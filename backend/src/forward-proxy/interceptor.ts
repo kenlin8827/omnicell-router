@@ -1,6 +1,7 @@
 import type http from 'node:http';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { detectSurface } from '../surfaces/table.js';
+import { findGateway } from '../plugins/gateways.js';
 import { dispatchSurface } from '../surfaces/dispatch.js';
 import { createNodeHttpTransport, readRequestBody, sendPreDispatchError } from '../surfaces/transport-node-http.js';
 
@@ -27,6 +28,23 @@ export function createProxyInterceptor(
   orchestrator: PipelineOrchestrator
 ): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   return async function intercept(req, res): Promise<boolean> {
+    // Client-gateway plugins (ADR-0017) claim whole SNI hosts: they see the
+    // decrypted request first and own its lifecycle — h1 native req/res and
+    // the h2 compatibility API both land here.
+    const gateway = findGateway(req);
+    if (gateway) {
+      try {
+        await gateway.handle(req, res);
+      } catch {
+        if (!res.headersSent) {
+          try {
+            res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: { message: 'Gateway handler failed' } }));
+          } catch {}
+        }
+      }
+      return true;
+    }
     if (req.method !== 'POST') return false;
     const surface = detectSurface(req.url || '');
     if (!surface) return false;

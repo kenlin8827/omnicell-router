@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventRing, nextRingEventId, PROXY_ACCESS_RING_CAPACITY } from '../utils/event-ring.js';
 import zlib from 'node:zlib';
-import { DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS } from '../config/defaults.js';
+import { DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS } from '../config/defaults.js';
 import { sanitizePlainHeadersForCapture } from '../observability/http-exchange.js';
 
 /**
@@ -20,20 +20,23 @@ import { sanitizePlainHeadersForCapture } from '../observability/http-exchange.j
  * and reloaded into the ring on startup, so the console keeps history across
  * restarts. Auto-cleanup deletes files older than
  * `forwardProxy.accessLog.persistDays` at startup and then daily.
- * Bodies are captured IN FULL unless `forwardProxy.accessLog.bodyBytes` sets
- * a per-side cap (absent = unlimited, 0 = headers only); headers
+ * Bodies are bounded per side by `forwardProxy.accessLog.bodyBytes` (absent =
+ * the finite default `DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES`, 0 = headers only):
+ * the bytes inside the cap are decoded inline, and a body that outgrows it
+ * spills WHOLE to a raw body file (see BodyCapture) so full capture never
+ * costs an unbounded heap. Headers
  * pass the shared credential deny-list as the request-capture archive
  * (`sanitizePlainHeadersForCapture`), and the archive's redaction policy
  * (`setCaptureSecretRedaction`) applies here too.
  *
  * Hot switch: `forwardProxy.accessLog.enabled` is re-read per request via the
- * live config ref (same hot-apply seam as bypassHosts / viaOutboundProxy).
+ * live config ref (same hot-apply seam as forwardProxy.rules).
  */
 
 export interface ProxyAccessEvent {
   id: string;
   ts: number;
-  /** `connect` = a CONNECT tunnel (bypass / MITM setup); `http` = one decrypted HTTP exchange. */
+  /** `connect` = a CONNECT tunnel (blind tunnel / MITM setup); `http` = one decrypted HTTP exchange. */
   kind: 'connect' | 'http';
   host: string;
   port: number;
@@ -60,7 +63,7 @@ export interface ProxyAccessEvent {
   resBodyFormat?: 'hex';
   /** true when either side hit the body cap and bytes were dropped. */
   truncated?: boolean;
-  /** CONNECT routing note: bypassed / mitm / tunnel / mitm-failed. */
+  /** CONNECT routing note (free-form, e.g. 'connect (blind tunnel)'). */
   note?: string;
 }
 
@@ -77,11 +80,18 @@ function sniffMime(b: Buffer): string {
 
 interface AccessLogSettings {
   enabled: boolean;
-  /** Per-side body cap; undefined = unlimited, 0 = headers only. */
-  bodyBytes: number | undefined;
+  /** Per-side inline capture cap (absent in config = the finite default); 0 = headers only. */
+  bodyBytes?: number;
   persist: boolean;
   persistDays: number;
 }
+
+/**
+ * Decompression bomb guard: a captured body is already capped on the wire, but
+ * `gzip`/`br`/`deflate` inflate by an arbitrary factor — the inflate call needs
+ * its own ceiling or a tiny hostile body becomes a multi-GB allocation.
+ */
+const MAX_INFLATE_BYTES = 32 * 1024 * 1024;
 
 let settingsReader: (() => AccessLogSettings | undefined) | undefined;
 
@@ -94,7 +104,10 @@ function settings(): AccessLogSettings {
   const s = settingsReader?.();
   return {
     enabled: s?.enabled ?? false,
-    bodyBytes: s?.bodyBytes,
+    // Absent in config = the finite default cap (never unlimited: this ledger
+    // is fed by a full-capture proxy, so "no cap" means "whole downloads in
+    // the heap"). An explicit 0 still means headers-only.
+    bodyBytes: s?.bodyBytes ?? DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES,
     persist: s?.persist ?? true,
     persistDays: s?.persistDays ?? DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS,
   };
@@ -144,12 +157,18 @@ export function setProxyAccessLogPersistDir(dir: string): void {
 
 const dayStamp = (ts: number): string => new Date(ts).toISOString().slice(0, 10).replace(/-/g, '');
 
-function writeBodyFile(id: string, ts: number, side: 'req' | 'res', buf: Buffer): string {
-  const dir = path.join(persistDir!, 'bodies', dayStamp(ts));
-  fs.mkdirSync(dir, { recursive: true });
+/** Absolute path + ring ref (`<day>/<name>.bin`) of one persisted body file. */
+function bodyFileTarget(id: string, ts: number, side: 'req' | 'res'): { path: string; ref: string } {
+  const day = dayStamp(ts);
   const name = `${id}-${side}.bin`;
-  fs.writeFileSync(path.join(dir, name), buf);
-  return `${dayStamp(ts)}/${name}`;
+  return { path: path.join(persistDir!, 'bodies', day, name), ref: `${day}/${name}` };
+}
+
+function writeBodyFile(id: string, ts: number, side: 'req' | 'res', buf: Buffer): string {
+  const target = bodyFileTarget(id, ts, side);
+  fs.mkdirSync(path.dirname(target.path), { recursive: true });
+  fs.writeFileSync(target.path, buf);
+  return target.ref;
 }
 
 const BODY_REF_RE = /^(\d{8})\/(pa-[a-z0-9-]+-(?:req|res))\.bin$/;
@@ -269,6 +288,38 @@ export function recordProxyConnect(args: {
 }
 
 /**
+ * Record one FINISHED blind tunnel — the byte totals a `connect` decision row
+ * cannot know yet.
+ *
+ * A tunnel is opaque on purpose (ADR-0020: TCP is passthrough-only), so the
+ * counts and the lifetime are the entire observation. Without them "the tunnel
+ * was opened" and "the tunnel carried nothing for six hours" look identical on
+ * the console.
+ */
+export function recordProxyTunnel(args: {
+  host: string;
+  port: number;
+  note: string;
+  reqBytes: number;
+  respBytes: number;
+  durationMs: number;
+}): void {
+  if (!settings().enabled) return;
+  const now = Date.now();
+  append({
+    id: nextRingEventId('pa-', now),
+    ts: now,
+    kind: 'connect',
+    host: args.host,
+    port: args.port,
+    reqBytes: args.reqBytes,
+    respBytes: args.respBytes,
+    durationMs: args.durationMs,
+    note: args.note,
+  });
+}
+
+/**
  * A live tap on one non-intercepted HTTP exchange. The forwarders feed it
  * request/response chunks; `finish` lands the ring row exactly once.
  */
@@ -332,18 +383,19 @@ interface DecodedBody {
  * becomes a hex dump capped only when a bodyBytes cap is configured; text is
  * decoded with the declared charset when Node supports it (utf-8 fallback).
  */
-function decodeCaptureBody(parts: Buffer[], cap: number | undefined, encoding: string | undefined, contentType: string | undefined, truncated: boolean): DecodedBody {
+function decodeCaptureBody(parts: Buffer[], cap: number, encoding: string | undefined, contentType: string | undefined, truncated: boolean): DecodedBody {
   if (parts.length === 0) return { text: undefined };
   let buf = Buffer.concat(parts);
   try {
     if (!truncated && buf.length > 0) {
-      if (encoding === 'gzip' || encoding === 'x-gzip') buf = zlib.gunzipSync(buf);
-      else if (encoding === 'br') buf = zlib.brotliDecompressSync(buf);
+      const inflate = { maxOutputLength: MAX_INFLATE_BYTES };
+      if (encoding === 'gzip' || encoding === 'x-gzip') buf = zlib.gunzipSync(buf, inflate);
+      else if (encoding === 'br') buf = zlib.brotliDecompressSync(buf, inflate);
       else if (encoding === 'deflate') {
         try {
-          buf = zlib.inflateSync(buf);
+          buf = zlib.inflateSync(buf, inflate);
         } catch {
-          buf = zlib.inflateRawSync(buf);
+          buf = zlib.inflateRawSync(buf, inflate);
         }
       }
     }
@@ -353,11 +405,148 @@ function decodeCaptureBody(parts: Buffer[], cap: number | undefined, encoding: s
   if (isBinaryBody(buf, contentType)) {
     return { hex: true, bytes: buf, mime: sniffMime(buf) };
   }
-  if (cap !== undefined && buf.length > cap) buf = buf.subarray(0, cap);
+  if (buf.length > cap) buf = buf.subarray(0, cap);
   try {
     return { text: new TextDecoder(charsetOf(contentType) ?? 'utf-8').decode(buf) };
   } catch {
     return { text: buf.toString('utf8') };
+  }
+}
+
+/**
+ * One side's captured body: decoded inline content, or a raw body-file ref
+ * when the capture outgrew the inline cap (see BodyCapture).
+ */
+interface CapturedSide {
+  text?: string;
+  hex?: boolean;
+  bytes?: Buffer;
+  mime?: string;
+  fileRef?: string;
+  fileMime?: string;
+  truncated: boolean;
+}
+
+/**
+ * Bounded body capture for ONE side of an exchange.
+ *
+ * `cap` is the INLINE budget (finite by default — DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES):
+ * the bytes that fit are buffered for the decoded text/hex rendering the
+ * console shows. The moment a body outgrows the cap, the WHOLE body (buffered
+ * prefix + the rest) is spilled to a raw body file and every later chunk is
+ * appended straight to disk — full capture without an unbounded heap. With no
+ * disk sink (persistence off) the tail is dropped and the row is marked
+ * truncated.
+ */
+class BodyCapture {
+  private parts: Buffer[] = [];
+  private buffered = 0;
+  private total = 0;
+  private spilled = false;
+  private spillFd: number | undefined;
+  private spillRef: string | undefined;
+  private spillMime: string | undefined;
+  private truncated = false;
+
+  constructor(
+    private readonly cap: number,
+    private readonly spill?: { id: string; ts: number; side: 'req' | 'res' }
+  ) {}
+
+  get byteCount(): number {
+    return this.total;
+  }
+
+  push(chunk: Buffer): void {
+    this.total += chunk.length;
+    if (this.cap === 0) return; // headers-only capture
+    if (this.spilled) {
+      if (this.spillFd === undefined) {
+        this.truncated = true; // the spill died mid-body — the tail is gone
+        return;
+      }
+      this.writeSpill(chunk);
+      return;
+    }
+    if (this.buffered + chunk.length <= this.cap) {
+      this.parts.push(chunk);
+      this.buffered += chunk.length;
+      return;
+    }
+    if (this.openSpill()) {
+      this.writeSpill(chunk);
+      return;
+    }
+    // No disk sink: keep what fits the cap, drop the tail, flag the row.
+    const room = this.cap - this.buffered;
+    if (room > 0) {
+      this.parts.push(chunk.subarray(0, room));
+      this.buffered += room;
+    }
+    this.truncated = true;
+  }
+
+  /** Decode this side: inline text/hex, or a raw body-file ref. */
+  finish(encoding: string | undefined, contentType: string | undefined): CapturedSide {
+    if (this.spilled) {
+      this.closeSpill();
+      return { fileRef: this.spillRef, fileMime: this.spillMime, truncated: this.truncated };
+    }
+    const body = decodeCaptureBody(this.parts, this.cap, encoding, contentType, this.truncated);
+    if (body.hex && body.bytes) {
+      // Binary content: a persisted body lands as a raw file, never inline.
+      if (this.spill && persistDir) {
+        try {
+          const ref = writeBodyFile(this.spill.id, this.spill.ts, this.spill.side, body.bytes);
+          return { fileRef: ref, fileMime: body.mime, truncated: this.truncated };
+        } catch {
+          // Fall through to the inline hex dump.
+        }
+      }
+      return { hex: true, bytes: body.bytes, mime: body.mime, truncated: this.truncated };
+    }
+    return { text: body.text, truncated: this.truncated };
+  }
+
+  /** Open the spill file and flush the buffered prefix into it. */
+  private openSpill(): boolean {
+    if (!this.spill || !persistDir) return false;
+    try {
+      const target = bodyFileTarget(this.spill.id, this.spill.ts, this.spill.side);
+      fs.mkdirSync(path.dirname(target.path), { recursive: true });
+      this.spillFd = fs.openSync(target.path, 'w');
+      this.spillRef = target.ref;
+      if (this.buffered > 0) {
+        const prefix = Buffer.concat(this.parts);
+        fs.writeSync(this.spillFd, prefix);
+        this.spillMime = sniffMime(prefix);
+      }
+      this.parts = [];
+      this.buffered = 0;
+      this.spilled = true;
+      return true;
+    } catch {
+      this.closeSpill();
+      return false;
+    }
+  }
+
+  private writeSpill(chunk: Buffer): void {
+    try {
+      fs.writeSync(this.spillFd!, chunk);
+    } catch {
+      // Disk trouble must never break the proxy path — stop spilling.
+      this.closeSpill();
+      this.truncated = true;
+    }
+  }
+
+  private closeSpill(): void {
+    if (this.spillFd === undefined) return;
+    try {
+      fs.closeSync(this.spillFd);
+    } catch {}
+    this.spillFd = undefined;
   }
 }
 
@@ -378,42 +567,29 @@ export function createAccessTap(args: {
   const s = settings();
   if (!s.enabled) return undefined;
   const started = Date.now();
-  let reqBytes = 0;
-  let respBytes = 0;
-  const reqParts: Buffer[] = [];
-  const resParts: Buffer[] = [];
-  let truncatedReq = false;
-  let truncatedRes = false;
-  // Returns false when ANY bytes of the chunk were dropped at the cap — both
-  // the whole-chunk drop and the subarray trim count as truncation. A cap of
-  // 0 (headers-only capture) drops bytes intentionally and never truncates.
-  const push = (parts: Buffer[], chunk: Buffer, bytes: number): boolean => {
-    if (s.bodyBytes === 0) return true;
-    if (s.bodyBytes !== undefined) {
-      if (bytes >= s.bodyBytes) return false;
-      if (bytes + chunk.length > s.bodyBytes) {
-        parts.push(chunk.subarray(0, s.bodyBytes - bytes));
-        return false;
-      }
-      parts.push(chunk);
-      return true;
-    }
-    parts.push(chunk);
-    return true;
-  };
+  // Row id up front: a spilled body file is named after it.
+  const id = nextRingEventId('pa-', started);
+  const sink = (side: 'req' | 'res'): { id: string; ts: number; side: 'req' | 'res' } | undefined =>
+    s.persist && persistDir !== null ? { id, ts: started, side } : undefined;
+  const cap = s.bodyBytes ?? DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES;
+  const reqCap = new BodyCapture(cap, sink('req'));
+  const resCap = new BodyCapture(cap, sink('res'));
   return {
     onReqChunk(chunk: Buffer): void {
-      if (!push(reqParts, chunk, reqBytes)) truncatedReq = true;
-      reqBytes += chunk.length;
+      reqCap.push(chunk);
     },
     onResChunk(chunk: Buffer): void {
-      if (!push(resParts, chunk, respBytes)) truncatedRes = true;
-      respBytes += chunk.length;
+      resCap.push(chunk);
     },
     finish(status, responseHeaders, note): void {
-      const reqBody = decodeCaptureBody(reqParts, s.bodyBytes, headerValue(args.requestHeaders, 'content-encoding'), headerValue(args.requestHeaders, 'content-type'), truncatedReq);
-      const resBody = decodeCaptureBody(resParts, s.bodyBytes, headerValue(responseHeaders, 'content-encoding'), headerValue(responseHeaders, 'content-type'), truncatedRes);
-      const id = nextRingEventId('pa-', Date.now());
+      const reqSide = reqCap.finish(
+        headerValue(args.requestHeaders, 'content-encoding'),
+        headerValue(args.requestHeaders, 'content-type')
+      );
+      const resSide = resCap.finish(
+        headerValue(responseHeaders, 'content-encoding'),
+        headerValue(responseHeaders, 'content-type')
+      );
       const ev: ProxyAccessEvent = {
         id,
         ts: started,
@@ -424,29 +600,26 @@ export function createAccessTap(args: {
         path: args.path,
         status,
         durationMs: Date.now() - started,
-        reqBytes,
-        respBytes,
+        reqBytes: reqCap.byteCount,
+        respBytes: resCap.byteCount,
         requestHeaders: sanitizePlainHeadersForCapture(args.requestHeaders),
         responseHeaders: sanitizePlainHeadersForCapture(responseHeaders as Record<string, string | string[] | undefined>),
-        truncated: truncatedReq || truncatedRes,
+        truncated: reqSide.truncated || resSide.truncated,
         note,
       };
-      const toDisk = settings().persist && persistDir !== null;
-      for (const [body, fileKey, mimeKey, textKey, formatKey, side] of [
-        [reqBody, 'reqBodyFile', 'reqBodyMime', 'requestBody', 'reqBodyFormat', 'req'],
-        [resBody, 'resBodyFile', 'resBodyMime', 'responseBody', 'resBodyFormat', 'res'],
+      for (const [side, fileKey, mimeKey, textKey, formatKey] of [
+        [reqSide, 'reqBodyFile', 'reqBodyMime', 'requestBody', 'reqBodyFormat'],
+        [resSide, 'resBodyFile', 'resBodyMime', 'responseBody', 'resBodyFormat'],
       ] as const) {
-        if (body.hex && body.bytes) {
-          if (toDisk) {
-            ev[fileKey] = writeBodyFile(id, started, side, body.bytes);
-            ev[mimeKey] = body.mime;
-          } else {
-            // Not persisting — keep the hex dump inline in the ring.
-            ev[textKey] = toHexDump(body.bytes);
-            ev[formatKey] = 'hex';
-          }
-        } else if (body.text !== undefined) {
-          ev[textKey] = body.text;
+        if (side.fileRef !== undefined) {
+          ev[fileKey] = side.fileRef;
+          if (side.fileMime !== undefined) ev[mimeKey] = side.fileMime;
+        } else if (side.hex && side.bytes) {
+          // Not persisting — keep the hex dump inline in the ring.
+          ev[textKey] = toHexDump(side.bytes);
+          ev[formatKey] = 'hex';
+        } else if (side.text !== undefined) {
+          ev[textKey] = side.text;
         }
       }
       append(ev);

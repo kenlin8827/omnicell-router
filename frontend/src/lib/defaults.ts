@@ -14,8 +14,15 @@ export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 /** `forwardProxy.host` backend default (loopback only). */
 export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
 
+/** `forwardProxy.maxConnections` backend default (concurrent proxied exchanges).
+ *  Mirrors backend `DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS` (backend/src/config/defaults.ts). */
+export const DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS = 512;
+
 /** `forwardProxy.accessLog.persistDays` backend default (day-file retention). */
 export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
+
+/** `forwardProxy.accessLog.bodyBytes` backend default (per-side inline cap, 1 MiB). */
+export const DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES = 1_048_576;
 /** `persistDays` clamp bounds — mirrors backend
  *  `PROXY_ACCESS_LOG_PERSIST_DAYS_MIN/MAX` (backend/src/config/defaults.ts). */
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;

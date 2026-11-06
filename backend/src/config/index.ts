@@ -3,6 +3,7 @@ import path from 'node:path';
 import { parse, stringify } from 'yaml';
 import { DirectivesConfig, Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
+import { lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { EFFORT_LADDER } from '../types/router.js';
 import { resolveDirectivePrefix } from '../pipeline/directives.js';
@@ -11,6 +12,10 @@ import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
   DEFAULT_FORWARD_PROXY_PORT,
   DEFAULT_FORWARD_PROXY_HOST,
+  DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
+  DEFAULT_FORWARD_PROXY_RULES,
+  FORWARD_PROXY_MAX_CONNECTIONS_MIN,
+  FORWARD_PROXY_MAX_CONNECTIONS_MAX,
   DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS,
   PROXY_ACCESS_LOG_PERSIST_DAYS_MIN,
   PROXY_ACCESS_LOG_PERSIST_DAYS_MAX,
@@ -111,9 +116,15 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: false, // opt-in: full-capture MITM proxy must be enabled consciously
     port: DEFAULT_FORWARD_PROXY_PORT,
     host: DEFAULT_FORWARD_PROXY_HOST,
-    bypassHosts: [],
-    viaOutboundProxy: false, // opt-in: transit egress via the outbound proxy policy
+    maxConnections: DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
+    // Rule table (ADR-0018): the fresh-install seed routes everything through
+    // the outbound proxy policy, decrypted. Inert until BOTH this listener and
+    // `proxy.enabled` are on, so it costs a fresh install nothing.
+    rules: DEFAULT_FORWARD_PROXY_RULES,
     accessLog: { enabled: true, persist: true, persistDays: DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS },
+    // Upstream TLS trust for the origin legs (ADR-0019): system trust store
+    // unless the operator names a private CA or disables verification.
+    upstreamTls: { insecure: false },
   },
   compression: {
     rtk: { enabled: false },
@@ -338,9 +349,68 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
 }
 
 /**
+ * Resolve the whole `forwardProxy` section (ADR-0018).
+ */
+function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
+  const rawFp = (raw ?? {}) as Record<string, any>;
+  const fp = { ...DEFAULT_CONFIG.forwardProxy, ...rawFp } as Record<string, any>;
+  // The section carries exactly the keys `ForwardProxyConfig` declares. Any
+  // other key a hand-edited file still holds — a retired key (`bypassHosts`,
+  // `viaOutboundProxy`, `mitmHosts`, the interim `egress` / `egressRules` /
+  // `decryptRules` shapes) or a typo — is dropped here: never folded, never
+  // translated, never re-persisted on the next console save.
+  const declared = {
+    enabled: fp.enabled,
+    port: fp.port,
+    host: fp.host,
+    caDir: fp.caDir,
+    authToken: fp.authToken,
+    maxConnections: fp.maxConnections,
+    accessLog: fp.accessLog,
+    rules: fp.rules,
+    upstreamTls: fp.upstreamTls,
+    unresolvedModel: fp.unresolvedModel,
+  };
+  // An EXPLICIT `rules` array in the user's file wins (even empty — an empty
+  // table is a decision); otherwise the shipped default table applies.
+  const rules = Array.isArray(rawFp.rules) ? normalizeRuleTable({ rules: rawFp.rules }) : normalizeRuleTable(declared);
+  return {
+    ...declared,
+    rules,
+    maxConnections: normalizeMaxConnections(fp.maxConnections),
+    unresolvedModel: normalizeUnresolvedModelConfig(fp.unresolvedModel as never),
+    accessLog: normalizeAccessLogConfig(fp.accessLog),
+    upstreamTls: normalizeUpstreamTlsConfig(fp.upstreamTls),
+  } as RouterConfig['forwardProxy'];
+}
+
+/**
+ * Resolve `forwardProxy.upstreamTls` (ADR-0019) — same trust boundary as the
+ * rest of the section: junk falls back to the system trust store, never to a
+ * silently disabled verification. `insecure` is only ever true when the operator
+ * literally wrote `true`.
+ */
+function normalizeUpstreamTlsConfig(raw: unknown): { caFile?: string; insecure: boolean } {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const caFile = typeof r.caFile === 'string' && r.caFile.trim() ? r.caFile.trim() : undefined;
+  return { ...(caFile ? { caFile } : {}), insecure: r.insecure === true };
+}
+
+/**
+ * Resolve `forwardProxy.maxConnections` — junk falls back to the default (no
+ * coercion), a real number is floored and clamped to the declared bounds so a
+ * typo cannot turn the cap into "unlimited" or "reject everything".
+ */
+function normalizeMaxConnections(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS;
+  return Math.min(FORWARD_PROXY_MAX_CONNECTIONS_MAX, Math.max(FORWARD_PROXY_MAX_CONNECTIONS_MIN, Math.floor(raw)));
+}
+
+/**
  * Resolve `forwardProxy.accessLog` — same trust boundary as resolveRateLimit:
- * junk values fall back to defaults, not coercion. bodyBytes: absent = FULL
- * body capture (no cap); 0 = headers only; a positive number = per-side cap.
+ * junk values fall back to defaults, not coercion. bodyBytes: absent = the
+ * consumer applies DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES (1 MiB, spill-to-file);
+ * 0 = headers only; a positive number = per-side inline cap.
  * persistDays clamps to 1..365.
  */
 function normalizeAccessLogConfig(raw: unknown): {
@@ -535,6 +605,29 @@ export function resolveRateLimit(parsed: any): RateLimitConfig {
 let _schemaVersionWarned = false;
 /** One-shot guard for the schemaVersion-position warning. */
 let _schemaOrderWarned = false;
+/** One-shot guard for the forward-proxy rule-table lint (ADR-0018). */
+let _rulesLintWarned = false;
+
+/**
+ * Boot-time egress lint (ADR-0018). The console renders the same codes per row
+ * with translations, but a hand-edited config.yaml never opens the console —
+ * one warn per process so a table that cannot do what it says is never silent.
+ *
+ * Gated on `forwardProxy.enabled`: with the listener off the table routes
+ * nothing, so warning about it would be noise on every fresh install.
+ */
+function warnForwardProxyRulesOnce(raw: unknown, proxyEnabled: boolean): void {
+  if (_rulesLintWarned) return;
+  const fp = (raw ?? {}) as Record<string, any>;
+  if (fp.enabled !== true) return;
+  _rulesLintWarned = true;
+  // Lint the RAW rows (position-preserving): `lintRules` runs the same parse as
+  // the resolver, so a warning's index addresses the row the operator typed.
+  for (const w of lintRules(fp.rules, proxyEnabled)) {
+    const at = w.ruleIndex === undefined ? '' : ` rule #${w.ruleIndex + 1}`;
+    console.warn(`[Config] forwardProxy.rules${at}: ${w.code}${w.detail ? ` (${w.detail})` : ''}`);
+  }
+}
 
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
@@ -580,6 +673,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         return DEFAULT_CONFIG;
       }
       const flat = toRuntimeConfig(parsed as unknown as DiskConfig) as Record<string, any>;
+      warnForwardProxyRulesOnce(flat.forwardProxy, flat.proxy?.enabled === true);
       return {
         ...DEFAULT_CONFIG,
         ...flat,
@@ -615,12 +709,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         routeEntries: sanitizeRouteEntriesInput(flat.routeEntries),
         directives: sanitizeDirectivesInput(flat.directives),
         proxy: { ...DEFAULT_CONFIG.proxy, ...flat.proxy },
-        forwardProxy: {
-          ...DEFAULT_CONFIG.forwardProxy,
-          ...flat.forwardProxy,
-          unresolvedModel: normalizeUnresolvedModelConfig(flat.forwardProxy?.unresolvedModel),
-          accessLog: normalizeAccessLogConfig(flat.forwardProxy?.accessLog),
-        },
+        forwardProxy: resolveForwardProxyConfig(flat.forwardProxy),
         compression: {
           rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...flat.compression?.rtk },
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...flat.compression?.headroom },
@@ -858,9 +947,8 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     runtimeConfigRef.systemone = fresh.systemone;
     // forwardProxy too — the MITM interceptor and the orchestrator's
     // unresolved-model policy read the live boot snapshot per request
-    // (bypassHosts, viaOutboundProxy, unresolvedModel.onMiss/hosts), so a
-    // save must land here or the console's "takes effect immediately"
-    // promise is false.
+    // (rules, unresolvedModel.onMiss/hosts), so a save must land here or the
+    // console's "takes effect immediately" promise is false.
     runtimeConfigRef.forwardProxy = fresh.forwardProxy;
   }
   getRateLimiter().reload(fresh);

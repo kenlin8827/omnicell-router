@@ -15,7 +15,7 @@ import forge from 'node-forge';
  * memory (persist nothing per-host).
  */
 
-const CA_CN = 'OmniCellRouter Forward Proxy CA';
+export const CA_CN = 'OmniCellRouter Forward Proxy CA';
 const CA_DAYS = 3650;
 const LEAF_DAYS = 30;
 
@@ -91,6 +91,13 @@ interface MintedCert {
   cert: string;
 }
 
+/**
+ * Cap on cached leaf certs. Full-capture MITM mints one per host and the proxy
+ * sees every host a client visits, so an unbounded map is a slow leak; evicting
+ * a cert is free (the next CONNECT re-mints it from the same CA).
+ */
+const MAX_CACHED_CERTS = 512;
+
 export class CertMinter {
   private cache = new Map<string, MintedCert>();
 
@@ -99,13 +106,23 @@ export class CertMinter {
   /** Cached per-host leaf cert for the per-host `tls.createServer` (server.ts). */
   get(host: string): MintedCert {
     const hit = this.cache.get(host);
-    if (hit) return hit;
+    if (hit) {
+      // Re-insert to mark most-recently-used (a Map keeps insertion order).
+      this.cache.delete(host);
+      this.cache.set(host, hit);
+      return hit;
+    }
     const certPem = this.mintLeaf(host);
     const out: MintedCert = {
       key: this.ca.leafKeyPem,
       cert: certPem,
     };
     this.cache.set(host, out);
+    while (this.cache.size > MAX_CACHED_CERTS) {
+      const oldest = this.cache.keys().next();
+      if (oldest.done) break;
+      this.cache.delete(oldest.value);
+    }
     return out;
   }
 

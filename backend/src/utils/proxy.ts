@@ -79,6 +79,21 @@ function globalProxyUrl(): string | undefined {
 }
 
 /**
+ * The outbound proxy URL with NO provider/model gating — `proxy.enabled` +
+ * `proxy.url`, nothing else.
+ *
+ * `resolveProxyUrl` answers "which proxy for THIS provider/model" (includes /
+ * excludes). Callers that already decided the egress themselves — the
+ * forward-proxy transit legs after the egress table (ADR-0018) — must not be
+ * re-gated by a list that was never about hosts.
+ */
+export function outboundProxyUrl(): string | undefined {
+  const cfg = activeConfig;
+  if (!cfg || cfg.enabled !== true) return undefined;
+  return globalProxyUrl();
+}
+
+/**
  * Resolve the proxy URL for a target. `match` identifies the logical caller
  * ({ provider, model }) for list evaluation; omit it for unlisted infra calls.
  * Returns undefined for direct connections.

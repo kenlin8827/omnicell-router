@@ -313,15 +313,55 @@ export interface ProxyConfig {
 }
 
 /**
+ * What happens at INGRESS for a forward-proxy rule row (ADR-0018, second
+ * revision — the two-field shape):
+ *
+ *   `intercept`   → MITM the connection (the default posture — LLM traffic
+ *                   enters the routing pipeline this way)
+ *   `passthrough` → blind-tunnel the bytes without decrypting
+ *   `reject`      → 403 on admission, before any tunnel or certificate
+ */
+export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/** Where the bytes EXIT — out of this machine, or through `config.proxy`. */
+export type RuleEgress = 'direct' | 'proxy';
+
+/** The EXIT half of a decision — where the bytes go (`RuleDecision.action`). */
+export type RuleExit = 'direct' | 'proxy' | 'reject';
+
+/** One row of the forward-proxy rule table — ordered, first match wins. */
+export interface ForwardProxyRule {
+  /** Glob over the BARE hostname (port is not matched; `*` crosses dots). */
+  match: string;
+  /** What happens at ingress (see RuleIngress). */
+  ingress: RuleIngress;
+  /** Where the bytes exit (see RuleEgress); a `reject` row uses `direct`. */
+  egress: RuleEgress;
+}
+
+/**
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
  *
- * FULL-CAPTURE by design: every proxied TLS connection is MITM'd with a
- * locally generated CA; the decrypted request is inspected — LLM-protocol
- * traffic enters the routing pipeline, anything else is forwarded
- * transparently. Only loopback targets and `bypassHosts` matches are
- * blind-tunneled (never decrypted). No `mode` switch: full capture IS the
- * single behavior. The generated CA must be trusted by the clients that use
- * this proxy (`<caDir>/ca.pem`).
+ * FULL-CAPTURE by design: every proxied TLS connection is MITM'd with a locally
+ * generated CA; the decrypted request is inspected — LLM-protocol traffic enters
+ * the routing pipeline, anything else is forwarded transparently. No `mode`
+ * switch: full capture IS the single behavior. The generated CA must be trusted
+ * by the clients that use this proxy (`<caDir>/ca.pem`).
+ *
+ * ONE ordered rule table (ADR-0018): each row names the host's whole outcome
+ * with two fields — `ingress` (intercept / passthrough / reject) and `egress`
+ * (direct / proxy). First match wins: no specificity ranking, no category
+ * precedence. `reject` is deny-first only because it is written first, and it
+ * is an ADMISSION gate — 403 before any tunnel is opened or certificate minted.
+ *
+ * Invariants no rule can override: loopback is always passthrough + direct
+ * (cycle safety + local dev), and an unmatched host falls back to direct +
+ * intercepted, which is the pre-ADR-0018 posture — so an empty table changes
+ * nothing.
+ *
+ * Scope: traffic this gateway proxies or relays for a client. The gateway's own
+ * upstream calls keep their provider/model-scoped `proxy:` policy, so a reject
+ * rule can never silence inference.
  */
 export interface ForwardProxyConfig {
   enabled?: boolean; // master switch; default false (opt-in — full-capture MITM must be enabled consciously)
@@ -330,14 +370,16 @@ export interface ForwardProxyConfig {
   /**
    * Access log for the transparent-forward path: records EVERY non-intercepted
    * HTTP exchange (and CONNECT tunnel decisions) in a memory ring, viewable on
-   * the console /proxy-log page. Bodies are captured in full unless a
-   * per-side cap is set; headers pass the shared credential deny-list.
-   * Hot-applies on save.
+   * the console /proxy-log page. Bodies are capped per side (a larger body
+   * spills to a raw body file while persisting); headers pass the shared
+   * credential deny-list. Hot-applies on save.
    */
   accessLog?: {
     /** Record non-intercepted traffic; default true. */
     enabled?: boolean;
-    /** Per-side body capture cap in bytes; absent = unlimited, 0 = headers only. */
+    /** Per-side inline body cap in bytes; absent = the default cap
+     *  (`DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES`, 1 MiB), 0 = headers only. An
+     *  overflow spills the whole body to a raw file when persisting. */
     bodyBytes?: number;
     /** Persist events as daily JSONL under <ocrHome>/forward-proxy/access-log/; default true. */
     persist?: boolean;
@@ -345,20 +387,42 @@ export interface ForwardProxyConfig {
     persistDays?: number;
   };
   /**
-   * Bypass list: bare glob strings = pure tunnel with DIRECT egress; object
-   * entries `{ host, viaProxy }` choose the egress per host (viaProxy →
-   * tunnel through the upstream proxy policy, e.g. clash). Loopback always
-   * bypasses (direct).
+   * The rule table (see ForwardProxyRule). Absent = every host takes the
+   * unmatched fallback (direct + intercepted). Hot-applies on save.
    */
-  bypassHosts?: (string | { host: string; viaProxy?: boolean })[];
+  rules?: ForwardProxyRule[];
+  /**
+   * Basic proxy-auth token. When set, EVERY CONNECT and plain request must
+   * carry `Proxy-Authorization: Basic <base64 user:token>` (any username) or it
+   * is answered 407. When unset, auth is off — which is only allowed while the
+   * proxy listens on loopback: binding anywhere else without a token makes this
+   * machine an open MITM proxy for the LAN, so the start is REFUSED.
+   * Hot-applies on save. Same secret-in-config posture as `adminKey`.
+   */
+  authToken?: string;
+  /**
+   * Concurrent inbound socket cap on the proxy listener; sockets opened past it
+   * are destroyed immediately. Default 512, clamp 16..8192. Hot-applies on save.
+   */
+  maxConnections?: number;
   caDir?: string; // MITM CA dir; default ~/.omnicell-router/forward-proxy
   /**
-   * Route forward-proxy transit (bypass tunnels + non-intercepted forwards)
-   * through the outbound proxy policy (`proxy:` — url/includes/excludes).
-   * Default false = direct egress; recommended on when targets are
-   * network-blocked and a local proxy (clash etc.) is configured.
+   * Upstream TLS trust for the proxy's ORIGIN legs (ADR-0019).
+   *
+   * The proxy validates the REAL target certificate on every origin leg, so an
+   * origin signed by a PRIVATE CA (a corporate TLS-inspection chain, an internal
+   * service, a staging box) fails closed with a 502 until that CA is trusted
+   * here. Hot-applies on save (the options are resolved per request and an h2
+   * session established under the old policy is never reused).
    */
-  viaOutboundProxy?: boolean;
+  upstreamTls?: {
+    /** PEM bundle appended to the system trust store (never replacing it). A
+     *  missing/unreadable file warns once and leaves the system store in force. */
+    caFile?: string;
+    /** Disable upstream certificate verification entirely. Escape hatch for a
+     *  broken chain; default false. Warned at boot and on the console. */
+    insecure?: boolean;
+  };
   /** Unresolved-model-name policy — MITM forward-proxy leg only
    *  (see UnresolvedModelConfig). */
   unresolvedModel?: UnresolvedModelConfig;

@@ -24,7 +24,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { resolveUnresolvedModelAction } from './unresolved-model.js';
-import { isLoopbackHost } from '../forward-proxy/bypass.js';
+import { isLoopbackHost } from '../forward-proxy/rules.js';
 import { filterHeaders } from '../forward-proxy/egress.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
 import {

@@ -32,6 +32,12 @@ import { APP_VERSION } from '../version.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
+import {
+  lintRules,
+  normalizeRules,
+  osBypassHosts,
+  resolveHost,
+} from '../forward-proxy/rules.js';
 import { listProxyAccessEvents, clearProxyAccessLog, proxyAccessLogSettings, readProxyAccessBodyFile } from '../forward-proxy/access-log.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
@@ -1081,6 +1087,10 @@ export function registerConsoleRoutes(
       // the Proxy Access page polls this to show running / failed / pending.
       forwardProxy: {
         enabled: Boolean(config.forwardProxy?.enabled),
+        // ADR-0019: a disabled upstream verification is a standing risk, so the
+        // console states it next to the runtime status instead of hiding it in
+        // a YAML comment.
+        upstreamInsecure: config.forwardProxy?.upstreamTls?.insecure === true,
         ...getForwardProxyStatus(),
       },
     };
@@ -1126,22 +1136,44 @@ export function registerConsoleRoutes(
   app.get('/api/admin/system-proxy', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await getSystemProxyStatus(port, fp?.bypassHosts || []);
+    const sys = await getSystemProxyStatus(port, osBypassHosts(fp?.rules));
     return { status: 'ok', ...sys, proxyEnabled: Boolean(fp?.enabled) };
   });
 
   app.post('/api/admin/system-proxy/enable', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await enableSystemProxy(port, fp?.bypassHosts || []);
+    const sys = await enableSystemProxy(port, osBypassHosts(fp?.rules));
     return { status: 'ok', ...sys };
   });
 
   app.post('/api/admin/system-proxy/disable', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await disableSystemProxy(port, fp?.bypassHosts || []);
+    const sys = await disableSystemProxy(port, osBypassHosts(fp?.rules));
     return { status: 'ok', ...sys };
+  });
+
+  // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The
+  // console renders the warning CODES through i18n and shows which rule a probe
+  // host hits, so an ordered table is never a black box. `rules` in the body =
+  // the UNSAVED table being edited; omitted = the live one.
+  app.post('/api/admin/forward-proxy/rules/resolve', async (req) => {
+    const body = (req.body ?? {}) as { host?: unknown; rules?: unknown };
+    const live = getRuntimeConfigRef();
+    const rawRules = Array.isArray(body.rules) ? body.rules : live?.forwardProxy?.rules;
+    const proxyEnabled = live?.proxy?.enabled === true;
+    const rules = normalizeRules(rawRules);
+    const host = typeof body.host === 'string' ? body.host.trim() : '';
+    return {
+      status: 'ok',
+      rules,
+      warnings: lintRules(rawRules, proxyEnabled),
+      proxyEnabled,
+      // The resolver is the SAME function the proxy legs call, so the preview
+      // can never disagree with the live decision.
+      decision: host ? resolveHost(host, rules) : null,
+    };
   });
 
   // 3B. Token usage aggregation from the trace ring: windowed totals plus

@@ -11,7 +11,7 @@ import { getOcrHomeDir } from '../cli/paths.js';
  *  - `enable` reads the CURRENT OS proxy settings (whatever they point at —
  *    including a user's clash/v2ray), snapshots them to
  *    `<ocrHome>/forward-proxy/system-proxy.json`, then points the OS proxy at
- *    127.0.0.1:<port> with a bypass list (loopback + forwardProxy.bypassHosts).
+ *    127.0.0.1:<port> with a bypass list (loopback + the literal `direct` rules).
  *  - `disable` restores the snapshot verbatim and deletes it. Without a
  *    snapshot OCR owns nothing, so disable is a NO-OP — it never blind-offs
  *    a proxy it did not set (a user's clash/v2ray keeps working).
@@ -91,11 +91,10 @@ function clearSnapshot(): void {
   } catch {}
 }
 
-/** Loopback + config bypassHosts, rendered in the platform's override syntax. */
-export function buildOverride(bypassHosts: (string | { host: string })[], platform: NodeJS.Platform): string {
+/** Loopback + the rule table's literal `direct` hosts, in the platform's override syntax. */
+export function buildOverride(bypassList: string[], platform: NodeJS.Platform): string {
   const hosts = ['localhost', '127.0.0.1', '<local>'];
-  for (const b of bypassHosts) {
-    const h = typeof b === 'string' ? b : b.host;
+  for (const h of bypassList) {
     if (h) hosts.push(h);
   }
   return platform === 'win32' ? hosts.join(';') : JSON.stringify(hosts);
@@ -259,7 +258,7 @@ async function readCurrentServer(platform: NodeJS.Platform): Promise<string | un
   return undefined;
 }
 
-export async function getSystemProxyStatus(targetPort: number, bypassHosts: (string | { host: string })[]): Promise<SystemProxyStatus> {
+export async function getSystemProxyStatus(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const platform = process.platform;
   const supported = platformSupported(platform);
   const targetServer = `127.0.0.1:${targetPort}`;
@@ -268,7 +267,7 @@ export async function getSystemProxyStatus(targetPort: number, bypassHosts: (str
     supported,
     state: supported ? 'off' : 'unsupported',
     targetServer,
-    override: buildOverride(bypassHosts, platform),
+    override: buildOverride(bypassList, platform),
     caPath: path.join(getOcrHomeDir(), 'forward-proxy', 'ca.pem'),
   };
   if (!supported) return base;
@@ -282,19 +281,19 @@ export async function getSystemProxyStatus(targetPort: number, bypassHosts: (str
 }
 
 /** Point the OS proxy at the inbound forward proxy, snapshotting first. */
-export async function enableSystemProxy(targetPort: number, bypassHosts: (string | { host: string })[]): Promise<SystemProxyStatus> {
+export async function enableSystemProxy(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const platform = process.platform;
   if (!platformSupported(platform)) throw new Error(`system proxy not supported on ${platform}`);
   // Idempotent ownership: a second enable MUST NOT re-read the OS settings
   // through the snapshot slot — at that point they point at OUR server, so
   // re-snapshotting would overwrite (and permanently lose) the user's
   // original proxy configuration. Treat re-enable as a status refresh.
-  if (readSnapshot()) return getSystemProxyStatus(targetPort, bypassHosts);
+  if (readSnapshot()) return getSystemProxyStatus(targetPort, bypassList);
   const targetServer = `127.0.0.1:${targetPort}`;
-  const overrideHosts = ['localhost', '127.0.0.1', '<local>', ...bypassHosts.map(b => (typeof b === 'string' ? b : b.host)).filter(Boolean)];
+  const overrideHosts = ['localhost', '127.0.0.1', '<local>', ...bypassList.filter(Boolean)];
   if (platform === 'win32') {
     const snap = await winRead();
-    await winSet(targetServer, buildOverride(bypassHosts, platform));
+    await winSet(targetServer, buildOverride(bypassList, platform));
     writeSnapshot({ platform, setAt: Date.now(), targetServer, win: snap });
   } else if (platform === 'darwin') {
     const services = await macServices();
@@ -306,17 +305,17 @@ export async function enableSystemProxy(targetPort: number, bypassHosts: (string
     await gnomeSet(targetServer, overrideHosts);
     writeSnapshot({ platform, setAt: Date.now(), targetServer, gnome: snap });
   }
-  return getSystemProxyStatus(targetPort, bypassHosts);
+  return getSystemProxyStatus(targetPort, bypassList);
 }
 
 /** Restore whatever the OS proxy was before OCR took ownership. */
-export async function disableSystemProxy(targetPort: number, bypassHosts: (string | { host: string })[]): Promise<SystemProxyStatus> {
+export async function disableSystemProxy(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const snapshot = readSnapshot();
   if (!snapshot) {
     // Nothing owned — deliberately a no-op: without a snapshot we cannot
     // know what to restore, so touching the OS proxy here could blind-off
     // a proxy OCR never set (a user's clash/v2ray). File-header contract.
-    return getSystemProxyStatus(targetPort, bypassHosts);
+    return getSystemProxyStatus(targetPort, bypassList);
   }
   try {
     if (snapshot.win) await winRestore(snapshot.win);
@@ -325,5 +324,5 @@ export async function disableSystemProxy(targetPort: number, bypassHosts: (strin
   } finally {
     clearSnapshot();
   }
-  return getSystemProxyStatus(targetPort, bypassHosts);
+  return getSystemProxyStatus(targetPort, bypassList);
 }

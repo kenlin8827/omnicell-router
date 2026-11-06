@@ -393,6 +393,8 @@ export interface GatewayStatusResponse {
   /** Inbound forward-proxy runtime status (backend forward-proxy/status.ts). */
   forwardProxy?: {
     enabled: boolean;
+    /** ADR-0019: upstream certificate verification is OFF — a standing risk. */
+    upstreamInsecure?: boolean;
     running: boolean;
     port?: number;
     host?: string;
@@ -434,7 +436,8 @@ export interface ProxyAccessEvent {
 export interface ProxyAccessLogResponse {
   status: string;
   enabled: boolean;
-  /** Per-side capture cap; absent = unlimited (backend `accessLog.bodyBytes`). */
+  /** Per-side inline capture cap; absent = the backend default cap
+   *  (`DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES`, 1 MiB), 0 = headers only. */
   bodyBytes?: number;
   events: ProxyAccessEvent[];
 }
@@ -449,6 +452,66 @@ export interface SystemProxyStatus {
   override?: string;
   caPath: string;
   proxyEnabled?: boolean;
+}
+
+/**
+ * Forward-proxy rule table (backend forward-proxy/rules.ts, ADR-0018 second
+ * revision).
+ *
+ * ONE ordered table, first match wins. Each row carries TWO fields splitting
+ * the decision into its axes: `ingress` — what happens at ingress (`intercept`
+ * = MITM, the default posture; `passthrough` = blind tunnel; `reject` = 403 on
+ * admission) — and `egress` — where the bytes exit (`direct` / `proxy`). A
+ * `reject` row uses `egress: 'direct'`. Loopback is always passthrough +
+ * direct; an unmatched host falls back to direct + intercepted.
+ */
+export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/** Where the bytes exit. */
+export type RuleEgress = 'direct' | 'proxy';
+
+/** The exit half of a decision — where the bytes go. */
+export type RuleExit = 'direct' | 'proxy' | 'reject';
+
+/** One row of the rule table. `match` is a glob over the bare hostname. */
+export interface ForwardProxyRule {
+  match: string;
+  ingress: RuleIngress;
+  egress: RuleEgress;
+}
+
+/** Lint codes — the console owns the wording (i18n); the backend owns the rule. */
+export type RuleWarningCode =
+  | 'invalid-rule'
+  | 'unreachable-rule'
+  | 'no-catch-all'
+  | 'proxy-rule-without-proxy';
+
+export interface RuleWarning {
+  code: RuleWarningCode;
+  /** Index into the RAW rules array (the row the operator typed). */
+  ruleIndex?: number;
+  /** English detail for logs — never rendered untranslated. */
+  detail?: string;
+}
+
+/** The full decision for a probe host — the console preview + the ledger note. */
+export interface HostDecision {
+  action: RuleExit;
+  tunnel: boolean;
+  reason: 'loopback' | 'rule' | 'fallback';
+  ruleIndex?: number;
+  match?: string;
+}
+
+export interface RulesResolveResponse {
+  status: string;
+  rules: ForwardProxyRule[];
+  warnings: RuleWarning[];
+  /** `config.proxy.enabled` — a `proxy` row is inert while this is false. */
+  proxyEnabled: boolean;
+  /** Null when the request carried no probe host. */
+  decision: HostDecision | null;
 }
 
 /**
@@ -1781,6 +1844,21 @@ export const api = {
   },
   async getSystemProxy(): Promise<SystemProxyStatus> {
     const res = await fetch('/api/admin/system-proxy');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Lint + dry-run the forward-proxy rule table (ADR-0018). The backend runs the
+   * SAME resolver the proxy legs use, so the preview can never disagree with the
+   * live decision. Pass `rules` to test UNSAVED edits.
+   */
+  async resolveForwardProxyRules(args: { host?: string; rules?: ForwardProxyRule[] }): Promise<RulesResolveResponse> {
+    const res = await fetch('/api/admin/forward-proxy/rules/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(args),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

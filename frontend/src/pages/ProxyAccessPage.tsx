@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, FileText, Download, Image as ImageIcon, Maximize2, Minimize2 } from 'lucide-react';
-import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus } from '../lib/api';
+import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, FileText, Download, Image as ImageIcon, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
+import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -12,7 +12,7 @@ import { Drawer } from '../components/Drawer';
 import { Prose, proseIsLong } from '../components/Prose';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { sortModelOptions } from '../lib/model-options';
-import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
+import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
 
 import { FONT_MONO } from '../lib/fonts';
 /**
@@ -36,8 +36,11 @@ interface ForwardProxyShape {
   host?: string;
   /** MITM CA directory — boot-frozen (cert material). */
   caDir?: string;
-  bypassHosts?: (string | { host: string; viaProxy?: boolean })[];
-  viaOutboundProxy?: boolean;
+  /** The rule table (ADR-0018) — one ordered list, first match wins; each row is
+   *  `{ match, ingress, egress }`: what happens at ingress and where the bytes exit. */
+  rules?: ForwardProxyRule[];
+  /** Concurrent inbound socket cap (default 512). Raw-YAML page only. */
+  maxConnections?: number;
   unresolvedModel?: { onMiss?: string; hosts?: Record<string, string> };
   accessLog?: { enabled?: boolean; bodyBytes?: number; persist?: boolean; persistDays?: number };
 }
@@ -73,6 +76,29 @@ const LOG_TD: React.CSSProperties = {
   fontSize: 'var(--text-sm)',
 };
 
+/**
+ * The rule table (ADR-0018) is ONE grid: the head row and every rule row are
+ * cells of the same template, so a column label can never drift off the field
+ * it names (the ingress control is pinned, the match input takes the slack, and
+ * the egress / actions tracks size to their widest row).
+ */
+const RULE_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '18px minmax(0, 1fr) 170px max-content max-content',
+  columnGap: '6px',
+  rowGap: '8px',
+  alignItems: 'center',
+};
+/** Column label of that grid — dim, uppercase, never wrapping (it would re-flow the tracks). */
+const RULE_HEAD: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-semibold)',
+  color: 'var(--text-dim)',
+  textTransform: 'uppercase',
+  letterSpacing: 'var(--tracking-label)',
+  whiteSpace: 'nowrap',
+};
+
 /** Section header inside a .sub-card group — 11px bold dim, one tier under card titles. */
 const SEC_TITLE: React.CSSProperties = {
   fontSize: 'var(--text-xs)',
@@ -82,6 +108,55 @@ const SEC_TITLE: React.CSSProperties = {
   letterSpacing: 'var(--tracking-wide)',
 };
 const fmtBytes = (n: number): string => (n === 0 ? '0' : n < 1024 ? String(n) : `${(n / 1024).toFixed(1)}K`);
+
+/**
+ * Inline advisory strip for the egress card (ADR-0018).
+ * `warn` = the table cannot do what it says (no catch-all / proxy rules with the
+ * outbound proxy off); `info` = the table is currently inert (listener off).
+ */
+const EgressNote: React.FC<{ tone: 'warn' | 'info'; text: string }> = ({ tone, text }) => (
+  <div
+    style={{
+      display: 'flex',
+      gap: '8px',
+      alignItems: 'flex-start',
+      padding: '8px 10px',
+      marginBottom: '10px',
+      borderRadius: '8px',
+      border: `1px solid ${tone === 'warn' ? 'rgba(248,113,113,0.45)' : 'var(--card-border)'}`,
+      background: tone === 'warn' ? 'rgba(248,113,113,0.10)' : 'var(--well-bg)',
+      color: tone === 'warn' ? '#f87171' : 'var(--text-dim)',
+      fontSize: 'var(--text-xs)',
+      lineHeight: 1.5,
+    }}
+  >
+    {tone === 'warn' && <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />}
+    <span>{text}</span>
+  </div>
+);
+
+/** Swap one rule with its neighbour. Order IS the semantics — this is the only
+ *  way an operator can change which rule wins. */
+function moveRule<T>(rules: T[], idx: number, delta: -1 | 1): T[] {
+  const to = idx + delta;
+  if (to < 0 || to >= rules.length) return rules;
+  const next = [...rules];
+  [next[idx], next[to]] = [next[to], next[idx]];
+  return next;
+}
+
+/** New rules land BEFORE the catch-all — appended after it they would never
+ *  match, which reads as "the feature is broken" rather than "you put it in the
+ *  wrong place". The value is inherited from the catch-all so the common case
+ *  (add an exception to the default posture) needs no second click. */
+function insertRule<T extends { match: string }>(rules: T[], make: (catchAll: T | undefined) => T): T[] {
+  const catchAllAt = rules.findIndex(r => r.match.trim() === '*');
+  const row = make(catchAllAt >= 0 ? rules[catchAllAt] : undefined);
+  if (catchAllAt < 0) return [...rules, row];
+  const next = [...rules];
+  next.splice(catchAllAt, 0, row);
+  return next;
+}
 
 /**
  * The forward-proxy access log card (backend /api/admin/proxy-log). Lists
@@ -909,8 +984,13 @@ export const ProxyAccessPage: React.FC = () => {
   const [view, setView] = useState<'config' | 'sys' | 'wizard' | 'log'>('config');
   /** Config-tab fold state: the traffic-log and miss-policy groups (advanced) default collapsed. */
   const [fold, setFold] = useState({ log: false, miss: false });
-  /** Bypass host rows — per-row egress choice (viaProxy) */
-  const [bypassRows, setBypassRows] = useState<{ host: string; viaProxy: boolean }[]>([]);
+  /** The rule table (ADR-0018). Order is the semantics — the ↑↓ buttons are the
+   *  ONLY thing keeping it readable, not a convenience. */
+  const [ruleRows, setRuleRows] = useState<ForwardProxyRule[]>([]);
+  /** Lint + preview come from the backend resolvers (never a local re-implementation). */
+  const [ruleWarnings, setRuleWarnings] = useState<RuleWarning[]>([]);
+  const [probeHost, setProbeHost] = useState('');
+  const [probeDecision, setProbeDecision] = useState<HostDecision | null>(null);
   /** unresolvedModel host-override rows — per-row onMiss value. */
   const [missRows, setMissRows] = useState<{ host: string; onMiss: string }[]>([]);
   /** onMiss is ONE flat picker: the two verbs first, then the modelRef pool
@@ -950,11 +1030,7 @@ export const ProxyAccessPage: React.FC = () => {
       const fpCfg = ((cfg as any).forwardProxy as ForwardProxyShape) || {};
       bootSnapshot.current = fpCfg;
       setFp(fpCfg);
-      setBypassRows(
-        (fpCfg.bypassHosts || []).map(e =>
-          typeof e === 'string' ? { host: e, viaProxy: false } : { host: e.host || '', viaProxy: e.viaProxy === true }
-        )
-      );
+      setRuleRows(fpCfg.rules || []);
       setMissRows(
         Object.entries(fpCfg.unresolvedModel?.hosts || {}).map(([host, onMiss]) => ({
           host,
@@ -982,15 +1058,35 @@ export const ProxyAccessPage: React.FC = () => {
     return () => { alive = false; clearInterval(iv); };
   }, []);
 
+  // Lint + probe — one debounced call to the backend resolver (the same
+  // function the proxy legs call, so the preview cannot disagree with reality).
+  useEffect(() => {
+    const host = probeHost.trim();
+    const timer = setTimeout(() => {
+      api
+        .resolveForwardProxyRules({ host: host || undefined, rules: ruleRows })
+        .then(r => {
+          setRuleWarnings(r.warnings);
+          setProbeDecision(r.decision);
+        })
+        .catch(() => {});
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [probeHost, ruleRows]);
+
   const handleSave = async () => {
     setSaving(true);
     try {
       const next = {
         forwardProxy: {
           ...(fp || {}),
-          bypassHosts: bypassRows
-            .filter(r => r.host.trim())
-            .map(r => (r.viaProxy ? { host: r.host.trim(), viaProxy: true } : r.host.trim())),
+          // Blank rows never persist (an empty glob
+          // would match nothing but still round-trip as noise); trimming matches
+          // the backend normalizer, and rows already carry the full two-field
+          // shape, so they persist as-is.
+          rules: ruleRows
+            .filter(r => r.match.trim())
+            .map(r => ({ match: r.match.trim(), ingress: r.ingress, egress: r.egress })),
           unresolvedModel: {
             onMiss: fp?.unresolvedModel?.onMiss || 'auto',
             hosts: Object.fromEntries(
@@ -1004,9 +1100,8 @@ export const ProxyAccessPage: React.FC = () => {
       await api.saveConfig(next);
       // Only enabled / port / host / caDir shape the listening socket and CA
       // material — boot-frozen. Everything else on this page hot-applies
-      // (bypassHosts / viaOutboundProxy / unresolvedModel re-read the runtime
-      // ref per request), so the restart warning fires ONLY when one of them
-      // actually changed.
+      // (rules / unresolvedModel re-read the runtime ref per request), so the
+      // restart warning fires ONLY when a boot-frozen field actually changed.
       const boot = bootSnapshot.current;
       const saved = next.forwardProxy;
       const frozen = (v: unknown, fallback: unknown): unknown => (v === undefined || v === '' ? fallback : v);
@@ -1030,6 +1125,38 @@ export const ProxyAccessPage: React.FC = () => {
 
 
   const port = fp.port || DEFAULT_FORWARD_PROXY_PORT;
+  const ingressOptions: ComboboxOption[] = [
+    // Full descriptions surface on OPTION HOVER via the app-wide [data-tip]
+    // provider (the panel row carries them as `meta` — never rendered inline).
+    { value: 'intercept', label: t('forwardProxy.ingressIntercept'), meta: t('forwardProxy.ruleDescIngressIntercept') },
+    { value: 'passthrough', label: t('forwardProxy.ingressPassthrough'), meta: t('forwardProxy.ruleDescIngressPassthrough') },
+    { value: 'reject', label: t('forwardProxy.ingressReject'), meta: t('forwardProxy.ruleDescIngressReject') },
+  ];
+  /** Translated label for a resolved exit (probe display) — RuleExit, not RuleIngress. */
+  const exitLabel = (a: HostDecision['action']): string =>
+    a === 'direct' ? t('forwardProxy.exitDirect')
+      : a === 'proxy' ? t('forwardProxy.exitProxy')
+        : t('forwardProxy.exitReject');
+  /** The ingress half of a decision, in the SAME words as the row's dropdown —
+   *  the probe must not invent a second name for what the operator just picked. */
+  const ingressLabel = (tunnel: boolean): string =>
+    tunnel ? t('forwardProxy.ingressPassthrough') : t('forwardProxy.ingressIntercept');
+  /** Row-level lint sentence for EVERY code in the mirrored union. Banner-level
+   *  codes return null (the note above the table already says it); the `never`
+   *  assertion makes a new backend code a typecheck failure here rather than a
+   *  silently wrong sentence. */
+  const rowWarningText = (code: RuleWarning['code']): string | null => {
+    switch (code) {
+      case 'invalid-rule': return t('forwardProxy.ruleInvalid');
+      case 'unreachable-rule': return t('forwardProxy.ruleUnreachable');
+      case 'proxy-rule-without-proxy': return null;
+      case 'no-catch-all': return null;
+      default: {
+        const unmapped: never = code;
+        throw new Error(`unmapped rule warning: ${unmapped}`);
+      }
+    }
+  };
 
 
   // ── status chip ──
@@ -1150,7 +1277,7 @@ export const ProxyAccessPage: React.FC = () => {
           <span>{statusText}</span>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '640px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '720px' }}>
           {/* ── Section 1: listener & enable ── */}
           <div className="sub-card">
             <div style={SEC_TITLE}>{t('forwardProxy.secListener')}</div>
@@ -1173,69 +1300,187 @@ export const ProxyAccessPage: React.FC = () => {
                   className="input"
                 />
               </div>
+              <div>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  {t('forwardProxy.maxConnections')}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder={String(DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS)}
+                  value={fp.maxConnections ?? ''}
+                  onChange={e => {
+                    const digits = e.target.value.replace(/[^0-9]/g, '');
+                    setFp({ ...fp, maxConnections: digits === '' ? undefined : parseInt(digits, 10) });
+                  }}
+                  className="input"
+                />
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
+                  {t('forwardProxy.maxConnectionsHint')}
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* ── Section 2: bypass hosts — per-row egress choice (direct tunnel vs via outbound proxy) ── */}
+          {/* ── Section 2: the rule table (ADR-0018) — ordered, first match wins ── */}
           <div className="sub-card">
-            <div style={SEC_TITLE}>{t('forwardProxy.bypassHosts')}</div>
-            <div>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                  {t('forwardProxy.viaOutboundProxy')}
-                  <InfoTip text={t('forwardProxy.viaOutboundProxyHint')} />
-                </span>
-                <Switch checked={fp.viaOutboundProxy ?? false} onChange={v => setFp({ ...fp, viaOutboundProxy: v })} />
-              </label>
+            <div style={SEC_TITLE}>{t('forwardProxy.ruleTable')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '12px', lineHeight: 1.5 }}>
+              {t('forwardProxy.ruleTableHint')}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '14px' }}>
-              {bypassRows.map((row, idx) => (
-                <div key={idx} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <input
-                    type="text"
-                    placeholder={t('forwardProxy.pattern')}
-                    value={row.host}
-                    onChange={e => {
-                      const next = [...bypassRows];
-                      next[idx] = { ...next[idx], host: e.target.value };
-                      setBypassRows(next);
-                    }}
-                    className="input"
-                  />
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
-                    <label
-                      style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', cursor: 'pointer', whiteSpace: 'nowrap' }}
-                    >
-                    <input
-                      type="checkbox"
-                      checked={row.viaProxy}
-                      onChange={e => {
-                        const next = [...bypassRows];
-                        next[idx] = { ...next[idx], viaProxy: e.target.checked };
-                        setBypassRows(next);
-                      }}
-                    />
-                    {t('forwardProxy.bypassViaProxy')}
-                  </label>
-                    <InfoTip text={t('forwardProxy.bypassViaProxyHint')} />
-                  </div>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    style={{ padding: '4px 8px' }}
-                    onClick={() => setBypassRows(bypassRows.filter((_, i) => i !== idx))}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-              <button
-                className="btn btn-sm"
-                style={{ alignSelf: 'flex-start', gap: '6px' }}
-                onClick={() => setBypassRows([...bypassRows, { host: '', viaProxy: false }])}
-              >
-                <Plus size={14} />
-                <span>{t('forwardProxy.addPattern')}</span>
-              </button>
+            {fp.enabled !== true && <EgressNote tone="info" text={t('forwardProxy.ruleDormant')} />}
+            {ruleWarnings.some(w => w.code === 'proxy-rule-without-proxy') && (
+              <EgressNote tone="warn" text={t('forwardProxy.ruleProxyOff')} />
+            )}
+            {status?.forwardProxy?.upstreamInsecure === true && (
+              <EgressNote tone="warn" text={t('forwardProxy.ruleUpstreamInsecure')} />
+            )}
+            {ruleWarnings.some(w => w.code === 'no-catch-all') && (
+              <EgressNote tone="warn" text={t('forwardProxy.ruleNoCatchAll')} />
+            )}
+            {ruleRows.length > 0 && (
+              <div style={RULE_GRID}>
+                <span style={{ ...RULE_HEAD, textAlign: 'right' }}>#</span>
+                <span style={RULE_HEAD}>{t('forwardProxy.ruleColMatch')}</span>
+                <span style={RULE_HEAD}>{t('forwardProxy.ruleColIngress')}</span>
+                <span style={RULE_HEAD}>{t('forwardProxy.ruleColEgress')}</span>
+                {/* Right-aligned like the button group under it, so the label sits over the
+                    icons instead of floating at the group's left edge. */}
+                <span style={{ ...RULE_HEAD, textAlign: 'right' }}>{t('forwardProxy.ruleColActions')}</span>
+                {ruleRows.map((row, idx) => {
+                  const rowWarnings = ruleWarnings.filter(w => w.ruleIndex === idx);
+                  return (
+                    <React.Fragment key={idx}>
+                      <span style={{ ...FONT_MONO_COLOR, textAlign: 'right', color: 'var(--text-dim)', fontSize: 'var(--text-xs)' }}>
+                        {idx + 1}
+                      </span>
+                      <input
+                        type="text"
+                        placeholder={t('forwardProxy.pattern')}
+                        value={row.match}
+                        onChange={e => {
+                          const next = [...ruleRows];
+                          next[idx] = { ...next[idx], match: e.target.value };
+                          setRuleRows(next);
+                        }}
+                        className="input"
+                        style={rowWarnings.some(w => w.code === 'invalid-rule') ? { borderColor: '#f87171' } : undefined}
+                      />
+                      <Combobox
+                        value={row.ingress}
+                        hideMetaInTrigger
+                        hoverMetaOnly
+                        onChange={v => {
+                          const next = [...ruleRows];
+                          // A reject row never sends bytes anywhere, so its
+                          // egress is pinned to direct (the toggle greys out).
+                          next[idx] = { ...next[idx], ingress: v as RuleIngress, egress: v === 'reject' ? 'direct' : next[idx].egress };
+                          setRuleRows(next);
+                        }}
+                        options={ingressOptions}
+                      />
+                      <label
+                        style={{
+                          display: 'flex', gap: '4px', alignItems: 'center',
+                          fontSize: 'var(--text-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap',
+                          cursor: row.ingress === 'reject' ? 'not-allowed' : 'pointer',
+                          opacity: row.ingress === 'reject' ? 0.4 : 1,
+                        }}
+                        title={t('forwardProxy.ruleDescEgressProxy')}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={row.egress === 'proxy'}
+                          disabled={row.ingress === 'reject'}
+                          onChange={e => {
+                            const next = [...ruleRows];
+                            next[idx] = { ...next[idx], egress: e.target.checked ? 'proxy' : 'direct' };
+                            setRuleRows(next);
+                          }}
+                        />
+                        {/* The toggle IS the row's egress field, so it reads in the
+                            same two words the probe uses for an exit. */}
+                        {row.egress === 'proxy' ? t('forwardProxy.exitProxy') : t('forwardProxy.exitDirect')}
+                      </label>
+                      <div style={{ display: 'flex', gap: '6px', justifySelf: 'end' }}>
+                        <button
+                          className="btn btn-sm"
+                          style={{ padding: '4px 6px' }}
+                          title={t('forwardProxy.ruleMoveUp')}
+                          disabled={idx === 0}
+                          onClick={() => setRuleRows(moveRule(ruleRows, idx, -1))}
+                        >
+                          <ArrowUp size={14} />
+                        </button>
+                        <button
+                          className="btn btn-sm"
+                          style={{ padding: '4px 6px' }}
+                          title={t('forwardProxy.ruleMoveDown')}
+                          disabled={idx === ruleRows.length - 1}
+                          onClick={() => setRuleRows(moveRule(ruleRows, idx, 1))}
+                        >
+                          <ArrowDown size={14} />
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          style={{ padding: '4px 8px' }}
+                          onClick={() => setRuleRows(ruleRows.filter((_, i) => i !== idx))}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                      {rowWarnings.map((w, wi) => {
+                        const text = rowWarningText(w.code);
+                        if (!text) return null;
+                        return (
+                          <div
+                            key={wi}
+                            style={{ gridColumn: '1 / -1', marginTop: '-4px', marginLeft: '24px', fontSize: 'var(--text-xs)', color: '#f87171', lineHeight: 1.5 }}
+                          >
+                            {text}
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            )}
+            <button
+              className="btn btn-sm"
+              style={{ alignSelf: 'flex-start', gap: '6px', marginTop: ruleRows.length > 0 ? '10px' : 0 }}
+              onClick={() => setRuleRows(insertRule(ruleRows, (c) => ({ match: '', ingress: 'intercept', egress: c?.egress ?? 'direct' })))}
+            >
+              <Plus size={14} />
+              <span>{t('forwardProxy.ruleAdd')}</span>
+            </button>
+            {/* Probe — an ordered table is only readable if you can ask it a
+                question, and the answer must come from the SAME resolver the
+                proxy legs call (the backend), never a local re-implementation. */}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '14px', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                placeholder={t('forwardProxy.ruleProbe')}
+                value={probeHost}
+                onChange={e => setProbeHost(e.target.value)}
+                className="input"
+                style={{ maxWidth: '260px' }}
+              />
+              {probeDecision && (
+                <span style={{ ...FONT_MONO_COLOR, fontSize: 'var(--text-xs)', color: probeDecision.action === 'reject' ? '#f87171' : 'var(--text-muted)' }}>
+                  {probeDecision.reason === 'rule'
+                    ? t('forwardProxy.ruleProbeRule', {
+                        action: exitLabel(probeDecision.action),
+                        mode: ingressLabel(probeDecision.tunnel),
+                        index: String((probeDecision.ruleIndex ?? 0) + 1),
+                        match: probeDecision.match ?? '',
+                      })
+                    : t(
+                        probeDecision.reason === 'loopback' ? 'forwardProxy.ruleProbeLoopback' : 'forwardProxy.ruleProbeFallback',
+                        { action: exitLabel(probeDecision.action), mode: ingressLabel(probeDecision.tunnel) },
+                      )}
+                </span>
+              )}
             </div>
           </div>
 
