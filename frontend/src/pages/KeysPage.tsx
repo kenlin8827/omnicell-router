@@ -97,6 +97,20 @@ const rowsToHeaders = (rows: HeaderRow[]): Record<string, string> | undefined =>
 const headersToRows = (headers?: Record<string, string>): HeaderRow[] =>
   Object.entries(headers ?? {}).map(([name, value]) => ({ name, value }));
 
+/** Long baseURLs must wrap between segments, never inside one: `break-all`
+ *  split "…maas.aliyuncs.com" into "…maas.aliyun" + "cs.com", which reads as
+ *  a typo on the provider card. `<wbr>` after each `/` and `.` hands the
+ *  browser legal break points while every segment stays whole; the caller
+ *  keeps `overflow-wrap: break-word` as the fallback for a segment wider
+ *  than the card. */
+const breakableUrl = (url: string): React.ReactNode =>
+  url.split(/(?<=[/.])/g).map((segment, i, all) => (
+    <React.Fragment key={i}>
+      {segment}
+      {i < all.length - 1 ? <wbr /> : null}
+    </React.Fragment>
+  ));
+
 /** Two-column header rows editor: name | value | remove, plus an add-row
  *  affordance. Blank rows are ignored on serialize. */
 const HeadersEditor: React.FC<{
@@ -2351,7 +2365,11 @@ export const KeysPage: React.FC = () => {
                 {p.models.length === 0 && (
                   <button
                     className="btn btn-sm"
-                    style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), flexShrink: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', padding: '0 5px' }}
+                    /* Square chip, not a pill: the shell `.btn`/`.btn-sm`
+                       min-height would otherwise stretch an icon-only badge
+                       into a tall oval (padding 0 + 11px glyph, forced 30px
+                       box). The explicit box wins over both rules. */
+                    style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), flexShrink: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, width: 22, height: 22, minHeight: 22 }}
                     disabled={busy}
                     title={t('op.pmEmptyBadgeTip')}
                     aria-label={t('op.pmEmptyBadgeTip')}
@@ -2412,8 +2430,11 @@ export const KeysPage: React.FC = () => {
               {(p.baseURL || displayNpm(p.npm)) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {p.baseURL && (
-                    <div style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                      {p.baseURL}
+                    <div
+                      style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflowWrap: 'break-word' }}
+                      title={p.baseURL}
+                    >
+                      {breakableUrl(p.baseURL)}
                     </div>
                   )}
                   {displayNpm(p.npm) && (

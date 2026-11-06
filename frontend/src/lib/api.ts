@@ -4004,9 +4004,6 @@ export interface TestProviderResult {
   unroutableCode?: 'unknownPackage' | 'dedicatedTransport';
   unroutableNpm?: string;
   upstreamBody?: string;
-  /** @deprecated pre-i18n backend limb (composed human string). Read ONLY by
-   * the composeProbeError legacy passthrough during frontend/backend skew. */
-  error?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
   credential?: CredentialMeta;

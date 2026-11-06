@@ -20,8 +20,8 @@ import './styles/shell.css';
 
 // Apply the persisted theme before first paint: the auth gate renders
 // LoginPage without mounting Layout (which owns the theme picker), so
-// otherwise the pre-login views always show the default theme. Legacy ids
-// stored before the theme rename are migrated by resolveStoredTheme.
+// otherwise the pre-login views always show the default theme. A stored value
+// outside the current light/dark/system set resolves to 'system'.
 document.documentElement.setAttribute(
   'data-theme',
   resolveStoredTheme(localStorage.getItem(THEME_STORAGE_KEY)),

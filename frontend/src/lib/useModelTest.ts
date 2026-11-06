@@ -36,14 +36,6 @@ const TEST_REASON_KEY: Record<string, string> = {
  * loud (gap #8 rule).
  */
 export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
-  // Skew passthrough: a backend predating the machine-limb contract still
-  // sends a composed `error` string — show it raw rather than swallow the
-  // diagnosis down to the bare fallback.
-  if (
-    r.httpStatus === undefined && !r.transportCode && !r.unroutableCode &&
-    !r.hintCode && !r.upstreamBody && r.error
-  )
-    return r.error;
   if (r.transportCode === 'timeout') return t('op.probeTimeout', { n: fmtLatency(r.timeoutMs ?? NaN) });
   if (r.transportCode === 'unreachable')
     return t('op.probeUnreachable', { url: r.transportUrl ?? '?', cause: r.transportCause ?? '?' });
