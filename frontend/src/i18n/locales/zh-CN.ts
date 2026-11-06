@@ -2424,7 +2424,7 @@ export const zhCN: TranslationDict = {
   },
   pluginPage: {
     title: '插件管理',
-    desc: '模型服务插件承载厂商私有协议（原生 gRPC、签名链等），由操作者自行安装到 <ocrHome>/plugins（.zip 包）或开发目录；OCR 核心只保存凭证与路由。重载后立即生效。',
+    desc: '插件分两类：模型服务插件承载厂商私有协议（原生 gRPC、签名链等），客户端网关插件适配本地 CLI 客户端；由操作者自行安装到 <ocrHome>/plugins（.zip 包）或开发目录，OCR 核心只保存凭证与路由。重载后立即生效。',
     reload: '重载',
     reloadOk: '插件已重载',
     install: '安装插件',
@@ -2458,6 +2458,14 @@ export const zhCN: TranslationDict = {
     enableOk: '插件 {name} 已启用',
     enableFail: '启用失败',
     typeModelService: '模型服务',
+    typeClientGateway: '客户端网关',
+    settings: '设置',
+    configTitle: '插件设置',
+    configSave: '保存',
+    configSaved: '设置已保存',
+    configInvalid: '设置出错',
+    configWarnings: '已保存，但有警告',
+    configEmpty: '该插件未声明任何设置项。',
   },
   catalogPage: {
     title: '模型来源',

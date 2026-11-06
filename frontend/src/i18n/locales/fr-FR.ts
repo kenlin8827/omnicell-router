@@ -2445,7 +2445,7 @@ export const frFR: TranslationDict = {
   },
   pluginPage: {
     title: 'Plugins',
-    desc: 'Les plugins de service de modèles portent les protocoles privés du fournisseur (gRPC natif, chaînes de signature). Installez dans <ocrHome>/plugins (paquets .zip) ou larbre de dev ; le cœur OCR ne garde que les identifiants et le routage. Le rechargement est immédiat.',
+    desc: 'Deux types de plugins : ceux de service de modèles portent les protocoles privés du fournisseur (gRPC natif, chaînes de signature) ; les client-gateway adaptent les clients CLI locaux. Installez dans <ocrHome>/plugins (paquets .zip) ou larbre de dev ; le cœur OCR ne garde que les identifiants et le routage. Le rechargement est immédiat.',
     reload: 'Recharger',
     reloadOk: 'Plugins rechargés',
     install: 'Installer le plugin',
@@ -2479,6 +2479,14 @@ export const frFR: TranslationDict = {
     enableOk: 'Plugin {name} activé',
     enableFail: 'Échec de l’activation',
     typeModelService: 'Service de modèles',
+    typeClientGateway: 'Passerelle client',
+    settings: 'Paramètres',
+    configTitle: 'Paramètres du plugin',
+    configSave: 'Enregistrer',
+    configSaved: 'Paramètres enregistrés',
+    configInvalid: 'Erreur de paramètres',
+    configWarnings: 'Enregistré avec des avertissements',
+    configEmpty: 'Ce plugin ne déclare aucun paramètre.',
   },
   catalogPage: {
     title: 'Sources du catalogue',

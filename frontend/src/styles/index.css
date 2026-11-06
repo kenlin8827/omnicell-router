@@ -22,7 +22,9 @@
   --text-muted: #9aa8b7;
   --text-dim: #8293a3;
   --nav-group-text: #7b8b9a;
-  --nav-item-text: #aab6c2;
+  --nav-item-text: #bcc8d4;
+  --nav-badge-text: #d6e0ea;
+  --nav-badge-bg: rgba(255, 255, 255, 0.09);
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   --card-shadow-hover: 0 10px 30px -18px rgba(0, 0, 0, 0.65);
   --btn-bg: rgba(238, 242, 246, 0.045);
@@ -59,7 +61,9 @@
   --text-muted: #49616a;
   --text-dim: #596f77;
   --nav-group-text: #5f747d;
-  --nav-item-text: #36515b;
+  --nav-item-text: #2c4550;
+  --nav-badge-text: #243d47;
+  --nav-badge-bg: color-mix(in srgb, var(--text-main) 9%, transparent);
   --card-shadow: 0 1px 2px rgba(23, 42, 50, 0.04);
   --card-shadow-hover: 0 10px 28px -20px rgba(23, 42, 50, 0.28);
   --btn-bg: rgba(23, 42, 50, 0.035);
@@ -1173,11 +1177,11 @@ input[type='checkbox']:not(.switch):disabled {
   flex-direction: column;
   gap: 16px;
 }
-/* 180px: sized to the plugin-capable labels the catalog actually ships today
+/* 200px: sized to the plugin-capable labels the catalog actually ships today
    (OpenCode / Claude Code / Gemini CLI) at 12.5px, without stealing width from the
    content column. Longer names still ellipsize rather than push the frame. */
 .harness-rail {
-  flex: 0 0 180px;
+  flex: 0 0 200px;
   /* The card must never outgrow the frame, or its border would overshoot the content
      column's bottom edge (the row list can be taller than the whole page). A definite
      `height` also makes the percentage cap on `.harness-rail-inner` resolvable — a

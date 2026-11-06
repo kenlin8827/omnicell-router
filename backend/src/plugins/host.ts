@@ -11,10 +11,24 @@ import {
   emitUpstreamFailureOnce,
   withUpstreamFailureGuard,
 } from '../observability/upstream-events.js';
-import type { ModelServicePlugin, ModelServicePluginHost, PluginAuthType, PluginManifest, PluginView } from './types.js';
-
+import type {
+  ClientGatewayHost,
+  ClientGatewayPlugin,
+  ModelServicePlugin,
+  ModelServicePluginHost,
+  PluginAuthType,
+  PluginConfigField,
+  PluginManifest,
+  PluginView,
+} from './types.js';
+import { commitGateways, removeGateway, stageGateway, getGatewayById } from './gateways.js';
+import { getGatewayChatServices } from '../surfaces/gateway-chat.js';
+import { invalidatePluginConfigCache, mergedPluginConfig, writePluginConfig } from './config.js';
+import { validatePluginManifest } from './manifest.js';
 /**
- * Plugin host: discovers, unpacks and loads model-service plugins.
+ * Plugin host: discovers, unpacks and loads plugins. Two types today
+ * (ADR-0017): 'model-service' (outbound executors, registry below) and
+ * 'client-gateway' (inbound SNI-host gateways, registered via gateways.ts).
  *
  * Discovery, in priority order (dev wins so `plugins:build` is optional in a
  * checkout that carries the untracked plugins/ tree):
@@ -42,6 +56,9 @@ export function pluginsRoot(): string {
 }
 
 const registry = new Map<string, { plugin: ModelServicePlugin; view: PluginView }>();
+/** Manifest index for the config endpoints (loaded packages only — a
+ *  disabled/broken plugin has no trustworthy schema to edit against). */
+const manifestsById = new Map<string, PluginManifest>();
 
 /** Staging map for atomic rebuilds (see loadInstalledPlugins). */
 const nextRegistry = new Map<string, { plugin: ModelServicePlugin; view: PluginView }>();
@@ -50,8 +67,8 @@ const nextRegistry = new Map<string, { plugin: ModelServicePlugin; view: PluginV
  *  callers cannot interleave and leave a last-writer-wins registry. */
 let rebuildInFlight: Promise<PluginView[]> = Promise.resolve([]);
 
-/** The backend capabilities handed to every plugin at load time. */
-function buildHostSdk(): ModelServicePluginHost {
+/** The backend capabilities handed to every model-service plugin at load time. */
+function buildHostSdk(manifest: PluginManifest): ModelServicePluginHost {
   return {
     UpstreamError: UpstreamError as unknown as ModelServicePluginHost['UpstreamError'],
     upstream: {
@@ -61,6 +78,7 @@ function buildHostSdk(): ModelServicePluginHost {
       failureGuard: withUpstreamFailureGuard,
     },
     constants: { providerTimeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS },
+    config: () => mergedPluginConfig(manifest.id, manifest.configSchema),
     // Filled by pluginPullServices() BEFORE createPlugin is invoked.
     pull: {
       getProviderNode: () => undefined,
@@ -93,6 +111,20 @@ async function pluginPullServices(): Promise<ModelServicePluginHost['pull']> {
     enrichFromCatalog: (models, excludeId) => autoPull.enrichFromCatalog(models as never[], excludeId),
   };
 }
+/** The capabilities handed to every client-gateway plugin at load time. */
+function buildGatewayHostSdk(manifest: PluginManifest): ClientGatewayHost {
+  return {
+    log: (...args: unknown[]) => console.log('[OCR] gateway:', ...args),
+    ocrHome: () => getOcrHomeDir(),
+    config: () => mergedPluginConfig(manifest.id, manifest.configSchema),
+    chat: (body, sink, signal) => {
+      const svc = getGatewayChatServices();
+      if (!svc) return Promise.reject(new Error('gateway chat services not wired (forward proxy disabled?)'));
+      return svc.run(body, sink, signal);
+    },
+    catalog: () => getGatewayChatServices()?.catalog() ?? { tiers: [], models: [] },
+  };
+}
 
 /** Bare imports inside an UNPACKED plugin resolve against the gateway's own
  *  node_modules via a junction at <pluginsRoot>/node_modules (Windows-safe,
@@ -116,10 +148,8 @@ function ensurePluginNodeModules(): void {
 }
 
 function readManifest(dir: string): PluginManifest {
-  const raw = JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')) as Partial<PluginManifest>;
-  if (!raw.id || !raw.name || !raw.version || raw.type !== 'model-service' || !Array.isArray(raw.wires)) {
-    throw new Error('invalid plugin.json (need id/name/version, type=model-service, wires[])');
-  }
+  const raw = JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')) as unknown;
+  validatePluginManifest(raw, 'invalid plugin.json');
   return raw as PluginManifest;
 }
 
@@ -151,36 +181,51 @@ function ensureUnpacked(packagedPath: string, id: string): string {
   return dest;
 }
 
-async function importPlugin(dir: string, source: PluginView['source']): Promise<{ plugin: ModelServicePlugin; view: PluginView }> {
+/** Import result: exactly one of the two plugin shapes is set (manifest type). */
+async function importPlugin(
+  dir: string,
+  source: PluginView['source']
+): Promise<{ plugin?: ModelServicePlugin; gateway?: ClientGatewayPlugin; view: PluginView }> {
   const manifest = readManifest(dir);
   const entry = join(dir, 'index.ts');
   if (!existsSync(entry)) throw new Error('plugin entry index.ts missing');
+  // Dynamic import: plugins load from a RUNTIME registry (dev dir / packaged
+  // zip), never known at author time — plus the cache-bust below.
   // cache-bust: same id reinstalls reuse the same unpacked path, so a stable
   // import URL would serve the PREVIOUS version's module from the ESM cache
   const mod = (await import(`${pathToFileURL(entry).href}?v=${statSync(entry).mtimeMs}`)) as {
-    createPlugin?: (host: ModelServicePluginHost) => ModelServicePlugin;
+    createPlugin?: (host: ModelServicePluginHost | ClientGatewayHost) => ModelServicePlugin | ClientGatewayPlugin;
   };
   if (typeof mod.createPlugin !== 'function') throw new Error('plugin entry missing createPlugin(host)');
-  const plugin = mod.createPlugin({ ...buildHostSdk(), pull: await pluginPullServices() });
-  if (!plugin || typeof plugin.createProvider !== 'function') throw new Error('createPlugin returned no createProvider()');
   // plugin.json IS the single manifest truth — the runtime module never
   // declares one (a TS literal would only drift from the JSON).
-  return {
-    plugin,
-    view: {
-      id: manifest.id,
-      name: manifest.name,
-      version: manifest.version,
-      type: manifest.type,
-      wires: manifest.wires,
-      description: manifest.description,
-      presets: manifest.presets,
-      logo: manifest.logo,
-      source,
-      path: dir,
-      loaded: true,
-    },
+  const view: PluginView = {
+    id: manifest.id,
+    name: manifest.name,
+    version: manifest.version,
+    type: manifest.type,
+    wires: manifest.wires ?? [],
+    description: manifest.description,
+    presets: manifest.presets,
+    logo: manifest.logo,
+    source,
+    path: dir,
+    loaded: true,
   };
+  if (manifest.type === 'client-gateway') {
+    const gateway = mod.createPlugin(buildGatewayHostSdk(manifest)) as ClientGatewayPlugin;
+    if (!gateway || !Array.isArray(gateway.hosts) || gateway.hosts.length === 0 || typeof gateway.match !== 'function' || typeof gateway.handle !== 'function') {
+      throw new Error('createPlugin returned no usable gateway (need hosts[], match(), handle())');
+    }
+    // Loaded packages only — a broken plugin must not expose a schema the
+    // console could edit against, so the map is filled AFTER validation.
+    manifestsById.set(manifest.id, manifest);
+    return { gateway, view };
+  }
+  const plugin = mod.createPlugin({ ...buildHostSdk(manifest), pull: await pluginPullServices() }) as ModelServicePlugin;
+  if (!plugin || typeof plugin.createProvider !== 'function') throw new Error('createPlugin returned no createProvider()');
+  manifestsById.set(manifest.id, manifest);
+  return { plugin, view };
 }
 
 function viewWireKey(view: PluginView): string {
@@ -212,6 +257,8 @@ export async function loadInstalledPlugins(): Promise<PluginView[]> {
 
 async function doLoadInstalledPlugins(): Promise<PluginView[]> {
   nextRegistry.clear();
+  manifestsById.clear();
+  invalidatePluginConfigCache();
   const views: PluginView[] = [];
   const devRoot = join(REPO_ROOT, 'plugins');
   const disabled = readDisabled();
@@ -229,9 +276,10 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       }
       seenIds.add(name);
       try {
-        const { plugin, view } = await importPlugin(dir, 'dev');
-        nextRegistry.set(viewWireKey(view), { plugin, view });
-        views.push(view);
+        const loaded = await importPlugin(dir, 'dev');
+        if (loaded.gateway) stageGateway(loaded.view.id, loaded.gateway);
+        if (loaded.plugin) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.plugin, view: loaded.view });
+        views.push(loaded.view);
       } catch (err) {
         views.push(failedView(name, 'dev', dir, err));
       }
@@ -257,19 +305,23 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       }
       try {
         const dir = ensureUnpacked(packagedPath, id);
-        const { plugin, view } = await importPlugin(dir, 'packaged');
-        nextRegistry.set(viewWireKey(view), { plugin, view });
+        const loaded = await importPlugin(dir, 'packaged');
+        if (loaded.gateway) stageGateway(loaded.view.id, loaded.gateway);
+        if (loaded.plugin) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.plugin, view: loaded.view });
         seenIds.add(id);
-        views.push(view);
+        views.push(loaded.view);
       } catch (err) {
         views.push(failedView(id, 'packaged', packagedPath, err));
       }
     }
   }
-  // Atomic swap: in-flight dispatch/probe never observe an empty registry.
+  // Atomic swap: in-flight dispatch/probe never observe an empty registry —
+  // and the gateway registry rides the same commit point.
   registry.clear();
   for (const [k, v] of nextRegistry) registry.set(k, v);
   nextRegistry.clear();
+  commitGateways();
+  lastViews = views;
   return views;
 }
 
@@ -300,6 +352,10 @@ function writeDisabled(ids: Iterable<string>): void {
 /** Stub views for disabled plugins: manifest facts from plugin.json when
  *  readable (code is NOT imported), a bare id row otherwise. */
 let disabledViews: PluginView[] = [];
+/** Every view (both plugin types, failures included) from the last full
+ *  load — the console listing derives from this, NOT from the model-service
+ *  registry, so gateways and boot-time failures stay visible (ADR-0017). */
+let lastViews: PluginView[] = [];
 
 function stubDisabledView(id: string, dir: string, source: PluginView['source']): PluginView {
   try {
@@ -309,7 +365,7 @@ function stubDisabledView(id: string, dir: string, source: PluginView['source'])
       name: m.name,
       version: m.version,
       type: m.type,
-      wires: m.wires,
+      wires: m.wires ?? [],
       description: m.description,
       presets: m.presets,
       logo: m.logo,
@@ -334,6 +390,7 @@ export async function setPluginDisabled(id: string, disabled: boolean): Promise<
   if (disabled) {
     set.add(id);
     writeDisabled(set);
+    removeGateway(id); // a disabled gateway stops answering before the reload lands
     return { providersRemoved: await removePluginRegistrations(id) };
   }
   set.delete(id);
@@ -385,10 +442,8 @@ export function installPluginPackage(bytes: Uint8Array): { id: string } {
 }
 
 function readManifestFromBytes(raw: Uint8Array): PluginManifest {
-  const parsed = JSON.parse(new TextDecoder().decode(raw)) as Partial<PluginManifest>;
-  if (!parsed.id || !parsed.name || !parsed.version || parsed.type !== 'model-service' || !Array.isArray(parsed.wires)) {
-    throw new Error('need id/name/version, type=model-service, wires[]');
-  }
+  const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown;
+  validatePluginManifest(parsed, 'invalid plugin.json');
   return parsed as PluginManifest;
 }
 
@@ -435,6 +490,7 @@ export async function uninstallPlugin(
     removed.push(unpacked);
   }
   const providersRemoved = await removePluginRegistrations(id);
+  removeGateway(id); // stop answering immediately; the caller's reload commits the full rebuild
   // An uninstalled plugin must not linger as a disabled stub row.
   const disabled = readDisabled();
   if (disabled.delete(id)) writeDisabled(disabled);
@@ -637,6 +693,37 @@ export function pluginLogoFile(id: string): string | undefined {
 /** Console listing — views only, never plugin internals. Disabled plugins
  *  are listed (marked, code never imported) so the operator can re-enable. */
 export function listInstalledPlugins(): PluginView[] {
-  return [...registry.values()].map((r) => r.view).concat(disabledViews);
+  return [...lastViews, ...disabledViews];
+}
+/** Console config read: schema + merged values for one loaded plugin. */
+export function getPluginConfig(
+  id: string
+): { schema: PluginConfigField[]; values: Record<string, unknown> } | undefined {
+  const manifest = manifestsById.get(id);
+  if (!manifest) return undefined;
+  return {
+    schema: manifest.configSchema ?? [],
+    values: mergedPluginConfig(id, manifest.configSchema),
+  };
+}
+
+/** Console config write: validate + persist + fire the plugin's optional
+ *  onConfigChange. Returns the merged values and any validation warnings. */
+export async function applyPluginConfig(
+  id: string,
+  values: Record<string, unknown>
+): Promise<{ values: Record<string, unknown>; warnings: string[] }> {
+  const manifest = manifestsById.get(id);
+  if (!manifest) throw new Error('unknown or unloaded plugin');
+  if (!manifest.configSchema?.length) throw new Error('plugin declares no configurable fields');
+  const result = writePluginConfig(id, manifest.configSchema, values);
+  const target = getGatewayById(id) ?? [...registry.values()].find((r) => r.view.id === id)?.plugin;
+  try {
+    await target?.onConfigChange?.(result.values);
+  } catch (err) {
+    // A failing hot-apply hook must not roll back a persisted save.
+    console.warn(`[OCR] plugin ${id}: onConfigChange failed —`, err instanceof Error ? err.message : err);
+  }
+  return result;
 }
 

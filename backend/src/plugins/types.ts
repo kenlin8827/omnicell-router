@@ -1,3 +1,6 @@
+import type http from 'node:http';
+import type net from 'node:net';
+
 import type { LLMProvider, CallCredential } from '../providers/base.js';
 import type { QuotaAdapterContext, QuotaProbeOutcome } from '../quota/types.js';
 import type { ProviderConfig } from '../config/types.js';
@@ -5,8 +8,10 @@ import type { ProviderConfig } from '../config/types.js';
 /**
  * OCR plugin system: vendor-specific protocol knowledge (native
  * transports, signing chains, vendored vendor binaries) lives in USER-INSTALLED
- * plugins, never distributed by OCR core. One plugin type today
- * ('model-service'); the manifest `type` field is the extension axis.
+ * plugins, never distributed by OCR core. Two plugin types today:
+ * 'model-service' (outbound provider executors) and 'client-gateway'
+ * (inbound native-protocol gateways, ADR-0017); the manifest `type` field
+ * is the extension axis.
  *
  * Trust boundary: a plugin is executable code loaded from the operator's
  * plugin directory — installing it IS the authorization. The host passes
@@ -20,10 +25,15 @@ export interface PluginManifest {
   id: string;
   name: string;
   version: string;
-  /** Extension axis — only 'model-service' is defined today. */
-  type: 'model-service';
-  /** Wire names this plugin provides executors for (e.g. ['qoder']). */
+  /** Extension axis — 'model-service' (outbound provider executors) or
+   *  'client-gateway' (inbound native-protocol gateway, ADR-0017). */
+  type: 'model-service' | 'client-gateway';
+  /** Wire names this plugin provides executors for (e.g. ['qoder']).
+   *  model-service only; a client-gateway manifest leaves it empty. */
   wires: string[];
+  /** SNI hosts this client-gateway claims on the forward proxy (display
+   *  metadata only — the runtime truth is the module's `hosts`). */
+  hosts?: string[];
   /** Plain string, or a locale map ({"zh-CN": …, "en-US": …}) — the console
    *  picks by current UI locale and falls back to en-US / the raw value. */
   description?: string | Record<string, string>;
@@ -31,6 +41,29 @@ export interface PluginManifest {
   logo?: string;
   /** Provider presets this plugin can pre-provision (shown on the plugins page). */
   presets?: PluginProviderPreset[];
+  /** Operator-facing configuration fields (ADR-0017). Flat primitives only —
+   *  the console renders the settings form generically from this; values are
+   *  stored as a plugin artifact (<pluginsRoot>/config/<id>.json), never in
+   *  the frozen config.yaml. */
+  configSchema?: PluginConfigField[];
+}
+
+/** One flat field of a plugin's operator-facing configuration. Primitives
+ *  only: the console renders string/number/boolean/string[]/enum inputs
+ *  generically. `title`/`desc` follow the manifest locale-map convention. */
+export interface PluginConfigField {
+  key: string;
+  type: 'string' | 'number' | 'boolean' | 'string[]' | 'enum';
+  /** Falls back per type when unset or when a stored value fails validation
+   *  (string '', number 0, boolean false, string[] [], enum values[0]). */
+  default?: string | number | boolean | string[];
+  /** number: inclusive bounds. */
+  min?: number;
+  max?: number;
+  /** enum: the allowed values. */
+  values?: string[];
+  title?: string | Record<string, string>;
+  desc?: string | Record<string, string>;
 }
 
 /** Options/result seam shared with opencode/probe.ts (concrete types live there). */
@@ -125,6 +158,9 @@ export interface ModelServicePlugin {
    * period-aware ordering.
    */
   quotaCheck?(ctx: QuotaAdapterContext): Promise<QuotaProbeOutcome>;
+  /** Optional: notified after the operator saves plugin settings; the merged
+   *  values arrive pre-validated (same object `host.config()` returns). */
+  onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
 }
 
 /**
@@ -152,6 +188,9 @@ export interface ModelServicePluginHost {
     /** Per-attempt upstream wall-clock cap (config default). */
     providerTimeoutMs: number;
   };
+  /** Operator configuration, merged (defaults ← stored artifact, validated).
+   *  Call-time lookup — always current after a console save. */
+  config(): Record<string, unknown>;
   /** Model-pull services (the auto-pull.ts seams, host-implemented). */
   pull: {
     getProviderNode(id: string): { options?: { baseURL?: string; apiKey?: string } } | undefined;
@@ -162,6 +201,95 @@ export interface ModelServicePluginHost {
     resolveCredentialKey(id: string): string | undefined;
     catalogToDef(m: Record<string, unknown>): Record<string, unknown>;
     enrichFromCatalog(models: unknown[], excludeProviderId: string): Promise<unknown[]>;
+  };
+}
+/**
+ * Client-gateway plugin contract (the second plugin type, ADR-0017).
+ *
+ * A gateway claims whole SNI hosts on the inbound forward proxy and handles
+ * the DECRYPTED traffic of those hosts itself — native Connect/protobuf
+ * wires (Cursor) etc. It sees node-http req/res on the h1 leg and the
+ * http2 compatibility API (same shape) on the h2 leg; `handle` owns the
+ * full request lifecycle (body read, terminal write, error frames). A
+ * gateway that cannot answer a path must relay it upstream itself — the
+ * core falls back to h1 forwarding, which h2-only vendors reject.
+ */
+export interface ClientGatewayPlugin {
+  /** Exact SNI hosts claimed (e.g. ['api2.cursor.sh']). */
+  readonly hosts: readonly string[];
+  /** Per-request admission (host already scoped by the registry lookup). */
+  match(info: { method?: string; url?: string; headers: http.IncomingHttpHeaders }): boolean;
+  /** Handle the decrypted request to completion. */
+  handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void>;
+  /**
+   * Optional: OWN an `Upgrade:` handshake on a claimed host (WebSocket or any
+   * other upgrade protocol). `true` = the gateway took the socket and owns the
+   * stream from here; `false` = fall through to the transparent upgrade relay
+   * (ADR-0008 §3), which is what happens when this hook is absent.
+   *
+   * Ownership is total: the gateway writes the `101` itself (the relay's own
+   * byte-verbatim splice is not involved), so a gateway that returns `true`
+   * and then fails must destroy the socket — the core will not write an error
+   * envelope over a stream it no longer owns.
+   */
+  handleUpgrade?(ctx: ClientGatewayUpgradeContext): boolean | Promise<boolean>;
+  /** Optional: notified after the operator saves plugin settings; the merged
+   *  values arrive pre-validated (same object `host.config()` returns). */
+  onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
+}
+
+/** One decrypted `Upgrade:` handshake handed to a client gateway. */
+export interface ClientGatewayUpgradeContext {
+  /** The DECRYPTED client socket (TLS already terminated by the proxy). */
+  socket: net.Socket;
+  /**
+   * Raw request head exactly as the client sent it — request line + headers +
+   * CRLFCRLF, followed by any bytes the client pipelined behind the handshake.
+   * Byte-verbatim, so nothing about the handshake was re-serialized.
+   */
+  head: Buffer;
+  /** Target host/port parsed from the head's Host header (the relay's dial target). */
+  host: string;
+  port: number;
+  method: string;
+  path: string;
+  headers: http.IncomingHttpHeaders;
+}
+
+/** Sink the gateway host hands a gateway for ONE canonical chat completion.
+ *  Terminal-send discipline holds: exactly one onJson XOR chunks→onEnd. */
+export interface GatewayChatSink {
+  /** One canonical OpenAI-shaped SSE frame, exactly as the /v1 wire writes it
+   *  (`data: {…}\n\n`, terminating `data: [DONE]\n\n`). */
+  onChunk(frame: string): void;
+  /** Non-stream terminal (stream:false). */
+  onJson(status: number, payload: unknown): void;
+  /** Stream terminal (after the last onChunk). */
+  onEnd(): void;
+}
+
+/**
+ * Host SDK for client-gateway plugins — self-contained capabilities only
+ * (same rule as ModelServicePluginHost: a packaged plugin never imports
+ * backend modules by path).
+ */
+export interface ClientGatewayHost {
+  log(...args: unknown[]): void;
+  /** The live OCR home directory (bookkeeping, CA material paths). */
+  ocrHome(): string;
+  /** Operator configuration, merged (defaults ← stored artifact, validated).
+   *  Call-time lookup — always current after a console save. */
+  config(): Record<string, unknown>;
+  /** Run one canonical OpenAI-shaped chat completion through the SAME
+   *  dispatch pipeline as /v1/chat/completions (model resolution, tiers,
+   *  breakers, captures all apply). `signal` aborts with the client. */
+  chat(body: Record<string, unknown>, sink: GatewayChatSink, signal?: AbortSignal): Promise<void>;
+  /** Current routing surface for AvailableModels-style fabrication. */
+  catalog(): {
+    /** Virtual tier ids in canonical order (auto/lite/plus/pro/ultra). */
+    tiers: string[];
+    /** Registered model refs (gateway-visible ids, all kinds). */
+    models: { id: string; label?: string }[];
   };
 }
 

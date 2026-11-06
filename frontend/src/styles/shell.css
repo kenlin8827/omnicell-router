@@ -1,7 +1,7 @@
 /* Application shell and shared visual language. All colors derive from the active theme. */
 :root {
   --shell-header-height: 64px;
-  --shell-sidebar-width: 264px;
+  --shell-sidebar-width: 236px;
   --shell-sidebar-compact: 76px;
   --shell-content-max: 1720px;
   --shell-radius: 14px;
@@ -189,7 +189,7 @@ kbd {
   padding: 8px 11px;
   color: var(--nav-item-text);
   font-size: var(--text-md);
-  font-weight: var(--font-medium);
+  font-weight: var(--font-semibold);
   text-decoration: none;
   border: 1px solid transparent;
   border-radius: 9px;
@@ -199,18 +199,23 @@ kbd {
 .nav-item:hover { color: var(--text-main); background: var(--well-bg); }
 .nav-item.is-active {
   color: var(--accent);
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-bold);
   background: var(--accent-bg);
   border-color: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .nav-item.is-active svg { stroke-width: 2.2; }
+.nav-item.is-active .nav-item-badge {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
 .nav-item-label { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .nav-item-badge {
   min-width: 20px;
   padding: 0 5px;
-  color: var(--text-dim);
+  color: var(--nav-badge-text);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
+  background: var(--nav-badge-bg);
   line-height: var(--leading-18);
   text-align: center;
   background: var(--chip-bg);

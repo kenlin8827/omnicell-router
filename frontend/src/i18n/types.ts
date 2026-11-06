@@ -2512,6 +2512,14 @@ hiddenBadge: string;
     enableOk: string;
     enableFail: string;
     typeModelService: string;
+    typeClientGateway: string;
+    settings: string;
+    configTitle: string;
+    configSave: string;
+    configSaved: string;
+    configInvalid: string;
+    configWarnings: string;
+    configEmpty: string;
   };
   catalogPage: {
     title: string;

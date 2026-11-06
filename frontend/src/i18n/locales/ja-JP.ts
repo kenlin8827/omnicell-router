@@ -2444,7 +2444,7 @@ export const jaJP: TranslationDict = {
   },
   pluginPage: {
     title: 'プラグイン',
-    desc: 'モデルサービスプラグインはベンダー固有プロトコル（ネイティブ gRPC、署名チェーン）を担います。<ocrHome>/plugins へ（.zip パッケージ）または開発ツリーに配置してください。OCR コアは認証情報とルーティングのみ保持します。再読み込みで即時反映。',
+    desc: 'プラグインは2種類あります。モデルサービスプラグインはベンダー固有プロトコル（ネイティブ gRPC、署名チェーン）を担い、クライアントゲートウェイプラグインはローカル CLI クライアントに対応します。<ocrHome>/plugins へ（.zip パッケージ）または開発ツリーに配置してください。OCR コアは認証情報とルーティングのみ保持します。再読み込みで即時反映。',
     reload: '再読み込み',
     reloadOk: 'プラグインを再読み込みしました',
     install: 'プラグインをインストール',
@@ -2478,6 +2478,14 @@ export const jaJP: TranslationDict = {
     enableOk: 'プラグイン {name} を有効化しました',
     enableFail: '有効化に失敗しました',
     typeModelService: 'モデルサービス',
+    typeClientGateway: 'クライアントゲートウェイ',
+    settings: '設定',
+    configTitle: 'プラグイン設定',
+    configSave: '保存',
+    configSaved: '設定を保存しました',
+    configInvalid: '設定エラー',
+    configWarnings: '警告付きで保存しました',
+    configEmpty: 'このプラグインには設定項目がありません。',
   },
   catalogPage: {
     title: 'カタログソース',

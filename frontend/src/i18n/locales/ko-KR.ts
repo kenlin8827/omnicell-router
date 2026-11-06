@@ -2444,7 +2444,7 @@ export const koKR: TranslationDict = {
   },
   pluginPage: {
     title: '플러그인',
-    desc: '모델 서비스 플러그인은 벤더 전용 프로토콜(네이티브 gRPC, 서명 체인)을 담습니다. <ocrHome>/plugins(.zip 패키지) 또는 개발 트리에 설치하세요. OCR 코어는 자격 증명과 라우팅만 유지합니다. 다시 불러오면 즉시 적용됩니다.',
+    desc: '플러그인은 두 종류입니다. 모델 서비스 플러그인은 벤더 전용 프로토콜(네이티브 gRPC, 서명 체인)을 담고, 클라이언트 게이트웨이 플러그인은 로컬 CLI 클라이언트에 연결됩니다. <ocrHome>/plugins(.zip 패키지) 또는 개발 트리에 설치하세요. OCR 코어는 자격 증명과 라우팅만 유지합니다. 다시 불러오면 즉시 적용됩니다.',
     reload: '다시 불러오기',
     reloadOk: '플러그인을 다시 불러왔습니다',
     install: '플러그인 설치',
@@ -2478,6 +2478,14 @@ export const koKR: TranslationDict = {
     enableOk: '플러그인 {name} 활성됨',
     enableFail: '활성 실패',
     typeModelService: '모델 서비스',
+    typeClientGateway: '클라이언트 게이트웨이',
+    settings: '설정',
+    configTitle: '플러그인 설정',
+    configSave: '저장',
+    configSaved: '설정이 저장되었습니다',
+    configInvalid: '설정 오류',
+    configWarnings: '경고와 함께 저장되었습니다',
+    configEmpty: '이 플러그인에는 설정 항목이 없습니다.',
   },
   catalogPage: {
     title: '카탈로그 소스',

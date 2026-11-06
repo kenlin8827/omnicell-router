@@ -3781,6 +3781,22 @@ export interface PluginViewInfo {
   disabled?: boolean;
 }
 
+/** One operator-facing plugin setting, mirroring backend/src/plugins/types.ts. */
+export interface PluginConfigFieldInfo {
+  key: string;
+  type: 'string' | 'number' | 'boolean' | 'string[]' | 'enum';
+  /** Per-type fallback when the stored value is unset or fails validation. */
+  default?: string | number | boolean | string[];
+  /** number: inclusive bounds. */
+  min?: number;
+  max?: number;
+  /** enum: the allowed values. */
+  values?: string[];
+  /** Locale map keyed by BCP-47 ('zh-CN'), like the manifest description. */
+  title?: string | Record<string, string>;
+  desc?: string | Record<string, string>;
+}
+
 // ---------------------------------------------------------------------------
 // Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
@@ -4779,6 +4795,29 @@ export const opencodeApi = {
         body: '{}',
       })
     );
+  },
+
+  /** Schema + current values (defaults already merged) for a plugin's settings drawer. */
+  async getPluginConfig(id: string): Promise<{ status: string; schema: PluginConfigFieldInfo[]; values: Record<string, unknown> }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`);
+    const parsed = (await res.json()) as { status: string; error?: string; schema: PluginConfigFieldInfo[]; values: Record<string, unknown> };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return parsed;
+  },
+
+  /** Persist the FULL values object; the backend validates and reports warnings. */
+  async putPluginConfig(
+    id: string,
+    values: Record<string, unknown>
+  ): Promise<{ status: string; values: Record<string, unknown>; warnings: string[] }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+    const parsed = (await res.json()) as { status: string; error?: string; values?: Record<string, unknown>; warnings?: string[] };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return { status: parsed.status, values: parsed.values ?? values, warnings: parsed.warnings ?? [] };
   },
 
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {

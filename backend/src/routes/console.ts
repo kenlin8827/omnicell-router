@@ -4024,6 +4024,33 @@ export function registerConsoleRoutes(
       return reply.type(mime).send(await fs.promises.readFile(file));
     });
 
+    // Plugin-level configuration (ADR-0017): schema declared in plugin.json,
+    // values stored as a plugin artifact — never in config.yaml.
+    app.get(`${prefix}/plugins/:id/config`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { getPluginConfig } = await import('../plugins/host.js');
+      const cfg = getPluginConfig(id);
+      if (!cfg) return reply.code(404).send({ status: 'error', error: 'unknown or unloaded plugin' });
+      return { status: 'ok', schema: cfg.schema, values: cfg.values };
+    });
+    app.put(`${prefix}/plugins/:id/config`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as { values?: unknown };
+      if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
+        return reply.code(400).send({ status: 'error', error: 'body.values must be an object' });
+      }
+      try {
+        const { applyPluginConfig } = await import('../plugins/host.js');
+        const result = await applyPluginConfig(id, body.values as Record<string, unknown>);
+        return { status: 'ok', values: result.values, warnings: result.warnings };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Unknown/unloaded plugin = 404 (same as GET); schema/value problems = 400.
+        if (message === 'unknown or unloaded plugin') return reply.code(404).send({ status: 'error', error: message });
+        return reply.code(400).send({ status: 'error', error: message });
+      }
+    });
+
     app.delete(`${prefix}/plugins/:id/uninstall`, async (req, reply) => {
       const { id } = req.params as { id: string };
       try {

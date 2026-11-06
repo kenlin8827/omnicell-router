@@ -2446,7 +2446,7 @@ export const deDE: TranslationDict = {
   },
   pluginPage: {
     title: 'Plugins',
-    desc: 'Modell-Service-Plugins kapseln herstellerspezifische Protokolle (natives gRPC, Signaturketten). Installation nach <ocrHome>/plugins (.zip) oder Entwicklungsbaum; der OCR-Kern verwaltet nur Anmeldedaten und Routing. Neuladen wirkt sofort.',
+    desc: 'Zwei Plugin-Arten: Modell-Service-Plugins kapseln herstellerspezifische Protokolle (natives gRPC, Signaturketten); Client-Gateway-Plugins binden lokale CLI-Clients an. Installation nach <ocrHome>/plugins (.zip) oder Entwicklungsbaum; der OCR-Kern verwaltet nur Anmeldedaten und Routing. Neuladen wirkt sofort.',
     reload: 'Neu laden',
     reloadOk: 'Plugins neu geladen',
     install: 'Plugin installieren',
@@ -2480,6 +2480,14 @@ export const deDE: TranslationDict = {
     enableOk: 'Plugin {name} aktiviert',
     enableFail: 'Aktivieren fehlgeschlagen',
     typeModelService: 'Modell-Service',
+    typeClientGateway: 'Client-Gateway',
+    settings: 'Einstellungen',
+    configTitle: 'Plugin-Einstellungen',
+    configSave: 'Speichern',
+    configSaved: 'Einstellungen gespeichert',
+    configInvalid: 'Fehler bei den Einstellungen',
+    configWarnings: 'Mit Warnungen gespeichert',
+    configEmpty: 'Dieses Plugin deklariert keine Einstellungen.',
   },
   catalogPage: {
     title: 'Katalog-Quellen',

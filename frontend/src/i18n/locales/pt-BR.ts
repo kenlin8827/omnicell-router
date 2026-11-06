@@ -2445,7 +2445,7 @@ export const ptBR: TranslationDict = {
   },
   pluginPage: {
     title: 'Plugins',
-    desc: 'Plugins de serviço de modelos contêm protocolos privados do fornecedor (gRPC nativo, cadeias de assinatura). Instale em <ocrHome>/plugins (pacotes .zip) ou na árvore de dev; o núcleo OCR guarda apenas credenciais e roteamento. Recarregar aplica imediatamente.',
+    desc: 'Dois tipos de plugins: os de serviço de modelos contêm protocolos privados do fornecedor (gRPC nativo, cadeias de assinatura); os client-gateway adaptam clientes CLI locais. Instale em <ocrHome>/plugins (pacotes .zip) ou na árvore de dev; o núcleo OCR guarda apenas credenciais e roteamento. Recarregar aplica imediatamente.',
     reload: 'Recarregar',
     reloadOk: 'Plugins recarregados',
     install: 'Instalar plugin',
@@ -2479,6 +2479,14 @@ export const ptBR: TranslationDict = {
     enableOk: 'Plugin {name} ativado',
     enableFail: 'Falha ao ativar',
     typeModelService: 'Serviço de modelos',
+    typeClientGateway: 'Gateway de cliente',
+    settings: 'Configurações',
+    configTitle: 'Configurações do plugin',
+    configSave: 'Salvar',
+    configSaved: 'Configurações salvas',
+    configInvalid: 'Erro nas configurações',
+    configWarnings: 'Salvo com avisos',
+    configEmpty: 'Este plugin não declara nenhuma configuração.',
   },
   catalogPage: {
     title: 'Fontes do catálogo',

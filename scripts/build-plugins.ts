@@ -10,6 +10,7 @@ import { zipSync } from 'fflate';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validatePluginManifest } from '../backend/src/plugins/manifest.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const srcRoot = join(repoRoot, 'plugins');
@@ -22,46 +23,24 @@ function ocrHome(): string {
   return join(home, '.omnicell-router');
 }
 
-/** Structural validation of plugin.json — plugin.json IS the single manifest
- *  truth (the runtime module declares no manifest), so a broken or partial
- *  JSON must fail the build, never ship. Kept in sync with
- *  backend/src/plugins/types.ts PluginManifest by contract. */
-function validateManifest(manifest: unknown, dirName: string): void {
-  const fail = (msg: string): never => {
-    throw new Error(`[plugins] ${dirName}/plugin.json invalid: ${msg}`);
-  };
-  if (typeof manifest !== 'object' || manifest === null) fail('not an object');
-  const m = manifest as Record<string, unknown>;
-  if (typeof m.id !== 'string' || !m.id) fail('id must be a non-empty string');
-  if (typeof m.name !== 'string' || !m.name) fail('name must be a non-empty string');
-  if (typeof m.version !== 'string' || !m.version) fail('version must be a non-empty string');
-  if (m.type !== 'model-service') fail('type must be "model-service"');
-  if (!Array.isArray(m.wires) || m.wires.length === 0 || !m.wires.every((w) => typeof w === 'string' && w)) {
-    fail('wires must be a non-empty string array');
-  }
-  if (m.logo !== undefined && typeof m.logo !== 'string') fail('logo must be a string');
-  if (m.description !== undefined && typeof m.description !== 'string' && (typeof m.description !== 'object' || m.description === null)) {
-    fail('description must be a string or locale map');
-  }
-  if (m.presets !== undefined) {
-    if (!Array.isArray(m.presets)) fail('presets must be an array');
-    for (const preset of m.presets) {
-      const p = preset as Record<string, unknown>;
-      if (typeof p !== 'object' || p === null) fail('preset must be an object');
-      if (typeof p.presetId !== 'string' || !p.presetId) fail('preset.presetId must be a non-empty string');
-      if (typeof p.providerId !== 'string' || !p.providerId) fail('preset.providerId must be a non-empty string');
-      if (typeof p.npm !== 'string' || !p.npm) fail('preset.npm must be a non-empty string');
-      if (typeof p.baseUrl !== 'string' || !p.baseUrl) fail('preset.baseUrl must be a non-empty string');
-      if (p.displayName !== undefined && typeof p.displayName !== 'string' && (typeof p.displayName !== 'object' || p.displayName === null)) {
-        fail('preset.displayName must be a string or locale map');
-      }
-    }
-  }
-}
+// plugin.json IS the single manifest truth, so the packager and the runtime
+// loader (backend/src/plugins/host.ts) share ONE validator — a manifest that
+// passes here can never fail at load.
+const validateManifest = (manifest: unknown, dirName: string): void =>
+  validatePluginManifest(manifest, `[plugins] ${dirName}/plugin.json invalid`);
+
+/**
+ * Fixed entry mtime for every packaged file. Without it fflate stamps the
+ * CURRENT time into the zip (2-second DOS resolution), so two runs seconds
+ * apart produce different bytes — which makes `--check` (and any byte-level
+ * drift guard) fail unconditionally. A fixed stamp makes the package
+ * reproducible: same sources ⇒ same bytes, forever.
+ */
+const ZIP_ENTRY_MTIME = new Date('2000-01-01T00:00:00Z');
 
 /** Files one plugin ships — the whole dir minus editor junk. */
-function collect(dir: string): Record<string, Uint8Array> {
-  const out: Record<string, Uint8Array> = {};
+function collect(dir: string): Record<string, [Uint8Array, { mtime: Date }]> {
+  const out: Record<string, [Uint8Array, { mtime: Date }]> = {};
   const walk = (rel: string): void => {
     const abs = join(dir, rel);
     for (const name of readdirSync(abs)) {
@@ -69,7 +48,7 @@ function collect(dir: string): Record<string, Uint8Array> {
       const child = rel ? `${rel}/${name}` : name;
       const childAbs = join(abs, name);
       if (statSync(childAbs).isDirectory()) walk(child);
-      else out[child] = new Uint8Array(readFileSync(childAbs));
+      else out[child] = [new Uint8Array(readFileSync(childAbs)), { mtime: ZIP_ENTRY_MTIME }];
     }
   };
   walk('');

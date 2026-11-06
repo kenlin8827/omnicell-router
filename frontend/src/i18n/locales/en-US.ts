@@ -2464,7 +2464,7 @@ export const enUS: TranslationDict = {
   },
   pluginPage: {
     title: 'Plugins',
-    desc: 'Model-service plugins carry vendor-private protocol knowledge (native gRPC, signing chains). Install into <ocrHome>/plugins (.zip packages) or the dev tree; the OCR core keeps only credentials and routing. Reload applies immediately.',
+    desc: 'Two plugin kinds: model-service plugins carry vendor-private protocol knowledge (native gRPC, signing chains); client-gateway plugins adapt local CLI clients. Install into <ocrHome>/plugins (.zip packages) or the dev tree; the OCR core keeps only credentials and routing. Reload applies immediately.',
     reload: 'Reload',
     reloadOk: 'Plugins reloaded',
     install: 'Install Plugin',
@@ -2498,6 +2498,14 @@ export const enUS: TranslationDict = {
     enableOk: 'Plugin {name} enabled',
     enableFail: 'Enable failed',
     typeModelService: 'Model service',
+    typeClientGateway: 'Client gateway',
+    settings: 'Settings',
+    configTitle: 'Plugin settings',
+    configSave: 'Save',
+    configSaved: 'Settings saved',
+    configInvalid: 'Settings error',
+    configWarnings: 'Saved with warnings',
+    configEmpty: 'This plugin declares no settings.',
   },
   catalogPage: {
     title: 'Catalog Sources',
