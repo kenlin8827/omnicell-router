@@ -75,10 +75,10 @@ export interface EnvEnvelope {
 
 /** Envelope key → on-disk file within the env (relative to the env root).
  *
- * This is the EXPORT set. `catalog/custom.json` is deliberately absent: the
- * custom model store is retired (ADR-0010 unification amendment), and the file
- * it names is no longer read by anything. It stays IMPORTABLE (see
- * LEGACY_IMPORT_ONLY_KEYS) so a pre-amendment book-set still restores.
+ * This is the ONLY payload set, export and import alike. `catalog/custom.json`
+ * is gone with the custom model store it belonged to (ADR-0010 unification
+ * amendment): the file is read by nothing, so an archive carrying it is refused
+ * outright rather than half-imported.
  */
 const PAYLOAD_EXPORT_FILES: Array<{ key: string; resolve: (p: ReturnType<typeof getEnvPaths>) => string }> = [
   { key: 'data/layer2-decisions.jsonl', resolve: (p) => path.join(p.dataDir, 'layer2-decisions.jsonl') },
@@ -89,23 +89,13 @@ const PAYLOAD_EXPORT_FILES: Array<{ key: string; resolve: (p: ReturnType<typeof 
 ];
 
 /**
- * Retired payload keys still accepted on IMPORT (never exported again).
- *
- * A book-set written before the model-book unification carries the custom
- * store's `catalog/custom.json`; refusing it would make every such archive
- * un-importable. Accepting it is inert (no code reads the file) and the next
- * export drops it — a one-way migration, not a supported payload.
- */
-const LEGACY_IMPORT_ONLY_KEYS: readonly string[] = ['catalog/custom.json'];
-
-/**
  * The ONLY payload keys an envelope may carry (v1). Import enforces this
  * WHITELIST, not merely traversal safety: `config.yaml` / `env.json` /
  * `webauth-secret` as payload keys would silently overwrite the sanitized
  * config, flip the env type, or plant a valid session secret — a backdoored
  * book-set (L3 review P1-1).
  */
-export const PAYLOAD_IMPORT_KEYS: readonly string[] = [...PAYLOAD_EXPORT_FILES.map((f) => f.key), ...LEGACY_IMPORT_ONLY_KEYS];
+export const PAYLOAD_IMPORT_KEYS: readonly string[] = PAYLOAD_EXPORT_FILES.map((f) => f.key);
 
 /** Only these zip entries can ever be extracted — and therefore written. */
 const ZIP_ALLOWED_ENTRIES: ReadonlySet<string> = new Set([
@@ -597,13 +587,6 @@ export function parseAndValidateEnvelope(
     const err = expect(key, text);
     if (err) return { ok: false, code: 400, error: err };
   }
-
-  // Retired payload keys ride the validation chain above (their checksums must
-  // still verify, or a tampered archive would slip through) and are then
-  // DROPPED — never materialized. The custom model store is gone (ADR-0010
-  // unification amendment), so writing the file back would only plant dead data
-  // in the new environment and re-create residue the next export has to remove.
-  for (const key of LEGACY_IMPORT_ONLY_KEYS) delete payload[key];
 
   // Sanitizing chain: strip sentinels, then never-importable login material.
   const stripped = stripSentinels(parsedConfig);

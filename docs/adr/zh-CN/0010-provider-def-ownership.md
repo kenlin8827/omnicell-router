@@ -54,7 +54,7 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **模型写入只有一个落点**（provider 自己的节点）：modelsGet/modelAdd/modelUpdate/modelRemove/modelsClear/modelReorder 删除 credential-only 回退分支；pullCatalogModels 无条件写节点；周期清扫对无节点 provider 直接跳过（未连接 → 无处可写，绝不伪造连接）。`modelsManageable` 能力字段随它曾经把守的门一并**从线上移除**：落点唯一之后，可编辑性**就是**存在性（行存在即拥有节点），一个恒为 true 的字段是死接口。模型**顺序**同样以 defs 文件为真值：控制台的上下移动手势重写节点 `models` 的键序（modelReorder）——物化按节点原样渲染、漂移判定对顺序敏感，所以顺序变化是一次真实的 def 写入并推送到客户端，绝不是控制台视角偏好。
 - **绑定清扫检查原始 defs 文件而非归一化视图**。归一化视图会丢弃 retired-shape 节点（Decision 9），只有原始检查能避免把此类节点"复活"为全新可路由节点。retired 节点保持启动时的响亮排除，直到操作员显式迁移（重连即有意重建——密钥刚入 store，无损失）。
 - **`ocr.json` 版本 4**：3 被本修订案烧毁（聚合失去了 `custom` 源）；单调递增、永不复用。`custom` CatalogSourceId 随之消失：source 标签永远是配置中该 source 自己的 `src.def.id`，从不硬编码类别，因此退役成员已无生产者。（`catalog.sources[].type: 'custom'` 是另一个概念——用户可配置的模型清单 SOURCE 类型——继续存在。）
-- 环境书集（ADR-0007）：`catalog/custom.json` 移出导出集；信封白名单继续**接受**该键（其 checksum 仍校验，被篡改的书集照样拒绝）随后**丢弃**——修订前的书集可导入而不被拒，退役文件绝不写回新环境。
+- 环境书集（ADR-0007）：`catalog/custom.json` 彻底移出 payload 集——不导出，导入也**不接受**。仍带着它的修订前书集会被白名单错误直接拒绝（`Unsupported payload key`，错误信息会回显允许的键），而不是「导入成功但文件被悄悄丢掉」：不存在迁移面，因为它所属的 store 已经不存在了。
 - **控制台按平面分离**。`/models` = 仅已维护的物理模型（defs 支撑的行，可编辑/测试/锁定）；聚合目录移到模型来源页的只读 tab（发现/参考，无维护动作）。虚拟引用（auto/梯队别名、combo、变体）绝不出现在 `/models`——它们有自己的页面，这让"已维护"没有歧义。
 
 ## 修订案 —— defs 写入路径加固（2026-12）

@@ -62,20 +62,13 @@ const ARCHIVE_PAYLOAD_OPTIONS: Array<{ key: string; i18nKey: string; defaultOn: 
 const defaultExportInclude = (): Record<string, boolean> =>
   Object.fromEntries(ARCHIVE_PAYLOAD_OPTIONS.map((o) => [o.key, o.defaultOn]));
 
-// Legacy imports (pre-structured provenance) store the generated English
-// sentence in description — match it back so old book-sets localize too.
-// Any other description is operator text and renders verbatim.
-const LEGACY_IMPORTED_DESC_RE = /^imported from "(.+)" \(OCR (.+)\)$/;
-
-/** The provenance line under the env name: operator description wins, else localized import stamp. */
+/** The provenance line under the env name: operator description wins, else the
+ *  localized import stamp built from the structured `importedFrom` record. */
 function envProvenance(
   e: AdminEnvironment,
   t: (path: string, params?: Record<string, string | number>) => string
 ): string | null {
-  if (e.description) {
-    const m = LEGACY_IMPORTED_DESC_RE.exec(e.description);
-    return m ? t('env.importedFrom', { name: m[1], version: m[2] }) : e.description;
-  }
+  if (e.description) return e.description;
   return e.importedFrom
     ? t('env.importedFrom', { name: e.importedFrom.name, version: e.importedFrom.appVersion })
     : null;
