@@ -2,8 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
-import { loadConfig } from '../../config/index.js';
+import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
+import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
+import { getOcrHomeDir } from '../paths.js';
+import type { RouterConfig } from '../../config/types.js';
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
 export const OCR_DEFAULT_V1_URL = `${OCR_DEFAULT_URL}/v1`;
@@ -135,34 +138,81 @@ const VERSION_PROBE_TTL_MS = 10 * 60 * 1000;
  * Returns the first `major[.minor[.patch…]]` token in the output (CLI banners
  * are prose — "kimi version 2.4.1"), or null when the command fails/times out
  * (absent client, non-zero exit). Failures are cached like successes so a
- * missing client costs one spawn per TTL window, not one per status poll.
  */
 export async function probeClientVersion(cmd: string[]): Promise<string | null> {
   const key = cmd.join(' ');
   const hit = versionProbeCache.get(key);
   if (hit && Date.now() - hit.at < VERSION_PROBE_TTL_MS) return hit.version;
-  let version: string | null = null;
-  try {
-    let data = '';
-    const out = await new Promise<string>((resolve, reject) => {
-      // Windows: `kimi`/`opencode`/… are npm-style .cmd shims libuv cannot exec directly —
-      // the same shell rule as the plugin writer's defaultExec. argv is adapter-owned constants
-      // (never request input), so no pre-quoting is needed.
-      const proc = spawn(cmd[0], cmd.slice(1), {
-        timeout: 5000,
-        windowsHide: true,
-        shell: process.platform === 'win32',
-      });
-      proc.stdout?.on('data', chunk => (data += String(chunk)));
-      // Drain stderr even though it is unused: an undrained pipe fills and blocks a chatty CLI.
-      proc.stderr?.on('data', () => {});
-      proc.on('error', reject);
-      proc.on('close', code => (code === 0 ? resolve(data) : reject(new Error(`exit ${code}`))));
-    });
-    version = out.match(/\d+(?:\.\d+)+/)?.[0] ?? null;
-  } catch {
-    version = null;
-  }
+  const { ok, stdout } = await runCommand(cmd[0], cmd.slice(1), 5000);
+  const version = ok ? stdout.match(/\d+(?:\.\d+)+/)?.[0] ?? null : null;
   versionProbeCache.set(key, { version, at: Date.now() });
   return version;
+}
+
+/** Client-facing forward-proxy endpoint derived from the runtime config snapshot. */
+export interface ForwardProxyEndpoint {
+  url: string;
+  port: number;
+  caPath: string;
+}
+
+/**
+ * Effective forward-proxy endpoint from the runtime config snapshot; null
+ * when the forward proxy is disabled or the config is unreadable.
+ */
+export function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
+  let cfg: RouterConfig | undefined;
+  try {
+    cfg = getRuntimeConfigRef() || loadConfig();
+  } catch {
+    return null;
+  }
+  const fp = cfg?.forwardProxy;
+  if (!fp || fp.enabled !== true) return null;
+  const port = Number.isFinite(fp.port) && (fp.port as number) > 0 ? (fp.port as number) : DEFAULT_FORWARD_PROXY_PORT;
+  // `host` is a LISTEN address — the client-facing URL must stay reachable
+  // from the client on the same machine, so wildcard binds normalize to loopback.
+  const host = !fp.host || fp.host === '0.0.0.0' || fp.host === '::' ? '127.0.0.1' : fp.host;
+  const caDir = fp.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+  return { url: `http://${host}:${port}`, port, caPath: path.join(caDir, 'ca.pem') };
+}
+
+/** Result of a one-shot command run: exit status plus captured output. */
+export interface CommandResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Asynchronous one-shot command runner with a timeout; never throws.
+ *
+ * Windows: CLI commands may be npm `.cmd` shims, so the spawn goes through
+ * cmd.exe and args containing spaces/cmd metacharacters are pre-quoted for
+ * the shell line (note: `%` inside double quotes is still cmd-expanded —
+ * paths containing `%` are out of scope). Other platforms spawn directly
+ * with an argv array.
+ */
+export async function runCommand(cmd: string, args: string[], timeoutMs = 5000): Promise<CommandResult> {
+  const isWin = process.platform === 'win32';
+  const finalArgs = isWin
+    ? args.map(a => (/[\s"%^&|<>()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a))
+    : args;
+  let resolve: (r: CommandResult) => void = () => {};
+  const promise = new Promise<CommandResult>(r => {
+    resolve = r;
+  });
+  let stdout = '';
+  let stderr = '';
+  try {
+    const proc = spawn(cmd, finalArgs, { timeout: timeoutMs, windowsHide: true, shell: isWin });
+    proc.stdout?.on('data', (c: Buffer) => (stdout += String(c)));
+    proc.stderr?.on('data', (c: Buffer) => (stderr += String(c)));
+    proc.on('error', err => resolve({ ok: false, stdout, stderr: String(err) }));
+    proc.on('close', code => resolve({ ok: code === 0, stdout, stderr }));
+  } catch (err) {
+    resolve({ ok: false, stdout, stderr: String(err) });
+  }
+  return promise;
+
 }

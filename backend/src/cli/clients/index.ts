@@ -9,6 +9,7 @@ import { GrokClientAdapter } from './grok.js';
 import { OmpClientAdapter } from './omp.js';
 import { KimiClientAdapter } from './kimi.js';
 import { OpenClawClientAdapter } from './openclaw.js';
+import { CursorClientAdapter } from './cursor.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
@@ -22,6 +23,7 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   grok: new GrokClientAdapter(),
   kimi: new KimiClientAdapter(),
   openclaw: new OpenClawClientAdapter(),
+  cursor: new CursorClientAdapter(),
 };
 
 export function getClientAdapter(name: string): ClientAdapter | null {

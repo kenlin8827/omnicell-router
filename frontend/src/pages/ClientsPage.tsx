@@ -27,7 +27,7 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw' || name === 'cursor';
 
 /** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
@@ -37,6 +37,9 @@ const CLIENT_REASON_KEY: Record<string, string> = {
   serviceSetEnvFailed: 'clients.proxyErrServiceSetEnv',
   serviceStartFailed: 'clients.proxyErrServiceStart',
   notActive: 'clients.proxyErrNotActive',
+  forward_proxy_disabled: 'clients.cursorErrForwardProxyDisabled',
+  forward_proxy_ca_missing: 'clients.cursorErrCaMissing',
+  cursor_not_found: 'clients.cursorErrNotFound',
 };
 
 type TFn = (key: string, params?: Record<string, string | number>) => string;
@@ -493,7 +496,7 @@ export const ClientsPage: React.FC = () => {
       // previous token. opencode-proxy writes no key (it only persists the
       // service env: forward proxy, NO_PROXY, MITM CA), so it is exempt —
       // its form doesn't even render the key picker.
-      const keyless = clientName === 'opencode-proxy';
+      const keyless = clientName === 'opencode-proxy' || clientName === 'cursor';
       if (action === 'setup' && !keyless && !(apiKeySel[clientName] || '')) {
         toast.error(t('clients.apiKeyRequired'));
         return;
@@ -984,9 +987,10 @@ export const ClientsPage: React.FC = () => {
             quick action, expanding reveals the progressive setup form. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {clients.filter(c => activeTab === 'proxy'
-            ? c.name === 'opencode-proxy'
+            ? c.name === 'opencode-proxy' || c.name === 'cursor'
             : activeTab === 'hook'
               && c.name !== 'opencode-proxy'
+              && c.name !== 'cursor'
               && (!filter || [c.displayName, c.name, c.configPath].some(v => (v || '').toLowerCase().includes(filter.toLowerCase())))).map(c => {
             const open = expanded === c.name;
             const toggle = () => setExpanded(prev => (prev === c.name ? null : c.name));
@@ -1071,14 +1075,14 @@ export const ClientsPage: React.FC = () => {
                       </div>
                     </div>
 
-                    {c.name === 'opencode-proxy' && (
+                    {(c.name === 'opencode-proxy' || c.name === 'cursor') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
-                        {t('clients.proxyHint')}
+                        {t(c.name === 'cursor' ? 'clients.cursorHint' : 'clients.proxyHint')}
                       </div>
                     )}
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
-                {c.name !== 'opencode-proxy' && (
+                {(c.name !== 'opencode-proxy' && c.name !== 'cursor') && (
                   <div style={{ gridColumn: '1 / -1' }}>
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
                     <Combobox
@@ -1133,7 +1137,7 @@ export const ClientsPage: React.FC = () => {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
                             <div style={{ display: 'inline-flex', gap: '4px' }}>
-                              {(['none', 'custom', 'follow'] as const).map(m => (
+                              {(c.name === 'cursor' ? (['none', 'custom'] as const) : (['none', 'custom', 'follow'] as const)).map(m => (
                                 <button
                                   key={m}
                                   className="btn btn-sm"

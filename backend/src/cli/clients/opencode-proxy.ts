@@ -1,10 +1,7 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ClientAdapter, ClientActionResult } from './base.js';
+import { ClientAdapter, ClientActionResult, resolveForwardProxyEndpoint, runCommand, type CommandResult, type ForwardProxyEndpoint } from './base.js';
 import { ClientHookStatus } from '../types.js';
-import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
-import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
 import { getOcrHomeDir } from '../paths.js';
 
 /**
@@ -45,32 +42,6 @@ import { getOcrHomeDir } from '../paths.js';
 const PROXY_ENV_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS'] as const;
 const LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,::1';
 
-interface ForwardProxyEndpoint {
-  url: string;
-  caPath: string;
-}
-
-/**
- * Effective forward-proxy endpoint from the runtime config snapshot; null
- * when the forward proxy is disabled or the config is unreadable.
- */
-function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
-  let cfg: ReturnType<typeof loadConfig> | undefined;
-  try {
-    cfg = getRuntimeConfigRef() || loadConfig();
-  } catch {
-    return null;
-  }
-  const fp = cfg?.forwardProxy;
-  if (!fp || fp.enabled !== true) return null;
-  const port = Number.isFinite(fp.port) && (fp.port as number) > 0 ? (fp.port as number) : DEFAULT_FORWARD_PROXY_PORT;
-  // `host` is a LISTEN address — the client-facing URL must stay reachable
-  // from opencode on the same machine, so wildcard binds normalize to loopback.
-  const host = !fp.host || fp.host === '0.0.0.0' || fp.host === '::' ? '127.0.0.1' : fp.host;
-  const caDir = fp.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
-  return { url: `http://${host}:${port}`, caPath: path.join(caDir, 'ca.pem') };
-}
-
 function defaultCaPath(): string {
   return path.join(getOcrHomeDir(), 'forward-proxy', 'ca.pem');
 }
@@ -101,40 +72,14 @@ function writeMeta(meta: ProxyMeta): void {
   }
 }
 
-interface OcRunResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-}
+type OcRunResult = CommandResult;
 
 /**
  * Run `opencode <args>` ASYNCHRONOUSLY — getStatus is polled (~4s) by the
  * console, so a sync spawn here would block the whole gateway event loop.
- *
- * Windows: opencode may be an npm `.cmd` shim, so the spawn goes through
- * cmd.exe and args containing spaces/cmd metacharacters are pre-quoted for
- * the shell line (note: `%` inside double quotes is still cmd-expanded —
- * paths containing `%` are out of scope). Other platforms spawn directly
- * with an argv array.
  */
 function runOpenCode(args: string[]): Promise<OcRunResult> {
-  const isWin = process.platform === 'win32';
-  const finalArgs = isWin
-    ? args.map(a => (/[\s"%^&|<>()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a))
-    : args;
-  return new Promise(resolve => {
-    const child = spawn('opencode', finalArgs, {
-      shell: isWin,
-      windowsHide: true,
-      timeout: 20_000,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
-    child.on('error', err => resolve({ ok: false, stdout, stderr: `${err}` }));
-    child.on('close', code => resolve({ ok: code === 0, stdout, stderr }));
-  });
+  return runCommand('opencode', args, 20_000);
 }
 
 /**
