@@ -18,7 +18,7 @@ import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { sanitizeExtraHeaders } from '../utils/http-headers.js';
 import { isSelfBaseURL } from '../utils/self-url.js';
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
-import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
+import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
 
 /**
  * Build the direct execution pool WITHOUT the opencode daemon.
@@ -125,7 +125,7 @@ export function effortLadderFor(
 
 /** One shared line for a node the reader refuses to route (Decision 11). */
 function retiredShapeReason(paths: string[]): string {
-  return `provider 定义节点为已废弃形状（${paths.join(', ')}）：已废弃形状不可路由 —— 请改用 package/settings 的 v2 形状`;
+  return `provider def node is a retired shape (${paths.join(', ')}): retired shapes are not routable — use the package/settings v2 shape`;
 }
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
@@ -194,7 +194,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       // only surface when the user actually defined a config node for them.
       // the credential candidates are the inline def and
       // the BOUND store (auth.json is no longer named here — it is not a sink).
-      if (def) excluded.push({ provider: rec.id, reasonCode: 'no_credential', reason: '无凭证（内联或凭证库均缺失）' });
+      if (def) excluded.push({ provider: rec.id, reasonCode: 'no_credential', reason: 'no credential (neither inline nor in the credential store)' });
       continue;
     }
     // models.dev `api` (canonical) beats the daemon's runtime hint; per-wire
@@ -203,7 +203,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // may be stale project-scoped state.
     const baseURL = expandEnvTemplate(def?.options?.baseURL) || rec.api || rec.baseURL;
     if (!baseURL) {
-      excluded.push({ provider: rec.id, reason: '无法确定 baseURL（无 config 定义且目录无默认 api）' });
+      excluded.push({ provider: rec.id, reason: 'baseURL undetermined (no config definition and no catalog default api)' });
       continue;
     }
     // The gateway must never route THROUGH itself: a baseURL pointing back at
@@ -233,7 +233,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // flag: removing a model from routing means removing its definition.
     const modelIds = Object.keys(defs);
     if (modelIds.length === 0) {
-      excluded.push({ provider: rec.id, reason: '配置中未维护任何模型（请拉取或新增）' });
+      excluded.push({ provider: rec.id, reason: 'no models maintained in the config (pull or add them)' });
       continue;
     }
 
@@ -248,7 +248,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       // Read from the AGGREGATE so both write paths are honored by this one
       // check (overrides.json wins over a def-level flag).
       if (catModel?.disabled === true) {
-        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: '已从客户端目录隐藏（disabled）' });
+        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: 'hidden from the client catalog (disabled)' });
         continue;
       }
       // the routing pool speaks chat/responses/anthropic only —
@@ -258,13 +258,19 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       // pass through (no evidence they are non-text).
       const outMods = catModel?.modalities?.output;
       if (Array.isArray(outMods) && outMods.length > 0 && !outMods.includes('text')) {
-        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: `非文本输出模型（modalities.output=${outMods.join('/')}），不入文本路由池` });
+        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: `non-text output model (modalities.output=${outMods.join('/')}), not in the text routing pool` });
         continue;
       }
       const npm = d?.provider?.npm || catModel?.npm || def?.npm || rec.npm;
       const wire = wireFor(npm, baseURL || rec.api);
       if (wire === 'unroutable') {
-        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: unroutableReason(npm) });
+        const info = unroutableInfo(npm);
+        excluded.push({
+          provider: rec.id,
+          model: `${rec.id}/${mid}`,
+          reasonCode: `unroutable_${info.code}`,
+          reason: `wire not routable (${info.code}): ${info.npm || 'unknown package'}`,
+        });
         continue;
       }
       wires.add(wire);
@@ -335,7 +341,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     }
 
     if (wires.size === 0) {
-      excluded.push({ provider: rec.id, reason: '该 provider 全部模型不可直连路由' });
+      excluded.push({ provider: rec.id, reason: 'every model of this provider is not directly routable' });
       continue;
     }
     // per-call selection chain. One instance per provider

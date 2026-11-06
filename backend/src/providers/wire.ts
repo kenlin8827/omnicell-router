@@ -119,17 +119,6 @@ export function unroutableInfo(npm?: string): { code: UnroutableCode; npm: strin
   return { code: 'dedicatedTransport', npm: npm || '' };
 }
 
-/** Human-readable exclusion reason for console/logs when a wire is unroutable.
- * @deprecated i18n residue — the boot-direct exclusion surface still renders
- * this Chinese text on /tiers. Migrate to unroutableInfo codes + t() there,
- * then delete. */
-export function unroutableReason(npm?: string): string {
-  const { code, npm: n } = unroutableInfo(npm);
-  return code === 'unknownPackage'
-    ? `无法识别的 opencode v2 SDK 包名（${n || '未知 package'}），网关直连暂不支持（显式不可路由）`
-    : `该 provider 的 SDK 包需要专用端点构造/签名（${n || '未知 npm'}），网关直连暂不支持（显式不可路由）`;
-}
-
 /**
  * Anthropic-wire mount translation. models.dev publishes ONE `api` per provider
  * (usually the OpenAI-compatible mount), but gateways often serve the Anthropic

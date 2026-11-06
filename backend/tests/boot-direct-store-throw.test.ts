@@ -121,7 +121,7 @@ describe('boot-direct per-provider store-read isolation (P2-9)', () => {
     // no-credential exclusion (def node present in this mock) — NOT the
     // db_unreadable code: the isolation change adds no new verdicts
     const quiet = res.excluded.find((e) => e.provider === 'p-quiet' && !e.model);
-    expect(quiet?.reason).toContain('无凭证');
+    expect(quiet?.reason).toContain('no credential');
     expect(quiet?.reasonCode).toBe('no_credential');
   });
 });
