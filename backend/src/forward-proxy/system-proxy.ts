@@ -103,6 +103,24 @@ export function buildOverride(bypassList: string[], platform: NodeJS.Platform): 
 /* ── win32 ─────────────────────────────────────────────────────────────── */
 
 const WIN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+/**
+ * Normalize the Windows Internet Settings into the single server the OS is
+ * ACTUALLY using:
+ *   - `ProxyEnable=0` means the `ProxyServer` value is stale → nothing;
+ *   - `AutoConfigURL` (PAC) wins over the manual server when present;
+ *   - WinINET's per-scheme form (`http=host:port;https=host:port`) reduces to
+ *     one `host:port` (https preferred) so ownership comparison and the port
+ *     label see a real endpoint.
+ */
+export function normalizeProxyServer(raw: string, enabled: number, pac: string): string | undefined {
+  if (pac.trim()) return pac.trim();
+  if (!enabled) return undefined;
+  const value = raw.trim();
+  if (!value) return undefined;
+  const https = /(?:^|;)https=([^;]+)/i.exec(value)?.[1];
+  const http = /(?:^|;)http=([^;]+)/i.exec(value)?.[1];
+  return (https || http || value.split(';')[0]).trim() || undefined;
+}
 
 async function winRead(): Promise<WinSnapshot & { _server?: string }> {
   const { stdout } = await exec('reg', ['query', WIN_KEY]);
@@ -116,7 +134,7 @@ async function winRead(): Promise<WinSnapshot & { _server?: string }> {
     ProxyServer: get('ProxyServer'),
     ProxyOverride: get('ProxyOverride'),
     AutoConfigURL: get('AutoConfigURL'),
-    _server: get('ProxyServer'),
+    _server: normalizeProxyServer(get('ProxyServer'), hex(get('ProxyEnable')), get('AutoConfigURL')),
   };
 }
 
@@ -243,14 +261,17 @@ async function readCurrentServer(platform: NodeJS.Platform): Promise<string | un
   try {
     if (platform === 'win32') return (await winRead())._server || undefined;
     if (platform === 'darwin') {
+      // First enabled service is enough for a preflight: a proxy that owns the
+      // machine is normally set on the active service too.
       const svc = (await macServices())[0];
       if (!svc) return undefined;
       const s = await macRead(svc);
-      return s.secure.enabled || s.web.enabled ? `${s.secure.enabled ? s.secure.host : s.web.host}` : undefined;
+      const pick = s.secure.enabled && s.secure.host ? s.secure : s.web.enabled && s.web.host ? s.web : undefined;
+      return pick ? `${pick.host}:${pick.port}` : undefined;
     }
     if (platform === 'linux') {
       const g = await gnomeRead();
-      return g.mode === 'manual' ? g.http.host : undefined;
+      return g.mode === 'manual' && g.http.host ? `${g.http.host}:${g.http.port}` : undefined;
     }
   } catch {
     return undefined;

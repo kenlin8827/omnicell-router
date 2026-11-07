@@ -461,6 +461,13 @@ function forwardDirect(
 
 
 /**
+ * The admission gate's refusal body, spelled ONCE (ADR-0018 §3): every leg
+ * that answers 403 for a `reject` row — plain proxy, intercepted inner server,
+ * client-gateway relay — says exactly this.
+ */
+export const RULE_REJECTED_MESSAGE = 'Forward proxy: host rejected by rule';
+
+/**
  * Answer with an error envelope and CLOSE the connection.
  *
  * `Connection: close` is not decoration: on Bun an error answer written through
@@ -469,7 +476,7 @@ function forwardDirect(
  * hung on a response it had already received in full. An error envelope is
  * terminal; the connection must say so.
  */
-function proxyFail(res: http.ServerResponse, code: number, msg: string): void {
+export function proxyFail(res: http.ServerResponse, code: number, msg: string): void {
   try {
     if (!res.headersSent) {
       res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', connection: 'close' });
@@ -719,7 +726,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       // CONNECT target, so the same gate runs here (403 lands in the ledger).
       if (isRuleRejected(host)) {
         tap?.finish(403, undefined, 'rejected by rule');
-        proxyFail(res, 403, 'Forward proxy: host rejected by rule');
+        proxyFail(res, 403, RULE_REJECTED_MESSAGE);
         return;
       }
       // Protocol fidelity: an h2 client is answered upstream over h2 (gRPC and
@@ -1629,7 +1636,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       });
       if (isRuleRejected(target.hostname)) {
         tap?.finish(403, undefined, 'rejected by rule');
-        proxyFail(res, 403, 'Forward proxy: host rejected by rule');
+        proxyFail(res, 403, RULE_REJECTED_MESSAGE);
         return;
       }
       await forwardTo(

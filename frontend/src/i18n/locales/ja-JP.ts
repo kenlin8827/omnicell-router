@@ -1989,7 +1989,7 @@ export const jaJP: TranslationDict = {
     proxyErrServiceStart: '`opencode service start` に失敗: {detail} — 手動で実行するか、ティアダウンで元に戻してください。',
     proxyErrNotActive: 'OpenCode プロキシモードは有効ではありません — 解除するものがありません。',
     proxyTeardownOk: 'OpenCode プロキシモードを解除しました。サービスは以前の環境で再起動しています。',
-    cursorHint: 'Cursor は設定でカスタムエンドポイントに向けられません — セットアップは --proxy-server で OCR フォワードプロキシを指すランチャー（<ocrHome>/clients/cursor-launcher.*）を書き込み、api2.cursor.sh へのトラフィックを OCR パイプラインで横取りします。下のモデルリストは <ocrHome>/gateways/cursor/models.json に公開され、Cursor のピッカーに表示されます。MITM CA（<ocrHome>/forward-proxy/ca.pem）を一度だけ OS の信頼ストアにインポートしてください。ティアダウンはランチャーとモデルファイルのみを削除します。',
+    cursorHint: 'Cursor は設定でカスタムエンドポイントに向けられません — セットアップは 2 つのランチャー（<ocrHome>/clients/cursor-launcher.* と、cursor-agent CLI がインストールされている場合の cursor-agent-launcher.*）を書き込み、--proxy-server で OCR フォワードプロキシを指し、小文字の http(s)_proxy・NODE_EXTRA_CA_CERTS・NO_PROXY を設定して Cursor／CLI を起動します。これにより api2.cursor.sh へのトラフィックは OCR パイプラインで横取りされ、ローカル宛の通信は直接接続のままです。MITM CA（<ocrHome>/forward-proxy/ca.pem）を一度だけ OS の信頼ストアにインポートしてください。ティアダウンはランチャーのみを削除します。',
     cursorErrForwardProxyDisabled: 'フォワードプロキシが無効です — 先に設定 → プロキシで有効にしてください',
     cursorErrCaMissing: 'フォワードプロキシの MITM CA が {path} に見つかりません — forwardProxy を有効にしてゲートウェイを起動すると生成されます。ゲートウェイを起動して再試行してください。',
     cursorErrNotFound: 'Cursor が検出できませんでした — Cursor をインストールするか（`cursor` コマンドを PATH に）再試行してください。',

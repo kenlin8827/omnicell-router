@@ -37,7 +37,7 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   if (m.type === 'client-gateway' && (!Array.isArray(m.hosts) || m.hosts.length === 0)) {
     fail('a client-gateway manifest needs a non-empty hosts array');
   }
-  // Flat primitives only (ADR-0017 §6): a malformed schema fails loudly
+  // Flat primitives only (ADR-0017 §7): a malformed schema fails loudly
   // instead of degrading silently in the console's generic form.
   if (m.configSchema !== undefined) validateConfigSchema(m.configSchema, label);
   if (m.logo !== undefined && typeof m.logo !== 'string') fail('logo must be a string');
@@ -70,7 +70,7 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
 
 const CONFIG_FIELD_TYPES: Record<string, true> = { string: true, number: true, boolean: true, 'string[]': true, enum: true };
 
-/** Validate one plugin's `configSchema` (flat primitive fields, ADR-0017 §6). */
+/** Validate one plugin's `configSchema` (flat primitive fields, ADR-0017 §7). */
 export function validateConfigSchema(schema: unknown, label: string): void {
   const fail = (msg: string): never => {
     throw new Error(`${label}: ${msg}`);

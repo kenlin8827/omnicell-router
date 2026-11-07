@@ -243,7 +243,9 @@ banner.
 
 Every transit leg consults the table: `forwardTo` (plain-proxy + intercepted h1),
 `tunnel` (blind tunnels), the `Upgrade:` relay, `forwardH2` (intercepted h2
-upstream) and the pipeline's `direct-forward` relay. The gateway's own upstream
+upstream), the pipeline's `direct-forward` relay and the client-gateway relay
+(`relayUpstream`, ADR-0017 §3 — the same admission gate and egress, because a
+gateway that dialed an origin itself would silently bypass both). The gateway's own upstream
 calls keep their provider/model-scoped `proxy:` policy (`providers/*`,
 `systemone/native`, catalog sync via `proxiedFetch`) — a `reject` rule can never
 silence inference, and the two vocabularies never collide.

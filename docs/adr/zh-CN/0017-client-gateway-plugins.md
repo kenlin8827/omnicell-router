@@ -11,7 +11,7 @@
 - 插件清单的 `type` 字段是声明好的扩展轴（`plugins/types.ts`），但只有一种类型 `'model-service'` —— 承载出站方向的厂商协议知识（原生传输、凭证链、vendored 厂商二进制）。
 - ADR-0008 的入站 surface 表是封闭的：四个 wire 别名，其余一律 404。协议既非 OpenAI 亦非 Anthropic 形态的厂商客户端（Cursor：ConnectRPC + protobuf over HTTP/2 打到 `api2.cursor.sh`，且端点不可配置）没有任何合法的入站路径。
 
-Cursor 无法通过配置指向自定义端点 —— 它的 AI 流量硬编码到自己的 API 域名。唯一可行的集成拓扑是 TLS 拦截：让客户端指向入站 forward proxy（ADR-0008 §3），然后应答/中继解密后的流量。这正是 `plugins/types.ts` 早已为插件保留的那类厂商协议知识：数 MB 的 vendored .proto 集（7 个文件，约 7 万行，锁定 Cursor 3.28.7）、帧编解码器、版本漂移提取工具。它们不应进入 core。
+Cursor 无法通过配置指向自定义端点 —— 它的 AI 流量硬编码到自己的 API 域名。唯一可行的集成拓扑是 TLS 拦截：让客户端指向入站 forward proxy（ADR-0008 §3），然后应答/中继解密后的流量。这正是 `plugins/types.ts` 早已为插件保留的那类厂商协议知识：后续阶段才会用到的 vendored .proto 集（阶段 2 才锁定到已验证的 Cursor 版本，见 §4）、帧编解码器、版本漂移提取工具。它们不应进入 core。
 
 ## 决策
 
@@ -37,23 +37,35 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 - 到内环的路由在第一个解密块上判定：协商出的 ALPN 只是提示（Bun 在回调时刻不能可靠暴露服务端 `alpnProtocol`）；h2 连接 preface（`PRI * HTTP/2.0`）才是权威。h2 字节接先验 h2c 内环（`http2.createServer`，compat `request` API），h1 字节走既有内环。两个内环跑同一条 intercept 链，且 h2 回落同时接受 `:authority`（h1 用 `host`）。
 - 透明转发会**重新发起它刚接受的协议**：h2 腿向上游也用 h2 中继（`forward-proxy/h2-forward.ts` —— 会话池、`:authority` 按拨号目标重建、剥离逐跳头但**保留 `te: trailers`**（gRPC 要求端到端）、响应 trailer 经 `addTrailers` 转发、双向 body 带背压、客户端断开即取消）。上游若不会说 h2，则在任何字节到达客户端**之前**把这次交换交回 h1 转发器 —— 包括已经捕获的 body 字节，由 h1 腿先写出（Bun 的 h2 兼容 IncomingMessage 会丢弃无人监听时发出的块，所以 body 头部必须同步捕获）。
 - 后果：**不装任何插件**时，gRPC/Connect 客户端被完整透明代理 —— 完整 HTTP/2 语义、完整 access-log 捕获 —— 而不是被降级成 464。vendor 语义（Cursor 的 Connect 路由、模型目录）仍然需要插件；属于核心的只是传输。
+- 网关中继走同一条腿：client gateway 通过 host SDK 的 `relayUpstream` 中继其认领主机，该调用跑的正是这些转发器，带 ADR-0018 **准入**门（`reject` → 任何拨号之前先 403，返回 `{ rejected: true }`）、**实时**规则表 egress、ADR-0019 上游信任与 h2/h1 回落。上游 scheme 由调用方声明 —— `opts.secure`（缺省 `true` = TLS；`false` = 明文源站）—— 声明明文源站**不**绕过其他任何东西：准入门与实时规则表 egress 与 TLS 腿完全一致（明文腿本来就没有证书可信任），且 h2 腿仅支持 TLS，所以明文源站由 h1 腿服务。插件永不自己拨号上游 —— 裸 `http2.connect`/`https.request` 会静默绕过全部。
 
-### 4. 参考实现：`cursor-gateway`
+### 4. 参考实现：`cursor`
 
-仓库 dev 插件树携带参考实现（`plugins/cursor-gateway/`，vendored protos + `protobufjs`，keepCase 加载 —— 提取的 proto 是蛇形命名）：
+仓库 dev 插件树携带分阶段参考实现（`plugins/cursor/`，独立仓库；此处不跟踪）：
 
-- `AvailableModels`（一元）按广告工件 `<ocrHome>/gateways/cursor/models.json`（`{models: string[]}`，由控制台 Cursor 客户端适配器写入）应答，缺省回落到实时 `catalog()` —— Cursor 的模型选择器逐字显示 OCR 的 tier/模型。
-- `StreamUnifiedChatWithTools`（双向）实现 AGENT LOOP：对话历史 → 规范消息；OpenAI `tool_calls` → `ClientSideToolV2Call` 帧（枚举 `ClientSideToolV2`、`tool_call_id`、`name`、`raw_args` JSON）；客户端后续的 `ClientSideToolV2Result` 帧（同一请求信封的字段 2）→ `role:'tool'` 消息并进入下一轮；无工具调用的轮次关闭流（Connect 0x80 end-stream JSON trailer）。
-- `StreamUnifiedChat`（服务端流，顶层裸文本）与 SSE/Poll 变体的诚实 `unimplemented` Connect trailer；被接管主机上的未知路径经真实 TLS 用 h2 客户端中继上游（`agent.api5.cursor.sh` 仅 h2）。
-- 线格式编解码：Connect 帧 `[1B flags][4B BE length][payload]`，0x01 gzip，0x80 end-stream-JSON —— 自集成验证所用的协议实验台移植（Cursor 3.28.7）。proto 锁定；客户端升级后重跑提取器并重新 vendor。
+- **阶段 1（已发布，0.1.0）** —— OBSERVE。认领四个 Cursor 主机，把每个解密交换经核心 host SDK（`relayUpstream`）逐字节中继上游；两个方向都抓取进按天 JSONL feed，Connect 帧由解码器在**读取时**解析。Cursor 继续打真实后端；抓取永不改写流量。
+- **阶段 2（计划中）** —— REPLACE。解码推理 RPC（`aiserver.v1.ChatService/StreamUnifiedChat…`），把 model/prompt 改写进 OCR pipeline（`host.chat`），再把响应重新编码成 Connect 帧；非推理 RPC 继续走阶段 1 中继。
+- 线格式：Connect 帧 `[1B flags][4B BE length][payload]`，0x01 gzip，0x80 end-stream-JSON —— 阶段 1 是无 schema 预览；阶段 2 vendor 锁定到已验证 Cursor 版本的 proto，客户端升级后重跑提取器。
 
-### 5. 控制台归属
+### 5. 流量观测 —— 抓取全保真，展示开窗口
 
-`/admin/clients` 新增 `cursor` 作为代理接入客户端（`SupportedClient`、`CursorClientAdapter`）。setup 无法写厂商配置文件 —— 它 (a) 要求 `forwardProxy.enabled`，(b) 写启动器（`cursor-launcher.cmd|.sh|.command`）以 `--proxy-server=http://127.0.0.1:<livePort>` 启动探测到的 Cursor 二进制，(c) 写模型广告文件。CA 信任保持 forward-proxy CA 原样（不新增信任材料）；安装仍是 operator 显式动作（certutil/security/update-ca-certificates 探测尽力而为，探测不出即诚实 `unknown`）。teardown 只删启动器 + 广告文件 —— 永不触碰 CA，永不触碰 Cursor 自身文件。
+想让自己的流量可见的网关注册的是**解析器**（dissector），而不是一个视图。Wireshark 模型，按阶段拆开：
 
-### 6. 插件级配置
+- **抓取（插件，写路径）** —— 插件把每个解密块直接流式写入旁挂文件 `<ocrHome>/plugins/traffic/<id>/bodies/<YYYYMMDD>/<exchangeId>-<side>.bin`，并往当天的 JSONL 追加**一行**元数据（头、字节数、状态、腿、文件引用）。内存里不缓冲任何东西：一次长 `StreamChat` 的代价是 O(chunk)，不是 O(body)。body **绝不为存储而截断** —— 唯一的天花板是失控保护（每侧 64 MiB），它停下写入并打上诚实的 `truncated` 标记。超过 7 个按天目录的 body 由插件自己的写路径清理。
+- **解码（插件，读路径）** —— 后端在**读取时**用抓到的字节调用插件的 `dissect(exchange)`，返回具名的协议层。协议知识因此留在拥有那条线的插件里；控制台渲染它从未听说过的层。
+- **展示（核心路由，读路径）** —— 路由每侧只读一个固定**窗口**（解析器 32 KiB，内联 hex 预览 1 KiB），只下发字节数与文件引用，永不下发 payload。`/api/admin/traffic-body/:token` 流式返回完整抓取以供下载 —— 与 proxy 日志用的是**同一个**中立端点，所以控制台永不知道是哪个子系统存的字节；全保真一键可得，而浏览器的 DOM 永不会收到几兆的 body。
+- **一条时间线，一套筛选** —— 被解析的行并入既有的 proxy access-log 表（不新开 tab，不新开视图）。各列分类的是传输，不是厂商：type（`http` / `connect`）、protocol（`h1` / `h2` / `ws` / connect-rpc）、host、method、path、status、duration、↑/↓ body 字节数。
+- **一个抽屉，一个解码器注册表** —— 每一行（proxy 或 gateway）都由**同一个**详情组件按归一化的单侧模型（头、字节、层、下载引用）渲染；行的种类只负责构建这个模型。一个 body 就是字节加上一串声称能解它的解码器：`hex` 是**兜底**解码器（Wireshark 的 `data` —— 永远适用，即回退项），内置 `text` / `json` / `image` / `pdf`，而每个插件解析层都排在它们之上。默认视图是排名最高且适用的解码器，于是协议知识无需 UI 里的排序逻辑就压过 hex，新增一种格式只是注册表里多一项 —— 永不新增一个分支。层输出由解析器打上**单侧标记**（`req` / `res`）：空响应 body 绝不能以已解码的样子出现。
 
-插件可声明面向 operator 的参数，控制台按声明通用渲染设置表单。三个来源严格分离 —— 与 §4 的广告文件同一三元组的一般化：
+后果：控制台永不学习厂商协议，未声明解析器的插件干脆不出现。保留期、feed 布局与尾部上限属于核心路由；字节归属属于插件。
+
+### 6. 控制台归属
+
+`/admin/clients` 新增 `cursor` 作为代理接入客户端（`SupportedClient`、`CursorClientAdapter`）。setup 无法写厂商配置文件 —— 它 (a) 要求 `forwardProxy.enabled`，(b) 写 `cursor-launcher.cmd|.sh|.command`（CLI 存在时再写 `cursor-agent-launcher.*`），启动器对 Chromium 腿设 `--proxy-server`，对 Electron 的 Node/gRPC 腿设小写 `http(s)_proxy` + `NODE_EXTRA_CA_CERTS` + `NO_PROXY`。阶段 1 不发布模型广告：插件的 `AvailableModels` 在阶段 2 才到来。按应用启动器是刻意的：不接管系统代理（那会和 Clash/v2ray 抢同一组注册表键），也不上内核重定向器。CA 信任保持 forward-proxy CA 原样（不新增信任材料）；安装仍是 operator 显式动作。状态探测按平台取证 —— Windows 查 Root 存储（`certutil`）、macOS 用 `security verify-cert` 走 SSL 信任策略、Linux 查锚点目录 + 合并 bundle + Chromium/Electron 实际读取的 NSS 数据库 —— 探测无法执行时返回 `unknown`，绝不猜。代理注入只在进程启动时生效：Dock / 开始菜单 / `.desktop` 启动会绕过启动器，已运行的单实例会吞掉后来的启动器调用。macOS 的 `.command` 以脱离方式启动 Cursor（`nohup … &`），所以关掉双击它的那个终端窗口不会带走 Cursor；Linux 的 `.sh` 保留 `exec`，因为它本身就是那个终端会话。teardown 删除启动器、≤0.1.x 遗留的 `models.json`，永不触碰 CA，永不触碰 Cursor 自身文件；CLI 已不在时 setup 会清掉过期的 CLI 启动器。
+
+### 7. 插件级配置
+
+插件可声明面向 operator 的参数，控制台按声明通用渲染设置表单。三个来源严格分离：
 
 - **声明** —— `plugin.json` `configSchema`：扁平数组，元素 `{key, type, default?, min?, max?, values?, title?, desc?}`，其中 `type ∈ string|number|boolean|string[]|enum`，`title`/`desc` 沿用清单的 locale-map 约定。仅原始类型；刻意不引 JSON-Schema 引擎 —— 那会把任意 UI 复杂度邀请进插件协议。畸形 schema 在安装/装载时响亮失败（作者侧 API 不得静默降级）。
 - **存储** —— `<pluginsRoot()>/config/<id>.json` 只存 operator 的**生效值**（非默认值）。插件参数**永不**进入 `config.yaml`（ADR-0016：schema 冻结；插件生命周期状态随插件工件存放，disabled.json / registrations.json 先例）。
@@ -61,12 +73,13 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 控制台：`GET /api/admin/plugins/:id/config` 返回 `{schema, values}`，`PUT` 校验 + 持久化 + 触发插件可选的 `onConfigChange(config)`（钩子失败绝不回滚已持久化的保存；合并值无论如何都会通过 `config()` 到达插件）。无 schema 的插件不暴露任何字段并拒绝写入 —— 不存在自由参数袋。
 
-`cursor-gateway` 使用该机制承载 `toolTimeoutMs`（0 = 工具调用帧省略 `timeout_ms`）、`relayUnknownPaths`（false = 未知路径回 unimplemented Connect trailer 而不是中继）、`debugFrames`（帧级日志）。模型广告仍是独立工件 —— 由客户端适配器从 Cursor 卡片的模型槽位写入，不是 operator 自由文本。
+`cursor` 使用该机制承载 `logFrames`（抓取 body + 解析 Connect 帧；关闭 = 仅元数据行）与 `previewBytes`（单帧解码预览上限；落盘抓取永不被它截断）。阶段 1 不发布模型广告：插件的 `AvailableModels` 在阶段 2 才到来。
 
 ## 后果
 
-- 厂商入站协议可插拔，core 不再增长；2 MB 的 proto 语料与其漂移工具随需要它们的插件走（安装即授权）。**传输**是另一半，而且它不动：h2 重发属于核心（§3），所以插件作者只需要写语义——什么都不装的运维方同样得到可用且完整落日志的 h2/gRPC 透传。
+- 厂商入站协议可插拔，core 不再增长；proto 语料与其漂移工具在阶段 2 vendored 之后随需要它们的插件走（§4，安装即授权）。**传输**是另一半，而且它不动：h2 重发属于核心（§3），并通过 `relayUpstream`（ADR-0018 准入门 + 实时规则表 egress + ADR-0019 上游信任 + h2/h1 回落）暴露给网关，所以插件作者只需要写语义或观测——什么都不装的运维方同样得到可用且完整落日志的 h2/gRPC 透传。
+- 网关中继永不静默绕过 forward-proxy 策略：`relayUpstream` 是唯一拨号路径，应用 ADR-0018 准入门、实时规则表 egress 与 ADR-0019 信任。插件自己拨号上游是缺陷，不是优化。
 - TransportContext 多了第三个实现（回调 sink 的网关 seam）—— 终端发送纪律由三个实现共同背书，插件补全对路由/熔断/捕获而言与原生腿补全无法区分。
 - Bun http2 服务端的怪癖（terminator 回调时刻 `alpnProtocol` 不可靠）已固化为 preface 嗅探规则 —— 不要"简化"回纯 ALPN 路由。同一族的怪癖、同一条规矩：ALPN **顺序**是服务端偏好决策（实测，不靠假定），且 h2 兼容 IncomingMessage 会丢弃无人监听时发出的块 —— 所以 h2 请求体头部必须在第一个 await 之前同步捕获。
 - 边界：Tab 补全、代码库索引与登录流量不被拦截（未接管主机/中继路径 —— Cursor 对这些继续打真实后端）；网关不承担 `x-cursor-checksum` 义务（它是服务端不是客户端）；个人使用，自己的机器，自己的账号。
-- 不新增 config.yaml 节：网关生命周期状态随插件工件存放（disabled.json / registrations.json 先例，ADR-0016 姿态不动）；广告文件是插件工件状态，不是 schema。
+- 不新增 config.yaml 节：网关生命周期状态随插件工件存放（disabled.json / registrations.json 先例，ADR-0016 姿态不动）；operator 设置的插件值存在 `<pluginsRoot()>/config/<id>.json`，永不进入 schema。

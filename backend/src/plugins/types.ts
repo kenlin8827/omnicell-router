@@ -4,6 +4,7 @@ import type net from 'node:net';
 import type { LLMProvider, CallCredential } from '../providers/base.js';
 import type { QuotaAdapterContext, QuotaProbeOutcome } from '../quota/types.js';
 import type { ProviderConfig } from '../config/types.js';
+import type { AccessTap } from '../forward-proxy/access-log.js';
 
 /**
  * OCR plugin system: vendor-specific protocol knowledge (native
@@ -319,6 +320,16 @@ export interface GatewayChatSink {
 }
 
 /**
+ * Capture hooks for a gateway relay — the core access tap's three calls, so a
+ * gateway streams bytes into its own feed without owning the transport (and
+ * without importing a backend module at runtime).
+ *
+ * An ALIAS, not a copy: a second structural declaration would drift the moment
+ * either side grows a member. Type-only, so nothing is imported at runtime.
+ */
+export type GatewayRelayTap = AccessTap;
+
+/**
  * Host SDK for client-gateway plugins — self-contained capabilities only
  * (same rule as ModelServicePluginHost: a packaged plugin never imports
  * backend modules by path).
@@ -341,6 +352,37 @@ export interface ClientGatewayHost {
     /** Registered model refs (gateway-visible ids, all kinds). */
     models: { id: string; label?: string }[];
   };
+  /**
+   * Relay a decrypted exchange upstream through the CORE transport policy:
+   * `forwardProxy.rules` egress (direct / `proxy.url`) and upstream TLS trust
+   * (ADR-0019), re-originating h2 faithfully with an h1 fallback. The gateway
+   * owns capture via `tap`; it must never dial an origin itself.
+   *
+   * `h2: true` = the inbound leg is h2 (the request carries `:authority`), so
+   * the h2 relay is tried first. Returns the wire that actually served it.
+   *
+   * `secure` = the ORIGIN scheme the caller is claiming: default `true` (TLS),
+   * `false` for a plaintext origin. It changes the dial scheme and nothing
+   * else — the ADR-0018 admission gate and the rule-table egress apply exactly
+   * as on the TLS leg (a plaintext origin simply has no certificate to trust).
+   * The h2 leg is TLS-only, so a plaintext origin is served by the h1 leg.
+   *
+   * `rejected: true` = the rule table's admission gate answered 403 before any
+   * dial: nothing was sent upstream, the tap carries the row and `res` already
+   * holds the refusal. `wire` is the leg the request arrived on.
+   */
+  relayUpstream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    opts: {
+      host: string;
+      port: number;
+      path?: string;
+      h2?: boolean;
+      secure?: boolean;
+      tap?: GatewayRelayTap;
+    }
+  ): Promise<{ wire: 'h1' | 'h2'; rejected?: true }>;
 }
 
 /** One plugin known to the host — loaded, or the reason it could not load. */

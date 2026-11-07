@@ -25,6 +25,10 @@ import { commitGateways, removeGateway, stageGateway, getGatewayById } from './g
 import { getGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { invalidatePluginConfigCache, mergedPluginConfig, writePluginConfig } from './config.js';
 import { validatePluginManifest } from './manifest.js';
+import { forwardH2 } from '../forward-proxy/h2-forward.js';
+import { forwardTo, proxyFail, RULE_REJECTED_MESSAGE, type ForwardTarget } from '../forward-proxy/server.js';
+import { resolveUpstreamTls } from '../forward-proxy/upstream-tls.js';
+import { isRuleRejected } from '../forward-proxy/egress.js';
 /**
  * Plugin host: discovers, unpacks and loads plugins. Two types today
  * (ADR-0017): 'model-service' (outbound executors, registry below) and
@@ -111,8 +115,14 @@ async function pluginPullServices(): Promise<ModelServicePluginHost['pull']> {
     enrichFromCatalog: (models, excludeId) => autoPull.enrichFromCatalog(models as never[], excludeId),
   };
 }
-/** The capabilities handed to every client-gateway plugin at load time. */
-function buildGatewayHostSdk(manifest: PluginManifest): ClientGatewayHost {
+
+/** The capabilities handed to every client-gateway plugin at load time.
+ *
+ * Exported as a test seam: the relay's transport policy (ADR-0018 admission
+ * gate, rule-table egress, ADR-0019 trust, h2/h1 fallback) is only reachable
+ * through this factory, and it has no other side effects.
+ */
+export function buildGatewayHostSdk(manifest: PluginManifest): ClientGatewayHost {
   return {
     log: (...args: unknown[]) => console.log('[OCR] gateway:', ...args),
     ocrHome: () => getOcrHomeDir(),
@@ -123,6 +133,44 @@ function buildGatewayHostSdk(manifest: PluginManifest): ClientGatewayHost {
       return svc.run(body, sink, signal);
     },
     catalog: () => getGatewayChatServices()?.catalog() ?? { tiers: [], models: [] },
+    relayUpstream: async (req, res, opts) => {
+      // Transport policy lives in core: the claimed host's rule-table egress
+      // (`direct` / `proxy.url`) and upstream TLS trust (ADR-0019) are applied
+      // by the SAME forwarders the transparent relay uses. A plugin that dials
+      // an origin itself would silently bypass both.
+      //
+      // The ADMISSION gate runs first (ADR-0018: every proxy leg consults it
+      // before opening a tunnel or minting a certificate). The egress lookup
+      // cannot stand in for it — a `reject` row has no egress to honour, so the
+      // forwarder would dial the host DIRECT.
+      if (isRuleRejected(opts.host)) {
+        opts.tap?.finish(403, undefined, 'rejected by rule');
+        // The forward proxy's own refusal envelope (`proxyFail`), so a gateway
+        // route and the transparent leg answer identically — the core keeps
+        // ownership of its error surface.
+        proxyFail(res, 403, RULE_REJECTED_MESSAGE);
+        return { wire: opts.h2 ? 'h2' : 'h1', rejected: true };
+      }
+      const target: ForwardTarget = {
+        host: opts.host,
+        port: opts.port,
+        path: opts.path ?? req.url ?? '/',
+        // The origin scheme is the caller's claim, never a constant: a gateway
+        // relaying a plaintext origin must be able to say so. Default = TLS.
+        secure: opts.secure !== false,
+        tap: opts.tap,
+      };
+      const upstreamTls = resolveUpstreamTls();
+      if (opts.h2) {
+        const relay = await forwardH2(req, res, target, upstreamTls);
+        if (relay.owned) return { wire: 'h2' };
+        // The h2 attempt consumed the body head synchronously; hand it to the
+        // h1 leg so the fallback never truncates the request.
+        target.preface = relay.preface;
+      }
+      await forwardTo(req, res, target, upstreamTls);
+      return { wire: 'h1' };
+    },
   };
 }
 

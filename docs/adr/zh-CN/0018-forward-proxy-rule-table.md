@@ -125,7 +125,7 @@ forwardProxy:
 
 ### 5. 作用域：网关替客户端处理的流量
 
-每条转发腿都查表：`forwardTo`（明文代理 + 接管后的 h1）、`tunnel`（盲隧道）、`Upgrade:` 中继、`forwardH2`（接管后的 h2 上游），以及管线的 `direct-forward` 中继。网关自身的上游调用保留 provider/model 级的 `proxy:` 策略（`providers/*`、`systemone/native`、catalog 同步走 `proxiedFetch`）——`reject` 规则永远不可能把推理打断，两套词表也不会相撞。
+每条转发腿都查表：`forwardTo`（明文代理 + 接管后的 h1）、`tunnel`（盲隧道）、`Upgrade:` 中继、`forwardH2`（接管后的 h2 上游）、管线的 `direct-forward` 中继，以及 client-gateway 中继（`relayUpstream`，ADR-0017 §3 —— 同一道准入门与同一套 egress：插件自己拨号上游就会静默绕过两者）。网关自身的上游调用保留 provider/model 级的 `proxy:` 策略（`providers/*`、`systemone/native`、catalog 同步走 `proxiedFetch`）——`reject` 规则永远不可能把推理打断，两套词表也不会相撞。
 
 放置位置带来的后果：规则表挂在 `forwardProxy.` 下，因此治理前向代理/中继流量。网关自身基础设施调用的主机级出站明确不在范围内；要覆盖它们，需要把规则表提升到顶层 `egress:` 并同步退役 `proxy.includes/excludes`。
 

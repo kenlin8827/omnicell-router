@@ -1969,7 +1969,7 @@ export const zhCN: TranslationDict = {
     proxyErrServiceStart: '`opencode service start` 失败：{detail} —— 请手动执行，或先解除接入以还原。',
     proxyErrNotActive: 'OpenCode 代理模式未激活 —— 没有可解除的内容。',
     proxyTeardownOk: 'OpenCode 代理模式已关闭，服务已用原环境变量重启。',
-    cursorHint: 'Cursor 无法通过配置指向自定义端点 —— setup 会生成启动脚本（<ocrHome>/clients/cursor-launcher.*），以 --proxy-server=OCR 前置代理 的方式启动 Cursor，其 api2.cursor.sh 流量由此进入 OCR 路由管线。下方模型列表会发布到 <ocrHome>/gateways/cursor/models.json，供 Cursor 的模型选择器使用。请手动将 MITM CA（<ocrHome>/forward-proxy/ca.pem）导入系统信任库；teardown 只删除启动脚本和模型发布文件。',
+    cursorHint: 'Cursor 无法通过配置指向自定义端点 —— setup 会生成两个启动脚本（<ocrHome>/clients/cursor-launcher.*，以及安装了 cursor-agent CLI 时的 cursor-agent-launcher.*），以 --proxy-server=OCR 前置代理 加上小写的 http(s)_proxy、NODE_EXTRA_CA_CERTS、NO_PROXY 启动 Cursor/CLI，其 api2.cursor.sh 流量由此进入 OCR 路由管线，本地流量保持直连。请手动将 MITM CA（<ocrHome>/forward-proxy/ca.pem）导入系统信任库；teardown 只删除启动脚本。',
     cursorErrForwardProxyDisabled: '前置代理未启用 — 请先在设置中开启',
     cursorErrCaMissing: '未找到转发代理 MITM CA（{path}）—— 它在网关以 forwardProxy 启用状态启动时生成。请启动网关后重试。',
     cursorErrNotFound: '未检测到 Cursor —— 请安装 Cursor（或将 `cursor` 命令加入 PATH）后重试。',

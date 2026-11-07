@@ -1989,7 +1989,7 @@ export const koKR: TranslationDict = {
     proxyErrServiceStart: '`opencode service start` 실패: {detail} — 수동으로 실행하거나, 되돌리려면 연결 해제하세요.',
     proxyErrNotActive: 'OpenCode 프록시 모드가 활성 상태가 아닙니다 — 해제할 것이 없습니다.',
     proxyTeardownOk: 'OpenCode 프록시 모드가 해제되었습니다. 서비스가 이전 환경으로 재시작되었습니다.',
-    cursorHint: 'Cursor 는 설정으로 커스텀 엔드포인트에 연결할 수 없습니다 — 셋업이 --proxy-server 로 OCR 포워드 프록시를 가리키는 런처(<ocrHome>/clients/cursor-launcher.*)를 작성해 api2.cursor.sh 트래픽을 OCR 파이프라인으로 가로챕니다. 아래 모델 목록은 <ocrHome>/gateways/cursor/models.json 에 게시되어 Cursor 의 선택기에 표시됩니다. MITM CA(<ocrHome>/forward-proxy/ca.pem)를 OS 신뢰 저장소에 한 번 가져오세요. 해제는 런처와 모델 파일만 제거합니다.',
+    cursorHint: 'Cursor 는 설정으로 커스텀 엔드포인트에 연결할 수 없습니다 — 셋업이 두 개의 런처(<ocrHome>/clients/cursor-launcher.*, 그리고 cursor-agent CLI 가 설치된 경우 cursor-agent-launcher.*)를 작성해 --proxy-server 로 OCR 포워드 프록시를 가리키고 소문자 http(s)_proxy·NODE_EXTRA_CA_CERTS·NO_PROXY 를 설정한 상태로 Cursor/CLI 를 실행합니다. 따라서 api2.cursor.sh 트래픽은 OCR 파이프라인으로 가로채지고 로컬 트래픽은 직접 연결로 남습니다. MITM CA(<ocrHome>/forward-proxy/ca.pem)를 OS 신뢰 저장소에 한 번 가져오세요. 해제는 런처만 제거합니다.',
     cursorErrForwardProxyDisabled: '포워드 프록시가 비활성화되어 있습니다 — 먼저 설정 → 프록시에서 활성화하세요',
     cursorErrCaMissing: '포워드 프록시 MITM CA 를 {path} 에서 찾을 수 없습니다 — forwardProxy 를 켠 상태로 게이트웨이를 시작하면 생성됩니다. 게이트웨이를 시작한 뒤 다시 시도하세요.',
     cursorErrNotFound: 'Cursor 를 감지하지 못했습니다 — Cursor 를 설치하거나(또는 `cursor` 명령을 PATH 에 추가) 다시 시도하세요.',

@@ -27,7 +27,7 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw' || name === 'cursor';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw';
 
 /** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
@@ -1137,7 +1137,7 @@ export const ClientsPage: React.FC = () => {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
                             <div style={{ display: 'inline-flex', gap: '4px' }}>
-                              {(c.name === 'cursor' ? (['none', 'custom'] as const) : (['none', 'custom', 'follow'] as const)).map(m => (
+                              {(['none', 'custom', 'follow'] as const).map(m => (
                                 <button
                                   key={m}
                                   className="btn btn-sm"
