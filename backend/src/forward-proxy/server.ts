@@ -694,6 +694,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         port,
         method: req.method,
         path: req.url || '/',
+        wire: h2Leg ? 'h2' : String(req.headers.upgrade ?? '').toLowerCase().includes('websocket') ? 'ws' : 'h1',
         // h2 pseudo-headers are transport framing, not wire headers — the row
         // already carries host/method/path from them.
         requestHeaders: h2Leg
@@ -1612,6 +1613,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         port: parseInt(target.port || (target.protocol === 'https:' ? '443' : '80'), 10),
         method: req.method,
         path: req.url || '/',
+        wire: String(req.headers.upgrade ?? '').toLowerCase().includes('websocket') ? 'ws' : 'h1',
         requestHeaders: req.headers,
       });
       if (isRuleRejected(target.hostname)) {

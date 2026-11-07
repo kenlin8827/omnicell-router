@@ -47,11 +47,23 @@ The repo's dev plugin tree carries the reference implementation (`plugins/cursor
 - `StreamUnifiedChat` (server-stream, bare top-level text) and honest `unimplemented` Connect trailers for the SSE/Poll variants; unknown paths on claimed hosts relay upstream over real TLS via an h2 client (`agent.api5.cursor.sh` is h2-only).
 - Wire codec: Connect frame `[1B flags][4B BE length][payload]`, 0x01 gzip, 0x80 end-stream-JSON — ported from the protocol lab the integration was validated against (Cursor 3.28.7). Protos are pinned; a client upgrade re-runs the extractor and re-vendors.
 
-### 5. Console ownership
+### 5. Traffic observation — capture is full-fidelity, display is windowed
+
+A gateway that wants its traffic visible registers a **dissector**, never a view. The Wireshark model, split by phase:
+
+- **Capture (plugin, write path)** — the plugin streams every decrypted chunk straight to a sidecar file `<ocrHome>/plugins/traffic/<id>/bodies/<YYYYMMDD>/<exchangeId>-<side>.bin` and appends ONE metadata line to the day JSONL (headers, byte counts, status, leg, file refs). Nothing is buffered in memory: a long `StreamChat` costs O(chunk), not O(body). Bodies are **never truncated for storage** — the sole ceiling is a runaway guard (64 MiB per side) that stops the write and sets an honest `truncated` flag. Bodies older than 7 day-directories are pruned on the plugin's own write path.
+- **Decode (plugin, read path)** — the plugin's `dissect(exchange)` is called by the backend at READ time with the captured bytes, and returns named protocol layers. Protocol knowledge therefore stays with the plugin that owns the wire; the console renders layers it has never heard of.
+- **Display (core route, read path)** — the route reads a fixed WINDOW per side (32 KiB for the dissector, 1 KiB for the inline hex preview) and ships byte counts + file refs, never payloads. `/api/admin/traffic-body/:token` streams the whole capture for download — the SAME neutral endpoint the proxy log uses, so the console never learns which subsystem stored the bytes; full fidelity is one click away and the browser's DOM never receives a multi-megabyte body.
+- **One timeline, one filter set** — dissected rows join the existing proxy access-log table (no separate tab, no separate view). Columns classify transport, not vendor: 类型 (`http` / `connect`), 协议 (`h1` / `h2` / `ws` / connect-rpc), 主机, 方法, 路径, 状态, 耗时, ↑/↓ body bytes.
+- **One drawer, one decoder registry** — every row (proxy or gateway) is rendered by the SAME detail component from a normalized side model (headers, bytes, layers, download ref); the row kind only builds the model. A body is bytes plus a list of decoders that claim them: `hex` is the FLOOR decoder (Wireshark's `data` — always applicable, the fallback), with `text` / `json` / `image` / `pdf` built in and each plugin dissector layer ranked above them. The default view is the highest-ranked applicable decoder, so protocol knowledge wins over hex with no ordering logic in the UI, and a new format is one registry entry — never a new branch. Layer output is SIDE-TAGGED (`req` / `res`) by the dissector: an empty response body must never appear decoded.
+
+Consequence: the console never learns a vendor protocol, and a plugin that declares no dissector simply does not appear. Retention, feed layout and the tail cap belong to the core route; byte ownership belongs to the plugin.
+
+### 6. Console ownership
 
 `/admin/clients` gains `cursor` as a proxy-access client (`SupportedClient`, `CursorClientAdapter`). Setup cannot write a vendor config file — it (a) requires `forwardProxy.enabled`, (b) writes a launcher (`cursor-launcher.cmd|.sh|.command`) starting the detected Cursor binary with `--proxy-server=http://127.0.0.1:<livePort>`, (c) writes the models advertisement file. CA trust stays EXACTLY the forward-proxy CA (no new trust material); installation remains an explicit operator action (certutil/security/update-ca-certificates probes are best-effort status, honest `unknown` otherwise). Teardown removes only the launcher + advertisement file — never the CA, never Cursor's own files.
 
-### 6. Plugin-level configuration
+### 7. Plugin-level configuration
 
 Plugins may declare operator-facing parameters, and the console renders the settings form generically from that declaration. Three sources, strictly separated — the same triad as §4's advertisement file, generalized:
 

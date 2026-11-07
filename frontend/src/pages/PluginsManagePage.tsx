@@ -159,12 +159,13 @@ export function PluginsManagePage(): React.ReactElement {
       const res = await opencodeApi.reloadPlugins();
       setPlugins(res.plugins ?? []);
       toast.success(t('pluginPage.reloadOk'));
-    } catch {
-      toast.error(t('pluginPage.reloadFail'));
+    } catch (err) {
+      toast.error(`${t('pluginPage.reloadFail')}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setReloading(false);
     }
   };
+
 
   /** Open the drawer and load the schema/values. A 404 (disabled/unloaded
    *  plugin) surfaces inline in the drawer body. */
@@ -329,9 +330,9 @@ export function PluginsManagePage(): React.ReactElement {
           { key: 'type', label: t('pluginPage.colType'), width: 130 },
           { key: 'wires', label: t('pluginPage.colWires'), width: 120 },
           { key: 'status', label: t('pluginPage.colStatus'), width: 120 },
+          { key: 'loadedAt', label: t('pluginPage.colLoadedAt'), width: 110 },
           { key: 'detail', label: t('pluginPage.colDetail') },
-          { key: 'toggle', label: '', width: 110 },
-          { key: 'actions', label: '', width: 210 },
+          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 290 },
         ]}
         empty={loading ? t('common.loading') : (query || statusFilter) ? t('pluginPage.noMatch') : t('pluginPage.empty')}
       >
@@ -357,6 +358,9 @@ export function PluginsManagePage(): React.ReactElement {
                 {p.disabled ? t('pluginPage.statusDisabled') : p.loaded ? t('pluginPage.statusLoaded') : t('pluginPage.statusError')}
               </span>
             </td>
+            <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)' }}>
+              {p.loaded && p.loadedAt ? new Date(p.loadedAt).toLocaleTimeString() : '—'}
+            </td>
             <td style={{ ...CELL, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {p.error ?? (
                 <span title={`${p.source === 'dev' ? t('pluginPage.sourceDev') : t('pluginPage.sourcePackaged')} · ${p.path}`}>
@@ -370,18 +374,17 @@ export function PluginsManagePage(): React.ReactElement {
             </td>
             <td style={CELL}>
               {/* Row-level actions use the compact button size — a full-height .btn inside a
-                  7px-padded cell pushes the row past every other management table. */}
-              <button
-                className={p.disabled ? 'btn btn-sm btn-success' : 'btn btn-sm btn-warning'}
-                onClick={() => void toggle(p)}
-                title={p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
-              >
-                {p.disabled ? <Power size={12} aria-hidden /> : <PowerOff size={12} aria-hidden />}
-                {p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
-              </button>
-            </td>
-            <td style={CELL}>
-              <div style={{ display: 'flex', gap: 6 }}>
+                  7px-padded cell pushes the row past every other management table.
+                  flex containers ignore text-align, so the button row centers itself. */}
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <button
+                  className={p.disabled ? 'btn btn-sm btn-success' : 'btn btn-sm btn-warning'}
+                  onClick={() => void toggle(p)}
+                  title={p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
+                >
+                  {p.disabled ? <Power size={12} aria-hidden /> : <PowerOff size={12} aria-hidden />}
+                  {p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
+                </button>
                 <button
                   className="btn btn-sm"
                   onClick={() => void openConfig(p)}

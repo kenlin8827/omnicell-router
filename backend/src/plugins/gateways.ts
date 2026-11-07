@@ -61,6 +61,12 @@ export function getGatewayById(id: string): ClientGatewayPlugin | undefined {
   return gateways.get(id);
 }
 
+/** All live gateways (id → instance) — read-only snapshot. The generic
+ *  protocol-traffic console route enumerates dissectors from here. */
+export function listGateways(): Map<string, ClientGatewayPlugin> {
+  return new Map(gateways);
+}
+
 /** First gateway claiming the request's host whose match() accepts it. The
  *  host scope is enforced HERE (never trusted to the plugin): `:authority`
  *  on the h2 compat layer, `host` on h1, port stripped, case-insensitive. */

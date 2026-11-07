@@ -6,10 +6,12 @@ import path from 'node:path';
 import {
   createAccessTap,
   listProxyAccessEvents,
+  readProxyAccessHistory,
   readProxyAccessBodyFile,
   setProxyAccessLogPersistDir,
   setProxyAccessLogSettingsReader,
   clearProxyAccessLog,
+  deleteProxyAccessEvents,
   proxyAccessLogSettings,
 } from '../src/forward-proxy/access-log.js';
 import { DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES } from '../src/config/defaults.js';
@@ -97,5 +99,81 @@ describe('forward-proxy access log: bounded body capture', () => {
     assert.equal(ev.responseBody, undefined);
     assert.equal(ev.resBodyFile, undefined);
     assert.equal(ev.respBytes, 'ignored-body'.length);
+  });
+});
+
+describe('row-scoped deletion (the filter-scoped clear)', () => {
+  /** A tap that does NOT reset the ledger — these tests need several rows. */
+  const nextTap = (): NonNullable<ReturnType<typeof createAccessTap>> => {
+    setProxyAccessLogPersistDir(persistDir);
+    setProxyAccessLogSettingsReader(() => ({ enabled: true, bodyBytes: 1024, persist: true, persistDays: 7 }));
+    const tap = createAccessTap({ host: 'h.test', port: 443, method: 'GET', path: '/row', requestHeaders: { host: 'h.test' } });
+    assert.ok(tap);
+    return tap;
+  };
+
+  it('removes exactly the named rows: ring, day file and body sidecars', () => {
+    clearProxyAccessLog();
+    const keep = nextTap();
+    // Past the cap so the bytes really live in a sidecar (that is what gets deleted).
+    keep.onResChunk(Buffer.alloc(2048, 0x4b));
+    keep.finish(200, {});
+    const drop = nextTap();
+    drop.onResChunk(Buffer.alloc(2048, 0x44));
+    drop.finish(200, {});
+
+    const [dropEv, keepEv] = listProxyAccessEvents();
+    assert.ok(dropEv && keepEv);
+    const dropped = deleteProxyAccessEvents([dropEv.id]);
+    assert.equal(dropped, 1, 'one row matched the key');
+
+    const left = listProxyAccessEvents().map((e) => e.id);
+    assert.deepEqual(left, [keepEv.id], 'only the named row is gone from the ring');
+    // Its sidecar went with it; the survivor's bytes are untouched.
+    assert.ok(dropEv.resBodyFile, 'the dropped row had a sidecar');
+    assert.equal(readProxyAccessBodyFile(dropEv.resBodyFile!), null);
+    assert.ok(readProxyAccessBodyFile(keepEv.resBodyFile!), 'neighbour bodies survive');
+
+    // The persisted day file no longer resurrects it on reload.
+    const dayFiles = fs.readdirSync(persistDir).filter((f) => f.endsWith('.jsonl'));
+    const persisted = dayFiles
+      .flatMap((f) => fs.readFileSync(path.join(persistDir, f), 'utf8').split('\n').filter(Boolean))
+      .map((l) => JSON.parse(l) as { id: string });
+    assert.deepEqual(persisted.map((r) => r.id), [keepEv.id]);
+  });
+});
+
+describe('persisted history: filtered newest-first scan', () => {
+  it('materializes the full day-JSONL history for the federated merge', () => {
+    setProxyAccessLogPersistDir(persistDir);
+    setProxyAccessLogSettingsReader(() => ({ enabled: true, bodyBytes: 64, persist: true, persistDays: 7 }));
+    clearProxyAccessLog();
+    // One tap per exchange — finish() retires it; each row gets a distinct status.
+    // (tapFor clears the ledger, so this suite drives createAccessTap directly.)
+    for (let i = 0; i < 5; i++) {
+      const t = createAccessTap({
+        host: 'h.test',
+        port: 443,
+        method: 'GET',
+        path: '/body',
+        requestHeaders: { host: 'h.test' },
+      });
+      assert.ok(t, 'the tap exists while the log is enabled');
+      t.onResChunk(Buffer.from(`resp-${i}`));
+      t.finish(200 + i, { 'content-type': 'text/plain' });
+    }
+
+    const all = readProxyAccessHistory();
+    assert.equal(all.length, 5);
+    for (let i = 1; i < all.length; i++) {
+      assert.ok(all[i - 1].ts >= all[i].ts, 'newest first');
+    }
+
+    // Server-side filters prune rows the same way the live view does.
+    const f = readProxyAccessHistory({ status: '204' });
+    assert.equal(f.length, 1);
+    assert.equal(f[0].status, 204);
+    const none = readProxyAccessHistory({ host: 'nope.invalid' });
+    assert.equal(none.length, 0);
   });
 });

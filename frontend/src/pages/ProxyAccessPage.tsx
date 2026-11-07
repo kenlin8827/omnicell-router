@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, FileText, Download, Image as ImageIcon, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
-import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning } from '../lib/api';
+import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
+import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -8,13 +8,20 @@ import { Switch } from '../components/Switch';
 import { InfoTip } from '../components/InfoTip';
 import { Combobox, type ComboboxOption } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
+import { Pagination } from '../components/Pagination';
 import { Drawer } from '../components/Drawer';
 import { Prose, proseIsLong } from '../components/Prose';
+import { applicableDecoders, decoderLabel, hexDumpToBytes, type DecoderContext, type SideDecoder } from '../lib/sideDecoders';
 import { modelRefBadge } from '../lib/modelRefBadge';
+import { copyToClipboard } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
 
 import { FONT_MONO } from '../lib/fonts';
+
+/** Default rows per page — page 1 follows the live tail, so the default is generous. */
+const PAGE_SIZE = 100;
+const PAGE_SIZES = [20, 50, 100, 200];
 /**
  * Proxy Access — the inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server)
  * as a client access method under the Client Access nav group.
@@ -168,7 +175,9 @@ function insertRule<T extends { match: string }>(rules: T[], make: (catchAll: T 
  */
 /** One collapsible section of the detail drawer (headers / body). When
  *  `onToggle` is given (content is long), an expand/collapse glyph sits at
- *  the summary's right edge, driving the same state as the in-content toggle. */
+ *  the summary's right edge, driving the same state as the in-content toggle.
+ *  The body section instead overlays its glyph INSIDE the content frame
+ *  (top-right corner), so the control sits on the very surface it expands. */
 const DetailSection: React.FC<{
   title: string;
   children: React.ReactNode;
@@ -200,7 +209,8 @@ const DetailSection: React.FC<{
 /**
  * Drawer body of one proxy-log event: Request / Response tabs, each with
  * collapsible header and body sections. Keyed by event id so the tab choice
- * resets to Response (the side you usually read) per opened row.
+ * resets to Request (read the request first, then compare the response)
+ * per opened row.
  */
 /**
  * JSON bodies arrive as one compact line — unreadable in the drawer. Parse
@@ -217,172 +227,266 @@ const prettyIfJson = (text: string): string => {
   }
 };
 
-/** 16-bytes-per-row hex dump (offset / hex / ASCII gutter) — mirrors the backend format. */
-const bytesToHexDump = (buf: Uint8Array): string => {
-  const rows: string[] = [];
-  for (let off = 0; off < buf.length; off += 16) {
-    const slice = buf.subarray(off, off + 16);
-    const hex = [...slice].map((b) => b.toString(16).padStart(2, '0'));
-    const cells: string[] = [];
-    for (let i = 0; i < 16; i += 8) cells.push(hex.slice(i, i + 8).join(' ').padEnd(23, ' '));
-    const ascii = [...slice].map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.')).join('');
-    rows.push(`${off.toString(16).padStart(8, '0')}  ${cells.join('  ')}  |${ascii}|`);
-  }
-  return rows.join('\n');
-};
-
-/** Parse a hex dump back into raw bytes (offset + ASCII gutter are prose). */
-const hexDumpToBytes = (dump: string): Uint8Array => {
-  const out: number[] = [];
-  for (const line of dump.split('\n')) {
-    const bar = line.indexOf('|');
-    const hexPart = (bar >= 0 ? line.slice(0, bar) : line).replace(/^[0-9a-f]+\s*/, '').replace(/[^0-9a-f]/g, '');
-    for (let i = 0; i + 1 < hexPart.length; i += 2) out.push(parseInt(hexPart.slice(i, i + 2), 16));
-  }
-  return new Uint8Array(out);
-};
-/** Image container sniffing from magic bytes; null when not a displayable image. */
-const sniffImage = (b: Uint8Array): 'image/png' | 'image/gif' | 'image/jpeg' | 'image/webp' | 'image/bmp' | 'image/x-icon' | null => {
-  const head = b.subarray(0, 12);
-  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return 'image/png';
-  if (head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) return 'image/gif';
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
-  if (head[0] === 0x42 && head[1] === 0x4d) return 'image/bmp';
-  if (head[0] === 0x00 && head[1] === 0x00 && head[2] === 0x01 && head[3] === 0x00) return 'image/x-icon';
-  if (head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50) return 'image/webp';
-  return null;
-};
-
-const EXT_BY_MIME: Record<string, string> = {
-  'image/png': '.png',
-  'image/gif': '.gif',
-  'image/jpeg': '.jpg',
-  'image/webp': '.webp',
-  'image/bmp': '.bmp',
-  'image/x-icon': '.ico',
-};
-
 /**
- * Hex viewer for a binary captured body. Persisted bodies load their raw
- * bytes from the gateway (`file` ref → /api/admin/proxy-log/bodies/...);
- * non-persisted fallbacks arrive as an inline dump (`inlineDump`). The hex
- * dump is generated here either way. Top-right switch: hex ⇄ text (lossy
- * utf-8) ⇄ image preview when the magic bytes are a displayable container;
- * plus a download of the captured bytes.
+ * ── shared exchange detail ────────────────────────────────────────────────
+ * ONE renderer for every captured exchange, whatever produced it: the proxy
+ * access log (HTTP/1, HTTP/2, CONNECT) and the client-gateway plugin feeds
+ * (Connect-RPC, dissected). The row kind only decides how the MODEL is built —
+ * the drawer shell (side tabs → collapsible sections → clamped prose →
+ * expand glyph) is identical, so the two never drift apart again.
  */
-/** Collapsible section for a captured BINARY body. The toolbar (format hint
- *  + text/image/download controls) lives on the summary's right edge; the
- *  body is just the hex dump / decoded text / image preview. */
-const HexSection: React.FC<{ title: string; file?: string; inlineDump?: string; mimeHint?: string; filename?: string }> = ({ title, file, inlineDump, mimeHint, filename }) => {
-  const { t } = useI18n();
-  const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null);
-  const [loadError, setLoadError] = useState(false);
+export interface DetailSideModel {
+  headersTitle: string;
+  /** Pre-formatted `name: value` lines, or null when nothing was captured. */
+  headers: string | null;
+  bodyTitle: string;
+  /** Suffix on the body title (` · 1.2 KiB · preview truncated`). */
+  bodyBadge?: string;
+  /** Captured window bytes — the input every decoder claims. */
+  bytes?: Uint8Array | null;
+  /** Full captured size, when the gateway knows it. */
+  bodyBytes?: number;
+  /** Opaque body token: the drawer loads a preview from it and offers it as
+   *  the download. One shape for every row, no storage detail. */
+  bodyToken?: string;
+  /** Plugin dissector layers for this side (server-side protocol knowledge). */
+  layers?: { name: string; frames?: unknown[] }[];
+  contentType?: string;
+  /** Plugin whose dissector owns `layers` — shown as this side's decoder name. */
+  decoderName?: string;
+  /** Extra line above the body (e.g. "204 → no body by HTTP semantics"). */
+  note?: string | null;
+  /** Localized "nothing captured" text. */
+  empty: string;
+}
+
+/** Bytes of a persisted core body, loaded on demand (capped by the capture
+ *  config, so the full fetch is safe). */
+const useBodyBytes = (token: string | undefined): { bytes: Uint8Array | null; error: boolean } => {
+  const [bytes, setBytes] = useState<Uint8Array | null>(null);
+  const [error, setError] = useState(false);
   useEffect(() => {
-    if (!file) return;
+    if (!token) return;
     let alive = true;
-    setFileBytes(null);
-    setLoadError(false);
+    setBytes(null);
+    setError(false);
     api
-      .getProxyAccessBody(file)
+      .getTrafficBody(token)
       .then((buf) => {
-        if (alive) setFileBytes(new Uint8Array(buf));
+        if (alive) setBytes(new Uint8Array(buf));
       })
       .catch(() => {
-        if (alive) setLoadError(true);
+        if (alive) setError(true);
       });
     return () => {
       alive = false;
     };
-  }, [file]);
-  const bytes = useMemo(() => {
-    if (file) return fileBytes;
-    return inlineDump ? hexDumpToBytes(inlineDump) : null;
-  }, [file, fileBytes, inlineDump]);
-  const mime = useMemo(() => (bytes ? sniffImage(bytes) : null), [bytes]);
-  const [view, setView] = useState<'hex' | 'text' | 'img'>('hex');
-  const text = useMemo(() => (view === 'text' && bytes ? new TextDecoder('utf-8', { fatal: false }).decode(bytes) : ''), [view, bytes]);
-  const dataUrl = useMemo(
-    () => (view === 'img' && mime && bytes ? `data:${mime};base64,${btoa(String.fromCharCode(...bytes))}` : ''),
-    [view, mime, bytes]
-  );
-  const download = () => {
-    if (!bytes) return;
-    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime ?? mimeHint ?? 'application/octet-stream' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = (filename?.split('/').pop() || 'body') + (EXT_BY_MIME[mime ?? ''] ?? '.bin');
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-  const btn: React.CSSProperties = {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    color: 'var(--text-dim)',
-    fontSize: 'var(--text-xs)',
-    padding: '0 2px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 2,
-  };
+  }, [token]);
+  return { bytes, error };
+};
+
+/**
+ * Two downloads, two artifacts — never one ambiguous button:
+ *   RAW       the captured bytes as they arrived (lossless, streamed by the
+ *             gateway, independent of any decoder);
+ *   DECODED   whatever the ACTIVE decoder rendered (frame tree / text / image)
+ *             — derived, and limited to the preview window.
+ */
+const saveBlob = (blob: Blob, filename: string): void => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+/** Base filename for an export: the capture's own name, never a vendor verb. */
+const exportBase = (side: DetailSideModel): string => {
+  // The token encodes {kind, ref, decoder} — decode the ref for a stable,
+  // vendor-neutral filename (`pa-…-req`, `cx-…-res`).
+  try {
+    const meta = JSON.parse(atob((side.bodyToken ?? '').replace(/-/g, '+').replace(/_/g, '/'))) as { r?: string };
+    const name = (meta.r ?? '').split('/').pop() ?? '';
+    return name.replace(/\.[a-z0-9]+$/i, '') || 'body';
+  } catch {
+    return 'body';
+  }
+};
+
+const IMAGE_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/x-icon': 'ico',
+};
+
+/**
+ * One side's pane: headers section + body section. Owns its own expansion and
+ * decoder choice; remounted per side via `key`, so switching tabs never
+ * inherits the other side's fold state.
+ *
+ * The body is rendered through the decoder REGISTRY (lib/sideDecoders): hex is
+ * the floor, and the default view is the most specific decoder that claims the
+ * bytes — a plugin dissector tree, an image, JSON, or plain text.
+ */
+const DetailSidePane: React.FC<{ side: DetailSideModel }> = ({ side }) => {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [exp, setExp] = useState({ h: false, b: false });
+  const flip = (k: keyof typeof exp, v: boolean): void => setExp((st) => ({ ...st, [k]: v }));
+  const fileBytes = useBodyBytes(side.bodyToken);
+  const bytes = side.bytes ?? fileBytes.bytes;
+  const bodyBytes = side.bodyBytes ?? bytes?.length ?? 0;
+  const windowed = Boolean(bytes && bodyBytes > bytes.length);
+  const ctx: DecoderContext = { bytes: bytes ?? null, bodyBytes, windowed, contentType: side.contentType, layers: side.layers, decoderName: side.decoderName };
+  const decoders = useMemo(() => applicableDecoders(ctx), [bytes, bodyBytes, side.contentType, side.layers]);
+  const [picked, setPicked] = useState<string | null>(null);
+  /** Default = the most specific applicable decoder (hex when nothing claims). */
+  const active = decoders.find((d) => d.id === picked) ?? decoders[0];
+  const output = useMemo(() => {
+    try {
+      return active ? active.render(ctx) : null;
+    } catch {
+      return null;
+    }
+  }, [active, bytes, bodyBytes, side.contentType, side.layers]);
+  const empty = <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{side.empty}</div>;
   return (
-    <details className="sub-card" open>
-      <summary style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', listStyle: 'none' }}>
-        <ChevronDown size={14} color="var(--text-dim)" style={{ flexShrink: 0 }} />
-        <span style={{ ...SEC_TITLE, marginBottom: 0, flexShrink: 0 }}>{title}</span>
-        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('proxyLog.hexHint')}</span>
-          <button
-            type="button"
-            style={btn}
-            title={t('proxyLog.hexAsText')}
-            onClick={e => { e.preventDefault(); e.stopPropagation(); setView(view === 'text' ? 'hex' : 'text'); }}
-          >
-            <FileText size={12} />
-          </button>
-          {mime && (
-            <button
-              type="button"
-              style={btn}
-              title={t('proxyLog.hexAsImage')}
-              onClick={e => { e.preventDefault(); e.stopPropagation(); setView(view === 'img' ? 'hex' : 'img'); }}
-            >
-              <ImageIcon size={12} />
-            </button>
-          )}
-          <button
-            type="button"
-            style={btn}
-            title={t('proxyLog.hexDownload')}
-            onClick={e => { e.preventDefault(); e.stopPropagation(); download(); }}
-          >
-            <Download size={12} />
-          </button>
-        </span>
-      </summary>
-      <div style={{ marginTop: '8px' }}>
-        {file && !bytes && !loadError && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.hexLoading')}</div>}
-        {loadError && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.hexLoadFailed')}</div>}
-        {bytes && view === 'hex' && <Prose text={bytesToHexDump(bytes)} clamp={14} />}
-        {bytes && view === 'text' && <Prose text={text || t('proxyLog.hexTextEmpty')} clamp={14} />}
-        {bytes && view === 'img' && (
-          <div style={{ padding: '8px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: 6, textAlign: 'center' }}>
-            <img src={dataUrl} alt={filename || 'captured body'} style={{ maxWidth: '100%', maxHeight: 320, imageRendering: 'auto' }} />
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
-              {mime} · {bytes.length} B
-            </div>
+    <>
+      <DetailSection
+        title={side.headersTitle}
+        expanded={exp.h}
+        onToggle={proseIsLong(side.headers ?? '', 10) ? () => flip('h', !exp.h) : undefined}
+      >
+        {side.headers ? <Prose text={side.headers} clamp={10} open={exp.h} onOpenChange={(v) => flip('h', v)} hideToggle scrollClamp /> : empty}
+      </DetailSection>
+      <DetailSection title={`${side.bodyTitle}${side.bodyBadge ?? ''}`} expanded={exp.b}>
+        {(decoders.length > 1 || side.bodyToken || (output && output.kind !== 'none')) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
+            {decoders.length > 1 && (
+              <SegGroup
+                size="lg"
+                optionMinWidth={64}
+                value={active?.id ?? ''}
+                onChange={setPicked}
+                options={decoders.map((d) => ({ value: d.id, label: decoderLabel(d, t) }))}
+              />
+            )}
+            <span style={{ display: 'inline-flex', gap: '6px', marginLeft: 'auto' }}>
+              {side.bodyToken && (
+                <a className="btn" href={`/api/admin/traffic-body/${encodeURIComponent(side.bodyToken)}`} download style={{ gap: '4px', display: 'inline-flex', alignItems: 'center' }}>
+                  <Download size={12} />
+                  <span>{t('proxyLog.downloadRaw')}</span>
+                </a>
+              )}
+              {output && output.kind !== 'none' && (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ gap: '4px', display: 'inline-flex', alignItems: 'center' }}
+                  title={windowed ? t('proxyLog.exportWindowedHint') : t('proxyLog.exportDecodedHint')}
+                  onClick={() => {
+                    const base = exportBase(side);
+                    if (output.kind === 'image') {
+                      saveBlob(new Blob([output.bytes.slice().buffer as ArrayBuffer], { type: output.mime }), `${base}-${active!.id}.${IMAGE_EXT[output.mime] ?? 'bin'}`);
+                      return;
+                    }
+                    const ext = active!.id === 'hex' || active!.id === 'pdf' ? 'txt' : 'json';
+                    saveBlob(new Blob([output.text], { type: 'text/plain;charset=utf-8' }), `${base}-${active!.id}.${ext}`);
+                  }}
+                >
+                  <FileDown size={12} />
+                  <span>{t('proxyLog.exportDecoded')}</span>
+                </button>
+              )}
+            </span>
           </div>
         )}
-      </div>
-    </details>
+        {side.note && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>{side.note}</div>}
+        {fileBytes.error ? (
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.hexLoadFailed')}</div>
+        ) : output?.kind === 'image' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <img
+              src={`data:${output.mime};base64,${btoa(String.fromCharCode(...output.bytes))}`}
+              alt={side.bodyTitle}
+              style={{ maxWidth: '100%', border: '1px solid var(--divider)', borderRadius: '4px' }}
+            />
+            {windowed && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.previewWindowed')}</div>}
+          </div>
+        ) : output?.kind === 'text' ? (
+          <div style={{ position: 'relative' }}>
+            <Prose text={output.text} clamp={14} open={exp.b} onOpenChange={(v) => flip('b', v)} hideToggle scrollClamp />
+            {/* Overlay actions inside the content frame — they sit exactly on the
+                surface they act on: copy what the active decoder rendered, and
+                the expand toggle that owns this frame. */}
+            <span style={{ position: 'absolute', top: 6, right: 6, zIndex: 1, display: 'inline-flex', gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  void copyToClipboard(output.text).then((ok) =>
+                    ok ? toast.success(t('proxyLog.bodyCopied')) : toast.error(t('proxyLog.copyFailed')),
+                  );
+                }}
+                title={t('proxyLog.copyBody')}
+                style={{ background: 'var(--btn-bg)', border: '1px solid var(--divider)', borderRadius: 6, padding: '3px 5px', cursor: 'pointer', color: 'var(--text-dim)', display: 'inline-flex' }}
+              >
+                <Copy size={12} />
+              </button>
+              <button
+                type="button"
+                onClick={() => flip('b', !exp.b)}
+                title={exp.b ? t('captures.collapse') : t('captures.expand')}
+                style={{ background: 'var(--btn-bg)', border: '1px solid var(--divider)', borderRadius: 6, padding: '3px 5px', cursor: 'pointer', color: 'var(--text-dim)', display: 'inline-flex' }}
+              >
+                {exp.b ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              </button>
+            </span>
+          </div>
+        ) : (
+          empty
+        )}
+      </DetailSection>
+    </>
   );
 };
 
+/** The drawer body itself: meta line(s) → side tabs → the active side's pane. */
+const ExchangeDetail: React.FC<{
+  meta: React.ReactNode;
+  note?: string | null;
+  warn?: string | null;
+  req: DetailSideModel;
+  res: DetailSideModel;
+  defaultSide?: 'req' | 'res';
+}> = ({ meta, note, warn, req, res, defaultSide = 'req' }) => {
+  const { t } = useI18n();
+  const [side, setSide] = useState<'req' | 'res'>(defaultSide);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {note && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{note}</div>}
+      {warn && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{warn}</div>}
+      {meta}
+      <SegGroup
+        size="lg"
+        optionMinWidth={88}
+        value={side}
+        onChange={(v) => setSide(v as 'req' | 'res')}
+        options={[
+          { value: 'req', label: t('proxyLog.tabReq') },
+          { value: 'res', label: t('proxyLog.tabRes') },
+        ]}
+      />
+      <DetailSidePane key={side} side={side === 'req' ? req : res} />
+    </div>
+  );
+};
 
 const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
   const { t } = useI18n();
   const toast = useToast();
-  const [tab, setTab] = useState<'req' | 'res'>('res');
 
   /** Reconstruct the absolute request URL (port implied for 80/443). */
   const eventUrl = (): string => {
@@ -430,15 +534,6 @@ const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
       : typeof val === 'string'
         ? prettyIfJson(val)
         : Object.entries(val).map(([k, v]) => `${k}: ${v}`).join('\n');
-  const reqHeaders = asText(ev.requestHeaders);
-  const resHeaders = asText(ev.responseHeaders);
-  /** Per-section expansion, owned here so the header glyph and the Prose
-   *  toggle stay in lockstep. Keyed by event via the component `key`. */
-  const [exp, setExp] = useState({ reqH: false, reqB: false, resH: false, resB: false });
-  const flip = (k: keyof typeof exp, v: boolean) => setExp(s => ({ ...s, [k]: v }));
-  const empty = (
-    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.captureEmpty')}</div>
-  );
   const urlRow = (
     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
       {ev.kind === 'http' && (
@@ -457,92 +552,50 @@ const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
       )}
     </div>
   );
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      {ev.note && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{ev.note}</div>}
-      {ev.truncated && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.truncated')}</div>}
-      {urlRow}
-      {ev.kind === 'connect' ? (
+  if (ev.kind === 'connect') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {ev.note && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{ev.note}</div>}
+        {urlRow}
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.detailNone')}</div>
-      ) : (
-        <>
-          <SegGroup
-            value={tab}
-            onChange={(v) => setTab(v as 'req' | 'res')}
-            options={[
-              { value: 'req', label: t('proxyLog.tabReq') },
-              { value: 'res', label: t('proxyLog.tabRes') },
-            ]}
-          />
-          {tab === 'req' ? (
-            <>
-              <DetailSection
-                title={t('proxyLog.reqHeaders')}
-                expanded={exp.reqH}
-                onToggle={proseIsLong(reqHeaders ?? '', 10) ? () => flip('reqH', !exp.reqH) : undefined}
-              >
-                {reqHeaders ? <Prose text={reqHeaders} clamp={10} open={exp.reqH} onOpenChange={v => flip('reqH', v)} hideToggle /> : empty}
-              </DetailSection>
-              {ev.reqBodyFile || ev.reqBodyFormat === 'hex' ? (
-                <HexSection
-                  title={t('proxyLog.reqBody')}
-                  file={ev.reqBodyFile}
-                  inlineDump={ev.reqBodyFormat === 'hex' ? ev.requestBody : undefined}
-                  mimeHint={ev.reqBodyMime}
-                  filename={ev.path}
-                />
-              ) : asText(ev.requestBody) && (
-                <DetailSection
-                  title={t('proxyLog.reqBody')}
-                  expanded={exp.reqB}
-                  onToggle={proseIsLong(asText(ev.requestBody)!, 14) ? () => flip('reqB', !exp.reqB) : undefined}
-                >
-                  <Prose text={asText(ev.requestBody)!} clamp={14} open={exp.reqB} onOpenChange={v => flip('reqB', v)} hideToggle />
-                </DetailSection>
-              )}
-            </>
-          ) : (
-            <>
-              <DetailSection
-                title={t('proxyLog.resHeaders')}
-                expanded={exp.resH}
-                onToggle={proseIsLong(resHeaders ?? '', 10) ? () => flip('resH', !exp.resH) : undefined}
-              >
-                {resHeaders ? <Prose text={resHeaders} clamp={10} open={exp.resH} onOpenChange={v => flip('resH', v)} hideToggle /> : empty}
-              </DetailSection>
-              {(ev.status === 204 || ev.status === 304) && (
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.noBodyStatus', { status: ev.status })}</div>
-              )}
-              {ev.resBodyFile || ev.resBodyFormat === 'hex' ? (
-                <HexSection
-                  title={t('proxyLog.resBody')}
-                  file={ev.resBodyFile}
-                  inlineDump={ev.resBodyFormat === 'hex' ? ev.responseBody : undefined}
-                  mimeHint={ev.resBodyMime}
-                  filename={ev.path}
-                />
-              ) : asText(ev.responseBody) && (
-                <DetailSection
-                  title={t('proxyLog.resBody')}
-                  expanded={exp.resB}
-                  onToggle={proseIsLong(asText(ev.responseBody)!, 14) ? () => flip('resB', !exp.resB) : undefined}
-                >
-                  <Prose text={asText(ev.responseBody)!} clamp={14} open={exp.resB} onOpenChange={v => flip('resB', v)} hideToggle />
-                </DetailSection>
-              )}
-            </>
-          )}
-        </>
-      )}
-    </div>
+      </div>
+    );
+  }
+  const emptyText = t('proxyLog.captureEmpty');
+  /** Inline bodies arrive as text, or as a hex dump when the capture could not
+   *  be treated as text — both are just bytes to the decoder registry. */
+  const inlineBytes = (text: string | undefined, isHex: boolean | undefined): Uint8Array | null => {
+    if (!text) return null;
+    if (isHex) return hexDumpToBytes(text);
+    return new TextEncoder().encode(text);
+  };
+  return (
+    <ExchangeDetail
+      note={ev.note}
+      warn={ev.truncated ? t('proxyLog.truncated') : null}
+      meta={urlRow}
+      req={{
+        headersTitle: t('proxyLog.reqHeaders'),
+        headers: asText(ev.requestHeaders),
+        bodyTitle: t('proxyLog.reqBody'),
+        bytes: inlineBytes(ev.requestBody, ev.reqBodyFormat === 'hex'),
+        bodyToken: ev.reqBodyToken,
+        contentType: ev.requestHeaders?.['content-type'],
+        empty: emptyText,
+      }}
+      res={{
+        headersTitle: t('proxyLog.resHeaders'),
+        headers: asText(ev.responseHeaders),
+        bodyTitle: t('proxyLog.resBody'),
+        bytes: inlineBytes(ev.responseBody, ev.resBodyFormat === 'hex'),
+        bodyToken: ev.resBodyToken,
+        contentType: ev.responseHeaders?.['content-type'],
+        note: ev.status === 204 || ev.status === 304 ? t('proxyLog.noBodyStatus', { status: ev.status }) : null,
+        empty: emptyText,
+      }}
+    />
   );
 };
-
-/** The rendered request line: `METHOD host[:port]path` for http rows, `host:port` for CONNECT rows. */
-const requestLine = (e: ProxyAccessEvent): string =>
-  e.kind === 'http'
-    ? `${e.method} ${e.host}${e.port !== 443 && e.port !== 80 ? `:${e.port}` : ''}${e.path ?? ''}`
-    : `${e.host}:${e.port}`;
 
 /** Case-insensitive glob (`*` / `?`) anchored to the whole string. */
 const globToRe = (glob: string): RegExp =>
@@ -554,11 +607,233 @@ const globToRe = (glob: string): RegExp =>
 /** Default kind filter: `http` — CONNECT rows are mostly duplicate tunnel-setup noise. */
 const KIND_DEFAULT = 'http';
 
+/**
+ * Drawer body for one DISSECTED plugin exchange. Same shell as every other
+ * row (ExchangeDetail): the dissector output simply arrives as this side's
+ * `decoded` rendering, so the hex ⇄ decoded switch exists exactly where a
+ * decoder recognized the bytes — and nowhere else.
+ */
+const PluginAccessDetail: React.FC<{ ev: PluginTrafficEvent; decoder: string }> = ({ ev, decoder }) => {
+  const { t } = useI18n();
+  const headerText = (bag: Record<string, string> | undefined): string | null =>
+    bag && Object.keys(bag).length > 0
+      ? Object.entries(bag).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}: ${v}`).join('\n')
+      : null;
+  const bytesOf = (hex: string | undefined): Uint8Array | null =>
+    hex ? new Uint8Array((hex.match(/.{2}/g) ?? []).map((h) => parseInt(h, 16))) : null;
+  const layersOf = (side: 'req' | 'res'): { name: string; frames?: unknown[] }[] =>
+    (ev.decoded?.layers ?? []).filter((l) => (l.side ?? 'req') === side).map((l) => ({ name: l.name, frames: l.frames }));
+  const badge = (total: number | undefined, truncated: boolean | undefined, window: string | undefined): string => {
+    const parts: string[] = [];
+    if (total && total > 0) parts.push(fmtBytes(total));
+    if (truncated) parts.push(t('proxyLog.truncated'));
+    else if (total && total > (window ? window.length / 2 : 0)) parts.push(t('proxyLog.previewWindowed'));
+    return parts.length > 0 ? ` · ${parts.join(' · ')}` : '';
+  };
+  const meta = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', flexShrink: 0 }}>{ev.method ?? 'GET'}</span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={`${ev.authority ?? ''}${ev.path ?? ''}`}>
+          {ev.authority ?? ''}{ev.path ?? ''}
+        </span>
+      </div>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>
+        {ev.status ?? '—'} · {ev.durationMs ?? '—'}ms · {ev.leg ?? '—'} · {ev.reqContentType ?? '—'} → {ev.resContentType ?? '—'}
+        <br />
+        {t('proxyLog.capturedBy', { decoder })}
+      </div>
+    </div>
+  );
+  const emptyText = t('proxyLog.captureEmpty');
+  return (
+    <ExchangeDetail
+      warn={ev.reqTruncated || ev.resTruncated ? t('proxyLog.bodyTruncated') : null}
+      meta={meta}
+      req={{
+        headersTitle: t('proxyLog.reqHeaders'),
+        headers: headerText(ev.reqHeaders),
+        bodyTitle: t('proxyLog.reqBody'),
+        bodyBadge: badge(ev.reqBodyBytes, ev.reqTruncated, ev.reqHex),
+        bytes: bytesOf(ev.reqHex),
+        bodyBytes: ev.reqBodyBytes,
+        layers: layersOf('req'),
+        contentType: ev.reqContentType,
+        decoderName: decoder,
+        bodyToken: ev.reqBodyToken,
+        empty: emptyText,
+      }}
+      res={{
+        headersTitle: t('proxyLog.resHeaders'),
+        headers: headerText(ev.resHeaders),
+        bodyTitle: t('proxyLog.resBody'),
+        bodyBadge: badge(ev.resBodyBytes, ev.resTruncated, ev.resHex),
+        bytes: bytesOf(ev.resHex),
+        bodyBytes: ev.resBodyBytes,
+        layers: layersOf('res'),
+        contentType: ev.resContentType,
+        decoderName: decoder,
+        bodyToken: ev.resBodyToken,
+        empty: emptyText,
+      }}
+    />
+  );
+};
+
+/** One merged log row: either a proxy-access event (kind http/connect) or a
+ *  client-gateway plugin's DISSECTED exchange (kind = the decoder/plugin id).
+ *  One timeline, one filter set — the Wireshark-style decoder output is just a
+ *  third kind in the same table, never a separate view. */
+type UnifiedLogRow =
+  | { rid: string; source: 'proxy'; isProxy: true; tsNum: number; ev: ProxyAccessEvent }
+  | { rid: string; source: string; isProxy: false; tsNum: number; ev: PluginTrafficEvent };
+
+/**
+ * Row projection — the request is split into its Wireshark-ish parts so each
+ * column carries exactly one fact: kind (transport family) / proto (wire
+ * protocol) / host / method / path.
+ */
+/**
+ * Three orthogonal axes, never one mixed column (Chrome DevTools' Type /
+ * Protocol / Content-Type split; mitmproxy's flow detail):
+ *
+ *   kind  what kind of exchange this is   HTTP request | CONNECT tunnel | WS upgrade
+ *   proto the NETWORK protocol            HTTP/1.1 | HTTP/2
+ *   rpc   the RPC FRAMEWORK / wire convention above HTTP   — | ConnectRPC | gRPC
+ *
+ * ConnectRPC (Buf — the spelling is the vendor's own) is an RPC framework, not
+ * an "application protocol" layer of its own: it defines path naming
+ * (`/pkg.Service/Method`), the 5-byte streaming envelope, error mapping and
+ * trailers, and runs that over plain HTTP with protobuf (or JSON) as the
+ * message encoding. gRPC is the same shape of thing. Lumping them into the
+ * proto column
+ * an "application protocol" layer of its own: it defines path naming
+ * (`/pkg.Service/Method`), the 5-byte streaming envelope, error mapping and
+ * trailers, and runs that over plain HTTP with protobuf (or JSON) as the
+ * message encoding. gRPC is the same shape of thing. Lumping them into the
+ * proto column mixed an RPC convention with a transport; calling them
+ * "application protocol" would collide
+ * with "HTTP is the application layer"; and a bare `Connect` badge collides
+ * with the `CONNECT` tunnel method in the kind column — hence `ConnectRPC`.
+ */
+/**
+ * The ONE row identity both sides agree on: the persisted `id` when the feed
+ * writes one, else the timestamp (rows predating ids). Deletion keys and the
+ * React key both come from here — never a positional index, which shifts as
+ * soon as a neighbour is deleted.
+ */
+const rowKey = (ev: ProxyAccessEvent | PluginTrafficEvent): string =>
+  (ev as { id?: string }).id ?? (ev as { ts?: string }).ts ?? '';
+
+const kindOf = (r: UnifiedLogRow): string => {
+  if (r.isProxy) {
+    if (r.ev.kind === 'connect') return 'connect';
+    if (r.ev.wire === 'ws') return 'ws';
+    return 'http';
+  }
+  return 'http';
+};
+const protoOf = (r: UnifiedLogRow): string =>
+  r.isProxy ? (r.ev.wire === 'h2' ? 'h2' : 'h1') : String(r.ev.leg ?? '').startsWith('h2') ? 'h2' : 'h1';
+
+/**
+ * Application protocol above HTTP, with the payload encoding it carries.
+ * Claimed, most reliable first: Connect frames the dissector actually framed,
+ * a Connect/gRPC content type, or an RPC-shaped path (`/pkg.Service/Method`)
+ * with a protobuf body — which is exactly Cursor's wire.
+ */
+const rpcOf = (r: UnifiedLogRow): { rpc: 'connect' | 'grpc' | null; enc: 'proto' | 'json' | null } => {
+  // Proxy rows only expose their headers; gateway rows carry parsed content types.
+  const ct = r.isProxy
+    ? `${r.ev.requestHeaders?.['content-type'] ?? ''} ${r.ev.responseHeaders?.['content-type'] ?? ''}`
+    : `${r.ev.reqContentType ?? ''} ${r.ev.resContentType ?? ''}`;
+  const enc: 'proto' | 'json' | null = /application\/(connect\+|x-)?proto|application\/grpc/i.test(ct)
+    ? 'proto'
+    : /json/i.test(ct)
+      ? 'json'
+      : null;
+  if (r.isProxy) return { rpc: null, enc };
+  const layers = r.ev.decoded?.layers ?? [];
+  if (layers.some((l) => l.name === 'connect-frames')) return { rpc: 'connect', enc };
+  if (/application\/connect\+/i.test(ct)) return { rpc: 'connect', enc };
+  if (/application\/grpc/i.test(ct)) return { rpc: 'grpc', enc };
+  if (enc === 'proto' && /^\/[\w.]+\/[\w]+$/.test(pathOf(r))) return { rpc: 'connect', enc };
+  return { rpc: null, enc };
+};
+const hostOf = (r: UnifiedLogRow): string => (r.isProxy ? r.ev.host : r.ev.authority ?? '');
+const methodOf = (r: UnifiedLogRow): string | undefined => r.ev.method;
+const pathOf = (r: UnifiedLogRow): string => r.ev.path ?? '';
+/**
+ * Request / response body sizes. Proxy rows count wire bytes (what the tap
+ * saw); gateway rows count the captured body bytes (what landed on disk).
+ * Two columns, one number each — a shared ↑/↓ cell forces the reader to
+ * remember which side came first.
+ */
+const bodySizes = (r: UnifiedLogRow): { up: number; down: number } =>
+  r.isProxy
+    ? { up: r.ev.reqBytes, down: r.ev.respBytes }
+    : { up: r.ev.reqBodyBytes ?? 0, down: r.ev.resBodyBytes ?? 0 };
+/**
+ * The decoder this row resolves to — the TOP of the fallback chain, i.e. what
+ * the drawer will render by default. The rest of the chain (every decoder that
+ * also claims the bytes) is offered as switches in the detail view; the list
+ * column only answers "what does this row decode as".
+ *
+ * Chosen from the same registry over the same inputs the drawer uses, so the
+ * column can never disagree with the detail view. Provider decoders show the
+ * plugin's own name (`cursor`), built-ins their format (`Hex`, `JSON`, …).
+ */
+const rowDecoder = (r: UnifiedLogRow): SideDecoder | undefined => {
+  const found = decodersOf(r);
+  // Both sides claim independently; the response is the body you read, so it
+  // wins a tie, and a more specific request decoder still beats a generic one.
+  const resTop = found.res[0];
+  const reqTop = found.req[0];
+  if (resTop && reqTop) return resTop.rank >= reqTop.rank ? resTop : reqTop;
+  return resTop ?? reqTop;
+};
+
+/** Decoders that claim THIS row, per side, most specific first. */
+const decodersOf = (r: UnifiedLogRow): { req: SideDecoder[]; res: SideDecoder[] } => {
+  const fromBytes = (bytes: Uint8Array | null, contentType?: string, layers?: { name: string }[]): SideDecoder[] =>
+    applicableDecoders({ bytes, bodyBytes: bytes?.length, windowed: false, contentType, layers, decoderName: r.source });
+
+  const proxyBytes = (text: string | undefined, isHex: boolean | undefined): Uint8Array | null => {
+    if (!text) return null;
+    return isHex ? hexDumpToBytes(text) : new TextEncoder().encode(text);
+  };
+
+  if (r.isProxy) {
+    return {
+      req: fromBytes(proxyBytes(r.ev.requestBody, r.ev.reqBodyFormat === 'hex'), r.ev.requestHeaders?.['content-type']),
+      res: fromBytes(proxyBytes(r.ev.responseBody, r.ev.resBodyFormat === 'hex'), r.ev.responseHeaders?.['content-type']),
+    };
+  }
+  const layers = r.ev.decoded?.layers ?? [];
+  const hexOf = (h: string | undefined): Uint8Array | null =>
+    h ? new Uint8Array((h.match(/.{2}/g) ?? []).map((c) => parseInt(c, 16))) : null;
+  return {
+    req: fromBytes(hexOf(r.ev.reqHex), r.ev.reqContentType, layers.filter((l) => (l.side ?? 'req') === 'req')),
+    res: fromBytes(hexOf(r.ev.resHex), r.ev.resContentType, layers.filter((l) => (l.side ?? 'req') === 'res')),
+  };
+};
+
+const rowStatus = (r: UnifiedLogRow): number | undefined => r.ev.status;
+const rowDuration = (r: UnifiedLogRow): number | undefined => r.ev.durationMs;
+const PROTO_LABEL_KEY: Record<string, string> = {
+  h1: 'proxyLog.protoH1',
+  h2: 'proxyLog.protoH2',
+};
+const KIND_LABEL_KEYS: Record<string, string> = {
+  http: 'proxyLog.kindHttp',
+  connect: 'proxyLog.kindConnect',
+  ws: 'proxyLog.protoWs',
+};
+
 const ProxyAccessLogCard: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
-  const [events, setEvents] = useState<ProxyAccessEvent[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [auto, setAuto] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -568,88 +843,259 @@ const ProxyAccessLogCard: React.FC = () => {
   /** Advanced filters — each optional, AND-combined with the free-text query. `http` is the
    *  default kind: CONNECT rows are mostly duplicate tunnel-setup noise. */
   const [fKind, setFKind] = useState('http');
+  /** Transport filter (HTTP/1.1 vs HTTP/2) — independent of kind and rpc. */
+  const [fProto, setFProto] = useState('');
+  const [fRpc, setFRpc] = useState('');
   const [fMethod, setFMethod] = useState('');
   const [fStatus, setFStatus] = useState('');
   const [fHost, setFHost] = useState('');
   const [fPath, setFPath] = useState('');
   /** Time sort direction — backend yields newest-first, so default is desc. */
   const [timeAsc, setTimeAsc] = useState(false);
+  /** Client-side pagination. Page 1 follows the live tail (auto-refresh keeps
+   *  landing there); any other page holds still and counts the rows that
+   *  arrived since, so a refresh never yanks the operator off what they read. */
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [heldTotal, setHeldTotal] = useState(0);
+  const [newCount, setNewCount] = useState(0);
+  /** History mode — page-numbered server scan over the PERSISTED day JSONL
+   *  (the live ring above holds only the most recent rows). kind/method/
+   *  status/host go to the backend; query/proto/rpc/path are live-view only. */
+  const [mode, setMode] = useState<'live' | 'history'>('live');
+  /** Federated rows — the backend merges every source, the console just maps. */
+  const [rows, setRows] = useState<UnifiedLogRow[]>([]);
+  /** History scope: the exact server-side total (live pages locally instead). */
+  const [serverTotal, setServerTotal] = useState(0);
 
-  const selected = events.find((e) => e.id === openId) ?? null;
+  /** The merged timeline — already interleaved by the backend, newest first. */
+  const merged = rows;
+  const selected = merged.find((r) => r.rid === openId) ?? null;
   /** Distinct method / status values present in the ring, for the filter dropdowns. */
-  const fMethodOptions = useMemo(() => [...new Set(events.map(e => e.method).filter(Boolean) as string[])].sort(), [events]);
+  const fMethodOptions = useMemo(
+    () => [...new Set(merged.map((r) => r.ev.method).filter(Boolean) as string[])].sort(),
+    [merged]
+  );
   const fStatusOptions = useMemo(
-    () => [...new Set(events.filter(e => e.status != null).map(e => String(e.status)))].sort((a, b) => Number(a) - Number(b)),
-    [events]
+    () => [...new Set(merged.filter((r) => rowStatus(r) != null).map((r) => String(rowStatus(r))))].sort((a, b) => Number(a) - Number(b)),
+    [merged]
   );
   /** Distinct hosts with row counts, most active first. */
   const fHostOptions = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const e of events) if (e.host) counts.set(e.host, (counts.get(e.host) || 0) + 1);
+    for (const r of merged) {
+      const host = r.isProxy ? r.ev.host : r.ev.authority;
+      if (host) counts.set(host, (counts.get(host) || 0) + 1);
+    }
     return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  }, [events]);
-  const anyFilter = Boolean(query.trim() || (fKind && fKind !== KIND_DEFAULT) || fMethod || fStatus || fHost || fPath.trim());
+  }, [merged]);
+  const anyFilter = Boolean(query.trim() || (fKind && fKind !== KIND_DEFAULT) || fProto || fRpc || fMethod || fStatus || fHost || fPath.trim());
   const resetFilters = useCallback(() => {
-    setQuery(''); setFKind(KIND_DEFAULT); setFMethod(''); setFStatus(''); setFHost(''); setFPath('');
+    setQuery(''); setFKind(KIND_DEFAULT); setFProto(''); setFMethod(''); setFStatus(''); setFHost(''); setFPath('');
   }, []);
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const p = fPath.trim().toLowerCase();
     const h = fHost.toLowerCase();
-    const rows = events.filter((e) => {
-      if (fKind && e.kind !== fKind) return false;
-      if (fMethod && e.method !== fMethod) return false;
-      if (fStatus && String(e.status ?? '') !== fStatus) return false;
-      if (h && e.host.toLowerCase() !== h) return false;
-      if (p && !(e.path ?? '').toLowerCase().includes(p)) return false;
+    const rows = merged.filter((r) => {
+      if (fKind && kindOf(r) !== fKind) return false;
+      if (fProto && protoOf(r) !== fProto) return false;
+      if (fRpc && rpcOf(r).rpc !== fRpc) return false;
+      if (fMethod && methodOf(r) !== fMethod) return false;
+      if (fStatus && String(rowStatus(r) ?? '') !== fStatus) return false;
+      if (h && hostOf(r).toLowerCase() !== h) return false;
+      if (p && !pathOf(r).toLowerCase().includes(p)) return false;
       if (q) {
         // Request-line search: plain text = substring, glob metachars = anchored glob.
-        const line = requestLine(e);
+        const line = `${methodOf(r) ?? ''} ${hostOf(r)}${pathOf(r)}`;
         const hit = /[*?]/.test(q) ? globToRe(q).test(line) : line.toLowerCase().includes(q);
         if (!hit) return false;
       }
       return true;
     });
-    return timeAsc ? [...rows].sort((a, b) => a.ts - b.ts) : rows;
-  }, [events, query, fKind, fMethod, fStatus, fHost, fPath, timeAsc]);
-  const loadData = useCallback(async () => {
+    return timeAsc ? [...rows].sort((a, b) => a.tsNum - b.tsNum) : rows;
+  }, [merged, query, fKind, fProto, fRpc, fMethod, fStatus, fHost, fPath, timeAsc]);
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const pageRows = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [visible, page, pageSize]);
+  /** What the table renders: the live page slice, or the server-returned history page. */
+  /** Live pages `visible` locally; history's server page gets the same
+   *  client-side filter pass for the free-text / proto / rpc / path dims. */
+  const displayRows = mode === 'live' ? pageRows : visible;
+  // A filter or sort change redefines what the rows ARE — back to page 1.
+  useEffect(() => {
+    setPage(1);
+    setNewCount(0);
+  }, [query, fKind, fProto, fRpc, fMethod, fStatus, fHost, fPath, timeAsc]);
+  // Keep the current page inside bounds (LIVE only — its bounds are the
+  // client-side row count; history's bounds live server-side, a client
+  // "totalPages" there is always 1 because one page arrives at a time).
+  useEffect(() => {
+    if (mode === 'live' && page > totalPages) setPage(totalPages);
+  }, [mode, page, totalPages]);
+  useEffect(() => {
+    if (page === 1) {
+      setNewCount(0);
+      setHeldTotal(merged.length);
+    } else if (merged.length > heldTotal) {
+      setNewCount(merged.length - heldTotal);
+      setHeldTotal(merged.length);
+    }
+  }, [merged.length, page, heldTotal]);
+  const goPage = useCallback((p: number) => {
+    setPage(Math.min(Math.max(1, p), totalPages));
+  }, [totalPages]);
+
+  /** ONE read for BOTH scopes: the backend federates the sources behind
+   *  `/api/admin/proxy-log` — live = ring + plugin tails (paged locally),
+   *  history = the persisted federated scan (paged server-side). */
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getProxyAccessLog();
-      setEvents(res.events);
-      setEnabled(res.enabled);
+      if (mode === 'history') {
+        const res = await api.getProxyTimeline({
+          scope: 'history',
+          page,
+          limit: pageSize,
+          kind: fKind || undefined,
+          method: fMethod || undefined,
+          status: fStatus || undefined,
+          host: fHost || undefined,
+        });
+        setRows(res.rows.map((r, i) =>
+          'ev' in r
+            ? { rid: r.ev.id, source: 'proxy', isProxy: true as const, tsNum: r.ev.ts, ev: r.ev }
+            : {
+                rid: `p:${r.source}:${rowKey(r.ex)}:${i}`,
+                source: r.source,
+                isProxy: false as const,
+                tsNum: Date.parse(r.ex.ts ?? '') || 0,
+                ev: r.ex,
+              }
+        ));
+        setServerTotal(res.total);
+      } else {
+        const res = await api.getProxyTimeline({ scope: 'live' });
+        setRows(res.rows.map((r, i) =>
+          'ev' in r
+            ? { rid: r.ev.id, source: 'proxy', isProxy: true as const, tsNum: r.ev.ts, ev: r.ev }
+            : {
+                rid: `p:${r.source}:${rowKey(r.ex)}:${i}`,
+                source: r.source,
+                isProxy: false as const,
+                tsNum: Date.parse(r.ex.ts ?? '') || 0,
+                ev: r.ex,
+              }
+        ));
+        setEnabled(res.enabled ?? true);
+      }
     } catch {
       // Log endpoint is additive on older gateways; stay silent.
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [mode, page, pageSize, fKind, fMethod, fStatus, fHost]);
 
+  // The scope/page/filter state IS the query: any change re-issues the read
+  // (live refetches too — same 4s-cadence data, keeps manual refresh honest).
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    load();
+  }, [load]);
   useEffect(() => {
-    if (!auto) return;
-    const iv = setInterval(loadData, 4000);
+    if (!auto || mode !== 'live') return;
+    const iv = setInterval(load, 4000);
     return () => clearInterval(iv);
-  }, [auto, loadData]);
+  }, [auto, mode, load]);
 
+  const switchMode = useCallback((m: 'live' | 'history') => {
+    if (m === mode) return;
+    setMode(m);
+    setOpenId(null);
+    setPage(1);
+    setNewCount(0);
+    setHeldTotal(0);
+  }, [mode]);
+
+  /**
+   * Clear = delete EXACTLY the rows on screen. The filter IS the scope: no
+   * filter means everything, a filter means what it shows — and the confirm
+   * states both counts so the blast radius is never a guess. Row KEYS travel
+   * to the backend, not a predicate: the filter logic stays in this file, a
+   * backend copy would drift into deleting rows nobody can see.
+   */
+  /**
+   * Clear = delete rows. The scope follows the mode:
+   *  live    — every matching row is resident locally, so "visible" IS the
+   *            full filter scope; row keys travel to the backend (traffic-delete).
+   *  history — the console only holds ONE server page, so keys can't express
+   *            the scope; the SAME filter vocabulary travels instead and the
+   *            backend deletes all matching persisted rows across all sources
+   *            (proxy-log/history/delete). The exact count is fetched first so
+   *            the confirm states the blast radius, never a guess.
+   */
   const handleClear = useCallback(async () => {
+    if (mode === 'history') {
+      const filters = {
+        kind: fKind || undefined,
+        method: fMethod || undefined,
+        status: fStatus || undefined,
+        host: fHost || undefined,
+      };
+      let total = 0;
+      try {
+        const probe = await api.getProxyTimeline({ scope: 'history', page: 1, limit: 1, ...filters });
+        total = probe.total;
+      } catch {
+        // Probe failure never blocks the flow — the delete re-reports counts.
+      }
+      const ok = await confirmDialog({
+        title: t('proxyLog.clearConfirmTitle'),
+        description: [
+          t('proxyLog.clearConfirmDesc'),
+          t('proxyLog.clearPersistNote'),
+          t('proxyLog.clearPersistScope', { count: total }),
+        ].join('\n\n'),
+        danger: true,
+        confirmLabel: t('proxyLog.clear'),
+      });
+      if (!ok) return;
+      try {
+        const res = await api.deleteProxyHistory(filters);
+        const n = res.deleted.proxy + Object.values(res.deleted.plugins).reduce((a, b) => a + b, 0);
+        toast.success(t('proxyLog.clearDone', { count: n }));
+        load();
+      } catch (err: any) {
+        toast.error(`${t('proxyLog.clear')}: ${err?.message || err}`);
+      }
+      return;
+    }
+    if (visible.length === 0) return;
     const ok = await confirmDialog({
       title: t('proxyLog.clearConfirmTitle'),
-      description: t('proxyLog.clearConfirmDesc'),
+      description: [
+        t('proxyLog.clearConfirmDesc'),
+        t('proxyLog.clearScopeNote', { count: visible.length, total: merged.length }),
+      ].join('\n\n'),
       danger: true,
       confirmLabel: t('proxyLog.clear'),
     });
     if (!ok) return;
     try {
-      await api.clearProxyAccessLog();
-      toast.success(t('proxyLog.clearDone'));
-      loadData();
+      const proxy: string[] = [];
+      const plugins: Record<string, string[]> = {};
+      for (const r of visible) {
+        const key = r.isProxy ? r.ev.id : rowKey(r.ev);
+        if (r.isProxy) proxy.push(key);
+        else (plugins[r.source] ??= []).push(key);
+      }
+      const res = await api.deleteTrafficRows({ proxy, plugins });
+      const n =
+        res.deleted.proxy + Object.values(res.deleted.plugins).reduce((a, b) => a + b, 0);
+      toast.success(t('proxyLog.clearDone', { count: n }));
+      load();
     } catch (err: any) {
-      toast.error(t('proxyLog.clear') + ': ' + (err?.message || err));
+      toast.error(`${t('proxyLog.clear')}: ${err?.message || err}`);
     }
-  }, [confirmDialog, toast, t, loadData]);
+  }, [confirmDialog, toast, t, load, visible, merged.length, mode, fKind, fMethod, fStatus, fHost]);
 
   return (
     <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -670,15 +1116,33 @@ const ProxyAccessLogCard: React.FC = () => {
           </span>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button className={`btn btn-sm ${auto ? 'btn-primary' : ''}`} onClick={() => setAuto(a => !a)} title={t('proxyLog.autoHint')}>
+          <SegGroup
+            value={mode}
+            onChange={(v) => switchMode(v as 'live' | 'history')}
+            options={[
+              { value: 'live', label: t('proxyLog.modeLive') },
+              { value: 'history', label: t('proxyLog.modeHistory') },
+            ]}
+            size="sm"
+          />
+          <button className={`btn btn-sm ${auto ? 'btn-primary' : ''}`} onClick={() => setAuto(a => !a)} disabled={mode !== 'live'} title={t('proxyLog.autoHint')}>
             <RefreshCw size={12} />
             <span>{t('proxyLog.auto')}</span>
           </button>
-          <button className="btn btn-sm" onClick={loadData} disabled={loading}>
+          <button
+            className="btn btn-sm"
+            onClick={load}
+            disabled={loading}
+          >
             <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('proxyLog.refresh')}</span>
           </button>
-          <button className="btn btn-sm" onClick={handleClear} disabled={events.length === 0}>
+          <button
+            className="btn btn-sm"
+            onClick={handleClear}
+            disabled={mode === 'live' ? visible.length === 0 : anyFilter ? false : serverTotal === 0}
+            title={mode === 'history' ? t('proxyLog.clearPersistHint') : undefined}
+          >
             <Eraser size={12} />
             <span>{t('proxyLog.clear')}</span>
           </button>
@@ -692,10 +1156,33 @@ const ProxyAccessLogCard: React.FC = () => {
       <div style={{ padding: '0 14px 10px', flexShrink: 0, display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
         <input
           className="input"
+          title={mode === 'history' ? t('proxyLog.histFilterHint') : undefined}
           style={{ flex: 1, minWidth: '160px', fontSize: 'var(--text-sm)' }}
           value={query}
           onChange={(ev) => setQuery(ev.target.value)}
           placeholder={t('proxyLog.search')}
+        />
+        <Combobox
+          value={fProto}
+          onChange={setFProto}
+          clearable
+          placeholder={t('proxyLog.fProto')}
+          style={{ width: '112px' }}
+          options={[
+            { value: 'h1', label: t('proxyLog.protoH1') },
+            { value: 'h2', label: t('proxyLog.protoH2') },
+          ]}
+        />
+        <Combobox
+          value={fRpc}
+          onChange={setFRpc}
+          clearable
+          placeholder={t('proxyLog.fRpc')}
+          style={{ width: '128px' }}
+          options={[
+            { value: 'connect', label: t('proxyLog.rpcConnect') },
+            { value: 'grpc', label: t('proxyLog.rpcGrpc') },
+          ]}
         />
         <Combobox
           value={fKind}
@@ -703,7 +1190,10 @@ const ProxyAccessLogCard: React.FC = () => {
           clearable
           placeholder={t('proxyLog.fKind')}
           style={{ width: '112px' }}
-          options={[{ value: 'http', label: t('proxyLog.kindHttp') }, { value: 'connect', label: t('proxyLog.kindConnect') }]}
+          options={[
+            { value: 'http', label: t('proxyLog.kindHttp') },
+            { value: 'connect', label: t('proxyLog.kindConnect') },
+          ]}
         />
         <Combobox
           value={fMethod}
@@ -728,10 +1218,11 @@ const ProxyAccessLogCard: React.FC = () => {
           placeholder={t('proxyLog.fHost')}
           panelMinWidth={260}
           style={{ width: '180px' }}
-          options={fHostOptions.map(([h, n]) => ({ value: h, label: h, meta: `${n}` }))}
+          options={fHostOptions.map(([h, n]) => ({ value: h, label: h, meta: t('proxyLog.rowCount', { count: n }) }))}
         />
         <input
           className="input"
+          title={mode === 'history' ? t('proxyLog.histFilterHint') : undefined}
           style={{ width: '150px', fontSize: 'var(--text-sm)' }}
           value={fPath}
           onChange={(ev) => setFPath(ev.target.value)}
@@ -744,20 +1235,20 @@ const ProxyAccessLogCard: React.FC = () => {
         )}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-        {events.length === 0 ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
-            <Inbox size={24} />
-            <span>{t('proxyLog.empty')}</span>
-          </div>
-        ) : visible.length === 0 ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
-            <span>{t('proxyLog.noMatch')}</span>
-          </div>
-        ) : (
+        {(mode === 'live' ? merged.length === 0 : serverTotal === 0) ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
+              <Inbox size={24} />
+              <span>{t(mode === 'history' ? 'proxyLog.histEmpty' : 'proxyLog.empty')}</span>
+            </div>
+          ) : (mode === 'live' ? visible.length === 0 : rows.length === 0) ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
+              <span>{t('proxyLog.noMatch')}</span>
+            </div>
+          ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
             <thead>
               <tr>
-                <th style={LOG_TH}>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>
                   <button
                     onClick={() => setTimeAsc((a) => !a)}
                     title={t('proxyLog.sortTimeHint')}
@@ -766,37 +1257,91 @@ const ProxyAccessLogCard: React.FC = () => {
                     {t('proxyLog.colTime')} {timeAsc ? '↑' : '↓'}
                   </button>
                 </th>
-                <th style={LOG_TH}>{t('proxyLog.colKind')}</th>
-                <th style={LOG_TH}>{t('proxyLog.colRequest')}</th>
-                <th style={LOG_TH}>{t('proxyLog.colStatus')}</th>
-                <th style={LOG_TH}>{t('proxyLog.colMs')}</th>
-                <th style={LOG_TH}>{t('proxyLog.colBytes')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>{t('proxyLog.colKind')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>{t('proxyLog.colProto')}</th>
+                <th style={LOG_TH}>{t('proxyLog.colHost')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>{t('proxyLog.colMethod')}</th>
+                <th style={LOG_TH}>{t('proxyLog.colPath')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>{t('proxyLog.colStatus')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>{t('proxyLog.colMs')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }} title={t('proxyLog.colReqBytesHint')}>{t('proxyLog.colReqBytes')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }} title={t('proxyLog.colResBytesHint')}>{t('proxyLog.colResBytes')}</th>
+                <th style={{ ...LOG_TH, textAlign: 'center' }}>{t('proxyLog.colDecoder')}</th>
               </tr>
             </thead>
             <tbody>
-              {visible.map((e) => (
+              {displayRows.map((r) => (
                 <tr
-                  key={e.id}
-                  onClick={() => setOpenId(e.id)}
-                  style={{ cursor: 'pointer', background: openId === e.id ? 'var(--well-bg)' : undefined }}
+                  key={r.rid}
+                  onClick={() => setOpenId(r.rid)}
+                  style={{ cursor: 'pointer', background: openId === r.rid ? 'var(--well-bg)' : undefined }}
                 >
-                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR }}>{new Date(e.ts).toLocaleTimeString()}</td>
-                  <td style={LOG_TD}>
-                    <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: e.kind === 'http' ? 'var(--accent)' : 'var(--text-dim)' }}>
-                      {e.kind === 'http' ? t('proxyLog.kindHttp') : t('proxyLog.kindConnect')}
+                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, textAlign: 'center' }}>{new Date(r.tsNum).toLocaleTimeString()}</td>
+                  <td style={{ ...LOG_TD, textAlign: 'center' }}>
+                    <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: kindOf(r) === 'http' ? 'var(--accent)' : 'var(--text-dim)' }}>
+                      {t(KIND_LABEL_KEYS[kindOf(r)] ?? 'proxyLog.kindHttp')}
                     </span>
                   </td>
-                  <td style={{ ...LOG_TD, maxWidth: '420px' }}>
-                    <div style={{ fontFamily: FONT_MONO, wordBreak: 'break-all', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                      {requestLine(e)}
-                    </div>
+                  <td
+                    style={{ ...LOG_TD, ...FONT_MONO_COLOR, textAlign: 'center', color: 'var(--text-dim)' }}
+                    title={(() => {
+                      // The RPC convention is a per-ROW fact with almost no
+                      // variance (every gateway row is ConnectRPC), so it earns
+                      // a tooltip instead of a column: transport · RPC · encoding.
+                      const { rpc, enc } = rpcOf(r);
+                      const parts = [t(PROTO_LABEL_KEY[protoOf(r)] ?? 'proxyLog.protoH1')];
+                      if (rpc) parts.push(rpc === 'connect' ? t('proxyLog.rpcConnect') : t('proxyLog.rpcGrpc'));
+                      if (enc) parts.push(t(`proxyLog.enc${enc === 'proto' ? 'Proto' : 'Json'}`));
+                      return parts.join(' · ');
+                    })()}
+                  >
+                    {t(PROTO_LABEL_KEY[protoOf(r)] ?? 'proxyLog.protoH1')}
                   </td>
-                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, color: e.status && e.status >= 400 ? '#f87171' : undefined }}>
-                    {e.kind === 'http' ? (e.status ?? '—') : '—'}
+                  <td style={{ ...LOG_TD, fontFamily: FONT_MONO, maxWidth: '190px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={hostOf(r)}>
+                    {hostOf(r) || '—'}
                   </td>
-                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR }}>{e.durationMs ?? '—'}</td>
-                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, color: 'var(--text-dim)' }}>
-                    {fmtBytes(e.reqBytes)}/{fmtBytes(e.respBytes)}
+                  <td
+                    style={{ ...LOG_TD, ...FONT_MONO_COLOR, textAlign: 'center' }}
+                    // An RPC row is always POST: the operation lives in the path,
+                    // not in the HTTP verb. Say so where the confusion starts.
+                    title={!r.isProxy && rpcOf(r).rpc ? t('proxyLog.rpcMethodHint') : undefined}
+                  >
+                    {methodOf(r) ?? '—'}
+                  </td>
+                  <td style={{ ...LOG_TD, fontFamily: FONT_MONO, maxWidth: '380px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={pathOf(r)}>
+                    {pathOf(r) || '—'}
+                  </td>
+                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, textAlign: 'center', color: rowStatus(r) && rowStatus(r)! >= 400 ? '#f87171' : undefined }}>
+                    {rowStatus(r) ?? '—'}
+                  </td>
+                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, textAlign: 'center' }}>{rowDuration(r) ?? '—'}</td>
+                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, color: 'var(--text-dim)', textAlign: 'center' }}>
+                    {bodySizes(r).up ? fmtBytes(bodySizes(r).up) : '—'}
+                  </td>
+                  <td style={{ ...LOG_TD, ...FONT_MONO_COLOR, color: 'var(--text-dim)', textAlign: 'center' }}>
+                    {bodySizes(r).down ? fmtBytes(bodySizes(r).down) : '—'}
+                  </td>
+                  <td style={{ ...LOG_TD, fontSize: 'var(--text-xs)', textAlign: 'center' }}>
+                    {(() => {
+                      const win = rowDecoder(r);
+                      if (!win) return '—';
+                      return (
+                        <span
+                          className="badge"
+                          style={{
+                            fontSize: 'var(--text-2xs)',
+                            border: '1px solid var(--divider)',
+                            color: win.id === 'hex' ? 'var(--text-dim)' : win.id === 'dissector' ? 'var(--accent)' : 'var(--text-main)',
+                          }}
+                          title={decodersOf(r).res.map((d) => decoderLabel(d, t)).join(' | ')}
+                        >
+                          {/* The column header already says "decoder", so the cell
+                              carries the bare owner name — the qualified label
+                              (`Decode (cursor)`) lives in the detail drawer only. */}
+                          {win.labelOverride ?? t(win.labelKey)}
+                        </span>
+                      );
+                    })()}
                   </td>
                 </tr>
               ))}
@@ -805,6 +1350,49 @@ const ProxyAccessLogCard: React.FC = () => {
         )}
       </div>
 
+      {/* Pager — the shared Pagination bar (one layout everywhere), OUTSIDE
+          the scroll layer. Live: page 1 follows the tail and the arrival count
+          offers the jump back. History: server-computed pages over the exact
+          filtered total — the same bar, real numbered pages. */}
+      {mode === 'live' && merged.length > 0 && (
+        <div style={{ position: 'relative', padding: '0 14px 12px', flexShrink: 0 }}>
+          {/* The new-rows hint floats left of the shared bar; the bar itself
+              stays a plain block child (exactly like /admin/models), so its
+              auto-margin page buttons land flush right. */}
+          {page > 1 && newCount > 0 && (
+            <button
+              className="btn btn-sm btn-primary"
+              style={{ float: 'left', marginTop: 12, marginRight: 10 }}
+              onClick={() => goPage(1)}
+            >
+              {t('proxyLog.newRows', { count: newCount })}
+            </button>
+          )}
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={visible.length}
+            onChange={goPage}
+            showSummary
+            pageSizeOptions={PAGE_SIZES}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+          />
+        </div>
+      )}
+      {mode === 'history' && serverTotal > 0 && (
+        <div style={{ position: 'relative', padding: '0 14px 12px', flexShrink: 0 }}>
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={serverTotal}
+            onChange={setPage}
+            showSummary
+            pageSizeOptions={PAGE_SIZES}
+            onPageSizeChange={setPageSize}
+          />
+        </div>
+      )}
+
       {selected && (
         <Drawer
           title={
@@ -812,7 +1400,7 @@ const ProxyAccessLogCard: React.FC = () => {
               <Activity size={17} color="var(--accent)" />
               <span>{t('proxyLog.detailTitle')}</span>
               <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', fontWeight: 'var(--font-regular)', color: 'var(--text-dim)' }}>
-                {new Date(selected.ts).toLocaleString()}
+                {new Date(selected.tsNum).toLocaleString()}
               </span>
             </span>
           }
@@ -820,7 +1408,11 @@ const ProxyAccessLogCard: React.FC = () => {
           closeLabel={t('combobox.close')}
           width="min(760px, 94vw)"
         >
-          <ProxyAccessDetail key={selected.id} ev={selected} />
+          {selected.isProxy ? (
+            <ProxyAccessDetail key={selected.rid} ev={selected.ev} />
+          ) : (
+            <PluginAccessDetail key={selected.rid} ev={selected.ev} decoder={selected.source} />
+          )}
         </Drawer>
       )}
     </div>

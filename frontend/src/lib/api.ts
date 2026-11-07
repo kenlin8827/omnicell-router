@@ -426,20 +426,86 @@ export interface ProxyAccessEvent {
   /** bodies-dir ref (`<day>/<name>.bin`) when THAT binary body was persisted as a raw file. */
   reqBodyFile?: string;
   resBodyFile?: string;
+  /** Opaque download token for the persisted body — the console's ONLY way to
+   *  address it (one neutral URL, no storage/subsystem detail). */
+  reqBodyToken?: string;
+  resBodyToken?: string;
   /** Sniffed MIME for the persisted binary body file. */
   reqBodyMime?: string;
   resBodyMime?: string;
   truncated?: boolean;
+  /** Wire protocol of the serving leg ('h1' | 'h2' | 'ws') — console protocol column. */
+  wire?: string;
   note?: string;
 }
 
-export interface ProxyAccessLogResponse {
+/** One row of the federated traffic timeline — a discriminated union on
+ *  `source`: the proxy access log, or a plugin gateway's traffic feed. */
+export type TimelineRow =
+  | { source: 'proxy'; ev: ProxyAccessEvent }
+  | { source: string; ex: PluginTrafficEvent };
+
+export interface ProxyTimelineResponse {
   status: string;
-  enabled: boolean;
-  /** Per-side inline capture cap; absent = the backend default cap
-   *  (`DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES`, 1 MiB), 0 = headers only. */
+  /** Live scope only: whether the proxy access log is recording. */
+  enabled?: boolean;
+  /** Live scope only: per-side inline capture cap; absent = the backend
+   *  default cap (`DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES`, 1 MiB), 0 = headers. */
   bodyBytes?: number;
-  events: ProxyAccessEvent[];
+  /** Federated rows, newest first (both scopes — the backend merges). */
+  rows: TimelineRow[];
+  /** Exact count across ALL sources. Live: the merged tail's length (the
+   *  console pages it locally). History: the paged query's exact total. */
+  total: number;
+  /** History scope: the served page / page count. */
+  page?: number;
+  pages?: number;
+}
+
+/** One RAW captured exchange in a client-gateway plugin's generic traffic
+ *  feed (base64 bodies stripped by the route; decoded layers attached). */
+export interface PluginTrafficEvent {
+  /** Persisted row identity (feeds written after ids existed) — the delete key. */
+  id?: string;
+  ts?: string;
+  authority?: string;
+  method?: string;
+  path?: string;
+  reqContentType?: string;
+  resContentType?: string;
+  status?: number;
+  durationMs?: number;
+  leg?: string;
+  reqTruncated?: boolean;
+  resTruncated?: boolean;
+  /** Captured header maps (names lowercased, values capped by the plugin). */
+  reqHeaders?: Record<string, string>;
+  resHeaders?: Record<string, string>;
+  /** Small hex preview of each captured side (≤1KiB) — the no-decoder fallback. */
+  reqHex?: string;
+  resHex?: string;
+  /** Sidecar refs of the FULL captured bodies (`<day>/<id>-<side>.bin`). */
+  reqBodyFile?: string;
+  resBodyFile?: string;
+  /** Opaque download token for the persisted body (neutral URL, see above). */
+  reqBodyToken?: string;
+  resBodyToken?: string;
+  /** Full captured byte counts (independent of the display window). */
+  reqBodyBytes?: number;
+  resBodyBytes?: number;
+  decoded?: { decoder: string; layers: { name: string; side?: 'req' | 'res'; frames?: unknown[] }[] };
+}
+
+export interface PluginTrafficDecodersResponse {
+  status: string;
+  decoders: { id: string; label: string }[];
+}
+
+export interface PluginTrafficResponse {
+  status: string;
+  days: number;
+  truncated?: boolean;
+  events: PluginTrafficEvent[];
 }
 
 /** OS system-proxy ownership state (backend forward-proxy/system-proxy.ts). */
@@ -1826,21 +1892,87 @@ export const api = {
     return res.json();
   },
 
-  async getProxyAccessLog(): Promise<ProxyAccessLogResponse> {
-    const res = await fetch('/api/admin/proxy-log');
+  /** THE ONE traffic-timeline read. `scope=live` returns the merged tail
+   *  (ring + plugin feeds); `scope=history` runs the backend's federated
+   *  paged scan over every persisted source and returns an exact total. */
+  async getProxyTimeline(params: {
+    scope: 'live' | 'history';
+    page?: number;
+    limit?: number;
+    kind?: string;
+    method?: string;
+    status?: string;
+    host?: string;
+  }): Promise<ProxyTimelineResponse> {
+    const q = new URLSearchParams({ scope: params.scope });
+    if (params.page) q.set('page', String(params.page));
+    if (params.limit) q.set('limit', String(params.limit));
+    for (const k of ['kind', 'method', 'status', 'host'] as const) {
+      if (params[k]) q.set(k, params[k]!);
+    }
+    const res = await fetch(`/api/admin/proxy-log?${q}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
-  async getProxyAccessBody(ref: string): Promise<ArrayBuffer> {
-    const res = await fetch(`/api/admin/proxy-log/bodies/${encodeURIComponent(ref)}`);
+  /** HISTORY delete by FILTER — deletes every persisted row matching the
+   *  same filter vocabulary the history query uses, across ALL sources
+   *  (proxy day JSONL + plugin feeds). Returns per-source counts. */
+  async deleteProxyHistory(params: {
+    kind?: string;
+    method?: string;
+    status?: string;
+    host?: string;
+  }): Promise<{ status: string; deleted: { proxy: number; plugins: Record<string, number> } }> {
+    const res = await fetch('/api/admin/proxy-log/history/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Captured body by its opaque token — the one body endpoint. */
+  async getTrafficBody(token: string): Promise<ArrayBuffer> {
+    const res = await fetch(`/api/admin/traffic-body/${encodeURIComponent(token)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.arrayBuffer();
   },
 
-  async clearProxyAccessLog(): Promise<void> {
-    const res = await fetch('/api/admin/proxy-log/clear', { method: 'POST' });
+  /** Empty EVERY source behind the one traffic timeline (core ring + gateway feeds). */
+  /** Delete exactly these rows (the filter-scoped clear). Keys, not a predicate: */
+  /** the console already knows what it is showing, so the filter logic stays */
+  /** in one place instead of being re-implemented here. */
+  async deleteTrafficRows(body: {
+    proxy: string[];
+    plugins: Record<string, string[]>;
+  }): Promise<{ deleted: { proxy: number; plugins: Record<string, number> } }> {
+    const res = await fetch('/api/admin/traffic-delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as { deleted: { proxy: number; plugins: Record<string, number> } };
+  },
+  async clearTrafficLog(): Promise<{ cleared: string[] }> {
+    const res = await fetch('/api/admin/traffic-clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as { cleared: string[] };
+  },
+
+
+  async getPluginTrafficDecoders(): Promise<PluginTrafficDecodersResponse> {
+    const res = await fetch('/api/admin/plugin-traffic');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getPluginTraffic(decoder: string): Promise<PluginTrafficResponse> {
+    const res = await fetch(`/api/admin/plugin-traffic/${encodeURIComponent(decoder)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   },
   async getSystemProxy(): Promise<SystemProxyStatus> {
     const res = await fetch('/api/admin/system-proxy');
@@ -3777,6 +3909,8 @@ export interface PluginViewInfo {
   source: 'dev' | 'packaged';
   path: string;
   loaded: boolean;
+  /** Wall-clock ms when the backend imported this plugin's code (mirrors backend PluginView). */
+  loadedAt?: number;
   error?: string;
   disabled?: boolean;
 }

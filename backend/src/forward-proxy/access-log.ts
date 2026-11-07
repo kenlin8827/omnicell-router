@@ -63,6 +63,8 @@ export interface ProxyAccessEvent {
   resBodyFormat?: 'hex';
   /** true when either side hit the body cap and bytes were dropped. */
   truncated?: boolean;
+  /** Wire protocol of the serving leg ('h1' | 'h2' | 'ws') — console protocol column. */
+  wire?: string;
   /** CONNECT routing note (free-form, e.g. 'connect (blind tunnel)'). */
   note?: string;
 }
@@ -135,6 +137,59 @@ export function clearProxyAccessLog(): void {
   removeBodyFiles(stale.flatMap((e) => [e.reqBodyFile, e.resBodyFile]));
 }
 
+/**
+ * Delete EXACTLY these events (the console's "clear the rows I can see" when a
+ * filter is active): ring, their day-JSONL lines and their body sidecars.
+ *
+ * The console sends the ids it is displaying instead of a predicate, so the
+ * filter logic stays in ONE place (the frontend) — a predicate copy here would
+ * be a drift twin that silently deletes more than the operator sees. The
+ * read-filter-write runs in one synchronous block: `persistEvent` appends
+ * synchronously too, so no concurrent append can be lost inside the rewrite.
+ */
+export function deleteProxyAccessEvents(ids: string[]): number {
+  const drop = new Set(ids);
+  if (drop.size === 0) return 0;
+  const removed = listProxyAccessEvents().filter((e) => drop.has(e.id));
+  for (const id of drop) ring.remove(id);
+  if (persistDir) {
+    for (const f of persistedFiles(persistDir)) {
+      let text: string;
+      try {
+        text = fs.readFileSync(f, 'utf8');
+      } catch {
+        continue;
+      }
+      const kept: string[] = [];
+      let touched = false;
+      for (const line of text.split(/\r?\n/)) {
+        if (!line) continue;
+        let id: unknown;
+        try {
+          id = (JSON.parse(line) as { id?: unknown }).id;
+        } catch {
+          kept.push(line); // a torn line is not ours to judge
+          continue;
+        }
+        if (typeof id === 'string' && drop.has(id)) {
+          touched = true;
+          continue;
+        }
+        kept.push(line);
+      }
+      if (!touched) continue;
+      try {
+        if (kept.length === 0) fs.unlinkSync(f);
+        else fs.writeFileSync(f, kept.join('\n') + '\n');
+      } catch {
+        // Best effort: the ring already dropped them and will not resurface.
+      }
+    }
+  }
+  removeBodyFiles(removed.flatMap((e) => [e.reqBodyFile, e.resBodyFile]));
+  return removed.length;
+}
+
 function append(ev: ProxyAccessEvent): void {
   ring.append(ev);
   persistEvent(ev);
@@ -173,13 +228,24 @@ function writeBodyFile(id: string, ts: number, side: 'req' | 'res', buf: Buffer)
 
 const BODY_REF_RE = /^(\d{8})\/(pa-[a-z0-9-]+-(?:req|res))\.bin$/;
 
-/** Console-side fetch of a persisted binary body; null when missing/invalid. */
-export function readProxyAccessBodyFile(ref: string): Buffer | null {
+/**
+ * Absolute path of a persisted body, validated against the ref grammar (a
+ * hand-crafted ref cannot walk out of the bodies tree). The console streams
+ * this path; nothing else may address the directory.
+ */
+export function proxyAccessBodyPath(ref: string): string | null {
   if (!persistDir) return null;
   const m = BODY_REF_RE.exec(ref);
   if (!m) return null;
+  return path.join(persistDir, 'bodies', m[1], `${m[2]}.bin`);
+}
+
+/** Console-side fetch of a persisted binary body; null when missing/invalid. */
+export function readProxyAccessBodyFile(ref: string): Buffer | null {
+  const abs = proxyAccessBodyPath(ref);
+  if (!abs) return null;
   try {
-    return fs.readFileSync(path.join(persistDir, 'bodies', m[1], `${m[2]}.bin`));
+    return fs.readFileSync(abs);
   } catch {
     return null;
   }
@@ -212,6 +278,62 @@ function persistedFiles(dir: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+// ── history queries (persisted day JSONL) ──────────────────────────────────
+
+export interface ProxyAccessHistoryOptions {
+  /** Optional server-side filters — each optional, AND-combined. */
+  kind?: string;
+  method?: string;
+  status?: string;
+  host?: string;
+}
+
+const matchHistoryFilter = (ev: ProxyAccessEvent, o: ProxyAccessHistoryOptions): boolean => {
+  if (o.kind && ev.kind !== o.kind) return false;
+  if (o.method && ev.method !== o.method) return false;
+  if (o.status && String(ev.status ?? '') !== o.status) return false;
+  if (o.host && ev.host !== o.host) return false;
+  return true;
+};
+
+/** Read one day file's lines newest-first; a torn last line is skipped. */
+function readDayLines(file: string): ProxyAccessEvent[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const out: ProxyAccessEvent[] = [];
+  for (const line of raw.split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      out.push(JSON.parse(s) as ProxyAccessEvent);
+    } catch {
+      // Torn tail (crash mid-append) — skip.
+    }
+  }
+  return out.reverse();
+}
+
+/**
+ * The FULL filtered proxy-access history, newest-first — the input of the
+ * console's FEDERATED history query, which interleaves these rows with the
+ * plugin traffic feeds and pages the merge (exact total = all sources).
+ * Retention is thousands of rows at most, so a full materialization per
+ * request is cheap; bodies never leave the files here.
+ */
+export function readProxyAccessHistory(opts: ProxyAccessHistoryOptions = {}): ProxyAccessEvent[] {
+  const out: ProxyAccessEvent[] = [];
+  for (const file of persistedFiles(persistDir).reverse()) { // newest day first
+    for (const ev of readDayLines(file)) {
+      if (matchHistoryFilter(ev, opts)) out.push(ev);
+    }
+  }
+  return out;
 }
 
 function persistEvent(ev: ProxyAccessEvent): void {
@@ -563,6 +685,9 @@ export function createAccessTap(args: {
   method: string | undefined;
   path: string;
   requestHeaders: http.IncomingHttpHeaders;
+  /** Wire protocol of the serving leg ('h1' | 'h2' | 'ws') — surfaced in the
+   *  row so the console's protocol column can classify without re-sniffing. */
+  wire?: string;
 }): AccessTap | undefined {
   const s = settings();
   if (!s.enabled) return undefined;
@@ -594,6 +719,7 @@ export function createAccessTap(args: {
         id,
         ts: started,
         kind: 'http',
+        wire: args.wire,
         host: args.host,
         port: args.port,
         method: args.method,

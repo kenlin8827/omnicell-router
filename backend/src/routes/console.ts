@@ -9,7 +9,8 @@ import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { NPM_VOCABULARY } from '../providers/vocabulary.js';
 import { getModelServicePlugin, pluginProviderOrigins } from '../plugins/host.js';
-import { PluginAuthType } from '../plugins/types.js';
+import { PluginAuthType, type TrafficExchange, type DissectedExchange } from '../plugins/types.js';
+import { listGateways, getGatewayById } from '../plugins/gateways.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef, getConfigPath } from '../config/index.js';
@@ -38,7 +39,7 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
-import { listProxyAccessEvents, clearProxyAccessLog, proxyAccessLogSettings, readProxyAccessBodyFile } from '../forward-proxy/access-log.js';
+import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deleteProxyAccessEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
@@ -1103,13 +1104,155 @@ export function registerConsoleRoutes(
   // by persisted daily JSONL under <ocrHome>/forward-proxy/access-log/; binary
   // bodies land as raw files referenced by reqBodyFile/resBodyFile). Newest
   // first; the Proxy Access page renders it.
-  app.get('/api/admin/proxy-log', async () => {
+  type BodyToken = { k: 'p' | 'g'; r: string; d?: string };
+  const mintBodyToken = (t: BodyToken): string => Buffer.from(JSON.stringify(t), 'utf8').toString('base64url');
+  const bodyTokenOf = (ref: unknown, decoder?: string): string | undefined =>
+    typeof ref === 'string' && ref !== ''
+      ? mintBodyToken(decoder ? { k: 'g', r: ref, d: decoder } : { k: 'p', r: ref })
+      : undefined;
+  const resolveBodyPath = (token: string): string | null => {
+    let t: BodyToken;
+    try {
+      t = JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as BodyToken;
+    } catch {
+      return null;
+    }
+    if (t?.k === 'p' && typeof t.r === 'string') return proxyAccessBodyPath(t.r);
+    if (t?.k === 'g' && typeof t.r === 'string' && typeof t.d === 'string' && getGatewayById(t.d)) {
+      return bodyPath(t.d, t.r);
+    }
+    return null;
+  };
+  // 3A2. THE ONE traffic-timeline endpoint — the console never addresses a
+  // subsystem, it declares a SCOPE and the backend federates:
+  //   scope=live    → memory ring (proxy access log) + every plugin gateway's
+  //                   tail feed, interleaved by timestamp, newest first.
+  //   scope=history → the PERSISTED federated scan: proxy day JSONL
+  //                   (`persistDays` retention) + each plugin feed's day
+  //                   JSONL, merged, paged — one exact total across sources.
+  // Both scopes share one row shape (a discriminated union on `source`), so
+  // the console renders one table and one pager whatever the scope. Filters
+  // (kind/method/status/host) bind history server-side; live filters stay in
+  // the console (the ring is already fully resident there).
+  /** Timestamp of a timeline row in ms — proxy rows carry epoch ms, plugin
+   *  rows an ISO string; 0 when unparsable (sorts to the oldest end). */
+  const tsOf = (r: TimelineRow): number =>
+    'ev' in r ? (r.ev as { ts?: number }).ts ?? 0 : Date.parse((r.ex as { ts?: string }).ts ?? '') || 0;
+    type TimelineRow =
+    | { source: 'proxy'; ev: Record<string, unknown> }
+    | { source: string; ex: Record<string, unknown> };
+  app.get('/api/admin/proxy-log', async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+
+    if (q.scope === 'history') {
+      const limit = Math.min(Math.max(Number(q.limit) || 50, 1), 500);
+      const pageNo = Math.max(Number(q.page) || 1, 1);
+      const kindF = q.kind ?? '';
+      const methodF = q.method ?? '';
+      const statusF = q.status ?? '';
+      const hostF = (q.host ?? '').toLowerCase();
+
+      const rows: Array<
+        | { source: 'proxy'; tsMs: number; ev: ProxyAccessEvent }
+        | { source: string; tsMs: number; ex: TrafficExchange }
+      > = [];
+      for (const ev of readProxyAccessHistory({
+        kind: kindF || undefined,
+        method: methodF || undefined,
+        status: statusF || undefined,
+        host: hostF || undefined,
+      })) {
+        rows.push({ source: 'proxy', tsMs: ev.ts, ev });
+      }
+      for (const { id } of trafficDecoders()) {
+        const dir = path.join(trafficRoot(), id);
+        let files: string[] = [];
+        try {
+          files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().reverse();
+        } catch {
+          continue; // fresh plugin / unreadable feed dir — no history from it
+        }
+        for (const f of files) {
+          let lines: string[] = [];
+          try {
+            lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n');
+          } catch {
+            continue;
+          }
+          for (const line of lines) {
+            if (!line) continue;
+            let ex: TrafficExchange;
+            try {
+              ex = JSON.parse(line) as TrafficExchange;
+            } catch {
+              continue; // torn final line (crash mid-append) skips one row
+            }
+            if (methodF && ex.method !== methodF) continue;
+            if (hostF && (ex.authority ?? '').toLowerCase() !== hostF) continue;
+            rows.push({ source: id, tsMs: Date.parse(ex.ts ?? '') || 0, ex });
+          }
+        }
+      }
+      rows.sort((a, b) => b.tsMs - a.tsMs);
+      const total = rows.length;
+      const pages = Math.max(Math.ceil(total / limit), 1);
+      const slice = rows.slice((pageNo - 1) * limit, (pageNo - 1) * limit + limit);
+      // Read-time decode is PAGE-scoped: dissect + hex previews only for the
+      // rows actually returned, never for the whole scan.
+      return {
+        status: 'ok',
+        rows: slice.map((r) =>
+          'ev' in r
+            ? {
+                source: 'proxy' as const,
+                ev: { ...r.ev, reqBodyToken: bodyTokenOf(r.ev.reqBodyFile), resBodyToken: bodyTokenOf(r.ev.resBodyFile) },
+              }
+            : { source: r.source, ex: decoratePluginRow(r.source, r.ex) }
+        ),
+        total,
+        page: pageNo,
+        pages,
+      };
+    }
+
+    // scope=live (default) — the merged tail: ring + every plugin feed tail.
     const s = proxyAccessLogSettings();
+    const rows: TimelineRow[] = [];
+    for (const e of listProxyAccessEvents()) {
+      rows.push({ source: 'proxy', ev: { ...e, reqBodyToken: bodyTokenOf(e.reqBodyFile), resBodyToken: bodyTokenOf(e.resBodyFile) } });
+    }
+    for (const { id } of trafficDecoders()) {
+      const gw = getGatewayById(id);
+      if (!gw || typeof gw.dissect !== 'function') continue;
+      const dir = path.join(trafficRoot(), id);
+      const events: TrafficExchange[] = [];
+      try {
+        if (fs.existsSync(dir)) {
+          const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().reverse();
+          for (const f of files) {
+            if (events.length >= TRAFFIC_TAIL) break;
+            const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean);
+            for (let i = lines.length - 1; i >= 0 && events.length < TRAFFIC_TAIL; i--) {
+              try {
+                events.push(JSON.parse(lines[i]) as TrafficExchange);
+              } catch {
+                continue; // a torn final line (crash mid-append) skips one row
+              }
+            }
+          }
+        }
+      } catch {
+        // Unreadable feed dir = empty feed.
+      }
+      for (const ex of events) rows.push({ source: id, ex: decoratePluginRow(id, ex) } as TimelineRow);
+    }
+    rows.sort((a, b) => (tsOf(a) || 0) - (tsOf(b) || 0));
     return {
       status: 'ok',
       enabled: s.enabled,
       bodyBytes: s.bodyBytes,
-      events: listProxyAccessEvents(),
+      rows: rows.reverse(),
+      total: rows.length,
     };
   });
 
@@ -1118,17 +1261,379 @@ export function registerConsoleRoutes(
     return { status: 'ok' };
   });
 
+  // 3A2c. HISTORY delete by FILTER — the history-mode counterpart of the
+  // clear button. The visible-keys rule (traffic-delete) cannot apply here:
+  // the console only holds ONE page of the persisted federation at a time, so
+  // "what I see" and "what I asked to delete" would diverge. Instead the
+  // console sends the SAME filter vocabulary it queries with and the backend
+  // deletes every matching persisted row across ALL sources: proxy day JSONL
+  // (`deleteProxyAccessEvents` = ring + day files + body sidecars) and each
+  // plugin feed's day JSONL + orphaned body sidecars. The response reports
+  // per-source counts so the confirm toast is never a guess.
+  app.post('/api/admin/proxy-log/history/delete', async (req) => {
+    const b = (req.body ?? {}) as Record<string, string | undefined>;
+    const kindF = b.kind ?? '';
+    const methodF = b.method ?? '';
+    const statusF = b.status ?? '';
+    const hostF = (b.host ?? '').toLowerCase();
+
+    // Proxy side: ids → the row-scoped deleter (ring + day files + sidecars).
+    const ids = readProxyAccessHistory({
+      kind: kindF || undefined,
+      method: methodF || undefined,
+      status: statusF || undefined,
+      host: hostF || undefined,
+    }).map((e) => e.id);
+    const proxyDeleted = ids.length > 0 ? deleteProxyAccessEvents(ids) : 0;
+
+    // Plugin side: rewrite each feed's day files without the matching lines.
+    const deletedPlugins: Record<string, number> = {};
+    for (const { id } of trafficDecoders()) {
+      const dir = path.join(trafficRoot(), id);
+      let files: string[] = [];
+      try {
+        files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
+      } catch {
+        continue;
+      }
+      let removed = 0;
+      const bodyIds = new Set<string>();
+      for (const f of files) {
+        const abs = path.join(dir, f);
+        let kept: string[] = [];
+        try {
+          kept = fs.readFileSync(abs, 'utf8').split('\n').filter(Boolean);
+        } catch {
+          continue;
+        }
+        let touched = false;
+        const keptOut: string[] = [];
+        for (const line of kept) {
+          let ex: TrafficExchange;
+          try {
+            ex = JSON.parse(line) as TrafficExchange;
+          } catch {
+            keptOut.push(line); // a torn line survives deletion round-trips
+            continue;
+          }
+          const hit =
+            (!methodF || ex.method === methodF) &&
+            (!hostF || (ex.authority ?? '').toLowerCase() === hostF) &&
+            (!statusF || String((ex as { status?: number }).status ?? '') === statusF);
+          if (hit && kindF) {
+            // `kind` is proxy-only vocabulary: a filtered history delete never
+            // carries it, but if one ever does, refuse plugin matching rather
+            // than guess (count drift beats wrong deletes).
+            keptOut.push(line);
+            continue;
+          }
+          if (hit) {
+            touched = true;
+            removed++;
+            if (typeof (ex as { id?: unknown }).id === 'string') bodyIds.add((ex as { id: string }).id);
+            continue;
+          }
+          keptOut.push(line);
+        }
+        if (!touched) continue;
+        try {
+          if (keptOut.length === 0) fs.unlinkSync(abs);
+          else fs.writeFileSync(abs, keptOut.join('\n') + '\n');
+        } catch {
+          // Best effort — the row is gone from the feed view either way.
+        }
+      }
+      // Sidecar bytes are named `<day>/<id>-<side>.bin`: drop only the ones
+      // whose row just went away, never a neighbour's.
+      if (bodyIds.size > 0) {
+        const bodiesRoot = path.join(dir, 'bodies');
+        if (fs.existsSync(bodiesRoot)) {
+          for (const day of fs.readdirSync(bodiesRoot)) {
+            const dayDir = path.join(bodiesRoot, day);
+            let names: string[] = [];
+            try {
+              names = fs.readdirSync(dayDir);
+            } catch {
+              continue;
+            }
+            for (const name of names) {
+              const owner = name.replace(/-(?:req|res)\.bin$/, '');
+              if (!bodyIds.has(owner)) continue;
+              try {
+                fs.unlinkSync(path.join(dayDir, name));
+              } catch {
+                // Locked file (Windows) — the row is gone, the blob is orphaned.
+              }
+            }
+          }
+        }
+      }
+      if (removed > 0) deletedPlugins[id] = removed;
+    }
+    return { status: 'ok', deleted: { proxy: proxyDeleted, plugins: deletedPlugins } };
+  });
+
+
+  // 3A1b. Clear the WHOLE traffic view — the console renders one timeline, so
+  // "clear" must empty every source behind it, not just the core ring. Gateway
+  // feeds are plugin-owned artifacts on disk (day JSONL + captured bodies), so
+  // they are removed here rather than through the plugin: the console owns the
+  // feed layout (ADR-0017 §5).
+  app.post('/api/admin/traffic-clear', async () => {
+    clearProxyAccessLog();
+    const cleared: string[] = [];
+    for (const [id, gw] of listGateways()) {
+      if (typeof gw.dissect !== 'function') continue;
+      const dir = path.join(trafficRoot(), id);
+      try {
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+        cleared.push(id);
+      } catch {
+        // A locked feed (Windows handle) must not fail the whole clear.
+      }
+    }
+    return { status: 'ok', cleared };
+  });
+
+  /**
+   * 3A1c. Delete EXACTLY the rows the console is showing — the filter-scoped
+   * counterpart of `/traffic-clear`.
+   *
+   * The console sends row KEYS, never a predicate: the filter lives in one
+   * place (the page) and a backend copy would drift into deleting more than
+   * the operator can see. A key is `id` (proxy events, plugin exchanges that
+   * carry one) or `ts` (feed rows written before ids existed), matched the same
+   * way on both sides.
+   */
+  app.post('/api/admin/traffic-delete', async (req) => {
+    const body = (req.body ?? {}) as { proxy?: unknown; plugins?: unknown };
+    const asKeys = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+    const proxyKeys = asKeys(body.proxy);
+    const deleted: { proxy: number; plugins: Record<string, number> } = {
+      proxy: deleteProxyAccessEvents(proxyKeys),
+      plugins: {},
+    };
+    const pluginEntries = body.plugins && typeof body.plugins === 'object'
+      ? Object.entries(body.plugins as Record<string, unknown>)
+      : [];
+    for (const [decoderId, rawKeys] of pluginEntries) {
+      const keys = new Set(asKeys(rawKeys));
+      if (keys.size === 0) continue;
+      const dir = path.join(trafficRoot(), decoderId);
+      let removed = 0;
+      const bodyIds = new Set<string>();
+      try {
+        if (!fs.existsSync(dir)) continue;
+        const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
+        for (const f of files) {
+          const abs = path.join(dir, f);
+          let text: string;
+          try {
+            text = fs.readFileSync(abs, 'utf8');
+          } catch {
+            continue;
+          }
+          const kept: string[] = [];
+          let touched = false;
+          for (const line of text.split(/\r?\n/)) {
+            if (!line) continue;
+            let row: Record<string, unknown>;
+            try {
+              row = JSON.parse(line) as Record<string, unknown>;
+            } catch {
+              kept.push(line); // torn tail line, not ours to judge
+              continue;
+            }
+            const key = typeof row.id === 'string' ? row.id : typeof row.ts === 'string' ? row.ts : undefined;
+            if (key !== undefined && keys.has(key)) {
+              touched = true;
+              removed++;
+              if (typeof row.id === 'string') bodyIds.add(row.id);
+              continue;
+            }
+            kept.push(line);
+          }
+          if (!touched) continue;
+          try {
+            if (kept.length === 0) fs.unlinkSync(abs);
+            else fs.writeFileSync(abs, kept.join('\n') + '\n');
+          } catch {
+            // Best effort — the row is gone from the feed view either way.
+          }
+        }
+        // Sidecar bytes are named `<day>/<id>-<side>.bin`: drop only the ones
+        // whose row just went away, never a neighbour's.
+        const bodiesRoot = path.join(dir, 'bodies');
+        if (bodyIds.size > 0 && fs.existsSync(bodiesRoot)) {
+          for (const day of fs.readdirSync(bodiesRoot)) {
+            const dayDir = path.join(bodiesRoot, day);
+            let names: string[];
+            try {
+              names = fs.readdirSync(dayDir);
+            } catch {
+              continue;
+            }
+            for (const name of names) {
+              const owner = name.replace(/-(?:req|res)\.bin$/, '');
+              if (!bodyIds.has(owner)) continue;
+              try {
+                fs.unlinkSync(path.join(dayDir, name));
+              } catch {
+                // Locked file (Windows) — the row is gone, the blob is orphaned.
+              }
+            }
+          }
+        }
+      } catch {
+        // Unreadable feed dir = nothing to delete.
+      }
+      deleted.plugins[decoderId] = removed;
+    }
+    return { status: 'ok', deleted };
+  });
+
+  // 3A2b. Generic plugin-traffic feed (Wireshark dissector model, ADR-0017
+  // client gateways): each gateway that declares `dissect` owns a protocol
+  // decoder AND a raw day-JSONL feed under
+  // <ocrHome>/plugins/traffic/<pluginId>/. The console tab lists the decoder
+  // registry and reads a feed, applying the plugin's dissector at READ time.
+  // The plugin stays self-contained — the route only owns the feed layout and
+  // tail discipline (newest first, capped).
+  // Resolved per call, never captured at registration: OCR_HOME is the
+  // environment-book-set switch (ADR-0007) and may change under a live server.
+  const trafficRoot = (): string => path.join(getOcrHomeDir(), 'plugins', 'traffic');
+  const TRAFFIC_TAIL = 500;
+  /** Per-side DISPLAY window handed to the dissector (and the hex preview).
+   *  Capture is full fidelity on disk; only this read is bounded. */
+  const TRAFFIC_DISSECT_WINDOW = 32 * 1024;
+  /** Inline hex preview length (the drawer's hex fallback). */
+  const TRAFFIC_HEX_PREVIEW = 1024;
+  /** Strict sidecar ref: `<YYYYMMDD>/<id>-<side>.bin`, no traversal. */
+  const TRAFFIC_BODY_REF_RE = /^\d{8}\/[A-Za-z0-9._-]+\.bin$/;
+  /** Resolve a feed body ref to an absolute path inside that decoder's dir. */
+  const bodyPath = (decoderId: string, ref: string): string | null => {
+    if (!TRAFFIC_BODY_REF_RE.test(ref)) return null;
+    const root = path.join(trafficRoot(), decoderId, 'bodies');
+    const abs = path.join(root, ref);
+    return abs.startsWith(root + path.sep) ? abs : null;
+  };
+  const trafficDecoders = (): { id: string; label: string }[] => {
+    const out: { id: string; label: string }[] = [];
+    for (const [id, gw] of listGateways()) {
+      if (typeof gw.dissect !== 'function') continue;
+      out.push({ id, label: gw.hosts.join(', ') });
+    }
+    return out;
+  };
+  /** Read-time wire decoration for ONE plugin feed row: body windows for the
+   *  dissector + hex preview, dissect layers, body tokens, bodies stripped.
+   *  Shared by the live tail route and the federated history scan — one
+   *  decoration path, never two. */
+  const decoratePluginRow = (decoderId: string, ex: TrafficExchange): Record<string, unknown> => {
+    const windowOf = (ref: unknown): Buffer | undefined => {
+      if (typeof ref !== 'string') return undefined;
+      const abs = bodyPath(decoderId, ref);
+      if (!abs) return undefined;
+      try {
+        const fd = fs.openSync(abs, 'r');
+        try {
+          const buf = Buffer.alloc(TRAFFIC_DISSECT_WINDOW);
+          const read = fs.readSync(fd, buf, 0, TRAFFIC_DISSECT_WINDOW, 0);
+          return buf.subarray(0, read);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        return undefined;
+      }
+    };
+    const reqWin = windowOf(ex.reqBodyFile);
+    const resWin = windowOf(ex.resBodyFile);
+    // Legacy rows (inline base64 body) still decode: the window is the
+    // inline body itself, so both feed generations share one path.
+    const reqBytes = reqWin ?? (typeof ex.reqBody === 'string' ? Buffer.from(ex.reqBody, 'base64') : undefined);
+    const resBytes = resWin ?? (typeof ex.resBody === 'string' ? Buffer.from(ex.resBody, 'base64') : undefined);
+    let dissected: DissectedExchange | undefined;
+    try {
+      dissected = getGatewayById(decoderId)?.dissect?.({ ...ex, reqBody: reqBytes?.toString('base64'), resBody: resBytes?.toString('base64') });
+    } catch {
+      dissected = undefined; // a decoder bug degrades to the raw view only
+    }
+    // Strip bodies from the wire view: the console gets byte counts,
+    // file refs and a small hex preview, never the payload itself.
+    const { reqBody: _rq, resBody: _rs, ...meta } = ex as Record<string, unknown>;
+    void _rq;
+    void _rs;
+    const hexPreview = (b?: Buffer): string | undefined => {
+      if (!b || b.length === 0) return undefined;
+      return b.subarray(0, TRAFFIC_HEX_PREVIEW).toString('hex');
+    };
+    return {
+      ...meta,
+      reqBodyToken: bodyTokenOf(ex.reqBodyFile, decoderId),
+      resBodyToken: bodyTokenOf(ex.resBodyFile, decoderId),
+      reqHex: hexPreview(reqBytes),
+      resHex: hexPreview(resBytes),
+      decoded: dissected,
+    };
+  };
+  app.get('/api/admin/plugin-traffic', async () => {
+    return { status: 'ok', decoders: trafficDecoders() };
+  });
+  app.get('/api/admin/plugin-traffic/:decoder', async (req, reply) => {
+    const decoderId = String((req.params as Record<string, string>).decoder ?? '');
+    const gw = getGatewayById(decoderId);
+    if (!gw || typeof gw.dissect !== 'function') {
+      reply.code(404);
+      return { status: 'error', message: `no traffic decoder registered for '${decoderId}'` };
+    }
+    const dir = path.join(trafficRoot(), decoderId);
+    const events: Array<Record<string, unknown>> = [];
+    let days = 0;
+    try {
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().reverse();
+        for (const f of files) {
+          if (events.length >= TRAFFIC_TAIL) break;
+          days++;
+          const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean);
+          for (let i = lines.length - 1; i >= 0 && events.length < TRAFFIC_TAIL; i--) {
+            let raw: unknown;
+            try {
+              raw = JSON.parse(lines[i]);
+            } catch {
+              continue; // a torn final line (crash mid-append) skips one row
+            }
+            const ex = raw as TrafficExchange;
+            events.push(decoratePluginRow(decoderId, ex));
+          }
+        }
+      }
+    } catch {
+      // Unreadable feed dir (fresh plugin, permissions) = empty feed.
+    }
+    return { status: 'ok', days, truncated: events.length >= TRAFFIC_TAIL, events };
+  });
+
   // Raw persisted binary body (ref format `<day>/pa-...-<side>.bin`, validated
   // inside readProxyAccessBodyFile — no traversal).
-  app.get('/api/admin/proxy-log/bodies/*', async (req, reply) => {
-    const ref = (req.params as Record<string, string>)['*'];
-    const body = readProxyAccessBodyFile(ref ?? '');
-    if (!body) {
+  // 3A2c. THE body download — one neutral endpoint for every captured body,
+  // whatever stored it. The console never learns which subsystem owns the
+  // bytes (or which plugin captured them): the row carries an opaque token and
+  // only this route resolves it. Validation happens AFTER decoding the token,
+  // so a hand-crafted token is no stronger than the refs the feeds already
+  // expose (strict grammar + containment inside the resolved root).
+  app.get('/api/admin/traffic-body/:token', async (req, reply) => {
+    const token = String((req.params as Record<string, string>).token ?? '');
+    const abs = resolveBodyPath(token);
+    if (!abs || !fs.existsSync(abs)) {
       reply.code(404);
-      return { status: 'error', message: 'body file not found' };
+      return { status: 'error', message: 'body not found' };
     }
     reply.header('content-type', 'application/octet-stream');
-    return body;
+    reply.header('content-disposition', `attachment; filename="${path.basename(abs)}"`);
+    return reply.send(fs.createReadStream(abs));
   });
 
   // 3A3. OS system proxy ownership for the inbound forward proxy: snapshot →

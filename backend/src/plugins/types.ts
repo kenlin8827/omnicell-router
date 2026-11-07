@@ -139,6 +139,7 @@ export interface ModelServicePlugin {
      *  box and relies on poll alone. */
     submit?(opts: { baseURL: string; code: string }): Promise<{ ok: boolean; error?: string; token?: string }>;
   };
+
   /** Ordered credential methods for the console connect card (see PluginAuthType). */
   authTypes?: PluginAuthType[];
   /**
@@ -162,6 +163,47 @@ export interface ModelServicePlugin {
    *  values arrive pre-validated (same object `host.config()` returns). */
   onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
 }
+// ── generic plugin-traffic feed shapes (Wireshark dissector model) ──
+
+/** One RAW captured exchange in a client-gateway plugin's traffic feed:
+ *  the feed stores bytes, decode runs at read time. Bodies are base64,
+ *  capped by the writing plugin. */
+export interface TrafficExchange {
+  ts?: string;
+  authority?: string;
+  method?: string;
+  path?: string;
+  reqContentType?: string;
+  resContentType?: string;
+  status?: number;
+  durationMs?: number;
+  /** Which upstream leg relayed the exchange (h2 / h1 / h1-fallback). */
+  leg?: string;
+  reqBody?: string;
+  resBody?: string;
+  reqTruncated?: boolean;
+  resTruncated?: boolean;
+  [k: string]: unknown;
+}
+
+/** One decoded protocol layer a dissector produced for an exchange. */
+export interface TrafficLayer {
+  name: string;
+  /** Which side of the exchange this layer decodes. REQUIRED in practice:
+   *  without it the console cannot keep the request tree out of the response
+   *  tab, and a row with an empty response body appears to decode anyway. */
+  side?: 'req' | 'res';
+  frames?: unknown[];
+  [k: string]: unknown;
+}
+
+/** Dissector output: the plugin's protocol knowledge applied to one raw
+ *  exchange, rendered by the console's generic protocol-traffic tab. */
+export interface DissectedExchange {
+  decoder: string;
+  layers: TrafficLayer[];
+}
+
 
 /**
  * The backend capabilities a plugin may use, injected at load time
@@ -233,6 +275,14 @@ export interface ClientGatewayPlugin {
    * envelope over a stream it no longer owns.
    */
   handleUpgrade?(ctx: ClientGatewayUpgradeContext): boolean | Promise<boolean>;
+  /** Optional decoder (Wireshark dissector model): the console's generic
+   *  protocol-traffic tab lists every client gateway that declares one and
+   *  calls it at READ time on the raw feed — never at capture time. A plugin
+   *  that does not write a traffic feed has no dissector and no tab entry.
+   *  Feed layout: day-JSONL files under
+   *  `<ocrHome>/plugins/traffic/<pluginId>/<YYYY-MM-DD>.jsonl`, one base64-
+   *  capped TrafficExchange per row, newest-first tail served by the route. */
+  dissect?(exchange: TrafficExchange): DissectedExchange;
   /** Optional: notified after the operator saves plugin settings; the merged
    *  values arrive pre-validated (same object `host.config()` returns). */
   onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
@@ -309,6 +359,8 @@ export interface PluginView {
   path: string;
   disabled?: boolean;
   loaded: boolean;
+  /** Wall-clock ms when this view's code was imported into the runtime (undefined for disabled/failed rows). */
+  loadedAt?: number;
   error?: string;
 }
 

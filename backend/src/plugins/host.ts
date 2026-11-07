@@ -277,6 +277,7 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       seenIds.add(name);
       try {
         const loaded = await importPlugin(dir, 'dev');
+        loaded.view.loadedAt = Date.now();
         if (loaded.gateway) stageGateway(loaded.view.id, loaded.gateway);
         if (loaded.plugin) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.plugin, view: loaded.view });
         views.push(loaded.view);
@@ -306,6 +307,7 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       try {
         const dir = ensureUnpacked(packagedPath, id);
         const loaded = await importPlugin(dir, 'packaged');
+        loaded.view.loadedAt = Date.now();
         if (loaded.gateway) stageGateway(loaded.view.id, loaded.gateway);
         if (loaded.plugin) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.plugin, view: loaded.view });
         seenIds.add(id);
