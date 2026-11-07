@@ -117,12 +117,11 @@ export interface ClientAdapter {
    * (the plain `ocr setup` CLI command passes no models). apiKey (optional):
    * gateway-issued key to write into the client's auth field.
    */
-  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: MAX_CONTEXT_TOKENS + AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings (opencode): agent name → resolved modelRef ('auto' = inherit the default model). */ agentModels?: Record<string, string>; /** Profile-link echo written to the OCR sidecar meta when defined: agent → profile-slot key; id '' un-links. */ profile?: ModelProfileBinding }): Promise<ClientActionResult>;
+  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: CLAUDE_CODE_MAX_CONTEXT_TOKENS + CLAUDE_CODE_AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings: agent/role name → resolved modelRef ('auto' = inherit the default model), written by the adapters that carry agent bindings. */ agentModels?: Record<string, string>; /** Profile-link echo written to the OCR sidecar meta when defined: agent → profile-slot key; id '' un-links. */ profile?: ModelProfileBinding }): Promise<ClientActionResult>;
   /**
-   * Profile-change write-through (opencode, pi): re-resolve the linked
-   * agents' slot keys against the just-saved profile slots and rewrite the
-   * client config without a full setup. Absent on adapters without profile
-   * links.
+   * Profile-change write-through: re-resolve the linked agents' slot keys
+   * against the just-saved profile slots and rewrite the client config
+   * without a full setup. Absent on adapters without profile links.
    */
   refreshProfileBindings?(profileId: string, tags: Record<string, string>, slots: Record<string, string>): Promise<ClientActionResult>;
   teardown(): Promise<ClientActionResult>;
