@@ -1,7 +1,7 @@
 import http2 from 'node:http2';
 import tls from 'node:tls';
 import type http from 'node:http';
-import { FORWARD_PROXY_HANG_TIMEOUT_MS, FORWARD_PROXY_KEEPALIVE_MS } from '../config/defaults.js';
+import { DEFAULT_MAX_BODY_BYTES, FORWARD_PROXY_HANG_TIMEOUT_MS, FORWARD_PROXY_KEEPALIVE_MS } from '../config/defaults.js';
 import {
   describeUpstreamFailure,
   openViaProxy,
@@ -290,14 +290,30 @@ export async function forwardH2(
   // Bun's h2 compatibility IncomingMessage DROPS chunks emitted while nobody is
   // listening (verified — the h1 leg does not). The session handshake below is
   // async, so the body is captured SYNCHRONOUSLY here, before any await, and
-  // replayed into the upstream stream once it exists. Anything captured before
-  // the fallback decision is handed back in `preface` — the h1 forwarder must
-  // write it first or the body would silently lose its head.
+  // replayed into the upstream stream once it exists.
+  //
+  // The h2→h1 fallback must ALSO drain the body to END before handing off:
+  // the h1 forwarder attaches only after its own TLS handshake, and `pause()`
+  // is not a safe hold — Bun's compat layer drops the buffered tail when the
+  // stream resumes through `pipe()` (a 512 KB body lost ~230 KB). Draining
+  // keeps the listeners attached and hands the h1 leg a complete preface.
   const held: Buffer[] = [];
+  let heldBytes = 0;
+  let overflow = false;
   let upstreamStream: http2.ClientHttp2Stream | undefined;
   let heldEnd = false;
+  let resolveEnd: () => void = () => {};
+  const bodyEnded = new Promise<void>((resolve) => {
+    resolveEnd = resolve;
+  });
   const onBody = (chunk: Buffer): void => {
     if (!upstreamStream) {
+      heldBytes += chunk.length;
+      if (heldBytes > DEFAULT_MAX_BODY_BYTES) {
+        overflow = true;
+        req.destroy();
+        return;
+      }
       held.push(chunk);
       return;
     }
@@ -308,16 +324,17 @@ export async function forwardH2(
     }
   };
   const onBodyEnd = (): void => {
+    heldEnd = true;
+    resolveEnd();
     if (upstreamStream) {
       try {
         upstreamStream.end();
       } catch {}
-    } else {
-      heldEnd = true;
     }
   };
   req.on('data', onBody);
   req.on('end', onBodyEnd);
+  req.on('close', resolveEnd);
   req.on('error', () => {
     try {
       upstreamStream?.close(http2.constants.NGHTTP2_CANCEL);
@@ -329,12 +346,35 @@ export async function forwardH2(
   const key = sessionKey(t, upstreamTls, proxyUrl);
   const session = await acquireSession(t, upstreamTls, key);
   if (!session) {
+    // h1 upstreams cannot carry bidi: drain the bounded body, then hand a
+    // complete preface to the h1 leg. The timeout is the proxy's hang guard;
+    // the 16 MB cap prevents buffering an unbounded upload.
+    if (!heldEnd && !overflow) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        bodyEnded,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, FORWARD_PROXY_HANG_TIMEOUT_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
     req.removeListener('data', onBody);
     req.removeListener('end', onBodyEnd);
-    return {
-      owned: false,
-      ...(held.length || heldEnd ? { preface: { chunks: held, ended: heldEnd } } : {}),
-    };
+    req.removeListener('close', resolveEnd);
+    if (overflow) {
+      failPlain(res, 413, `Forward proxy: request body exceeds ${DEFAULT_MAX_BODY_BYTES} bytes on an h1 upstream`);
+      return { owned: true };
+    }
+    if (!heldEnd) {
+      failPlain(res, 504, 'Forward proxy: request body did not complete for the h1 upstream');
+      return { owned: true };
+    }
+    return { owned: false, ...(held.length ? { preface: { chunks: held, ended: true } } : {}) };
+  }
+  if (overflow) {
+    failPlain(res, 413, `Forward proxy: request body exceeds ${DEFAULT_MAX_BODY_BYTES} bytes`);
+    return { owned: true };
   }
 
   const entry = pool.get(key);

@@ -8,7 +8,7 @@ import https from 'node:https';
 import http2 from 'node:http2';
 import net from 'node:net';
 import tls from 'node:tls';
-import { createForwardProxyServer } from '../src/forward-proxy/server.js';
+import { createForwardProxyServer, forwardTo } from '../src/forward-proxy/server.js';
 import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
 import { closeH2Pool, forwardH2 } from '../src/forward-proxy/h2-forward.js';
 import type { AccessTap } from '../src/forward-proxy/access-log.js';
@@ -203,6 +203,97 @@ describe('forward-proxy: transparent h2 forward', () => {
       closeH2Pool();
       await close(front as unknown as net.Server);
       await close(upstream as unknown as net.Server);
+    }
+  });
+
+  it('captures a large body synchronously across the async upstream TLS handshake (Bun h2 drop guard)', async () => {
+    const ca = ensureCa(tmpCaDir());
+    const leaf = new CertMinter(ca).get('127.0.0.1');
+    const body = 'x'.repeat(512 * 1024);
+    let received = 0;
+
+    const upstream = http2.createSecureServer({ key: leaf.key, cert: leaf.cert });
+    upstream.on('request', (req, res) => {
+      req.on('data', (d: Buffer) => {
+        received += d.length;
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end(String(received));
+      });
+    });
+    const upstreamPort = await listen(upstream as unknown as net.Server);
+
+    const tap = tapProbe();
+    const front = http2.createServer((req, res) => {
+      void forwardH2(
+        req as unknown as http.IncomingMessage,
+        res as unknown as http.ServerResponse,
+        { host: '127.0.0.1', port: upstreamPort, path: req.url || '/', tap },
+        { opts: { ca: ca.caCertPem }, key: 'test' }
+      );
+    });
+    const frontPort = await listen(front as unknown as net.Server);
+
+    try {
+      const out = await driveH2(frontPort, { path: '/large', body });
+      assert.equal(Number(out.body), body.length, 'every request byte must survive the async TLS handshake');
+      assert.equal(tap.reqBytes, body.length, 'the tap sees the whole body, not the post-handshake remainder');
+    } finally {
+      closeH2Pool();
+      await close(front as unknown as net.Server);
+      await close(upstream as unknown as net.Server);
+    }
+  });
+
+  it('holds the body across the h2→h1 handoff (pause, then preface)', async () => {
+    const ca = ensureCa(tmpCaDir());
+    const leaf = new CertMinter(ca).get('127.0.0.1');
+    const body = 'y'.repeat(512 * 1024);
+    let received = 0;
+
+    // h1-only TLS upstream: forces the h2 relay to hand the exchange back.
+    const upstream = https.createServer({ key: leaf.key, cert: leaf.cert }, (req, res) => {
+      req.on('data', (d: Buffer) => {
+        received += d.length;
+      });
+      req.on('end', () => res.end(String(received)));
+    });
+    const upstreamPort = await listen(upstream);
+
+    const front = http2.createServer((req, res) => {
+      const target = { host: '127.0.0.1', port: upstreamPort, path: req.url || '/', secure: true };
+      const tls = { opts: { ca: ca.caCertPem }, key: 'test' };
+      void forwardH2(req as unknown as http.IncomingMessage, res as unknown as http.ServerResponse, target, tls).then(async (relay) => {
+        if (relay.owned) return;
+        // The h2→h1 handoff must be fed a COMPLETE body: the drain keeps the
+        // listeners attached until END, so the preface holds every byte and the
+        // h1 leg never depends on Bun's compatible-pause buffering.
+        const prefaceBytes = relay.preface?.chunks.reduce((n, c) => n + c.length, 0) ?? 0;
+        assert.equal(relay.preface?.ended, true);
+        assert.equal(prefaceBytes, body.length);
+        await forwardTo(
+          req as unknown as http.IncomingMessage,
+          res as unknown as http.ServerResponse,
+          { ...target, preface: relay.preface },
+          tls
+        );
+      });
+    });
+    const frontPort = await listen(front as unknown as net.Server);
+
+    try {
+      const out = await driveH2(frontPort, { path: '/fallback-large', body });
+      assert.equal(
+        Number(out.body),
+        body.length,
+        `the h1 fallback must receive the whole body (response ${out.body}, upstream counted ${received})`
+      );
+      assert.equal(received, body.length, 'no chunk may be lost in the handoff window');
+    } finally {
+      closeH2Pool();
+      await close(front as unknown as net.Server);
+      await close(upstream);
     }
   });
 

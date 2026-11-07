@@ -92,6 +92,10 @@ export function filterHeaders(headers: http.IncomingHttpHeaders): Record<string,
   const out: Record<string, string | string[]> = {};
   for (const [k, v] of Object.entries(headers)) {
     if (v === undefined) continue;
+    // HTTP/2 pseudo-headers (`:method`, `:path`, `:authority`, …) are transport
+    // framing. The h2→h1 fallback reuses the same request object, and Node's
+    // h1 client throws ERR_INVALID_HTTP_TOKEN on them.
+    if (k.startsWith(':')) continue;
     if (HOP_BY_HOP[k.toLowerCase()]) continue;
     out[k] = v;
   }

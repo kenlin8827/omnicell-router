@@ -212,7 +212,13 @@ export interface ForwardProxyHandle {
   close(): Promise<void>;
 }
 
-interface ForwardTarget {
+/**
+ * One decrypted exchange's upstream target. Exported because client-gateway
+ * plugins relay their claimed hosts through the SAME leg (`forwardTo` /
+ * `forwardH2`) — a plugin must never dial an origin itself, or the rule
+ * table's egress and ADR-0019's upstream trust would be silently bypassed.
+ */
+export interface ForwardTarget {
   host: string;
   port: number;
   path: string;
@@ -352,7 +358,12 @@ function pipeUpResponse(up: http.IncomingMessage, res: http.ServerResponse, tap?
   up.pipe(res);
 }
 
-function forwardTo(
+/**
+ * Relay one decrypted exchange upstream on the h1 leg (direct or through the
+ * outbound proxy), tapping both directions when a tap is given. Gateway
+ * plugins call this through the host SDK so transport policy lives in core.
+ */
+export function forwardTo(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   t: ForwardTarget,
