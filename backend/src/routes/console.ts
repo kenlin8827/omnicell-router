@@ -4536,7 +4536,7 @@ export function registerConsoleRoutes(
       const { getPluginConfig } = await import('../plugins/host.js');
       const cfg = getPluginConfig(id);
       if (!cfg) return reply.code(404).send({ status: 'error', error: 'unknown or unloaded plugin' });
-      return { status: 'ok', schema: cfg.schema, values: cfg.values };
+      return { status: 'ok', schema: cfg.schema, sections: cfg.sections, values: cfg.values };
     });
     app.put(`${prefix}/plugins/:id/config`, async (req, reply) => {
       const { id } = req.params as { id: string };

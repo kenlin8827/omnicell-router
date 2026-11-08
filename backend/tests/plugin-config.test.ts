@@ -93,11 +93,21 @@ if (fs.existsSync(cursorPluginJson)) {
       await loadInstalledPlugins();
       const cfg = getPluginConfig('cursor');
       assert.ok(cfg, 'cursor must be loaded from the dev tree');
-      assert.deepEqual(cfg!.schema.map((f) => f.key), ['logFrames', 'previewBytes']);
+      // The manifest lives in the gitignored dev tree, so it grows without this
+      // test: pin the SHAPE the drawer relies on (types, bounds, section refs)
+      // instead of an exact key list, which would be a drift twin of the
+      // manifest and red-flag every new field.
+      const keys = cfg!.schema.map((f) => f.key);
+      assert.ok(keys.includes('logFrames'), 'the capture group is declared');
+      assert.ok(keys.includes('previewBytes'));
       const fields = Object.fromEntries(cfg!.schema.map((f) => [f.key, f]));
       assert.equal(fields.logFrames.type, 'boolean');
       assert.equal(fields.previewBytes.type, 'number');
       assert.deepEqual([fields.previewBytes.min, fields.previewBytes.max], [256, 65536]);
+      const sectionIds = new Set(cfg!.sections.map((s) => s.id));
+      for (const field of cfg!.schema) {
+        if (field.section !== undefined) assert.ok(sectionIds.has(field.section), `field '${field.key}' names a declared section`);
+      }
       assert.equal(cfg!.values.logFrames, true);
       assert.equal(cfg!.values.previewBytes, 2048);
 

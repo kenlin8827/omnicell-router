@@ -18,6 +18,7 @@ import type {
   ModelServicePluginHost,
   PluginAuthType,
   PluginConfigField,
+  PluginConfigSection,
   PluginManifest,
   PluginView,
 } from './types.js';
@@ -159,6 +160,9 @@ export function buildGatewayHostSdk(manifest: PluginManifest): ClientGatewayHost
         // relaying a plaintext origin must be able to say so. Default = TLS.
         secure: opts.secure !== false,
         tap: opts.tap,
+        ...(opts.preface
+          ? { preface: { chunks: opts.preface.chunks, ended: opts.preface.ended === true } }
+          : {}),
       };
       const upstreamTls = resolveUpstreamTls();
       if (opts.h2) {
@@ -748,11 +752,12 @@ export function listInstalledPlugins(): PluginView[] {
 /** Console config read: schema + merged values for one loaded plugin. */
 export function getPluginConfig(
   id: string
-): { schema: PluginConfigField[]; values: Record<string, unknown> } | undefined {
+): { schema: PluginConfigField[]; sections: PluginConfigSection[]; values: Record<string, unknown> } | undefined {
   const manifest = manifestsById.get(id);
   if (!manifest) return undefined;
   return {
     schema: manifest.configSchema ?? [],
+    sections: manifest.configSections ?? [],
     values: mergedPluginConfig(id, manifest.configSchema),
   };
 }

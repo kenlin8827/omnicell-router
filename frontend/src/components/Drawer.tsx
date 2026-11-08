@@ -45,7 +45,10 @@ export const Drawer: React.FC<DrawerProps> = ({
   useEffect(() => {
     if (!backdropClose) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // A modal opened ON TOP of this drawer owns Escape (it is the topmost
+      // dismissal target): without the guard one press closes the dialog and the
+      // drawer underneath it. `data-ocr-dialog` is the shared Dialog marker.
+      if (e.key === 'Escape' && !document.querySelector('[data-ocr-dialog]')) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

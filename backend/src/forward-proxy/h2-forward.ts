@@ -41,6 +41,8 @@ export interface H2ForwardTarget {
   path: string;
   /** Access-log tap (non-intercepted forwards only); undefined = no capture. */
   tap?: AccessTap;
+  /** Body bytes already consumed by the caller's route decision. */
+  preface?: { chunks: Buffer[]; ended?: boolean };
 }
 
 /** Outcome of one h2 relay attempt. */
@@ -297,15 +299,16 @@ export async function forwardH2(
   // is not a safe hold — Bun's compat layer drops the buffered tail when the
   // stream resumes through `pipe()` (a 512 KB body lost ~230 KB). Draining
   // keeps the listeners attached and hands the h1 leg a complete preface.
-  const held: Buffer[] = [];
-  let heldBytes = 0;
+  const held: Buffer[] = t.preface ? [...t.preface.chunks] : [];
+  let heldBytes = held.reduce((total, chunk) => total + chunk.length, 0);
   let overflow = false;
   let upstreamStream: http2.ClientHttp2Stream | undefined;
-  let heldEnd = false;
+  let heldEnd = t.preface?.ended === true;
   let resolveEnd: () => void = () => {};
   const bodyEnded = new Promise<void>((resolve) => {
     resolveEnd = resolve;
   });
+  if (heldEnd) resolveEnd();
   const onBody = (chunk: Buffer): void => {
     if (!upstreamStream) {
       heldBytes += chunk.length;

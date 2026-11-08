@@ -7,7 +7,7 @@ import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
-import { api, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
@@ -74,6 +74,33 @@ const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 const virtualDefaultFor = (clientName: string): string[] =>
   clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
 
+/** Cursor's model surface lives in the plugin config but is edited HERE (client
+ *  card), not on the Plugins page: the model list is part of "how this client
+ *  connects", while the plugin page keeps protocol/runtime settings. The raw
+ *  values object is retained so a save never drops unrelated plugin settings. */
+interface CursorCfgDraft {
+  model: string;
+  catalogReplace: boolean;
+  modelListMode: 'all' | 'custom' | 'follow';
+  models: string[];
+  followKeyId: string;
+  values: Record<string, unknown>;
+}
+
+const parseCursorCfg = (values: Record<string, unknown>): CursorCfgDraft => ({
+  model: String(values.model ?? 'auto').replace(/^ocr\//, ''),
+  catalogReplace: values.catalogReplace === true,
+  modelListMode:
+    values.modelListMode === 'custom' || values.modelListMode === 'follow'
+      ? values.modelListMode
+      : 'all',
+  models: Array.isArray(values.models)
+    ? values.models.map((id) => String(id).replace(/^ocr\//, ''))
+    : [],
+  followKeyId: typeof values.followKeyId === 'string' ? values.followKeyId : '',
+  values,
+});
+
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
@@ -92,6 +119,20 @@ export const ClientsPage: React.FC = () => {
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
   /** Per-client context window in tokens (claude compaction envs; default 256K) */
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
+  /** Cursor is plugin-driven, not a config-writing adapter: its model surface
+   *  lives in the cursor plugin config but is edited on THIS client card —
+   *  client-facing model selection belongs beside the client, while the
+   *  Plugins page keeps protocol/runtime settings. */
+  const [cursorCfg, setCursorCfg] = useState<CursorCfgDraft | null>(null);
+  const [cursorCfgBusy, setCursorCfgBusy] = useState(false);
+  /** Loaded/disabled state of the `cursor` plugin. Without it the proxy can
+   *  still be installed, but Cursor sees no OCR catalog: the card must say so
+   *  instead of advertising a model list that does not exist. */
+  const [cursorPlugin, setCursorPlugin] = useState<{
+    installed: boolean;
+    loaded: boolean;
+    disabled: boolean;
+  } | null>(null);
   /** Per-client extra concrete models (model-list editors: opencode/dsh/pi) */
   const [extraSel, setExtraSel] = useState<Record<string, string[]>>({});
   /** Per-client custom virtual-tier draft (custom mode): the explicit set the
@@ -204,6 +245,19 @@ export const ClientsPage: React.FC = () => {
         }
         return next;
       });
+      // Cursor's takeover/model summary depends on the plugin, not the launcher
+      // adapter: re-read it on every status refresh so installing/enabling the
+      // plugin in the Plugins page updates this card without a full reload.
+      opencodeApi.listPlugins()
+        .then(res => {
+          const plugin = (res.plugins || []).find(p => p.id === 'cursor');
+          setCursorPlugin({
+            installed: !!plugin,
+            loaded: !!plugin?.loaded && !plugin?.disabled,
+            disabled: !!plugin?.disabled,
+          });
+        })
+        .catch(err => console.error('cursor plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
       // seeded from the slot echo (bare ref / native pin verbatim), then the
       // profile-link echo re-tags linked roles to `slot:<key>`.
@@ -242,6 +296,67 @@ export const ClientsPage: React.FC = () => {
     api.getModelProfiles().then(p => { setProfiles(p); setProfilesReady(true); }).catch(() => setProfilesReady(true));
     api.getClientProfileMemory().then(m => { memRef.current = m; setMem(m); }).catch(() => { memRef.current = {}; setMem({}); });
   }, []);
+
+  // Cursor's model surface is plugin config, not the launcher adapter. Load it
+  // only when the card is opened AND the plugin is loaded; a missing/disabled
+  // plugin has no config endpoint and must not look like an empty catalog.
+  useEffect(() => {
+    if (expanded !== 'cursor' || cursorCfg || !cursorPlugin?.loaded) return;
+    let alive = true;
+    setCursorCfgBusy(true);
+    opencodeApi.getPluginConfig('cursor')
+      .then(cfg => {
+        if (!alive) return;
+        setCursorCfg(parseCursorCfg(cfg.values ?? {}));
+      })
+      .catch(err => { if (alive) console.error('cursor plugin config:', err); })
+      .finally(() => { if (alive) setCursorCfgBusy(false); });
+    return () => { alive = false; };
+  }, [expanded, cursorCfg, cursorPlugin?.loaded]);
+
+  // Follow mode on the Cursor card is the same snapshot idea as the clients
+  // above: load the picked key's effective view for a live preview; Save writes
+  // the snapshot into the plugin config.
+  useEffect(() => {
+    const keyId = cursorCfg?.followKeyId;
+    if (!cursorCfg || cursorCfg.modelListMode !== 'follow' || !keyId || keyModels[keyId]) return;
+    api.getKeyModels(keyId)
+      .then((view) => setKeyModels((prev) => ({ ...prev, [keyId]: view })))
+      .catch(() => {});
+  }, [cursorCfg?.modelListMode, cursorCfg?.followKeyId, keyModels]);
+
+  const saveCursorCfg = async (): Promise<void> => {
+    if (!cursorCfg) return;
+    setCursorCfgBusy(true);
+    try {
+      let models = cursorCfg.models;
+      if (cursorCfg.modelListMode === 'follow') {
+        const keyId = cursorCfg.followKeyId;
+        if (!keyId) {
+          toast.error(t('clients.followNoKey'));
+          return;
+        }
+        const view = keyModels[keyId] ?? (await api.getKeyModels(keyId));
+        if (!keyModels[keyId]) setKeyModels((prev) => ({ ...prev, [keyId]: view }));
+        models = view.models.filter((model) => model.allowed).map((model) => model.id);
+      }
+      const values = {
+        ...cursorCfg.values,
+        model: cursorCfg.model,
+        catalogReplace: cursorCfg.catalogReplace,
+        modelListMode: cursorCfg.modelListMode,
+        models,
+        followKeyId: cursorCfg.followKeyId,
+      };
+      const res = await opencodeApi.putPluginConfig('cursor', values);
+      setCursorCfg(parseCursorCfg(res.values ?? values));
+      toast.success(t('pluginPage.configSaved'));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCursorCfgBusy(false);
+    }
+  };
 
   /** Seed selections once BOTH sources are in: the committed form memory
    *  (the full snapshot the last setup applied — see rememberDraft) wins —
@@ -890,8 +1005,12 @@ export const ClientsPage: React.FC = () => {
   };
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
-  const renderActionButtons = (c: ClientStatus, stretched: boolean) =>
-    c.hooked ? (
+  const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
+    // Cursor's launcher only exists to feed the cursor plugin. Hooking it
+    // without a loaded plugin would proxy every request transparently while
+    // the UI claims OCR is active — block the setup, never the teardown.
+    const pluginBlocked = c.name === 'cursor' && cursorPlugin !== null && !cursorPlugin.loaded;
+    return c.hooked ? (
       <button
         className="btn btn-danger btn-sm"
         style={stretched ? { flex: 1 } : undefined}
@@ -906,12 +1025,14 @@ export const ClientsPage: React.FC = () => {
         className="btn btn-primary btn-sm"
         style={stretched ? { flex: 1 } : undefined}
         onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup'); }}
-        disabled={loading}
+        disabled={loading || pluginBlocked}
+        title={pluginBlocked ? t('clients.cursorPluginRequired') : undefined}
       >
         <ArrowUpRight size={12} />
         <span>{t('clients.setupBtn')}</span>
       </button>
     );
+  };
 
 
   return (
@@ -1078,6 +1199,171 @@ export const ClientsPage: React.FC = () => {
                     {(c.name === 'opencode-proxy' || c.name === 'cursor') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
                         {t(c.name === 'cursor' ? 'clients.cursorHint' : 'clients.proxyHint')}
+                      </div>
+                    )}
+
+                    {c.name === 'cursor' && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: 'var(--text-xs)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
+                          {t('clients.cursorModels')} <InfoTip text={t('clients.cursorModelsInfo')} />
+                        </div>
+                        {cursorPlugin && !cursorPlugin.loaded ? (
+                          <div style={{ color: 'var(--warning, #eab308)', lineHeight: 'var(--leading-normal)' }}>
+                            {cursorPlugin.installed
+                              ? t(cursorPlugin.disabled ? 'clients.cursorPluginDisabled' : 'clients.cursorPluginNotLoaded')
+                              : t('clients.cursorPluginMissing')}
+                          </div>
+                        ) : cursorCfgBusy && !cursorCfg ? (
+                          <div style={{ color: 'var(--text-dim)' }}>{t('common.loading')}</div>
+                        ) : cursorCfg ? (
+                          (() => {
+                            const mode = cursorCfg.modelListMode;
+                            const followKey = apiKeys.find((key) => key.id === cursorCfg.followKeyId);
+                            const followView = followKey ? keyModels[followKey.id] : undefined;
+                            const listed = mode === 'all'
+                              ? models.map((model) => model.id)
+                              : mode === 'custom'
+                                ? cursorCfg.models
+                                : followView
+                                  ? followView.models.filter((model) => model.allowed).map((model) => model.id)
+                                  : cursorCfg.models;
+                            const visible = [...new Set(listed)];
+                            const defaultOptions = [...new Set([
+                              cursorCfg.model,
+                              ...(mode === 'all' ? models.map((model) => model.id) : visible),
+                            ].filter(Boolean))];
+                            const update = (patch: Partial<CursorCfgDraft>): void =>
+                              setCursorCfg((prev) => (prev ? { ...prev, ...patch } : prev));
+                            return (
+                              <>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  {(['none', 'custom', 'follow'] as const).map((uiMode) => {
+                                    const target = uiMode === 'none' ? 'all' : uiMode;
+                                    const active = mode === target;
+                                    return (
+                                      <button
+                                        key={uiMode}
+                                        type="button"
+                                        className="btn btn-sm"
+                                        disabled={cursorCfgBusy}
+                                        onClick={() => update({ modelListMode: target })}
+                                        style={active
+                                          ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
+                                          : undefined}
+                                      >
+                                        {t(uiMode === 'none'
+                                          ? 'clients.modelModeNone'
+                                          : uiMode === 'custom'
+                                            ? 'clients.modelModeCustom'
+                                            : 'clients.modelModeFollow')}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+
+                                {mode === 'follow' && (
+                                  <>
+                                    <Combobox
+                                      value={cursorCfg.followKeyId}
+                                      onChange={(keyId) => update({ followKeyId: keyId })}
+                                      options={apiKeys.map((key) => ({
+                                        value: key.id,
+                                        label: key.name,
+                                        meta: key.key.length > 12 ? `${key.key.slice(0, 8)}…${key.key.slice(-4)}` : undefined,
+                                      }))}
+                                      placeholder={t('clients.followKeyPlaceholder')}
+                                      clearable
+                                      panelMinWidth={320}
+                                    />
+                                    {!followKey ? (
+                                      <div style={{ color: 'var(--accent-amber)' }}>{t('clients.followNoKey')}</div>
+                                    ) : !followView ? (
+                                      <div style={{ color: 'var(--text-dim)' }}>{t('clients.followLoading')}</div>
+                                    ) : (
+                                      <>
+                                        {renderModelChips('cursor', visible)}
+                                        <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                                          {t('clients.followCount', { n: visible.length })} · {t('clients.followSnapshot')}
+                                        </div>
+                                      </>
+                                    )}
+                                  </>
+                                )}
+
+                                {mode === 'custom' && (
+                                  <>
+                                    <Combobox
+                                      value=""
+                                      onChange={(id) => {
+                                        if (id && !cursorCfg.models.includes(id)) {
+                                          update({ models: [...cursorCfg.models, id] });
+                                        }
+                                      }}
+                                      options={models
+                                        .filter((model) => !cursorCfg.models.includes(model.id))
+                                        .map((model) => ({ value: model.id, label: model.id }))}
+                                      placeholder={t('clients.addModel')}
+                                      panelMinWidth={320}
+                                    />
+                                    {renderModelChips(
+                                      'cursor',
+                                      cursorCfg.models,
+                                      (id) => update({ models: cursorCfg.models.filter((model) => model !== id) }),
+                                    )}
+                                  </>
+                                )}
+
+                                {mode === 'all' && renderModelChips(
+                                  'cursor',
+                                  visible,
+                                  undefined,
+                                  <span style={{ color: 'var(--text-dim)' }}>
+                                    {t(cursorCfg.catalogReplace ? 'clients.cursorReplaceSummary' : 'clients.cursorAppendSummary', { n: visible.length })}
+                                  </span>,
+                                )}
+
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={cursorCfg.catalogReplace}
+                                    disabled={cursorCfgBusy}
+                                    onChange={(e) => update({ catalogReplace: e.target.checked })}
+                                  />
+                                  {t('clients.cursorReplace')}
+                                </label>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ color: 'var(--text-dim)' }}>{t('clients.cursorDefaultModel')}</span>
+                                  <Combobox
+                                    value={cursorCfg.model}
+                                    onChange={(model) => update({ model })}
+                                    options={defaultOptions.map((id) => ({ value: id, label: id }))}
+                                    placeholder={t('clients.cursorDefaultModel')}
+                                    panelMinWidth={320}
+                                  />
+                                </div>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary btn-sm"
+                                    disabled={cursorCfgBusy}
+                                    onClick={() => void saveCursorCfg()}
+                                  >
+                                    {t('pluginPage.configSave')}
+                                  </button>
+                                  <Link className="btn btn-sm" to="/plugins?plugin=cursor">
+                                    {t('clients.cursorAdvancedSettings')}
+                                  </Link>
+                                </div>
+                              </>
+                            );
+                          })()
+                        ) : (
+                          <Link className="btn btn-sm" to={cursorPlugin?.installed ? '/plugins?plugin=cursor' : '/plugins'}>
+                            {cursorPlugin?.installed ? t('clients.cursorConfigureModels') : t('clients.cursorInstallPlugin')}
+                          </Link>
+                        )}
                       </div>
                     )}
 

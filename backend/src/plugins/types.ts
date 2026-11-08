@@ -47,7 +47,29 @@ export interface PluginManifest {
    *  stored as a plugin artifact (<pluginsRoot>/config/<id>.json), never in
    *  the frozen config.yaml. */
   configSchema?: PluginConfigField[];
+  /** Optional grouping for those fields. Declared ONCE here and referenced by
+   *  id from each field (`section`), never repeated per field — a per-field
+   *  title would be a drift twin. Rendering order is array order; fields that
+   *  name no section render first, ungrouped. */
+  configSections?: PluginConfigSection[];
 }
+
+/** One group of operator-facing fields. `advanced` moves the whole group behind
+ *  a collapsed disclosure: hidden fields keep their values (the same rule as
+ *  `visibleWhen`), so collapsing never discards operator input. */
+export interface PluginConfigSection {
+  id: string;
+  /** Locale-text group heading. Omitted = a visual boundary with no heading. */
+  title?: string | Record<string, string>;
+  advanced?: boolean;
+}
+
+/** The closed widget vocabulary the CONSOLE owns (ADR-0017 §7). A plugin names
+ *  a control, never a layout, ordering or markup: 'text' is the default for a
+ *  `string`, 'textarea' a multi-line box, 'model' a single model-ref picker
+ *  bound to the gateway catalog, 'models' a multi-pick list of model refs.
+ *  A control that cannot drive the field's type fails the manifest. */
+export type PluginConfigControl = 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
 
 /** One flat field of a plugin's operator-facing configuration. Primitives
  *  only: the console renders string/number/boolean/string[]/enum inputs
@@ -63,6 +85,24 @@ export interface PluginConfigField {
   max?: number;
   /** enum: the allowed values. */
   values?: string[];
+  /** enum: value → display label, same string-or-locale-map convention as
+   *  `title`. Keys must be declared `values`; an unlabeled value renders raw.
+   *  Without this the console can only print machine values ('follow'), which
+   *  is the whole point of the map — the value carries operator-facing meaning. */
+  enumLabels?: Record<string, string | Record<string, string>>;
+  /** Widget override from the closed console vocabulary (see
+   *  `PluginConfigControl`). Omitted = the type's default control. */
+  control?: PluginConfigControl;
+  /** Id of the `configSections` entry this field belongs to. Omitted = the
+   *  leading ungrouped block. */
+  section?: string;
+  /** Display-only predicate: the console shows this field while the referenced
+   *  field holds one of the listed values. Exactly one of `equals` / `in`.
+   *  The referenced field must be an enum or boolean declared in this schema;
+   *  `equals`/`in` values must be part of it. A hidden field is NOT cleared and
+   *  NOT skipped by validation/merge — hiding is cosmetic, so toggling a mode
+   *  back never loses what the operator entered. */
+  visibleWhen?: { key: string; equals?: string | boolean; in?: (string | boolean)[] };
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;
 }
@@ -367,6 +407,11 @@ export interface ClientGatewayHost {
    * as on the TLS leg (a plaintext origin simply has no certificate to trust).
    * The h2 leg is TLS-only, so a plaintext origin is served by the h1 leg.
    *
+   * `preface` = request-body bytes the plugin already consumed while deciding
+   * whether to relay (model routing). They are written upstream before the
+   * live stream, on both the h2 and h1 legs, so a peeked request loses nothing.
+   * `ended: true` means the captured bytes are the complete body.
+   *
    * `rejected: true` = the rule table's admission gate answered 403 before any
    * dial: nothing was sent upstream, the tap carries the row and `res` already
    * holds the refusal. `wire` is the leg the request arrived on.
@@ -381,6 +426,7 @@ export interface ClientGatewayHost {
       h2?: boolean;
       secure?: boolean;
       tap?: GatewayRelayTap;
+      preface?: { chunks: Buffer[]; ended?: boolean };
     }
   ): Promise<{ wire: 'h1' | 'h2'; rejected?: true }>;
 }

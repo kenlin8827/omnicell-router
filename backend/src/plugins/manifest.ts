@@ -39,7 +39,10 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   }
   // Flat primitives only (ADR-0017 §7): a malformed schema fails loudly
   // instead of degrading silently in the console's generic form.
-  if (m.configSchema !== undefined) validateConfigSchema(m.configSchema, label);
+  if (m.configSchema !== undefined) validateConfigSchema(m.configSchema, label, m.configSections);
+  if (m.configSections !== undefined && m.configSchema === undefined) {
+    fail('configSections without configSchema groups nothing');
+  }
   if (m.logo !== undefined && typeof m.logo !== 'string') fail('logo must be a string');
   if (
     m.description !== undefined &&
@@ -70,8 +73,61 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
 
 const CONFIG_FIELD_TYPES: Record<string, true> = { string: true, number: true, boolean: true, 'string[]': true, enum: true };
 
-/** Validate one plugin's `configSchema` (flat primitive fields, ADR-0017 §7). */
-export function validateConfigSchema(schema: unknown, label: string): void {
+/** Closed console widget vocabulary → the field types each control can drive.
+ *  A new widget is a CONSOLE capability (added here, in the renderer and in the
+ *  ADR), never something a plugin can invent. */
+const CONFIG_CONTROLS: Record<string, Record<string, true>> = {
+  text: { string: true },
+  textarea: { string: true, 'string[]': true },
+  model: { string: true },
+  models: { 'string[]': true },
+  // A short closed choice rendered as joined buttons instead of a dropdown --
+  // the console's own mode switches (none / custom / follow) use the same shape.
+  segmented: { enum: true },
+  // The stable id of a gateway API key (the label/meta come from the live key
+  // list); stored as a plain string so the plugin never receives the secret.
+  apiKey: { string: true },
+};
+
+/** `title`/`desc` follow the manifest locale-map convention: a plain string or
+ *  a BCP-47 keyed map of strings. */
+function isTextOrLocaleMap(v: unknown): boolean {
+  if (typeof v === 'string') return true;
+  return (
+    typeof v === 'object' && v !== null && !Array.isArray(v) && Object.values(v).every((text) => typeof text === 'string')
+  );
+}
+
+/** A declared `default` must already be valid for its own type: the merge
+ *  falls back silently on a wrong-typed stored value, so a wrong-typed DEFAULT
+ *  would hand the plugin a value its own schema forbids. Returns the complaint
+ *  or null when the default is fine. */
+function defaultComplaint(field: Record<string, unknown>): string | null {
+  const d = field.default;
+  switch (field.type) {
+    case 'boolean':
+      return typeof d === 'boolean' ? null : 'must be a boolean';
+    case 'number':
+      if (typeof d !== 'number' || !Number.isFinite(d)) return 'must be a finite number';
+      if (typeof field.min === 'number' && d < field.min) return `must be >= min (${field.min})`;
+      if (typeof field.max === 'number' && d > field.max) return `must be <= max (${field.max})`;
+      return null;
+    case 'string':
+      return typeof d === 'string' ? null : 'must be a string';
+    case 'string[]':
+      return Array.isArray(d) && d.every((x) => typeof x === 'string') ? null : 'must be a string array';
+    case 'enum':
+      return typeof d === 'string' && (field.values as string[]).includes(d)
+        ? null
+        : 'must be one of the declared enum values';
+    default:
+      return null;
+  }
+}
+
+/** Validate one plugin's `configSchema` (flat primitive fields, ADR-0017 §7)
+ *  and, when given, its `configSections` grouping. */
+export function validateConfigSchema(schema: unknown, label: string, sections?: unknown): void {
   const fail = (msg: string): never => {
     throw new Error(`${label}: ${msg}`);
   };
@@ -90,5 +146,153 @@ export function validateConfigSchema(schema: unknown, label: string): void {
     if (field.type === 'enum' && (!Array.isArray(field.values) || field.values.length === 0 || !field.values.every((v) => typeof v === 'string'))) {
       fail(`enum '${field.key}' needs a non-empty string values[]`);
     }
+    // The label/description and the numeric bounds are DATA the console renders
+    // and coerces against. They are declared in the same block as `key`, so an
+    // unvalidated wrong type here would break the form (or the number bounds)
+    // silently after a successful install — the opposite of this validator's
+    // promise.
+    for (const prop of ['title', 'desc'] as const) {
+      if (field[prop] !== undefined && !isTextOrLocaleMap(field[prop])) {
+        fail(`'${key}' ${prop} must be a string or a locale map of strings`);
+      }
+    }
+    for (const prop of ['min', 'max'] as const) {
+      if (field[prop] !== undefined && typeof field[prop] !== 'number') fail(`'${key}' ${prop} must be a number`);
+    }
+    if (field.default !== undefined) {
+      const complaint = defaultComplaint(field);
+      if (complaint !== null) fail(`'${key}' default ${complaint}`);
+    }
+    if (field.control !== undefined) {
+      const drives = typeof field.control === 'string' ? CONFIG_CONTROLS[field.control] : undefined;
+      if (!drives) fail(`'${key}' has unknown control '${String(field.control)}'`);
+      if ((drives as Record<string, true>)[field.type as string] !== true) {
+        fail(`'${key}' control '${String(field.control)}' cannot drive a ${String(field.type)} field`);
+      }
+    }
+    if (field.enumLabels !== undefined) {
+      if (field.type !== 'enum') fail(`'${key}' enumLabels is only meaningful on an enum field`);
+      const labels = field.enumLabels;
+      if (typeof labels !== 'object' || labels === null || Array.isArray(labels)) {
+        fail(`'${key}' enumLabels must be an object keyed by value`);
+      }
+      const declared = new Set((field.values as string[] | undefined) ?? []);
+      for (const [value, text] of Object.entries(labels as Record<string, unknown>)) {
+        if (!declared.has(value)) fail(`'${key}' enumLabels names undeclared value '${value}'`);
+        if (!isTextOrLocaleMap(text)) fail(`'${key}' enumLabels['${value}'] must be a string or a locale map of strings`);
+      }
+    }
   }
+
+  // Second pass — `visibleWhen` names a SIBLING field, so a forward reference is
+  // legal and the target must already be validated above. Display-only: the
+  // merge never reads this, but a wrong reference would silently show a field
+  // that can never apply (or hide one forever), which is exactly the silent
+  // degradation this validator exists to prevent.
+  const fields = schema as Array<Record<string, unknown>>;
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const field of fields) byKey.set(field.key as string, field);
+  for (const field of fields) {
+    if (field.visibleWhen === undefined) continue;
+    const key = field.key as string;
+    const when = field.visibleWhen as Record<string, unknown> | null;
+    if (typeof when !== 'object' || when === null || Array.isArray(when)) {
+      fail(`'${key}' visibleWhen must be an object`);
+    }
+    const cond = when as { key?: unknown; equals?: unknown; in?: unknown };
+    if (typeof cond.key !== 'string' || !cond.key) fail(`'${key}' visibleWhen needs a field key`);
+    if (cond.key === key) fail(`'${key}' visibleWhen cannot reference itself`);
+    const target = byKey.get(cond.key as string);
+    if (!target) fail(`'${key}' visibleWhen references unknown field '${String(cond.key)}'`);
+    const allowed = discreteValues(target as Record<string, unknown>);
+    if (allowed === null) {
+      fail(`'${key}' visibleWhen references '${String(cond.key)}', which is not an enum or boolean field`);
+    }
+    const hasEquals = cond.equals !== undefined;
+    const hasIn = cond.in !== undefined;
+    if (hasEquals === hasIn) fail(`'${key}' visibleWhen needs exactly one of equals / in`);
+    if (hasEquals && !(allowed as Set<unknown>).has(cond.equals)) {
+      fail(`'${key}' visibleWhen equals ${JSON.stringify(cond.equals)}, which '${String(cond.key)}' never holds`);
+    }
+    if (hasIn) {
+      const list = cond.in;
+      if (!Array.isArray(list) || list.length === 0) fail(`'${key}' visibleWhen.in must be a non-empty array`);
+      for (const value of list as unknown[]) {
+        if (!(allowed as Set<unknown>).has(value)) {
+          fail(`'${key}' visibleWhen.in names ${JSON.stringify(value)}, which '${String(cond.key)}' never holds`);
+        }
+      }
+    }
+  }
+  assertNoVisibilityCycle(fields, fail);
+  if (sections !== undefined) validateSections(sections, fields, fail);
+}
+
+/** `configSections` is grouping only (no layout, no tabs): ids must be unique,
+ *  every `field.section` must name one of them, and the titles follow the same
+ *  locale-map convention as everything else. A dangling reference would put a
+ *  field in a group nobody renders, so it fails at install instead. */
+function validateSections(
+  sections: unknown,
+  fields: Array<Record<string, unknown>>,
+  fail: (msg: string) => never
+): void {
+  if (!Array.isArray(sections)) fail('configSections must be an array');
+  const ids = new Set<string>();
+  const referenced = new Set<string>();
+  for (const section of sections as Array<Record<string, unknown>>) {
+    if (!section || typeof section !== 'object' || Array.isArray(section)) fail('configSections entry must be an object');
+    if (typeof section.id !== 'string' || !section.id) fail('every configSections entry needs a non-empty id');
+    const id = section.id as string;
+    if (ids.has(id)) fail(`duplicate configSections id '${id}'`);
+    ids.add(id);
+    if (section.title !== undefined && !isTextOrLocaleMap(section.title)) {
+      fail(`section '${id}' title must be a string or a locale map of strings`);
+    }
+    if (section.advanced !== undefined && typeof section.advanced !== 'boolean') {
+      fail(`section '${id}' advanced must be a boolean`);
+    }
+  }
+  for (const field of fields) {
+    if (field.section === undefined) continue;
+    if (typeof field.section !== 'string' || !field.section) fail(`'${String(field.key)}' section must be a non-empty string`);
+    if (!ids.has(field.section as string)) {
+      fail(`'${String(field.key)}' names unknown configSections id '${String(field.section)}'`);
+    }
+    referenced.add(field.section as string);
+  }
+  // A declared group nothing references is either a typo in a field or dead
+  // declaration — both render as a heading that never appears, so they fail here.
+  for (const id of ids) {
+    if (!referenced.has(id)) fail(`configSections id '${id}' is not referenced by any field`);
+  }
+}
+
+/** The value domain of a condition target: an enum's declared values, or
+ *  booleans. Anything else has no discrete values to test against. */
+function discreteValues(field: Record<string, unknown>): Set<unknown> | null {
+  if (field.type === 'enum') return new Set((field.values as string[] | undefined) ?? []);
+  if (field.type === 'boolean') return new Set([true, false]);
+  return null;
+}
+
+/** `visibleWhen` chains must not cycle: 'A while B' plus 'B while A' could never
+ *  both be shown, so the form would silently lose a field. */
+function assertNoVisibilityCycle(fields: Array<Record<string, unknown>>, fail: (msg: string) => never): void {
+  const edge = new Map<string, string>();
+  for (const field of fields) {
+    const when = field.visibleWhen as { key?: unknown } | null | undefined;
+    if (when && typeof when.key === 'string') edge.set(field.key as string, when.key);
+  }
+  const state = new Map<string, 1 | 2>();
+  const visit = (key: string): void => {
+    const seen = state.get(key);
+    if (seen === 2) return;
+    if (seen === 1) fail(`visibleWhen cycle through '${key}'`);
+    state.set(key, 1);
+    const next = edge.get(key);
+    if (next !== undefined) visit(next);
+    state.set(key, 2);
+  };
+  for (const key of edge.keys()) visit(key);
 }

@@ -3926,9 +3926,31 @@ export interface PluginConfigFieldInfo {
   max?: number;
   /** enum: the allowed values. */
   values?: string[];
+  /** enum: value → display label (same string-or-locale-map convention as
+   *  `title`). An unlabeled value renders as the raw value. */
+  enumLabels?: Record<string, string | Record<string, string>>;
+  /** Widget from the closed console vocabulary (mirrors backend
+   *  `PluginConfigControl`). Omitted = the type's default control. */
+  control?: 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
+  /** Id of the plugin's `configSections` entry this field belongs to; omitted =
+   *  the leading ungrouped block. */
+  section?: string;
+  /** Display-only predicate: render this field only while the referenced field
+   *  holds one of the listed values (exactly one of `equals` / `in`). Hidden
+   *  fields keep their draft value, so a mode toggle never discards input. */
+  visibleWhen?: { key: string; equals?: string | boolean; in?: (string | boolean)[] };
   /** Locale map keyed by BCP-47 ('zh-CN'), like the manifest description. */
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;
+}
+
+/** One declared group of plugin settings (mirrors backend
+ *  `PluginConfigSection`). Fields reference it by id; the heading lives here so
+ *  it is declared exactly once. `advanced` starts the group collapsed. */
+export interface PluginConfigSectionInfo {
+  id: string;
+  title?: string | Record<string, string>;
+  advanced?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -4929,9 +4951,15 @@ export const opencodeApi = {
   },
 
   /** Schema + current values (defaults already merged) for a plugin's settings drawer. */
-  async getPluginConfig(id: string): Promise<{ status: string; schema: PluginConfigFieldInfo[]; values: Record<string, unknown> }> {
+  async getPluginConfig(id: string): Promise<{ status: string; schema: PluginConfigFieldInfo[]; sections?: PluginConfigSectionInfo[]; values: Record<string, unknown> }> {
     const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`);
-    const parsed = (await res.json()) as { status: string; error?: string; schema: PluginConfigFieldInfo[]; values: Record<string, unknown> };
+    const parsed = (await res.json()) as {
+      status: string;
+      error?: string;
+      schema: PluginConfigFieldInfo[];
+      sections?: PluginConfigSectionInfo[];
+      values: Record<string, unknown>;
+    };
     if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
     return parsed;
   },
