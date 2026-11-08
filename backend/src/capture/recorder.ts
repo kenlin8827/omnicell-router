@@ -6,6 +6,7 @@ import { getEnvPaths } from '../config/env.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 import { setCaptureSecretRedaction } from '../observability/http-exchange.js';
+import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
 
 /**
  * One captured turn — a single JSONL line in the per-session archive file.
@@ -224,13 +225,38 @@ export interface HttpExchangeEvent {
    */
   apiKey?: CaptureKeyIdentity;
   /**
-   * Flattened LAST user message of the request (the current turn's prompt),
-   * capped — stamped on client-request events at write time so metadata-only
-   * reads (`bodies=none`) can still render the turn prompt in the console
+   * Flattened LAST user message of the request, capped — stamped on
+   * client-request events at write time so metadata-only reads
+   * (`bodies=none`) can still render the turn prompt in the console
    * timeline. Absent on other phases/directions and for bodies without user
-   * text (tool-result continuations etc.).
+   * text. Note this is the *last user message of the body*, which for a
+   * tool-result continuation is the PREVIOUS turn's prompt (clients resend
+   * the whole history) — the read plane drops it in that case, see
+   * `promptLastUserIdx`.
    */
   promptSummary?: string;
+  /**
+   * Length of the client-request body's message array (post-parse, raw as
+   * received) — the floor the NEXT turn's `promptLastUserIdx` is compared
+   * against: clients append, so a genuinely new user message always lands at
+   * or past this index. Stamped with `promptSummary`; absent when the body
+   * carries no message array (plain-string `input`, System One `state`, a
+   * non-JSON / unrepairable body).
+   */
+  promptMessageCount?: number;
+  /**
+   * Index of the last user-role message inside `promptMessageCount`; absent
+   * when that array has no user message. An index BELOW the previous turn's
+   * `promptMessageCount` — with this turn's array no shorter than that
+   * previous one — means the message already existed at the previous turn:
+   * resent history, not this turn's question, so `groupEventsIntoTurns`
+   * drops `promptSummary` and the timeline renders the no-prompt glyph. A
+   * shrunk array (client-side compaction) disables the test: every index
+   * moved, and the last user message is normally the new prompt. Same rule
+   * the session plane applies to `userPromptSummary` (see the orchestrator's
+   * trace record).
+   */
+  promptLastUserIdx?: number;
   /** Error message if THIS phase errored (e.g. upstream request never got a response). */
   error?: string;
   /**
@@ -286,7 +312,30 @@ export interface CaptureTurnSummary {
   traceId: string;
   sessionId: string;
   model: string;
-  /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
+  /**
+   * 1-based REQUEST sequence number — one per client request, the same unit
+   * as the trace plane's `turnNumber` (backed by `ExecutionTrace.turnNumber`,
+   * see `trace/tracker.ts`). Numbered inside the read
+   * window; the read response carries `windowRequests` so the console can
+   * offset it against the exact archive tally and show an absolute number.
+   * Absent on turns whose client-request event fell outside the window (a
+   * continuation leg, not a request).
+   */
+  requestNumber?: number;
+  /**
+   * 1-based PROMPT-ROUND number — one per user prompt plus the requests it
+   * drove (tool-call hops). Continuation turns share their round's number.
+   * Numbered inside the read window; a leading prompt-less block is the
+   * visible tail of a round whose prompt sits outside the window and opens
+   * round 1. This is the console's "轮次" — never the request count.
+   */
+  roundNumber?: number;
+  /**
+   * This turn's NEW user prompt — lifted from the client-request event, and
+   * BLANKED when that request only resent the previous turn's user message
+   * (see groupEventsIntoTurns). Absent = the turn carried no fresh user
+   * message (tool-result continuation), rendered as the no-prompt glyph.
+   */
   promptSummary?: string;
   clientRequest?: HttpExchangeEvent;
   gatewayResponse?: HttpExchangeEvent;
@@ -323,6 +372,52 @@ export interface CaptureTurnSummary {
   upstreamTtftMs?: number;
   upstreamGenMs?: number;
 }
+
+/**
+ * One user-prompt round over the WHOLE archive (not a read window): the
+ * prompt and the contiguous request range it drove. `firstRequest` /
+ * `lastRequest` are 1-based chronological request numbers, so the console can
+ * map a round onto any page without loading full bodies.
+ */
+export interface CaptureRoundIndexEntry {
+  /** 1-based chronological round number over the whole conversation. */
+  ordinal: number;
+  /** New user message that opened the round; absent for a legacy archive. */
+  prompt?: string;
+  /** Request send time (epoch ms) of the round's first request. */
+  startTs?: number;
+  /** Client requests in this round (the prompt turn + tool-loop hops). */
+  requests: number;
+  firstRequest: number;
+  lastRequest: number;
+}
+
+/** Exact whole-archive totals + the prompt-round index (metadata only). */
+export interface CaptureArchiveSummary {
+  requests: number;
+  fragments: number;
+  rounds: CaptureRoundIndexEntry[];
+}
+
+interface RequestIndexState {
+  requests: number;
+  rounds: CaptureRoundIndexEntry[];
+  /** sessionId → previous request's prompt message count (continuation floor). */
+  lastMessageCount: Map<string, number>;
+}
+
+const newRequestIndexState = (): RequestIndexState => ({
+  requests: 0,
+  rounds: [],
+  lastMessageCount: new Map(),
+});
+
+/** Targeted line scans: the archive is compact JSON written by this recorder. */
+const RE_CAPTURE_SESSION_ID = /"sessionId":"((?:[^"\\]|\\.)*)"/;
+const RE_CAPTURE_TS = /"ts":(\d+)/;
+const RE_CAPTURE_PROMPT_SUMMARY = /"promptSummary":("(?:[^"\\]|\\.)*")/;
+const RE_CAPTURE_PROMPT_COUNT = /"promptMessageCount":(\d+)/;
+const RE_CAPTURE_PROMPT_LAST_USER = /"promptLastUserIdx":(\d+)/;
 
 interface CaptureDateRow {
   date: string; // YYYY-MM-DD (local time)
@@ -469,6 +564,11 @@ function humanBytes(n: number): string {
 // archive read is in flight.
 const READ_WINDOW_FLOOR_BYTES = 8 * 1024 * 1024;
 const READ_WINDOW_CEIL_BYTES = 48 * 1024 * 1024;
+/** Hard ceiling for the GROWING read window (page-driven growth, not the
+ *  default window). Growth is requested by the console's pager, so it must
+ *  stay memory-bounded regardless of how deep a click reaches: past this the
+ *  response clamps `page`/`totalPages` and the pager self-heals. */
+const READ_WINDOW_GROWTH_CEIL_BYTES = 3 * READ_WINDOW_CEIL_BYTES;
 
 /**
  * Last "completion_tokens" / "output_tokens" occurrence in a response body —
@@ -509,6 +609,26 @@ const stripBodies = (events: HttpExchangeEvent[]): void => {
 };
 
 /**
+ * `bodies='chat'` retention: the conversation replay needs each ROUND
+ * OPENER's client-request body (it carries the full history up to that
+ * prompt) plus every response body; the multi-MB continuation request bodies
+ * repeat the same history and only bloat memory. Upstream request bodies are
+ * byte-identical to their client counterpart, so they always go.
+ */
+const stripBodiesForChat = (events: HttpExchangeEvent[], keepRequests: Set<HttpExchangeEvent>): void => {
+  for (const ev of events) {
+    const wire = ev.wire as Partial<RawWireCapture> | undefined;
+    if (!wire) continue;
+    if (ev.phase === 'response') {
+      delete wire.requestBody;
+      continue;
+    }
+    delete wire.responseBody;
+    if (!(ev.direction === 'client' && keepRequests.has(ev))) delete wire.requestBody;
+  }
+};
+
+/**
  * Full request/response capture recorder (opt-in audit log).
  *
  * Archives are plain append-only JSONL files, laid out for O(1) retention:
@@ -532,6 +652,8 @@ export class CaptureRecorder {
   // archives already got their terminal `archive-overflow` line.
   private fileBytesCache = new Map<string, number>();
   private sealedFiles = new Set<string>();
+  /** Whole-archive request/round summaries keyed by file stat signature. */
+  private summaryCache = new Map<string, CaptureArchiveSummary>();
   private rootDir: string;
   private sweepTimer?: ReturnType<typeof setInterval>;
 
@@ -722,7 +844,7 @@ export class CaptureRecorder {
       ts,
       wire,
       ...(event.direction === 'client' && event.phase === 'request'
-        ? { promptSummary: CaptureRecorder.extractTurnPrompt(truncatedReq.value ?? '') }
+        ? CaptureRecorder.turnPromptStamp(truncatedReq.value ?? '')
         : {}),
       ...(truncated ? { truncated: true } : {}),
     };
@@ -1073,24 +1195,34 @@ export class CaptureRecorder {
   }
 
   /**
-   * Read the last `readWindowBytes()` of one archive and parse its
-   * http-exchange events. Async and yield-paced: the window can be tens of
-   * MB and per-line JSON.parse is CPU-bound — parsing in batches with
-   * event-loop yields keeps the gateway responsive while an archive read is
-   * in flight. Never fails: corrupt lines are skipped.
+   * Read the last `bytes` of one archive and parse its http-exchange events.
+   * Async and yield-paced: the window can be tens of MB and per-line
+   * JSON.parse is CPU-bound — parsing in batches with event-loop yields keeps
+   * the gateway responsive while an archive read is in flight. Never fails:
+   * corrupt lines are skipped.
+   *
+   * `minBytes` lets a caller ask for a window LARGER than the default one —
+   * the console's backward pager grows the window until the page it wants is
+   * covered (see readEvents), so a session whose bodies blow past the default
+   * window is still fully browsable instead of silently ending at its tail.
    */
   private async readWindowEvents(
     date: string,
-    file: string
-  ): Promise<{ events: HttpExchangeEvent[]; fileTruncated: boolean }> {
+    file: string,
+    minBytes = 0
+  ): Promise<{ events: HttpExchangeEvent[]; fileTruncated: boolean; fileBytes: number; windowBytes: number }> {
     const filePath = this.resolveArchiveFile(date, file);
-    if (!filePath) return { events: [], fileTruncated: false };
+    if (!filePath) return { events: [], fileTruncated: false, fileBytes: 0, windowBytes: 0 };
 
     let text: string;
     let fileTruncated = false;
+    let fileBytes = 0;
+    let windowBytes = 0;
     try {
       const st = await fs.promises.stat(filePath);
-      const readSize = Math.min(st.size, this.readWindowBytes());
+      fileBytes = st.size;
+      const readSize = Math.min(st.size, Math.max(this.readWindowBytes(), minBytes));
+      windowBytes = readSize;
       const fh = await fs.promises.open(filePath, 'r');
       try {
         const buf = Buffer.alloc(readSize);
@@ -1101,7 +1233,7 @@ export class CaptureRecorder {
       }
       fileTruncated = readSize < st.size;
     } catch {
-      return { events: [], fileTruncated: false };
+      return { events: [], fileTruncated: false, fileBytes: 0, windowBytes: 0 };
     }
 
     const lines = text.split(/\r?\n/);
@@ -1127,7 +1259,7 @@ export class CaptureRecorder {
       }
       if ((i + 1) % BATCH === 0) await yieldLoop();
     }
-    return { events, fileTruncated };
+    return { events, fileTruncated, fileBytes, windowBytes };
   }
 
   /**
@@ -1140,12 +1272,29 @@ export class CaptureRecorder {
    * console reads — the tok/s chips keep working via the derived
    * `completionTokens` field, and full bodies come back on demand
    * (readTurn / bodies='full').
+   *
+   * `page` (1-based, counted from the NEWEST end) pages backwards in REQUESTS:
+   * page 1 is the newest `limit` logical turns, page 2 the block just older
+   * than it, and so on. Paging in turns (not raw event lines) is what makes
+   * the console's pager summary speak the same unit as its header, and a page
+   * can never hold half a turn — the four events of a turn always travel
+   * together.
+   *
+   * The read window GROWS to cover the requested page: a 13 MB body per
+   * request means a few requests can fill the default window, and a console
+   * that stopped there would look like it lost history the trace plane still
+   * shows. Growth doubles the window until the page fits, the whole file is
+   * read, or READ_WINDOW_GROWTH_CEIL_BYTES is reached — past the ceiling the
+   * response clamps `page`/`totalPages` (the pager self-heals) and deeper
+   * history stays export-only, so one pager click can never allocate a
+   * seal-sized buffer.
    */
   public async readEvents(
     date: string,
     file: string,
-    limit = 500,
-    bodies: 'full' | 'none' = 'full'
+    limit = 50,
+    bodies: 'full' | 'none' | 'chat' = 'full',
+    page = 1
   ): Promise<{
     events: HttpExchangeEvent[];
     turns: CaptureTurnSummary[];
@@ -1153,23 +1302,123 @@ export class CaptureRecorder {
     /** Logical turn count over ALL events in the read window (totalLines is
      * raw event lines — 2-4 per turn — so it must never be shown as turns). */
     totalTurns: number;
+    /** Requests (turns with a client-request event) in the read window —
+     *  the offset the console applies to `requestNumber` for absolute #. */
+    windowRequests: number;
+    /** User-prompt rounds in the read window: one per turn carrying a NEW
+     *  prompt, plus a leading partial block when the window starts mid-round. */
+    totalRounds: number;
+    /** The window is the WHOLE file (false = only its tail was read). */
+    windowComplete: boolean;
     fileTruncated: boolean;
+    /** The page actually served (clamped into [1, totalPages]). */
+    page: number;
+    /** Pages available in the read window (turn pages). */
+    totalPages: number;
+    /** Older turns remain in the read window (page < totalPages). */
+    hasOlder: boolean;
+    /** Newer turns exist (page > 1). */
+    hasNewer: boolean;
   }> {
-    const { events, fileTruncated } = await this.readWindowEvents(date, file);
-    if (bodies === 'none') stripBodies(events);
+    const size = Math.max(1, limit);
+    // One page plus one turn proves "older exists"; growing until then makes
+    // hasOlder exact instead of window-relative.
+    const needed = page * size + 1;
+    let minBytes = 0;
+    let read = await this.readWindowEvents(date, file, minBytes);
+    for (;;) {
+      const groups = CaptureRecorder.groupEventsIntoTurns(read.events);
+      if (groups.length >= needed || !read.fileTruncated) break;
+      const next = Math.min(
+        Math.max(read.windowBytes * 2, this.readWindowBytes()),
+        READ_WINDOW_GROWTH_CEIL_BYTES
+      );
+      if (next <= read.windowBytes) break; // ceiling reached (or no growth) — stay put
+      minBytes = next;
+      read = await this.readWindowEvents(date, file, minBytes);
+    }
+    const { events, fileTruncated, windowBytes } = read;
+    void windowBytes;
+    const windowComplete = !fileTruncated;
 
-    let newest = events.slice(-Math.max(1, limit));
-    // Don't cut a turn in half: when the window starts mid-turn, the
-    // leading events (upstream/gateway responses whose client-request fell
-    // outside the window) would form a phantom incomplete turn with no
-    // latency — drop everything before the first turn-start in the window.
-    const firstTurnStart = newest.findIndex(e => e.direction === 'client' && e.phase === 'request');
-    if (firstTurnStart > 0) newest = newest.slice(firstTurnStart);
-    const turns = CaptureRecorder.groupEventsIntoTurns(newest);
-    // Total logical turns over the whole read window — the header's turn count
-    // must use this, not totalLines (raw event lines, 2-4 per turn).
-    const totalTurns = CaptureRecorder.groupEventsIntoTurns(events).length;
-    return { events: newest, turns, totalLines: events.length, totalTurns, fileTruncated };
+    // Turn boundaries are structural (direction/phase/traceId), so this first
+    // pass only exists to locate the page; the stamps backfilled below do not
+    // change it, which is why the indices stay valid for the second pass.
+    const groups = CaptureRecorder.groupEventsIntoTurns(events);
+    const totalPages = Math.max(1, Math.ceil(groups.length / size));
+    const pageNo = Math.min(Math.max(1, Math.trunc(page) || 1), totalPages);
+    const end = groups.length - (pageNo - 1) * size;
+    const sliceStart = Math.max(0, end - size);
+    const pageTurns = groups.slice(sliceStart, Math.max(sliceStart, end));
+    // The page's events — exactly the legs of its turns, in wire order.
+    const visible = new Set<HttpExchangeEvent>();
+    for (const t of pageTurns) {
+      for (const ev of [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]) {
+        if (ev) visible.add(ev);
+      }
+    }
+    const newest = events.filter(ev => visible.has(ev));
+    // Positions must be derived while the bodies are still attached.
+    CaptureRecorder.backfillPromptPositions(events, newest);
+
+    // Group over the WHOLE read window, then keep the turns on this page.
+    // Grouping only the page would lose the previous client request a
+    // prompt-staleness decision needs (see groupEventsIntoTurns), so the
+    // oldest visible continuation would show the resent prompt again. One
+    // grouping pass also owns `totalTurns` — the header's turn count must use
+    // that, not totalLines (raw event lines, 2-4 per turn).
+    const allTurns = CaptureRecorder.groupEventsIntoTurns(events);
+    const totals = CaptureRecorder.numberTurns(allTurns);
+    if (bodies === 'none') stripBodies(events);
+    else if (bodies === 'chat') {
+      const keepRequests = new Set<HttpExchangeEvent>();
+      allTurns.forEach((t, i) => {
+        if (t.clientRequest && (t.promptSummary || i === 0)) keepRequests.add(t.clientRequest);
+      });
+      stripBodiesForChat(events, keepRequests);
+    }
+    const turns = CaptureRecorder.turnsInWindow(allTurns, newest);
+    const hasOlder = sliceStart > 0;
+    return {
+      events: newest,
+      turns,
+      totalLines: events.length,
+      totalTurns: allTurns.length,
+      windowRequests: totals.requests,
+      totalRounds: totals.rounds,
+      windowComplete,
+      fileTruncated,
+      page: pageNo,
+      totalPages,
+      hasOlder,
+      hasNewer: pageNo > 1,
+    };
+  }
+
+  /**
+   * Number a window's turns in chronological order on TWO separate axes:
+   *   - `requestNumber` — one per client request (the unit the trace plane
+   *     calls `turnNumber` — `ExecutionTrace.turnNumber`, `trace/tracker.ts`),
+   *     never per tool-result continuation.
+   *     Turns whose client-request event fell outside the window keep no
+   *     number: they are the tail of a request whose number lives on an
+   *     older page.
+   *   - `roundNumber` — one per USER PROMPT plus every request it drove; a
+   *     continuation shares its round's number. A leading prompt-less block
+   *     is the visible tail of a round that started outside the window and
+   *     therefore opens round 1.
+   * The returned totals are the read window's request and round counts.
+   */
+  private static numberTurns(turns: CaptureTurnSummary[]): { requests: number; rounds: number } {
+    let requests = 0;
+    let rounds = 0;
+    for (const t of turns) {
+      if (t.clientRequest) t.requestNumber = ++requests;
+      else delete t.requestNumber;
+      if (t.promptSummary || rounds === 0) rounds++;
+      t.roundNumber = rounds;
+    }
+    return { requests, rounds };
   }
 
   /**
@@ -1186,9 +1435,19 @@ export class CaptureRecorder {
     const { events } = await this.readWindowEvents(date, file);
     const anchor = events.find(e => e.id === eventId);
     if (!anchor) return null;
-    const subset = events.filter(e => e.traceId === anchor.traceId);
-    const turns = CaptureRecorder.groupEventsIntoTurns(subset);
-    const turn = turns.find(t =>
+    // Group the WHOLE window, not just the anchor's trace: the prompt
+    // staleness decision compares against the session's previous client
+    // request, so a trace-only subset would re-show the resent prompt in the
+    // drawer. Grouping is metadata-only — the bodies ride on the same objects.
+    // Legacy archives carry `promptSummary` without its staleness basis —
+    // derive it from the still-attached bodies before grouping. The pass
+    // starts at the request BEFORE the anchor (it sets the anchor's floor)
+    // and runs to the end of the window; already-stamped events are skipped,
+    // so it is a no-op for archives written by this build.
+    CaptureRecorder.backfillPromptPositions(events, [anchor]);
+    const allTurns = CaptureRecorder.groupEventsIntoTurns(events);
+    CaptureRecorder.numberTurns(allTurns);
+    const turn = allTurns.find(t =>
       [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse].some(
         e => e?.id === eventId
       )
@@ -1307,48 +1566,128 @@ export class CaptureRecorder {
    * its request and response events landed in different date files.
    * Fragment turn counts are per-file (the archive's physical layout), while
    * `turns`/`totalTurns` cover the WHOLE conversation.
+   *
+   * `page` pages backwards exactly like the non-stitched read, over the
+   * MERGED conversation timeline (a page can therefore mix shards). Paging
+   * stays window-bounded: each fragment is read through its own tail window,
+   * so history older than every window is export-only.
    */
   public async readEventsStitched(
     date: string,
     file: string,
-    limit = 500,
-    bodies: 'full' | 'none' = 'full'
+    limit = 50,
+    bodies: 'full' | 'none' | 'chat' = 'full',
+    page = 1
   ): Promise<{
     events: HttpExchangeEvent[];
     turns: CaptureTurnSummary[];
     totalLines: number;
     totalTurns: number;
+    windowRequests: number;
+    totalRounds: number;
+    windowComplete: boolean;
     fileTruncated: boolean;
     fragments: { date: string; file: string; turns: number }[];
+    page: number;
+    totalPages: number;
+    hasOlder: boolean;
+    hasNewer: boolean;
   }> {
     const fragments = this.conversationFragments(date, file);
-    const merged = new Map<string, HttpExchangeEvent>();
+    const size = Math.max(1, limit);
+    const needed = page * size + 1;
+    // Same window growth as readEvents, applied per fragment: a shard whose
+    // bodies blow past the default window is grown until the merged timeline
+    // covers the requested page (or every shard is read whole).
+    let minBytes = 0;
+    let merged = new Map<string, HttpExchangeEvent>();
     let fileTruncated = false;
-    const fragmentRows: { date: string; file: string; turns: number }[] = [];
-    for (const f of fragments) {
-      const { events, fileTruncated: trunc } = await this.readWindowEvents(f.date, f.file);
-      if (trunc) fileTruncated = true;
-      for (const ev of events) {
-        if (!merged.has(ev.id)) merged.set(ev.id, ev);
+    let fragmentRows: { date: string; file: string; turns: number }[] = [];
+    for (;;) {
+      merged = new Map<string, HttpExchangeEvent>();
+      fragmentRows = [];
+      fileTruncated = false;
+      let grew = false;
+      let maxWindow = 0;
+      for (const f of fragments) {
+        const result = await this.readWindowEvents(f.date, f.file, minBytes);
+        if (result.fileTruncated) fileTruncated = true;
+        if (result.windowBytes > maxWindow) maxWindow = result.windowBytes;
+        if (result.fileBytes > result.windowBytes) grew = true;
+        for (const ev of result.events) {
+          if (!merged.has(ev.id)) merged.set(ev.id, ev);
+        }
+        fragmentRows.push({
+          date: f.date,
+          file: f.file,
+          turns: CaptureRecorder.groupEventsIntoTurns(result.events).length,
+        });
       }
-      fragmentRows.push({ date: f.date, file: f.file, turns: CaptureRecorder.groupEventsIntoTurns(events).length });
+      const all = [...merged.values()].sort((a, b) => a.ts - b.ts);
+      const groups = CaptureRecorder.groupEventsIntoTurns(all);
+      if (groups.length >= needed || !grew) break;
+      const next = Math.min(Math.max(maxWindow * 2, this.readWindowBytes()), READ_WINDOW_GROWTH_CEIL_BYTES);
+      if (next <= maxWindow) break; // ceiling reached — stay put
+      minBytes = next;
     }
     const all = [...merged.values()].sort((a, b) => a.ts - b.ts);
-    if (bodies === 'none') stripBodies(all);
 
-    let newest = all.slice(-Math.max(1, limit));
-    // Same mid-turn guard as readEvents: drop leading orphan response events.
-    const firstTurnStart = newest.findIndex(e => e.direction === 'client' && e.phase === 'request');
-    if (firstTurnStart > 0) newest = newest.slice(firstTurnStart);
-    const turns = CaptureRecorder.groupEventsIntoTurns(newest);
-    const totalTurns = CaptureRecorder.groupEventsIntoTurns(all).length;
-    return { events: newest, turns, totalLines: all.length, totalTurns, fileTruncated, fragments: fragmentRows };
+    // Same turn-page arithmetic as readEvents: locate the page on a first
+    // structural grouping pass, then re-group for the prompt-staleness stamps
+    // (they never move a turn boundary).
+    const groups = CaptureRecorder.groupEventsIntoTurns(all);
+    const totalPages = Math.max(1, Math.ceil(groups.length / size));
+    const pageNo = Math.min(Math.max(1, Math.trunc(page) || 1), totalPages);
+    const end = groups.length - (pageNo - 1) * size;
+    const sliceStart = Math.max(0, end - size);
+    const pageTurns = groups.slice(sliceStart, Math.max(sliceStart, end));
+    const visible = new Set<HttpExchangeEvent>();
+    for (const t of pageTurns) {
+      for (const ev of [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]) {
+        if (ev) visible.add(ev);
+      }
+    }
+    const newest = all.filter(ev => visible.has(ev));
+    // Positions must be derived while the bodies are still attached.
+    CaptureRecorder.backfillPromptPositions(all, newest);
+    const allTurns = CaptureRecorder.groupEventsIntoTurns(all);
+    const totals = CaptureRecorder.numberTurns(allTurns);
+    if (bodies === 'none') stripBodies(all);
+    else if (bodies === 'chat') {
+      const keepRequests = new Set<HttpExchangeEvent>();
+      allTurns.forEach((t, i) => {
+        if (t.clientRequest && (t.promptSummary || i === 0)) keepRequests.add(t.clientRequest);
+      });
+      stripBodiesForChat(all, keepRequests);
+    }
+    const turns = CaptureRecorder.turnsInWindow(allTurns, newest);
+    const hasOlder = sliceStart > 0;
+    return {
+      events: newest,
+      turns,
+      totalLines: all.length,
+      totalTurns: allTurns.length,
+      windowRequests: totals.requests,
+      totalRounds: totals.rounds,
+      windowComplete: !fileTruncated,
+      fileTruncated,
+      fragments: fragmentRows,
+      page: pageNo,
+      totalPages,
+      hasOlder,
+      hasNewer: pageNo > 1,
+    };
   }
 
   /**
    * readTurn across ALL fragments of the session: the anchor fragment's
    * window is tried first, then every other fragment — a turn archived in a
    * previous day's shard must still open its full wire bodies.
+   *
+   * Known limit: the prompt-staleness basis lives in the same fragment's
+   * window, so a turn that is the FIRST of a day shard may still show the
+   * resent prompt in the drawer (its predecessor sits in the previous shard).
+   * The stitched timeline is exact — it groups all fragments together.
    */
   public async readTurnStitched(date: string, file: string, eventId: string): Promise<{ turn: CaptureTurnSummary } | null> {
     for (const f of this.conversationFragments(date, file)) {
@@ -1356,6 +1695,181 @@ export class CaptureRecorder {
       if (result) return result;
     }
     return null;
+  }
+
+  /* -------------------------------------------------- exact archive summary */
+
+  /**
+   * EXACT whole-archive summary, not the read window: the request count and
+   * the USER-PROMPT ROUND INDEX (prompt + contiguous request range).
+   *
+   * Every request starts with one client-request event (see
+   * groupEventsIntoTurns: a client request ALWAYS opens a turn), and that line
+   * is written exactly once, so this scan counts requests without grouping.
+   * Legacy `cap_` turn records (one line per turn, pre-events) count as one
+   * each; the terminal `archive-overflow` seal line carries `eventType` and is
+   * skipped.
+   *
+   * Streamed in chunks so a seal-maximum session (512 MB) never becomes one
+   * string on the heap. Prompt metadata and positions are pulled with
+   * targeted regexes — never JSON.parse on the whole line, whose request body
+   * can be many MB. Rounds use the SAME continuation rule as
+   * groupEventsIntoTurns (a resent previous user message does not open a new
+   * round), so the dropdown and the timeline agree.
+   *
+   * The result is DISPLAY ONLY: pagination still reads a bounded window.
+   */
+  public async captureSummary(date: string, file: string): Promise<CaptureArchiveSummary> {
+    const filePath = this.resolveArchiveFile(date, file);
+    if (!filePath) return { requests: 0, fragments: 1, rounds: [] };
+    const sig = this.archiveSignature([filePath]);
+    const cached = sig ? this.summaryCache.get(sig) : undefined;
+    if (cached) return cached;
+    const state = newRequestIndexState();
+    await this.scanRequestIndex(filePath, state);
+    const summary = { requests: state.requests, fragments: 1, rounds: state.rounds };
+    if (sig) this.rememberSummary(sig, summary);
+    return summary;
+  }
+
+  /**
+   * Whole STITCHED conversation: fragments in chronological order, with the
+   * continuation state carried across the midnight boundary. A request's
+   * client-request line lives in exactly one shard, so it is counted once.
+   */
+  public async captureSummaryStitched(date: string, file: string): Promise<CaptureArchiveSummary> {
+    const fragments = this.conversationFragments(date, file)
+      .slice()
+      .sort((a, b) => a.date.localeCompare(b.date) || a.file.localeCompare(b.file));
+    const paths = fragments
+      .map(f => this.resolveArchiveFile(f.date, f.file))
+      .filter((p): p is string => Boolean(p));
+    const sig = this.archiveSignature(paths);
+    const cached = sig ? this.summaryCache.get(sig) : undefined;
+    if (cached) return cached;
+    const state = newRequestIndexState();
+    for (const p of paths) await this.scanRequestIndex(p, state);
+    const summary = { requests: state.requests, fragments: paths.length, rounds: state.rounds };
+    if (sig) this.rememberSummary(sig, summary);
+    return summary;
+  }
+
+  /** mtime+size signature — any append invalidates; a read-only archive hits. */
+  private archiveSignature(paths: string[]): string | null {
+    const parts: string[] = [];
+    for (const p of paths) {
+      try {
+        const st = fs.statSync(p);
+        parts.push(`${p}:${st.size}:${st.mtimeMs}`);
+      } catch {
+        return null;
+      }
+    }
+    return parts.join('|');
+  }
+
+  /** Bounded LRU-ish cache: drop the oldest entry past 8 summaries. */
+  private rememberSummary(sig: string, summary: CaptureArchiveSummary): void {
+    this.summaryCache.delete(sig);
+    this.summaryCache.set(sig, summary);
+    while (this.summaryCache.size > 8) {
+      const oldest = this.summaryCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.summaryCache.delete(oldest);
+    }
+  }
+
+  /**
+   * One streamed metadata pass; appends to `state` so shards chain.
+   * Byte-level: 2-4 event lines share a multi-MB request body, so the stream
+   * stays a Buffer and only a matching client-request line is decoded. This
+   * keeps the whole-archive scan proportional to the metadata, not the wire
+   * bodies.
+   */
+  private async scanRequestIndex(filePath: string, state: RequestIndexState): Promise<void> {
+    const take = (line: Buffer): void => {
+      if (line.length === 0) return;
+      if (line.indexOf('"eventType"') >= 0) {
+        if (
+          line.indexOf('"eventType":"http-exchange"') < 0 ||
+          line.indexOf('"direction":"client"') < 0 ||
+          line.indexOf('"phase":"request"') < 0
+        ) {
+          return;
+        }
+        const text = line.toString('utf8');
+        state.requests++;
+        const n = state.requests;
+        const sessionId = RE_CAPTURE_SESSION_ID.exec(text)?.[1] ?? '';
+        const tsMatch = RE_CAPTURE_TS.exec(text);
+        const ts = tsMatch ? Number(tsMatch[1]) : undefined;
+        const rawPrompt = RE_CAPTURE_PROMPT_SUMMARY.exec(text)?.[1];
+        let prompt: string | undefined;
+        if (rawPrompt !== undefined) {
+          try {
+            prompt = JSON.parse(rawPrompt);
+          } catch {
+            prompt = undefined; // truncated/sealed line — treat as no prompt
+          }
+        }
+        const countMatch = RE_CAPTURE_PROMPT_COUNT.exec(text);
+        const count = countMatch ? Number(countMatch[1]) : undefined;
+        const idxMatch = RE_CAPTURE_PROMPT_LAST_USER.exec(text);
+        const idx = idxMatch ? Number(idxMatch[1]) : undefined;
+        const prevCount = state.lastMessageCount.get(sessionId);
+        const resent =
+          prevCount !== undefined &&
+          count !== undefined &&
+          count >= prevCount &&
+          idx !== undefined &&
+          idx < prevCount;
+        if (resent) prompt = undefined;
+        if (prompt !== undefined || state.rounds.length === 0) {
+          state.rounds.push({
+            ordinal: state.rounds.length + 1,
+            prompt,
+            startTs: ts !== undefined && Number.isFinite(ts) ? ts : undefined,
+            requests: 0,
+            firstRequest: n,
+            lastRequest: n,
+          });
+        }
+        const round = state.rounds[state.rounds.length - 1];
+        round.requests++;
+        round.lastRequest = n;
+        if (count !== undefined) state.lastMessageCount.set(sessionId, count);
+        return;
+      }
+      // Legacy turn-shaped record (pre-events archive): one line per request.
+      if (line.indexOf('"id":"cap_') >= 0) {
+        state.requests++;
+        state.rounds.push({
+          ordinal: state.rounds.length + 1,
+          requests: 1,
+          firstRequest: state.requests,
+          lastRequest: state.requests,
+        });
+      }
+    };
+    try {
+      const stream = fs.createReadStream(filePath, { highWaterMark: 1 << 20 });
+      let rest = Buffer.alloc(0);
+      for await (const chunk of stream) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        rest = rest.length > 0 ? Buffer.concat([rest, buf]) : buf;
+        let start = 0;
+        for (;;) {
+          const nl = rest.indexOf(0x0a, start);
+          if (nl < 0) break;
+          take(rest.subarray(start, nl));
+          start = nl + 1;
+        }
+        if (start > 0) rest = rest.subarray(start);
+      }
+      if (rest.length > 0) take(rest);
+    } catch {
+      // Unreadable tail — answer what was counted.
+    }
   }
 
   /**
@@ -1371,6 +1885,9 @@ export class CaptureRecorder {
     const byTrace = new Map<string, CaptureTurnSummary[]>();
     /** traceId → the turn upstream events should attach to (the latest). */
     const activeByTrace = new Map<string, CaptureTurnSummary>();
+    /** sessionId → message count of the session's previous client request; the
+     *  floor a turn's `promptLastUserIdx` must reach to be a NEW user message. */
+    const lastMessageCount = new Map<string, number>();
 
     const newTurn = (ev: HttpExchangeEvent): CaptureTurnSummary => {
       const t: CaptureTurnSummary = { traceId: ev.traceId, sessionId: ev.sessionId, model: ev.model };
@@ -1392,7 +1909,27 @@ export class CaptureRecorder {
         // turn with last-write-wins fields).
         t = newTurn(ev);
         t.clientRequest = ev;
-        t.promptSummary = ev.promptSummary;
+        // The stamped prompt is the body's LAST user message — for a
+        // tool-result continuation that is the PREVIOUS turn's prompt resent
+        // inside the history, and quoting it again made every continuation
+        // row in the timeline read as a duplicate. Clients append, so a
+        // genuinely new user message always sits at or past the previous
+        // request's message count; below it, drop the summary and let the
+        // timeline render the no-prompt glyph. Same rule the session plane
+        // applies to `userPromptSummary`; events archived before the stamp
+        // existed carry no positions and keep their summary unchanged.
+        // The index test assumes an APPENDED history: when the client shrank
+        // its own array (compaction / truncation) every index moved down, so
+        // an index below the previous count proves nothing and the last user
+        // message is normally the new turn's prompt — show it.
+        const prevCount = lastMessageCount.get(ev.sessionId);
+        const resent = prevCount !== undefined
+          && ev.promptMessageCount !== undefined
+          && ev.promptMessageCount >= prevCount
+          && ev.promptLastUserIdx !== undefined
+          && ev.promptLastUserIdx < prevCount;
+        t.promptSummary = resent ? undefined : ev.promptSummary;
+        if (ev.promptMessageCount !== undefined) lastMessageCount.set(ev.sessionId, ev.promptMessageCount);
         activeByTrace.set(ev.traceId, t);
       } else if (ev.direction === 'client' && ev.phase === 'response') {
         // Pair by spanId with the matching client request (newest first —
@@ -1477,6 +2014,55 @@ export class CaptureRecorder {
       const bTs = b.clientRequest?.ts ?? b.upstreamRequest?.ts ?? 0;
       return aTs - bTs;
     });
+  }
+
+  /**
+   * The turns whose events survived a tail slice, in the slice's own object
+   * identity terms: group over the FULL window (so cross-turn derivations
+   * see their predecessor) and keep only turns still anchored in `window`.
+   * A turn created from a stray trailing response (its client request fell
+   * outside the read window) has no event in the slice and drops out, exactly
+   * as the old slice-then-group order did.
+   */
+  private static turnsInWindow(all: CaptureTurnSummary[], window: HttpExchangeEvent[]): CaptureTurnSummary[] {
+    const visible = new Set(window);
+    return all.filter(t =>
+      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]
+        .some(e => e !== undefined && visible.has(e))
+    );
+  }
+
+  /**
+   * Transitional: archives written before the prompt positions existed carry
+   * `promptSummary` without the basis the staleness rule compares against.
+   * Derive the positions from the still-attached request body for the client
+   * requests the caller is about to render — the tail window plus the one
+   * turn immediately before it (that turn sets the floor for the oldest
+   * visible continuation) — so the dedupe also covers the retention window
+   * written by earlier builds. Persisted lines are never rewritten, and the
+   * pass is a no-op once every archive carries the stamps. Must run BEFORE
+   * `stripBodies`.
+   */
+  private static backfillPromptPositions(window: HttpExchangeEvent[], visible: HttpExchangeEvent[]): void {
+    const visibleSet = new Set(visible);
+    const firstVisible = window.findIndex(ev => visibleSet.has(ev));
+    let from = 0;
+    if (firstVisible >= 0) {
+      for (let i = firstVisible - 1; i >= 0; i--) {
+        if (window[i].direction === 'client' && window[i].phase === 'request') {
+          from = i;
+          break;
+        }
+      }
+    }
+    for (let i = from; i < window.length; i++) {
+      const ev = window[i];
+      if (ev.direction !== 'client' || ev.phase !== 'request') continue;
+      if (ev.promptSummary === undefined || ev.promptMessageCount !== undefined) continue;
+      const stamp = CaptureRecorder.turnPromptStamp(ev.wire?.requestBody ?? '');
+      if (stamp.promptMessageCount !== undefined) ev.promptMessageCount = stamp.promptMessageCount;
+      if (stamp.promptLastUserIdx !== undefined) ev.promptLastUserIdx = stamp.promptLastUserIdx;
+    }
   }
 
   /**
@@ -1898,7 +2484,10 @@ export class CaptureRecorder {
    * form stored when a body exceeded maxBodyBytes. Fails open to undefined.
    */
   public static extractSessionPreview(request: unknown, cap = 120): string | undefined {
-    const text = CaptureRecorder.firstUserText(request);
+    // First HUMAN text, not the first user-role message: Cursor opens with a
+    // `<user_info>`/`<rules>` bundle and the prompt rides the NEXT message.
+    // Same strict-then-permissive rule as the console session title.
+    const text = CaptureRecorder.firstHumanUserText(request);
     if (!text) return undefined;
     const flat = text.replace(/\s+/g, ' ').trim();
     if (!flat) return undefined;
@@ -1906,17 +2495,49 @@ export class CaptureRecorder {
   }
 
   /**
-   * The LAST user message of a request body, flattened and capped — the
-   * current turn's prompt (history replay carries the full conversation;
-   * the tail is the fresh turn). Stamped onto client-request events at
-   * write time so metadata-only reads (`bodies=none`) can still render the
-   * turn prompt in the timeline. Same disclosure class as the session
-   * preview. Undefined when the body carries no user text.
+   * The LAST user message of a request body, flattened and capped. Same
+   * disclosure class as the session preview. Undefined when the body carries
+   * no user text.
+   *
+   * NOT stamped verbatim: a body's last user message is only THIS turn's
+   * question when the client appended it — agent loops resend the whole
+   * history, so a tool-result continuation still ends its user list with the
+   * previous turn's prompt. `turnPromptStamp` adds the positions the read
+   * plane needs to tell those apart.
    */
   public static extractTurnPrompt(request: unknown, cap = 120): string | undefined {
-    const text = CaptureRecorder.lastUserText(request);
+    return CaptureRecorder.summarizePromptText(CaptureRecorder.lastUserSlot(request)?.text, cap);
+  }
+
+  /**
+   * The client-request prompt stamp: the display summary PLUS the message
+   * positions that let the READ plane decide whether that summary belongs to
+   * this turn (see HttpExchangeEvent.promptLastUserIdx). The decision cannot
+   * be made here — it needs the previous client request of the same session,
+   * which only the archived event stream has (the recorder keeps no
+   * cross-turn state; capture stays fail-open and restart-transparent).
+   */
+  public static turnPromptStamp(request: unknown, cap = 120): {
+    promptSummary?: string;
+    promptLastUserIdx?: number;
+    promptMessageCount?: number;
+  } {
+    const slot = CaptureRecorder.lastUserSlot(request);
+    const summary = CaptureRecorder.summarizePromptText(slot?.text, cap);
+    return {
+      ...(summary ? { promptSummary: summary } : {}),
+      ...(slot?.lastUserIdx !== undefined ? { promptLastUserIdx: slot.lastUserIdx } : {}),
+      ...(slot?.messageCount !== undefined ? { promptMessageCount: slot.messageCount } : {}),
+    };
+  }
+
+  /** Display form of a prompt: newlines flattened, empty bundle text dropped
+   *  (a metadata-only turn keeps NO prompt — the timeline renders the
+   *  empty-prompt glyph instead of quoting the client's context bundle as
+   *  this turn's question), capped with an ellipsis. */
+  private static summarizePromptText(text: string | undefined, cap: number): string | undefined {
     if (!text) return undefined;
-    const flat = text.replace(/\s+/g, ' ').trim();
+    const flat = displayPromptText(text);
     if (!flat) return undefined;
     return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
   }
@@ -1968,31 +2589,52 @@ export class CaptureRecorder {
     }
   }
 
-  private static lastUserText(request: unknown, depth = 0): string | undefined {
+  /**
+   * The last user slot of a request body: its flattened text plus the array
+   * positions the read plane needs to judge staleness (see
+   * HttpExchangeEvent.promptLastUserIdx). `messageCount` is reported even when
+   * the array carries no user message — it is the NEXT turn's comparison
+   * floor. Both positions stay undefined for bodies whose shape is not a
+   * message array (plain-string `input`, System One `state`, unparseable raw
+   * bodies), which disables the staleness rule rather than guessing.
+   */
+  private static lastUserSlot(
+    request: unknown,
+    depth = 0
+  ): { text?: string; lastUserIdx?: number; messageCount?: number } | undefined {
     if (request === null || request === undefined || depth > 2) return undefined;
     if (typeof request === 'string') {
-      // Same truncation-repair contract as firstUserText.
+      // Same truncation-repair contract as firstHumanUserText.
       const trimmed = request.endsWith(TRUNCATION_SUFFIX)
         ? request.slice(0, -TRUNCATION_SUFFIX.length)
         : request;
       try {
-        return CaptureRecorder.lastUserText(JSON.parse(trimmed), depth + 1);
+        return CaptureRecorder.lastUserSlot(JSON.parse(trimmed), depth + 1);
       } catch {
         const repaired = CaptureRecorder.repairTruncatedJson(trimmed);
-        if (repaired !== null) return CaptureRecorder.lastUserText(repaired, depth + 1);
-        return trimmed.slice(0, 300);
+        if (repaired !== null) return CaptureRecorder.lastUserSlot(repaired, depth + 1);
+        return { text: trimmed.slice(0, 300) };
       }
     }
     if (typeof request !== 'object') return undefined;
     const body = request as Record<string, unknown>;
-    if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages, 'last');
-    if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input, 'last');
-    if (typeof body.input === 'string') return body.input;
+    if (Array.isArray(body.messages)) return CaptureRecorder.lastUserSlotInMessages(body.messages);
+    if (Array.isArray(body.input)) return CaptureRecorder.lastUserSlotInMessages(body.input);
+    if (typeof body.input === 'string') return { text: body.input };
     // System One decision surface — evaluated content lives in `state`.
-    return CaptureRecorder.stateText(body.state);
+    return { text: CaptureRecorder.stateText(body.state) };
   }
 
-  private static firstUserText(request: unknown, depth = 0): string | undefined {
+  /**
+   * The FIRST user message that carries HUMAN text — the client-envelope
+   * normalizer's rules, not the first user-role message. Cursor's agent opens
+   * with a standalone `<user_info>`/`<rules>`/`<mcp_server_catalog>` bundle and
+   * puts the real prompt in the NEXT `<user_query>` message, so taking the
+   * first user role verbatim titled capture sessions with an OS banner. Same
+   * strict-then-permissive rule as the console session title
+   * (`firstDisplayText`), so every surface names a conversation identically.
+   */
+  private static firstHumanUserText(request: unknown, depth = 0): string | undefined {
     if (request === null || request === undefined || depth > 2) return undefined;
     if (typeof request === 'string') {
       // Truncated bodies are stored as `JSON.slice(0, cap) + '...[TRUNCATED]'`
@@ -2003,17 +2645,21 @@ export class CaptureRecorder {
         ? request.slice(0, -TRUNCATION_SUFFIX.length)
         : request;
       try {
-        return CaptureRecorder.firstUserText(JSON.parse(trimmed), depth + 1);
+        return CaptureRecorder.firstHumanUserText(JSON.parse(trimmed), depth + 1);
       } catch {
         const repaired = CaptureRecorder.repairTruncatedJson(trimmed);
-        if (repaired !== null) return CaptureRecorder.firstUserText(repaired, depth + 1);
+        if (repaired !== null) return CaptureRecorder.firstHumanUserText(repaired, depth + 1);
         return trimmed.slice(0, 300);
       }
     }
     if (typeof request !== 'object') return undefined;
     const body = request as Record<string, unknown>;
-    if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages, 'first');
-    if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input, 'first');
+    if (Array.isArray(body.messages)) {
+      return CaptureRecorder.firstHumanText(body.messages) ?? CaptureRecorder.stateText(body.state);
+    }
+    if (Array.isArray(body.input)) {
+      return CaptureRecorder.firstHumanText(body.input) ?? CaptureRecorder.stateText(body.state);
+    }
     if (typeof body.input === 'string') return body.input;
     // System One decision surface — evaluated content lives in `state`.
     return CaptureRecorder.stateText(body.state);
@@ -2065,34 +2711,52 @@ export class CaptureRecorder {
     return null;
   }
 
-  /** First role === 'user' entry; content as string or text-part array. */
-  private static userTextFromMessages(messages: unknown[], pick: 'first' | 'last'): string | undefined {
-    // Walk forward for 'first', backward for 'last' — the session's opening
-    // message anchors the session preview; the LAST user message is the
-    // current turn's prompt (history replay means every request carries the
-    // full conversation, so the tail is the fresh turn).
-    const order = pick === 'first' ? messages : [...messages].reverse();
-    for (const m of order) {
-      if (!m || typeof m !== 'object') continue;
-      const msg = m as Record<string, unknown>;
-      if (msg.role !== 'user') continue;
-      const content = msg.content;
-      if (typeof content === 'string') return content;
-      if (Array.isArray(content)) {
-        const parts = content
-          .map(p => (p && typeof p === 'object' && typeof (p as any).text === 'string' ? (p as any).text : ''))
-          .filter(Boolean);
-        if (parts.length > 0) return parts.join(' ');
-        // Non-text parts only. In the backward walk a text-less tail means a
-        // tool-result continuation: that user message IS the current turn, so
-        // stamping an older user message would mislabel the turn — stop here.
-        // The forward walk keeps looking (session preview wants opening text).
-        if (pick === 'last') return undefined;
-        continue; // images etc. — try the next user message
-      }
-      continue; // missing/non-text content (tool calls etc.) — try the next user message
+  /**
+   * Text of one message's content (string, or joined text parts). Undefined
+   * for non-text content — the callers treat that differently on purpose.
+   */
+  private static messageText(m: unknown): string | undefined {
+    if (!m || typeof m !== 'object' || !('content' in m)) return undefined;
+    const content = m.content;
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return undefined;
+    const parts = content
+      .map(p => (p && typeof p === 'object' && 'text' in p && typeof p.text === 'string' ? p.text : ''))
+      .filter(Boolean);
+    return parts.length > 0 ? parts.join(' ') : undefined;
+  }
+
+  /**
+   * The last user slot of a message array, with its index. A text-less tail
+   * (tool-result continuation) ENDS the walk: quoting an older user message
+   * would mislabel the turn, so only the positions come back.
+   */
+  private static lastUserSlotInMessages(messages: unknown[]): {
+    text?: string;
+    lastUserIdx?: number;
+    messageCount: number;
+  } {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!msg || typeof msg !== 'object' || !('role' in msg) || msg.role !== 'user') continue;
+      return { text: CaptureRecorder.messageText(msg), lastUserIdx: i, messageCount: messages.length };
     }
-    return undefined;
+    return { messageCount: messages.length };
+  }
+
+  /**
+   * The FIRST user message that carries HUMAN text (client envelopes stripped)
+   * — the capture session preview's opening prompt. Walks forward and skips
+   * metadata-only / image-only messages, exactly like the console title.
+   */
+  private static firstHumanText(messages: unknown[]): string | undefined {
+    const texts: string[] = [];
+    for (const msg of messages) {
+      if (!msg || typeof msg !== 'object' || !('role' in msg) || msg.role !== 'user') continue;
+      const text = CaptureRecorder.messageText(msg);
+      if (text) texts.push(text);
+    }
+    return firstDisplayText(texts, 300);
   }
 
   /** Local-timezone YYYY-MM-DD — retention is by calendar day as users see it. */

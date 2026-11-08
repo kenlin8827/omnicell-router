@@ -34,9 +34,16 @@ import { humanizeKey } from '../lib/format';
 const HEADER: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '0 0 12px', flexWrap: 'wrap' };
 
 /** Cursor's model surface is a CLIENT concern and is edited in Client Hub →
- *  Cursor. Keep these keys in the schema (they are the storage contract) but do
- *  not render a second editor here — one source, one editor. */
-const CURSOR_CLIENT_FACING_FIELDS = new Set(['model', 'modelListMode', 'models', 'followKeyId', 'catalogReplace']);
+ *  Cursor. These keys stay in the schema (the storage contract) but are not
+ *  rendered a second time here — one source, one editor. */
+const CURSOR_CLIENT_FACING_FIELDS: Record<string, true> = {
+  model: true,
+  forceModel: true,
+  modelListMode: true,
+  models: true,
+  followKeyId: true,
+  catalogReplace: true,
+};
 const TITLE: React.CSSProperties = { fontSize: 'var(--text-xl)', fontWeight: 'var(--font-bold)', display: 'flex', alignItems: 'center', gap: 8 };
 const CELL: React.CSSProperties = { padding: '7px 10px', verticalAlign: 'middle' };
 /** Description cell: three lines, then ellipsis (full text on hover). Unclamped,
@@ -505,7 +512,7 @@ export function PluginsManagePage(): React.ReactElement {
   // all-hidden section renders no heading at all.
   const configGroups = groupVisibleFields(
     configTarget?.id === 'cursor'
-      ? configSchema.filter((field) => !CURSOR_CLIENT_FACING_FIELDS.has(field.key))
+      ? configSchema.filter((field) => CURSOR_CLIENT_FACING_FIELDS[field.key] !== true)
       : configSchema,
     configSections,
     configDraft,

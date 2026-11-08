@@ -80,6 +80,7 @@ const virtualDefaultFor = (clientName: string): string[] =>
  *  values object is retained so a save never drops unrelated plugin settings. */
 interface CursorCfgDraft {
   model: string;
+  forceModel: boolean;
   catalogReplace: boolean;
   modelListMode: 'all' | 'custom' | 'follow';
   models: string[];
@@ -89,6 +90,7 @@ interface CursorCfgDraft {
 
 const parseCursorCfg = (values: Record<string, unknown>): CursorCfgDraft => ({
   model: String(values.model ?? 'auto').replace(/^ocr\//, ''),
+  forceModel: values.forceModel === true,
   catalogReplace: values.catalogReplace === true,
   modelListMode:
     values.modelListMode === 'custom' || values.modelListMode === 'follow'
@@ -343,6 +345,7 @@ export const ClientsPage: React.FC = () => {
       const values = {
         ...cursorCfg.values,
         model: cursorCfg.model,
+        forceModel: cursorCfg.forceModel,
         catalogReplace: cursorCfg.catalogReplace,
         modelListMode: cursorCfg.modelListMode,
         models,
@@ -350,7 +353,14 @@ export const ClientsPage: React.FC = () => {
       };
       const res = await opencodeApi.putPluginConfig('cursor', values);
       setCursorCfg(parseCursorCfg(res.values ?? values));
-      toast.success(t('pluginPage.configSaved'));
+      // The backend drops keys the running plugin build does not declare (a
+      // gateway started before the manifest listed them), so a plain success
+      // toast would report a save that silently lost the model choice.
+      if (res.warnings.length > 0) {
+        toast.warning(t('clients.cursorSaveDropped', { warnings: res.warnings.join('; ') }));
+      } else {
+        toast.success(t('pluginPage.configSaved'));
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1333,8 +1343,9 @@ export const ClientsPage: React.FC = () => {
                                 </label>
 
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <span style={{ color: 'var(--text-dim)' }}>{t('clients.cursorDefaultModel')}</span>
+                                  <span style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>{t('clients.cursorDefaultModel')}</span>
                                   <Combobox
+                                    style={{ flex: 1, minWidth: 0 }}
                                     value={cursorCfg.model}
                                     onChange={(model) => update({ model })}
                                     options={defaultOptions.map((id) => ({ value: id, label: id }))}
@@ -1342,6 +1353,16 @@ export const ClientsPage: React.FC = () => {
                                     panelMinWidth={320}
                                   />
                                 </div>
+
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={cursorCfg.forceModel}
+                                    disabled={cursorCfgBusy}
+                                    onChange={(e) => update({ forceModel: e.target.checked })}
+                                  />
+                                  {t('clients.cursorForceModel')}
+                                </label>
 
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                   <button

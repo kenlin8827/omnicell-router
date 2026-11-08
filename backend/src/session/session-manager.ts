@@ -62,6 +62,25 @@ export interface SessionResolveResult {
 }
 
 /**
+ * A client-minted conversation id — Cursor's agent-wire `conversation_id`
+ * (carried to the gateway as `router_options.client_ref`) — bound to a gateway
+ * session as an ALIAS.
+ *
+ * Deliberately NOT the session id itself (ADR-0002 §1, "client conversation
+ * refs"): the gateway id is what the ratchet, pins, traces and the snapshot key
+ * on, while a client id may appear on some wires and not others (Cursor's agent
+ * wire carries one, its inference wire and plain chat-completions do not). The
+ * alias answers only "which gateway session is this client conversation", and
+ * content anchors still outrank it on a conflict.
+ */
+export interface ClientConversationRef {
+  /** Client family, lowercase (`cursor`, `claude`, …). */
+  kind: string;
+  /** The client's own conversation id, verbatim (bounded, display-safe). */
+  id: string;
+}
+
+/**
  * Client identity inputs for zero-header resolution. Deliberately NOT the
  * transport IP: on a local gateway every conversation shares `127.0.0.1`/`::1`
  * (the address adds no discrimination, and IPv4/IPv6 flapping actively broke
@@ -72,6 +91,14 @@ export interface SessionResolveResult {
 export interface SessionIdentity {
   keyId?: string;
   headers?: Record<string, string | string[] | undefined>;
+  /**
+   * Resolved client conversation ref. The orchestrator resolves it once
+   * (`SessionManager.clientRefOf`) and hands the SAME value to the resolver
+   * and the trace; when omitted the resolver derives it from the request body
+   * (`router_options.client_ref`) — the in-process plugin channel, never an
+   * HTTP header (the Cursor host leg has no request at all).
+   */
+  clientRef?: ClientConversationRef;
 }
 
 /**
@@ -93,6 +120,7 @@ const MAX_CHAIN_ENTRIES = 200_000; // global FIFO caps
 const MAX_TAIL_ENTRIES = 100_000;
 const MAX_CONVKEY_ENTRIES = 50_000;
 const MAX_BYPASS_ENTRIES = 10_000; // combo turn counters — aligns with the default session capacity
+const MAX_CLIENTREF_ENTRIES = 50_000; // client conversation refs -> session ids
 const CANDIDATE_CAP = 3;           // sessions a single conversation key may claim
 const ANCHOR_HEX = 20;             // anchor digest length
 const CONVERSATION_KEY_HEX = 24;   // conversation-key digest length
@@ -133,36 +161,50 @@ const PERSIST_SAVE_DEBOUNCE_MS = 2_000;
  *      cross-matching unrelated conversations — see probeTailAnchors).
  *   6. Conversation key (turn 2+ only) — sha256(apiKey identity + FULL first
  *      user message). Reaches ONLY after the byte-exact anchors miss (a
- *      regenerated assistant rewrite), and rejoins its session ONLY when the
- *      key has exactly one candidate (unambiguous). Two live sessions sharing a
- *      byte-identical first message make the key ambiguous → it splits (cold
- *      start) rather than false-merge. False split self-heals (the branches get
- *      their own anchors); false merge never does — so the split stays safe.
- *      This is keyed on the API-key identity (not the transport IP, which flaps
- *      between `127.0.0.1`/`::1` and adds nothing on a local gateway) and keeps
- *      a bounded newest-first candidate list instead of poisoning an ambiguous
+ *      regenerated assistant rewrite), and rejoins its session ONLY
+ *      when the key has exactly one candidate (unambiguous): content-derived
+ *      identity outranks the client's claim, so an alias can never redirect a
+ *      conversation whose opening the key still recognises. Two live sessions
+ *      sharing a byte-identical first message make the key ambiguous → the
+ *      client ref (step 7) disambiguates, else it splits (cold start) rather
+ *      than false-merge. False split self-heals (the branches get their own
+ *      anchors); false merge never does — so the split stays safe. This is
+ *      keyed on the API-key identity (not the transport IP, which flaps between
+ *      `127.0.0.1`/`::1` and adds nothing on a local gateway) and keeps a
+ *      bounded newest-first candidate list instead of poisoning an ambiguous
  *      key. The earlier first-message-root-map design short-circuited turn-1
- *      shapes straight to mint and tombstoned the key on the first same-opening
- *      resend; combined with tool-call byte drift (below) every later turn fell
- *      through to the poisoned key and minted a fresh id — cascading one
- *      conversation into dozens of session ids. The full history is in
- *      ADR-0002.
- *   7. Cold start — mint `sess_<24 random hex>` and claim the conversation key.
- *      A generic vendor header (`x-<app>-(session|conversation)-id`) RENAMES
- *      the minted id (lookupType header_fallback) and is honored ONLY on the
- *      two fresh-mint paths (turn-1-shaped start, step-8 ambiguity re-mint):
- *      it can name a session that would be freshly minted anyway — the claim
- *      outranks content ambiguity exactly like step 1 outranks everything —
- *      never redirect one the anchors already hold. Values claiming the
+ *      shapes straight to mint and tombstoned the key on the first
+ *      same-opening resend; combined with tool-call byte drift (below) every
+ *      later turn fell through to the poisoned key and minted a fresh id —
+ *      cascading one conversation into dozens of session ids. The full
+ *      history is in ADR-0002.
+ *   7. Client conversation ref — `router_options.client_ref`, the in-process
+ *      plugin channel (Cursor's agent-wire `conversation_id`; that leg has no
+ *      HTTP request, so a header is not an option) bound to a gateway session
+ *      as an ALIAS, keyed by (kind, API-key identity, id) so two tenants'
+ *      identical strings never merge. Consulted only after the byte-exact
+ *      anchors AND the conversation key missed (content still outranks the
+ *      client's claim) or left the opening ambiguous — the alias is what
+ *      survives assistant rewrites, truncated openings and client-side
+ *      compaction, where both anchors and the key can miss. The mapping is
+ *      one-way: the gateway id stays the identity, the client id is a foreign
+ *      key the console shows beside it. A vendor `x-<app>-…-id` header is NOT
+ *      an alias input — it already names the minted id (step 8), so header
+ *      clients have no second namespace to map.
+ *   8. Cold start — mint `sess_<16 random hex>` (64 bits: 21 chars, one console
+ *      line; see mintColdStart) and claim the conversation key.
+ *      A turn-1-shaped request that already carries a bound client ref
+ *      re-attaches to it (a retry of the opening turn is the same conversation
+ *      by the client's own claim); with no claim it ALWAYS mints a distinct id,
+ *      preserving the no-false-merge guarantee. A vendor header is kept as the
+ *      minted id's NAME (lookupType header_fallback) — the historical
+ *      behaviour, and the same value the alias is bound under — never as a
+ *      redirection of a session the anchors already hold. Values claiming the
  *      reserved `ocr-internal:` prefix or exceeding 200 chars are ignored
- *      (fall through to the next header / the random mint).
- *      A turn-1-shaped resend (retry / harness re-fork, no assistant yet) with
- *      no vendor header ALWAYS mints a distinct id (preserving the no-false-
- *      merge guarantee); carrying the SAME header value re-attaches instead —
- *      the value IS the conversation claim. Headerless splits self-heal from
- *      turn 2 when the branches get their own anchors.
- *      Deterministic birth ids are rejected: they collide across conversations
- *      sharing boilerplate openings on a local gateway.
+ *      (fall through to the next header / the random mint). Deterministic birth
+ *      ids are rejected: they collide across conversations sharing boilerplate
+ *      openings on a local gateway. Headerless splits self-heal from turn 2 when
+ *      the branches get their own anchors.
  *
  * Anchors and conversation keys persist to disk when a `persistPath` is wired
  * (per-environment data dir): a gateway restart no longer splits non-
@@ -178,6 +220,8 @@ export class SessionManager {
   private tailAnchors = new Map<string, string>();   // 'T'-salted trailing-window hash -> sessionId
   private convKeys = new Map<string, string[]>();    // conversation key -> candidate session ids, newest first
   private bypassTurns = new Map<string, number>();   // combo/bypass sessionId -> recorded turn count (display-only)
+  /** Alias key (kind, API-key identity, client conversation id) -> sessionId. */
+  private clientRefs = new Map<string, string>();
   private readonly ttlMs: number;
   private readonly maxSessions: number;
   private readonly persistPath?: string;
@@ -357,26 +401,30 @@ export class SessionManager {
   private static readonly VENDOR_SESSION_ID_MAX = 200;
 
   /**
-   * Vendor-header fallback probe — see step 7 in the class doc. Returns the
-   * trimmed value of the first `x-<app>-(session|conversation)-id` header
-   * (array header → first entry), or null. The bare `x-session-id` /
-   * `x-conversation-id` / `session-id` / `conversation-id` forms never match
-   * (the app segment must be non-empty) — they are step 1's explicit_header
-   * territory, never re-probed here. Two namespace guards bind each value: a
-   * value claiming the reserved `ocr-internal:` prefix (a gateway-internal
-   * row marker — a client must not be able to hide its row from the console)
-   * or exceeding `VENDOR_SESSION_ID_MAX` is skipped, falling through to the
-   * next matching header, else to the random mint. Deterministic pick:
-   * alphabetically first match on the lowercased name, so the same header
-   * set always resolves to the same id regardless of arrival order.
+   * Vendor-header probe (`header_fallback` naming only — NOT the client-ref
+   * alias: a header-carrying client's session id IS the header value, so there
+   * is no second namespace to map, while the body channel below covers wires
+   * that have no HTTP headers at all). Returns the alphabetically first
+   * matching header's value (array header → first entry), or null. The bare
+   * `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`
+   * forms never match (the app segment must be non-empty) — they are step 1's
+   * explicit_header territory. Two namespace guards bind each value: a value
+   * claiming the reserved `ocr-internal:` prefix (a gateway-internal row
+   * marker — a client must not be able to hide its row from the console) or
+   * exceeding `VENDOR_SESSION_ID_MAX` is skipped, falling through to the next
+   * matching header, else to the random mint. Deterministic pick on the
+   * lowercased name, so the same header set always resolves to the same claim
+   * regardless of arrival order.
    */
-  private static vendorSessionHeader(headers?: Record<string, string | string[] | undefined>): string | null {
+  private static vendorSessionHeader(
+    headers?: Record<string, string | string[] | undefined>
+  ): string | null {
     if (!headers) return null;
     const hits = Object.entries(headers)
       .map(([name, value]) => ({ lower: name.toLowerCase(), value }))
-      .filter(h => SessionManager.VENDOR_SESSION_HEADER_RE.test(h.lower))
       .sort((a, b) => (a.lower < b.lower ? -1 : a.lower > b.lower ? 1 : 0));
     for (const hit of hits) {
+      if (!SessionManager.VENDOR_SESSION_HEADER_RE.test(hit.lower)) continue;
       const id = (Array.isArray(hit.value) ? hit.value[0] : hit.value)?.trim();
       if (id && !id.startsWith(INTERNAL_SESSION_PREFIX) && id.length <= SessionManager.VENDOR_SESSION_ID_MAX) {
         return id;
@@ -386,11 +434,54 @@ export class SessionManager {
   }
 
   /**
+   * Validate a client conversation ref from the request body
+   * (`router_options.client_ref`) — the in-process plugin channel, where no
+   * HTTP header exists. Returns null on any shape the gateway refuses to
+   * persist verbatim (non-string id, reserved prefix, over-long, empty).
+   */
+  public static normalizeClientRef(raw: unknown): ClientConversationRef | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const rec = raw as { kind?: unknown; id?: unknown };
+    const id = typeof rec.id === 'string' ? rec.id.trim() : '';
+    if (!id || id.length > SessionManager.VENDOR_SESSION_ID_MAX || id.startsWith(INTERNAL_SESSION_PREFIX)) {
+      return null;
+    }
+    const kindRaw = typeof rec.kind === 'string' ? rec.kind.trim().toLowerCase() : '';
+    const kind = /^[a-z0-9][a-z0-9_-]{0,23}$/.test(kindRaw) ? kindRaw : 'client';
+    return { kind, id };
+  }
+
+  /**
+   * The ONE derivation of "which client conversation is this request":
+   * `router_options.client_ref` — the in-process plugin channel (the Cursor
+   * host leg has no HTTP request at all). The orchestrator resolves it once and
+   * hands the same value to the resolver and the trace, so the console's alias
+   * and the session it names can never disagree.
+   */
+  public static clientRefOf(request: ChatCompletionRequest): ClientConversationRef | null {
+    return SessionManager.normalizeClientRef(request.router_options?.client_ref);
+  }
+
+  /**
    * Seamless Session Resolver — see the class doc for the full priority list.
+   * Resolves the client conversation ref once, then binds whatever session won
+   * to it (the alias follows reality; it never drives a redirect the content
+   * evidence contradicts).
    */
   public resolveSessionId(
     request: ChatCompletionRequest,
     identity?: SessionIdentity
+  ): SessionResolveResult {
+    const clientRef = identity?.clientRef ?? SessionManager.clientRefOf(request);
+    const resolved = this.resolveIdentity(request, identity, clientRef);
+    if (clientRef) this.bindClientRef(clientRef, identity?.keyId, resolved.sessionId);
+    return resolved;
+  }
+
+  private resolveIdentity(
+    request: ChatCompletionRequest,
+    identity: SessionIdentity | undefined,
+    clientRef: ClientConversationRef | null
   ): SessionResolveResult {
     // 1. Explicit Header Probe
     const explicitHeader =
@@ -404,18 +495,18 @@ export class SessionManager {
       return { sessionId: id.trim(), lookupType: 'explicit_header' };
     }
 
-    // 2. Explicit router_options.session_id
+    // 1 (cont.) Explicit router_options.session_id
     if (request.router_options?.session_id) {
       return { sessionId: request.router_options.session_id.trim(), lookupType: 'explicit_header' };
     }
 
-    // 3. Embedded client session UUID (Claude Code metadata.user_id)
+    // 2. Embedded client session UUID (Claude Code metadata.user_id)
     const embedded = SessionManager.extractEmbeddedSessionId(request.user);
     if (embedded) {
       return { sessionId: embedded, lookupType: 'embedded_user_id' };
     }
 
-    // 4. OpenAI Native request.user Probe
+    // 3. OpenAI Native request.user Probe
     if (request.user && typeof request.user === 'string' && request.user.trim()) {
       return { sessionId: request.user.trim(), lookupType: 'request_user' };
     }
@@ -423,23 +514,29 @@ export class SessionManager {
     const messages = request.messages || [];
     const priorHistory = messages.slice(0, -1);
     const key = SessionManager.conversationKey(messages, identity?.keyId);
-    // Vendor-header fallback rides the fresh-mint paths only (turn-1 start +
-    // step-8 ambiguity re-mint — see vendorSessionHeader): resolved once
-    // here, consumed by mintColdStart.
+    // Vendor header: names an otherwise-minted cold start (historical
+    // behaviour) — never an alias, see vendorSessionHeader.
     const vendorHeader = SessionManager.vendorSessionHeader(identity?.headers);
+    const aliasKey = clientRef ? SessionManager.clientRefKey(clientRef, identity?.keyId) : null;
+    const alias = aliasKey ? this.clientRefs.get(aliasKey) : undefined;
 
     // Cold start: nothing to anchor on — either a literal turn 1 (single
     // message) or harness turn 1 ([system, user]: no completed exchange yet).
-    // A turn-1-shaped resend ALWAYS mints a distinct id (two conversations
-    // sharing a byte-identical first message must not false-merge — the split
-    // self-heals from turn 2 when the branches get their own anchors).
+    // A bound client ref re-attaches (a resend of the opening turn is the same
+    // conversation by the client's own claim); with no claim it ALWAYS mints a
+    // distinct id (two conversations sharing a byte-identical first message
+    // must not false-merge — the split self-heals from turn 2 when the
+    // branches get their own anchors).
     if (messages.length < 2 || !priorHistory.some(m => m?.role === 'assistant')) {
+      if (alias) {
+        if (key) this.claimConvKey(key, alias);
+        return { sessionId: alias, lookupType: 'client_ref' };
+      }
       return this.mintColdStart(key, vendorHeader);
     }
 
-    // 5/6. Byte-exact anchor evidence (turn 2+ fast paths). Anchors carry the
-    // strongest evidence, so they run first on resends that contain a completed
-    // exchange and disambiguate conversations sharing a conversation key.
+    // 4/5. Byte-exact anchor evidence (turn 2+ fast paths). Anchors carry the
+    // strongest evidence, so they outrank the client-ref alias on a conflict.
     const anchor = this.probeChainAnchors(priorHistory) ?? this.probeTailAnchors(priorHistory);
     if (anchor) {
       // Keep the conversation-key claim in sync: a client whose history is
@@ -449,15 +546,23 @@ export class SessionManager {
       return anchor;
     }
 
-    // 7. Conversation key (turn 2+, anchors already missed — e.g. regenerated
-    // assistant bytes). Rejoin ONLY when the key is unambiguous (single
-    // candidate). Two live sessions under one key = an ambiguous opening:
-    // split (fresh mint) rather than risk a false merge.
+    // 6. Conversation key (turn 2+, content evidence already missed). Rejoin
+    // ONLY when the key is unambiguous (single candidate): content-derived
+    // identity outranks the client's claim. Two live sessions under one key =
+    // an ambiguous opening, which the alias below may disambiguate.
     if (key) {
       const candidates = this.convKeys.get(key);
       if (candidates && candidates.length === 1) {
         return { sessionId: candidates[0], lookupType: 'conversation_key' };
       }
+    }
+
+    // 7. Client conversation ref — the client's own claim, consulted only
+    // after every content signal missed (rewritten assistant bytes, truncated
+    // opening, client-side compaction) or left the opening ambiguous.
+    if (alias) {
+      if (key) this.claimConvKey(key, alias);
+      return { sessionId: alias, lookupType: 'client_ref' };
     }
 
     // 8. Nothing to anchor on: fresh mint + claim.
@@ -502,16 +607,31 @@ export class SessionManager {
    * (deterministic per conversation, so a turn-1-shaped resend from the same
    * harness conversation re-attaches instead of splitting; distinct
    * conversations never share the header value, so the no-false-merge
-   * guarantee holds) — else random entropy (collision-free by construction).
-   * The conversation key is claimed either way so later turns re-anchor
-   * through content alone (retries, regenerated assistant bytes). The claim
-   * rides BOTH mint call sites (turn-1 start and the step-8 ambiguity
-   * re-mint): a well-behaved client re-attaches to its own id instead of
-   * churning to a random one; a per-turn junk value only renames that mint,
-   * and the anchors re-acquire the conversation from the next turn.
+   * guarantee holds) — else random entropy. The conversation key is claimed
+   * either way so later turns re-anchor through content alone (retries,
+   * regenerated assistant bytes). The claim rides BOTH mint call sites
+   * (turn-1 start and the conversation-key ambiguity re-mint): a well-behaved
+   * client re-attaches to its own id instead of churning to a random one; a
+   * per-turn junk value only renames that mint, and the anchors re-acquire the
+   * conversation from the next turn.
+   *
+   * Entropy: 64 random bits (16 hex) — 21 characters with the `sess_` prefix,
+   * i.e. one console line in a mono cell (the previous 96-bit id was 29
+   * characters and wrapped mid-string in the session table). 64 bits is plenty
+   * for a local gateway: the birthday bound at 100k sessions is ~2.7e-10, and
+   * the live-map retry below removes even that against ids this process minted.
+   * Ids are opaque and persist as-is, so older 24-hex ids keep working; the
+   * shape is only what `crypto.randomBytes` produces for NEW sessions.
    */
   private mintColdStart(key: string | null, vendorHeader?: string | null): SessionResolveResult {
-    const sessionId = vendorHeader || 'sess_' + crypto.randomBytes(12).toString('hex');
+    let sessionId = '';
+    if (vendorHeader) {
+      sessionId = vendorHeader;
+    } else {
+      do {
+        sessionId = 'sess_' + crypto.randomBytes(8).toString('hex');
+      } while (this.sessions.has(sessionId));
+    }
     if (key) this.claimConvKey(key, sessionId);
     return { sessionId, lookupType: vendorHeader ? 'header_fallback' : 'cold_start' };
   }
@@ -529,6 +649,30 @@ export class SessionManager {
     if (list && list[0] === sessionId) return; // already the head claim — no churn
     const next = [sessionId, ...(list ?? []).filter(s => s !== sessionId)].slice(0, CANDIDATE_CAP);
     this.setBounded(this.convKeys, key, next, MAX_CONVKEY_ENTRIES);
+    this.markDirty();
+  }
+
+  /**
+   * Alias key: client family + API-key identity + the client's own id. The
+   * key identity is part of the key ON PURPOSE — two applications (or two
+   * tenants behind one gateway) that mint the same conversation string must
+   * never resolve to one session.
+   */
+  private static clientRefKey(ref: ClientConversationRef, keyId?: string): string {
+    return `${ref.kind}\u0000${keyId ?? ''}\u0000${ref.id}`;
+  }
+
+  /**
+   * Bind a client conversation ref to the session that just served it. Last
+   * write wins, so when content evidence moves a conversation (anchors outrank
+   * the claim) the alias follows instead of fighting it — the alias is a
+   * by-product of resolution, never an input that redirects one.
+   */
+  private bindClientRef(ref: ClientConversationRef, keyId: string | undefined, sessionId: string): void {
+    if (!this.config.enabled || this.config.strategy === 'stateless') return;
+    const aliasKey = SessionManager.clientRefKey(ref, keyId);
+    if (this.clientRefs.get(aliasKey) === sessionId) return;
+    this.setBounded(this.clientRefs, aliasKey, sessionId, MAX_CLIENTREF_ENTRIES);
     this.markDirty();
   }
 
@@ -843,6 +987,9 @@ export class SessionManager {
       if (kept.length === 0) this.convKeys.delete(key);
       else if (kept.length !== list.length) this.convKeys.set(key, kept);
     }
+    for (const [aliasKey, boundId] of this.clientRefs.entries()) {
+      if (boundId === sessionId) this.clientRefs.delete(aliasKey);
+    }
     this.markDirty();
     return existed;
   }
@@ -865,6 +1012,7 @@ export class SessionManager {
     this.chainAnchors.clear();
     this.tailAnchors.clear();
     this.convKeys.clear();
+    this.clientRefs.clear();
     this.markDirty();
   }
 
@@ -895,16 +1043,21 @@ export class SessionManager {
   /* ------------------------------------------------------------ persist */
 
   /**
-   * Load anchors + conversation keys + bypass turn counters written by a
-   * previous run (per-environment JSON snapshot). Fail-open: a broken/missing
-   * file starts empty; a capture or persistence problem must never break routing.
+   * Load anchors + conversation keys + client-ref aliases + bypass turn
+   * counters written by a previous run (per-environment JSON snapshot).
+   * Fail-open: a broken/missing file starts empty; a capture or persistence
+   * problem must never break routing.
+   *
+   * `v: 1` snapshots (pre-client-refs) load their four maps and simply start
+   * with no aliases — the alias is additive continuity, never a migration
+   * gate.
    */
   private loadPersisted(): void {
     if (!this.persistPath) return;
     try {
       const raw = fs.readFileSync(this.persistPath, 'utf8');
       const data = JSON.parse(raw);
-      if (data?.v !== 1) return;
+      if (data?.v !== 1 && data?.v !== 2) return;
       if (data.chainAnchors && typeof data.chainAnchors === 'object') {
         for (const [k, v] of Object.entries(data.chainAnchors)) {
           if (typeof k === 'string' && typeof v === 'string') this.setBounded(this.chainAnchors, k, v, MAX_CHAIN_ENTRIES);
@@ -930,6 +1083,13 @@ export class SessionManager {
           }
         }
       }
+      if (data.clientRefs && typeof data.clientRefs === 'object') {
+        for (const [k, v] of Object.entries(data.clientRefs)) {
+          if (typeof k === 'string' && typeof v === 'string') {
+            this.setBounded(this.clientRefs, k, v, MAX_CLIENTREF_ENTRIES);
+          }
+        }
+      }
     } catch {
       // Missing / corrupt snapshot — start empty.
     }
@@ -952,13 +1112,14 @@ export class SessionManager {
    * deterministic tests. Never throws — disk failure is fail-open by contract.
    *
    * Scale ceiling (documented, not yet a problem at local-gateway volume): the
-   * write is a FULL synchronous serialization of the four anchor/key/counter
-   * maps, which are FIFO-capped at 460k combined entries; anchor keys are pruned only
-   * on `deleteSession`, and TTL eviction runs only at session capacity, so under
-   * sustained heavy agent traffic the maps grow toward their caps and each
-   * debounced flush costs more (sub-second at the cap). Upgrade path when that
-   * is reached: prune anchors for sessions absent past the TTL inside flush, or
-   * switch to `fs.promises` async tmp+rename.
+   * write is a FULL synchronous serialization of the five anchor/key/counter/
+   * alias maps, which are FIFO-capped at 510k combined entries; anchor keys are
+   * pruned only on `deleteSession`, and TTL eviction runs only at session
+   * capacity, so under sustained heavy agent traffic the maps grow toward their
+   * caps and each debounced flush costs more (sub-second at the cap). Upgrade
+   * path when that is reached: prune anchors for sessions absent past the TTL
+   * inside flush, or switch to `fs.promises` async tmp+rename.
+
    */
   public flushPersist(): void {
     if (!this.persistPath || !this.dirty) return;
@@ -969,12 +1130,13 @@ export class SessionManager {
     }
     try {
       const data = {
-        v: 1,
+        v: 2,
         savedAt: Date.now(),
         chainAnchors: Object.fromEntries(this.chainAnchors),
         tailAnchors: Object.fromEntries(this.tailAnchors),
         convKeys: Object.fromEntries(this.convKeys),
         bypassTurns: Object.fromEntries(this.bypassTurns),
+        clientRefs: Object.fromEntries(this.clientRefs),
       };
       fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
       const tmp = `${this.persistPath}.tmp`;

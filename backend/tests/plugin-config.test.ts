@@ -31,6 +31,15 @@ describe('plugin config: validation', () => {
     assert.deepEqual(values, { enabled: false, count: 7, label: 'y', tags: ['b', 'c'], mode: 'slow' });
   });
 
+  it('accepts an empty string for a string field (blank default round-trips)', () => {
+    // The console posts the FULL merged object on every save, so a field whose
+    // declared default is '' arrives as '' — rejecting it warned about a
+    // perfectly valid value and made every save look lossy.
+    const { values, warnings } = validatePluginConfig(schema, { enabled: true, count: 3, label: '', tags: [], mode: 'fast' });
+    assert.equal(values.label, '');
+    assert.deepEqual(warnings, []);
+  });
+
   it('falls back to the default on a wrong-typed or out-of-range value', () => {
     const { values, warnings } = validatePluginConfig(schema, { enabled: 'yes', count: 99, tags: 'nope', mode: 'warp' });
     assert.deepEqual(values, { enabled: true, count: 3, label: 'x', tags: ['a'], mode: 'fast' });

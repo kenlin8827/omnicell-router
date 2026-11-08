@@ -189,6 +189,117 @@ describe('Console session title (firstUserMessage)', () => {
     assert.equal(row.firstUserMessage, 'Describe this chart');
   });
 
+  it('skips a client metadata envelope and unwraps the real prompt (Cursor agent)', async () => {
+    // Cursor's agent opens a conversation with a standalone `<timestamp>`
+    // message, then wraps the human turn in `<user_query>`. The gateway
+    // forwards both verbatim, but the console title must name the PROMPT —
+    // the timezone clock reading identifies nothing.
+    await chat('sess_title_envelope', {
+      messages: [
+        { role: 'user', content: '<timestamp>11/8/2026, 8:53:57 PM GMT+8</timestamp>' },
+        { role: 'user', content: '<user_query>\n你知道项目结构吗\n</user_query>' },
+      ],
+    });
+
+    const row = (await rows()).find(s => s.id === 'sess_title_envelope');
+    assert.ok(row, 'envelope-led session must be listed');
+    assert.equal(row.firstUserMessage, '你知道项目结构吗');
+
+    // The per-turn summary uses the same display normalizer, so the trace
+    // carries the unwrapped prompt rather than the wrapper tags.
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/admin/sessions/sess_title_envelope/traces',
+      headers: authHeaders(),
+    });
+    assert.equal(res.statusCode, 200);
+    const traces = JSON.parse(res.body).data;
+    assert.equal(traces[0].request.userPromptSummary, '你知道项目结构吗');
+  });
+
+  it('skips a Cursor context bundle and titles the real turn after it', async () => {
+    // Cursor's agent also opens a conversation with a standalone context
+    // BUNDLE (measured 2026-11-08): `<user_info>` first, then rules, skills,
+    // MCP catalog and hooks, with the human turn arriving as the next
+    // `<user_query>` message. Titling from the bundle named sessions
+    // `<user_info> OS Version: win32 …` — the operating system tells the
+    // operator nothing about what they asked.
+    await chat('sess_title_context_bundle', {
+      messages: [
+        {
+          role: 'user',
+          content:
+            '<user_info>\nOS Version: win32 10.0.26200\n\nShell: powershell\n\n' +
+            'Workspace Path: D:\\Projects\\BaijiuShop\n\n' +
+            'Is directory a git repo: Unknown (git repository detection still warming)\n' +
+            "</user_info>\n\n<rules>\n<always_applied_workspace_rules />\n</rules>\n\n" +
+            '<hooks_context description="session hooks">\n<EXTREMELY_IMPORTANT>postman</EXTREMELY_IMPORTANT>\n</hooks_context>',
+        },
+        { role: 'user', content: '<user_query>\n你是谁\n</user_query>' },
+      ],
+    });
+
+    const row = (await rows()).find(s => s.id === 'sess_title_context_bundle');
+    assert.ok(row, 'context-bundle-led session must be listed');
+    assert.equal(row.firstUserMessage, '你是谁');
+  });
+
+  it('skips a context envelope of UNKNOWN tag vocabulary (no tag list can cover it)', async () => {
+    // Rule 3 in utils/client-envelope.ts: a message that is nothing but
+    // XML-style blocks is a client envelope whatever its tag names are — the
+    // evidence-backed list only fast-paths today's clients, it is not the
+    // contract. `<environment_context>`/`<open_and_recently_viewed_files>` are
+    // deliberately absent from that list.
+    await chat('sess_title_unknown_envelope', {
+      messages: [
+        {
+          role: 'user',
+          content:
+            "<environment_context>\n  <cwd>D:\\Projects\\BaijiuShop</cwd>\n  <shell>powershell</shell>\n</environment_context>\n\n" +
+            '<open_and_recently_viewed_files>\n  <file path="src/main.ts" />\n</open_and_recently_viewed_files>',
+        },
+        { role: 'user', content: '<user_query>\n你是谁\n</user_query>' },
+      ],
+    });
+
+    const row = (await rows()).find(s => s.id === 'sess_title_unknown_envelope');
+    assert.ok(row, 'unknown-envelope-led session must be listed');
+    assert.equal(row.firstUserMessage, '你是谁');
+  });
+
+  it('prefers the wrapped human turn over context riding in the SAME message', async () => {
+    // Rule 1: the `<user_query>` body is the human content, so a client that
+    // prepends its context to the turn instead of sending it separately still
+    // names the session after the prompt.
+    await chat('sess_title_inline_bundle', {
+      messages: [
+        {
+          role: 'user',
+          content:
+            '<user_info>\nOS Version: win32 10.0.26200\n</user_info>\n\n' +
+            '<user_query>\n你知道项目结构吗\n</user_query>',
+        },
+      ],
+    });
+
+    const row = (await rows()).find(s => s.id === 'sess_title_inline_bundle');
+    assert.ok(row, 'inline-bundle session must be listed');
+    assert.equal(row.firstUserMessage, '你知道项目结构吗');
+  });
+
+  it('keeps a prompt that is itself pure markup instead of naming the session nothing', async () => {
+    // Cost of rule 3: a tag-only HUMAN prompt is structurally identical to a
+    // client envelope. The title's permissive pass keeps it, so the session is
+    // still identifiable by the snippet the operator actually typed.
+    await chat('sess_title_markup_prompt', {
+      messages: [{ role: 'user', content: '<task>修复登录</task>' }],
+    });
+
+    const row = (await rows()).find(s => s.id === 'sess_title_markup_prompt');
+    assert.ok(row, 'markup-prompt session must be listed');
+    assert.equal(row.firstUserMessage, '<task>修复登录</task>');
+  });
+
   it('q searches the title on trace-reconstructed rows', async () => {
     const res = await app.inject({
       method: 'GET',

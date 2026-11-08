@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Combine, FileText, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Combine, FileText, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send, CirclePlus } from 'lucide-react';
 import { buildCurl, buildCurlPosix, buildReplaySpec } from '../lib/curl';
 import {
   api,
@@ -11,6 +11,7 @@ import {
   type CaptureFragmentRow,
   type HttpExchangeEvent,
   type CaptureTurn,
+  type CaptureRoundIndexEntry,
   type CaptureReplayResult,
   type CaptureReplayStreamEvent,
   type ReplaySpec,
@@ -20,6 +21,7 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { Pagination } from '../components/Pagination';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { copyToClipboard, shortId, decodeRate, formatRate, fmtDur, fmtLatency } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
@@ -108,6 +110,16 @@ const AUTO_REFRESH_KEY = 'ocr.captures.autoRefresh';
 // Detail-pane tail poll cadence. Deliberately unhurried: the refresh is a
 // quiet in-place turn-list replace, not a loading state.
 const AUTO_REFRESH_INTERVAL_MS = 3000;
+// Requests per detail page (wire events for a request always travel together:
+// 2-4 per request). Pages count BACK from the newest end and the pager
+// summary therefore counts REQUESTS, never prompt rounds — a round can span
+// page boundaries. 50 requests keeps the first paint cheap.
+const PAGE_REQUESTS = 50;
+// Conversation lens reads history in 100-turn batches (round openers only, see
+// bodies=chat). Smaller = faster first rounds; larger = fewer window regrowth
+// passes over the archive.
+const CHAT_PAGE = 100;
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 
 // Inbound-protocol badge (backend CaptureSessionRow.protocol): i18n key +
 // hue per surface. Semantic coloring: the conversation surfaces (chat /
@@ -116,8 +128,8 @@ const AUTO_REFRESH_INTERVAL_MS = 3000;
 // fall back to accent anyway, so it is written explicitly). The decision
 // surface shares the blue family with the per-turn decision chips — the
 // hue this UI already uses for informational/system-metadata chips
-// (⇢ proxy, ⊕ day-span). Legacy archives without request lines stay
-// unbadged.
+// (⇢ proxy, circled-plus day-span). Legacy archives without request lines
+// stay unbadged.
 const PROTOCOL_LABEL: Record<NonNullable<CaptureSessionRow['protocol']>, string> = {
   chat: 'captures.protocolChat',
   anthropic: 'captures.protocolAnthropic',
@@ -370,6 +382,10 @@ type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upst
  */
 const CaptureDrawer: React.FC<{
   turn: CaptureTurn;
+  /** Request sequence number from the list metadata (readTurn may omit it). */
+  requestNumber?: number;
+  /** Prompt-round number from the list metadata. */
+  roundNumber?: number;
   /** Full wire bodies are being fetched for this turn. */
   loading?: boolean;
   /** Turn's bodies fall outside the read window (long archive, tail kept). */
@@ -378,7 +394,7 @@ const CaptureDrawer: React.FC<{
    *  from the decision layer sub-row); defaults to the inbound request view. */
   initialTab?: DrawerTab;
   onClose: () => void;
-}> = ({ turn, loading, outOfWindow, initialTab, onClose }) => {
+}> = ({ turn, requestNumber, roundNumber, loading, outOfWindow, initialTab, onClose }) => {
   const { t } = useI18n();
   const focusBackdrop = useBackdropDismiss(onClose);
   const toast = useToast();
@@ -481,6 +497,24 @@ const CaptureDrawer: React.FC<{
           <span className={`badge ${hasError ? 'badge-danger' : 'badge-success'}`}>
             {hasError ? t('captures.statusError') : t('captures.statusOk')}
           </span>
+          {roundNumber !== undefined && (
+            <span
+              className="badge"
+              title={t('captures.roundSeqHint')}
+              style={{ background: 'var(--chip-bg)', color: 'var(--text-muted)', fontFamily: FONT_MONO }}
+            >
+              {t('captures.roundOrdinal', { n: roundNumber })}
+            </span>
+          )}
+          {requestNumber !== undefined && (
+            <span
+              className="badge"
+              title={t('captures.requestSeqHint')}
+              style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
+            >
+              #{requestNumber}
+            </span>
+          )}
           {turnKey && (
             <span
               className="badge"
@@ -1204,10 +1238,27 @@ export const CapturesPage: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<string>('');
   const [turns, setTurns] = useState<CaptureTurn[]>([]);
   const [, setEvents] = useState<HttpExchangeEvent[]>([]);
-  // Logical turn count for the whole archive (totalLines is raw event
-  // lines — 2-4 per turn — and must never be labelled as turns).
-  const [totalTurns, setTotalTurns] = useState(0);
+  // Read-window totals, kept as SEPARATE units: `windowRequests` counts
+  // client requests (the pager's unit), `windowRounds` counts user-prompt
+  // rounds (one prompt + every request it drove). Raw event lines are 2-4
+  // per request and must never be labelled as either.
+  const [windowRequests, setWindowRequests] = useState(0);
+  const [windowRounds, setWindowRounds] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
+  // Backward paging in REQUESTS: `page` is 1-based from the NEWEST end; the
+  // backend answers the clamped page plus how many request pages the read
+  // window holds. The tail poll only runs on page 1 — off page 1 the reader
+  // is browsing history, and a newer request landing would shift every page
+  // boundary.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_REQUESTS);
+  // EXACT whole-archive summary: request count (header denominator + pager
+  // total) and the user-prompt round index for the selector. Display-only,
+  // fetched once per selection. `rounds` are PROMPT rounds, not requests.
+  const [exactRequests, setExactRequests] = useState<number | null>(null);
+  const [roundIndex, setRoundIndex] = useState<CaptureRoundIndexEntry[]>([]);
+  // Prompt-round selection by ordinal in `roundIndex` (null = all rounds).
+  const [focusRound, setFocusRound] = useState<number | null>(null);
   // Cross-midnight stitching: per-SHARD fragments ((date, file) pairs) the
   // displayed timeline was merged from (empty = single-archive session). A
   // conversation regrouped via conversationKey can span MANY files within
@@ -1250,6 +1301,11 @@ export const CapturesPage: React.FC = () => {
   // bodies (conversation lens / explicit full read). Drawer bodies are
   // fetched per turn and cached per session (fetchedTurnsRef).
   const [bodiesLoaded, setBodiesLoaded] = useState(false);
+  // Conversation lens: `turns` holds the WHOLE conversation (metadata + round
+  // opener request bodies + response bodies), accumulated newest→oldest.
+  // Timeline turns are one page; chat turns are absolute-numbered and must be
+  // swapped back when the lens returns to the timeline.
+  const [chatLoaded, setChatLoaded] = useState(false);
   // The date/file pair the rendered `turns` were loaded for — a date-chip
   // click updates the live selection one render BEFORE the turns are
   // replaced, so per-turn fetches must target this pair, not the live one.
@@ -1265,10 +1321,6 @@ export const CapturesPage: React.FC = () => {
   // Monotonic read sequence: a newer selection supersedes an in-flight read
   // (fast A→B clicks must never let A's late response clobber B's).
   const loadSeqRef = useRef(0);
-  // Set when the latest read failed: the conversation-lens upgrade effect
-  // keys off bodiesLoaded/loading and would refetch in a loop on a
-  // persistent failure — the explicit refresh buttons are the retry path.
-  const loadFailedRef = useRef(false);
   const fetchedTurnsRef = useRef(new Map<string, CaptureTurn>());
   const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
   const [query, setQuery] = useState('');
@@ -1336,46 +1388,204 @@ export const CapturesPage: React.FC = () => {
     }
   }, []);
 
-  const loadRecords = useCallback(async (date: string, file: string, wantBodies = false) => {
-    const seq = ++loadSeqRef.current;
-    fetchedTurnsRef.current.clear();
-    setDrawerTurn(null);
-    setDrawerLoading(false);
-    setDrawerMiss(false);
-    setSelectedTurnIdx(null);
-    setBodiesLoaded(false);
-    // Immediate feedback: the previous session's rows drop right away and a
-    // skeleton takes over — a click never waits silently on the fetch. The
-    // metadata-first read (no wire bodies) keeps that wait to KBs.
-    setTurns([]);
-    setEvents([]);
-    if (!date || !file) {
-      // Supersedes any in-flight read — its seq-guarded finally must not be
-      // the one to clear `loading`, so clear it here or a deselect while a
-      // load is in flight would stick the skeleton on forever.
-      if (seq === loadSeqRef.current) setLoading(false);
-      return;
-    }
-    loadFailedRef.current = false;
-    setLoading(true);
-    setLoadedFor({ date, file });
-    try {
-      const res = await api.getCaptureEvents(date, file, 500, wantBodies ? 'full' : 'none');
-      if (seq !== loadSeqRef.current) return; // superseded by a newer selection
-      setTurns([...res.turns].reverse());
-      setEvents(res.events);
-      setTotalTurns(res.totalTurns);
-      setFileTruncated(res.fileTruncated);
-      setFragments(res.fragments ?? []);
-      setBodiesLoaded(wantBodies);
-    } catch (err) {
-      console.error(err);
-      // No auto-retry (see loadFailedRef) — flag it for the upgrade effect.
-      if (seq === loadSeqRef.current) loadFailedRef.current = true;
-    } finally {
-      if (seq === loadSeqRef.current) setLoading(false);
-    }
-  }, []);
+  // Exact-tally cache key (`date/file`): the count endpoint scans the whole
+  // archive, so a lens upgrade or refresh must not re-scan the same archive.
+  const countedForRef = useRef('');
+  // Header values belong to that archive; switching sessions must blank them
+  // before the new summary resolves instead of showing the old tallies.
+  const headerForRef = useRef('');
+
+  const loadRecords = useCallback(
+    async (date: string, file: string, wantBodies = false, wantedPage = 1, size = PAGE_REQUESTS): Promise<boolean> => {
+      const seq = ++loadSeqRef.current;
+      fetchedTurnsRef.current.clear();
+      setDrawerTurn(null);
+      setDrawerLoading(false);
+      setDrawerMiss(false);
+      setSelectedTurnIdx(null);
+      setBodiesLoaded(false);
+      setFocusRound(null);
+      // Immediate feedback: the previous session's rows drop right away and a
+      // skeleton takes over — a click never waits silently on the fetch. The
+      // metadata-first read (no wire bodies) keeps that wait to KBs.
+      setTurns([]);
+      setEvents([]);
+      const headerKey = `${date}/${file}`;
+      if (headerForRef.current !== headerKey) {
+        headerForRef.current = '';
+        setWindowRequests(0);
+        setWindowRounds(0);
+        setExactRequests(null);
+        setRoundIndex([]);
+        setFragments([]);
+        setFileTruncated(false);
+      }
+      if (!date || !file) {
+        // Supersedes any in-flight read — its seq-guarded finally must not be
+        // the one to clear `loading`, so clear it here or a deselect while a
+        // load is in flight would stick the skeleton on forever.
+        if (seq === loadSeqRef.current) setLoading(false);
+        return false;
+      }
+      setLoading(true);
+      setLoadedFor({ date, file });
+      setPage(wantedPage);
+      setPageSize(size);
+      try {
+        const res = await api.getCaptureEvents(date, file, size, wantBodies ? 'full' : 'none', true, wantedPage);
+        if (seq !== loadSeqRef.current) return false; // superseded by a newer selection
+        setTurns([...res.turns].reverse());
+        setChatLoaded(false);
+        setEvents(res.events);
+        setWindowRequests(res.windowRequests);
+        setWindowRounds(res.totalRounds);
+        setFileTruncated(res.fileTruncated);
+        setFragments(res.fragments ?? []);
+        setBodiesLoaded(wantBodies);
+        setPage(res.page);
+      } catch (err) {
+        console.error(err);
+        return false; // the explicit refresh buttons are the retry path
+      } finally {
+        if (seq === loadSeqRef.current) setLoading(false);
+      }
+      // EXACT summary: the events read only knows the read window. This scan
+      // yields the request denominator AND every prompt round in the archive,
+      // so the selector lists all rounds on page 1 too. Display-only, after
+      // paint; a stale answer for a superseded selection is dropped by seq.
+      const key = `${date}/${file}`;
+      if (countedForRef.current === key && headerForRef.current === key) return true;
+      countedForRef.current = key;
+      setExactRequests(null); // never show the previous archive's summary
+      setRoundIndex([]);
+      try {
+        const summary = await api.getCaptureSummary(date, file);
+        if (seq === loadSeqRef.current && summary) {
+          setExactRequests(summary.requests);
+          setRoundIndex(summary.rounds);
+          headerForRef.current = key;
+        } else if (seq === loadSeqRef.current) {
+          // Unavailable: let the next load retry instead of caching the miss.
+          countedForRef.current = '';
+        }
+      } catch {
+        if (seq === loadSeqRef.current) countedForRef.current = '';
+        /* the header falls back to the window count */
+      }
+      return seq === loadSeqRef.current;
+    },
+    []
+  );
+
+  /** Page change: same archive, same lens state, different window slice. */
+  const goToPage = useCallback(
+    (next: number) => {
+      if (!loadedFor.date || !loadedFor.file) return;
+      loadRecords(loadedFor.date, loadedFor.file, bodiesLoaded || mainView === 'chat', next, pageSize);
+    },
+    [loadedFor, bodiesLoaded, mainView, pageSize, loadRecords]
+  );
+
+  /**
+   * Conversation lens: load the WHOLE conversation, newest page first.
+   * `bodies=chat` keeps only round-opener request bodies + response bodies
+   * (the replay accounts for every prompt without carrying multi-MB
+   * continuation bodies). Each page's window grows, so request numbers are
+   * re-anchored to the exact archive totals after every batch; round numbers
+   * come from the same summary index the selector uses.
+   */
+  const loadChatHistory = useCallback(
+    async (date: string, file: string) => {
+      if (!date || !file) {
+        setTurns([]);
+        setEvents([]);
+        setLoading(false);
+        setBodiesLoaded(false);
+        setChatLoaded(false);
+        return;
+      }
+      const seq = ++loadSeqRef.current;
+      setLoading(true);
+      setTurns([]);
+      setEvents([]);
+      setBodiesLoaded(false);
+      setChatLoaded(false);
+      setFocusRound(null);
+      setFileTruncated(false);
+      const headerKey = `${date}/${file}`;
+      if (headerForRef.current !== headerKey) {
+        headerForRef.current = '';
+        setWindowRequests(0);
+        setWindowRounds(0);
+        setExactRequests(null);
+        setRoundIndex([]);
+        setFragments([]);
+      }
+      setLoadedFor({ date, file });
+      setPage(1);
+      try {
+        const summary = await api.getCaptureSummary(date, file);
+        if (seq !== loadSeqRef.current) return;
+        countedForRef.current = `${date}/${file}`;
+        if (summary) {
+          headerForRef.current = `${date}/${file}`;
+          setExactRequests(summary.requests);
+          setRoundIndex(summary.rounds);
+        }
+        const acc: CaptureTurn[] = [];
+        const seen = new Set<string>();
+        // Round index for the re-anchor. Without the exact summary it is empty
+        // and cards fall back to the window-local round number.
+        const rounds = summary?.rounds ?? [];
+        let archiveRequests = summary?.requests ?? null;
+        let p = 1;
+        let totalPages = 1;
+        do {
+          const res = await api.getCaptureEvents(date, file, CHAT_PAGE, 'chat', true, p);
+          if (seq !== loadSeqRef.current) return;
+          for (const t of res.turns.slice().reverse()) {
+            const key = t.clientRequest?.id ?? `${t.traceId}:${t.roundNumber ?? ''}:${t.requestNumber ?? ''}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            acc.push(t);
+          }
+          setFileTruncated(res.fileTruncated);
+          setWindowRequests(res.windowRequests);
+          setWindowRounds(res.totalRounds);
+          // The walk's LAST window covers the whole conversation, so its count
+          // is the archive total when the exact summary was unavailable.
+          archiveRequests = res.windowRequests;
+          totalPages = res.totalPages;
+          p++;
+        } while (p <= totalPages);
+        // Re-anchor numbering ONCE after the walk: every page read grew the
+        // window, so earlier pages' numbers are window-relative and stale, but
+        // committing per page would make the transcript re-parse the whole
+        // conversation once per page (it memoizes on the `turns` identity).
+        let n = archiveRequests ?? 0;
+        for (const t of acc) {
+          if (!t.clientRequest) {
+            delete t.requestNumber;
+            continue;
+          }
+          const abs = n--;
+          t.requestNumber = abs;
+          if (rounds.length > 0) {
+            t.roundNumber = rounds.find(r => abs >= r.firstRequest && abs <= r.lastRequest)?.ordinal;
+          }
+        }
+        setTurns(acc.slice());
+        setChatLoaded(true);
+        setLoading(false);
+      } catch (err) {
+        if (seq !== loadSeqRef.current) return;
+        console.error(err);
+        setLoading(false);
+        toast.error(t('captures.loadFailed'));
+      }
+    },
+    [toast, t]
+  );
 
   useEffect(() => {
     loadStatus();
@@ -1405,20 +1615,15 @@ export const CapturesPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // A session opened while the conversation lens is active needs full
-    // bodies immediately; lens switches are upgraded by the effect below.
-    loadRecords(selectedDate, selectedFile, mainView === 'chat');
-  }, [selectedDate, selectedFile, loadRecords]);
-
-  // Switching to the conversation lens needs full wire bodies (the
-  // metadata-first list is enough only for the timeline). Upgrade in place:
-  // the skeleton takes over, then the full read renders progressively.
-  // loadFailedRef stops the loop: on a persistent failure this effect would
-  // otherwise refire on every loading flip — the refresh button retries.
-  useEffect(() => {
-    if (mainView !== 'chat' || !selectedFile || bodiesLoaded || loading || loadFailedRef.current) return;
-    loadRecords(selectedDate, selectedFile, true);
-  }, [mainView, selectedFile, bodiesLoaded, loading, selectedDate, loadRecords]);
+    // Lens switch / session switch is an explicit load:
+    //   timeline → one metadata page (cheap, pager owns older history);
+    //   chat     → the WHOLE conversation in bodies=chat batches (all rounds).
+    if (mainView === 'chat') loadChatHistory(selectedDate, selectedFile);
+    else loadRecords(selectedDate, selectedFile, false, 1, pageSize);
+    // Lens switch owns the initial fetch (and a `pageSize` change re-fires it
+    // with the new size), so the pager only stores the choice — calling
+    // loadRecords here as well issued two identical archive reads.
+  }, [mainView, selectedDate, selectedFile, pageSize, loadChatHistory, loadRecords]);
 
   /**
    * Deep link from other pages: /captures?session=<raw sessionId>.
@@ -1518,19 +1723,51 @@ export const CapturesPage: React.FC = () => {
    * Quiet tail refresh for the auto-poll: same request as the session-level
    * refresh button, but never disturbs the reader — no skeleton, no selection
    * reset, no loading flag. Skipped entirely while a turn drawer is open, a
-   * read is already in flight, the tab is hidden, or no archive is selected.
-   * On failure it stays silent — the next tick and the refresh buttons are
-   * the retry paths (loadFailedRef semantics untouched).
+   * focused round is active, a read is already in flight, the tab is hidden,
+   * no archive is selected, or the reader is on an OLDER page (page 1 no
+   * longer owns the list — a newer turn landing would shift every page
+   * boundary under them; the manual refresh buttons reset to the newest
+   * page). On failure it stays silent — the next tick and the refresh
+   * buttons are the retry paths.
    */
-  const autoStateRef = useRef({ loading, selectedTurnIdx, selectedDate, selectedFile, bodiesLoaded });
-  autoStateRef.current = { loading, selectedTurnIdx, selectedDate, selectedFile, bodiesLoaded };
+  const autoStateRef = useRef({
+    loading,
+    selectedTurnIdx,
+    selectedDate,
+    selectedFile,
+    bodiesLoaded,
+    chatLoaded,
+    page,
+    pageSize,
+    focusRound,
+  });
+  autoStateRef.current = {
+    chatLoaded,
+    loading,
+    selectedTurnIdx,
+    selectedDate,
+    selectedFile,
+    bodiesLoaded,
+    page,
+    pageSize,
+    focusRound,
+  };
   const tailRefreshSeqRef = useRef(0);
   const tailRefresh = useCallback(async () => {
     const st = autoStateRef.current;
-    if (!st.selectedFile || st.loading || st.selectedTurnIdx !== null || document.hidden) return;
+    if (!st.selectedFile || st.loading || st.selectedTurnIdx !== null || document.hidden || st.chatLoaded) return;
+    if (st.page !== 1) return;
+    // A focused round is anchored to absolute request numbers; a new turn
+    // landing at the head would shift the array slice it maps onto.
+    if (st.focusRound !== null) return;
     const seq = ++tailRefreshSeqRef.current;
     try {
-      const res = await api.getCaptureEvents(st.selectedDate, st.selectedFile, 500, st.bodiesLoaded ? 'full' : 'none');
+      const res = await api.getCaptureEvents(
+        st.selectedDate,
+        st.selectedFile,
+        st.pageSize,
+        st.bodiesLoaded ? 'full' : 'none'
+      );
       if (seq !== tailRefreshSeqRef.current) return;
       // The user may have switched archives mid-flight — the late response
       // must not clobber the new selection's turns.
@@ -1540,13 +1777,15 @@ export const CapturesPage: React.FC = () => {
       // the head shifts row indices and the drawer would silently re-resolve
       // to a different turn. Skip rather than disturb the reader.
       if (cur.selectedTurnIdx !== null) return;
+      if (cur.page !== 1) return;
       setTurns([...res.turns].reverse());
       setEvents(res.events);
-      setTotalTurns(res.totalTurns);
+      setWindowRequests(res.windowRequests);
+      setWindowRounds(res.totalRounds);
       setFileTruncated(res.fileTruncated);
       setFragments(res.fragments ?? []);
       setBodiesLoaded(st.bodiesLoaded);
-      loadFailedRef.current = false;
+      setPage(res.page);
     } catch {
       /* silent — retried on the next tick */
     }
@@ -1565,14 +1804,22 @@ export const CapturesPage: React.FC = () => {
    */
   const handleRefreshAll = useCallback(async () => {
     setRefreshing(true);
+    // An explicit refresh must recount: the summary is cached per archive key,
+    // so without this the header's exact requests/rounds never grow after new
+    // turns arrive (the window tally would update while the header stayed old).
+    countedForRef.current = '';
     try {
       await loadStatus();
       await loadSessions(selectedDate, apiKeyFilter);
-      if (selectedFile) await loadRecords(selectedDate, selectedFile, mainView === 'chat' || bodiesLoaded);
+      // The conversation lens re-reads the whole conversation (it has no pager).
+      if (selectedFile) {
+        if (mainView === 'chat') await loadChatHistory(selectedDate, selectedFile);
+        else await loadRecords(selectedDate, selectedFile, false, page, pageSize);
+      }
     } finally {
       setRefreshing(false);
     }
-  }, [loadStatus, loadSessions, loadRecords, selectedDate, apiKeyFilter, selectedFile, mainView, bodiesLoaded]);
+  }, [loadStatus, loadSessions, loadRecords, loadChatHistory, selectedDate, apiKeyFilter, selectedFile, mainView, page, pageSize]);
 
   const handleToggle = async (next: boolean) => {
     if (toggling) return;
@@ -1738,11 +1985,140 @@ export const CapturesPage: React.FC = () => {
     return sum;
   }, [turns]);
 
-  // Distinct DATE count of the stitched fragments. The ⊕ badge and the day
+  // Distinct DATE count of the stitched fragments. The day-span badge and the
   // dividers speak DATES, not shard files — same-day session-id churn merges
   // multiple files (conversationKey join) without crossing midnight, so the
   // raw fragment count would read as a bogus day count.
   const fragmentDates = useMemo(() => new Set(fragments.map(f => f.date)).size, [fragments]);
+
+  // The backend numbers requests inside the READ WINDOW; the window is always
+  // the conversation's newest tail, so the exact archive tally gives the
+  // offset that turns `requestNumber` into a stable, conversation-wide
+  // sequence. Chat turns are already re-anchored while accumulating, so their
+  // offset is zero. Display-only — paging itself still walks the window.
+  const requestOffset = chatLoaded ? 0 : exactRequests !== null ? Math.max(0, exactRequests - windowRequests) : 0;
+
+  // Prompt-round ordinals come from the WHOLE-archive index too. The read
+  // window numbers rounds from ITS oldest prompt, so a windowed page would
+  // label the archive's round 40 as "Round 1" while the selector — built from
+  // the index — calls it 40. Rounds are contiguous and ascending, so the
+  // transcription is a binary search over the archive index.
+  const roundOrdinalAt = useCallback(
+    (abs: number): number | undefined => {
+      let lo = 0;
+      let hi = roundIndex.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const r = roundIndex[mid];
+        if (abs < r.firstRequest) hi = mid - 1;
+        else if (abs > r.lastRequest) lo = mid + 1;
+        else return r.ordinal;
+      }
+      return undefined;
+    },
+    [roundIndex]
+  );
+  /** The badge's round number: archive-wide while the index is loaded, else
+   *  the window-local number (a cold header must not blank the badge). */
+  const roundOrdinalOf = useCallback(
+    (turn: CaptureTurn): number | undefined =>
+      turn.requestNumber === undefined
+        ? turn.roundNumber
+        : roundOrdinalAt(turn.requestNumber + requestOffset) ?? turn.roundNumber,
+    [roundOrdinalAt, requestOffset]
+  );
+
+  // Prompt rounds come from the WHOLE-archive index, so the selector lists
+  // every round on every page. Focusing one maps its absolute request range
+  // onto the loaded page; rounds are contiguous, so the match is a slice
+  // (newest row first — the same order as `turns`).
+  const focusRange = useMemo(() => {
+    if (focusRound === null) return null;
+    const round = roundIndex.find(r => r.ordinal === focusRound);
+    if (!round) return null;
+    let startIdx = -1;
+    let endIdx = -1;
+    for (let i = 0; i < turns.length; i++) {
+      const n = turns[i].requestNumber;
+      if (n === undefined) continue;
+      const abs = n + requestOffset;
+      if (abs >= round.firstRequest && abs <= round.lastRequest) {
+        if (startIdx < 0) startIdx = i;
+        endIdx = i;
+      }
+    }
+    return startIdx >= 0 ? { startIdx, endIdx } : null;
+  }, [turns, roundIndex, focusRound, requestOffset]);
+  // "Only this round" narrows the rendered rows; the drawer still takes the
+  // GLOBAL index (re-anchored inside the map below).
+  const shownTurns = useMemo(
+    () => (focusRange ? turns.slice(focusRange.startIdx, focusRange.endIdx + 1) : turns),
+    [turns, focusRange]
+  );
+  // A focused slice starts at that archive round, so the transcript must
+  // number its first card from the archive ordinal, not from 1.
+  const chatRoundOffset = focusRound !== null
+    ? (roundIndex.find(r => r.ordinal === focusRound)?.ordinal ?? focusRound) - 1
+    : 0;
+  // Selector options: ALL prompt rounds, newest first. A round can span pages,
+  // so this list is built from the archive index, never from page metadata.
+  const roundOptions = useMemo(
+    () =>
+      [...roundIndex].reverse().map(r => {
+        const prompt = r.prompt || t('captures.roundNoPrompt');
+        const label = [
+          t('captures.roundOrdinal', { n: r.ordinal }),
+          t('captures.roundSteps', { n: r.requests }),
+          prompt.length > 48 ? `${prompt.slice(0, 48)}…` : prompt,
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return { value: String(r.ordinal), label };
+      }),
+    [roundIndex, t]
+  );
+  /**
+   * Pick a prompt round. The conversation lens already holds the whole
+   * conversation, so it only narrows in place. The timeline lens pages: the
+   * round's NEWEST request determines the page, and focus is applied after the
+   * page arrives because loadRecords clears it at the start of a read.
+   */
+  const selectRound = useCallback(
+    (v: string) => {
+      if (!v) {
+        setFocusRound(null);
+        return;
+      }
+      const ordinal = Number(v);
+      const round = roundIndex.find(r => r.ordinal === ordinal);
+      if (!round || !loadedFor.date || !loadedFor.file) {
+        setFocusRound(Number.isFinite(ordinal) ? ordinal : null);
+        return;
+      }
+      if (mainView === 'chat') {
+        setFocusRound(ordinal);
+        return;
+      }
+      const total = exactRequests ?? windowRequests;
+      const target = total > 0 ? Math.max(1, Math.ceil((total - round.lastRequest + 1) / pageSize)) : 1;
+      if (target === page) {
+        setFocusRound(ordinal);
+        return;
+      }
+      void loadRecords(
+        loadedFor.date,
+        loadedFor.file,
+        bodiesLoaded,
+        target,
+        pageSize
+      ).then(landed => {
+        // A superseded read resolves false — never apply this round's focus to
+        // the archive the operator has since switched to.
+        if (landed) setFocusRound(ordinal);
+      });
+    },
+    [roundIndex, loadedFor, exactRequests, windowRequests, pageSize, page, bodiesLoaded, mainView, loadRecords]
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
@@ -2045,6 +2421,13 @@ export const CapturesPage: React.FC = () => {
                         {s.preview && (
                           <span
                             style={{
+                              // The id is the row's only flexible cell: it
+                              // claims the leftover width so the trailing
+                              // chip column is anchored to the right edge.
+                              // Without the grow the chips split the free
+                              // space with the hover-action slot and drift
+                              // into the middle of the row.
+                              flex: 1,
                               fontFamily: FONT_MONO,
                               fontSize: 'var(--text-xs)',
                               color: 'var(--text-dim)',
@@ -2058,8 +2441,10 @@ export const CapturesPage: React.FC = () => {
                           </span>
                         )}
                         {/* Trailing metadata chips pinned right: the app tag +
-                            day-span badge align into a column across rows, the
-                            id span claims the freed width. */}
+                            day-span badge align into a column across rows —
+                            the id span above grows into the freed width, so
+                            these chips never drift and never leave a gap on
+                            the right. */}
                         <span
                           style={{
                             marginLeft: 'auto',
@@ -2115,21 +2500,33 @@ export const CapturesPage: React.FC = () => {
                                 background: 'var(--hue-blue-soft)',
                                 color: 'var(--hue-blue)',
                                 flexShrink: 0,
+                                // inline-flex so the token icon centres on the
+                                // badge box, not on the text's ink: U+2295 sat
+                                // ~1.5px low because its circle is anchored to
+                                // the math axis and dips below the baseline.
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
                               }}
                             >
-                              ⊕{s.spanDates.length}d
+                              <CirclePlus size={10} aria-hidden />
+                              {s.spanDates.length}d
                               {/* This shard is NOT the conversation's opening day
                                   (spanDates is newest-first, last = earliest). */}
                               {selectedDate !== s.spanDates[s.spanDates.length - 1] && (
-                                <span style={{ opacity: 0.75 }}> · {t('captures.continuedFrom')}</span>
+                                <span style={{ opacity: 0.75 }}>· {t('captures.continuedFrom')}</span>
                               )}
                             </span>
                           )}
                         </span>
+                        {/* Hover-revealed actions ride directly after the
+                            chip column. The chips carry the row's ONE auto
+                            spacer — a second marginLeft:auto here split the
+                            free space in half, parking the chips mid-row
+                            with a dead gap on the right. */}
                         <span
                           className="capture-card-actions"
                           style={{
-                            marginLeft: 'auto',
                             display: 'flex',
                             alignItems: 'center',
                             gap: '8px',
@@ -2211,11 +2608,33 @@ export const CapturesPage: React.FC = () => {
                           padding: '10px 16px',
                           borderBottom: '1px solid var(--divider)',
                           flexWrap: 'wrap',
+                          // Header and pager are FIXED around the scrolling
+                          // list; only the list may absorb the height loss.
+                          flexShrink: 0,
                         }}
                       >
                         <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)' }}>{t('captures.turnsTitle')}</span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                          {selectedFile.replace(/\.jsonl$/, '')} · {totalTurns} {t('captures.turnsUnit')}
+                        <span
+                          title={
+                            t('captures.requestsCountHint', {
+                              shown: shownTurns.length,
+                              total: exactRequests ?? windowRequests,
+                            }) +
+                            '\n' +
+                            t('captures.roundsCountHint', {
+                              rounds: roundIndex.length > 0 ? roundIndex.length : windowRounds,
+                            })
+                          }
+                          style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
+                        >
+                          {selectedFile.replace(/\.jsonl$/, '')} · {exactRequests ?? '…'}{' '}
+                          {t('captures.requestsUnit')} ·{' '}
+                          {roundIndex.length > 0
+                            ? roundIndex.length
+                            : exactRequests === null
+                              ? '…'
+                              : windowRounds}{' '}
+                          {t('captures.roundsUnit')}
                         </span>
                         {fragmentDates > 1 && (
                           <span
@@ -2232,9 +2651,17 @@ export const CapturesPage: React.FC = () => {
                               borderRadius: '4px',
                               background: 'var(--hue-blue-soft)',
                               color: 'var(--hue-blue)',
+                              // Same inline-flex box as the rail badge: the
+                              // icon centres on the chip, never on the text
+                              // ink (see the row badge above).
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              flexShrink: 0,
                             }}
                           >
-                            ⊕ {fragmentDates}d
+                            <CirclePlus size={10} aria-hidden />
+                            {fragmentDates}d
                           </span>
                         )}
                         {totalLatencyMs > 0 && (
@@ -2245,7 +2672,46 @@ export const CapturesPage: React.FC = () => {
                             · {t('captures.totalTime')} {fmtDur(totalLatencyMs)}
                           </span>
                         )}
-                        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      </div>
+                      {/* Timeline toolbar: round filter + lens/actions. A
+                          dedicated row keeps the session-identity header clean
+                          and stops the selector from being pushed onto an
+                          unpredictable second line at narrow widths. */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '8px 16px',
+                          borderBottom: '1px solid var(--divider)',
+                          flexWrap: 'wrap',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 'var(--text-2xs)',
+                            color: 'var(--text-dim)',
+                            flexShrink: 0,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em',
+                          }}
+                        >
+                          {t('captures.roundsUnit')}
+                        </span>
+                        {/* Prompt-round navigator: one user prompt plus every
+                            request it drove. Options come from the WHOLE
+                            archive index, so page 1 lists all rounds; picking
+                            one loads the page holding its newest request and
+                            narrows the rows, "全部轮次" restores them. */}
+                        <Combobox
+                          value={focusRound === null ? '' : String(focusRound)}
+                          onChange={selectRound}
+                          options={[{ value: '', label: t('captures.roundAll') }, ...roundOptions]}
+                          panelMinWidth={420}
+                          style={{ width: 340, maxWidth: '100%', flexShrink: 1, fontSize: 'var(--text-sm)', padding: '5px 10px' }}
+                        />
+                        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           {/* View lens: raw-wire turn timeline vs reconstructed conversation replay. */}
                           <div
                             style={{
@@ -2303,12 +2769,16 @@ export const CapturesPage: React.FC = () => {
                             <Zap size={12} />
                             <span>{t('captures.autoRefresh')}</span>
                           </button>
-                          {/* Session-level refresh: re-read just this archive's
-                              tail (cheap), vs the header button that reloads
+                          {/* Session-level refresh: re-read the CURRENT page
+                              (cheap), vs the header button that reloads
                               status + dates + session list too. */}
                           <button
                             className="btn btn-sm"
-                            onClick={() => loadRecords(selectedDate, selectedFile, mainView === 'chat' || bodiesLoaded)}
+                            onClick={() =>
+                              mainView === 'chat'
+                                ? void loadChatHistory(selectedDate, selectedFile)
+                                : goToPage(page)
+                            }
                             disabled={loading}
                             title={t('captures.refreshTurnsHint')}
                           >
@@ -2321,11 +2791,17 @@ export const CapturesPage: React.FC = () => {
                         {loading && turns.length === 0 ? (
                           <TurnsSkeleton chat={mainView === 'chat'} />
                         ) : mainView === 'chat' ? (
+                          // Conversation replay carries NO pager: loadChatHistory
+                          // loads the WHOLE conversation in bodies=chat batches,
+                          // and this component renders its rounds progressively.
+                          // A page cut would slice a round in half, so all rounds
+                          // are present and the round selector narrows in place.
                           <SessionTranscript
-                            turns={turns}
+                            turns={shownTurns}
                             fileTruncated={fileTruncated}
                             date={selectedDate}
-                            onOpenTurn={idx => setSelectedTurnIdx(idx)}
+                            roundOffset={chatRoundOffset}
+                            onOpenTurn={i => openTurn(focusRange ? focusRange.startIdx + i : i)}
                           />
                         ) : (
                         <>
@@ -2357,12 +2833,16 @@ export const CapturesPage: React.FC = () => {
                               borderRadius: 1,
                             }}
                           />
-                          {turns.length === 0 && (
+                          {shownTurns.length === 0 && (
                             <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
                               {t('captures.emptyRecords')}
                             </div>
                           )}
-                          {turns.map((turn, idx) => {
+                          {shownTurns.map((turn, i) => {
+                            // Global index into the page's `turns` — the drawer
+                            // contract. Focus mode renders a slice, so the row
+                            // index must be re-anchored to the round's start.
+                            const idx = focusRange ? focusRange.startIdx + i : i;
                             const turnStart = turn.clientRequest?.ts
                               ?? turn.upstreamRequest?.ts
                               ?? turn.gatewayResponse?.ts
@@ -2377,7 +2857,7 @@ export const CapturesPage: React.FC = () => {
                             // Turns render newest-first, so compare with the
                             // NEXT turn (later in wall time).
                             const multiDay = fragmentDates > 1;
-                            const prevTurn = turns[idx - 1];
+                            const prevTurn = shownTurns[i - 1];
                             const prevStart = prevTurn
                               ? (prevTurn.clientRequest?.ts
                                 ?? prevTurn.upstreamRequest?.ts
@@ -2390,8 +2870,7 @@ export const CapturesPage: React.FC = () => {
                               turnStart !== undefined &&
                               (prevStart === undefined || fmtDay(prevStart) !== fmtDay(turnStart));
                             return (
-                              <React.Fragment key={`${turn.traceId}-${idx}`}>
-                                {dayChanged && (
+                              <React.Fragment key={`${turn.traceId}-${idx}`}>                                {dayChanged && (
                                   <div
                                     style={{
                                       position: 'relative',
@@ -2446,6 +2925,43 @@ export const CapturesPage: React.FC = () => {
                                 >
                                   {errEvent ? t('captures.statusError') : t('captures.statusOk')}
                                 </span>
+                                {/* TWO axes, never conflated: the prompt round
+                                    (one user message + every request it drove)
+                                    and the request sequence (every client
+                                    request, tool-loop continuations included). */}
+                                {(() => {
+                                  const roundOrdinal = roundOrdinalOf(turn);
+                                  return roundOrdinal !== undefined ? (
+                                    <span
+                                      className="badge"
+                                      title={t('captures.roundSeqHint')}
+                                      style={{
+                                        flexShrink: 0,
+                                        background: 'var(--chip-bg)',
+                                        color: 'var(--text-muted)',
+                                        fontFamily: FONT_MONO,
+                                        fontSize: 'var(--text-2xs)',
+                                      }}
+                                    >
+                                      {t('captures.roundOrdinal', { n: roundOrdinal })}
+                                    </span>
+                                  ) : null;
+                                })()}
+                                {turn.requestNumber !== undefined && (
+                                  <span
+                                    className="badge"
+                                    title={t('captures.requestSeqHint')}
+                                    style={{
+                                      flexShrink: 0,
+                                      background: 'var(--chip-bg)',
+                                      color: 'var(--text-dim)',
+                                      fontFamily: FONT_MONO,
+                                      fontSize: 'var(--text-2xs)',
+                                    }}
+                                  >
+                                    #{turn.requestNumber + requestOffset}
+                                  </span>
+                                )}
                                 {/* Model: `inbound → upstream` renders only when the
                                     upstream id differs BEYOND a mechanical provider-prefix
                                     strip (`ark/x → x` is the same model — noise inline);
@@ -2574,6 +3090,40 @@ export const CapturesPage: React.FC = () => {
                         </>
                         )}
                       </div>
+                      {/* Page bar — a FIXED footer of the detail pane, outside
+                          the scrolling list, so the pager never scrolls away
+                          with the rows (same layout as /models). Timeline lens
+                          only: the conversation replay renders rounds
+                          progressively and has no pager. Pages count REQUESTS
+                          BACK from the newest end, so `total` is the read
+                          window's request count — the header additionally
+                          shows the archive-wide exact request tally and the
+                          window's user-prompt round count. Off page 1 the tail
+                          poll pauses (page boundaries would shift under the
+                          reader). */}
+                      {mainView === 'timeline' && turns.length > 0 && (
+                        <div
+                          style={{
+                            flexShrink: 0,
+                            padding: '0 16px 10px',
+                            borderTop: '1px solid var(--divider)',
+                            background: 'var(--card-bg)',
+                          }}
+                        >
+                          <Pagination
+                            page={page}
+                            pageSize={pageSize}
+                            total={exactRequests ?? windowRequests}
+                            onChange={goToPage}
+                            disabled={loading}
+                            showSummary
+                            summaryUnit={t('captures.requestsUnit')}
+                            newestFirst
+                            pageSizeOptions={PAGE_SIZE_OPTIONS}
+                            onPageSizeChange={size => setPageSize(size)}
+                          />
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -2585,6 +3135,12 @@ export const CapturesPage: React.FC = () => {
       {selectedTurnIdx !== null && turns[selectedTurnIdx] && (
         <CaptureDrawer
           turn={drawerTurn ?? turns[selectedTurnIdx]}
+          requestNumber={
+            turns[selectedTurnIdx]?.requestNumber !== undefined
+              ? turns[selectedTurnIdx].requestNumber + requestOffset
+              : undefined
+          }
+          roundNumber={turns[selectedTurnIdx] ? roundOrdinalOf(turns[selectedTurnIdx]) : undefined}
           loading={drawerLoading}
           outOfWindow={drawerMiss}
           initialTab={initialDrawerTab}
@@ -2665,11 +3221,12 @@ export const CapturesPage: React.FC = () => {
                 }}
               >
                 <SessionTranscript
-                  turns={turns}
+                  turns={shownTurns}
                   fileTruncated={fileTruncated}
                   date={selectedDate}
                   expandAll
-                  onOpenTurn={idx => setSelectedTurnIdx(idx)}
+                  roundOffset={chatRoundOffset}
+                  onOpenTurn={i => openTurn(focusRange ? focusRange.startIdx + i : i)}
                 />
               </div>
             </div>

@@ -83,6 +83,9 @@ export interface TranslationDict {
     /** Same figures, for a source that publishes no total: `{total}` is a LOWER BOUND (rows known to
      *  exist), never a fabricated exact count. */
     summaryAtLeast: string;
+    /** Same figures with the caller's own unit word (`{unit}`), for pagers
+     *  whose `total` counts something other than plain rows (capture: turns). */
+    summaryUnit: string;
     perPage: string;
   };
   /** Live client-simulation chat page (/chat): one turn per gateway call,
@@ -1147,6 +1150,10 @@ hiddenBadge: string;
     emptySessions: string;
     copiedSessionId: string;
     copiedPrompt: string;
+    /** Toast after copying the client-minted conversation id (alias half). */
+    copiedClientRef: string;
+    /** Tooltip on the client conversation id under the gateway session id. */
+    clientRefTooltip: string;
     thinkAutoTip: string;
     thinkClientTip: string;
     copyFailed: string;
@@ -1467,7 +1474,21 @@ hiddenBadge: string;
     /** Detail-pane auto-refresh toggle label + title hint. */
     autoRefresh: string;
     autoRefreshHint: string;
-    turnsUnit: string;
+    /** Detail header: user-prompt round count and client-request count are
+     *  separate axes and must never share a label. */
+    roundsUnit: string;
+    requestsUnit: string;
+    /** Prompt-round navigator: "all rounds" option + labels. */
+    roundAll: string;
+    roundNoPrompt: string;
+    roundSteps: string;
+    /** Header tally tooltip: page requests vs the archive-wide exact count. */
+    requestsCountHint: string;
+    /** Header tally tooltip: user-prompt rounds over the whole archive. */
+    roundsCountHint: string;
+    /** Row tooltips explaining the two independent numbering axes. */
+    roundSeqHint: string;
+    requestSeqHint: string;
     /** Timeline header summary: total gateway latency over the displayed turns. */
     totalTime: string;
     totalTimeHint: string;
@@ -2014,6 +2035,8 @@ hiddenBadge: string;
     cursorModelsInfo: string;
     cursorReplace: string;
     cursorDefaultModel: string;
+    cursorForceModel: string;
+    cursorSaveDropped: string;
     cursorAdvancedSettings: string;
     cursorAppendSummary: string;
     cursorReplaceSummary: string;

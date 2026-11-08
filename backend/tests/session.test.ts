@@ -34,7 +34,8 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     const resolve1 = sessionManager.resolveSessionId(req1);
     assert.strictEqual(resolve1.lookupType, 'cold_start');
     const sessionId1 = resolve1.sessionId;
-    assert.ok(sessionId1.startsWith('sess_'));
+    // 64 random bits, 16 hex: one console line (ADR-0002 §1 item 8).
+    assert.match(sessionId1, /^sess_[0-9a-f]{16}$/);
 
     // Turn 1 completes with assistant reply
     const assistantReply1 = 'The speed of light in vacuum is approximately 299,792,458 meters per second.';

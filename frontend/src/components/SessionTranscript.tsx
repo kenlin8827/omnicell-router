@@ -1026,8 +1026,14 @@ export const SessionTranscript: React.FC<{
   date?: string;
   /** Fullscreen reading seeds every round open (pane default: collapsed). */
   expandAll?: boolean;
+  /**
+   * Absolute archive ordinal of the first rendered round minus one. A caller
+   * that narrows `turns` to one prompt round passes its archive ordinal so
+   * local enumeration does not restart at 1 and contradict the selector.
+   */
+  roundOffset?: number;
   onOpenTurn: (idx: number) => void;
-}> = ({ turns, fileTruncated, date, expandAll, onOpenTurn }) => {
+}> = ({ turns, fileTruncated, date, expandAll, roundOffset = 0, onOpenTurn }) => {
   const { t } = useI18n();
   // Transcript parsing (one JSON.parse per wire body) is the heaviest CPU
   // step of the lens — run it against the deferred turns so a session switch
@@ -1133,7 +1139,7 @@ export const SessionTranscript: React.FC<{
           <RoundCard
             key={`${r.steps[0]?.turn.traceId ?? 'r'}-${i}`}
             round={r}
-            ordinal={i + 1}
+            ordinal={i + 1 + roundOffset}
             date={date}
             first={i === 0}
             defaultOpen={expandAll}
@@ -1180,7 +1186,7 @@ export const SessionTranscript: React.FC<{
               }}
             >
               <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)' }}>
-                {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 })}
+                {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 + roundOffset })}
               </span>
               <ExpandMenu open={secOpen} onToggle={toggleSec} onAll={allSec} />
               <button
@@ -1231,7 +1237,7 @@ export const SessionTranscript: React.FC<{
                 >
                   <FocusRoundView
                     round={rounds[focusIdx]}
-                    ordinal={focusIdx + 1}
+                    ordinal={focusIdx + 1 + roundOffset}
                     date={date}
                     onOpenTurn={onOpenTurn}
                   />

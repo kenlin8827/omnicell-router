@@ -44,8 +44,8 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 仓库 dev 插件树携带分阶段参考实现（`plugins/cursor/`，独立仓库；此处不跟踪）：
 
 - **阶段 1（已发布，0.1.0）** —— OBSERVE。认领四个 Cursor 主机，把每个解密交换经核心 host SDK（`relayUpstream`）逐字节中继上游；两个方向都抓取进按天 JSONL feed，Connect 帧由解码器在**读取时**解析。Cursor 继续打真实后端；抓取永不改写流量。
-- **阶段 2（计划中）** —— REPLACE。解码推理 RPC（`aiserver.v1.ChatService/StreamUnifiedChat…`），把 model/prompt 改写进 OCR pipeline（`host.chat`），再把响应重新编码成 Connect 帧；非推理 RPC 继续走阶段 1 中继。
-- 线格式：Connect 帧 `[1B flags][4B BE length][payload]`，0x01 gzip，0x80 end-stream-JSON —— 阶段 1 是无 schema 预览；阶段 2 vendor 锁定到已验证 Cursor 版本的 proto，客户端升级后重跑提取器。
+- **阶段 2+（dev 插件已发布）** —— OWN。解码并回答三条推理线（`agent.v1.AgentService/Run`、`aiserver.v1.InferenceService/RunInference`、旧版 `ChatService/StreamUnifiedChat…`），合并或替换模型目录，并路由被请求的 id：OCR 命名空间的 id 走 `host.chat`，其余 id 逐字节中继给 Cursor。客户端的 MCP 工具定义随 agent 线作为额外 function spec 传递。插件面向 operator 的 `mockGetMe` 开关（`mockEmail` 覆盖地址）由插件本地用合成身份回答 `aiserver.v1.DashboardService/GetMe`（Cursor 的登录校验），没有可用 Cursor 会话也能演练接管链路；其他账户/仪表盘 RPC 仍按原样转发。另一个仅用于测试的 `mockPlan` 开关会在回程改写 `/auth/full_stripe_profile` 的会员字段，让客户端选择器在免费账户上渲染注入的条目——上游资料不动，Cursor 服务端鉴权照常生效。
+- 线格式：Connect 帧 `[1B flags][4B BE length][payload]`，0x01 gzip，EndStream JSON 位于 `0x02`（Connect 标准）或 `0x80`（Cursor 旧标记）—— 阶段 1 是无 schema 预览；阶段 2 vendor 锁定到已验证 Cursor 版本的 proto，客户端升级后重跑提取器。
 
 ### 5. 流量观测 —— 抓取全保真，展示开窗口
 
@@ -69,11 +69,11 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 - **声明** —— `plugin.json` `configSchema`：扁平数组，元素 `{key, type, default?, min?, max?, values?, enumLabels?, control?, section?, visibleWhen?, title?, desc?}`，其中 `type ∈ string|number|boolean|string[]|enum`，另外可选 `configSections` 分组。`title`/`desc`/`enumLabels` 沿用清单的 locale-map 约定（纯字符串或 BCP-47 键的字符串映射）；`enumLabels` 把一个已声明的 `values` 项映射到操作者看到的文案——机器值（`follow`）本身不是标签。`visibleWhen` 是**仅影响显示**的谓词——`{key, equals?|in?}`，且只能指向一个兄弟 enum/boolean 字段。`control` 从**封闭**的控制台控件词表（`text` | `textarea` | `model` | `models` | `segmented` | `apiKey`）里选一个控件，且必须能驱动该字段的类型（`model` 对 `string`、`models` 对 `string[]`、`segmented` 对 `enum`、`apiKey` 对 `string`——即控制台自己模式开关用的连体按钮形态，这样「不设置 / 自定义 / 跟随 Key」这类三选一不必硬塞进下拉框）；控件只改变取值的**编辑方式**，存储、校验、合并仍按类型驱动，所以 `model` 的值在产物里依然是一个纯字符串。新增控件属于控制台能力（注册表 + 渲染器 + 本 ADR），插件既不能自创也不能组合。`configSections: [{id, title?, advanced?}]` 用来把字段分组，**只声明一次**、由 `field.section` 引用（每个字段自带标题就是 drift twin）；声明了却无人引用的 section、字段指向未声明的 id，安装期即失败；一个 section 里的字段若全被 `visibleWhen` 隐藏，则不渲染该标题。`advanced` 让整组默认折叠——组内取值同样保留，与隐藏字段一致。这就是它的全部表面积：没有表达式、没有布局、没有顺序、没有分页、也没有插件自带的 UI 代码（那会以管理员凭证在控制台里运行）。**分组就是终点**：超出 sections 的表单应该是控制台的第一方页面，而不是更厚的协议。排列顺序为：已声明 section 顺序 → 组内 schema 顺序，无分组字段排在最前。排布权留在控制台；插件只声明条件，以及在默认控件不适配数据时从词表里点一个控件。被 `visibleWhen` 隐藏的字段**不清空也不跳过**——它保留取值，仍参与校验与合并，操作者切回某个模式不会丢掉已填内容。仅原始类型；刻意不引 JSON-Schema 引擎或布局 DSL —— 那会把任意 UI 复杂度邀请进插件协议。畸形 schema 在安装/装载时响亮失败（作者侧 API 不得静默降级）：未知或与类型不兼容的 `control`、无人引用的 section、字段指向未声明的 section、`visibleWhen` 指向未知字段、指向没有离散取值的字段、指向目标永远不会取的值、以及可见性成环，都是安装期错误。
 - **存储** —— `<pluginsRoot()>/config/<id>.json` 只存 operator 的**生效值**（非默认值）。插件参数**永不**进入 `config.yaml`（ADR-0016：schema 冻结；插件生命周期状态随插件工件存放，disabled.json / registrations.json 先例）。
-- **合并** —— host 逐字段校验存储值（未知键丢弃；类型/范围不符回落默认值并告警；坏工件永不导致装载崩溃），把合并结果通过 host SDK `config()` 交给插件。调用时查询：控制台保存后永远是最新。合并结果按插件 id 缓存；每次插件重载使缓存失效，手改工件可被拾取。
+- **合并** —— host 逐字段校验存储值（未知键丢弃；类型/范围不符回落默认值并告警；坏工件永不导致装载崩溃），把合并结果通过 host SDK `config()` 交给插件。`''` 是合法的 `string` 值：声明为空的默认值可原样往返。调用时查询：控制台保存后永远是最新。合并结果按插件 id 缓存；每次插件重载使缓存失效，手改工件可被拾取。
 
 控制台：`GET /api/admin/plugins/:id/config` 返回 `{schema, values}`，`PUT` 校验 + 持久化 + 触发插件可选的 `onConfigChange(config)`（钩子失败绝不回滚已持久化的保存；合并值无论如何都会通过 `config()` 到达插件）。无 schema 的插件不暴露任何字段并拒绝写入 —— 不存在自由参数袋。
 
-`cursor` 使用该机制承载 `logFrames`（抓取 body + 解析 Connect 帧；关闭 = 仅元数据行）与 `previewBytes`（单帧解码预览上限；落盘抓取永不被它截断）。阶段 1 不发布模型广告：插件的 `AvailableModels` 在阶段 2 才到来。
+`cursor` 使用该机制承载它的整个 operator 面：抓包（`logFrames`、`previewBytes`）、模型目录（`model` 写入 Cursor 的默认模型 RPC，`forceModel`，`modelListMode` 及其 `models`/`followKeyId`，`catalogReplace`）、Agent 循环（`maxTurns`、`toolTimeoutMs`、`heartbeatMs`、`maxResultChars`、`contextMaxChars`、`systemPrompt`）、接管范围（`interceptAgent` / `interceptDesktop` / `interceptLegacy`，以及后者的旧版开关）与合成 `GetMe` 应答（`mockGetMe` / `mockEmail` / `mockPlan`）。Client Hub 卡片只编辑该 schema 的模型目录子集；Plugins 页抽屉渲染其余字段。
 
 ## 后果
 

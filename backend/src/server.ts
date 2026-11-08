@@ -37,7 +37,7 @@ import {
   type VirtualEnvelope,
 } from './providers/virtual-meta.js';
 import { modelSupportsEfforts } from './types/router.js';
-import { isInternalSessionId } from './session/session-manager.js';
+import { isInternalSessionId, type ClientConversationRef } from './session/session-manager.js';
 import {
   currentModelOf,
   deriveSessionEntryMode,
@@ -76,6 +76,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
   );
   const keyList = distinctTraceKeys(traces);
   const uaList = distinctTraceUserAgents(traces);
+  const refList = distinctTraceClientRefs(traces);
   return {
     id,
     // The id IS the marker (see isInternalSessionId) — traces key on it, so
@@ -99,6 +100,9 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
     apiKeys: keyList.length ? keyList : undefined,
     // DISTINCT client User-Agent strings (write order) — console display only.
     clients: uaList.length ? uaList : undefined,
+    // DISTINCT client-minted conversation ids (write order) — the alias half
+    // of the gateway-id ↔ client-id mapping (ADR-0002 §1).
+    clientRefs: refList.length ? refList : undefined,
     ...traceTracker.getSessionAggregates(id),
   };
 }
@@ -110,6 +114,26 @@ function distinctTraceKeys(traces: ExecutionTrace[]): CaptureKeyIdentity[] {
     if (t.apiKey && !m.has(t.apiKey.id)) m.set(t.apiKey.id, t.apiKey);
   }
   return [...m.values()];
+}
+
+/**
+ * Distinct client conversation refs across a session's traces (write order,
+ * first element = display anchor). Keyed by kind+id: a client that rewrites
+ * its own id mid-conversation lists every claim, and the gateway session id is
+ * what they all resolve to.
+ */
+function distinctTraceClientRefs(traces: ExecutionTrace[]): ClientConversationRef[] {
+  const seen = new Set<string>();
+  const list: ClientConversationRef[] = [];
+  for (const t of traces) {
+    const ref = t.request.clientRef;
+    if (!ref) continue;
+    const key = `${ref.kind}\u0000${ref.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(ref);
+  }
+  return list;
 }
 
 /**
@@ -1188,6 +1212,7 @@ export function createServer(
       const sessTraces = traceTracker.getTracesBySession(s.id);
       const keyList = distinctTraceKeys(sessTraces);
       const uaList = distinctTraceUserAgents(sessTraces);
+      const refList = distinctTraceClientRefs(sessTraces);
       const row: SessionRow = {
         // Whitelisted entity projection (session-row.ts): the entity's
         // pinnedModel/pinnedProvider are routing-internal (ADR-0002) and are
@@ -1209,6 +1234,10 @@ export function createServer(
         apiKeys: keyList.length ? keyList : undefined,
         // Client User-Agents (write order) — console display only (forgeable).
         clients: uaList.length ? uaList : undefined,
+        // Client-minted conversation ids (write order) — the alias half of the
+        // gateway-id ↔ client-id mapping, derived from traces exactly like the
+        // reconstructed rows so both shapes show the same pair.
+        clientRefs: refList.length ? refList : undefined,
         // Entry mode is trace-derived for live rows too: the session entity
         // itself does not record how the client addressed its turns.
         entryMode: deriveSessionEntryMode(sessTraces),
@@ -1227,8 +1256,9 @@ export function createServer(
       .map(id => reconstructSessionFromTraces(traceTracker, id));
     // Most recently active first — stable ordering for pagination. `q`
     // filters (case-insensitive substring) across session id, current model AND
-    // its provider (both are rendered in that column), first user message and
-    // every app name, applied BEFORE pagination.
+    // its provider (both are rendered in that column), first user message,
+    // every app name and every client-minted conversation id (the alias half
+    // of the ADR-0002 §1 pair), applied BEFORE pagination.
     // `apiKey` (ak) selects by membership in the session's distinct key set.
     const all = [...live, ...reconstructed]
       .filter(s => {
@@ -1247,7 +1277,8 @@ export function createServer(
           String(s.firstUserMessage || '')
             .toLowerCase()
             .includes(q) ||
-          keys.some(k => k.name.toLowerCase().includes(q))
+          keys.some(k => k.name.toLowerCase().includes(q)) ||
+          (s.clientRefs ?? []).some(r => r.id.toLowerCase().includes(q) || r.kind.toLowerCase().includes(q))
         );
       })
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt);

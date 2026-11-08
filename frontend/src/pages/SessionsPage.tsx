@@ -882,12 +882,23 @@ export const SessionsPage: React.FC = () => {
                       textAlign: 'left',
                       fontFamily: FONT_MONO,
                       color: 'var(--text-main)',
-                      wordBreak: 'break-all',
+                      // The id is a single opaque token: never break it across
+                      // lines (a wrapped `sess_…` reads as two ids). Narrow
+                      // windows ellipsize instead; the full value is in the
+                      // title tooltip and the click-copy target.
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     <span
                       title={s.id}
-                      style={{ cursor: 'copy' }}
+                      style={{
+                        cursor: 'copy',
+                        display: 'inline-block',
+                        maxWidth: '100%',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        verticalAlign: 'middle',
+                      }}
                       onClick={async () => {
                         const ok = await copyToClipboard(s.id);
                         if (ok) toast.success(t('sessions.copiedSessionId'));
@@ -920,13 +931,94 @@ export const SessionsPage: React.FC = () => {
                         {t('sessions.internalBadge')}
                       </span>
                     )}
+                    {/* Client-minted conversation id(s): the OTHER half of the
+                        mapping (ADR-0002 §1). Line 2, right under the gateway
+                        id, so the two id namespaces read as a pair — and sized
+                        to the id's own width (~21 mono chars ≈ 151px) rather
+                        than to the cell, so the chip's right edge lands on the
+                        id's last glyph instead of floating past it. Full value
+                        in the tooltip, click copies the complete id, and the
+                        detail dialog prints it unclipped. */}
+                    {s.clientRefs && s.clientRefs.length > 0 && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '4px',
+                          marginTop: '3px',
+                          minWidth: 0,
+                        }}
+                      >
+                        {s.clientRefs.map(ref => (
+                          <span
+                            key={`${ref.kind}:${ref.id}`}
+                            title={t('sessions.clientRefTooltip', { kind: ref.kind, id: ref.id })}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                              minWidth: 0,
+                              maxWidth: '100%',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'var(--chip-bg)',
+                              border: '1px solid var(--divider)',
+                              lineHeight: 'var(--leading-14)',
+                              verticalAlign: 'middle',
+                              cursor: 'copy',
+                            }}
+                            onClick={async () => {
+                              const ok = await copyToClipboard(ref.id);
+                              if (ok) toast.success(t('sessions.copiedClientRef'));
+                              else toast.error(t('sessions.copyFailed'));
+                            }}
+                          >
+                            <span
+                              style={{
+                                flex: 'none',
+                                fontSize: '9px',
+                                letterSpacing: '0.08em',
+                                textTransform: 'uppercase',
+                                color: 'var(--text-dim)',
+                              }}
+                            >
+                              {ref.kind}
+                            </span>
+                            {/* 15 leading characters + ellipsis is what makes
+                                the chip 152px wide — the run of a 21-char
+                                gateway id at 12px mono (151px), measured, not
+                                guessed. A CSS ellipsis would size the chip to
+                                the cell instead (it grows to fit whatever the
+                                column allows), which is the alignment the row
+                                should NOT have. A trailing separator (UUID
+                                hyphen) is dropped so the label ends on a glyph,
+                                not on a dangling dash: 56-60 bits, unambiguous
+                                between rows. */}
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 'var(--text-2xs)',
+                                color: 'var(--text-dim)',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {ref.id.length > 15
+                                ? `${ref.id.slice(0, 15).replace(/-$/, '')}…`
+                                : ref.id}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {/* Title = first user prompt (backend-capped summary);
-                        single line, ellipsized, full text in the tooltip. */}
+                        single line, ellipsized, full text in the tooltip. It
+                        follows the id pair: the ids identify, the title says
+                        what the conversation was about. */}
                     {s.firstUserMessage && (
                       <div
                         title={s.firstUserMessage}
                         style={{
-                          marginTop: '2px',
+                          marginTop: '3px',
                           fontSize: 'var(--text-xs)',
                           color: 'var(--text-dim)',
                           whiteSpace: 'nowrap',
@@ -1240,8 +1332,34 @@ export const SessionsPage: React.FC = () => {
             </span>
           }
           subtitle={
-            <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', wordBreak: 'break-all' }}>
-              {timeline.session.id}
+            <span
+              style={{
+                display: 'inline-flex',
+                flexDirection: 'column',
+                gap: '2px',
+                fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)',
+                wordBreak: 'break-all',
+              }}
+            >
+              <span>{timeline.session.id}</span>
+              {/* The row can only afford a truncated prefix of a client-minted
+                  conversation id; this dialog is where the FULL value is
+                  readable and copyable (ADR-0002 §1). */}
+              {timeline.session.clientRefs?.map(ref => (
+                <span
+                  key={`${ref.kind}:${ref.id}`}
+                  title={t('sessions.clientRefTooltip', { kind: ref.kind, id: ref.id })}
+                  style={{ color: 'var(--text-dim)', cursor: 'copy' }}
+                  onClick={async () => {
+                    const ok = await copyToClipboard(ref.id);
+                    if (ok) toast.success(t('sessions.copiedClientRef'));
+                    else toast.error(t('sessions.copyFailed'));
+                  }}
+                >
+                  {ref.kind} · {ref.id}
+                </span>
+              ))}
             </span>
           }
           onClose={() => setTimeline(null)}

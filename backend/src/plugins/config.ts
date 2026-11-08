@@ -72,7 +72,10 @@ export function validatePluginConfig(
     let ok = false;
     switch (field.type) {
       case 'string':
-        ok = has && typeof v === 'string' && v.length > 0;
+        // '' is a legitimate value: several fields declare it as their default
+        // (a blank system-prompt override, an unfollowed key). Rejecting it
+        // warned on every full-form save and rewrote the key to its default.
+        ok = has && typeof v === 'string';
         break;
       case 'number': {
         ok = has && typeof v === 'number' && Number.isFinite(v) && (field.min === undefined || v >= field.min) && (field.max === undefined || v <= field.max);

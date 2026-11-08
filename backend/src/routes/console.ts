@@ -3948,7 +3948,12 @@ export function registerConsoleRoutes(
       const body = req.body as { pattern?: string; ids?: string[]; dryRun?: boolean } | undefined;
       const { autoPullProvider } = await import('../opencode/catalog/auto-pull.js');
       const result = await autoPullProvider(id, body ?? {});
-      return reply.status(result.httpStatus).send(result.body);
+      // withPoolSync keys on reply.sent. A dry run is a read-only preview and
+      // must not rebuild the live registry; a real pull returns the body so
+      // the wrapper can apply the new defs without a restart.
+      if (body?.dryRun) return reply.status(result.httpStatus).send(result.body);
+      reply.status(result.httpStatus);
+      return result.body;
     },
 
     /** Clear models — whole node without a pattern, matching ids only with one. */
@@ -5181,22 +5186,47 @@ export function registerConsoleRoutes(
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
-    const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '500', 10) || 500, 1), 5000);
+    // `limit` is TURNS per page (2-4 wire events travel with their turn), so
+    // the pager's summary counts the same unit the header does. 50 turns is
+    // the console default.
+    const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '50', 10) || 50, 1), 500);
     // Metadata-first console reads: bodies=none strips the wire bodies (KB
     // payload, instant paint); full bodies come back per turn via /turn or a
-    // bodies=full re-read.
-    const bodies = (req.query as any)?.bodies === 'none' ? 'none' : 'full';
+    // bodies=full re-read. bodies=chat keeps round-opener request bodies +
+    // response bodies only — the conversation replay's bounded footprint.
+    const bodiesParam = (req.query as any)?.bodies;
+    const bodies = bodiesParam === 'none' ? 'none' : bodiesParam === 'chat' ? 'chat' : 'full';
     // stitched=1: merge the session's fragments from every date dir (a
     // conversation that crossed midnight — or whose session id churned) into
     // one chronological timeline. Response carries the per-fragment breakdown.
     const stitched = (req.query as any)?.stitched === '1';
+    // page=1 is the NEWEST window page; older pages count up from there.
+    // Pages are TURN pages (a page never splits a turn's events), bounded by
+    // the read window — history older than the window is export-only.
+    const page = Math.min(Math.max(parseInt((req.query as any)?.page || '1', 10) || 1, 1), 100000);
     const result = stitched
-      ? await captureRecorder.readEventsStitched(date, file, limit, bodies)
-      : await captureRecorder.readEvents(date, file, limit, bodies);
+      ? await captureRecorder.readEventsStitched(date, file, limit, bodies, page)
+      : await captureRecorder.readEvents(date, file, limit, bodies, page);
     if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
       return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
     }
     return { status: 'ok', date, file, ...result };
+  });
+
+  /**
+   * EXACT whole-archive summary: request count (header denominator / pager
+   * total) and the USER-PROMPT ROUND INDEX (prompt + request range) for the
+   * round selector. The events window only knows the tail; this metadata scan
+   * is streamed and never parses request bodies.
+   * Display-only: pagination still follows a bounded read window.
+   */
+  app.get('/api/admin/capture/:date/:file/summary', async (req: any) => {
+    const { date, file } = req.params as { date: string; file: string };
+    const stitched = (req.query as any)?.stitched === '1';
+    const summary = stitched
+      ? await captureRecorder.captureSummaryStitched(date, file)
+      : await captureRecorder.captureSummary(date, file);
+    return { status: 'ok', date, file, ...summary };
   });
 
   /**

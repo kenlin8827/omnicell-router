@@ -61,6 +61,7 @@ import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type C
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
+import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import {
@@ -700,11 +701,16 @@ export class PipelineOrchestrator {
 
     // 2. Identify / track conversation session (zero-header layered resolution).
     // Reuse the capture-time resolve when present: both call sites normalize
-    // identically, and one request must yield exactly one session ID.
+    // identically, and one request must yield exactly one session ID. The
+    // client conversation ref is resolved ONCE here and handed to both the
+    // resolver and the trace, so the console's "both ids" view and the session
+    // it names can never disagree.
+    const clientRef = SessionManager.clientRefOf(normalizedRequest);
     const sessionResolve = preResolvedSession ??
       this.sessionManager.resolveSessionId(normalizedRequest, {
         keyId: captureKeyIdentity(context?.fastifyRequest ?? context?.clientRequest)?.id,
         headers: context?.headers,
+        clientRef: clientRef ?? undefined,
       });
     const sessionId = sessionResolve.sessionId;
 
@@ -949,25 +955,40 @@ export class PipelineOrchestrator {
       return typeof text === 'string' ? text : '';
     };
 
-    // Session title: the FIRST user message of the conversation, flattened and
+    // Session title: the FIRST user message carrying human text, flattened and
     // capped like the capture preview (array content is joined, never dropped —
-    // a multimodal opening message must still name the session). Once written,
-    // every later turn copies the birth value verbatim, so the trace ring can
-    // evict the birth trace without blanking the console title. Written to two
-    // places from this ONE value: the live entity (attachOrigin, below) and the
-    // trace (step 8) — a row rebuilt from traces alone has no entity at all.
+    // a multimodal opening message must still name the session). Client
+    // metadata envelopes are skipped, not quoted: Cursor's agent opens with a
+    // standalone `<timestamp>` message or a whole `<user_info>`/`<rules>`/…
+    // context bundle, which would otherwise title the session with a clock
+    // reading or an OS banner (see utils/client-envelope.ts for the rules —
+    // known tags AND any tag-only message count as envelope). Strict runs
+    // first so an unrecognized envelope never outranks a later human turn in
+    // the same request; only when the whole request carries no recognized
+    // human text does the permissive pass keep a tag-only message (a prompt
+    // that is itself markup) rather than naming the session nothing. Once
+    // written, every later turn copies the birth value verbatim, so the trace
+    // ring can evict the birth trace without blanking the console title.
+    // Written to two places from this ONE value: the live entity
+    // (attachOrigin, below) and the trace (step 8) — a row rebuilt from traces
+    // alone has no entity at all.
     const firstUserSummary =
       prevTraces[0]?.request.firstUserSummary ??
       (() => {
-        const firstUser = normalizedRequest.messages.find((m) => m.role === 'user');
-        const raw =
-          typeof firstUser?.content === 'string'
-            ? firstUser.content
-            : Array.isArray(firstUser?.content)
-              ? firstUser.content.map(textPartOf).join(' ')
-              : '';
-        const flat = raw.replace(/\s+/g, ' ').trim();
-        return flat ? flat.slice(0, 200) : undefined;
+        const userTexts: string[] = [];
+        for (const msg of normalizedRequest.messages) {
+          if (msg.role !== 'user') continue;
+          const raw =
+            typeof msg.content === 'string'
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content.map(textPartOf).join(' ')
+                : '';
+          if (raw) userTexts.push(raw);
+        }
+        // Strict-then-permissive pass lives in the normalizer, shared with the
+        // capture-session preview (one derivation, three surfaces).
+        return firstDisplayText(userTexts, 200);
       })();
 
     // Birth metadata: attach once per session (first-write-wins inside the
@@ -1834,7 +1855,9 @@ export class PipelineOrchestrator {
             effort: actualEffort,
             source: 'l2_confident',
             confidence: decision.confidence,
-            snippet: routeGate.snippetEnabled === false ? undefined : lastUserText ? lastUserText.slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
+            // Display aid only: client metadata envelopes (Cursor's `<timestamp>`)
+            // are dropped so the snippet names the prompt, not a clock reading.
+            snippet: routeGate.snippetEnabled === false ? undefined : lastUserText ? displayPromptText(lastUserText).slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
           },
           sessionId
         );
@@ -1860,9 +1883,10 @@ export class PipelineOrchestrator {
     // duplicate (an empty summary renders the "no new user message"
     // fallback glyph). The message is stale when its index already existed
     // at the session's previous turn: clients append, so a genuinely new
-    // user message always lands at or past the previous messageCount.
-    // Both counts are post-compression snapshots — a heavy compression
-    // shrink may over-mark; that only hides a display aid, never data.
+    // user message always lands at or past the previous messageCount. When
+    // this request's history SHRANK (client-side compaction / truncation)
+    // every index moved down and the comparison proves nothing, so the
+    // summary is kept — hiding a real prompt is the worse failure.
     const lastUserIdx = (() => {
       for (let i = normalizedRequest.messages.length - 1; i >= 0; i--) {
         if (normalizedRequest.messages[i].role === 'user') return i;
@@ -1870,13 +1894,19 @@ export class PipelineOrchestrator {
       return -1;
     })();
     const lastUserMsg = lastUserIdx >= 0 ? normalizedRequest.messages[lastUserIdx] : undefined;
-    let userPromptSummary = typeof lastUserMsg?.content === 'string'
-      ? lastUserMsg.content.slice(0, 200)
+    const lastUserTextForSummary = typeof lastUserMsg?.content === 'string'
+      ? lastUserMsg.content
       : Array.isArray(lastUserMsg?.content)
-        ? (lastUserMsg.content.map(textPartOf).join(' ')).slice(0, 200)
+        ? lastUserMsg.content.map(textPartOf).join(' ')
         : '';
+    // Display aid: same envelope stripping as the session title — a metadata-only
+    // turn renders as the empty-summary glyph, never as `<timestamp>…</timestamp>`.
+    let userPromptSummary = displayPromptText(lastUserTextForSummary).slice(0, 200);
     const prevMessageCount = prevTraces[prevTraces.length - 1]?.request.messageCount ?? 0;
-    if (userPromptSummary && lastUserIdx < prevMessageCount) userPromptSummary = '';
+    const turnMessageCount = normalizedRequest.messages.length;
+    if (userPromptSummary && turnMessageCount >= prevMessageCount && lastUserIdx < prevMessageCount) {
+      userPromptSummary = '';
+    }
 
     this.traceTracker.record({
       traceId: sharedTraceId,
@@ -1894,6 +1924,7 @@ export class PipelineOrchestrator {
         hasSystemPrompt: normalizedRequest.messages.some(m => m.role === 'system'),
         hasToolsOrSchema: Boolean(decision.needsSchemaValidation),
         clientHeaders: extractClientHeaders(context?.headers),
+        ...(clientRef ? { clientRef } : {}),
       },
       routing: {
         layerUsed: (decision.layerUsed || 'layer0') as any,

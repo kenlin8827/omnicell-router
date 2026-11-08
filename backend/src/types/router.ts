@@ -158,6 +158,7 @@ export type SessionLookupType =
   | 'request_user'      // raw OpenAI request.user field
   | 'prefix_chain'      // exact head-prefix anchor of a completed chain
   | 'tail_anchor'       // trailing-window anchor (survives history truncation)
+  | 'client_ref'        // client-minted conversation id alias via router_options.client_ref (Cursor conversation_id)
   | 'conversation_key'  // deterministic apiKey + first-user-message key
   | 'header_fallback'   // vendor x-*-session-id header naming an otherwise-minted cold start
   | 'cold_start';       // fresh mint (random, collision-free by construction)

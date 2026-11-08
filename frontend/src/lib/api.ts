@@ -888,18 +888,39 @@ export interface HttpExchangeEvent {
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
   /**
-   * Flattened LAST user message of the request (the current turn's prompt),
-   * capped — stamped on client-request events at write time so metadata-only
-   * reads (bodies=none) still render the turn prompt in the timeline.
-   * Absent on other phases/directions and for bodies without user text.
+   * Flattened LAST user message of the request, capped — stamped on
+   * client-request events at write time so metadata-only reads (bodies=none)
+   * still render the turn prompt in the timeline. Absent on other
+   * phases/directions and for bodies without user text. The body's last user
+   * message is only THIS turn's prompt when the client appended it: the
+   * server blanks it for resent history (tool-result continuations), so an
+   * absent summary means "no new user message", not "unknown". A history
+   * that SHRANK (client-side compaction) is exempt — its last user message
+   * is this turn's prompt even though the index looks old.
    */
   promptSummary?: string;
+  /** Message-array length of the client request (staleness basis for the NEXT turn). */
+  promptMessageCount?: number;
+  /** Index of the last user message inside that array (see promptSummary). */
+  promptLastUserIdx?: number;
 }
 
 export interface CaptureTurn {
   traceId: string;
   sessionId: string;
   model: string;
+  /**
+   * 1-based request sequence number inside the read window — one per client
+   * request, never per tool-result continuation. Absent when the request line
+   * fell outside the window (a continuation tail).
+   */
+  requestNumber?: number;
+  /**
+   * 1-based prompt-round number inside the read window — one per user
+   * prompt plus every request it drove. A leading prompt-less block opens
+   * round 1 (its prompt sits outside the window).
+   */
+  roundNumber?: number;
   /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
   promptSummary?: string;
   clientRequest?: HttpExchangeEvent;
@@ -924,6 +945,23 @@ export interface CaptureTurn {
   /** TTFT / decode window for the decision layer leg (same derivation as upstream). */
   decisionTtftMs?: number;
   decisionGenMs?: number;
+}
+
+/** Whole-archive USER-PROMPT round (backend CaptureRoundIndexEntry). */
+export interface CaptureRoundIndexEntry {
+  ordinal: number;
+  prompt?: string;
+  startTs?: number;
+  requests: number;
+  firstRequest: number;
+  lastRequest: number;
+}
+
+/** Exact whole-archive totals + prompt-round index (backend CaptureArchiveSummary). */
+export interface CaptureArchiveSummary {
+  requests: number;
+  fragments: number;
+  rounds: CaptureRoundIndexEntry[];
 }
 
 // Mirrors backend SessionRow (backend/src/session/session-row.ts) — the console
@@ -1014,6 +1052,13 @@ export interface SessionRecord {
   /** Distinct client User-Agent strings seen on this session's traces,
    *  write order (display-only fingerprint; forgeable, never identity). */
   clients?: string[];
+  /**
+   * Client-minted conversation ids seen on this session's turns, write order
+   * (first = display anchor). The `id` field above remains the GATEWAY session
+   * id; this is the other side of the mapping (ADR-0002 §1), rendered beside it
+   * so both namespaces can be correlated. Absent when the client sent none.
+   */
+  clientRefs?: { kind: string; id: string }[];
 }
 
 // Mirrors backend UsageStatsSummary (backend/src/trace/tracker.ts getUsageStats)
@@ -3713,28 +3758,86 @@ export const api = {
   async getCaptureEvents(
     date: string,
     file: string,
-    limit = 500,
-    bodies: 'full' | 'none' = 'full',
-    stitched = true
+    limit = 50,
+    bodies: 'full' | 'none' | 'chat' = 'full',
+    stitched = true,
+    /** 1-based page counted from the NEWEST end (page 1 = newest turn page). */
+    page = 1
   ): Promise<{
     events: HttpExchangeEvent[];
     turns: CaptureTurn[];
     totalLines: number;
+    /** Logical turns (requests + orphan response tails) in the read window. */
     totalTurns: number;
+    /** Client REQUESTS in the read window — the pager's unit. */
+    windowRequests: number;
+    /** USER-PROMPT ROUNDS in the read window; never the request count. */
+    totalRounds: number;
+    /** The read window is the whole archive (false = only its tail). */
+    windowComplete: boolean;
     fileTruncated: boolean;
     /** Present on stitched reads: per-date-dir fragments of the conversation. */
     fragments?: CaptureFragmentRow[];
+    /** The page actually served (clamped into [1, totalPages]). */
+    page: number;
+    /** Turn pages available inside the read window. */
+    totalPages: number;
+    /** Older turns remain in the read window (page < totalPages). */
+    hasOlder: boolean;
+    /** Newer turns exist (page > 1). */
+    hasNewer: boolean;
   }> {
     const params = new URLSearchParams({
       limit: String(limit),
       bodies,
+      page: String(page),
       ...(stitched ? { stitched: '1' } : {}),
     });
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?${params.toString()}`
     );
-    if (!res.ok) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
+    if (!res.ok) {
+      return {
+        events: [],
+        turns: [],
+        totalLines: 0,
+        totalTurns: 0,
+        windowRequests: 0,
+        totalRounds: 0,
+        windowComplete: true,
+        fileTruncated: false,
+        page: 1,
+        totalPages: 1,
+        hasOlder: false,
+        hasNewer: false,
+      };
+    }
     return res.json();
+  },
+
+  /** EXACT whole-archive summary: request count (header denominator + pager
+   *  total) and the USER-PROMPT round index for the selector. Display-only —
+   *  pagination stays window-bounded. Never call round entries "requests".
+   *  Resolves `null` when the scan is unavailable: callers must keep their
+   *  previous/unknown state so the header falls back to the window tally
+   *  instead of rendering a bogus "0 requests" over live rows. */
+  async getCaptureSummary(
+    date: string,
+    file: string,
+    stitched = true
+  ): Promise<CaptureArchiveSummary | null> {
+    const res = await fetch(
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/summary${
+        stitched ? '?stitched=1' : ''
+      }`
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    return {
+      requests: Number(json.requests) || 0,
+      fragments: Number(json.fragments) || 0,
+      rounds: Array.isArray(json.rounds) ? json.rounds : [],
+    };
   },
 
   /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads).
