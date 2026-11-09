@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter, type CaMaterial } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { peekClientHello } from '../src/forward-proxy/sni.js';
 
 /**
@@ -76,7 +77,7 @@ function httpRequest(sock: tls.TLSSocket, hostHeader: string, p = '/'): Promise<
 }
 
 /** A TLS origin that answers every request with `body`, on its own random port. */
-function tlsOrigin(ca: ReturnType<typeof ensureCa>, certHost: string, body: string) {
+function tlsOrigin(ca: CaMaterial, certHost: string, body: string) {
   const leaf = new CertMinter(ca).get(certHost);
   const hits: string[] = [];
   const srv = tls.createServer({ key: leaf.key, cert: leaf.cert }, (s) => {
@@ -166,7 +167,7 @@ describe('forward-proxy: ClientHello peek', () => {
 describe('forward-proxy: MITM target port', () => {
   it('forwards to the CONNECT port when the request head omits one', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     // A non-443 origin: the client CONNECTs to this port and then sends
     // `Host: port.test` (no port) — the classic HTTPS client shape.
     const origin = await tlsOrigin(ca, 'port.test', 'from-origin-port');
@@ -192,7 +193,7 @@ describe('forward-proxy: MITM target port', () => {
 
   it('lets an explicit Host port win over the CONNECT port', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     const connectOrigin = await tlsOrigin(ca, 'two.test', 'from-connect-port');
     const hostOrigin = await tlsOrigin(ca, 'two.test', 'from-host-port');
 

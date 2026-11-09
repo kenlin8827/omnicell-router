@@ -7,7 +7,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
-import { ensureCa } from '../src/forward-proxy/ca.js';
 import { resolveHost } from '../src/forward-proxy/rules.js';
 import {
   clearProxyAccessLog,

@@ -5,7 +5,7 @@ import { ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
 import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
-import { getOcrHomeDir } from '../paths.js';
+import { resolveCaDir } from '../../forward-proxy/ca.js';
 import type { RouterConfig } from '../../config/types.js';
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
@@ -172,8 +172,7 @@ export function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
   // `host` is a LISTEN address — the client-facing URL must stay reachable
   // from the client on the same machine, so wildcard binds normalize to loopback.
   const host = !fp.host || fp.host === '0.0.0.0' || fp.host === '::' ? '127.0.0.1' : fp.host;
-  const caDir = fp.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
-  return { url: `http://${host}:${port}`, port, caPath: path.join(caDir, 'ca.pem') };
+  return { url: `http://${host}:${port}`, port, caPath: path.join(resolveCaDir(fp.caDir), 'ca.pem') };
 }
 
 /** Result of a one-shot command run: exit status plus captured output. */

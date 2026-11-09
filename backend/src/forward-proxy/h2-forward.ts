@@ -93,16 +93,36 @@ interface PoolEntry {
 /** Live sessions keyed `host:port`; dropped on close/goaway/error. */
 const pool = new Map<string, PoolEntry>();
 
+/**
+ * Acquire in flight per pool key — the SINGLE-FLIGHT gate.
+ *
+ * Without it a burst of first requests for one host opens one TLS session
+ * each: every acquire misses the empty pool, and the last `pool.set` overwrites
+ * the earlier entries. Those orphans are then unreachable (`releaseStream`
+ * cannot match them, so no idle close is armed) — an fd/session leak per burst,
+ * plus a TLS handshake per request instead of per session.
+ */
+const pending = new Map<string, Promise<http2.ClientHttp2Session | null>>();
+
+/**
+ * Bumped by `closeH2Pool()`. A connect that finishes after shutdown belongs to
+ * a dead pool: adopting it would keep an upstream session alive for the next
+ * proxy instance.
+ */
+let generation = 0;
+
 function dropSession(key: string, session: http2.ClientHttp2Session): void {
   const entry = pool.get(key);
-  if (entry && entry.session === session) pool.delete(key);
-  if (entry?.idle) clearTimeout(entry.idle);
+  if (!entry || entry.session !== session) return;
+  pool.delete(key);
+  clearTimeout(entry.idle);
 }
 
 /** Close every pooled session (forward-proxy shutdown). */
 export function closeH2Pool(): void {
+  generation += 1;
   for (const [key, entry] of pool) {
-    if (entry.idle) clearTimeout(entry.idle);
+    clearTimeout(entry.idle);
     try {
       entry.session.close();
     } catch {}
@@ -178,7 +198,12 @@ function acquireSession(
   }
   if (hit) pool.delete(key);
 
-  return new Promise<http2.ClientHttp2Session | null>((resolve) => {
+  // Single flight: a concurrent first request shares THIS handshake.
+  const inFlight = pending.get(key);
+  if (inFlight) return inFlight;
+
+  const startedGeneration = generation;
+  const promise = new Promise<http2.ClientHttp2Session | null>((resolve) => {
     const authority = `https://${authorityOf(t)}`;
     const connectOpts: http2.SecureClientSessionOptions = { ...(upstreamTls.opts || {}), ALPNProtocols: ['h2'] };
     let settled = false;
@@ -191,6 +216,32 @@ function acquireSession(
     const timer = setTimeout(() => settle(null), FORWARD_PROXY_HANG_TIMEOUT_MS);
 
     const adopt = (session: http2.ClientHttp2Session): void => {
+      // Settled already (hang timeout / a sibling error): this connect finished
+      // too late. It has no owner, so close it instead of pooling it.
+      if (settled) {
+        try {
+          session.close();
+        } catch {}
+        return;
+      }
+      if (startedGeneration !== generation) {
+        try {
+          session.close();
+        } catch {}
+        settle(null);
+        return;
+      }
+      const existing = pool.get(key);
+      if (existing && existing.session !== session && !existing.session.closed && !existing.session.destroyed) {
+        // Defensive: a live session appeared while we were connecting. Keep
+        // it (its stream accounting is already in place), discard ours.
+        try {
+          session.close();
+        } catch {}
+        settle(existing.session);
+        return;
+      }
+      clearTimeout(existing?.idle);
       const entry: PoolEntry = { session, streams: 0 };
       pool.set(key, entry);
       // Same probe as the h1 legs (see relay.ts): a pooled h2 session that lost
@@ -252,15 +303,27 @@ function acquireSession(
       })
       .catch(() => settle(null));
   });
+  pending.set(key, promise);
+  void promise.then(() => {
+    if (pending.get(key) === promise) pending.delete(key);
+  });
+  return promise;
 }
 
 /** Decrement the session's live-stream count; arm the idle close at zero. */
 function releaseStream(key: string, session: http2.ClientHttp2Session): void {
   const entry = pool.get(key);
-  if (!entry || entry.session !== session) return;
+  if (!entry || entry.session !== session) {
+    // Not pooled any more (dropped, superseded, or shutdown): no idle timer
+    // will ever close it, so this release is its last owner.
+    try {
+      session.close();
+    } catch {}
+    return;
+  }
   entry.streams = Math.max(0, entry.streams - 1);
   if (entry.streams > 0) return;
-  if (entry.idle) clearTimeout(entry.idle);
+  clearTimeout(entry.idle);
   const idle = setTimeout(() => {
     dropSession(key, session);
     try {
@@ -299,25 +362,80 @@ export async function forwardH2(
   // is not a safe hold — Bun's compat layer drops the buffered tail when the
   // stream resumes through `pipe()` (a 512 KB body lost ~230 KB). Draining
   // keeps the listeners attached and hands the h1 leg a complete preface.
-  const held: Buffer[] = t.preface ? [...t.preface.chunks] : [];
-  let heldBytes = held.reduce((total, chunk) => total + chunk.length, 0);
+  // Pending body bytes, in wire order: the captured preface first, then every
+  // chunk that arrives before the upstream stream exists (or while it is
+  // applying backpressure). Bun's h2 compat IncomingMessage drops chunks with
+  // no listener, so the listeners below are attached synchronously.
+  const queue: Buffer[] = t.preface ? [...t.preface.chunks] : [];
+  let queueHead = 0;
+  let queuedBytes = queue.reduce((total, chunk) => total + chunk.length, 0);
   let overflow = false;
   let upstreamStream: http2.ClientHttp2Stream | undefined;
+  let pumping = false;
+  let queuePaused = false;
+  let upstreamEnded = false;
   let heldEnd = t.preface?.ended === true;
   let resolveEnd: () => void = () => {};
   const bodyEnded = new Promise<void>((resolve) => {
     resolveEnd = resolve;
   });
   if (heldEnd) resolveEnd();
+
+  /**
+   * Drain the queued bytes upstream in order, honouring backpressure. The old
+   * synchronous loop wrote every held chunk even after `write()` returned
+   * false, dumping up to 16 MB into the stream's buffer at once.
+   */
+  const pumpQueue = (): void => {
+    if (!upstreamStream || pumping) return;
+    pumping = true;
+    while (queueHead < queue.length) {
+      const chunk = queue[queueHead];
+      const ok = upstreamStream.write(chunk);
+      t.tap?.onReqChunk(chunk);
+      queueHead += 1;
+      if (!ok) {
+        upstreamStream.once('drain', () => {
+          pumping = false;
+          pumpQueue();
+        });
+        return;
+      }
+    }
+    queue.length = 0;
+    queueHead = 0;
+    queuedBytes = 0;
+    pumping = false;
+    if (queuePaused) {
+      queuePaused = false;
+      req.resume();
+    }
+    if (heldEnd && !upstreamEnded) {
+      upstreamEnded = true;
+      try {
+        upstreamStream.end();
+      } catch {}
+    }
+  };
+
   const onBody = (chunk: Buffer): void => {
-    if (!upstreamStream) {
-      heldBytes += chunk.length;
-      if (heldBytes > DEFAULT_MAX_BODY_BYTES) {
+    if (!upstreamStream || pumping || queueHead < queue.length) {
+      queuedBytes += chunk.length;
+      if (queuedBytes > DEFAULT_MAX_BODY_BYTES) {
         overflow = true;
         req.destroy();
         return;
       }
-      held.push(chunk);
+      queue.push(chunk);
+      if (upstreamStream) {
+        // The stream exists but is still draining: hold the client at the queue
+        // until the backlog clears, so a slow origin cannot grow it unbounded.
+        if (!queuePaused) {
+          queuePaused = true;
+          req.pause();
+        }
+        pumpQueue();
+      }
       return;
     }
     t.tap?.onReqChunk(chunk);
@@ -329,11 +447,7 @@ export async function forwardH2(
   const onBodyEnd = (): void => {
     heldEnd = true;
     resolveEnd();
-    if (upstreamStream) {
-      try {
-        upstreamStream.end();
-      } catch {}
-    }
+    pumpQueue();
   };
   req.on('data', onBody);
   req.on('end', onBodyEnd);
@@ -373,7 +487,7 @@ export async function forwardH2(
       failPlain(res, 504, 'Forward proxy: request body did not complete for the h1 upstream');
       return { owned: true };
     }
-    return { owned: false, ...(held.length ? { preface: { chunks: held, ended: true } } : {}) };
+    return { owned: false, ...(queue.length ? { preface: { chunks: queue, ended: true } } : {}) };
   }
   if (overflow) {
     failPlain(res, 413, `Forward proxy: request body exceeds ${DEFAULT_MAX_BODY_BYTES} bytes`);
@@ -431,21 +545,9 @@ export async function forwardH2(
     }, FORWARD_PROXY_HANG_TIMEOUT_MS);
 
     // Hand the captured head of the body to the live stream, then let the
-    // synchronous handler above carry the rest.
+    // synchronous handler above carry the rest (queue-behind-flush keeps order).
     upstreamStream = stream;
-    for (const chunk of held) {
-      t.tap?.onReqChunk(chunk);
-      if (!stream.write(chunk)) {
-        req.pause();
-        stream.once('drain', () => req.resume());
-      }
-    }
-    held.length = 0;
-    if (heldEnd) {
-      try {
-        stream.end();
-      } catch {}
-    }
+    pumpQueue();
 
     stream.on('response', (headers) => {
       clearTimeout(hang);

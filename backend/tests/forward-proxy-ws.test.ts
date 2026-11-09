@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { createWsObserver } from '../src/forward-proxy/ws-frames.js';
 import {
   clearProxyAccessLog,
@@ -125,7 +126,7 @@ describe('forward-proxy: WebSocket frame stats on the h1 upgrade leg', () => {
     clearProxyAccessLog();
 
     const caDir = tmpDir('ocr-fp-wsstats-ca-');
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     const leaf = new CertMinter(ca).get('wsstats.test');
 
     // Origin: completes the h1 upgrade, then echoes every byte verbatim.

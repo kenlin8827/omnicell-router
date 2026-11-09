@@ -9,7 +9,8 @@ import http2 from 'node:http2';
 import net from 'node:net';
 import tls from 'node:tls';
 import { createForwardProxyServer, forwardTo } from '../src/forward-proxy/server.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { closeH2Pool, forwardH2 } from '../src/forward-proxy/h2-forward.js';
 import type { AccessTap } from '../src/forward-proxy/access-log.js';
 
@@ -141,7 +142,7 @@ function driveH1(
 
 describe('forward-proxy: transparent h2 forward', () => {
   it('relays a gRPC-shaped exchange upstream over h2: te: trailers, body, response trailers, tap bytes', async () => {
-    const ca = ensureCa(tmpCaDir());
+    const ca = ensureTestCa(tmpCaDir());
     const leaf = new CertMinter(ca).get('127.0.0.1');
     const seen: { te?: string; authority?: string; path?: string; body?: string } = {};
 
@@ -207,7 +208,7 @@ describe('forward-proxy: transparent h2 forward', () => {
   });
 
   it('captures a large body synchronously across the async upstream TLS handshake (Bun h2 drop guard)', async () => {
-    const ca = ensureCa(tmpCaDir());
+    const ca = ensureTestCa(tmpCaDir());
     const leaf = new CertMinter(ca).get('127.0.0.1');
     const body = 'x'.repeat(512 * 1024);
     let received = 0;
@@ -247,7 +248,7 @@ describe('forward-proxy: transparent h2 forward', () => {
   });
 
   it('holds the body across the h2→h1 handoff (pause, then preface)', async () => {
-    const ca = ensureCa(tmpCaDir());
+    const ca = ensureTestCa(tmpCaDir());
     const leaf = new CertMinter(ca).get('127.0.0.1');
     const body = 'y'.repeat(512 * 1024);
     let received = 0;
@@ -298,7 +299,7 @@ describe('forward-proxy: transparent h2 forward', () => {
   });
 
   it('returns false (h1 fallback) when the upstream does not speak h2 — nothing reaches the client first', async () => {
-    const ca = ensureCa(tmpCaDir());
+    const ca = ensureTestCa(tmpCaDir());
     const leaf = new CertMinter(ca).get('127.0.0.1');
 
     // h1-only TLS upstream: the ALPN offer of h2 cannot be satisfied.
@@ -333,6 +334,57 @@ describe('forward-proxy: transparent h2 forward', () => {
       closeH2Pool();
       await close(front);
       await close(upstream);
+    }
+  });
+
+  it('shares ONE upstream TLS session across concurrent first requests (single flight)', async () => {
+    const ca = ensureTestCa(tmpCaDir());
+    const leaf = new CertMinter(ca).get('127.0.0.1');
+    let handshakes = 0;
+
+    const upstream = http2.createSecureServer({ key: leaf.key, cert: leaf.cert, allowHTTP1: false });
+    upstream.on('secureConnection', () => {
+      handshakes += 1;
+    });
+    upstream.on('stream', (stream) => {
+      stream.respond({ ':status': 200 });
+      stream.end('ok');
+    });
+    const upstreamPort = await listen(upstream as unknown as net.Server);
+
+    const front = http2.createServer((req, res) => {
+      void forwardH2(
+        req as unknown as http.IncomingMessage,
+        res as unknown as http.ServerResponse,
+        { host: '127.0.0.1', port: upstreamPort, path: req.url || '/', secure: true },
+        { opts: { ca: ca.caCertPem }, key: 'test' }
+      );
+    });
+    const frontPort = await listen(front as unknown as net.Server);
+
+    const session = http2.connect(`http://127.0.0.1:${frontPort}`);
+    try {
+      const answers = await Promise.all(
+        Array.from(
+          { length: 6 },
+          (_value, i) =>
+            new Promise<string>((resolve, reject) => {
+              const stream = session.request({ ':method': 'GET', ':path': `/s${i}` });
+              let body = '';
+              stream.on('data', (d: Buffer) => (body += d.toString()));
+              stream.on('error', reject);
+              stream.on('end', () => resolve(body));
+              stream.end();
+            })
+        )
+      );
+      assert.deepEqual(answers, ['ok', 'ok', 'ok', 'ok', 'ok', 'ok']);
+      assert.equal(handshakes, 1, 'concurrent first requests must share ONE upstream TLS handshake');
+    } finally {
+      session.close();
+      closeH2Pool();
+      await close(front as unknown as net.Server);
+      await close(upstream as unknown as net.Server);
     }
   });
 });

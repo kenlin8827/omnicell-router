@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { getOcrHomeDir } from '../cli/paths.js';
+import { resolveCaDir } from './ca.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import type { ForwardProxyConfig } from '../config/types.js';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS } from '../config/defaults.js';
@@ -47,7 +47,7 @@ export async function startForwardProxy(
   const host = cfg.host?.trim() || DEFAULT_FORWARD_PROXY_HOST;
   // Bind-safety gate BEFORE anything listens: no token + non-loopback = refuse.
   assertForwardProxyBindSafety(host, cfg.authToken);
-  const caDir = cfg.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+  const caDir = resolveCaDir(cfg.caDir);
   const intercept = createProxyInterceptor(orchestrator);
   // Gateway-plugin chat seam (ADR-0017): the services ride the same
   // orchestrator the interceptor uses, so plugins dispatch through the

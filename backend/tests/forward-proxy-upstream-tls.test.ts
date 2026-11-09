@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter, type CaMaterial } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { resolveUpstreamTls, setUpstreamTlsReader } from '../src/forward-proxy/upstream-tls.js';
 import {
   clearProxyAccessLog,
@@ -55,7 +56,7 @@ function connectViaProxy(proxyPort: number, targetHost: string, port: number): P
 }
 
 /** A private-CA origin: its leaf is signed by the test CA, which the OS does not trust. */
-function privateCaOrigin(ca: ReturnType<typeof ensureCa>) {
+function privateCaOrigin(ca: CaMaterial) {
   const leaf = new CertMinter(ca).get('origin.trust.test');
   const srv = tls.createServer({ key: leaf.key, cert: leaf.cert }, (s) => {
     let buf = '';
@@ -121,7 +122,7 @@ describe('forward-proxy: upstream TLS trust (ADR-0019)', () => {
     setProxyAccessLogSettingsReader(() => ({ enabled: true, persist: false, persistDays: 1 }));
     clearProxyAccessLog();
 
-    const ca = ensureCa(tmpDir('ocr-fp-trust-ca-'));
+    const ca = ensureTestCa(tmpDir('ocr-fp-trust-ca-'));
     const origin = await privateCaOrigin(ca);
     const handle = await startProxy(tmpDir('ocr-fp-trust-'));
 
@@ -142,7 +143,7 @@ describe('forward-proxy: upstream TLS trust (ADR-0019)', () => {
   });
 
   it('reaches the origin once its CA is named in upstreamTls.caFile', async () => {
-    const ca = ensureCa(tmpDir('ocr-fp-trust-ca2-'));
+    const ca = ensureTestCa(tmpDir('ocr-fp-trust-ca2-'));
     const caFile = path.join(tmpDir('ocr-fp-trust-bundle-'), 'root-ca.pem');
     fs.writeFileSync(caFile, ca.caCertPem);
     setUpstreamTlsReader(() => ({ caFile, insecure: false }));
@@ -161,7 +162,7 @@ describe('forward-proxy: upstream TLS trust (ADR-0019)', () => {
   it('honours upstreamTls.insecure as the escape hatch', async () => {
     setUpstreamTlsReader(() => ({ insecure: true }));
 
-    const ca = ensureCa(tmpDir('ocr-fp-trust-ca3-'));
+    const ca = ensureTestCa(tmpDir('ocr-fp-trust-ca3-'));
     const origin = await privateCaOrigin(ca);
     const handle = await startProxy(tmpDir('ocr-fp-trust3-'));
 
@@ -184,7 +185,7 @@ describe('forward-proxy: upstream TLS trust (ADR-0019)', () => {
     // `ca` is not additive in tls.connect: a bundle installed alone would make
     // every publicly-signed origin untrusted — the opposite of what the option
     // promises. The resolved list must therefore carry the system roots too.
-    const ca = ensureCa(tmpDir('ocr-fp-trust-ca4-'));
+    const ca = ensureTestCa(tmpDir('ocr-fp-trust-ca4-'));
     const caFile = path.join(tmpDir('ocr-fp-trust-bundle2-'), 'root-ca.pem');
     fs.writeFileSync(caFile, ca.caCertPem);
     setUpstreamTlsReader(() => ({ caFile, insecure: false }));
@@ -199,7 +200,7 @@ describe('forward-proxy: upstream TLS trust (ADR-0019)', () => {
 
   it('insecure wins over caFile — no trust list is installed when verification is off', () => {
     const caFile = path.join(tmpDir('ocr-fp-trust-bundle3-'), 'root-ca.pem');
-    fs.writeFileSync(caFile, ensureCa(tmpDir('ocr-fp-trust-ca5-')).caCertPem);
+    fs.writeFileSync(caFile, ensureTestCa(tmpDir('ocr-fp-trust-ca5-')).caCertPem);
     setUpstreamTlsReader(() => ({ caFile, insecure: true }));
     const resolved = resolveUpstreamTls();
     assert.equal(resolved.opts?.rejectUnauthorized, false);

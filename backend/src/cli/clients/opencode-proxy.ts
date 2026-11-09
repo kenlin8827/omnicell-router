@@ -3,6 +3,7 @@ import path from 'node:path';
 import { ClientAdapter, ClientActionResult, resolveForwardProxyEndpoint, runCommand, type CommandResult, type ForwardProxyEndpoint } from './base.js';
 import { ClientHookStatus } from '../types.js';
 import { getOcrHomeDir } from '../paths.js';
+import { resolveCaDir } from '../../forward-proxy/ca.js';
 
 /**
  * OpenCode "proxy mode" client adapter.
@@ -43,7 +44,7 @@ const PROXY_ENV_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_
 const LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,::1';
 
 function defaultCaPath(): string {
-  return path.join(getOcrHomeDir(), 'forward-proxy', 'ca.pem');
+  return path.join(resolveCaDir(), 'ca.pem');
 }
 
 /** Stable sidecar recording the service env values we replaced (teardown restores them). */

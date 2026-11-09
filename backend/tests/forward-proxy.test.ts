@@ -11,7 +11,8 @@ import { EventEmitter, once } from 'node:events';
 import type { ForwardProxyConfig } from '../src/config/types.js';
 import { peekClientHello } from '../src/forward-proxy/sni.js';
 import { isLoopbackHost, resolveHost } from '../src/forward-proxy/rules.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter, ensureCa } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
 import { loadConfig } from '../src/config/index.js';
@@ -121,7 +122,7 @@ describe('forward-proxy: SNI probing + rule resolution', () => {
 describe('forward-proxy: CA + certificate minting', () => {
   it('generates a persistent CA and leaf certs that verify + hostname-match', () => {
     const dir = tmpCaDir();
-    const ca = ensureCa(dir);
+    const ca = ensureTestCa(dir);
     assert.ok(fs.existsSync(path.join(dir, 'ca.pem')));
     assert.ok(fs.existsSync(path.join(dir, 'ca-key.pem')));
 
@@ -137,8 +138,31 @@ describe('forward-proxy: CA + certificate minting', () => {
     assert.equal(minter.get('api.example.com').cert, minted.cert);
 
     // Reload from disk — same CA material
-    const ca2 = ensureCa(dir);
+    const ca2 = ensureTestCa(dir);
     assert.equal(ca2.caCertPem, ca.caCertPem);
+
+    // The fix that made this suite pass on a machine whose OS trust store holds
+    // the operator's CA: every CA gets a key-derived OU, so two installs never
+    // share one subject DN (a verifier resolving the wrong same-subject root is
+    // what produced CERT_SIGNATURE_FAILURE here).
+    const ou = 'CA ' + crypto
+      .createHash('sha256')
+      .update(`${ca.caKey.n.toString(16)}:${ca.caKey.e.toString(16)}`)
+      .digest('hex')
+      .slice(0, 8);
+    assert.equal(ca.caCert.subject.getField('OU')?.value, ou);
+    const otherDir = tmpCaDir();
+    const other = ensureTestCa(otherDir);
+    assert.notEqual(
+      ca.caCert.subject.attributes.map((a) => `${a.name}=${a.value}`).join(','),
+      other.caCert.subject.attributes.map((a) => `${a.name}=${a.value}`).join(','),
+      'two CA dirs must not produce the same subject DN'
+    );
+
+    // A request for a DIFFERENT identity over an existing bundle is refused
+    // rather than silently answered with the persisted CA (that would hand a
+    // test back the production-CN CA and reintroduce the shadowing).
+    assert.throws(() => ensureCa(dir, 'Some Other CA'), /refusing to return a CA under the wrong identity/);
   });
 });
 

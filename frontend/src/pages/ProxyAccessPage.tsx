@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
-import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent } from '../lib/api';
+import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -1566,6 +1566,14 @@ export const ProxyAccessPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<GatewayStatusResponse | null>(null);
+  /** This install's CA path — interpolated into the wizard snippets so every
+   *  example shows the real file instead of a placeholder. */
+  const [caMeta, setCaMeta] = useState<CaMeta | null>(null);
+  /** A failed `/ca/meta` (older gateway, offline console) must not strand the
+   *  wizard on "Loading…": fall back to the documented `<ocrHome>` placeholder
+   *  the help copy already uses, so every snippet still renders. */
+  const [caMetaFailed, setCaMetaFailed] = useState(false);
+  const [caDetailsOpen, setCaDetailsOpen] = useState(false);
   const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; members?: number; wire?: string }[]>([]);
   /** Current wizard step id */
   const [step, setStep] = useState('1');
@@ -1631,6 +1639,21 @@ export const ProxyAccessPage: React.FC = () => {
     api.listGatewayModels()
       .then(setGatewayModels)
       .catch(() => setGatewayModels([]));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getProxyCaMeta()
+      .then(m => {
+        if (alive) setCaMeta(m);
+      })
+      .catch(() => {
+        if (alive) setCaMetaFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // Runtime status poll — the chip must reflect a FAILED start (the gateway
@@ -1771,6 +1794,17 @@ export const ProxyAccessPage: React.FC = () => {
   // Wizard steps (display order — the i18n key numbers are historical: the old
   // "enable proxy" step was removed since enabling lives in the always-visible
   // config card above). Steps: 1 trust CA · 2 point clients · 3 verify.
+  // System-store install snippets: one row per OS so the platform reads as a
+  // tag and the command as code, instead of one pre-line text blob.
+  const caPath = caMeta?.path ?? (caMetaFailed ? '<ocrHome>/forward-proxy/ca.pem' : undefined);
+  const sysInstallRows: { os: string; cmd: string; hint?: string }[] = caPath
+    ? [
+        { os: 'Windows', cmd: t('forwardProxy.sysInstallWinCmd', { caPath }), hint: t('forwardProxy.sysInstallWinHint', { caPath }) },
+        { os: 'macOS', cmd: t('forwardProxy.sysInstallMacCmd', { caPath }) },
+        { os: 'Linux', cmd: t('forwardProxy.sysInstallLinuxCmd', { caPath }) },
+      ]
+    : [];
+
   const steps: { id: string; title: string; body: React.ReactNode }[] = [
     {
       id: '1',
@@ -1778,8 +1812,65 @@ export const ProxyAccessPage: React.FC = () => {
       body: (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep2')}</div>
-          <pre style={preStyle}>{t('forwardProxy.helpStep2Code')}</pre>
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', whiteSpace: 'pre-line' }}>{t('forwardProxy.helpStep2Sys')}</div>
+          <pre style={preStyle}>{caPath ? t('forwardProxy.helpStep2Code', { caPath }) : t('common.loading')}</pre>
+          {caPath ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.sysInstallTitle')}</div>
+              {sysInstallRows.map(row => (
+                <div key={row.os} style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                  <span
+                    className="badge"
+                    style={{
+                      flexShrink: 0, minWidth: '60px', justifyContent: 'center',
+                      textTransform: 'none', letterSpacing: 0,
+                      color: 'var(--text-muted)', border: '1px solid var(--card-border)',
+                    }}
+                  >
+                    {row.os}
+                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                    <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', overflowWrap: 'anywhere' }}>{row.cmd}</code>
+                    {row.hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}>{row.hint}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
+          )}
+          {/* Verification details live in the trust step only: the path is
+              already in every command above, the fingerprint matters exactly
+              when the user is checking the root they just installed. */}
+          {caMeta && (
+            <details
+              open={caDetailsOpen}
+              onToggle={e => setCaDetailsOpen((e.target as HTMLDetailsElement).open)}
+              style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
+            >
+              <summary style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', listStyle: 'none' }}>
+                <ChevronDown
+                  size={12}
+                  style={{ flexShrink: 0, transform: caDetailsOpen ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
+                />
+                <span>{t('forwardProxy.caCardDetails')}</span>
+              </summary>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                  <span style={{ minWidth: '96px' }}>{t('forwardProxy.caCardFingerprint')}</span>
+                  <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)', wordBreak: 'break-all' }}>{caMeta.fingerprintSha256}</span>
+                  <button
+                    className="btn btn-sm btn-icon"
+                    title={t('common.copy')}
+                    style={{ flexShrink: 0 }}
+                    onClick={() => void copyToClipboard(caMeta.fingerprintSha256).then(ok => { if (ok) toast.success(t('forwardProxy.caCardCopied')); })}
+                  >
+                    <Copy size={12} />
+                  </button>
+                </div>
+                <div>{t('forwardProxy.caCardValidUntil', { date: new Date(caMeta.notAfter).toLocaleDateString() })}</div>
+              </div>
+            </details>
+          )}
         </div>
       ),
     },
@@ -1799,7 +1890,7 @@ export const ProxyAccessPage: React.FC = () => {
       body: (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep4')}</div>
-          <pre style={preStyle}>{t('forwardProxy.helpStep4Code', { port })}</pre>
+          <pre style={preStyle}>{caPath ? t('forwardProxy.helpStep4Code', { port, caPath }) : t('common.loading')}</pre>
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.helpNotes')}</div>
         </div>
       ),
@@ -2231,6 +2322,11 @@ export const ProxyAccessPage: React.FC = () => {
             <BookOpen size={18} color="var(--accent)" />
             <span>{t('forwardProxy.helpTitle')}</span>
           </div>
+          {/* Step 1 tells the user to click "Export CA Certificate"; the
+              wizard is its own tab, so the button must live here too. */}
+          <a className="btn" href="/api/admin/proxy/ca" download>
+            {t('forwardProxy.caBtn')}
+          </a>
         </div>
 
         {!(fp.enabled ?? false) ? (

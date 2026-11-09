@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import {
   clearProxyAccessLog,
   listProxyAccessEvents,
@@ -67,7 +68,7 @@ describe('forward-proxy: blind-tunnel observation', () => {
     setProxyAccessLogSettingsReader(() => ({ enabled: true, persist: false, persistDays: 1 }));
     clearProxyAccessLog();
 
-    const ca = ensureCa(tmpDir('ocr-fp-obs-ca-'));
+    const ca = ensureTestCa(tmpDir('ocr-fp-obs-ca-'));
     const leaf = new CertMinter(ca).get('obs.test');
     // A TLS echo origin on loopback: the CONNECT target is loopback, so the rule
     // table's loopback invariant blind-tunnels it — exactly the traffic this

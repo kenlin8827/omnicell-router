@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import forge from 'node-forge';
+import { getOcrHomeDir } from '../cli/paths.js';
 
 /**
  * MITM CA + per-host certificate minting for the inbound forward proxy.
@@ -28,13 +29,25 @@ function generateRsaKeyPem(): string {
   return privateKey;
 }
 
-function createCaCertPem(caKey: forge.pki.rsa.PrivateKey): string {
+function createCaCertPem(caKey: forge.pki.rsa.PrivateKey, commonName: string): string {
   const cert = forge.pki.createCertificate();
   cert.publicKey = forge.pki.setRsaPublicKey(caKey.n, caKey.e);
   cert.serialNumber = '01';
   cert.validity.notBefore = new Date(Date.now() - 24 * 3600 * 1000);
   cert.validity.notAfter = new Date(Date.now() + CA_DAYS * 24 * 3600 * 1000);
-  const attrs = [{ name: 'commonName', value: CA_CN }];
+  // A unique OU per CA key. Without it every OCR CA shares one subject DN, and
+  // a verifier holding several same-subject roots (the operator's installed
+  // CA plus a test/rotated one) can select the wrong certificate and report
+  // CERT_SIGNATURE_FAILURE. The CN stays stable for CA detection/CLI display.
+  const keyId = crypto
+    .createHash('sha256')
+    .update(`${caKey.n.toString(16)}:${caKey.e.toString(16)}`)
+    .digest('hex')
+    .slice(0, 8);
+  const attrs = [
+    { name: 'commonName', value: commonName },
+    { name: 'organizationalUnitName', value: `CA ${keyId}` },
+  ];
   cert.setSubject(attrs);
   cert.setIssuer(attrs);
   cert.setExtensions([
@@ -53,8 +66,23 @@ export interface CaMaterial {
   leafKey: forge.pki.rsa.PrivateKey;
 }
 
-/** Load the CA bundle from disk, generating (and persisting) it on first use. */
-export function ensureCa(caDir: string): CaMaterial {
+/**
+ * Load the CA bundle from disk, generating (and persisting) it on first use.
+ *
+ * `commonName` is overridable for TESTS only. A test CA that reuses `CA_CN` is
+ * shadowed by an OCR CA installed in the OS trust store: the TLS verifier can
+ * resolve the stored same-subject certificate first and fail the signature
+ * check (CERT_SIGNATURE_FAILURE) even though the minted CA is valid.
+ *
+ * A persisted bundle whose CN differs from an EXPLICITLY requested one is an
+ * ERROR, never a silent return: `ensureCa(dir, testCn)` on a dir that already
+ * holds the operator CA would hand back the production CA and reintroduce
+ * exactly that shadowing with no trace of what happened. The DEFAULT CN stays
+ * permissive on purpose — the proxy, the PEM download and the CA card all call
+ * `ensureCa(dir)` and must keep working over whatever bundle the dir holds
+ * (test sandboxes seed one).
+ */
+export function ensureCa(caDir: string, commonName: string = CA_CN): CaMaterial {
   fs.mkdirSync(caDir, { recursive: true });
   const caCertPath = path.join(caDir, 'ca.pem');
   const caKeyPath = path.join(caDir, 'ca-key.pem');
@@ -67,11 +95,17 @@ export function ensureCa(caDir: string): CaMaterial {
     caCertPem = fs.readFileSync(caCertPath, 'utf8');
     caKeyPem = fs.readFileSync(caKeyPath, 'utf8');
     leafKeyPem = fs.readFileSync(leafKeyPath, 'utf8');
+    const persistedCn = forge.pki.certificateFromPem(caCertPem).subject.getField('CN').value as string;
+    if (commonName !== CA_CN && persistedCn !== commonName) {
+      throw new Error(
+        `CA at ${caDir} has CN "${persistedCn}", but "${commonName}" was requested — refusing to return a CA under the wrong identity.`
+      );
+    }
   } else {
     caKeyPem = generateRsaKeyPem();
     leafKeyPem = generateRsaKeyPem();
     const caKey = forge.pki.privateKeyFromPem(caKeyPem);
-    caCertPem = createCaCertPem(caKey);
+    caCertPem = createCaCertPem(caKey, commonName);
     fs.writeFileSync(caCertPath, caCertPem, { mode: 0o600 });
     fs.writeFileSync(caKeyPath, caKeyPem, { mode: 0o600 });
     fs.writeFileSync(leafKeyPath, leafKeyPem, { mode: 0o600 });
@@ -83,6 +117,39 @@ export function ensureCa(caDir: string): CaMaterial {
     caKey: forge.pki.privateKeyFromPem(caKeyPem),
     leafKeyPem,
     leafKey: forge.pki.privateKeyFromPem(leafKeyPem),
+  };
+}
+
+/**
+ * Resolve the MITM CA directory: the operator's `forwardProxy.caDir` override,
+ * else the per-install default under OCR home. ONE spelling for the proxy, the
+ * console CA download and the system-proxy trust hint — a drift twin here
+ * points users at a certificate the proxy does not use.
+ */
+export function resolveCaDir(caDir?: string): string {
+  return caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+}
+
+/** Display-safe identity of the persisted CA (console CA card). */
+export interface CaMeta {
+  /** Absolute path of the PEM clients must trust. */
+  path: string;
+  fingerprintSha256: string;
+  subject: string;
+  notBefore: string;
+  notAfter: string;
+}
+
+/** Read/generate the CA and describe it without exposing key material. */
+export function describeCa(caDir?: string): CaMeta {
+  const dir = resolveCaDir(caDir);
+  const x509 = new crypto.X509Certificate(ensureCa(dir).caCertPem);
+  return {
+    path: path.join(dir, 'ca.pem'),
+    fingerprintSha256: x509.fingerprint256,
+    subject: x509.subject.split('\n').join(', '),
+    notBefore: new Date(x509.validFrom).toISOString(),
+    notAfter: new Date(x509.validTo).toISOString(),
   };
 }
 

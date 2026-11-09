@@ -3,6 +3,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getOcrHomeDir } from '../cli/paths.js';
+import { getRuntimeConfigRef } from '../config/index.js';
+import { resolveCaDir } from './ca.js';
 
 /**
  * Cross-platform OS system-proxy ownership for the inbound forward proxy.
@@ -289,7 +291,7 @@ export async function getSystemProxyStatus(targetPort: number, bypassList: strin
     state: supported ? 'off' : 'unsupported',
     targetServer,
     override: buildOverride(bypassList, platform),
-    caPath: path.join(getOcrHomeDir(), 'forward-proxy', 'ca.pem'),
+    caPath: path.join(resolveCaDir(getRuntimeConfigRef()?.forwardProxy?.caDir), 'ca.pem'),
   };
   if (!supported) return base;
   const snapshot = readSnapshot();

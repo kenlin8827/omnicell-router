@@ -31,7 +31,7 @@ import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
-import { ensureCa } from '../forward-proxy/ca.js';
+import { describeCa, ensureCa, resolveCaDir } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
 import {
   lintRules,
@@ -2403,7 +2403,7 @@ export function registerConsoleRoutes(
   // same idempotent ensureCa the proxy itself uses).
   const handleForwardProxyCa = async (_req: any, reply: any) => {
     const cfg = loadConfig();
-    const caDir = cfg.forwardProxy?.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+    const caDir = resolveCaDir(cfg.forwardProxy?.caDir);
     try {
       const ca = ensureCa(caDir);
       reply.header('content-type', 'application/x-pem-file');
@@ -2414,6 +2414,18 @@ export function registerConsoleRoutes(
     }
   };
   app.get('/api/admin/proxy/ca', handleForwardProxyCa);
+
+  // 6a-bis. CA identity for the console card: absolute path, SHA-256
+  // fingerprint and validity. Never key material — clients use it to check
+  // that the root they installed is the root this proxy signs with.
+  app.get('/api/admin/proxy/ca/meta', async (_req, reply) => {
+    const cfg = loadConfig();
+    try {
+      return { status: 'ok', ...describeCa(cfg.forwardProxy?.caDir) };
+    } catch (err: any) {
+      return reply.status(500).send({ status: 'error', message: err?.message || 'Failed to load CA' });
+    }
+  });
 
   // 6b. Tier member lists — candidate pool snapshots (console preview).
   // membership is a PURE projection of (model id × tiers.members);

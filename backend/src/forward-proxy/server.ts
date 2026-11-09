@@ -324,32 +324,76 @@ function parseUpgradeHead(head: string, defaultPort: number): UpgradeHead | null
 }
 
 /** Send the request body upstream: the h2 relay's captured preface first (if
- *  any), then a straight pipe (non-intercepted forwards never had their
- *  stream consumed). With a tap, chunks tee into the access log alongside the
- *  pipe (both consumers see every chunk). */
+ *  any), then the live stream. With a tap, chunks tee into the access log
+ *  alongside the upstream writes (both consumers see every chunk).
+ *
+ *  A preface can be up to 16 MB (`DEFAULT_MAX_BODY_BYTES`), so it is written
+ *  under backpressure: the old loop queued every chunk regardless of
+ *  `write()` returning false, spiking the outgoing buffer by the whole body. */
 function pumpRequestBody(
   req: http.IncomingMessage,
   upstream: http.ClientRequest,
   tap?: AccessTap,
   preface?: { chunks: Buffer[]; ended: boolean }
 ): void {
-  if (preface) {
-    for (const chunk of preface.chunks) {
-      tap?.onReqChunk(chunk);
-      upstream.write(chunk);
-    }
-    if (preface.ended) {
-      upstream.end();
-      return;
-    }
+  if (!preface) {
+    if (tap) req.on('data', (d: Buffer) => tap.onReqChunk(d));
+    req.pipe(upstream);
+    req.on('error', () => {
+      try {
+        upstream.destroy();
+      } catch {}
+    });
+    return;
   }
-  if (tap) req.on('data', (d: Buffer) => tap.onReqChunk(d));
-  req.pipe(upstream);
+
+  // Keep the live listener attached even while the preface drains: a paused
+  // stream does not restart itself, and Bun's h1 body may emit before the
+  // preface has been flushed. Chunks queue behind the preface to keep order.
+  const queue = [...preface.chunks];
+  let head = 0;
+  let ended = preface.ended;
+  let blocked = false;
+  let upstreamEnded = false;
+  const flush = (): void => {
+    if (blocked) return;
+    while (head < queue.length) {
+      const chunk = queue[head];
+      tap?.onReqChunk(chunk);
+      const ok = upstream.write(chunk);
+      head += 1;
+      if (!ok) {
+        blocked = true;
+        req.pause();
+        upstream.once('drain', () => {
+          blocked = false;
+          req.resume();
+          flush();
+        });
+        return;
+      }
+    }
+    queue.length = 0;
+    head = 0;
+    if (ended && !upstreamEnded) {
+      upstreamEnded = true;
+      upstream.end();
+    }
+  };
+  req.on('data', (chunk: Buffer) => {
+    queue.push(chunk);
+    flush();
+  });
+  req.on('end', () => {
+    ended = true;
+    flush();
+  });
   req.on('error', () => {
     try {
       upstream.destroy();
     } catch {}
   });
+  flush();
 }
 
 /** Pipe the upstream response to the client, teeing chunks into the tap. */

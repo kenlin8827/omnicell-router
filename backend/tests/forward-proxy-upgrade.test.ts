@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { CertMinter, type CaMaterial } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { upstreamServernameOption } from '../src/forward-proxy/egress.js';
 import { commitGateways, removeGateway, stageGateway } from '../src/plugins/gateways.js';
 import type { ClientGatewayPlugin } from '../src/plugins/types.js';
@@ -117,7 +118,7 @@ interface Origin {
  */
 function upgradeOrigin(args: {
   reply?: string;
-  ca: ReturnType<typeof ensureCa>;
+  ca: CaMaterial;
   certHost?: string;
 }): Promise<Origin> {
   const leaf = new CertMinter(args.ca).get(args.certHost ?? 'ws.test');
@@ -183,7 +184,7 @@ describe('forward-proxy: upstream SNI for an IP-literal origin', () => {
 
   it('relays an upgrade to an IP-addressed origin instead of throwing', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     // The origin is addressed by IP, so its leaf carries the IP SAN and the
     // proxy must NOT send SNI for it.
     const origin = await upgradeOrigin({ ca, certHost: '127.0.0.1' });
@@ -218,7 +219,7 @@ describe('forward-proxy: upstream SNI for an IP-literal origin', () => {
 describe('forward-proxy: client-gateway upgrade hook', () => {
   it('a gateway claiming the host owns the handshake — the relay never dials upstream', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     const seen: { host?: string; path?: string; headBytes?: number } = {};
     const gateway: ClientGatewayPlugin = {
       hosts: ['gw.test'],
@@ -281,7 +282,7 @@ describe('forward-proxy: client-gateway upgrade hook', () => {
 describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
   it('relays the handshake byte-verbatim, keeps pipelined bytes, and stays bidirectional', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     const origin = await upgradeOrigin({ ca });
     const handle = await createForwardProxyServer({
       port: 0,
@@ -323,7 +324,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
 
   it('passes a refused upgrade (non-101) through to the client unchanged', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     const origin = await upgradeOrigin({
       ca,
       reply: 'HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nnope',
@@ -361,7 +362,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
     await new Promise<void>((r) => dead.close(() => r()));
 
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     const handle = await createForwardProxyServer({
       port: 0,
       host: '127.0.0.1',
@@ -390,7 +391,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
 
   it('a plain request head without Upgrade still reaches the interceptor (no sniff regression)', async () => {
     const caDir = tmpCaDir();
-    const ca = ensureCa(caDir);
+    const ca = ensureTestCa(caDir);
     let intercepted = 0;
     const handle = await createForwardProxyServer({
       port: 0,

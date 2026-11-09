@@ -530,6 +530,19 @@ export interface SystemProxyStatus {
 }
 
 /**
+ * Persisted MITM CA identity — mirrors the backend contract `CaMeta`
+ * (forward-proxy/ca.ts `describeCa`). Never key material.
+ */
+export interface CaMeta {
+  /** Absolute path of the PEM clients must trust. */
+  path: string;
+  fingerprintSha256: string;
+  subject: string;
+  notBefore: string;
+  notAfter: string;
+}
+
+/**
  * Forward-proxy rule table (backend forward-proxy/rules.ts, ADR-0018 second
  * revision).
  *
@@ -2032,6 +2045,14 @@ export const api = {
     const res = await fetch('/api/admin/system-proxy');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  },
+  async getProxyCaMeta(): Promise<CaMeta> {
+    const res = await fetch('/api/admin/proxy/ca/meta');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // The route answers `{ status: 'ok', ...CaMeta }`; `status` is transport
+    // bookkeeping (a non-ok answer throws above), not part of the contract.
+    const { status: _status, ...meta } = (await res.json()) as CaMeta & { status?: string };
+    return meta;
   },
 
   /**
