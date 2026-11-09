@@ -4123,6 +4123,11 @@ export interface OpenCodeProviderView {
   /** Owning plugin id when the def was registered by a plugin preset —
    *  provenance for the Connected-tab origin filter (backend ledger join). */
   pluginOrigin?: string;
+  /** Operator takedown (GLOBAL disabled-providers ledger): the card stays
+   *  listed, but the provider contributes nothing to the routing pool. */
+  disabled?: boolean;
+  /** Operator note attached at takedown time — display only. */
+  disabledReason?: string;
   auth: {
     connected: boolean;
     type?: 'api' | 'oauth' | 'wellknown';
@@ -4876,6 +4881,15 @@ function credentialPath(providerId: string, credentialId: string): string {
   return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/${encodeURIComponent(credentialId)}`;
 }
 
+/** Provider-level operator takedown response (disable/enable routes). */
+export interface ProviderTakedownResponse {
+  status: string;
+  success: boolean;
+  disabled: boolean;
+  provider: string;
+  message?: string;
+}
+
 export const opencodeApi = {
   async listProviders(): Promise<{
     status: string;
@@ -4883,6 +4897,28 @@ export const opencodeApi = {
     providers: OpenCodeProviderView[];
   }> {
     return ocJson(await fetch(`/api/admin/opencode/providers?lang=${encodeURIComponent(api.commentLang())}`));
+  },
+
+  /**
+   * Take a whole provider out of routing / put it back. State lives in the
+   * GLOBAL takedown ledger (not providers.json); the backend resyncs the pool
+   * in the same request, so `/v1/models` follows immediately.
+   */
+  async disableProvider(providerId: string, reason?: string): Promise<ProviderTakedownResponse> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/disable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reason ? { reason } : {}),
+      })
+    );
+  },
+
+  /** Lift the takedown (the only path that does). */
+  async enableProvider(providerId: string): Promise<ProviderTakedownResponse> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/enable`, { method: 'POST' })
+    );
   },
 
   /** One entry of the backend-owned npm SDK vocabulary (providers/vocabulary.ts). */

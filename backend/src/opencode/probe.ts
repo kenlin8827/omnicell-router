@@ -226,8 +226,8 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
       // truncation — the error string flows into the console response and
       // logs; truncating first could re-expose key chars at the boundary.
       // 600 chars: enough for a full provider business-error (Ark's
-      // ModelNotOpen sentence + request id) — the console card shows the
-      // error inline and copyable, so the cap is the user-visible truth.
+      // ModelNotOpen sentence + request id) — the console surfaces this on
+      // demand (failure InfoTip), so the cap is the user-visible truth.
       const text = redactBodySecrets(raw.replace(/\s+/g, ' '), { key: opts.apiKey }).slice(0, 600);
       const { authHint, hintCode } = hintForStatus(res.status, raw);
       const modelScoped =

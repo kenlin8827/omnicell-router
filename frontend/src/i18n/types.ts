@@ -454,6 +454,9 @@ export interface TranslationDict {
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOkMsg: string;
     testFailMsg: string;
+    probeDetailTitle: string;
+    probeDetailOpen: string;
+    probeDetailCopied: string;
     testAllBtn: string;
     testAllRunning: string;
     testAllDone: string;
@@ -478,6 +481,7 @@ export interface TranslationDict {
     reasonNoTestableModel: string;
     reasonNoBaseUrl: string;
     reasonCredentialNotTestable: string;
+    reasonNoEnabledCredential: string;
     /** Model-pull failures (pull_* reasonCodes). */
     pullHttp: string;
     pullNonJson: string;
@@ -535,9 +539,17 @@ export interface TranslationDict {
     searchConnected: string;
     apiKeyPlaceholder: string;
     idAndUrlRequired: string;
-    credCount: string;
     emptyConnected: string;
     pmManage: string;
+    /** Provider-level operator takedown (whole provider out of routing). */
+    providerDisable: string;
+    providerEnable: string;
+    providerDisableConfirmTitle: string;
+    /** {n} = number of models leaving the pool; nothing is deleted. */
+    providerDisableConfirmDesc: string;
+    providerDisabledBadge: string;
+    providerDisabledToast: string;
+    providerEnabledToast: string;
     pmNotInCatalog: string;
     pmTitle: string;
     pmEmpty: string;
@@ -705,9 +717,10 @@ export interface TranslationDict {
     credentialEnableTip: string;
     credentialDisabledOk: string;
     credentialEnabled: string;
-    credentialsAllDisabled: string;
-    /** Per-provider credential zoom (enlarged table dialog on KeysPage). */
-    credentialZoom: string;
+    /** Per-provider credential maintenance (enlarged table dialog on KeysPage). */
+    credentialManage: string;
+    pmEmptyBadge: string;
+    noBaseUrl: string;
     credentialZoomDesc: string;
     /** Zoom table: dim 'normal' word shown when a row carries no badges. */
     credentialZoomStatusNormal: string;

@@ -19,6 +19,7 @@ import { sanitizeExtraHeaders } from '../utils/http-headers.js';
 import { isSelfBaseURL } from '../utils/self-url.js';
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
+import { getProviderTakedownStore } from './provider-takedown.js';
 
 /**
  * Build the direct execution pool WITHOUT the opencode daemon.
@@ -51,7 +52,11 @@ export interface DirectBootResult {
     credentialChain: CallCredential[];
   }[];
   models: ModelRegistration[];
-  /** reasonCode present on store-level entries merged from the binding (machine-readable; the reason text stays human-readable). */
+  /**
+   * Reason text is human-readable; reasonCode is machine-readable (present on
+   * store-level entries merged from the binding and on provider-level
+   * takedowns — `operator_disabled`).
+   */
   excluded: { provider: string; model?: string; reason: string; reasonCode?: string }[];
 }
 
@@ -153,6 +158,17 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   const retiredShapes = new Map(legacyShapedSlotEntries().map((e) => [e.id, e.paths]));
 
   for (const rec of catalog) {
+    const takedown = getProviderTakedownStore().get(rec.id);
+    if (takedown) {
+      excluded.push({
+        provider: rec.id,
+        reasonCode: 'operator_disabled',
+        reason: takedown.reason
+          ? `disabled by operator: ${takedown.reason}`
+          : 'disabled by operator (console provider takedown)',
+      });
+      continue;
+    }
     const retired = retiredShapes.get(rec.id);
     if (retired) {
       retiredShapes.delete(rec.id);

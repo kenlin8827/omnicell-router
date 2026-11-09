@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyRequest } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
@@ -7,6 +7,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
+import { getProviderTakedownStore } from '../providers/provider-takedown.js';
 import { NPM_VOCABULARY } from '../providers/vocabulary.js';
 import { getModelServicePlugin, pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
 import { PluginAuthType, type TrafficExchange, type DissectedExchange } from '../plugins/types.js';
@@ -48,7 +49,7 @@ import { keyHashPrefix } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
-import { maskSecret } from '../opencode/user-config.js';
+import { maskSecret, isValidProviderId, PROVIDER_ID_RULE, getProviderNodeById } from '../opencode/user-config.js';
 import { isSelfBaseURL } from '../utils/self-url.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
@@ -3031,6 +3032,7 @@ export function registerConsoleRoutes(
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      const takedowns = getProviderTakedownStore();
       const store = await getCredentialStore();
       // B4: credentials come from the BOUND store on every binding — the masked store
       // credentials merge into the config views, so a stale auth.json entry can never
@@ -3050,6 +3052,7 @@ export function registerConsoleRoutes(
           const u = byId.get(v.id);
           const defNode = getProviderNodeById(v.id);
           const hasDefNode = defNode !== undefined;
+          const takedown = takedowns.get(v.id);
           return {
             ...v,
             // Precise delete-branch signal: an explicit defs-file node is the
@@ -3067,6 +3070,10 @@ export function registerConsoleRoutes(
             custom: u ? u.custom : true,
             logo: u?.logo ?? v.logo,
             npm: v.npm ?? u?.npm,
+            // Operator takedown: routing state, never a defs-file field (ADR-0010).
+            // The card stays listed so the operator can restore it with one click.
+            disabled: takedown !== undefined,
+            ...(takedown?.reason ? { disabledReason: takedown.reason } : {}),
             // Def-level custom headers (non-secret metadata — the edit dialog
             // prefills from this; secrets live in the bound store, never here).
             headers: defNode?.headers ?? defNode?.options?.headers,
@@ -3609,7 +3616,18 @@ export function registerConsoleRoutes(
       // upstream probe header (its whole purpose), never in the response.
       // Inline {env:VAR}/options.apiKey keep priority ABOVE the store (Decision 1).
       const store = await getCredentialStore();
-      const resolved = store.resolveKey(id);
+      // Provider-level probes honor the operator takedown overlay: a disabled
+      // credential is parked from routing, so probing with it would report a
+      // provider as healthy while inference refuses that key. The store does
+      // not carry the flag (it lives in the breaker state store's overlay), so
+      // the chain is filtered with the same keyHashPrefix identity routing
+      // uses. An addressed credentialId below deliberately bypasses this.
+      const credentialState = registry.getCircuitBreakerManager().getCredentialStateStore();
+      const storeChain = store.resolveKeyChain(id);
+      const enabledChain = storeChain.filter(
+        (c) => c.key && !credentialState.isDisabled(id, keyHashPrefix(c.key))
+      );
+      const resolvedKey = enabledChain[0]?.key;
       // Per-credential probe: the operator pinned ONE credential row (KeysPage
       // credential list). resolveKeyChain is a sanctioned raw read on this route
       // — same contract as resolveKey above: the key leaves only as the
@@ -3686,8 +3704,19 @@ export function registerConsoleRoutes(
       // OAuth access-token probing retires with the store flip: no
       // CredentialStore exports raw oauth tokens (masked list-and-badge only) —
       // an oauth-only provider lands on the 400 hint.
-      const apiKey = body.apiKey || (addressed ? addressed.key : expandEnvTemplate(def?.options?.apiKey) || resolved?.key);
+      const inlineKey = expandEnvTemplate(def?.options?.apiKey);
+      const apiKey = body.apiKey || (addressed ? addressed.key : inlineKey || resolvedKey);
       if (!apiKey) {
+        // Every stored key parked: say THAT, not the misleading no-key/OAuth
+        // hint (the operator must know a takedown is the cause).
+        if (!addressed && !inlineKey && enabledChain.length === 0 && storeChain.some((c) => c.key)) {
+          return reply.status(400).send({
+            success: false,
+            reasonCode: 'no_enabled_credential',
+            provider: id,
+            error: `Every credential stored for '${id}' is disabled — enable one before testing.`,
+          });
+        }
         return reply.status(400).send({
           success: false,
           oauthHint: true,
@@ -4412,6 +4441,78 @@ export function registerConsoleRoutes(
     },
 
     /**
+     * Operator DISABLE / ENABLE one WHOLE provider — the coarse counterpart of
+     * the credential takedown below. The provider keeps its defs node, models,
+     * credentials and console card; only the routing pool drops it
+     * (`buildDirectPool` → `operator_disabled`), so `/v1/models` omits it and
+     * direct ids 404. State lives in the GLOBAL takedown ledger, never in
+     * providers.json (that file is connection truth + the sync materializer's
+     * source, ADR-0010). Manual-only lifecycle: nothing auto-clears it.
+     */
+    providerSetDisabled: async (
+      req: FastifyRequest<{ Params: { id: string }; Body: { reason?: unknown } }>,
+      reply: FastifyReply,
+      disabled: boolean
+    ) => {
+      const { id } = req.params;
+      const body = req.body ?? {};
+      if (!isValidProviderId(id)) {
+        return reply.status(400).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'invalid_provider_id',
+          error: `Invalid provider id '${id}' - ${PROVIDER_ID_RULE}`,
+        });
+      }
+      const { getCredentialStore } = await import('../opencode/credentials/index.js');
+      const store = await getCredentialStore();
+      let hasCredential = false;
+      try {
+        hasCredential = store.listCredentials(id).length > 0;
+      } catch {
+        // unreadable per-provider detail: a defs node still proves the provider exists
+      }
+      if (!getProviderNodeById(id) && !hasCredential) {
+        return reply.status(404).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'provider_not_found',
+          error: `Provider '${id}' is neither defined in providers.json nor connected with a credential`,
+        });
+      }
+      const takedowns = getProviderTakedownStore();
+      if (disabled) {
+        const raw = typeof body.reason === 'string' ? body.reason.trim() : '';
+        if (raw.length > 200) {
+          return reply
+            .status(400)
+            .send({ status: 'error', success: false, reasonCode: 'invalid_reason', error: 'reason too long (max 200 characters)' });
+        }
+        takedowns.disable(id, raw);
+        return {
+          status: 'ok',
+          success: true,
+          disabled: true,
+          provider: id,
+          message: `Provider '${id}' taken down (no model routes through it)`,
+        };
+      }
+      takedowns.enable(id);
+      return {
+        status: 'ok',
+        success: true,
+        disabled: false,
+        provider: id,
+        message: `Provider '${id}' restored to routing`,
+      };
+    },
+
+    providerDisable: (req: FastifyRequest<{ Params: { id: string }; Body: { reason?: unknown } }>, reply: FastifyReply) =>
+      ocHandlers.providerSetDisabled(req, reply, true),
+    providerEnable: (req: FastifyRequest<{ Params: { id: string }; Body: { reason?: unknown } }>, reply: FastifyReply) =>
+      ocHandlers.providerSetDisabled(req, reply, false),
+
+    /**
      * Operator DISABLE / ENABLE one credential — a durable takedown that never
      * auto-returns (cooldown expiry, reconnect, Push and breaker resets all leave
      * it alone), and the only lever between "temporarily tripped" and "deleted".
@@ -4499,6 +4600,10 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers/:id/key`, withPoolSync(registry, ocHandlers.setKey));
     app.post(`${prefix}/opencode/providers/:id/test`, ocHandlers.test);
     app.delete(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.remove));
+    // Provider-level operator takedown: routing state, not a defs write — the
+    // pool resync drops (or restores) every model of the provider (ADR-0010).
+    app.post(`${prefix}/opencode/providers/:id/disable`, withPoolSync(registry, ocHandlers.providerDisable));
+    app.post(`${prefix}/opencode/providers/:id/enable`, withPoolSync(registry, ocHandlers.providerEnable));
 
     // Per-provider model maintenance (config-defined providers only)
     app.get(`${prefix}/opencode/providers/:id/models`, ocHandlers.modelsGet);

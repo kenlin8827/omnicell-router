@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, ArrowUpToLine } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -97,20 +97,6 @@ const rowsToHeaders = (rows: HeaderRow[]): Record<string, string> | undefined =>
 };
 const headersToRows = (headers?: Record<string, string>): HeaderRow[] =>
   Object.entries(headers ?? {}).map(([name, value]) => ({ name, value }));
-
-/** Long baseURLs must wrap between segments, never inside one: `break-all`
- *  split "…maas.aliyuncs.com" into "…maas.aliyun" + "cs.com", which reads as
- *  a typo on the provider card. `<wbr>` after each `/` and `.` hands the
- *  browser legal break points while every segment stays whole; the caller
- *  keeps `overflow-wrap: break-word` as the fallback for a segment wider
- *  than the card. */
-const breakableUrl = (url: string): React.ReactNode =>
-  url.split(/(?<=[/.])/g).map((segment, i, all) => (
-    <React.Fragment key={i}>
-      {segment}
-      {i < all.length - 1 ? <wbr /> : null}
-    </React.Fragment>
-  ));
 
 /** Two-column header rows editor: name | value | remove, plus an add-row
  *  affordance. Blank rows are ignored on serialize. */
@@ -496,17 +482,6 @@ function useCountdownClock(untilMax: number): number {
 }
 
 /**
- * Capped credential list: 3 one-line rows visible, the rest scrolls inside the
- * card. `CREDENTIAL_ROW_HEIGHT_EST` is an ESTIMATE of a single-line CredentialRow
- * (padding + the tallest of its mono chips / icon buttons); if the row style
- * changes, this constant must follow — an off-by-a-few cap only shows slightly
- * fewer rows. Upgrade path if it ever needs to be exact: measure the first
- * rendered row and drive max-height from it.
- */
-const CREDENTIAL_ROWS_VISIBLE = 3;
-const CREDENTIAL_ROW_HEIGHT_EST = 36;
-
-/**
  * Credential display name: the operator's label, or a bare neutral placeholder.
  * OCR never invents a name, and the placeholder carries no fingerprint either —
  * unlabeled rows are already distinguished by their masked key, and get the
@@ -530,7 +505,7 @@ const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) 
   );
 };
 
-type CredentialRowProps = {
+type CredentialZoomRowProps = {
   credential: CredentialHealth;
   caps: CredentialStoreCapabilities;
   /**
@@ -587,9 +562,9 @@ const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 'var(
 const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-none)' };
 
 /**
- * Status badges for one credential — shared by the card row and the zoom
- * table so the two surfaces can never disagree on what a row "says".
- * Word badges keep icon + text; icon-only markers lean on `title`.
+ * Status badges for one credential — used by the maintenance (zoom) table so
+ * the table can never disagree with itself on what a row "says". Word badges
+ * keep icon + text; icon-only markers lean on `title`.
  */
 const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining: number }> = ({ credential, remaining }) => {
   const { t } = useI18n();
@@ -643,7 +618,7 @@ const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining
 
 /**
  * Per-credential action buttons — the single source of action availability
- * (Decision 1: capability-first) shared by the card row and the zoom table.
+ * (Decision 1: capability-first) used by the maintenance (zoom) table.
  * Icon-only with full title + aria-label; the zoom table puts the labels in
  * its per-action column headers and renders ONE action per column via
  * `only` (the cell is empty when the row's state hides the action).
@@ -826,169 +801,6 @@ const CredentialActions: React.FC<CredentialActionsProps> = ({
   );
 };
 
-
-/** One credential of a multi-credential provider — the drill-down row. */
-const CredentialRow: React.FC<CredentialRowProps> = ({
-  credential,
-  caps,
-  soleServing,
-  prefixVisible,
-  pending,
-  testing,
-  renaming,
-  onStartRename,
-  onCancelRename,
-  now,
-  onPin,
-  onRename,
-  onTest,
-  onDisconnect,
-  onToggleDisabled,
-  onClearSuspect,
-  canReveal,
-  onCopyKey,
-  onEditLimits,
-  position,
-}) => {
-  const { t } = useI18n();
-  const [labelDraft, setLabelDraft] = useState('');
-  const remaining = credential.cooldownUntilMs !== undefined ? credential.cooldownUntilMs - now : 0;
-  const name = credentialName(credential, t('op.credentialUnnamed'));
-
-  return (
-    <div
-      className="list-row"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '7px 10px',
-        // The scroll container is a flex column: without this the rows SHRINK
-        // to fit the cap instead of overflowing and scrolling.
-        flexShrink: 0,
-        // Chain order rides the #1 slot number — no extra bar/border
-        // (redundant encoding was the box-in-box complaint).
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-      }}
-    >
-      {renaming ? (
-        <>
-          <input
-            className="input"
-            style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 110 }}
-            aria-label={t('op.credentialLabelPlaceholder')}
-            placeholder={t('op.credentialLabelPlaceholder')}
-            maxLength={80}
-            value={labelDraft}
-            onChange={(e) => setLabelDraft(e.target.value)}
-            onKeyDown={(e) => {
-              // Enter with an empty draft is the CLEAR gesture, not a no-op.
-              if (e.key === 'Enter') onRename(credential, labelDraft.trim());
-              if (e.key === 'Escape') onCancelRename();
-            }}
-            autoFocus
-          />
-          <button
-            className="btn btn-sm btn-primary"
-            style={CRED_ICON_BTN}
-            disabled={pending || labelDraft.trim() === (credential.label?.trim() ?? '')}
-            title={labelDraft.trim() ? t('op.credentialRename') : t('op.credentialClearLabel')}
-            onClick={() => onRename(credential, labelDraft.trim())}
-          >
-            <Check size={12} />
-          </button>
-          <button className="btn btn-sm" style={CRED_ICON_BTN} onClick={onCancelRename}>
-            ✕
-          </button>
-        </>
-      ) : (
-        <>
-          {/* Slot number = chain order (head = #1). The order itself changes
-              only via the pin action (a multi-credential provider spreads NEW
-              sessions across every healthy row — Decision 7 — so position is
-              priority, not exclusivity). Uniform color: order metadata only,
-              no row gets a special tint. */}
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              fontSize: 'var(--text-2xs)',
-              fontWeight: 'var(--font-semibold)',
-              minWidth: 12,
-              color: 'var(--text-dim)',
-              fontVariantNumeric: 'tabular-nums',
-            }}
-            title={t('op.credentialChainHeadTip')}
-          >
-            #{position}
-          </span>
-          {/* Weight badge (card rows are read-only here; the zoom table owns
-              the editor). Absent = 1 and stays unlabeled — clutter rule. */}
-          {(credential.weight ?? 1) > 1 && (
-            <span
-              style={{ fontSize: 'var(--text-2xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}
-            >
-              ×{credential.weight}
-            </span>
-          )}
-          <span
-            style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-sm)', flex: '0 1 auto', minWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis' }}
-            title={name}
-          >
-            {name}
-          </span>
-          {/* The fingerprint is a CORRELATION id (breaker state, SUSPECT flags,
-              the Guardrails per-credential trip and the logs all key on it), not
-              something to read. So it lives in the masked key's tooltip, and the
-              chip only appears when two rows of this provider mask to the same
-              text — the one case where a row is otherwise ambiguous. */}
-          {prefixVisible && <PrefixChip credential={credential} />}
-          {credential.maskedKey && (
-            <span
-              style={{
-                fontSize: 'var(--text-xs)',
-                fontFamily: FONT_MONO,
-                color: 'var(--text-dim)',
-                // Shrinkable so a narrow card clips the KEY, never the buttons
-                // (the action group holds flexShrink:0 and must stay reachable).
-                flex: '0 1 auto',
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-              title={credential.keyHashPrefix ? t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id }) : undefined}
-            >
-              {credential.maskedKey}
-            </span>
-          )}
-          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <CredentialStatusBadges credential={credential} remaining={remaining} />
-            <CredentialActions
-              credential={credential}
-              caps={caps}
-              pending={pending}
-              testing={testing}
-              canReveal={canReveal}
-              onStartRename={() => {
-                setLabelDraft(credential.label ?? '');
-                onStartRename();
-              }}
-              onPin={onPin}
-              onTest={onTest}
-              onCopyKey={onCopyKey}
-              onClearSuspect={onClearSuspect}
-              onEditLimits={onEditLimits}
-              onToggleDisabled={onToggleDisabled}
-              onDisconnect={onDisconnect}
-            />
-          </span>
-        </>
-      )}
-    </div>
-  );
-};
-
 const ZOOM_TH: React.CSSProperties = {
   textAlign: 'left',
   fontSize: 'var(--text-sm)',
@@ -1007,11 +819,9 @@ const ZOOM_TD: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-type CredentialZoomRowProps = Omit<CredentialRowProps, 'now'> & { now: number };
-
-/** One credential of the zoom dialog — a table row: the labels live in the
- *  column headers, the actions stay icon-only. Same shared badge/action
- *  components as the card row, so availability logic cannot drift. */
+/** One credential of the maintenance (zoom) dialog — a table row: the labels
+ *  live in the column headers, the actions stay icon-only (hover for the
+ *  full name). */
 const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
   credential,
   caps,
@@ -1541,6 +1351,9 @@ export const KeysPage: React.FC = () => {
   // Provider whose credential list is open in the zoom dialog (page-scoped:
   // the dialog shares the card rows' handler wiring).
   const [zoomProviderId, setZoomProviderId] = useState<string | null>(null);
+  // Full probe-failure text for the card's failure-detail dialog: the row
+  // itself only shows the classification (see composeProbeErrorShort).
+  const [probeDetail, setProbeDetail] = useState<{ providerId: string; error: string } | null>(null);
 
   const applyCredentialList = (providerId: string, credentials: CredentialHealth[]) =>
     setStoreStatus((prev) =>
@@ -2143,6 +1956,37 @@ export const KeysPage: React.FC = () => {
     }
   };
 
+  /**
+   * Provider-level operator takedown — the coarse counterpart of the
+   * per-credential switch. The card, defs node, models and credentials all
+   * stay; the backend drops the provider from the routing pool in the same
+   * request, so `/v1/models` follows immediately and a single click restores
+   * exactly the previous pool.
+   */
+  const handleToggleProviderDisabled = async (p: OpenCodeProviderView) => {
+    const disabling = !p.disabled;
+    if (disabling) {
+      const ok = await confirmDialog({
+        title: t('op.providerDisableConfirmTitle', { id: p.id }),
+        description: t('op.providerDisableConfirmDesc', { n: p.modelsCount ?? p.models.length }),
+        danger: true,
+        confirmLabel: t('op.providerDisable'),
+      });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      if (disabling) await opencodeApi.disableProvider(p.id);
+      else await opencodeApi.enableProvider(p.id);
+      toast.success(t(disabling ? 'op.providerDisabledToast' : 'op.providerEnabledToast', { id: p.id }));
+      await loadOpenCodeProviders();
+    } catch (err) {
+      toast.error(reasonError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleCreateCustom = async () => {
     if (!form.id.trim() || !form.baseURL.trim()) {
       toast.error(t('op.idAndUrlRequired'));
@@ -2319,51 +2163,108 @@ export const KeysPage: React.FC = () => {
           {pagedConnected.map(p => {
             const credentialList = credentialsByProvider.get(p.id) ?? [];
             const caps = storeStatus?.capabilities;
-            // Sole routable credential (see CredentialRow.soleServing): exactly one
-            // key that can route AND has not been taken down — a disabled row is
-            // in neither the spread nor the failover pool, so it never counts.
+            // Live = routable AND not taken down; a disabled row is in neither
+            // the spread nor the failover pool, so it never counts when deciding
+            // whether the card may look live.
             const liveIds = credentialList.filter((a) => a.routable && !a.disabled).map((a) => a.id);
-            const soleRoutableId = liveIds.length === 1 ? liveIds[0] : null;
+            // Pill tint / dot colour; text stays dim when everything is live.
+            const healthColor = liveIds.length === 0 ? 'var(--accent-rose)' : liveIds.length < credentialList.length ? 'var(--accent-amber)' : 'var(--accent-emerald)';
             // Key writes need a registered integration (see canWriteCredential).
             const keyWritable = canWriteCredential(p.id);
-            // Two rows printing the same masked key are indistinguishable without
-            // the fingerprint — that (and only that) is when the chip earns space.
-            const masks = credentialList.map((a) => a.maskedKey ?? a.id);
-            const ambiguousMasks = new Set(masks.filter((m, i) => masks.indexOf(m) !== i));
             return (
             <div key={p.id} className="sub-card" style={cardFlex}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {/* Header: identity left, credential status pill right. The
+                  pill is the card's health readout AND its maintenance entry
+                  (dot + live/total), so the corner carries information instead
+                  of a row of identical icon buttons. */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
                 <ProviderLogo id={p.id} logo={p.logo} size={44} />
-                <div style={{ flex: '1 1 96px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
-                  {p.name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
+                  <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', fontFamily: FONT_MONO, lineHeight: 1.25, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }} title={p.id}>{p.id}</span>
+                  {p.name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>{p.name}</span>}
                 </div>
-                {/* Identity badges ride the title row again — the wide npm badge
-                    moved to the URL row, so the small chips fit; the 96px title
-                    floor keeps the id readable on the narrowest card (badges
-                    wrap inside their own box below that). */}
-                {/* Empty defs node = this provider routes nothing (the boot pool
-                    only logs the exclusion). Deliberately understated: an
-                    icon-only warning chip, tooltip carries the full story and
-                    the click still opens the model dialog to pull / add. */}
-                {p.models.length === 0 && (
-                  <button
-                    className="btn btn-sm"
-                    /* Square chip, not a pill: the shell `.btn`/`.btn-sm`
-                       min-height would otherwise stretch an icon-only badge
-                       into a tall oval (padding 0 + 11px glyph, forced 30px
-                       box). The explicit box wins over both rules. */
-                    style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), flexShrink: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, width: 22, height: 22, minHeight: 22 }}
-                    disabled={busy}
-                    title={t('op.pmEmptyBadgeTip')}
-                    aria-label={t('op.pmEmptyBadgeTip')}
-                    onClick={() => setModelsPanelId(p.id)}
-                  >
-                    <AlertTriangle size={11} />
-                  </button>
+                {caps && credentialList.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                    {/* Read-only health readout — NOT a control. */}
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        fontSize: 'var(--text-xs)',
+                        fontVariantNumeric: 'tabular-nums',
+                        color: liveIds.length === 0 ? 'var(--accent-rose)' : liveIds.length < credentialList.length ? 'var(--accent-amber)' : 'var(--text-dim)',
+                      }}
+                      title={
+                        liveIds.length === 0
+                          ? t('op.credentialsAllDisabledTip')
+                          : liveIds.length > 1
+                            ? t('op.credentialsSpreadHint', { n: liveIds.length })
+                            : t('op.credentialChainHeadTip')
+                      }
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          background: healthColor,
+                        }}
+                      />
+                      {liveIds.length} / {credentialList.length}
+                    </span>
+                    {/* Maintenance entry, deliberately separate from the
+                        status so reading health never triggers an action. */}
+                    <button
+                      className="btn btn-sm"
+                      title={t('op.credentialManage')}
+                      aria-label={t('op.credentialManage')}
+                      onClick={() => setZoomProviderId(p.id)}
+                    >
+                      <Key size={12} />
+                    </button>
+                  </div>
                 )}
-                {(p.custom || p.auth.inline || p.auth.type === 'oauth') && (
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 }}>
+              </div>
+
+              {/* Meta: endpoint on its own line (single-line ellipsis keeps
+                  every card's meta block the same height), then identity chips
+                  with the provider utilities right-aligned on the same row.
+                  `models` is the DEF-NODE list and is the routing truth: the
+                  boot pool excludes a provider with no maintained models even
+                  when the catalog knows some (see the "[OCR] excluded" log). */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                {/* The endpoint line is always present; an absent baseURL is
+                    stated instead of leaving a silently empty row. */}
+                {p.baseURL ? (
+                  <span style={{ fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.baseURL}>
+                    {p.baseURL}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
+                    {t('op.noBaseUrl')}
+                  </span>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, rowGap: 4, flexWrap: 'wrap' }}>
+                    {p.disabled && (
+                      <span
+                        style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+                        title={p.disabledReason ? `${t('op.providerDisabledBadge')} — ${p.disabledReason}` : t('op.providerDisabledBadge')}
+                      >
+                        <PowerOff size={9} />
+                        {t('op.providerDisabledBadge')}
+                      </span>
+                    )}
+                    {displayNpm(p.npm) && (
+                      <span
+                        style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
+                        title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
+                      >
+                        {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
+                      </span>
+                    )}
                     {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
                     {p.auth.inline && (
                       <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -2372,172 +2273,131 @@ export const KeysPage: React.FC = () => {
                       </span>
                     )}
                     {p.auth.type === 'oauth' && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}>{t('op.badgeOauth')}</span>}
+                    {/* No maintained def-node models = the boot pool excludes
+                        this provider ("no models maintained in the config"),
+                        so nothing routes. Plain text signal instead of another
+                        bordered pill: ten cards showing it must not read as
+                        ten alerts. */}
+                    {p.models.length === 0 && (
+                      <button
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--accent-amber)', fontSize: 'var(--text-2xs)', fontWeight: 'var(--font-semibold)', lineHeight: 1.4 }}
+                        disabled={busy}
+                        title={t('op.pmEmptyBadgeTip')}
+                        aria-label={t('op.pmEmptyBadgeTip')}
+                        onClick={() => setModelsPanelId(p.id)}
+                      >
+                        <AlertTriangle size={9} />
+                        {t('op.pmEmptyBadge')}
+                      </button>
+                    )}
                     {/* The api-key sink badge ("credentials.json") was removed:
                         the bound store is PAGE-level truth (stated in the tab
                         descriptions), identical on every card — a per-card
                         repetition carried zero information. */}
                   </div>
-                )}
-                {caps && credentialList.length > 0 && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ flexShrink: 0 }}
-                    title={t('op.credentialZoom')}
-                    aria-label={t('op.credentialZoom')}
-                    onClick={() => setZoomProviderId(p.id)}
-                  >
-                    <Maximize2 size={12} />
-                  </button>
-                )}
-                {p.defNode && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ flexShrink: 0 }}
-                    disabled={busy}
-                    title={t('op.editDefTitle')}
-                    onClick={() => openDefEdit(p)}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                )}
-                <button
-                  className="btn btn-sm"
-                  style={{ color: 'var(--accent-rose)', flexShrink: 0 }}
-                  disabled={busy || testingIds.size > 0 || testAll.running}
-                  title={t('op.deleteBtn')}
-                  onClick={() => handleDelete(p)}
-                >
-                  <Trash2 size={12} />
-                </button>
+                  {/* Provider utilities: quiet ghost icons in a delimited
+                      group, sharing the chips row so no row is half empty. */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, paddingLeft: 8, borderLeft: '1px solid var(--divider)' }}>
+                    {p.defNode && (
+                      <button
+                        className="btn btn-sm"
+                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--text-dim)' }}
+                        disabled={busy}
+                        title={t('op.editDefTitle')}
+                        aria-label={t('op.editDefTitle')}
+                        onClick={() => openDefEdit(p)}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-sm"
+                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: p.disabled ? 'var(--accent-emerald)' : 'var(--text-dim)' }}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                      title={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
+                      aria-label={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
+                      onClick={() => handleToggleProviderDisabled(p)}
+                    >
+                      {p.disabled ? <Power size={12} /> : <PowerOff size={12} />}
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--accent-rose)' }}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                      title={t('op.deleteBtn')}
+                      aria-label={t('op.deleteBtn')}
+                      onClick={() => handleDelete(p)}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              {(p.baseURL || displayNpm(p.npm)) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {p.baseURL && (
-                    <div
-                      style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflowWrap: 'break-word' }}
-                      title={p.baseURL}
-                    >
-                      {breakableUrl(p.baseURL)}
-                    </div>
-                  )}
-                  {displayNpm(p.npm) && (
+              {/* Footer: the probe result gets its own line (squeezed beside
+                  three buttons it wrapped one token per line), then the action
+                  row. `margin-top: auto` + the divider keep button rows aligned
+                  across a grid row regardless of how much meta each card
+                  carries. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 'auto', paddingTop: 10, borderTop: '1px solid var(--divider)' }}>
+                {testResults[p.id] && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span
-                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
-                      title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
-                    >
-                      {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Chain-head key summary. With the per-credential list on screen it
-                  would repeat the first row, so it renders only when that list
-                  does not. The old OAuth-expiry line is gone: the provider view
-                  never carried a live expiry (store credentials are api keys). */}
-              {!(caps && credentialList.length > 0) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-xs)', fontFamily: FONT_MONO }}>
-                  <Lock size={11} />
-                  <span>{p.auth.keyMasked || '—'}</span>
-                </div>
-              )}
-
-              {/* Credential list — always visible, one line per key,
-                  capped at 3 rows (more scroll). No expand gesture: per-key state
-                  is the reason this page exists, and hiding it behind a click put
-                  the active credential out of sight. */}
-              {caps && credentialList.length > 0 && liveIds.length > 1 && (
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }} title={t('op.credentialChainHeadTip')}>
-                  {t('op.credentialsSpreadHint', { n: liveIds.length })}
-                </div>
-              )}
-              {/* Everything parked: say so plainly instead of letting the card look live. */}
-              {caps && credentialList.length > 0 && liveIds.length === 0 && (
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }} title={t('op.credentialsAllDisabledTip')}>
-                  {t('op.credentialsAllDisabled')}
-                </div>
-              )}
-              {caps && credentialList.length > 0 && (
-                <div
-                  className="list-group"
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    maxHeight: CREDENTIAL_ROWS_VISIBLE * CREDENTIAL_ROW_HEIGHT_EST,
-                    overflowY: 'auto',
-                  }}
-                >
-                  {credentialList.map((a, i) => (
-                    <CredentialRow
-                      key={a.id}
-                      credential={a}
-                      position={i + 1}
-                      caps={caps}
-                      soleServing={soleRoutableId === a.id}
-                      prefixVisible={a.maskedKey ? ambiguousMasks.has(a.maskedKey) : true}
-                      pending={pendingCredential === `${p.id}:${a.id}`}
-                      testing={testingIds.has(`${p.id}:${a.id}`)}
-                      onTest={(acc) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, credentialId: acc.id })}
-                      renaming={renameKey === `${p.id}:${a.id}`}
-                      onStartRename={() => setRenameKey(`${p.id}:${a.id}`)}
-                      onCancelRename={() => setRenameKey(null)}
-                      now={now}
-                      onPin={handleCredentialPin}
-                      onRename={handleCredentialRename}
-                      onDisconnect={handleCredentialDisconnect}
-                      onToggleDisabled={handleCredentialToggleDisabled}
-                      onClearSuspect={handleCredentialClearSuspect}
-                      canReveal={webAuthActive}
-                      onCopyKey={handleCredentialCopyKey}
-                      onEditLimits={(acc) => openLimitsDialog(p.id, acc)}
-                    />
-                  ))}
-                </div>
-              )}
-
-
-              {/* Action footer pinned to the card bottom (margin-top auto in
-                  the flex-column card) so button rows align across a grid row
-                  regardless of how many credential rows each card holds. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 'auto' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  {testResults[p.id] ? (
-                    <div
                       style={{
+                        flex: 1,
+                        minWidth: 0,
                         fontSize: 'var(--text-xs)',
                         fontFamily: FONT_MONO,
                         color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                        wordBreak: 'break-all',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
                       }}
-                      title={testResults[p.id].ok ? `${testResults[p.id].latencyMs} ms` : testResults[p.id].error}
+                      title={testResults[p.id].ok ? `${testResults[p.id].model} · ${testResults[p.id].latencyMs} ms` : undefined}
                     >
                       {testResults[p.id].ok
                         ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
-                        : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                      {t('op.credCount', { n: credentialList.length })}
+                        : `✗ ${testResults[p.id].errorShort || testResults[p.id].error || t('op.testFailMsg')}`}
                     </span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="btn btn-sm"
-                  disabled={!keyWritable}
-                  title={
-                    !keyWritable
-                        ? t('op.integrationMissingTip')
-                        : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
-                  }
-                  onClick={() => setAddCredential({ id: p.id, name: p.name ?? p.id, ...(webLoginByProvider.get(p.id) ?? {}) })}
-                >
-                  {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
-                  <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
-                </button>
-                <>
+                    {/* Failure detail behind an explicit click: the upstream
+                        body is multi-line JSON, so a hover bubble is the wrong
+                        surface — it overflows the card and cannot select or
+                        copy. */}
+                    {!testResults[p.id].ok && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', color: 'var(--accent-rose)', padding: '2px 4px', height: 18 }}
+                        title={t('op.probeDetailOpen')}
+                        aria-label={t('op.probeDetailOpen')}
+                        onClick={() => {
+                          const r = testResults[p.id];
+                          if (r) setProbeDetail({ providerId: p.id, error: r.error || t('op.testFailMsg') });
+                        }}
+                      >
+                        <AlertTriangle size={12} />
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* All actions left-aligned in chain-of-use order: the write
+                    action first, then the two diagnostics. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <button
+                    className="btn btn-sm"
+                    disabled={!keyWritable}
+                    title={
+                      !keyWritable
+                          ? t('op.integrationMissingTip')
+                          : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
+                    }
+                    onClick={() => setAddCredential({ id: p.id, name: p.name ?? p.id, ...(webLoginByProvider.get(p.id) ?? {}) })}
+                  >
+                    {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
+                    <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
+                  </button>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
                       className="btn btn-sm"
                       disabled={testingIds.size > 0 || testAll.running}
                       title={testingIds.has(p.id) ? t('op.testing') : t('op.testBtn')}
@@ -2556,7 +2416,7 @@ export const KeysPage: React.FC = () => {
                       <Cpu size={12} />
                       <span>{t('op.pmManage')}</span>
                     </button>
-                  </>
+                  </div>
                 </div>
               </div>
 
@@ -3039,11 +2899,11 @@ export const KeysPage: React.FC = () => {
           />
         )}
 
-        {/* Per-provider credential zoom — a TABLE: the labels live in the
-            column headers, the actions stay icon-only (title + aria-label
+        {/* Per-provider credential maintenance — a TABLE: the labels live in
+            the column headers, the actions stay icon-only (title + aria-label
             carry the full name), so the dialog stays narrow. Rows reuse the
-            same shared badge/action components as the card rows — availability
-            logic cannot drift — and share the page-owned handler wiring. */}
+            shared badge/action components, so availability logic cannot
+            drift, and share the page-owned handler wiring. */}
         {zoomProviderId && ocProviders.some((x) => x.id === zoomProviderId) && (() => {
           const p = ocProviders.find((x) => x.id === zoomProviderId)!;
           const caps = storeStatus?.capabilities;
@@ -3083,6 +2943,27 @@ export const KeysPage: React.FC = () => {
               closeLabel={t('common.close')}
               width={640}
               maxSize={{ width: 'min(860px, 94vw)' }}
+              footerLeft={
+                <button
+                  className="btn btn-sm"
+                  disabled={!canWriteCredential(p.id)}
+                  title={
+                    !canWriteCredential(p.id)
+                      ? t('op.integrationMissingTip')
+                      : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
+                  }
+                  onClick={() => {
+                    // Hand the screen to the add dialog: both are Dialog
+                    // portals at the same layer, and the later-mounted one
+                    // would otherwise sit UNDER this table.
+                    setZoomProviderId(null);
+                    setAddCredential({ id: p.id, name: p.name ?? p.id, ...(webLoginByProvider.get(p.id) ?? {}) });
+                  }}
+                >
+                  {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
+                  <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
+                </button>
+              }
               footerRight={
                 <button className="btn btn-sm" onClick={() => setZoomProviderId(null)}>
                   <span>{t('common.close')}</span>
@@ -3117,6 +2998,51 @@ export const KeysPage: React.FC = () => {
             </Dialog>
           );
         })()}
+
+        {/* Probe failure detail: the card row keeps only the classification;
+            the full (redacted, 600-char-bounded) upstream body lands here,
+            where it stays inside the viewport and is selectable/copyable. */}
+        {probeDetail && (
+          <Dialog
+            title={t('op.probeDetailTitle')}
+            subtitle={probeDetail.providerId}
+            onClose={() => setProbeDetail(null)}
+            closeLabel={t('common.close')}
+            width={720}
+            footerLeft={
+              <button
+                className="btn btn-sm"
+                onClick={async () => {
+                  if (await copyToClipboard(probeDetail.error)) toast.success(t('op.probeDetailCopied'));
+                  else toast.error(t('op.copyFailed'));
+                }}
+              >
+                <Copy size={12} />
+                <span>{t('common.copy')}</span>
+              </button>
+            }
+            footerRight={
+              <button className="btn btn-sm" onClick={() => setProbeDetail(null)}>
+                <span>{t('common.close')}</span>
+              </button>
+            }
+          >
+            <pre
+              style={{
+                margin: 0,
+                fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)',
+                lineHeight: 'var(--leading-normal)',
+                color: 'var(--text-main)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                userSelect: 'text',
+              }}
+            >
+              {probeDetail.error}
+            </pre>
+          </Dialog>
+        )}
 
         {/* Provider-def edit dialog — same fixed-overlay mount rule as the
             reveal gate (a tab switch must not orphan it). zIndex 200, NOT

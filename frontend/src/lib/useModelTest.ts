@@ -25,17 +25,18 @@ const TEST_REASON_KEY: Record<string, string> = {
   no_testable_model: 'op.reasonNoTestableModel',
   no_base_url: 'op.reasonNoBaseUrl',
   credential_not_testable: 'op.reasonCredentialNotTestable',
+  no_enabled_credential: 'op.reasonNoEnabledCredential',
 };
 
 /**
- * Compose the localized display string from a failed probe's machine limbs:
- * `HTTP <status> —— <category label> | <upstream body>`. The label is a short
+ * Short classification limb of a failed probe: `HTTP <status> —— <category>`.
+ * This is what the compact card row shows; the provider's own error body and
+ * the rotation trail stay in composeProbeError (hover detail). The label is a
  * CLASSIFICATION only (product rule 2026-10-14: classify, never speculate or
- * instruct) — the provider's own error body stays the detail. Transport/
- * unroutable failures are single localized limbs. Unknown codes stay raw +
- * loud (gap #8 rule).
+ * instruct). Transport/unroutable failures are single localized limbs. Unknown
+ * codes stay raw + loud (gap #8 rule).
  */
-export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
+export const composeProbeErrorShort = (r: TestProviderResult, t: TFn): string => {
   if (r.transportCode === 'timeout') return t('op.probeTimeout', { n: fmtLatency(r.timeoutMs ?? NaN) });
   if (r.transportCode === 'unreachable')
     return t('op.probeUnreachable', { url: r.transportUrl ?? '?', cause: r.transportCause ?? '?' });
@@ -46,6 +47,19 @@ export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
     );
   let s = r.httpStatus !== undefined ? `HTTP ${r.httpStatus}` : t('op.testFailMsg');
   if (r.hintCode) s += ` —— ${t(PROBE_HINT_KEY[r.hintCode] ?? r.hintCode)}`;
+  return s;
+};
+
+/**
+ * Full display string: the short classification plus the upstream body and
+ * the rotation trail. Surfaces with room (dialogs, tooltips) use this; compact
+ * rows use composeProbeErrorShort so a long provider payload cannot turn the
+ * card into a red wall.
+ */
+export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
+  const short = composeProbeErrorShort(r, t);
+  if (r.transportCode === 'timeout' || r.transportCode === 'unreachable' || r.unroutableCode) return short;
+  let s = short;
   if (r.upstreamBody) s += ` | ${r.upstreamBody}`;
   if (r.triedModels && r.triedModels.length > 1)
     s += ` (${t('op.testRotated', { n: r.triedModels.length, models: r.triedModels.join(', ') })})`;
@@ -90,6 +104,8 @@ export interface ModelTestOutcome {
   model?: string;
   latencyMs?: number;
   error?: string;
+  /** Card-row classification only — keeps long upstream bodies out of the grid. */
+  errorShort?: string;
 }
 
 const CONCURRENCY = 4;
@@ -128,7 +144,9 @@ export const useModelTest = () => {
       const r = await opencodeApi.testProvider(target.providerId, Object.keys(payload).length ? payload : undefined);
       // The wire carries machine limbs only — compose the localized display
       // ONCE here so every outcome surface (card/badge/toast/title) stays raw.
-      const outcome: ModelTestOutcome = { ...r, error: r.ok ? undefined : composeProbeError(r, t) };
+      const outcome: ModelTestOutcome = r.ok
+        ? { ...r }
+        : { ...r, error: composeProbeError(r, t), errorShort: composeProbeErrorShort(r, t) };
       setTestResults((prev) => ({ ...prev, [target.key]: outcome }));
       return outcome;
     } catch (err: any) {

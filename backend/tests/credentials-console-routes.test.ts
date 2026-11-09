@@ -10,6 +10,7 @@ import {
   resetCredentialStoreForTests,
   writeCredentialStoreState,
 } from '../src/opencode/credentials/factory.js';
+import { setProviderTakedownStoreForTests } from '../src/providers/provider-takedown.js';
 
 /**
  * Console credential routes through the BOUND store.
@@ -129,6 +130,9 @@ beforeEach(() => {
   // The defs funnel resolves through OCR_HOME — align it with credPaths().ocrHome
   // so route writes and test assertions address the same providers.json.
   process.env.OCR_HOME = path.join(tmpDir, 'ocr-home');
+  // Provider takedown ledger is a process singleton whose file path resolves
+  // lazily — drop it so every test binds to its own OCR_HOME sandbox.
+  setProviderTakedownStoreForTests(undefined);
   const p = credPaths();
   fs.mkdirSync(p.configDir, { recursive: true });
   fs.mkdirSync(p.dataDir, { recursive: true });
@@ -613,6 +617,47 @@ describe('POST /opencode/providers/:id/test — store-resolved probe key', () =>
     } finally {
       delete process.env.OCR_ROUTE_TEST_KEY;
     }
+  });
+
+  it('provider-level probe SKIPS operator-disabled credentials (never probes a parked key)', async () => {
+    const p = credPaths();
+    const PID = 'disabled-head-provider';
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }], api: 'https://x.test/v1' }];
+    seedOcr(p, {
+      [PID]: [
+        { id: 'c1', key: 'sk-head-parked', active: true },
+        { id: 'c2', key: 'sk-live-backup', active: false },
+      ],
+    });
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+    state.disable(PID, keyHashPrefix('sk-head-parked'), 'operator takedown');
+    bindStore(p);
+    probeCalls = [];
+    const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(probeCalls).toHaveLength(1);
+    expect(probeCalls[0].apiKey).toBe('sk-live-backup');
+  });
+
+  it('provider-level probe with EVERY credential disabled: 400 no_enabled_credential, no probe', async () => {
+    const p = credPaths();
+    const PID = 'all-disabled-provider';
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }], api: 'https://x.test/v1' }];
+    seedOcr(p, {
+      [PID]: [
+        { id: 'c1', key: 'sk-parked-a', active: true },
+        { id: 'c2', key: 'sk-parked-b', active: false },
+      ],
+    });
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+    state.disable(PID, keyHashPrefix('sk-parked-a'), 'operator takedown');
+    state.disable(PID, keyHashPrefix('sk-parked-b'), 'operator takedown');
+    bindStore(p);
+    probeCalls = [];
+    const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reasonCode).toBe('no_enabled_credential');
+    expect(probeCalls).toHaveLength(0);
   });
 
   it('unknown or non-routable credentialId: 400, no probe', async () => {
@@ -1120,6 +1165,64 @@ describe('POST .../credentials/:credentialId/{disable,enable} — operator taked
     const missing = await app.inject({ method: 'POST', url: disableUrl('anthropic', 'nope'), payload: {} });
     expect(missing.statusCode).toBe(404);
     expect(missing.json().reasonCode).toBe('credential_not_found');
+  });
+});
+
+describe('POST .../providers/:id/{disable,enable} — provider-level operator takedown', () => {
+  const step = (providerId: string, action: 'disable' | 'enable') =>
+    `/api/admin/opencode/providers/${providerId}/${action}`;
+
+  const providerRow = async (providerId: string) =>
+    (await app.inject({ method: 'GET', url: '/api/admin/opencode/providers' }))
+      .json()
+      .providers.find((p: { id: string }) => p.id === providerId);
+
+  it('200: flips the provider off/on through the GLOBAL ledger, leaving defs and credentials intact', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-live', key: 'sk-tk-live' }] });
+    bindStore(p);
+
+    const off = await app.inject({ method: 'POST', url: step('anthropic', 'disable'), payload: { reason: 'plan expired' } });
+    expect(off.statusCode).toBe(200);
+    expect(off.json()).toMatchObject({ success: true, disabled: true, provider: 'anthropic' });
+
+    // Durable state is the OCR-GLOBAL takedown file — the defs node the
+    // credential factory materialized is untouched and gains no `disabled` key.
+    const ledger = JSON.parse(fs.readFileSync(path.join(p.ocrHome, 'disabled-providers.json'), 'utf8'));
+    expect(ledger.version).toBe(1);
+    expect(ledger.providers.anthropic.reason).toBe('plan expired');
+    expect(readJsoncProviders(p).anthropic).toBeDefined();
+    expect(readJsoncProviders(p).anthropic.disabled).toBeUndefined();
+    expect(readOcrFile(p).providers.anthropic).toHaveLength(1);
+
+    // The connected grid keeps the card (restorable) and reports the state.
+    let row = await providerRow('anthropic');
+    expect(row.disabled).toBe(true);
+    expect(row.disabledReason).toBe('plan expired');
+
+    const on = await app.inject({ method: 'POST', url: step('anthropic', 'enable') });
+    expect(on.statusCode).toBe(200);
+    expect(on.json()).toMatchObject({ success: true, disabled: false });
+
+    row = await providerRow('anthropic');
+    expect(row.disabled).toBe(false);
+    expect(row.disabledReason).toBeUndefined();
+    // Enable lifts the takedown only: the credential row was never touched.
+    expect(readOcrFile(p).providers.anthropic).toHaveLength(1);
+  });
+
+  it('404 unknown provider / 400 invalid id (and no ledger row is written)', async () => {
+    const p = credPaths();
+    bindStore(p);
+
+    const missing = await app.inject({ method: 'POST', url: step('ghost', 'disable'), payload: {} });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().reasonCode).toBe('provider_not_found');
+
+    const invalid = await app.inject({ method: 'POST', url: step('Bad_ID', 'disable'), payload: {} });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().reasonCode).toBe('invalid_provider_id');
+    expect(fs.existsSync(path.join(p.ocrHome, 'disabled-providers.json'))).toBe(false);
   });
 });
 
