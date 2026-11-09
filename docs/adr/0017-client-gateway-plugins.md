@@ -41,9 +41,9 @@ Cursor's streaming endpoints force HTTP/2 (an h1 client is rejected with 464); t
 
 - A gateway that must read the first body frame to route (model selection) hands those consumed bytes back through `relayUpstream`'s `preface`; both the h2 and h1 legs write them before the live stream, so a peeked request loses nothing and is not replayed twice.
 
-### 4. Reference plugin: `cursor`
+### 4. Reference plugin: `cursor-gateway`
 
-The dev plugin tree carries the phased reference implementation (`plugins/cursor/`, its own repository; untracked here):
+The dev plugin tree carries the phased reference implementation (`plugins/cursor-gateway/`, its own repository; untracked here):
 
 - **Phase 1 (shipped, 0.1.0)** — OBSERVE. Claim the four Cursor authorities and relay every decrypted exchange through the core host SDK (`relayUpstream`): byte-verbatim upstream, both directions captured to a day-JSONL feed, Connect frames decoded at READ time by the dissector. Cursor keeps talking to its real backend; capture never mutates traffic.
 - **Phase 2+ (shipped in the dev plugin)** — OWN. Decode and answer the three inference wires (`agent.v1.AgentService/Run`, `aiserver.v1.InferenceService/RunInference`, legacy `ChatService/StreamUnifiedChat…`), merge or replace the model catalog, and route requested ids: OCR-namespace ids go through `host.chat`, every other id relays byte-verbatim to Cursor. Client MCP tool definitions ride the agent wire as extra function specs. An operator-only `mockGetMe` switch (`mockEmail` overrides the address) answers `aiserver.v1.DashboardService/GetMe` locally with a synthetic identity so the intercept path can be exercised without a live Cursor session; every other account/dashboard RPC still relays. A second test-only switch, `mockPlan`, rewrites `/auth/full_stripe_profile`'s membership fields on the way back so the client's picker renders injected entries on a free account — the upstream profile is untouched and Cursor's server-side entitlement still applies.
@@ -75,7 +75,7 @@ Plugins may declare operator-facing parameters, and the console renders the sett
 
 Console: `GET /api/admin/plugins/:id/config` returns `{schema, values}`, `PUT` validates + persists + fires the plugin's optional `onConfigChange(config)` (a failing hook never rolls back a persisted save; the merged values reach the plugin via `config()` regardless). A plugin without a schema exposes nothing and rejects writes — there is no free-form parameter bag.
 
-`cursor` uses the mechanism for its whole operator surface: capture (`logFrames`, `previewBytes`), the model catalog (`model` writes Cursor's default-model RPC, `forceModel`, `modelListMode` with `models`/`followKeyId`, `catalogReplace`), the agent loop (`maxTurns`, `toolTimeoutMs`, `heartbeatMs`, `maxResultChars`, `contextMaxChars`, `systemPrompt`), interception scope (`interceptAgent` / `interceptDesktop` / `interceptLegacy` plus the legacy knobs behind the third) and the synthetic `GetMe` answer (`mockGetMe` / `mockEmail` / `mockPlan`). The Client Hub card edits the model-catalog subset of that schema; the Plugins page drawer renders the rest.
+`cursor-gateway` uses the mechanism for its whole operator surface: capture (`logFrames`, `previewBytes`), the model catalog (`model` writes Cursor's default-model RPC, `forceModel`, `modelListMode` with `models`/`followKeyId`, `catalogReplace`), the agent loop (`maxTurns`, `toolTimeoutMs`, `heartbeatMs`, `maxResultChars`, `contextMaxChars`, `systemPrompt`), interception scope (`interceptAgent` / `interceptDesktop` / `interceptLegacy` plus the legacy knobs behind the third) and the synthetic `GetMe` answer (`mockGetMe` / `mockEmail` / `mockPlan`). The Client Hub card edits the model-catalog subset of that schema; the Plugins page drawer renders the rest.
 
 ## Consequences
 

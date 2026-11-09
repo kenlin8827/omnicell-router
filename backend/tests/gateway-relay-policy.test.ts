@@ -53,8 +53,8 @@ function tapProbe(): TapProbe {
 
 /** The relay only reads `id` (config lookup) — the rest is manifest surface. */
 const MANIFEST: PluginManifest = {
-  id: 'cursor',
-  name: 'Cursor',
+  id: 'cursor-gateway',
+  name: 'Cursor Gateway',
   version: '0.0.0-test',
   type: 'client-gateway',
   wires: [],

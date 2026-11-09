@@ -777,7 +777,7 @@ const bodySizes = (r: UnifiedLogRow): { up: number; down: number } =>
  *
  * Chosen from the same registry over the same inputs the drawer uses, so the
  * column can never disagree with the detail view. Provider decoders show the
- * plugin's own name (`cursor`), built-ins their format (`Hex`, `JSON`, …).
+ * plugin's own name (`cursor-gateway`), built-ins their format (`Hex`, `JSON`, …).
  */
 const rowDecoder = (r: UnifiedLogRow): SideDecoder | undefined => {
   const found = decodersOf(r);

@@ -44,7 +44,7 @@ export interface SideDecoder {
   labelKey: string;
   /** Provider-supplied name that supersedes the generic label (a plugin
    *  dissector is named after the plugin that owns the protocol knowledge:
-   *  `cursor`, `qoder`, … — never a faceless "Decoded"). */
+   *  `cursor-gateway`, `qoder`, … — never a faceless "Decoded"). */
   labelOverride?: string;
   /** Specificity: the highest-ranked applicable decoder is the default view. */
   rank: number;

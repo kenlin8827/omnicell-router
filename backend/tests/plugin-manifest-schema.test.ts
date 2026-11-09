@@ -272,19 +272,19 @@ describe('configSchema: configSections grouping', () => {
   });
 });
 
-// The `cursor` gateway plugin lives in the gitignored dev tree (/plugins/ is
+// The `cursor-gateway` plugin lives in the gitignored dev tree (/plugins/ is
 // in .gitignore) and is absent on a fresh clone / CI — registration stays
 // conditional (bun's node:test compat layer ignores a `skip` option).
-const cursorPluginJson = path.resolve(import.meta.dirname, '../../plugins/cursor/plugin.json');
-if (fs.existsSync(cursorPluginJson)) {
-  describe('configSchema: the shipped cursor manifest', () => {
+const cursorGatewayPluginJson = path.resolve(import.meta.dirname, '../../plugins/cursor-gateway/plugin.json');
+if (fs.existsSync(cursorGatewayPluginJson)) {
+  describe('configSchema: the shipped cursor-gateway manifest', () => {
     it('passes the same validation the loader and the packager run', () => {
-      const manifest = JSON.parse(fs.readFileSync(cursorPluginJson, 'utf8')) as unknown;
-      assert.doesNotThrow(() => validatePluginManifest(manifest, cursorPluginJson));
+      const manifest = JSON.parse(fs.readFileSync(cursorGatewayPluginJson, 'utf8')) as unknown;
+      assert.doesNotThrow(() => validatePluginManifest(manifest, cursorGatewayPluginJson));
     });
 
     it('labels every field for both en-US and zh-CN', () => {
-      const manifest = JSON.parse(fs.readFileSync(cursorPluginJson, 'utf8')) as {
+      const manifest = JSON.parse(fs.readFileSync(cursorGatewayPluginJson, 'utf8')) as {
         configSchema: { key: string; title?: string | Record<string, string> }[];
       };
       const untranslated = manifest.configSchema.filter(

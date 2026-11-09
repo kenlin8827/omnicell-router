@@ -330,7 +330,7 @@ export function PluginsManagePage(): React.ReactElement {
     }
   };
 
-  // `/plugins?plugin=cursor` (linked from the client card) opens that plugin's
+  // `/plugins?plugin=cursor-gateway` (linked from the client card) opens that plugin's
   // settings drawer without duplicating the model editor on the clients page.
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
@@ -356,7 +356,7 @@ export function PluginsManagePage(): React.ReactElement {
       // never receives the key secret and core exposes no key-policy lookup to
       // plugins, so the console resolves the key's allowed models here and
       // stores the resulting ids. Re-save after changing the key's policy.
-      if (configTarget.id === 'cursor' && draft.modelListMode === 'follow') {
+      if (configTarget.id === 'cursor-gateway' && draft.modelListMode === 'follow') {
         const keyId = String(draft.followKeyId ?? '');
         if (!keyId) {
           toast.error(t('clients.followNoKey'));
@@ -511,7 +511,7 @@ export function PluginsManagePage(): React.ReactElement {
   // — and the backend still validates it. Grouping inherits the same rule: an
   // all-hidden section renders no heading at all.
   const configGroups = groupVisibleFields(
-    configTarget?.id === 'cursor'
+    configTarget?.id === 'cursor-gateway'
       ? configSchema.filter((field) => CURSOR_CLIENT_FACING_FIELDS[field.key] !== true)
       : configSchema,
     configSections,
@@ -730,7 +730,7 @@ export function PluginsManagePage(): React.ReactElement {
             </div>
           ) : (
             <>
-              {configTarget?.id === 'cursor' && (
+              {configTarget?.id === 'cursor-gateway' && (
                 <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '12px' }}>
                   {t('pluginPage.cursorModelsMoved')}{' '}
                   <Link to="/clients">{t('pluginPage.cursorOpenClients')}</Link>

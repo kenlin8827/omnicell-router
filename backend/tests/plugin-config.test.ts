@@ -90,18 +90,18 @@ describe('plugin config: artifact store', () => {
   });
 });
 
-// The `cursor` gateway plugin lives in the gitignored dev tree (/plugins/ is
+// The `cursor-gateway` plugin lives in the gitignored dev tree (/plugins/ is
 // in .gitignore) and is absent on a fresh clone / CI. Bun's node:test compat
 // layer ignores the `skip` option, so registration stays conditional and the
 // whole describe is only registered when the dev tree exists.
-const cursorPluginJson = path.resolve(import.meta.dirname, '../../plugins/cursor/plugin.json');
-if (fs.existsSync(cursorPluginJson)) {
+const cursorGatewayPluginJson = path.resolve(import.meta.dirname, '../../plugins/cursor-gateway/plugin.json');
+if (fs.existsSync(cursorGatewayPluginJson)) {
   describe('plugin config: host read/apply against the dev tree', () => {
-    it('cursor declares its schema and answers merged values', async () => {
+    it('cursor-gateway declares its schema and answers merged values', async () => {
       const { loadInstalledPlugins, getPluginConfig, applyPluginConfig } = await import('../src/plugins/host.js');
       await loadInstalledPlugins();
-      const cfg = getPluginConfig('cursor');
-      assert.ok(cfg, 'cursor must be loaded from the dev tree');
+      const cfg = getPluginConfig('cursor-gateway');
+      assert.ok(cfg, 'cursor-gateway must be loaded from the dev tree');
       // The manifest lives in the gitignored dev tree, so it grows without this
       // test: pin the SHAPE the drawer relies on (types, bounds, section refs)
       // instead of an exact key list, which would be a drift twin of the
@@ -120,14 +120,14 @@ if (fs.existsSync(cursorPluginJson)) {
       assert.equal(cfg!.values.logFrames, true);
       assert.equal(cfg!.values.previewBytes, 2048);
 
-      const applied = await applyPluginConfig('cursor', { logFrames: false, previewBytes: 4096 });
+      const applied = await applyPluginConfig('cursor-gateway', { logFrames: false, previewBytes: 4096 });
       assert.equal(applied.values.logFrames, false);
       assert.equal(applied.values.previewBytes, 4096);
-      const artifact = JSON.parse(fs.readFileSync(pluginConfigPath('cursor'), 'utf8')) as Record<string, unknown>;
+      const artifact = JSON.parse(fs.readFileSync(pluginConfigPath('cursor-gateway'), 'utf8')) as Record<string, unknown>;
       assert.deepEqual(artifact, { logFrames: false, previewBytes: 4096 });
 
       // The schema's bounds are the write contract, not decoration.
-      const clamped = await applyPluginConfig('cursor', { previewBytes: 128 });
+      const clamped = await applyPluginConfig('cursor-gateway', { previewBytes: 128 });
       assert.equal(clamped.values.previewBytes, 2048, 'below min 256 falls back to the default');
     });
 

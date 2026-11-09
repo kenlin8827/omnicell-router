@@ -39,9 +39,9 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 - 后果：**不装任何插件**时，gRPC/Connect 客户端被完整透明代理 —— 完整 HTTP/2 语义、完整 access-log 捕获 —— 而不是被降级成 464。vendor 语义（Cursor 的 Connect 路由、模型目录）仍然需要插件；属于核心的只是传输。
 - 网关中继走同一条腿：client gateway 通过 host SDK 的 `relayUpstream` 中继其认领主机，该调用跑的正是这些转发器，带 ADR-0018 **准入**门（`reject` → 任何拨号之前先 403，返回 `{ rejected: true }`）、**实时**规则表 egress、ADR-0019 上游信任与 h2/h1 回落。上游 scheme 由调用方声明 —— `opts.secure`（缺省 `true` = TLS；`false` = 明文源站）—— 声明明文源站**不**绕过其他任何东西：准入门与实时规则表 egress 与 TLS 腿完全一致（明文腿本来就没有证书可信任），且 h2 腿仅支持 TLS，所以明文源站由 h1 腿服务。插件永不自己拨号上游 —— 裸 `http2.connect`/`https.request` 会静默绕过全部。
 
-### 4. 参考实现：`cursor`
+### 4. 参考实现：`cursor-gateway`
 
-仓库 dev 插件树携带分阶段参考实现（`plugins/cursor/`，独立仓库；此处不跟踪）：
+仓库 dev 插件树携带分阶段参考实现（`plugins/cursor-gateway/`，独立仓库；此处不跟踪）：
 
 - **阶段 1（已发布，0.1.0）** —— OBSERVE。认领四个 Cursor 主机，把每个解密交换经核心 host SDK（`relayUpstream`）逐字节中继上游；两个方向都抓取进按天 JSONL feed，Connect 帧由解码器在**读取时**解析。Cursor 继续打真实后端；抓取永不改写流量。
 - **阶段 2+（dev 插件已发布）** —— OWN。解码并回答三条推理线（`agent.v1.AgentService/Run`、`aiserver.v1.InferenceService/RunInference`、旧版 `ChatService/StreamUnifiedChat…`），合并或替换模型目录，并路由被请求的 id：OCR 命名空间的 id 走 `host.chat`，其余 id 逐字节中继给 Cursor。客户端的 MCP 工具定义随 agent 线作为额外 function spec 传递。插件面向 operator 的 `mockGetMe` 开关（`mockEmail` 覆盖地址）由插件本地用合成身份回答 `aiserver.v1.DashboardService/GetMe`（Cursor 的登录校验），没有可用 Cursor 会话也能演练接管链路；其他账户/仪表盘 RPC 仍按原样转发。另一个仅用于测试的 `mockPlan` 开关会在回程改写 `/auth/full_stripe_profile` 的会员字段，让客户端选择器在免费账户上渲染注入的条目——上游资料不动，Cursor 服务端鉴权照常生效。
@@ -73,7 +73,7 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 控制台：`GET /api/admin/plugins/:id/config` 返回 `{schema, values}`，`PUT` 校验 + 持久化 + 触发插件可选的 `onConfigChange(config)`（钩子失败绝不回滚已持久化的保存；合并值无论如何都会通过 `config()` 到达插件）。无 schema 的插件不暴露任何字段并拒绝写入 —— 不存在自由参数袋。
 
-`cursor` 使用该机制承载它的整个 operator 面：抓包（`logFrames`、`previewBytes`）、模型目录（`model` 写入 Cursor 的默认模型 RPC，`forceModel`，`modelListMode` 及其 `models`/`followKeyId`，`catalogReplace`）、Agent 循环（`maxTurns`、`toolTimeoutMs`、`heartbeatMs`、`maxResultChars`、`contextMaxChars`、`systemPrompt`）、接管范围（`interceptAgent` / `interceptDesktop` / `interceptLegacy`，以及后者的旧版开关）与合成 `GetMe` 应答（`mockGetMe` / `mockEmail` / `mockPlan`）。Client Hub 卡片只编辑该 schema 的模型目录子集；Plugins 页抽屉渲染其余字段。
+`cursor-gateway` 使用该机制承载它的整个 operator 面：抓包（`logFrames`、`previewBytes`）、模型目录（`model` 写入 Cursor 的默认模型 RPC，`forceModel`，`modelListMode` 及其 `models`/`followKeyId`，`catalogReplace`）、Agent 循环（`maxTurns`、`toolTimeoutMs`、`heartbeatMs`、`maxResultChars`、`contextMaxChars`、`systemPrompt`）、接管范围（`interceptAgent` / `interceptDesktop` / `interceptLegacy`，以及后者的旧版开关）与合成 `GetMe` 应答（`mockGetMe` / `mockEmail` / `mockPlan`）。Client Hub 卡片只编辑该 schema 的模型目录子集；Plugins 页抽屉渲染其余字段。
 
 ## 后果
 

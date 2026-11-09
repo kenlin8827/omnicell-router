@@ -125,15 +125,15 @@ export const ClientsPage: React.FC = () => {
   /** Per-client context window in tokens (claude compaction envs; default 256K) */
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
   /** Cursor is plugin-driven, not a config-writing adapter: its model surface
-   *  lives in the cursor plugin config but is edited on THIS client card —
+   *  lives in the Cursor Gateway plugin config but is edited on THIS client card —
    *  client-facing model selection belongs beside the client, while the
    *  Plugins page keeps protocol/runtime settings. */
   const [cursorCfg, setCursorCfg] = useState<CursorCfgDraft | null>(null);
   const [cursorCfgBusy, setCursorCfgBusy] = useState(false);
-  /** Loaded/disabled state of the `cursor` plugin. Without it the proxy can
+  /** Loaded/disabled state of the `cursor-gateway` plugin. Without it the proxy can
    *  still be installed, but Cursor sees no OCR catalog: the card must say so
    *  instead of advertising a model list that does not exist. */
-  const [cursorPlugin, setCursorPlugin] = useState<{
+  const [cursorGatewayPlugin, setCursorGatewayPlugin] = useState<{
     installed: boolean;
     loaded: boolean;
     disabled: boolean;
@@ -255,14 +255,14 @@ export const ClientsPage: React.FC = () => {
       // plugin in the Plugins page updates this card without a full reload.
       opencodeApi.listPlugins()
         .then(res => {
-          const plugin = (res.plugins || []).find(p => p.id === 'cursor');
-          setCursorPlugin({
+          const plugin = (res.plugins || []).find(p => p.id === 'cursor-gateway');
+          setCursorGatewayPlugin({
             installed: !!plugin,
             loaded: !!plugin?.loaded && !plugin?.disabled,
             disabled: !!plugin?.disabled,
           });
         })
-        .catch(err => console.error('cursor plugin status:', err));
+        .catch(err => console.error('cursor-gateway plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
       // seeded from the slot echo (bare ref / native pin verbatim), then the
       // profile-link echo re-tags linked roles to `slot:<key>`.
@@ -306,18 +306,18 @@ export const ClientsPage: React.FC = () => {
   // only when the card is opened AND the plugin is loaded; a missing/disabled
   // plugin has no config endpoint and must not look like an empty catalog.
   useEffect(() => {
-    if (expanded !== 'cursor' || cursorCfg || !cursorPlugin?.loaded) return;
+    if (expanded !== 'cursor' || cursorCfg || !cursorGatewayPlugin?.loaded) return;
     let alive = true;
     setCursorCfgBusy(true);
-    opencodeApi.getPluginConfig('cursor')
+    opencodeApi.getPluginConfig('cursor-gateway')
       .then(cfg => {
         if (!alive) return;
         setCursorCfg(parseCursorCfg(cfg.values ?? {}));
       })
-      .catch(err => { if (alive) console.error('cursor plugin config:', err); })
+      .catch(err => { if (alive) console.error('cursor-gateway plugin config:', err); })
       .finally(() => { if (alive) setCursorCfgBusy(false); });
     return () => { alive = false; };
-  }, [expanded, cursorCfg, cursorPlugin?.loaded]);
+  }, [expanded, cursorCfg, cursorGatewayPlugin?.loaded]);
 
   // Follow mode on the Cursor card is the same snapshot idea as the clients
   // above: load the picked key's effective view for a live preview; Save writes
@@ -354,7 +354,7 @@ export const ClientsPage: React.FC = () => {
         models,
         followKeyId: cursorCfg.followKeyId,
       };
-      const res = await opencodeApi.putPluginConfig('cursor', values);
+      const res = await opencodeApi.putPluginConfig('cursor-gateway', values);
       setCursorCfg(parseCursorCfg(res.values ?? values));
       // The backend drops keys the running plugin build does not declare (a
       // gateway started before the manifest listed them), so a plain success
@@ -1035,7 +1035,7 @@ export const ClientsPage: React.FC = () => {
     // Cursor's launcher only exists to feed the cursor plugin. Hooking it
     // without a loaded plugin would proxy every request transparently while
     // the UI claims OCR is active — block the setup, never the teardown.
-    const pluginBlocked = c.name === 'cursor' && cursorPlugin !== null && !cursorPlugin.loaded;
+    const pluginBlocked = c.name === 'cursor' && cursorGatewayPlugin !== null && !cursorGatewayPlugin.loaded;
     return c.hooked ? (
       <button
         className="btn btn-danger btn-sm"
@@ -1052,7 +1052,7 @@ export const ClientsPage: React.FC = () => {
         style={stretched ? { flex: 1 } : undefined}
         onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup'); }}
         disabled={loading || pluginBlocked}
-        title={pluginBlocked ? t('clients.cursorPluginRequired') : undefined}
+        title={pluginBlocked ? t('clients.cursorGatewayPluginRequired') : undefined}
       >
         <ArrowUpRight size={12} />
         <span>{t('clients.setupBtn')}</span>
@@ -1247,11 +1247,11 @@ export const ClientsPage: React.FC = () => {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
                           {t('clients.cursorModels')} <InfoTip text={t('clients.cursorModelsInfo')} />
                         </div>
-                        {cursorPlugin && !cursorPlugin.loaded ? (
+                        {cursorGatewayPlugin && !cursorGatewayPlugin.loaded ? (
                           <div style={{ color: 'var(--warning, #eab308)', lineHeight: 'var(--leading-normal)' }}>
-                            {cursorPlugin.installed
-                              ? t(cursorPlugin.disabled ? 'clients.cursorPluginDisabled' : 'clients.cursorPluginNotLoaded')
-                              : t('clients.cursorPluginMissing')}
+                            {cursorGatewayPlugin.installed
+                              ? t(cursorGatewayPlugin.disabled ? 'clients.cursorGatewayPluginDisabled' : 'clients.cursorGatewayPluginNotLoaded')
+                              : t('clients.cursorGatewayPluginMissing')}
                           </div>
                         ) : cursorCfgBusy && !cursorCfg ? (
                           <div style={{ color: 'var(--text-dim)' }}>{t('common.loading')}</div>
@@ -1403,7 +1403,7 @@ export const ClientsPage: React.FC = () => {
                                   >
                                     {t('pluginPage.configSave')}
                                   </button>
-                                  <Link className="btn btn-sm" to="/plugins?plugin=cursor">
+                                  <Link className="btn btn-sm" to="/plugins?plugin=cursor-gateway">
                                     {t('clients.cursorAdvancedSettings')}
                                   </Link>
                                 </div>
@@ -1411,8 +1411,8 @@ export const ClientsPage: React.FC = () => {
                             );
                           })()
                         ) : (
-                          <Link className="btn btn-sm" to={cursorPlugin?.installed ? '/plugins?plugin=cursor' : '/plugins'}>
-                            {cursorPlugin?.installed ? t('clients.cursorConfigureModels') : t('clients.cursorInstallPlugin')}
+                          <Link className="btn btn-sm" to={cursorGatewayPlugin?.installed ? '/plugins?plugin=cursor-gateway' : '/plugins'}>
+                            {cursorGatewayPlugin?.installed ? t('clients.cursorConfigureModels') : t('clients.cursorInstallPlugin')}
                           </Link>
                         )}
                       </div>
