@@ -1449,6 +1449,7 @@ hiddenBadge: string;
 
   captures: {
     title: string;
+    loadFailed: string;
     refresh: string;
     dir: string;
     retention: string;
@@ -2031,10 +2032,15 @@ hiddenBadge: string;
     proxyErrServiceStart: string;
     proxyErrNotActive: string;
     proxyTeardownOk: string;
+    proxySetupOk: string;
     cursorHint: string;
     cursorErrForwardProxyDisabled: string;
     cursorErrCaMissing: string;
     cursorErrNotFound: string;
+    cursorSetupOk: string;
+    cursorTeardownOk: string;
+    cursorErrNotActive: string;
+    cursorErrRemoveFailed: string;
     cursorModels: string;
     cursorModelsInfo: string;
     cursorReplace: string;
@@ -2143,7 +2149,6 @@ hiddenBadge: string;
     /** Switch-OFF explanatory line. */
     profileRowsOffHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
-    otherTitle: string;
     tabHook: string;
     tabProxy: string;
     tabManual: string;

@@ -30,7 +30,7 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
 const supportsExtraModels = (name: string): boolean =>
   name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw';
 
-/** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
+/** Backend machine reasonCodes (ClientActionResult) → i18n keys (per-adapter failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
   forwardProxyDisabled: 'clients.proxyErrForwardProxyDisabled',
   forwardProxyCaMissing: 'clients.proxyErrCaMissing',
@@ -41,6 +41,8 @@ const CLIENT_REASON_KEY: Record<string, string> = {
   forward_proxy_disabled: 'clients.cursorErrForwardProxyDisabled',
   forward_proxy_ca_missing: 'clients.cursorErrCaMissing',
   cursor_not_found: 'clients.cursorErrNotFound',
+  not_active: 'clients.cursorErrNotActive',
+  remove_failed: 'clients.cursorErrRemoveFailed',
 };
 
 type TFn = (key: string, params?: Record<string, string | number>) => string;
@@ -639,11 +641,14 @@ export const ClientsPage: React.FC = () => {
         profile: piPayload.profile,
         ...agentPayload,
       } : undefined);
-      // Proxy-mode notices are backend prose — show the localized hint/teardown copy instead.
+      // Proxy-mode notices are backend prose — show a localized one-liner instead
+      // (the long hints live in the expanded card).
       setActionNotice(
         clientName === 'opencode-proxy'
-          ? t(action === 'setup' ? 'clients.proxyHint' : 'clients.proxyTeardownOk')
-          : (res.message || 'Updated')
+          ? t(action === 'setup' ? 'clients.proxySetupOk' : 'clients.proxyTeardownOk')
+          : clientName === 'cursor'
+            ? t(action === 'setup' ? 'clients.cursorSetupOk' : 'clients.cursorTeardownOk')
+            : (res.message || 'Updated')
       );
       if (action === 'setup') {
         // Write-through: the memory mirrors the drafts this setup just
