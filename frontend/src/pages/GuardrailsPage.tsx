@@ -39,6 +39,16 @@ const SCOPE_LABEL_KEY: Record<BreakerTripScope, string> = {
   pair: 'guardrails.scopePair',
 };
 
+/** Header stat pill: `.badge` with the EN-oriented casing/spacing reset — these
+    carry localized sentences ("Models 7 · pairs 19"), not single state words. */
+const STAT_BADGE: React.CSSProperties = {
+  textTransform: 'none',
+  letterSpacing: 'normal',
+  fontSize: 'var(--text-2xs)',
+  borderColor: 'var(--card-border)',
+  whiteSpace: 'nowrap',
+};
+
 export const GuardrailsPage: React.FC = () => {
   const { status, refreshStatus } = useOutletContext<{
     status: GatewayStatusResponse | null;
@@ -757,52 +767,44 @@ export const GuardrailsPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
-      {/* Top Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
-        <div className="card">
-          <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.totalBreakers')}</div>
-          {/* Same truth as the grid: the roster-driven model × credential
-              tuples. The backend pair count only covers MATERIALIZED tuple
-              breakers (lazy — created on first failure/action), so it would
-              under-report and disagree with the cards below. */}
-          <div style={{ fontSize: 'var(--text-5xl)', fontWeight: 'var(--font-extrabold)' }}>{allItems.length}</div>
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {t('guardrails.pairSplit', { m: totalBreakers, p: allItems.length })}
-          </div>
-        </div>
-
-        <div className="card">
-          <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.openBreakers')}</div>
-          {/* SAME filter as the 熔断中 tab below (effectiveState): tuple truth
-              plus operator takedowns. The model layer is a DERIVED fold of the
-              same tuples — adding `openCount` counted one model-scope trip
-              twice (once per model fold, once per tuple). */}
-          <div style={{ fontSize: 'var(--text-5xl)', fontWeight: 'var(--font-extrabold)', color: openCards > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
-            {openCards}
-          </div>
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {openCards > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}
-          </div>
-          {pairOpen > 0 && (
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)', marginTop: '2px' }}>
-              {t('guardrails.pairTrippedSub', { n: pairOpen })}
-            </div>
-          )}
-          {halfOpenCards > 0 && (
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', marginTop: '2px' }}>
-              {t('guardrails.stateHalfOpen')}: {halfOpenCards}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Circuit Breaker Matrix — observation only; rule editing lives on /breaker-rules. */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {/* Circuit Breaker Matrix — observation only; rule editing lives on /breaker-rules.
+          The roster counts ride in this card's header: the old two-card KPI strip cost
+          ~120px of viewport plus a 24px gap and only restated these numbers one screen
+          above the tiles it summarized. */}
       <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <div className="card-header">
-          <div className="card-title">
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: 10 }}>
+          <div className="card-title" style={{ flexWrap: 'wrap' }}>
             <ShieldAlert size={18} color="var(--accent-rose)" />
             <span>{t('guardrails.title')}</span>
+            {/* Same truth as the grid: the roster-driven model × credential
+                tuples. The backend pair count only covers MATERIALIZED tuple
+                breakers (lazy — created on first failure/action), so it would
+                under-report and disagree with the tiles below. */}
+            <span className="badge" style={{ ...STAT_BADGE, color: 'var(--text-muted)' }} title={t('guardrails.totalBreakers')}>
+              {t('guardrails.pairSplit', { m: totalBreakers, p: allItems.length })}
+            </span>
+            {/* SAME filter as the 熔断中 tab below (effectiveState): tuple truth
+                plus operator takedowns. The model layer is a DERIVED fold of the
+                same tuples — adding `openCount` counted one model-scope trip
+                twice (once per model fold, once per tuple). */}
+            <span
+              className="badge"
+              style={{ ...STAT_BADGE, color: openCards > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}
+              title={`${t('guardrails.openBreakers')}\n${openCards > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}`}
+            >
+              {t('guardrails.stateTripped')} {openCards}
+            </span>
+            {halfOpenCards > 0 && (
+              <span className="badge" style={{ ...STAT_BADGE, color: 'var(--accent-amber)' }} title={t('guardrails.stateHalfOpen')}>
+                {t('guardrails.stateHalfOpen')} {halfOpenCards}
+              </span>
+            )}
+            {pairOpen > 0 && (
+              <span className="badge" style={{ ...STAT_BADGE, color: 'var(--accent-rose)' }}>
+                {t('guardrails.pairTrippedSub', { n: pairOpen })}
+              </span>
+            )}
           </div>
           <div style={{ display: 'flex', gap: '10px' }}>
             <Link
