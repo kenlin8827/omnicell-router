@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy } from 'lucide-react';
+import { RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy, PowerOff } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
@@ -463,6 +463,12 @@ export const ModelsPage: React.FC = () => {
                       {m.temperature && <span style={badgeStyle('var(--hue-orange)', 'var(--hue-orange-soft)')}><Thermometer size={10} />{t('models.badgeTemperature')}</span>}
                       {!hasCapability(m) && <span style={{ color: 'var(--text-dim)' }}>—</span>}
                       {m.disabled === true && <span style={badgeStyle('var(--text-dim)', 'var(--chip-bg)')}>{t('models.hiddenBadge')}</span>}
+                      {m.providerDisabled === true && (
+                        <span style={badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)')} title={t('op.providerDisabledBadge')}>
+                          <PowerOff size={10} />
+                          {t('op.providerDisabledBadge')}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td style={tdStyle}>

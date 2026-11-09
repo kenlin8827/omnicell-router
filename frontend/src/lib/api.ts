@@ -4323,6 +4323,8 @@ export interface OpenCodeModelView {
   maintained: boolean;
   /** hidden from client-facing catalogs — kept on console pages, out of the pool */
   disabled?: boolean;
+  /** provider-level operator takedown: listed (aggregate) but not routable */
+  providerDisabled?: boolean;
   source: string;
 }
 

@@ -916,6 +916,21 @@ async function purgeProviderCredentials(store: CredentialStore, id: string): Pro
 }
 
 /**
+ * Provider takedown lifecycle terminus: once NOTHING remains for the id (no
+ * defs node, no credential), drop the ledger row — a later connect reuses the
+ * id enabled. A partial state (either side still present) keeps the takedown.
+ */
+function dropTakedownWhenProviderGone(providerId: string, store: CredentialStore): void {
+  try {
+    if (!getProviderNodeById(providerId) && store.listCredentials(providerId).length === 0) {
+      getProviderTakedownStore().enable(providerId);
+    }
+  } catch {
+    // unreadable store: keep the takedown (safer than a silent re-enable)
+  }
+}
+
+/**
  * P1-3 outcome flip: whenever the purge ATTEMPTED credentials but did not
  * remove them all, the response must NOT claim success. HTTP stays 200 (the
  * flip is additive: {status:'ok', success:boolean, message, purge} — the
@@ -3187,6 +3202,7 @@ export function registerConsoleRoutes(
       // Raw file read once — the aggregate is already built from the normalized
       // view, so a retired-shape node here contributes no rows anyway.
       const rawNodes = readProviderDefsFile()?.providers ?? {};
+      const takedowns = getProviderTakedownStore();
       const nodeModels = (pid: string): Record<string, unknown> => {
         const node = rawNodes[pid];
         const models = node && typeof node === 'object' ? (node as any).models : undefined;
@@ -3209,6 +3225,9 @@ export function registerConsoleRoutes(
               logo: p.logo,
               custom: p.custom,
               connected: p.connected,
+              // Provider-level takedown: the row stays on the maintenance page
+              // (aggregate truth), but the badge says it cannot route.
+              providerDisabled: takedowns.isDisabled(p.id),
               maintained: Object.prototype.hasOwnProperty.call(defs, m.id),
             }))
             .filter((m) => !maintainedOnly || m.maintained);
@@ -3820,6 +3839,7 @@ export function registerConsoleRoutes(
           // Decision 8 double confirmation is enforced by the console UI
           // (purgeAuth opt-in) — server-side the loop reports honestly.
           const purge = purgeAuth ? await purgeProviderCredentials(store, id) : null;
+          dropTakedownWhenProviderGone(id, store);
           const outcome = purge ? purgeOutcomeMessage(purge, id, true) : null;
           // Clean purge (or no purge requested): legacy response bytes kept.
           // defRemoved is the runtime truth — the console success toast follows
@@ -3832,6 +3852,7 @@ export function registerConsoleRoutes(
         // Credential-only entry: provider-wide disconnect = the UI-level
         // credential loop (Decision 1), never a direct upstream-file edit.
         const purge = await purgeProviderCredentials(store, id);
+        dropTakedownWhenProviderGone(id, store);
         return { status: 'ok', defRemoved: false, ...purgeOutcomeMessage(purge, id, false), purge };
       } catch (err: any) {
         const failure = await mapStoreWriteFailure(err);
@@ -4321,6 +4342,9 @@ export function registerConsoleRoutes(
         store.invalidate();
         await refreshProviderCredentialChain(registry, store, id); // removed key must leave the live chain
         clearSuspectForCredential(registry.getCircuitBreakerManager(), id, prefix);
+        // The last credential of a def-less provider removes the row entirely;
+        // a takedown must not outlive the thing it targeted.
+        dropTakedownWhenProviderGone(id, store);
         // DELETE is a REVOCATION, so it must be as durable as a takedown: anchor
         // the key MATERIAL as disabled. Otherwise the read sync would re-import
         // the key from the client as a clean, routable credential — the delete

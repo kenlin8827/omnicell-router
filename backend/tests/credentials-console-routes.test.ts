@@ -1181,6 +1181,14 @@ describe('POST .../providers/:id/{disable,enable} — provider-level operator ta
     const p = credPaths();
     seedOcr(p, { anthropic: [{ id: 'c-live', key: 'sk-tk-live' }] });
     bindStore(p);
+    catalogRecs = [
+      { id: 'anthropic', name: 'Anthropic', custom: false, connected: true, models: [{ id: 'claude-x', name: 'Claude X', source: 'opencode' }] },
+    ];
+    const modelRows = async () =>
+      (await app.inject({ method: 'GET', url: '/api/admin/opencode/models?provider=anthropic' }))
+        .json()
+        .models as { id: string; providerDisabled: boolean }[];
+    expect((await modelRows()).every((m) => m.providerDisabled === false)).toBe(true);
 
     const off = await app.inject({ method: 'POST', url: step('anthropic', 'disable'), payload: { reason: 'plan expired' } });
     expect(off.statusCode).toBe(200);
@@ -1194,6 +1202,7 @@ describe('POST .../providers/:id/{disable,enable} — provider-level operator ta
     expect(readJsoncProviders(p).anthropic).toBeDefined();
     expect(readJsoncProviders(p).anthropic.disabled).toBeUndefined();
     expect(readOcrFile(p).providers.anthropic).toHaveLength(1);
+    expect((await modelRows()).every((m) => m.providerDisabled === true)).toBe(true);
 
     // The connected grid keeps the card (restorable) and reports the state.
     let row = await providerRow('anthropic');
@@ -1209,6 +1218,9 @@ describe('POST .../providers/:id/{disable,enable} — provider-level operator ta
     expect(row.disabledReason).toBeUndefined();
     // Enable lifts the takedown only: the credential row was never touched.
     expect(readOcrFile(p).providers.anthropic).toHaveLength(1);
+    // The maintenance page keeps the row but marks it non-routable, and the
+    // marker clears with enable — aggregate visibility ≠ routing availability.
+    expect((await modelRows()).every((m) => m.providerDisabled === false)).toBe(true);
   });
 
   it('404 unknown provider / 400 invalid id (and no ledger row is written)', async () => {
@@ -1223,6 +1235,20 @@ describe('POST .../providers/:id/{disable,enable} — provider-level operator ta
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json().reasonCode).toBe('invalid_provider_id');
     expect(fs.existsSync(path.join(p.ocrHome, 'disabled-providers.json'))).toBe(false);
+  });
+
+  it('deleting the last trace clears the ledger row (a later reconnect starts enabled)', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-live', key: 'sk-tk-live' }] });
+    bindStore(p);
+    await app.inject({ method: 'POST', url: step('anthropic', 'disable'), payload: { reason: 'parked' } });
+
+    const del = await app.inject({ method: 'DELETE', url: '/api/admin/opencode/providers/anthropic?purgeAuth=1' });
+    expect(del.statusCode).toBe(200);
+    expect(readOcrFile(p)?.providers?.anthropic ?? []).toHaveLength(0);
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(p.ocrHome, 'disabled-providers.json'), 'utf8'));
+    expect(ledger.providers.anthropic).toBeUndefined();
   });
 });
 

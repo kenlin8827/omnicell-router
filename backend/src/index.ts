@@ -21,7 +21,7 @@ import { openFailureEventStore, getFailureEventLog } from './observability/failu
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
 import { getQuotaStore } from './quota/store.js';
 import { keyHashPrefix, type CredentialStore } from './opencode/credentials/types.js';
-import { getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
+import { expandEnvTemplate, getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
@@ -57,6 +57,17 @@ function providerDefBaseUrl(providerId: string): string | undefined {
   const def = getProviderNodeById(providerId);
   const base = def?.options?.baseURL ?? def?.settings?.baseURL;
   return typeof base === 'string' && base.length > 0 ? base : undefined;
+}
+
+/**
+ * Provider-defs inference key, same fallback rationale as the baseURL above:
+ * a taken-down (or model-less) provider has no registry config, but its defs
+ * node may still carry the inline key that quota probing activates on.
+ */
+function providerDefApiKey(providerId: string): string | undefined {
+  const def = getProviderNodeById(providerId);
+  const key = expandEnvTemplate(def?.options?.apiKey ?? def?.settings?.apiKey);
+  return typeof key === 'string' && key.length > 0 ? key : undefined;
 }
 
 /**
@@ -349,7 +360,7 @@ async function main() {
     const quotaProber = new QuotaProber({
       registry: {
         getCredentialChain: (name) => registry.getCredentialChain(name),
-        getProviderApiKey: (name) => registry.getProviderConfig(name)?.apiKey,
+        getProviderApiKey: (name) => registry.getProviderConfig(name)?.apiKey ?? providerDefApiKey(name),
         // L-d origin containment anchor: a model-less provider has no registry
         // config, so fall back to its provider-defs node (the single def truth).
         getProviderBaseUrl: (name) => registry.getProviderConfig(name)?.baseUrl ?? providerDefBaseUrl(name),
