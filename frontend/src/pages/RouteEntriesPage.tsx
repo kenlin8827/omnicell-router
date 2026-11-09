@@ -8,6 +8,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * Route-entry experience table (ADR-0011) — every prompt the gateway has
  * learned to route. Human edits land as immutable `human` rows (confidence
@@ -109,12 +110,9 @@ export const RouteEntriesPage: React.FC = () => {
   // when the row has no snippet (snippet capture off at write time).
   const handleCopyPrompt = async (row: RouteEntryRow) => {
     if (!row.snippet) return;
-    try {
-      await navigator.clipboard.writeText(row.snippet);
-      toast.success(t('routeEntries.copyPromptOk'));
-    } catch (err: any) {
-      toast.error(t('routeEntries.copyPromptFailed') + ' ' + (err?.message || err));
-    }
+    const ok = await copyToClipboard(row.snippet);
+    if (ok) toast.success(t('routeEntries.copyPromptOk'));
+    else toast.error(t('routeEntries.copyPromptFailed'));
   };
 
   // Editor option labels: the wire identifier stays the anchor (it is the

@@ -19,6 +19,7 @@ import { useToast } from './ToastProvider';
 import { Combobox } from './Combobox';
 import { QuotaPeek } from './QuotaPeek';
 import { CommandPalette, type CommandItem } from './CommandPalette';
+import { copyToClipboard } from '../lib/clipboard';
 
 interface NavItemDef {
   to: string;
@@ -217,9 +218,8 @@ export const Layout: React.FC = () => {
   const copyGatewayUrl = () => {
     if (!status) return;
     const url = gatewayBaseUrl(status.port);
-    navigator.clipboard.writeText(url)
-      .then(() => toast.success(t('nav.footerUrlCopied')))
-      .catch(() => toast.error(t('common.failed') + url));
+    void copyToClipboard(url)
+      .then((ok) => (ok ? toast.success(t('nav.footerUrlCopied')) : toast.error(t('common.failed') + url)));
   };
 
   const handleRestartGateway = async () => {

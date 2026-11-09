@@ -2,7 +2,8 @@
 import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop, getRunningPid, getDaemonInfo } from './daemon.js';
 import { setupClient, teardownClient } from './clients/index.js';
 import { defaultGatewayPort } from './clients/base.js';
-import { registerGlobalShims } from './shim.js';
+import { runCursorLauncher } from './clients/cursor.js';
+import { registerGlobalShims, unregisterGlobalShims } from './shim.js';
 import { CliAction, SupportedClient } from './types.js';
 import { APP_VERSION } from '../version.js';
 import {
@@ -58,6 +59,10 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.magenta}ocr setup codex${C.reset}         Hook Codex / OpenAI-compatible CLI to local OCR gateway
   ${C.magenta}ocr setup pi${C.reset}            Hook Pi coding agent (models.json provider) to local OCR gateway
   ${C.magenta}ocr setup dsh${C.reset}           Hook DeepSeek Harness (web profile patch) to local OCR gateway
+  ${C.magenta}ocr setup cursor${C.reset}        Hook Cursor through the OCR forward proxy (writes the launchers)
+
+  ${C.magenta}ocr cursor${C.reset} [args]        Launch Cursor through the OCR launcher (run setup first)
+  ${C.magenta}ocr cursor-agent${C.reset} [args]  Launch the cursor-agent CLI through the OCR launcher
 
   ${C.yellow}ocr teardown opencode${C.reset}   Unhook OpenCode and restore original configuration
   ${C.yellow}ocr teardown opencode-proxy${C.reset} Unhook OpenCode proxy mode and restore service env
@@ -65,6 +70,9 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown codex${C.reset}      Unhook Codex and restore standard settings
   ${C.yellow}ocr teardown pi${C.reset}         Unhook Pi and remove the OCR provider entry
   ${C.yellow}ocr teardown dsh${C.reset}        Unhook DeepSeek Harness and remove the OCR provider route
+  ${C.yellow}ocr teardown cursor${C.reset}     Unhook Cursor and remove the OCR launchers
+
+
 
 ${C.bold}ENVIRONMENTS (book-sets under ~/.omnicell-router/envs/):${C.reset}
   ${C.cyan}ocr env list${C.reset}                List environments (current = next boot picks)
@@ -74,6 +82,7 @@ ${C.bold}ENVIRONMENTS (book-sets under ~/.omnicell-router/envs/):${C.reset}
 
 ${C.bold}SYSTEM COMMANDS:${C.reset}
   ocr install-shims       Register global \`ocr\` and \`omnicell-router\` commands to PATH
+  ocr uninstall-shims     Remove the shims THIS install wrote (marker-checked)
   ocr --version, -v       Show current OCR version
   ocr --help, -h          Display this help manual
 `);
@@ -98,6 +107,26 @@ async function handleStatus(): Promise<void> {
   } else {
     console.log(`  ○ Gateway Status : ${C.red}${C.bold}STOPPED${C.reset} (Run ${C.cyan}'ocr start'${C.reset} to activate)`);
     console.log(`  ○ Target Port    : ${defaultGatewayPort()} (config.yaml)`);
+  }
+
+  // Last controlled handover verdict. A failed restart leaves NO serving
+  // gateway to report through HTTP, so this file is where the operator finds
+  // out why nothing came back.
+  const last = st.lastRestart;
+  if (last && last.status !== 'ok') {
+    const when = last.finishedAt ? ` at ${last.finishedAt}` : '';
+    if (last.status === 'failed') {
+      console.log(
+        `\n  ${C.red}⚠ Last restart FAILED${C.reset}${when}${last.error ? ` — ${last.error}` : ''}` +
+          `\n    ${C.dim}${last.logFile}${C.reset}` +
+          `\n    ${C.dim}Retry with ${C.reset}${C.cyan}'ocr start'${C.reset}`
+      );
+    } else {
+      console.log(
+        `\n  ${C.yellow}⚠ Last start UNVERIFIED${C.reset}${when} — the process was alive but never answered /health` +
+          `\n    ${C.dim}It may still be initializing; check ${last.logFile}${C.reset}`
+      );
+    }
   }
 
   console.log(`\n${C.bold}Client Integration Status:${C.reset}`);
@@ -204,12 +233,55 @@ async function handleEnvCommand(args: string[]): Promise<void> {
     default:
       console.error(`${C.red}✗ Unknown env subcommand: '${sub}'${C.reset}  (list | use | create | reset)`);
       process.exit(2);
+
   }
 }
 
+/**
+ * Flags a caller may send through a passthrough verb to ask the TARGET for
+ * information; used to explain a silent detach instead of exiting 0 with no
+ * output (see `handleCursorLaunch`).
+ */
+const TARGET_INFO_FLAGS = new Set(['-h', '--help', 'help', '-v', '-V', '--version', 'version']);
+
+/**
+ * `ocr cursor` / `ocr cursor-agent` are PASSTHROUGH verbs: every remaining
+ * argument belongs to the target tool (`--help` and `--version` included), so
+ * they are dispatched before OCR's own flag parsing.
+ */
+async function handleCursorLaunch(action: 'cursor' | 'cursor-agent', argv: string[]): Promise<void> {
+  const res = await runCursorLauncher(action === 'cursor' ? 'ide' : 'agent', argv);
+  if (!res.ok) {
+    if (res.message) console.error(`${C.red}✗ ${res.message}${C.reset}`);
+    process.exitCode = res.code || 1;
+    return;
+  }
+  // The win32/darwin IDE launcher detaches Cursor on purpose, so the target's
+  // own stdio and exit code never come back. Say so instead of exiting 0 in
+  // silence when the caller asked the target for help/version output.
+  if (res.detached && argv.some(a => TARGET_INFO_FLAGS.has(a))) {
+    console.error(
+      `${C.dim}\`ocr ${action}\` starts the target detached on ${process.platform}, so its --help/--version output and exit code belong to the app it launches.${C.reset}`
+    );
+  }
+  // exitCode, not process.exit: a piped stdout/stderr must be flushed first.
+  process.exitCode = res.code;
+}
+
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  // `--cli` is the dual-entry marker the packaged `ocr-backend` binary PREPENDS
+  // before handing control here (the desktop bundle has no bun/node to
+  // trampoline). Only that leading occurrence is the marker: a passthrough verb
+  // owns every argument after it, `--cli` included.
+  const raw = process.argv.slice(2);
+  const args = raw[0] === '--cli' ? raw.slice(1) : raw;
   const action = (args[0] || 'status').toLowerCase() as CliAction;
+  // Passthrough verbs own their remaining flags (`--help`/`--version` mean the
+  // TARGET tool's help/version), so they never enter OCR's own flag parsing.
+  if (action === 'cursor' || action === 'cursor-agent') {
+    await handleCursorLaunch(action, args.slice(1));
+    return;
+  }
 
   if (args.includes('--help') || args.includes('-h') || action === 'help') {
     printHelp();
@@ -351,6 +423,21 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'uninstall-shims': {
+      printBanner();
+      const res = unregisterGlobalShims();
+      if (res.removed.length === 0) {
+        console.log(`${C.dim}No matching shims in ${res.binDir}.${C.reset}`);
+      } else {
+        for (const file of res.removed) console.log(`${C.green}✔ removed${C.reset} ${file}`);
+        // The PATH entry install-shims appended is deliberately NOT reverted
+        // (rc files and the Windows user PATH are operator-owned); say so
+        // instead of leaving a dangling directory silently behind.
+        console.log(`${C.dim}PATH entries added by install-shims stay in place — remove ${res.binDir} from PATH if you no longer need it.${C.reset}`);
+      }
+      break;
+    }
+
     default: {
       console.error(`${C.red}✗ Unknown command: '${action}'${C.reset}`);
       console.error(`  Run \`ocr --help\` to see supported commands.`);
@@ -359,7 +446,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
+/**
+ * The module starts the CLI itself (direct `bun backend/src/cli/index.ts` use)
+ * and exports the settled promise so the dual-entry `index.ts` can await it
+ * before deciding to boot the gateway.
+ */
+export const cliReady: Promise<void> = main().catch((err) => {
   console.error(`[OCR Fatal Error] ${err.message}`);
   process.exit(1);
 });

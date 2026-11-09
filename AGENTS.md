@@ -21,6 +21,7 @@ Source comments (`//`, `/* */`, JSDoc), identifiers, log messages: English only.
 - `frontend/src/i18n/locales/zh-CN.ts` (translation table), `docs/adr/zh-CN/**` / `*.zh-CN.md` mirrors. The English doc tree (`docs/adr/*.md`, `docs/design/*.md`, `docs/reviews/*.md`, `README.md`, `DEVELOPMENT.md`) is English-only, including comments inside fenced code blocks — quoted product strings (e.g. `YAML_FIELD_COMMENTS` values) get an English gloss in docs; the CJK originals live only in their sanctioned source files.
 - `backend/src/config/comments-zh.ts` `YAML_FIELD_COMMENTS_ZH` / `YAML_FILE_HEADER_ZH` (the zh-CN config comment dictionaries; ADR-0016: never written into the user's `config.yaml` — the console renders them dynamically; the en counterpart is `comments-en.ts`, English-only).
 - `backend/src/compression/caveman-prompts.ts` (the Chinese prompts are the feature).
+- `desktop/src-tauri/src/i18n.rs` (the native tray menu label table — the Rust shell builds it before any console document exists, so it cannot use the React tables; it follows the OS locale with the same eight languages, English fallback).
 - Copy-paste console snippets (e.g. cURL samples in `pages/ApiKeysPage.tsx`) and test fixture strings.
 
 **User-facing UI text is never hardcoded** — it must go through `t('i18n.key')`. A hardcoded Chinese string in a `.tsx` is a bug; fix it.

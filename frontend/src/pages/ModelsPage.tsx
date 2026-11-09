@@ -10,7 +10,8 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { ScrollTable } from '../components/ScrollTable';
 import { Chip } from '../components/Chip';
-import { fmtLatency, copyToClipboard } from '../lib/format';
+import { fmtLatency } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 
 import { FONT_MONO } from '../lib/fonts';
 type SortKey = 'default' | 'priceAsc' | 'priceDesc' | 'contextDesc' | 'name';

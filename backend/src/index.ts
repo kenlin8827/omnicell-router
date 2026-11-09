@@ -10,7 +10,7 @@ import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
-import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
+import { isRestartSupervisorProcess, runRestartSupervisor, takeRestartSelfRegisterFlag, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
 import { openRateLimitWindowStore } from './ratelimit/window-store.js';
@@ -32,6 +32,21 @@ import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
 import { wireFor } from './providers/wire.js';
 import { getModelServicePluginEntry } from './plugins/host.js';
 import type { QuotaCodeAdapter } from './quota/types.js';
+
+// Dual entry — the desktop bundle compiles THIS file into `ocr-backend`; the
+// `--cli` flag turns the same binary into the `ocr` command surface (a packaged
+// install has no bun/node to trampoline into, and no repo checkout to point at).
+// The import must stay conditional: `cli/index.ts` runs `main()` at module
+// scope, so a static import would parse argv and exit on every gateway boot.
+// Placed ahead of the gateway body so a CLI invocation never boots the server.
+// `cliMode` also gates the bottom-of-file `main()` call: setting `process.exitCode`
+// and letting the process drain is what keeps a piped `ocr status | head` from
+// losing its output (`process.exit` does not wait for stdout to flush).
+const cliMode = process.argv.includes('--cli');
+if (cliMode) {
+  const { cliReady } = await import('./cli/index.js');
+  await cliReady;
+}
 
 /**
  * Provider-defs inference baseURL (the single def truth) for ids the registry
@@ -65,9 +80,18 @@ function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined
 }
 
 async function main() {
-  // If this process was spawned by the UI "Restart Gateway" button, wait for
-  // the old gateway to die (and take over) before booting further.
-  const isRestartChild = await adoptRestartParent();
+  // Detached restart-supervisor mode (console "Restart Gateway" / environment
+  // switch): the caller has already exited, so THIS process owns the handover
+  // — wait for the old gateway, spawn the replacement, verify /health with
+  // retries, record the verdict, exit. No gateway services are initialized.
+  if (isRestartSupervisorProcess()) {
+    process.exit(await runRestartSupervisor());
+  }
+
+  // Gateway child spawned by that supervisor: self-register the pid/info
+  // files once listening (the old process already exited; nobody else owns
+  // those files at that point).
+  const isRestartChild = takeRestartSelfRegisterFlag();
 
   // Active environment (book-set) — resolve FIRST: an unknown OCR_ENV /
   // dangling pointer crashes the boot here with a clear message (fail-fast,
@@ -361,8 +385,9 @@ async function main() {
 
   try {
     await app.listen({ port: config.port, host: config.host });
-    // A UI-restart child must self-register: the pid/info files still point at
-    // the old (now-exiting) gateway, and nobody else rewrites them.
+    // A supervisor-spawned gateway must self-register: the pid/info files
+    // still point at the old (now-exiting) gateway, and nobody else rewrites
+    // them.
     if (isRestartChild) writeDaemonFiles(process.pid, config.port, config.host);
     console.log('\n============================================================');
     console.log(`🚀 OCR Gateway (OmniCellRouter) is ready! (OpenAI API Compatible)`);
@@ -444,4 +469,4 @@ async function main() {
   });
 }
 
-main();
+if (!cliMode) main();

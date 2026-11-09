@@ -76,6 +76,16 @@ curl -fsSL https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/ins
 * **macOS (Apple Silicon)**: `OmniCellRouter_0.0.1_aarch64.dmg`
 * **macOS (Intel)**: `OmniCellRouter_0.0.1_x64.dmg`
 
+桌面版常驻系统托盘（菜单跟随系统语言）。右键托盘图标可开关「关闭时驻留托盘」
+（点 X 后网关继续运行）与「随系统启动」：开机自启时网关在托盘静默启动，不会弹出
+控制台窗口；需要时从「打开控制台」打开即可。
+
+桌面安装包会在首次可见启动时**询问**是否注册 `ocr` / `omnicell-router` 命令：
+打包的网关二进制支持 `--cli`，因此只有桌面版的机器无需 bun、node 或源码仓库也能用
+完整 CLI。拒绝会被记住；之后可从托盘菜单「安装 ocr 命令」补装，`ocr uninstall-shims`
+可移除。装出的 shim 会带上应用自己的数据根（`OCR_HOME`），所以 `ocr status` /
+`ocr stop` 指向的就是桌面壳正在运行的那个网关，而不是另一份 CLI 默认目录。
+
 ---
 
 ## 命令行 CLI 使用指南
@@ -97,6 +107,11 @@ ocr setup codex         # 将 Codex / OpenAI CLI 接入 OCR
 ocr setup pi            # 将 Pi 接入 OCR
 ocr setup kimi          # 将 Kimi CLI 接入 OCR
 ocr setup openclaw      # 将 OpenClaw 接入 OCR
+ocr setup cursor        # 通过 OCR 前置代理 + cursor 插件接入 Cursor
+
+# 通过 OCR 托管的启动脚本运行（setup 之后）
+ocr cursor              # 以代理环境启动 Cursor IDE
+ocr cursor-agent        # 以代理环境运行 cursor-agent CLI
 
 # 卸载客户端代理挂载
 ocr teardown opencode   # 恢复 OpenCode 直连

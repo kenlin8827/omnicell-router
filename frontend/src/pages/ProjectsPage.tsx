@@ -15,7 +15,7 @@ import { api, type ProjectItem } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
-import { copyToClipboard } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { FONT_MONO } from '../lib/fonts';
 
 export const ProjectsPage: React.FC = () => {

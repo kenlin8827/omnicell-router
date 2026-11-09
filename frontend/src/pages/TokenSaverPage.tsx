@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Zap, Save, Check, Copy, Loader2 } from 'lucide-react';
 import { api, HeadroomSidecarStatus } from '../lib/api';
-import { copyToClipboard } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';

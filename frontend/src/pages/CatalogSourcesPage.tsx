@@ -28,6 +28,7 @@ import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/e
 import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * /catalog — remote catalog source management: view sync state (origin +
  * last-sync time), manually add sources, toggle, delete and force-refresh.
@@ -362,12 +363,12 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
 
   const copyJson = async () => {
     if (!jsonText) return;
-    try {
-      await navigator.clipboard.writeText(jsonText.full);
-      toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
-    } catch (err: any) {
-      toast.error('Copy failed: ' + err.message);
+    const ok = await copyToClipboard(jsonText.full);
+    if (!ok) {
+      toast.error(t('common.failed'));
+      return;
     }
+    toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
   };
 
   const isProviderSource = (data?.providers?.length ?? 0) > 0;
@@ -688,12 +689,12 @@ const OcrCatalogPanel: React.FC = () => {
 
   const copyJson = async () => {
     if (!jsonText) return;
-    try {
-      await navigator.clipboard.writeText(jsonText.full);
-      toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
-    } catch (err: any) {
-      toast.error('Copy failed: ' + err.message);
+    const ok = await copyToClipboard(jsonText.full);
+    if (!ok) {
+      toast.error(t('common.failed'));
+      return;
     }
+    toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
   };
   const truncated = providers.length > MAX_RENDER;
   const flatTruncated = flatRows.length > MAX_RENDER;

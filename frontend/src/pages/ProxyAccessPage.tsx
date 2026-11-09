@@ -13,7 +13,7 @@ import { Drawer } from '../components/Drawer';
 import { Prose, proseIsLong } from '../components/Prose';
 import { applicableDecoders, decoderLabel, hexDumpToBytes, type DecoderContext, type SideDecoder } from '../lib/sideDecoders';
 import { modelRefBadge } from '../lib/modelRefBadge';
-import { copyToClipboard } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { sortModelOptions } from '../lib/model-options';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
 
@@ -509,12 +509,8 @@ const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
   };
 
   const copy = async (text: string, okMsg: string): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success(okMsg);
-    } catch {
-      toast.error(t('proxyLog.copyFailed'));
-    }
+    if (await copyToClipboard(text)) toast.success(okMsg);
+    else toast.error(t('proxyLog.copyFailed'));
   };
 
   const miniBtn: React.CSSProperties = {
@@ -1529,9 +1525,10 @@ const SystemProxyCard: React.FC = () => {
                 className="btn btn-sm"
                 style={{ alignSelf: 'flex-start', gap: '6px' }}
                 onClick={() => {
-                  navigator.clipboard.writeText(ENV_SNIPPETS(st.targetServer || `http://127.0.0.1:${DEFAULT_FORWARD_PROXY_PORT}`, st.caPath)[shell]).then(
-                    () => toast.success(t('proxyLog.sysCopied')),
-                    () => toast.error(t('proxyLog.sysCopyFailed')),
+                  void copyToClipboard(
+                    ENV_SNIPPETS(st.targetServer || `http://127.0.0.1:${DEFAULT_FORWARD_PROXY_PORT}`, st.caPath)[shell],
+                  ).then((ok) =>
+                    ok ? toast.success(t('proxyLog.sysCopied')) : toast.error(t('proxyLog.sysCopyFailed')),
                   );
                 }}
               >

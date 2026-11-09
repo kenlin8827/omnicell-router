@@ -19,6 +19,7 @@ import { failureCaption, quotaStateWord, quotaSyncFailed, type TFn } from '../li
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * Quota tracking overview — every CONNECTED (provider × credential) pair of a
  * covered provider with its tracked allowance. Coverage ships with the release,
@@ -510,12 +511,9 @@ export const QuotaPage: React.FC = () => {
                 style={{ display: 'flex', alignItems: 'center', gap: 5, height: 24, padding: '0 8px' }}
                 title={t('quotaPage.lastProbeCopy')}
                 onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(prettyBody(lastProbe.http!.body));
-                    toast.success(t('quotaPage.lastProbeCopied'));
-                  } catch {
-                    toast.error(t('quotaPage.lastProbeCopyFailed'));
-                  }
+                  const ok = await copyToClipboard(prettyBody(lastProbe.http!.body));
+                  if (ok) toast.success(t('quotaPage.lastProbeCopied'));
+                  else toast.error(t('quotaPage.lastProbeCopyFailed'));
                 }}
               >
                 <Copy size={11} />

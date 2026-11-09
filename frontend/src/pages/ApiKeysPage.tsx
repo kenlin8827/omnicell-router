@@ -36,6 +36,7 @@ import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Pagination } from '../components/Pagination';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 const KEY_PAGE_SIZE = 20;
 const KEY_PAGE_SIZES = [10, 20, 50, 100, 200];
 
@@ -409,9 +410,11 @@ export const ApiKeysPage: React.FC = () => {
   }, []);
 
   const handleCopy = (text: string, id: string) => {
-    // Non-secure contexts / denied permissions reject the clipboard promise —
-    // surface it instead of swallowing the rejection silently.
-    navigator.clipboard.writeText(text).catch(() => toast.error(t('common.failed')));
+    // A failed write (denied permission, unfocused document, sandboxed shell)
+    // must surface — this is the path that produced silent no-op copies.
+    void copyToClipboard(text).then((ok) => {
+      if (!ok) toast.error(t('common.failed'));
+    });
     // Single timer slot: a second click supersedes the first reset, so the
     // 2s green feedback of the LATEST click is never truncated by an earlier
     // timeout (id sub-line and secret button share this state).
@@ -1713,9 +1716,14 @@ curl ${gwBaseV1}/systemone \\
               <span>{createdKey.key}</span>
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText(createdKey.key);
-                  setNewKeyCopied(true);
-                  setTimeout(() => setNewKeyCopied(false), 2000);
+                  void copyToClipboard(createdKey.key).then((ok) => {
+                    if (!ok) {
+                      toast.error(t('common.failed'));
+                      return;
+                    }
+                    setNewKeyCopied(true);
+                    setTimeout(() => setNewKeyCopied(false), 2000);
+                  });
                 }}
                 className="btn btn-sm"
                 title={t('apiKeys.copyKeyTooltip')}

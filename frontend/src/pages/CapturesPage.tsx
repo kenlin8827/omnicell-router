@@ -23,7 +23,8 @@ import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { copyToClipboard, shortId, decodeRate, formatRate, fmtDur, fmtLatency } from '../lib/format';
+import { shortId, decodeRate, formatRate, fmtDur, fmtLatency } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
@@ -239,16 +240,10 @@ export function JsonBlock({ value }: { value: unknown }) {
       : text;
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(copyTarget);
-    } catch {
-      // Fallback for non-secure contexts (http://, older browsers).
-      const ta = document.createElement('textarea');
-      ta.value = copyTarget;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
+    const ok = await copyToClipboard(copyTarget);
+    if (!ok) {
+      toast.error(t('common.failed'));
+      return;
     }
     setCopied(true);
     toast.success(t('captures.copied'));
@@ -791,16 +786,10 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
   const curl = isResponse ? null : buildCurl(event);
   const copyCurl = async () => {
     if (!curl) return;
-    try {
-      await navigator.clipboard.writeText(curl);
-    } catch {
-      // Fallback for non-secure contexts (http://, older browsers).
-      const ta = document.createElement('textarea');
-      ta.value = curl;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
+    const ok = await copyToClipboard(curl);
+    if (!ok) {
+      toast.error(t('common.failed'));
+      return;
     }
     setCurlCopied(true);
     toast.success(t('chat.curlCopied'));

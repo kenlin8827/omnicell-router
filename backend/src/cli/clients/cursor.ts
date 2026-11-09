@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClientAdapter, ClientActionResult, probeClientVersion, resolveForwardProxyEndpoint, runCommand } from './base.js';
-import { ClientHookStatus } from '../types.js';
+import { spawn } from 'node:child_process';
+import { ClientAdapter, ClientActionResult, probeClientVersion, quoteWindowsArgs, resolveForwardProxyEndpoint, runCommand } from './base.js';
+import { ClientArtifact, ClientHookStatus } from '../types.js';
 import { getOcrHomeDir } from '../paths.js';
 import { getForwardProxyStatus } from '../../forward-proxy/status.js';
 import { CA_CN } from '../../forward-proxy/ca.js';
@@ -376,6 +377,14 @@ export class CursorClientAdapter implements ClientAdapter {
     // cache: an absent Cursor has no trust state worth three subprocesses.
     const caTrusted = installed && fp ? await probeCaTrustedCached(fp.caPath) : 'unknown';
 
+    // The CLI launcher is a second owned artifact: setup writes it only while
+    // `cursor-agent` is installed and removes it otherwise, so a file left from
+    // an earlier setup is shown too (stale, but the operator can still see it).
+    const agentLauncher = agentLauncherPath();
+    const agentLauncherExists = fs.existsSync(agentLauncher);
+    const artifacts: ClientArtifact[] | undefined =
+      detectAgentBinary() || agentLauncherExists ? [{ path: agentLauncher, exists: agentLauncherExists }] : undefined;
+
     let hooked = false;
     let details: string;
     if (!installed) {
@@ -386,7 +395,7 @@ export class CursorClientAdapter implements ClientAdapter {
       details = `Forward proxy enabled (port ${live.port ?? fp.port}${live.running ? ', running' : ', NOT running'}) — CA trust: ${caTrusted === true ? 'trusted' : caTrusted === false ? 'NOT trusted' : 'unknown'} — run setup to write the Cursor launcher`;
     } else {
       hooked = true;
-      details = `Cursor starts via the OCR launcher (${launcherPath()}) with --proxy-server=${fp.url}; quit Cursor fully before launching — an existing instance ignores a later launcher invocation; forward proxy ${live.running ? `running on port ${live.port ?? fp.port}` : 'NOT running (start the gateway)'}; CA trust: ${caTrusted === true ? 'trusted' : caTrusted === false ? 'NOT trusted — import <ocrHome>/forward-proxy/ca.pem manually' : 'unknown'}`;
+      details = `Cursor starts via \`ocr cursor\` (or ${launcherPath()}) with --proxy-server=${fp.url}; quit Cursor fully before launching — an existing instance ignores a later launcher invocation; forward proxy ${live.running ? `running on port ${live.port ?? fp.port}` : 'NOT running (start the gateway)'}; CA trust: ${caTrusted === true ? 'trusted' : caTrusted === false ? 'NOT trusted — import <ocrHome>/forward-proxy/ca.pem manually' : 'unknown'}`;
     }
 
     return {
@@ -400,6 +409,7 @@ export class CursorClientAdapter implements ClientAdapter {
       // Slot-less by design: phase 1 publishes no model advertisement, so a
       // picker here would be a control that silently discards the choice.
       modelSlots: [],
+      artifacts,
     };
   }
 
@@ -468,7 +478,7 @@ export class CursorClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `Cursor hooked: start it via ${lPath} (Chromium legs use --proxy-server, Electron Node legs use http(s)_proxy + NODE_EXTRA_CA_CERTS). Import the MITM CA (${fp.caPath}) into the OS trust store if Cursor still fails TLS to api2.cursor.sh. Close Cursor before launching it through the proxy.`,
+      message: `Cursor hooked: start it via \`ocr cursor\` (or ${lPath}; Chromium legs use --proxy-server, Electron Node legs use http(s)_proxy + NODE_EXTRA_CA_CERTS). Import the MITM CA (${fp.caPath}) into the OS trust store if Cursor still fails TLS to api2.cursor.sh. Close Cursor before launching it through the proxy.`,
     };
   }
 
@@ -500,4 +510,59 @@ export class CursorClientAdapter implements ClientAdapter {
       message: `Cursor proxy mode disabled: removed ${removed.join(', ')}. Start Cursor normally (no proxy) — the MITM CA remains in the trust store if you imported it manually.`,
     };
   }
+}
+
+/** Outcome of a passthrough launcher run. */
+export interface CursorLaunchResult {
+  ok: boolean;
+  code: number;
+  /** Launcher returns before the target exits (IDE launcher on win32/darwin). */
+  detached: boolean;
+  message?: string;
+}
+
+/**
+ * Run one of the managed launchers, forwarding stdio and the launcher's exit code.
+ *
+ * `ocr cursor` / `ocr cursor-agent` go through the SCRIPT instead of re-deriving
+ * the proxy environment here: the launcher stays the single source of the env
+ * contract (flag for Chromium legs, lowercase http(s)_proxy + CA for Electron's
+ * Node legs), so a CLI launch and a double-click can never drift apart.
+ *
+ * `detached` flags the IDE launcher on win32/darwin, which returns as soon as
+ * the app is started (`start ""` / `nohup … &`): there the exit code is the
+ * LAUNCHER's, not the target's, and the target's own stdio never reaches us.
+ * The Linux `.sh` and the agent launchers stay attached, so their exit code is
+ * the real one.
+ */
+export async function runCursorLauncher(kind: 'ide' | 'agent', argv: string[]): Promise<CursorLaunchResult> {
+  const detached = kind === 'ide' && process.platform !== 'linux';
+  const script = kind === 'ide' ? launcherPath() : agentLauncherPath();
+  if (!fs.existsSync(script)) {
+    return {
+      ok: false,
+      code: 1,
+      detached,
+      message:
+        `${kind === 'ide' ? 'Cursor' : 'cursor-agent'} launcher not found at ${script} — run \`ocr setup cursor\`` +
+        `${kind === 'agent' ? ' (with the cursor-agent CLI installed)' : ''}.`,
+    };
+  }
+  const win = process.platform === 'win32';
+  // `.cmd` needs cmd.exe; `quoteWindowsArgs` is the SAME quoting `runCommand`
+  // applies to Windows shims, so an argument survives the extra shell hop.
+  const args = win ? quoteWindowsArgs(argv) : argv;
+  const cmd = win && /\s/.test(script) ? `"${script}"` : script;
+  // Executor form on purpose: the project lib target predates
+  // `Promise.withResolvers`, and the child events are the only completion path.
+  return await new Promise<CursorLaunchResult>(resolve => {
+    const child = spawn(cmd, args, { stdio: 'inherit', shell: win, windowsHide: true });
+    child.on('error', err => resolve({ ok: false, code: 1, detached, message: String(err) }));
+    child.on('close', (code, signal) => {
+      // A signal-killed child reports `code === null`; POSIX convention is
+      // 128 + signum, so a caller can tell an interrupt from a real failure.
+      const signum = signal ? (os.constants.signals as Record<string, number>)[signal] : undefined;
+      resolve({ ok: code === 0, code: code ?? (signum ? 128 + signum : 1), detached });
+    });
+  });
 }

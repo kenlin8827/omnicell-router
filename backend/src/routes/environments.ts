@@ -41,11 +41,12 @@ import type { EnvType } from '../config/env.js';
  * spawn/exit are injectable (`EnvironmentRouteDeps`) so tests can exercise
  * the pointer-write → spawn → rollback contract without restarting the
  * test runner itself. Defaults mirror the existing UI-restart machinery
- * (console.ts handleRestart / daemon.ts) byte-for-byte in behavior.
+ * (console.ts handleRestart / daemon.ts): spawn a detached restart
+ * supervisor, then exit; the supervisor boots and verifies the replacement.
  */
 
 export interface EnvironmentRouteDeps {
-  /** Spawn the replacement gateway bound to the new env. True = spawned. */
+  /** Spawn the detached supervisor that boots the new-env gateway. True = spawned. */
   spawnChild?: (opts: { envName: string }) => boolean | Promise<boolean>;
   /** Self-exit scheduler after a successful spawn (handover to the child). */
   scheduleExit?: () => void;
@@ -138,8 +139,7 @@ export function registerEnvironmentRoutes(app: FastifyInstance, deps: Environmen
   );
 
   // L3 P2-2: one switch in flight per gateway process. Two parallel POSTs
-  // would each spawn a replacement child and race the pointer. Held on the
-  // success path (this process is scheduled to exit anyway), released on
+  // would each spawn a replacement supervisor and race the pointer. Held on
   // every failure path so a retried switch works. Scoped to the plugin
   // registration: production has exactly one per process, and a fresh
   // registration in tests naturally gets a fresh guard.
@@ -514,7 +514,7 @@ export function registerEnvironmentRoutes(app: FastifyInstance, deps: Environmen
     }
 
     // P2-2: one switch in flight — a second concurrent POST would spawn a
-    // second replacement child and race the pointer. Acquired here (after
+    // second replacement supervisor and race the pointer. Acquired here (after
     // the cheap 404/running guards) and released on every failure path; the
     // success path intentionally holds it (this process is scheduled to die).
     if (switchInFlight) {

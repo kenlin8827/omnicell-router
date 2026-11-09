@@ -76,6 +76,19 @@ Download native standalone installers from [GitHub Releases](https://github.com/
 * **macOS (Apple Silicon)**: `OmniCellRouter_0.0.1_aarch64.dmg`
 * **macOS (Intel)**: `OmniCellRouter_0.0.1_x64.dmg`
 
+The desktop shell lives in the system tray. Right-click the tray icon for
+**Close to tray** (X keeps the gateway running) and **Start with system** — a
+login launch boots the gateway silently in the tray, so the console window
+never pops up on its own; open it from **Open Console** whenever you need it.
+
+On first launch (visible launches only) the desktop app ASKS whether to register
+the `ocr` / `omnicell-router` commands — the bundled gateway answers `--cli`, so
+a GUI-only machine gets the full CLI without bun, node, or a repo checkout.
+Declining is remembered; **Install `ocr` command** in the tray menu installs it
+later, and `ocr uninstall-shims` removes it. The installed shims pin the app's
+own data root (`OCR_HOME`), so `ocr status` / `ocr stop` address the gateway the
+desktop shell is running instead of a separate CLI default.
+
 ---
 
 ## Command Line Interface (CLI)
@@ -97,6 +110,11 @@ ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
 ocr setup pi            # Hook Pi coding agent to route via OCR
 ocr setup kimi          # Hook Kimi CLI to route via OCR
 ocr setup openclaw      # Hook OpenClaw to route via OCR
+ocr setup cursor        # Hook Cursor via the OCR forward proxy + cursor plugin
+
+# Launch through the OCR-managed launchers (after setup)
+ocr cursor              # Start the Cursor IDE with the proxy env applied
+ocr cursor-agent        # Run the cursor-agent CLI with the proxy env applied
 
 # Teardown hooks
 ocr teardown opencode   # Restore OpenCode to direct connection

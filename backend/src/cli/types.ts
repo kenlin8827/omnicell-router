@@ -9,6 +9,9 @@ export type CliAction =
   | 'setup'
   | 'teardown'
   | 'install-shims'
+  | 'uninstall-shims'
+  | 'cursor'
+  | 'cursor-agent'
   | 'env'
   | 'version'
   | 'help';
@@ -64,6 +67,18 @@ export interface ClientHookStatus {
    * config's agent node is the live truth).
    */
   profile?: ModelProfileBinding;
+
+  /** Additional files this adapter owns beyond `configPath` — Cursor publishes
+   *  a second launcher for the `cursor-agent` CLI. `exists` is probed at status
+   *  time so the console can list every artifact without a second round-trip.
+   *  Absent for single-artifact adapters. */
+  artifacts?: ClientArtifact[];
+}
+
+/** A file an adapter owns besides its primary `configPath` (status echo only). */
+export interface ClientArtifact {
+  path: string;
+  exists: boolean;
 }
 
 /** Sidecar echo of the last-applied model profile: which profile filled which agent with which modelRef. */

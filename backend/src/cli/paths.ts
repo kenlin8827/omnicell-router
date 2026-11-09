@@ -43,6 +43,40 @@ export function getInfoFilePath(): string {
   return path.join(getOcrHomeDir(), 'ocr.info.json');
 }
 
+/**
+ * Pid of the gateway a supervisor is currently bringing up.
+ *
+ * The supervisor takes over `ocr.pid` for the handover, so `ocr stop` targets
+ * the SUPERVISOR — and on Windows the kill is `taskkill /F`, which cannot
+ * deliver a signal (see `abortHandover`). This record is what lets the killer
+ * reap the in-flight replacement afterwards instead of leaving an orphan that
+ * binds the port after `ocr.pid` was already unlinked.
+ */
+export function getRestartChildPidFilePath(): string {
+  return path.join(getOcrHomeDir(), 'ocr.restart.child');
+}
+
+/**
+ * Verdict of the LAST controlled restart handover, written by the detached
+ * restart supervisor (console restart / environment switch) and by
+ * `startDaemon` (CLI). `ocr status` reads it so a failed handover that left
+ * nothing serving is still discoverable after the fact.
+ */
+export function getRestartStatusFilePath(): string {
+  return path.join(getOcrHomeDir(), 'ocr.restart.json');
+}
+
+/**
+ * Diagnostics of the detached restart supervisor (handover waiting, spawn
+ * attempts, verdict). Kept SEPARATE from `ocr.log`: the supervisor spawns the
+ * replacement gateway with `>> ocr.log`, and on Windows two cmd processes
+ * appending to one file are fragile while the parent handle is still open —
+ * the gateway's own log must never be held by the supervisor.
+ */
+export function getRestartLogFilePath(): string {
+  return path.join(getOcrHomeDir(), 'ocr.restart.log');
+}
+
 /** Pid record of a gateway-spawned headroom sidecar (compression/headroom-sidecar.ts). */
 export function getHeadroomPidFilePath(): string {
   return path.join(getOcrHomeDir(), 'headroom.pid');
@@ -61,4 +95,25 @@ export function getRepoRootDir(): string {
   // src/cli/paths.ts -> root is two levels up
   const currentDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
   return path.resolve(currentDir, '..', '..', '..');
+}
+
+/**
+ * Are we running inside a `bun build --compile` snapshot (the desktop
+ * sidecar)? The ONE definition of "packaged install" — the spawn resolver
+ * (`daemon.ts`) and the shim writer (`shim.ts`) must not disagree about it.
+ *
+ * Verified on bun 1.3.14 (scripts/tmp-probe.ts experiment, 2026-10-18): inside
+ * a snapshot Bun.main/import.meta.path live on the virtual embedded FS
+ * (Windows: `B:\~BUN\root\…`, POSIX: `/$bunfs/…`); a plain `bun`/node runtime
+ * reports a real path. Note Bun.embeddedFiles is [] in BOTH modes on this
+ * version — not a signal.
+ */
+export function compiledSnapshotExe(): boolean {
+  try {
+    const bunMain = (globalThis as { Bun?: { main?: string } }).Bun?.main;
+    if (!bunMain) return false;
+    return bunMain.startsWith('/$bunfs/') || /^[A-Za-z]:[\\/]~BUN[\\/]/.test(bunMain);
+  } catch {
+    return false;
+  }
 }

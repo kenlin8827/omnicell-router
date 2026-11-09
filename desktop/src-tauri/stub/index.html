@@ -52,8 +52,10 @@
   <body>
     <!-- Boot splash: shown while the gateway sidecar initializes; the shell
          navigates this webview to http://127.0.0.1:<port>/admin/ once
-         /health answers (main.rs). Never rendered in normal operation
-         afterwards. -->
+         /health answers (main.rs). Also the OFFLINE page: the gateway watch
+         swaps it back in whenever /health stops answering (a restart, an
+         environment switch, a crash), so it is rendered again on every
+         outage — not just at boot. -->
     <div class="box">
       <div class="bolt">⚡</div>
       <div class="spin"></div>

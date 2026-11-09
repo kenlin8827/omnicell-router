@@ -60,6 +60,15 @@ export interface ClientStatus {
   /** Last-linked model profile (opencode): profile id + agent→slot-key tags
    *  (the linked rows — their effective models resolve from the profile). */
   profile?: ModelProfileBinding;
+  /** A file an adapter owns besides its primary `configPath` (Cursor's CLI
+   *  launcher); `exists` probed at status time. Mirrors backend ClientArtifact. */
+  artifacts?: ClientArtifact[];
+}
+
+/** Mirrors backend ClientArtifact (a file an adapter owns besides `configPath`). */
+export interface ClientArtifact {
+  path: string;
+  exists: boolean;
 }
 
 /** Mirrors backend ModelProfileBinding (profile-link echo from the OCR sidecar meta). */

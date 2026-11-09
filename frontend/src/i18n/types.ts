@@ -427,6 +427,7 @@ export interface TranslationDict {
     refreshConnected: string;
     refreshDone: string;
     refreshFailed: string;
+    copyFailed: string;
     connectBtn: string;
     connectMethodKey: string;
     webLoginBtn: string;
@@ -1998,6 +1999,9 @@ hiddenBadge: string;
     desc: string;
     refresh: string;
     configPath: string;
+    /** Cursor owns launcher scripts, not a config file: the card lists every
+     *  launcher path (primary + CLI) under this label. */
+    launcherPaths: string;
     fileExists: string;
     backupExists: string;
     yes: string;

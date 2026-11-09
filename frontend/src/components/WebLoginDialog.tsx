@@ -4,6 +4,7 @@ import { Dialog } from './Dialog';
 import { useI18n } from '../i18n/I18nContext';
 import { opencodeApi } from '../lib/api';
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 
 type Phase = 'starting' | 'waiting' | 'done' | 'failed';
 
@@ -158,9 +159,11 @@ export const WebLoginDialog: React.FC<{
                 className="btn btn-sm"
                 title={t('op.webLoginCopyUrl')}
                 onClick={() => {
-                  navigator.clipboard.writeText(authUrl);
-                  setCopied(true);
-                  window.setTimeout(() => setCopied(false), 1500);
+                  void copyToClipboard(authUrl).then((ok) => {
+                    if (!ok) return;
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1500);
+                  });
                 }}
               >
                 {copied ? <Check size={12} /> : <Copy size={12} />}

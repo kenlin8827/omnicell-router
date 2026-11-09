@@ -9,6 +9,9 @@ dist/
 # a note that matters belongs in docs/ or an ADR, not here.
 .scratch/
 .tmp-docs/
+# Agent/IDE scratch droppings (screenshots, ad-hoc .ps1 probes) that land in the
+# repo root: never shipped, never worth a review round-trip.
+.tmp-*
 tmp-*.html
 .kimi-code/
 .omp/

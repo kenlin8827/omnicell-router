@@ -4944,26 +4944,44 @@ export function registerConsoleRoutes(
   };
   app.get('/api/admin/gateway-models', handleGatewayModels);
 
-  // 10. Remote restart trigger from UI — spawn a detached replacement gateway
-  //     first (it waits for our pid to die, boots, and self-registers the
-  //     pid/info files), THEN exit. Without the spawn we would just stop and
-  //     nothing would bring the gateway back (there is no supervisor).
+  // 10. Remote restart trigger from UI — spawn a detached restart SUPERVISOR
+  //     first, then exit. The supervisor waits for this process to die (and
+  //     force-kills it if stuck), spawns the replacement gateway, verifies
+  //     `/health` (retrying a crashed child), and records the verdict in
+  //     ocr.restart.json. Without the spawn we would just stop and nothing
+  //     would bring the gateway back (there is no resident supervisor).
+  // One handover at a time: this process exits 500 ms after acknowledging, so
+  // a second POST inside that window would spawn a SECOND supervisor and two
+  // replacements would race for the listen port. Idempotent answer instead.
+  let restartInFlight = false;
   const handleRestart = async () => {
-    const { spawnDetachedRestartChild } = await import('../cli/daemon.js');
-    const cfg = loadConfig();
-    const addr = app.server.address();
-    const port = typeof addr === 'object' && addr ? addr.port : cfg.port;
-    const spawned = spawnDetachedRestartChild({ port, host: cfg.host });
-    if (!spawned) {
-      // Fault-tolerance: NEVER stop the gateway without a replacement — keep
-      // serving and surface the failure to the UI instead of exiting.
-      return {
-        status: 'failed',
-        message: 'Could not spawn a replacement process — gateway keeps running. Restart it manually when convenient.',
-      };
+    if (restartInFlight) {
+      return { status: 'restarting', message: 'Gateway restart is already in progress' };
     }
-    setTimeout(() => process.exit(0), 500);
-    return { status: 'restarting', message: 'Gateway restart signal acknowledged — replacement process is booting' };
+    restartInFlight = true;
+    try {
+      const { spawnDetachedRestartChild } = await import('../cli/daemon.js');
+      const cfg = loadConfig();
+      const addr = app.server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : cfg.port;
+      const spawned = spawnDetachedRestartChild({ port, host: cfg.host });
+      if (!spawned) {
+        restartInFlight = false;
+        // Fault-tolerance: NEVER stop the gateway without a replacement — keep
+        // serving and surface the failure to the UI instead of exiting.
+        return {
+          status: 'failed',
+          message: 'Could not spawn a replacement process — gateway keeps running. Restart it manually when convenient.',
+        };
+      }
+      setTimeout(() => process.exit(0), 500);
+      return { status: 'restarting', message: 'Gateway restart signal acknowledged — the detached supervisor is booting the replacement' };
+    } catch (err) {
+      // Un-stick the guard: a thrown spawn/config error must not make every
+      // later restart answer "already in progress" forever.
+      restartInFlight = false;
+      return { status: 'failed', message: `Restart failed: ${(err as Error).message}` };
+    }
   };
   app.post('/api/admin/restart', handleRestart);
 

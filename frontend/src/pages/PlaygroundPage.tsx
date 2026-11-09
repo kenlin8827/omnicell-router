@@ -29,7 +29,7 @@ import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { Switch } from '../components/Switch';
 import { MD_COMPONENTS, MD_PLUGINS } from '../components/Prose';
-import { copyToClipboard } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { FONT_MONO } from '../lib/fonts';
 import type { PlaygroundPresetQuestion } from '../i18n/types';
 

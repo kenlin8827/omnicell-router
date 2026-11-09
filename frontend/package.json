@@ -1,7 +1,7 @@
 {
   "name": "@omnicell-router/frontend",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,7 @@
     "@fontsource/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/noto-sans-sc": "^5.3.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2",
     "@tauri-apps/plugin-shell": "^2",
     "@uiw/react-codemirror": "^4.25.12",
     "clsx": "^2.1.1",

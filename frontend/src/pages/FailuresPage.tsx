@@ -9,6 +9,7 @@ import { InfoTip } from '../components/InfoTip';
 import { SegGroup } from '../components/SegGroup';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * Model-call failure observability — the "which models failed, and why"
  * plane. Two sections over the same failure_events ledger (backend
@@ -431,9 +432,8 @@ export const FailuresPage: React.FC = () => {
                         title={t('failuresPage.copyMessage')}
                         style={{ padding: '2px 6px', color: 'var(--text-dim)' }}
                         onClick={() => {
-                          navigator.clipboard.writeText(e.message).then(
-                            () => toast.success(t('failuresPage.messageCopied')),
-                            () => toast.error(t('failuresPage.messageCopyFailed')),
+                          void copyToClipboard(e.message).then((ok) =>
+                            ok ? toast.success(t('failuresPage.messageCopied')) : toast.error(t('failuresPage.messageCopyFailed')),
                           );
                         }}
                       >

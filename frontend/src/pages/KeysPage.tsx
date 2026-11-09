@@ -51,6 +51,7 @@ import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 import { failureCaption } from '../lib/quotaFailure';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /** Shared provider display sort: localized display name A→Z (case-insensitive),
  *  falling back to the id when a row carries no display name (def-only
  *  providers often have no `name`), with id as the stable tiebreak. Both the
@@ -336,31 +337,6 @@ const syncOutcomeStyle: React.CSSProperties = {
   color: 'var(--text-dim)',
   lineHeight: 'var(--leading-snug)',
 };
-
-/**
- * Clipboard write with a non-secure-context fallback. navigator.clipboard
- * requires a trustworthy origin: the loopback console has one, a LAN http://
- * bind does NOT — and webAuth (hence reveal) is exactly what a non-loopback
- * bind forces on, so the legacy execCommand path must keep "copy" meaning
- * "copy" there too.
- */
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    if (!ok) throw new Error('clipboard-unavailable');
-  }
-}
 
 // the credential-store API serves machine-readable codes ONLY;
 // these tables own all user-visible copy (unknown codes fall back to the raw
@@ -1802,7 +1778,12 @@ export const KeysPage: React.FC = () => {
     setPendingCredential(`${a.providerId}:${a.id}`);
     try {
       const res = await opencodeApi.revealProviderKey(a.providerId, a.id, revealPassRef.current);
-      await copyToClipboard(res.key);
+      if (!(await copyToClipboard(res.key))) {
+        // A failed clipboard write is NOT an API error: surface the localized
+        // copy toast instead of routing a machine token through reasonError.
+        toast.error(t('op.copyFailed'));
+        return;
+      }
       toast.success(t('op.credentialKeyCopied'));
     } catch (err: any) {
       if (err?.reasonCode === 'invalid_password') {
@@ -1823,7 +1804,10 @@ export const KeysPage: React.FC = () => {
     setRevealBusy(true);
     try {
       const res = await opencodeApi.revealProviderKey(revealTarget.providerId, revealTarget.id, revealPassword);
-      await copyToClipboard(res.key);
+      if (!(await copyToClipboard(res.key))) {
+        setRevealError(t('op.copyFailed'));
+        return;
+      }
       revealPassRef.current = revealPassword;
       setRevealTarget(null);
       setRevealPassword('');
@@ -2701,8 +2685,12 @@ export const KeysPage: React.FC = () => {
                       title={`${c.baseURL || c.api} — ${t('op.copyBaseUrl')}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigator.clipboard.writeText(c.baseURL || c.api!);
-                        showNotice(t('op.baseUrlCopied'), 'ok');
+                        void copyToClipboard(c.baseURL || c.api!).then((ok) => {
+                          showNotice(
+                            ok ? t('op.baseUrlCopied') : t('common.failed'),
+                            ok ? 'ok' : 'err',
+                          );
+                        });
                       }}
                     >
                       <Copy size={11} />

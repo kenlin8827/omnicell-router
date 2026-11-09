@@ -28,16 +28,6 @@ export const formatSessionId = (raw: string): string => {
 export const shortId = (id: string, n = 16): string =>
   id.length <= n ? id : `${id.slice(0, n)}…`;
 
-/** Clipboard write with boolean outcome (pages surface success/error toasts). */
-export const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 /**
  * Decode throughput (industry TPS): completion tokens per second of the
  * generation window — first forwarded chunk → stream fully drained. TTFT,

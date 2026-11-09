@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CursorClientAdapter, CURSOR_NO_PROXY, LEGACY_MODELS_JSON_PATH, agentLauncherPath, buildCursorLaunchers, launcherPath, pemBundleContainsCa } from '../src/cli/clients/cursor.js';
+import { CursorClientAdapter, CURSOR_NO_PROXY, LEGACY_MODELS_JSON_PATH, agentLauncherPath, buildCursorLaunchers, launcherPath, pemBundleContainsCa, runCursorLauncher } from '../src/cli/clients/cursor.js';
 import { getEnvPaths } from '../src/config/env.js';
 
 /**
@@ -287,6 +287,40 @@ describe('Cursor adapter teardown', () => {
   });
 });
 
+describe('Cursor adapter status', () => {
+  it('echoes the CLI launcher as a secondary artifact, not only the IDE one', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cursor-status-'));
+    const previous = {
+      OCR_HOME: process.env.OCR_HOME,
+      CURSOR_BIN: process.env.CURSOR_BIN,
+      CURSOR_AGENT_BIN: process.env.CURSOR_AGENT_BIN,
+    };
+    process.env.OCR_HOME = home;
+    // Pin both binaries so detection never depends on the host machine.
+    const binary = path.join(home, 'Cursor');
+    const agent = path.join(home, 'cursor-agent');
+    for (const p of [binary, agent]) fs.writeFileSync(p, '');
+    process.env.CURSOR_BIN = binary;
+    process.env.CURSOR_AGENT_BIN = agent;
+    try {
+      fs.mkdirSync(path.dirname(agentLauncherPath()), { recursive: true });
+      fs.writeFileSync(agentLauncherPath(), 'managed');
+
+      const status = await new CursorClientAdapter().getStatus();
+
+      // The card must be able to render every owned path (the hint promises
+      // two launchers) — a single `configPath` would hide the CLI one.
+      assert.deepEqual(status.artifacts, [{ path: agentLauncherPath(), exists: true }]);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * Setup writes real files, so its file-system contract needs a real run: the
  * per-file sandbox OCR_HOME gets a config with `forwardProxy` enabled and a CA
@@ -376,5 +410,51 @@ describe('CA bundle probe', () => {
   it('does not match a different certificate body', () => {
     const other = '-----BEGIN CERTIFICATE-----\nREVG\n-----END CERTIFICATE-----\n';
     assert.equal(pemBundleContainsCa(other, pem), false);
+  });
+});
+
+describe('ocr cursor passthrough', () => {
+  /** Sandboxed OCR_HOME with the restore fn, mirroring the teardown fixture. */
+  const withSandbox = async (fn: () => Promise<void>): Promise<void> => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cursor-run-'));
+    const previous = process.env.OCR_HOME;
+    process.env.OCR_HOME = home;
+    try {
+      await fn();
+    } finally {
+      if (previous === undefined) delete process.env.OCR_HOME;
+      else process.env.OCR_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  };
+
+  it('refuses to launch before setup wrote the launcher', async () => {
+    await withSandbox(async () => {
+      const ide = await runCursorLauncher('ide', []);
+      assert.equal(ide.ok, false);
+      assert.match(ide.message ?? '', /ocr setup cursor/);
+
+      const agent = await runCursorLauncher('agent', []);
+      assert.equal(agent.ok, false);
+      assert.match(agent.message ?? '', /cursor-agent CLI installed/);
+    });
+  });
+
+  it('forwards the launcher exit code', async () => {
+    await withSandbox(async () => {
+      const p = launcherPath();
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      if (process.platform === 'win32') {
+        fs.writeFileSync(p, '@echo off\r\nexit /b 7\r\n');
+      } else {
+        fs.writeFileSync(p, '#!/bin/sh\nexit 7\n');
+        fs.chmodSync(p, 0o755);
+      }
+
+      const res = await runCursorLauncher('ide', []);
+
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 7);
+    });
   });
 });

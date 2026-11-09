@@ -7,13 +7,14 @@ import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
-import { api, opencodeApi, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * Slots to render for a client. An explicit `[]` means the client is
  * slot-less by design (opencode-proxy routes traffic transparently and keeps
@@ -1014,6 +1015,16 @@ export const ClientsPage: React.FC = () => {
     );
   };
 
+  // Owned files are listed the same way on every card (Cursor's launcher-only
+  // card and the config-path card alike): one renderer keeps the icon, spacing
+  // and wrap behavior in a single place.
+  const renderArtifact = (a: ClientArtifact) => (
+    <div key={a.path} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
+      {a.exists ? <Check size={12} color="var(--accent-emerald)" style={{ flexShrink: 0 }} /> : <X size={12} color="var(--text-dim)" style={{ flexShrink: 0 }} />}
+      <span>{a.path}</span>
+    </div>
+  );
+
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
     // Cursor's launcher only exists to feed the cursor plugin. Hooking it
@@ -1188,23 +1199,37 @@ export const ClientsPage: React.FC = () => {
 
                 {open && (
                   <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
-                      {t('clients.configPath')}
-                      <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
-                        {c.configPath}
+                    {c.name === 'cursor' ? (
+                      // Cursor owns launcher scripts, not a config file: every
+                      // launcher setup writes is listed with its own existence
+                      // mark (the CLI launcher only exists while cursor-agent
+                      // is installed).
+                      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                        {t('clients.launcherPaths')}
+                        {[{ path: c.configPath, exists: c.exists }, ...(c.artifacts ?? [])].map(renderArtifact)}
                       </div>
-                    </div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                          {t('clients.configPath')}
+                          <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
+                            {c.configPath}
+                          </div>
+                          {c.artifacts?.map(renderArtifact)}
+                        </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                        <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        {c.backupExists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                        <span>{t('clients.backupExists')} {c.backupExists ? t('clients.ready') : t('clients.none')}</span>
-                      </div>
-                    </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                            <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            {c.backupExists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                            <span>{t('clients.backupExists')} {c.backupExists ? t('clients.ready') : t('clients.none')}</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
 
                     {(c.name === 'opencode-proxy' || c.name === 'cursor') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
@@ -1661,10 +1686,11 @@ export const ClientsPage: React.FC = () => {
                       className="btn btn-sm"
                       style={{ flexShrink: 0 }}
                       title={t('clients.manualCopied')}
-                      onClick={() => navigator.clipboard.writeText(x.base).then(
-                        () => toast.success(t('clients.manualCopied')),
-                        () => toast.error(t('common.failed')),
-                      )}
+                      onClick={() => {
+                        void copyToClipboard(x.base).then((ok) =>
+                          ok ? toast.success(t('clients.manualCopied')) : toast.error(t('common.failed')),
+                        );
+                      }}
                     >
                       <Copy size={11} />
                     </button>
