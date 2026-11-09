@@ -110,7 +110,7 @@ ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
 ocr setup pi            # Hook Pi coding agent to route via OCR
 ocr setup kimi          # Hook Kimi CLI to route via OCR
 ocr setup openclaw      # Hook OpenClaw to route via OCR
-ocr setup cursor        # Hook Cursor via the OCR forward proxy + cursor plugin
+ocr setup cursor        # Hook Cursor via the OCR forward proxy + Cursor Gateway plugin
 
 # Launch through the OCR-managed launchers (after setup)
 ocr cursor              # Start the Cursor IDE with the proxy env applied

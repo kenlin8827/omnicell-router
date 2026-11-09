@@ -107,7 +107,7 @@ ocr setup codex         # 将 Codex / OpenAI CLI 接入 OCR
 ocr setup pi            # 将 Pi 接入 OCR
 ocr setup kimi          # 将 Kimi CLI 接入 OCR
 ocr setup openclaw      # 将 OpenClaw 接入 OCR
-ocr setup cursor        # 通过 OCR 前置代理 + cursor 插件接入 Cursor
+ocr setup cursor        # 通过 OCR 前置代理 + Cursor Gateway 插件接入 Cursor
 
 # 通过 OCR 托管的启动脚本运行（setup 之后）
 ocr cursor              # 以代理环境启动 Cursor IDE
