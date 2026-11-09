@@ -8,7 +8,7 @@ import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { NPM_VOCABULARY } from '../providers/vocabulary.js';
-import { getModelServicePlugin, pluginProviderOrigins } from '../plugins/host.js';
+import { getModelServicePlugin, pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
 import { PluginAuthType, type TrafficExchange, type DissectedExchange } from '../plugins/types.js';
 import { listGateways, getGatewayById } from '../plugins/gateways.js';
 import { globMatchAny } from '../utils/glob.js';
@@ -4544,6 +4544,22 @@ export function registerConsoleRoutes(
       reply.header('X-Content-Type-Options', 'nosniff');
       reply.header('Content-Security-Policy', "default-src 'none'");
       return reply.type(mime).send(await fs.promises.readFile(file));
+    });
+
+    // Package export: a packaged plugin returns its installed zip verbatim; a
+    // dev-tree plugin is zipped on the fly with the same deterministic packer
+    // `plugins:build` uses, so a download round-trips through Install.
+    app.get(`${prefix}/plugins/:id/package`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const zip = pluginPackageZip(id);
+      if (!zip) return reply.code(404).send({ status: 'error', error: 'unknown plugin or package not found' });
+      if (zip.length > PLUGIN_PACKAGE_MAX_BYTES) {
+        return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
+      }
+      // Operator-installed bytes: lock the response down (same rule as logo).
+      reply.header('X-Content-Type-Options', 'nosniff');
+      reply.header('Content-Disposition', `attachment; filename="${id}.zip"`);
+      return reply.type('application/zip').send(Buffer.from(zip));
     });
 
     // Plugin-level configuration (ADR-0017): schema declared in plugin.json,

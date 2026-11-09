@@ -6,11 +6,11 @@
  *
  * Usage: bun scripts/build-plugins.ts [--check]   (--check: exit 1 on drift, CI mode)
  */
-import { zipSync } from 'fflate';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validatePluginManifest } from '../backend/src/plugins/manifest.js';
+import { zipPluginDir } from '../backend/src/plugins/pack.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const srcRoot = join(repoRoot, 'plugins');
@@ -28,32 +28,6 @@ function ocrHome(): string {
 // passes here can never fail at load.
 const validateManifest = (manifest: unknown, dirName: string): void =>
   validatePluginManifest(manifest, `[plugins] ${dirName}/plugin.json invalid`);
-
-/**
- * Fixed entry mtime for every packaged file. Without it fflate stamps the
- * CURRENT time into the zip (2-second DOS resolution), so two runs seconds
- * apart produce different bytes — which makes `--check` (and any byte-level
- * drift guard) fail unconditionally. A fixed stamp makes the package
- * reproducible: same sources ⇒ same bytes, forever.
- */
-const ZIP_ENTRY_MTIME = new Date('2000-01-01T00:00:00Z');
-
-/** Files one plugin ships — the whole dir minus editor junk. */
-function collect(dir: string): Record<string, [Uint8Array, { mtime: Date }]> {
-  const out: Record<string, [Uint8Array, { mtime: Date }]> = {};
-  const walk = (rel: string): void => {
-    const abs = join(dir, rel);
-    for (const name of readdirSync(abs)) {
-      if (name === '.' || name === '..' || name.startsWith('.')) continue;
-      const child = rel ? `${rel}/${name}` : name;
-      const childAbs = join(abs, name);
-      if (statSync(childAbs).isDirectory()) walk(child);
-      else out[child] = [new Uint8Array(readFileSync(childAbs)), { mtime: ZIP_ENTRY_MTIME }];
-    }
-  };
-  walk('');
-  return out;
-}
 
 const check = process.argv.includes('--check');
 const home = ocrHome();
@@ -75,7 +49,7 @@ for (const name of readdirSync(srcRoot)) {
   }
   mkdirSync(destRoot, { recursive: true });
   const dest = join(destRoot, `${name}.zip`);
-  const zipped = zipSync(collect(dir));
+  const zipped = zipPluginDir(dir);
   if (check) {
     const existing = existsSync(dest) ? new Uint8Array(readFileSync(dest)) : undefined;
     const same =

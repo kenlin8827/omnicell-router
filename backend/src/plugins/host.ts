@@ -1,4 +1,5 @@
 import { unzipSync } from 'fflate';
+import { zipPluginDir } from './pack.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -740,6 +741,37 @@ export function pluginLogoFile(id: string): string | undefined {
     const file = resolve(view.path, rel);
     if (file !== view.path && !file.startsWith(view.path + sep)) return undefined; // manifest path escape
     return existsSync(file) ? file : undefined;
+  }
+  return undefined;
+}
+
+/** Package bytes for the console download. A dev-tree plugin is zipped on the
+ *  fly with the SAME deterministic packer `plugins:build` uses (so the export
+ *  is installable and byte-identical to the build output); a packaged plugin
+ *  returns its installed zip verbatim. The zip FILE NAME is free-form in the
+ *  discovery root, so match the manifest id first, then the canonical
+ *  `<id>.zip` stem a corrupt package was surfaced under. */
+export function pluginPackageZip(id: string): Uint8Array | undefined {
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(id)) return undefined;
+  const devDir = join(REPO_ROOT, 'plugins', id);
+  if (existsSync(join(devDir, 'plugin.json'))) {
+    try {
+      return zipPluginDir(devDir);
+    } catch {
+      return undefined;
+    }
+  }
+  const packRoot = pluginsRoot();
+  if (!existsSync(packRoot)) return undefined;
+  for (const name of readdirSync(packRoot)) {
+    if (!/\.zip$/i.test(name)) continue;
+    const file = join(packRoot, name);
+    if (readPackagedId(file) !== id && name.replace(/\.zip$/i, '') !== id) continue;
+    try {
+      return new Uint8Array(readFileSync(file));
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }

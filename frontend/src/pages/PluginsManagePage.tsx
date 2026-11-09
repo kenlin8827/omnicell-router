@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RefreshCw, Puzzle, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
+import { Download, RefreshCw, Puzzle, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
 import { ScrollTable } from '../components/ScrollTable';
 import { Combobox } from '../components/Combobox';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
@@ -17,7 +17,8 @@ import { FONT_MONO } from '../lib/fonts';
  * gateways, ADR-0017); this page lists what is installed, which type and
  * wires it serves, and whether it loaded. Disable/enable toggles a plugin
  * without deleting anything (works for dev-tree plugins too); uninstall
- * removes packages.
+ * removes packages; Download exports an installable package (a dev-tree
+ * plugin is zipped on the fly by the backend).
  * Reload re-scans and rebuilds the routing pool so changes apply without a
  * restart.
  * Settings opens the operator-facing config drawer (`PluginConfigDrawer`, shared
@@ -104,6 +105,19 @@ export function PluginsManagePage(): React.ReactElement {
     } finally {
       setInstalling(false);
       if (fileInput.current) fileInput.current.value = '';
+    }
+  };
+
+  const download = async (id: string): Promise<void> => {
+    try {
+      const blob = await opencodeApi.downloadPluginPackage(id);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${id}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (err) {
+      toast.error(`${t('pluginPage.downloadFail')}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -197,9 +211,9 @@ export function PluginsManagePage(): React.ReactElement {
           { key: 'version', label: t('pluginPage.colVersion'), width: 80 },
           { key: 'type', label: t('pluginPage.colType'), width: 190 },
           { key: 'status', label: t('pluginPage.colStatus'), width: 140 },
-          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 300 },
+          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 400 },
         ]}
-        minWidth={760}
+        minWidth={880}
         empty={loading ? t('common.loading') : (query || statusFilter) ? t('pluginPage.noMatch') : t('pluginPage.empty')}
       >
         {plugins
@@ -281,6 +295,14 @@ export function PluginsManagePage(): React.ReactElement {
                 >
                   {p.disabled ? <Power size={12} aria-hidden /> : <PowerOff size={12} aria-hidden />}
                   {p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => void download(p.id)}
+                  title={t('pluginPage.download')}
+                >
+                  <Download size={12} aria-hidden />
+                  {t('pluginPage.download')}
                 </button>
                 <button
                   className="btn btn-sm"

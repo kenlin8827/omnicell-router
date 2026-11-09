@@ -63,6 +63,8 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 `/admin/clients` 新增 `cursor` 作为代理接入客户端（`SupportedClient`、`CursorClientAdapter`）。setup 无法写厂商配置文件 —— 它 (a) 要求 `forwardProxy.enabled`，(b) 写 `cursor-launcher.cmd|.sh|.command`（CLI 存在时再写 `cursor-agent-launcher.*`），启动器对 Chromium 腿设 `--proxy-server`，对 Electron 的 Node/gRPC 腿设小写 `http(s)_proxy` + `NODE_EXTRA_CA_CERTS` + `NO_PROXY`。阶段 1 不发布模型广告：插件的 `AvailableModels` 在阶段 2 才到来。按应用启动器是刻意的：不接管系统代理（那会和 Clash/v2ray 抢同一组注册表键），也不上内核重定向器。CA 信任保持 forward-proxy CA 原样（不新增信任材料）；安装仍是 operator 显式动作。状态探测按平台取证 —— Windows 查 Root 存储（`certutil`）、macOS 用 `security verify-cert` 走 SSL 信任策略、Linux 查锚点目录 + 合并 bundle + Chromium/Electron 实际读取的 NSS 数据库 —— 探测无法执行时返回 `unknown`，绝不猜。代理注入只在进程启动时生效：Dock / 开始菜单 / `.desktop` 启动会绕过启动器，已运行的单实例会吞掉后来的启动器调用。macOS 的 `.command` 以脱离方式启动 Cursor（`nohup … &`），所以关掉双击它的那个终端窗口不会带走 Cursor；Linux 的 `.sh` 保留 `exec`，因为它本身就是那个终端会话。teardown 删除启动器、≤0.1.x 遗留的 `models.json`，永不触碰 CA，永不触碰 Cursor 自身文件；CLI 已不在时 setup 会清掉过期的 CLI 启动器。状态回显同时发布**两条**启动器路径（`configPath` 加 `artifacts` 里的 CLI 启动器 —— 仅当 `cursor-agent` 已安装或此前 setup 留下的启动器文件仍在时才发布，否则 `artifacts` 缺省不存在），控制台卡片据此列出 setup 拥有的每一个启动器，而不是只显示 IDE 那一个。`ocr cursor` / `ocr cursor-agent` 是直通动词：直接执行托管启动器（转发 stdio 与**启动器**的退出码，被信号终止时为 `128+signum`），不再另行推导 env —— 命令行与双击共用同一份契约。Windows/macOS 的 IDE 启动器是刻意脱离的（`start`/`nohup`），因此那里的退出码属于启动器，`--help`/`--version` 的输出属于它启动的应用而非 `ocr cursor` —— CLI 会明说这一点，而不是静默退出 0；Linux 的 `.sh` 与两个 agent 启动器保持挂接，转发真实退出码。
 
+同一页还能导出插件：`GET /api/admin/plugins/:id/package` 对已打包插件原样返回其安装 zip，对 dev 树插件则用与 `plugins:build` **同一个确定性打包器**现场压包——下回来的包可直接再 Install，且与构建产物逐字节相同。
+
 ### 7. 插件级配置
 
 插件可声明面向 operator 的参数，控制台按声明通用渲染设置表单。三个来源严格分离：

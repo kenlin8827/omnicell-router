@@ -5045,6 +5045,17 @@ export const opencodeApi = {
     return ocJson(await fetch('/api/admin/plugins'));
   },
 
+  /** Download an installed plugin's package: packaged zips are returned
+   *  verbatim, dev-tree plugins are zipped on the fly by the backend. */
+  async downloadPluginPackage(id: string): Promise<Blob> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/package`);
+    if (!res.ok) {
+      const parsed = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    }
+    return res.blob();
+  },
+
   async uninstallPlugin(id: string): Promise<{ status: string; removed: string[]; providersRemoved?: string[]; devOnly?: boolean; plugins: PluginViewInfo[] }> {
     const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/uninstall`, { method: 'DELETE' });
     const parsed = (await res.json()) as { status: string; error?: string; removed: string[]; plugins: PluginViewInfo[] };
