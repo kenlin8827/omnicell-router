@@ -4547,11 +4547,18 @@ export function registerConsoleRoutes(
     });
 
     // Package export: a packaged plugin returns its installed zip verbatim; a
-    // dev-tree plugin is zipped on the fly with the same deterministic packer
-    // `plugins:build` uses, so a download round-trips through Install.
+    // dev-tree plugin is bundled and zipped on the fly with the same
+    // deterministic packer `plugins:build` uses, so a download round-trips
+    // through Install. A bundle failure is the operator's signal that the
+    // plugin cannot be packaged self-contained — surface the reason.
     app.get(`${prefix}/plugins/:id/package`, async (req, reply) => {
       const { id } = req.params as { id: string };
-      const zip = pluginPackageZip(id);
+      let zip: Uint8Array | undefined;
+      try {
+        zip = await pluginPackageZip(id);
+      } catch (err) {
+        return reply.code(500).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
       if (!zip) return reply.code(404).send({ status: 'error', error: 'unknown plugin or package not found' });
       if (zip.length > PLUGIN_PACKAGE_MAX_BYTES) {
         return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
@@ -4647,7 +4654,19 @@ export function registerConsoleRoutes(
         return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
       }
       try {
-        const { installPluginPackage } = await import('../plugins/host.js');
+        const { installPluginPackage, packageIdOf, pluginPackageZip, listInstalledPlugins: listing } =
+          await import('../plugins/host.js');
+        // Snapshot the version this upload is about to REPLACE (a packaged one
+        // — a dev-tree plugin is not ours to materialize here). A failed upgrade
+        // must not delete a working install.
+        let previous: Uint8Array | undefined;
+        try {
+          const target = packageIdOf(new Uint8Array(bytes));
+          const existing = listing().find((p) => p.id === target);
+          if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
+        } catch {
+          // unreadable upload: installPluginPackage below reports it properly
+        }
         const { id: installed } = installPluginPackage(new Uint8Array(bytes));
         const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
         await loadInstalledPlugins();
@@ -4659,7 +4678,24 @@ export function registerConsoleRoutes(
           // registers nothing
           const { discardPluginPackage } = await import('../plugins/host.js');
           discardPluginPackage(installed);
-          return reply.code(422).send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins });
+          // Roll BACK to the version that was working until this upload, so a
+          // bad upgrade is a no-op instead of a lost plugin.
+          if (previous) {
+            installPluginPackage(previous);
+            await loadInstalledPlugins();
+            return reply.code(422).send({
+              status: 'error',
+              error: `package rejected and discarded (${view?.error ?? 'unknown error'}); rolled back to the previously installed version`,
+              plugins: listInstalledPlugins(),
+            });
+          }
+          // Reload AFTER the discard: otherwise the response would hand the
+          // console a row for a package that is no longer on disk (the list is
+          // the disk's truth, not the last failed import's).
+          await loadInstalledPlugins();
+          return reply
+            .code(422)
+            .send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins: listInstalledPlugins() });
         }
         // presets register at install time (same contract as boot/reload) —
         // after a verified successful load, BEFORE the pool refresh so the

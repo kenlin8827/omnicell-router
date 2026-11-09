@@ -261,6 +261,7 @@ describe('configSchema: configSections grouping', () => {
             id: 'p',
             name: 'P',
             version: '1.0.0',
+            apiVersion: 1,
             type: 'client-gateway',
             hosts: ['example.test'],
             configSections: [{ id: 'a' }],
@@ -269,6 +270,30 @@ describe('configSchema: configSections grouping', () => {
         ),
       /configSections without configSchema/
     );
+  });
+});
+
+describe('manifest: apiVersion contract', () => {
+  const base = { id: 'p', name: 'P', version: '1.0.0', type: 'model-service', wires: ['w'] };
+
+  it('requires a positive integer apiVersion', () => {
+    assert.throws(() => validatePluginManifest(base, 'plugin'), /apiVersion must be a positive integer/);
+    assert.throws(() => validatePluginManifest({ ...base, apiVersion: 0 }, 'plugin'), /apiVersion/);
+    assert.throws(() => validatePluginManifest({ ...base, apiVersion: 1.5 }, 'plugin'), /apiVersion/);
+    assert.doesNotThrow(() => validatePluginManifest({ ...base, apiVersion: 1 }, 'plugin'));
+  });
+
+  it('requires the id to be a lowercase slug (it is a directory name)', () => {
+    // The id addresses `<pluginsRoot>/<id>.zip` and `<pluginsRoot>/unpacked/<id>/`,
+    // so anything path-shaped would let a package steer install/unpack outside
+    // the plugins root, and casing would bypass the `ocr-` reservation.
+    assert.throws(() => validatePluginManifest({ ...base, id: '' }, 'plugin'), /id must be a non-empty string/);
+    for (const id of ['../evil', '../../x', 'a/b', 'a\\b', 'C:x', 'Ocr-x', 'OCR-x', 'a_b', 'a.b', '-lead', ' pad']) {
+      assert.throws(() => validatePluginManifest({ ...base, id }, 'plugin'), /must be a lowercase slug/, id);
+    }
+    for (const id of ['a', 'ab', 'ab-1', 'cursor-gateway', 'ocr-x']) {
+      assert.doesNotThrow(() => validatePluginManifest({ ...base, apiVersion: 1, id }, 'plugin'), id);
+    }
   });
 });
 

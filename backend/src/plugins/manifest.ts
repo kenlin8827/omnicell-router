@@ -10,6 +10,37 @@
  * extension point is claimed SNI hosts; the runtime view reads `wires ?? []`),
  * every other shape rule holds for both plugin types.
  */
+/** Contract version the CURRENT host implements. v1 is the FIRST plugin
+ *  mechanism: there is no legacy or forward compatibility — a package must
+ *  declare EXACTLY this value, anything else is an illegal package (ADR-0017
+ *  §6). A deliberate compatibility window can only be added later, together
+ *  with the test matrix that proves it. */
+export const SUPPORTED_PLUGIN_API = 1;
+
+/** Reject a package built for any other contract version. Called at INSTALL
+ *  (before anything touches disk) and at LOAD (packages already on disk). */
+export function assertSupportedPluginApi(apiVersion: number): void {
+  if (apiVersion !== SUPPORTED_PLUGIN_API) {
+    throw new Error(
+      `plugin apiVersion ${apiVersion} does not match this host's plugin contract (${SUPPORTED_PLUGIN_API}) — rebuild the package with the current packager`
+    );
+  }
+}
+
+/** A plugin id is a PATH COMPONENT — `<pluginsRoot>/<id>.zip`,
+ *  `<pluginsRoot>/unpacked/<id>/`, `<pluginsRoot>/bundled/<id>.zip` — so the
+ *  manifest id is a slug: lowercase alphanumerics and dashes, starting
+ *  alphanumeric. This is the ONE guard for that shape (the host's lifecycle
+ *  routes call it too). Without it a hostile package steers those paths with
+ *  `../..` (write AND recursive delete outside the plugins root), and the
+ *  `ocr-` shipped-package reservation would be bypassable by casing on a
+ *  case-insensitive filesystem. */
+const PLUGIN_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+export function isValidPluginId(id: unknown): id is string {
+  return typeof id === 'string' && PLUGIN_ID.test(id);
+}
+
 export function validatePluginManifest(manifest: unknown, label: string): void {
   const fail = (msg: string): never => {
     throw new Error(`${label}: ${msg}`);
@@ -17,8 +48,14 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) fail('not an object');
   const m = manifest as Record<string, unknown>;
   if (typeof m.id !== 'string' || !m.id) fail('id must be a non-empty string');
+  else if (!isValidPluginId(m.id)) {
+    fail(`id '${m.id}' must be a lowercase slug (a-z, 0-9, '-') — it is used as a plugin directory name`);
+  }
   if (typeof m.name !== 'string' || !m.name) fail('name must be a non-empty string');
   if (typeof m.version !== 'string' || !m.version) fail('version must be a non-empty string');
+  if (typeof m.apiVersion !== 'number' || !Number.isInteger(m.apiVersion) || m.apiVersion < 1) {
+    fail('apiVersion must be a positive integer (the plugin contract version, currently 1)');
+  }
   if (m.type !== 'model-service' && m.type !== 'client-gateway') {
     fail(`unknown plugin type '${String(m.type)}'`);
   }

@@ -16,6 +16,7 @@ describe('plugin package zip-slip guard', () => {
       id: 'slippery',
       name: 'Slippery',
       version: '1.0.0',
+      apiVersion: 1,
       type: 'model-service',
       wires: ['slippery'],
     };
@@ -45,6 +46,7 @@ describe('plugin package zip-slip guard', () => {
       id: 'nested-ok',
       name: 'NestedOk',
       version: '1.0.0',
+      apiVersion: 1,
       type: 'model-service',
       wires: ['nested-ok'],
     };

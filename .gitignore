@@ -25,9 +25,13 @@ tmp-*.html
 # Third-party protocol plugins: vendor-specific protocol knowledge (native
 # transports, signing chains, vendor binaries) is USER-INSTALLED, never
 # distributed by OCR. Each plugin lives in its own (typically private)
-# repository cloned under plugins/<id>/; `bun run plugins:build` packages it
-# into <ocrHome>/plugins/*.zip for the runtime host.
+# repository cloned under plugins/<id>/; `bun run plugins:build` bundles it
+# into the repo-local `.plugin-dist/<id>.zip` artifact (install it through the
+# console's upload — see ADR-0017 §6).
 /plugins/
+
+# Plugin packager output: a build artifact, never the runtime plugins root.
+/.plugin-dist/
 diff.patch
 plugins2/
 frontend/.vite/

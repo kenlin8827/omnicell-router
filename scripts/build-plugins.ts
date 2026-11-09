@@ -1,27 +1,32 @@
 /**
- * Plugin packager: zip every `plugins/<id>/` that carries a
- * plugin.json into `<ocrHome>/plugins/<id>.zip`. The runtime host
- * (backend/src/plugins/host.ts) extracts stale packages on boot and imports
- * the entry. Run via `bun run plugins:build`; wired into the root build.
+ * Plugin packager: bundle + zip every `plugins/<id>/` that carries a
+ * plugin.json into `<repo>/.plugin-dist/<id>.zip` — a build OUTPUT inside the
+ * repo, never the user's OCR home: `bun run build` must not touch operator
+ * state, and a zip dropped in the runtime root is shadowed by the dev tree
+ * anyway. Install one through the console's upload, or unzip it by hand.
+ * Run via `bun run plugins:build`; wired into the root build.
+ *
+ * The entry is BUNDLED (third-party imports inlined) because released hosts
+ * are compiled executables that cannot resolve packages from disk: a
+ * source-only zip fails to load at install time. See ADR-0017 §6.
  *
  * Usage: bun scripts/build-plugins.ts [--check]   (--check: exit 1 on drift, CI mode)
+ *
+ * `--check` compares BYTES, so it must run on the platform the artifact is
+ * published from: Bun's bundler output is stable within one OS/arch (fixed
+ * entry mtimes, sorted walk, cwd-independent headers — see pack.ts), but it is
+ * not guaranteed identical ACROSS platforms, so pinning the check to one OS in
+ * CI is the correct setup rather than expecting a Windows dev and a Linux
+ * runner to agree byte for byte.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validatePluginManifest } from '../backend/src/plugins/manifest.js';
-import { zipPluginDir } from '../backend/src/plugins/pack.js';
+import { bundlePluginDir } from '../backend/src/plugins/pack.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const srcRoot = join(repoRoot, 'plugins');
-
-function ocrHome(): string {
-  const override = process.env.OCR_HOME?.trim();
-  if (override) return override;
-  const home = process.env.USERPROFILE || process.env.HOME || '';
-  if (!home) throw new Error('cannot resolve OCR home (no USERPROFILE/HOME)');
-  return join(home, '.omnicell-router');
-}
 
 // plugin.json IS the single manifest truth, so the packager and the runtime
 // loader (backend/src/plugins/host.ts) share ONE validator — a manifest that
@@ -30,8 +35,10 @@ const validateManifest = (manifest: unknown, dirName: string): void =>
   validatePluginManifest(manifest, `[plugins] ${dirName}/plugin.json invalid`);
 
 const check = process.argv.includes('--check');
-const home = ocrHome();
-const destRoot = join(home, 'plugins');
+// Build output, owned entirely by this script: safe to prune, and never the
+// runtime plugins root (ADR-0017 §6).
+const destRoot = join(repoRoot, '.plugin-dist');
+const produced = new Set<string>();
 if (!existsSync(srcRoot)) {
   console.log(`[plugins] no plugins/ source dir — nothing to package`);
   process.exit(0);
@@ -49,7 +56,14 @@ for (const name of readdirSync(srcRoot)) {
   }
   mkdirSync(destRoot, { recursive: true });
   const dest = join(destRoot, `${name}.zip`);
-  const zipped = zipPluginDir(dir);
+  produced.add(`${name}.zip`);
+  let zipped: Uint8Array;
+  try {
+    zipped = await bundlePluginDir(dir);
+  } catch (err) {
+    console.error(`[plugins] ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
   if (check) {
     const existing = existsSync(dest) ? new Uint8Array(readFileSync(dest)) : undefined;
     const same =
@@ -63,6 +77,15 @@ for (const name of readdirSync(srcRoot)) {
     console.log(`[plugins] packaged ${name} -> ${dest} (${zipped.length} bytes)`);
   }
   built++;
+}
+if (!check) {
+  // A package whose source was removed must not linger in the artifact dir.
+  for (const stale of existsSync(destRoot) ? readdirSync(destRoot) : []) {
+    if (/\.zip$/i.test(stale) && !produced.has(stale)) {
+      rmSync(join(destRoot, stale), { force: true });
+      console.log(`[plugins] pruned stale ${stale}`);
+    }
+  }
 }
 if (check && drift > 0) process.exit(1);
 console.log(`[plugins] ${built} plugin(s) ${check ? 'checked' : 'packaged'}`);

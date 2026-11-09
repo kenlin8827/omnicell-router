@@ -94,8 +94,13 @@ describe('plugin config: artifact store', () => {
 // in .gitignore) and is absent on a fresh clone / CI. Bun's node:test compat
 // layer ignores the `skip` option, so registration stays conditional and the
 // whole describe is only registered when the dev tree exists.
-const cursorGatewayPluginJson = path.resolve(import.meta.dirname, '../../plugins/cursor-gateway/plugin.json');
+//
+// The source tier is OPT-IN (ADR-0017 §6): the loader reads no checkout unless
+// `OCR_PLUGIN_SRC_DIR` names one, so this suite points it at the repo tree.
+const sourceTree = path.resolve(import.meta.dirname, '../../plugins');
+const cursorGatewayPluginJson = path.join(sourceTree, 'cursor-gateway/plugin.json');
 if (fs.existsSync(cursorGatewayPluginJson)) {
+  process.env.OCR_PLUGIN_SRC_DIR = sourceTree;
   describe('plugin config: host read/apply against the dev tree', () => {
     it('cursor-gateway declares its schema and answers merged values', async () => {
       const { loadInstalledPlugins, getPluginConfig, applyPluginConfig } = await import('../src/plugins/host.js');

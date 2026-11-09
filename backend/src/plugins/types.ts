@@ -26,6 +26,9 @@ export interface PluginManifest {
   id: string;
   name: string;
   version: string;
+  /** Plugin contract version (ADR-0017 §6). Must EQUAL the host's
+   *  `SUPPORTED_PLUGIN_API` — v1 promises no legacy or forward compatibility. */
+  apiVersion: number;
   /** Extension axis — 'model-service' (outbound provider executors) or
    *  'client-gateway' (inbound native-protocol gateway, ADR-0017). */
   type: 'model-service' | 'client-gateway';
@@ -274,6 +277,12 @@ export interface ModelServicePluginHost {
   /** Operator configuration, merged (defaults ← stored artifact, validated).
    *  Call-time lookup — always current after a console save. */
   config(): Record<string, unknown>;
+  /** The directory this plugin's files were loaded from — the ONE asset root.
+   *  Packaged plugins are a SINGLE flattened `index.js`, so a path derived
+   *  from `import.meta.url` of an inner source module does not survive
+   *  packaging; a plugin that ships data files (`prompts/`, `protos/`, ...)
+   *  must resolve them from here (ADR-0017 §6). */
+  pluginDir(): string;
   /** Model-pull services (the auto-pull.ts seams, host-implemented). */
   pull: {
     getProviderNode(id: string): { options?: { baseURL?: string; apiKey?: string } } | undefined;
@@ -378,6 +387,11 @@ export interface ClientGatewayHost {
   log(...args: unknown[]): void;
   /** The live OCR home directory (bookkeeping, CA material paths). */
   ocrHome(): string;
+  /** The directory this plugin's files were loaded from — the ONE asset root.
+   *  A packaged plugin is a single flattened `index.js`, so resolving a data
+   *  file relative to an inner source module's `import.meta.url` breaks once
+   *  packaged; always resolve shipped assets from here (ADR-0017 §6). */
+  pluginDir(): string;
   /** Operator configuration, merged (defaults ← stored artifact, validated).
    *  Call-time lookup — always current after a console save. */
   config(): Record<string, unknown>;

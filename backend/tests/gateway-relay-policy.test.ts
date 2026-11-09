@@ -56,6 +56,7 @@ const MANIFEST: PluginManifest = {
   id: 'cursor-gateway',
   name: 'Cursor Gateway',
   version: '0.0.0-test',
+  apiVersion: 1,
   type: 'client-gateway',
   wires: [],
   hosts: ['rejected.example'],
@@ -133,7 +134,7 @@ describe('client-gateway relay: ADR-0018 admission gate', () => {
     setBootRules(REJECT_RULES);
     const port = await closedPort();
     const tap = tapProbe();
-    const sdk = buildGatewayHostSdk(MANIFEST);
+    const sdk = buildGatewayHostSdk(MANIFEST, process.cwd());
     let settle: (r: RelayResult) => void = () => {};
     const relayed = new Promise<RelayResult>((resolve) => (settle = resolve));
     const front = http.createServer((req, res) => {
@@ -165,7 +166,7 @@ describe('client-gateway relay: ADR-0018 admission gate', () => {
     setBootRules(REJECT_RULES);
     const port = await closedPort();
     const tap = tapProbe();
-    const sdk = buildGatewayHostSdk(MANIFEST);
+    const sdk = buildGatewayHostSdk(MANIFEST, process.cwd());
     let settle: (r: RelayResult) => void = () => {};
     const relayed = new Promise<RelayResult>((resolve) => (settle = resolve));
     const front = http2.createServer((req, res) => {
@@ -207,7 +208,7 @@ describe('client-gateway relay: ADR-0018 admission gate', () => {
     });
     const originPort = await listen(origin);
     const tap = tapProbe();
-    const sdk = buildGatewayHostSdk(MANIFEST);
+    const sdk = buildGatewayHostSdk(MANIFEST, process.cwd());
     let settle: (r: RelayResult) => void = () => {};
     const relayed = new Promise<RelayResult>((resolve) => (settle = resolve));
     const front = http.createServer((req, res) => {
