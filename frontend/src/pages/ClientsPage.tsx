@@ -7,7 +7,8 @@ import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
-import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
+import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
@@ -137,7 +138,13 @@ export const ClientsPage: React.FC = () => {
     installed: boolean;
     loaded: boolean;
     disabled: boolean;
+    /** Full plugin view for the in-place settings drawer (name/version). */
+    view: PluginViewInfo | null;
   } | null>(null);
+  /** In-place plugin settings drawer. It edits only the protocol/runtime keys —
+   *  the model surface stays in the card editor — so opening it never navigates
+   *  away or drops this card's draft. */
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   /** Per-client extra concrete models (model-list editors: opencode/dsh/pi) */
   const [extraSel, setExtraSel] = useState<Record<string, string[]>>({});
   /** Per-client custom virtual-tier draft (custom mode): the explicit set the
@@ -260,6 +267,7 @@ export const ClientsPage: React.FC = () => {
             installed: !!plugin,
             loaded: !!plugin?.loaded && !plugin?.disabled,
             disabled: !!plugin?.disabled,
+            view: plugin ?? null,
           });
         })
         .catch(err => console.error('cursor-gateway plugin status:', err));
@@ -1032,7 +1040,7 @@ export const ClientsPage: React.FC = () => {
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
-    // Cursor's launcher only exists to feed the cursor plugin. Hooking it
+    // Cursor's launcher only exists to feed the Cursor Gateway plugin. Hooking it
     // without a loaded plugin would proxy every request transparently while
     // the UI claims OCR is active — block the setup, never the teardown.
     const pluginBlocked = c.name === 'cursor' && cursorGatewayPlugin !== null && !cursorGatewayPlugin.loaded;
@@ -1403,9 +1411,14 @@ export const ClientsPage: React.FC = () => {
                                   >
                                     {t('pluginPage.configSave')}
                                   </button>
-                                  <Link className="btn btn-sm" to="/plugins?plugin=cursor-gateway">
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    disabled={!cursorGatewayPlugin?.view}
+                                    onClick={() => setAdvancedOpen(true)}
+                                  >
                                     {t('clients.cursorAdvancedSettings')}
-                                  </Link>
+                                  </button>
                                 </div>
                               </>
                             );
@@ -1768,6 +1781,13 @@ export const ClientsPage: React.FC = () => {
           )}
         </div>
       </div>
+      {advancedOpen && cursorGatewayPlugin?.view ? (
+        <PluginConfigDrawer
+          plugin={cursorGatewayPlugin.view}
+          onClose={() => setAdvancedOpen(false)}
+          showClientsGuide={false}
+        />
+      ) : null}
     </div>
   );
 };
