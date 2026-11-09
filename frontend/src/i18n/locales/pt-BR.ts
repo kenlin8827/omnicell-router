@@ -353,6 +353,10 @@ export const ptBR: TranslationDict = {
     restartFailed: 'Falha ao enviar o sinal de reinício — execute `ocr start` manualmente',
     restartTimeout: 'O gateway não voltou a tempo — verifique o log ou execute `ocr start` manualmente',
     switchLang: 'Mudar idioma',
+    minimize: 'Minimizar',
+    maximize: 'Maximizar',
+    restore: 'Restaurar',
+    close: 'Fechar',
     themes: {
       light: 'Claro',
       dark: 'Escuro',

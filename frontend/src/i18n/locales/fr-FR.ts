@@ -353,6 +353,10 @@ export const frFR: TranslationDict = {
     restartFailed: 'Échec de l’envoi du signal de redémarrage — lancez `ocr start` manuellement',
     restartTimeout: 'La passerelle n’est pas revenue à temps — consultez le log ou lancez `ocr start` manuellement',
     switchLang: 'Changer de langue',
+    minimize: 'Réduire',
+    maximize: 'Agrandir',
+    restore: 'Restaurer',
+    close: 'Fermer',
     themes: {
       light: 'Clair',
       dark: 'Sombre',

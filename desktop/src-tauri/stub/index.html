@@ -47,6 +47,48 @@
         font-size: 12px;
         color: #52525b;
       }
+      /* The shell window is frameless (decorations(false)), so the splash
+         brings its own title bar: this strip is the drag region (double-click
+         toggles maximize via Tauri's drag script) and hosts the two controls
+         that must work before — and during — console outages. */
+      .titlebar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        left: 0;
+        display: flex;
+        align-items: stretch;
+        justify-content: flex-end;
+        height: 36px;
+      }
+      .tb-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 46px;
+        padding: 0;
+        color: #a1a1aa;
+        cursor: pointer;
+        background: transparent;
+        border: 0;
+      }
+      .tb-btn svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-width: 1.5;
+      }
+      .tb-btn:hover {
+        color: #f4f4f5;
+        background: #27272a;
+      }
+      .tb-btn.tb-close:hover,
+      .tb-btn.tb-close:active {
+        color: #fff;
+        background: #e11d48;
+      }
     </style>
   </head>
   <body>
@@ -56,11 +98,34 @@
          swaps it back in whenever /health stops answering (a restart, an
          environment switch, a crash), so it is rendered again on every
          outage — not just at boot. -->
+    <div class="titlebar" data-tauri-drag-region="deep">
+      <button type="button" class="tb-btn" data-minimize title="Minimize" aria-label="Minimize">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
+      </button>
+      <button type="button" class="tb-btn tb-close" data-close title="Close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </div>
     <div class="box">
       <div class="bolt">⚡</div>
       <div class="spin"></div>
       <div class="t">Starting OmniCellRouter…</div>
       <div class="hint">first start can take ~20s while the gateway initializes</div>
     </div>
+    <script>
+      // The splash is a LOCAL asset, covered by capabilities/main-window.json;
+      // invoke through the injected bridge so the controls work without the
+      // console's remote page or its framework bundle.
+      (() => {
+        const invoke = window.__TAURI_INTERNALS__?.invoke;
+        const run = (cmd) => {
+          try {
+            invoke?.('plugin:window|' + cmd)?.catch(() => {});
+          } catch {}
+        };
+        document.querySelector('[data-minimize]')?.addEventListener('click', () => run('minimize'));
+        document.querySelector('[data-close]')?.addEventListener('click', () => run('close'));
+      })();
+    </script>
   </body>
 </html>

@@ -340,6 +340,10 @@ export const zhCN: TranslationDict = {
     restartFailed: '重启信号发送失败，网关未启动新进程，请手动执行 ocr start',
     restartTimeout: '网关未能在预期时间内恢复，请检查日志或手动执行 ocr start',
     switchLang: '切换系统语言',
+    minimize: '最小化',
+    maximize: '最大化',
+    restore: '还原',
+    close: '关闭',
     themes: {
       light: '浅色',
       dark: '深色',

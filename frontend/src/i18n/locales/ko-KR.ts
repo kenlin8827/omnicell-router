@@ -353,6 +353,10 @@ export const koKR: TranslationDict = {
     restartFailed: '재시작 신호를 보내지 못했습니다 — `ocr start` 를 직접 실행하세요',
     restartTimeout: '게이트웨이가 제시간에 돌아오지 않았습니다 — 로그를 확인하거나 `ocr start` 를 직접 실행하세요',
     switchLang: '언어 전환',
+    minimize: '최소화',
+    maximize: '최대화',
+    restore: '이전 크기로 복원',
+    close: '닫기',
     themes: {
       light: '라이트',
       dark: '다크',

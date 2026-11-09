@@ -352,6 +352,10 @@ export const enUS: TranslationDict = {
     restartFailed: 'Failed to send restart signal — run `ocr start` manually',
     restartTimeout: 'Gateway did not come back in time — check the log or run `ocr start` manually',
     switchLang: 'Switch language',
+    minimize: 'Minimize',
+    maximize: 'Maximize',
+    restore: 'Restore',
+    close: 'Close',
     themes: {
       light: 'Light',
       dark: 'Dark',

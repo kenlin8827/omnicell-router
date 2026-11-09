@@ -353,6 +353,10 @@ export const jaJP: TranslationDict = {
     restartFailed: '再起動シグナルを送れませんでした — 手動で `ocr start` を実行してください',
     restartTimeout: 'ゲートウェイが時間内に復帰しません — ログを確認するか手動で `ocr start` を実行してください',
     switchLang: '言語を切り替える',
+    minimize: '最小化',
+    maximize: '最大化',
+    restore: '元に戻す',
+    close: '閉じる',
     themes: {
       light: 'ライト',
       dark: 'ダーク',

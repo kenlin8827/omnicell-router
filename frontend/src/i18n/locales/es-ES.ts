@@ -351,6 +351,10 @@ export const esES: TranslationDict = {
     restartFailed: 'No se pudo enviar la señal de reinicio — ejecuta `ocr start` manualmente',
     restartTimeout: 'La pasarela no volvió a tiempo — revisa el log o ejecuta `ocr start` manualmente',
     switchLang: 'Cambiar idioma',
+    minimize: 'Minimizar',
+    maximize: 'Maximizar',
+    restore: 'Restaurar',
+    close: 'Cerrar',
     themes: {
       light: 'Claro',
       dark: 'Oscuro',

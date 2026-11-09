@@ -426,42 +426,80 @@ fn offer_cli_shims(
         });
 }
 
-/// Persist the window's last OUTER physical bounds — the standard "remember
-/// my geometry" contract. The restore path compensates for the chrome delta
-/// (outer − client) measured at restore time; persisting inner would grow the
-/// window by that delta on every restart cycle. Merges into desktop.json so
-/// closeToTray survives. Called from CloseRequested — both the exit path and
-/// the tray-hide path.
+/// Persisted geometry contract: the NORMAL (un-maximized) outer bounds plus a
+/// `maximized` flag. Persisting the MAXIMIZED rect as the normal size is the
+/// classic bug: the next launch reopens a screen-filling "normal" window, and
+/// because the maximized state was never recorded the operator can never get
+/// the pre-maximize size back. Called from CloseRequested — both the exit path
+/// and the tray-hide path.
 fn persist_window_bounds(
     home: &std::path::Path,
     win: &tauri::Window,
 ) {
-    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+    // A minimized window reports its off-screen parked rect (Windows parks at
+    // -32000); keep the last known geometry instead of poisoning the file.
+    if win.is_minimized().unwrap_or(false) {
         return;
-    };
-    save_setting(
-        home,
-        "window",
-        serde_json::json!({
-            "x": pos.x, "y": pos.y, "w": size.width, "h": size.height
-        }),
-    );
+    }
+    let maximized = win.is_maximized().unwrap_or(false);
+    // Maximized: the current outer rect IS the maximized rect, so keep the
+    // previously saved normal bounds and only record the flag. Not maximized:
+    // the current outer rect is the geometry to restore.
+    let mut entry = fs::read_to_string(settings_path(home))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("window").cloned())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !maximized {
+        let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+            return;
+        };
+        entry["x"] = pos.x.into();
+        entry["y"] = pos.y.into();
+        entry["w"] = size.width.into();
+        entry["h"] = size.height.into();
+    }
+    entry["maximized"] = maximized.into();
+    save_setting(home, "window", entry);
 }
 
-/// Saved bounds sanity: nonzero, positive origin, and at least a usable
-/// window. Corrupt entries fall back to the first-run default.
-fn load_window_bounds(home: &std::path::Path) -> Option<(i32, i32, u32, u32)> {
+/// Saved geometry: the NORMAL bounds (physical, outer) and whether the window
+/// was maximized. `bounds` is `None` when no usable rect was persisted (a
+/// first-run maximize): the restore path falls back to the 75% default.
+#[derive(Clone, Copy)]
+struct WindowGeometry {
+    bounds: Option<(i32, i32, u32, u32)>,
+    maximized: bool,
+}
+
+/// Corrupt entries fall back to the first-run default.
+///
+/// A file without the `maximized` flag predates state persistence and could
+/// only have stored a maximized rect as a normal size (the app-always-opens-
+/// fullscreen bug), so its bounds are NOT trustworthy: ignore them once and
+/// reopen at the 75% default. The next close writes flag-bearing bounds, so
+/// this migration happens at most once per install.
+fn load_window_geometry(home: &std::path::Path) -> Option<WindowGeometry> {
     let v: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(settings_path(home)).ok()?,
     )
     .ok()?;
     let w = v.get("window")?;
-    let (x, y) = (w.get("x")?.as_i64()? as i32, w.get("y")?.as_i64()? as i32);
-    let (wd, ht) = (w.get("w")?.as_u64()? as u32, w.get("h")?.as_u64()? as u32);
-    if wd < 400 || ht < 300 {
-        return None;
-    }
-    Some((x, y, wd, ht))
+    let Some(maximized) = w.get("maximized").and_then(|b| b.as_bool()) else {
+        return Some(WindowGeometry {
+            bounds: None,
+            maximized: false,
+        });
+    };
+    let bounds = (|| {
+        let (x, y) = (w.get("x")?.as_i64()? as i32, w.get("y")?.as_i64()? as i32);
+        let (wd, ht) = (w.get("w")?.as_u64()? as u32, w.get("h")?.as_u64()? as u32);
+        if wd < 400 || ht < 300 {
+            return None;
+        }
+        Some((x, y, wd, ht))
+    })();
+    Some(WindowGeometry { bounds, maximized })
 }
 
 /// Read a pid-file (trimmed, digits only).
@@ -885,8 +923,15 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     // A login launch stays in the tray: the gateway boots either way, and a
     // window popping up on every system start is the opposite of
     // unobtrusive. The tray "Open Console" raises it on demand.
+    // Frameless: the console draws its own title bar (drag region +
+    // minimize/maximize/close) so the native chrome never fights the app
+    // shell. Resizing stays native — tao keeps the thick-frame hit test for
+    // resizable undecorated windows. The bundled splash carries its own
+    // controls too (stub/index.html): it is shown before the console origin
+    // exists and again during gateway outages.
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("OmniCellRouter")
+        .decorations(false)
         .inner_size(default_w, default_h)
         .visible(!autostart_launch)
         .build()
@@ -905,7 +950,7 @@ fn boot(app: &tauri::App) -> Result<(), String> {
         .map(|m| *m.size());
     let req_w = (default_w * scale).round() as i64;
     let req_h = (default_h * scale).round() as i64;
-    let saved = load_window_bounds(&home);
+    let saved = load_window_geometry(&home);
     let win2 = win.clone();
     std::thread::spawn(move || {
         // WebView2 settles the frame asynchronously — measuring earlier
@@ -918,7 +963,8 @@ fn boot(app: &tauri::App) -> Result<(), String> {
             .outer_size()
             .map(|o| (o.width as i64 - req_w, o.height as i64 - req_h))
             .unwrap_or((0, 0));
-        match saved {
+        let bounds = saved.and_then(|s| s.bounds);
+        match bounds {
             Some((x, y, wo, ho)) => {
                 let _ = win2.set_size(tauri::PhysicalSize::new(
                     (wo as i64 - delta_w).max(400) as u32,
@@ -935,6 +981,13 @@ fn boot(app: &tauri::App) -> Result<(), String> {
                     }
                 }
             }
+        }
+        // Restore the WINDOW STATE, not just its rect: maximizing right after
+        // the normal bounds leaves the OS with those bounds as the
+        // un-maximize restore target. Never serialize the maximized rect as a
+        // normal size (that is the reopen-at-fullscreen bug).
+        if saved.is_some_and(|s| s.maximized) {
+            let _ = win2.maximize();
         }
     });
 

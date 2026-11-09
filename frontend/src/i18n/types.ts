@@ -262,6 +262,11 @@ export interface TranslationDict {
     restartFailed: string;
     restartTimeout: string;
     switchLang: string;
+    /** Frameless title-bar controls (components/WindowControls.tsx). */
+    minimize: string;
+    maximize: string;
+    restore: string;
+    close: string;
     themes: {
       light: string;
       dark: string;

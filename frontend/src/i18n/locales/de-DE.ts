@@ -353,6 +353,10 @@ export const deDE: TranslationDict = {
     restartFailed: 'Neustart-Signal konnte nicht gesendet werden — `ocr start` manuell ausführen',
     restartTimeout: 'Gateway kam nicht rechtzeitig zurück — Log prüfen oder `ocr start` manuell ausführen',
     switchLang: 'Sprache wechseln',
+    minimize: 'Minimieren',
+    maximize: 'Maximieren',
+    restore: 'Wiederherstellen',
+    close: 'Schließen',
     themes: {
       light: 'Hell',
       dark: 'Dunkel',

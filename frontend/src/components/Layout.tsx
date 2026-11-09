@@ -19,6 +19,7 @@ import { useToast } from './ToastProvider';
 import { Combobox } from './Combobox';
 import { QuotaPeek } from './QuotaPeek';
 import { CommandPalette, type CommandItem } from './CommandPalette';
+import { WindowControls } from './WindowControls';
 import { copyToClipboard } from '../lib/clipboard';
 
 interface NavItemDef {
@@ -297,7 +298,10 @@ export const Layout: React.FC = () => {
               <div className="nav-group" key={group.id}>
                 <button type="button" className="nav-group-trigger" onClick={() => toggleGroup(group.id)}
                   aria-expanded={!isCollapsed} title={compact ? t(group.headingKey) : undefined}>
-                  <GroupIcon size={14} /><span>{t(group.headingKey)}</span>
+                  {/* The group glyph is rail-only: with labels visible the
+                      section name already carries the meaning, and a second
+                      icon column competes with the item icons below it. */}
+                  <GroupIcon size={14} className="nav-group-icon" /><span>{t(group.headingKey)}</span>
                   <ChevronDown size={13} className={isCollapsed ? 'is-collapsed' : ''} />
                 </button>
                 {!isCollapsed && <div className="nav-group-items">
@@ -331,7 +335,10 @@ export const Layout: React.FC = () => {
       </aside>
 
       <div className="app-workspace">
-        <header className="app-header">
+        {/* Frameless desktop shell: the header doubles as the window title
+            bar. `deep` = drag anywhere in this subtree except clickable
+            elements (buttons, inputs, links); double-click toggles maximize. */}
+        <header className="app-header" data-tauri-drag-region="deep">
           <div className="header-heading">
             <button type="button" className="app-icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label={t('nav.openMenu')} title={t('nav.openMenu')}>
               <Menu size={19} />
@@ -367,6 +374,7 @@ export const Layout: React.FC = () => {
                 if (ok) api.logout().finally(() => window.location.reload());
               }}><LogOut size={16} /></button>}
           </div>
+          <WindowControls />
         </header>
         <main className="app-main"><div className="page-canvas"><Outlet context={{ status, statusError, refreshStatus }} /></div></main>
       </div>
