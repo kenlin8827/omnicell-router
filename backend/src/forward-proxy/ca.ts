@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import forge from 'node-forge';
-import { getOcrHomeDir } from '../cli/paths.js';
+import { getOcrHomeDir, getSharedDataRootDir } from '../cli/paths.js';
 
 /**
  * MITM CA + per-host certificate minting for the inbound forward proxy.
@@ -121,13 +121,64 @@ export function ensureCa(caDir: string, commonName: string = CA_CN): CaMaterial 
 }
 
 /**
+ * The machine-wide CA directory every OCR book-set shares: the per-user data
+ * root (the desktop shell's default OCR_HOME) + `forward-proxy`. A trust anchor
+ * is MACHINE state — a second install must adopt the root the operator already
+ * imported instead of minting a same-CN twin that clients can pick by mistake
+ * (`CERT_SIGNATURE_FAILURE`). `forwardProxy.caDir` is the operator override;
+ * `OCR_CA_DIR` pins the default for sandboxed test runs.
+ */
+export function defaultCaDir(): string {
+  return path.join(getSharedDataRootDir(), 'forward-proxy');
+}
+
+const CA_FILES = ['ca.pem', 'ca-key.pem', 'leaf-key.pem'] as const;
+
+/**
+ * Adopt a legacy per-home CA into the shared dir. Upgrades from the old default
+ * (`<ocrHome>/forward-proxy`) MUST keep the same identity: regenerating would
+ * invalidate the root the operator already imported into the OS trust store.
+ * Runs only while the shared dir holds no CA; each file lands through
+ * temp+rename so a concurrent boot never reads a half-written key. Best-effort:
+ * a failed adoption falls through to minting a fresh CA in the shared dir.
+ */
+function adoptLegacyCa(targetDir: string): void {
+  const legacyDir = path.join(getOcrHomeDir(), 'forward-proxy');
+  if (path.resolve(legacyDir) === path.resolve(targetDir)) return;
+  if (CA_FILES.some((name) => fs.existsSync(path.join(targetDir, name)))) return;
+  if (!CA_FILES.every((name) => fs.existsSync(path.join(legacyDir, name)))) return;
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+    for (const name of CA_FILES) {
+      const dest = path.join(targetDir, name);
+      if (fs.existsSync(dest)) continue;
+      const tmp = `${dest}.${process.pid}.tmp`;
+      try {
+        fs.copyFileSync(path.join(legacyDir, name), tmp);
+        fs.renameSync(tmp, dest);
+        fs.chmodSync(dest, 0o600);
+      } catch {
+        fs.rmSync(tmp, { force: true });
+      }
+    }
+  } catch {
+    // Unreadable legacy dir or a read-only data root: fall through to a fresh CA.
+  }
+}
+
+/**
  * Resolve the MITM CA directory: the operator's `forwardProxy.caDir` override,
- * else the per-install default under OCR home. ONE spelling for the proxy, the
- * console CA download and the system-proxy trust hint — a drift twin here
- * points users at a certificate the proxy does not use.
+ * else the `OCR_CA_DIR` sandbox pin, else the machine-wide default (adopting a
+ * legacy per-home CA first). ONE spelling for the proxy, the console CA
+ * download and the system-proxy trust hint — a drift twin here points users at
+ * a certificate the proxy does not use.
  */
 export function resolveCaDir(caDir?: string): string {
-  return caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+  const explicit = caDir?.trim() || process.env.OCR_CA_DIR?.trim();
+  if (explicit) return explicit;
+  const dir = defaultCaDir();
+  adoptLegacyCa(dir);
+  return dir;
 }
 
 /** Display-safe identity of the persisted CA (console CA card). */

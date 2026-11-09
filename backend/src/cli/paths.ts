@@ -16,6 +16,30 @@ export function getOcrHomeDir(): string {
 }
 
 /**
+ * Per-user data root shared by EVERY OCR book-set on this machine. Mirrors the
+ * desktop shell's default OCR_HOME (`desktop/src-tauri/src/main.rs`
+ * `default_ocr_home`): `%LOCALAPPDATA%\omnicell-router` on Windows, the XDG
+ * data dir on Linux, `~/Library/Application Support` on macOS.
+ *
+ * The MITM CA lives here, not under an individual OCR home: a trust anchor is
+ * machine state, so the second install must ADOPT the certificate the operator
+ * already imported instead of minting a same-CN twin (the `CERT_SIGNATURE_FAILURE`
+ * shadowing class). Book-set state (access logs, snapshots) stays under
+ * `getOcrHomeDir()`.
+ */
+export function getSharedDataRootDir(): string {
+  if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), 'AppData', 'Local');
+    return path.join(local, 'omnicell-router');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'omnicell-router');
+  }
+  const xdg = process.env.XDG_DATA_HOME?.trim();
+  return path.join(xdg || path.join(os.homedir(), '.local', 'share'), 'omnicell-router');
+}
+
+/**
  * The one OpenClaw config file, relocated by the vendor's own `OPENCLAW_CONFIG_PATH` (which does
  * NOT follow the state dir). Shared by the takeover client and the harness host adapter so the
  * gateway can never write one file while the runtime reads another.

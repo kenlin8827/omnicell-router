@@ -113,10 +113,16 @@ function sandboxEnvFor(tag: string): Record<string, string | undefined> {
   // must never read or rewrite the operator's `~/.openclaw`.
   const openclawState = path.join(dir, 'openclaw');
   fs.mkdirSync(openclawState, { recursive: true });
+  // The MITM CA is machine-wide by default (forward-proxy/ca.ts defaultCaDir),
+  // so it would otherwise be minted into the OPERATOR's data root and leak into
+  // every run. OCR_CA_DIR pins the default into this file's sandbox.
+  const caDir = path.join(dir, 'forward-proxy');
+  fs.mkdirSync(caDir, { recursive: true });
   const env: Record<string, string | undefined> = {
     ...process.env,
     OCR_HOME: ocrHome,
     OCR_ENV: SANDBOX_ENV,
+    OCR_CA_DIR: caDir,
     XDG_CONFIG_HOME: xdgConfig,
     XDG_DATA_HOME: xdgData,
     OPENCLAW_STATE_DIR: openclawState,

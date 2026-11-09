@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { ClientAdapter, ClientActionResult, probeClientVersion, quoteWindowsArgs, resolveForwardProxyEndpoint, runCommand } from './base.js';
 import { ClientArtifact, ClientHookStatus } from '../types.js';
@@ -323,22 +324,39 @@ async function probeDarwinCaTrusted(caPath?: string): Promise<boolean | 'unknown
  */
 async function probeCaTrusted(caPath?: string): Promise<boolean | 'unknown'> {
   try {
-    if (process.platform === 'win32') {
-      // certutil dumps both Local Machine and Current User Root stores; our CA
-      // is trusted only if its CN appears in one of them.
-      const machine = await runCommand('certutil', ['-store', 'Root']);
-      const user = await runCommand('certutil', ['-user', '-store', 'Root']);
-      const rx = new RegExp(CA_CN, 'i');
-      if (machine.stdout && rx.test(machine.stdout)) return true;
-      if (user.stdout && rx.test(user.stdout)) return true;
-      if (!machine.stdout && !user.stdout) return 'unknown';
-      return false;
-    }
+    if (process.platform === 'win32') return probeWindowsCaTrusted(caPath);
     if (process.platform === 'darwin') return probeDarwinCaTrusted(caPath);
     return probeLinuxCaTrusted(caPath);
   } catch {
     return 'unknown';
   }
+}
+
+/**
+ * Windows trust: match the EXACT certificate, not just the CN. Two installs
+ * could share `CA_CN` (legacy per-home CAs minted before the key-derived OU),
+ * and the CN-only witness reported "trusted" while the TLS verifier kept
+ * selecting the other root — the false green that hid Cursor's
+ * CERT_SIGNATURE_FAILURE. A missing certificate is a definite false; a tool
+ * that could not run stays 'unknown'.
+ */
+async function probeWindowsCaTrusted(caPath?: string): Promise<boolean | 'unknown'> {
+  if (!caPath || !fs.existsSync(caPath)) {
+    // No bundle to identify: keep the historical CN witness (best effort).
+    const machine = await runCommand('certutil', ['-store', 'Root']);
+    const user = await runCommand('certutil', ['-user', '-store', 'Root']);
+    const rx = new RegExp(CA_CN, 'i');
+    if (machine.stdout && rx.test(machine.stdout)) return true;
+    if (user.stdout && rx.test(user.stdout)) return true;
+    return !machine.stdout && !user.stdout ? 'unknown' : false;
+  }
+  const thumb = new crypto.X509Certificate(fs.readFileSync(caPath)).fingerprint.replace(/:/g, '');
+  const machine = await runCommand('certutil', ['-store', 'Root', thumb]);
+  if (machine.ok) return true;
+  const user = await runCommand('certutil', ['-user', '-store', 'Root', thumb]);
+  if (user.ok) return true;
+  const output = `${machine.stdout}${machine.stderr}${user.stdout}${user.stderr}`;
+  return /NTE_NOT_FOUND|0x80090011|not found|找不到/i.test(output) ? false : 'unknown';
 }
 
 /** CA-trust probe cache: one entry per CA path, 60s TTL — the console polls
@@ -395,7 +413,7 @@ export class CursorClientAdapter implements ClientAdapter {
       details = `Forward proxy enabled (port ${live.port ?? fp.port}${live.running ? ', running' : ', NOT running'}) — CA trust: ${caTrusted === true ? 'trusted' : caTrusted === false ? 'NOT trusted' : 'unknown'} — run setup to write the Cursor launcher`;
     } else {
       hooked = true;
-      details = `Cursor starts via \`ocr cursor\` (or ${launcherPath()}) with --proxy-server=${fp.url}; quit Cursor fully before launching — an existing instance ignores a later launcher invocation; forward proxy ${live.running ? `running on port ${live.port ?? fp.port}` : 'NOT running (start the gateway)'}; CA trust: ${caTrusted === true ? 'trusted' : caTrusted === false ? 'NOT trusted — import <ocrHome>/forward-proxy/ca.pem manually' : 'unknown'}`;
+      details = `Cursor starts via \`ocr cursor\` (or ${launcherPath()}) with --proxy-server=${fp.url}; quit Cursor fully before launching — an existing instance ignores a later launcher invocation; forward proxy ${live.running ? `running on port ${live.port ?? fp.port}` : 'NOT running (start the gateway)'}; CA trust: ${caTrusted === true ? 'trusted' : caTrusted === false ? `NOT trusted — import ${fp.caPath} manually` : 'unknown'}`;
     }
 
     return {

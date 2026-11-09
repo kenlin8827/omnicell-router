@@ -4,8 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
-import { getOcrHomeDir } from '../src/cli/paths.js';
-import { CA_CN } from '../src/forward-proxy/ca.js';
+import { CA_CN, resolveCaDir } from '../src/forward-proxy/ca.js';
 
 /**
  * Contract tests for GET /api/admin/proxy/ca/meta — the identity behind the
@@ -13,8 +12,8 @@ import { CA_CN } from '../src/forward-proxy/ca.js';
  *
  * The card exists so an operator can check that the root they installed is the
  * root this proxy signs with, so the endpoint must (a) resolve the SAME CA dir
- * the proxy uses and (b) never leak key material. The isolated runner points
- * OCR_HOME at a sandbox, so the CA generated here is this test home's own.
+ * the proxy uses and (b) never leak key material. The isolated runner pins
+ * OCR_CA_DIR into the sandbox, so the CA generated here is the test's own.
  */
 describe('Forward-proxy CA identity (GET /api/admin/proxy/ca/meta)', () => {
   const baseConfig = loadConfig();
@@ -22,7 +21,7 @@ describe('Forward-proxy CA identity (GET /api/admin/proxy/ca/meta)', () => {
   baseConfig.webAuth = { enabled: false };
   const { app } = createServer(baseConfig, true);
 
-  const caDir = path.join(getOcrHomeDir(), 'forward-proxy');
+  const caDir = resolveCaDir();
 
   before(() => {
     // Start from an empty dir so the assertions describe a freshly minted CA.

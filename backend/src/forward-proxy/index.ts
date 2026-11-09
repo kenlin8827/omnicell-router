@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { resolveCaDir } from './ca.js';
+import { getOcrHomeDir } from '../cli/paths.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import type { ForwardProxyConfig } from '../config/types.js';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS } from '../config/defaults.js';
@@ -38,7 +39,8 @@ export function assertForwardProxyBindSafety(host: string, authToken: string | u
 /**
  * Start the inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server).
  * Enabled via config.yaml `forwardProxy.enabled`; defaults: port 4555,
- * loopback-only, CA under ~/.omnicell-router/forward-proxy/.
+ * loopback-only. The MITM CA lives in the machine-wide shared dir (see
+ * `resolveCaDir`); the access log stays under this book-set's home.
  */
 export async function startForwardProxy(
   cfg: ForwardProxyConfig,
@@ -55,7 +57,7 @@ export async function startForwardProxy(
   setGatewayChatServices(buildGatewayChatServices(orchestrator));
   // Hot-apply seam: the access-log flags re-read the live runtime ref per
   // request, so console saves need no restart.
-  setProxyAccessLogPersistDir(path.join(caDir, 'access-log'));
+  setProxyAccessLogPersistDir(path.join(getOcrHomeDir(), 'forward-proxy', 'access-log'));
   initProxyAccessLogPersistence();
   setProxyAccessLogSettingsReader(() => {
     const fp = getRuntimeConfigRef()?.forwardProxy;

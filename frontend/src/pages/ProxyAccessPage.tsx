@@ -1421,6 +1421,26 @@ const ENV_SNIPPETS = (server: string, caPath: string): Record<string, string> =>
   sh: `export HTTP_PROXY=${server}\nexport HTTPS_PROXY=${server}\nexport NO_PROXY=localhost,127.0.0.1\nexport NODE_EXTRA_CA_CERTS='${caPath}'`,
 });
 
+/** One OS-tagged command row of the CA trust wizard (install AND uninstall). */
+const TrustCmdRow: React.FC<{ os: string; cmd: string; hint?: string }> = ({ os, cmd, hint }) => (
+  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+    <span
+      className="badge"
+      style={{
+        flexShrink: 0, minWidth: '60px', justifyContent: 'center',
+        textTransform: 'none', letterSpacing: 0,
+        color: 'var(--text-muted)', border: '1px solid var(--card-border)',
+      }}
+    >
+      {os}
+    </span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+      <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', overflowWrap: 'anywhere' }}>{cmd}</code>
+      {hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}>{hint}</div>}
+    </div>
+  </div>
+);
+
 /**
  * OS system-proxy ownership card: snapshot → point the OS at the inbound
  * forward proxy → one-click restore. WinINET / networksetup / gsettings per
@@ -1570,10 +1590,13 @@ export const ProxyAccessPage: React.FC = () => {
    *  example shows the real file instead of a placeholder. */
   const [caMeta, setCaMeta] = useState<CaMeta | null>(null);
   /** A failed `/ca/meta` (older gateway, offline console) must not strand the
-   *  wizard on "Loading…": fall back to the documented `<ocrHome>` placeholder
+   *  wizard on "Loading…": fall back to the documented `<appData>` placeholder
    *  the help copy already uses, so every snippet still renders. */
   const [caMetaFailed, setCaMetaFailed] = useState(false);
   const [caDetailsOpen, setCaDetailsOpen] = useState(false);
+  /** Uninstall commands are a rare, destructive follow-up — collapsed by
+   *  default so the trust step stays install-only until asked. */
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; members?: number; wire?: string }[]>([]);
   /** Current wizard step id */
   const [step, setStep] = useState('1');
@@ -1796,12 +1819,22 @@ export const ProxyAccessPage: React.FC = () => {
   // config card above). Steps: 1 trust CA · 2 point clients · 3 verify.
   // System-store install snippets: one row per OS so the platform reads as a
   // tag and the command as code, instead of one pre-line text blob.
-  const caPath = caMeta?.path ?? (caMetaFailed ? '<ocrHome>/forward-proxy/ca.pem' : undefined);
+  const caPath = caMeta?.path ?? (caMetaFailed ? '<appData>/forward-proxy/ca.pem' : undefined);
   const sysInstallRows: { os: string; cmd: string; hint?: string }[] = caPath
     ? [
         { os: 'Windows', cmd: t('forwardProxy.sysInstallWinCmd', { caPath }), hint: t('forwardProxy.sysInstallWinHint', { caPath }) },
         { os: 'macOS', cmd: t('forwardProxy.sysInstallMacCmd', { caPath }) },
         { os: 'Linux', cmd: t('forwardProxy.sysInstallLinuxCmd', { caPath }) },
+      ]
+    : [];
+  // Uninstall mirrors the install: same OS rows, the SAME subject/identity the
+  // trust probe looks for. The commands are identity-based on purpose — they
+  // also remove a stale same-CN root left by an older per-home CA.
+  const sysRemoveRows: { os: string; cmd: string; hint?: string }[] = caPath
+    ? [
+        { os: 'Windows', cmd: t('forwardProxy.sysRemoveWinCmd'), hint: t('forwardProxy.sysRemoveWinHint') },
+        { os: 'macOS', cmd: t('forwardProxy.sysRemoveMacCmd'), hint: t('forwardProxy.sysRemoveMacHint') },
+        { os: 'Linux', cmd: t('forwardProxy.sysRemoveLinuxCmd') },
       ]
     : [];
 
@@ -1816,24 +1849,24 @@ export const ProxyAccessPage: React.FC = () => {
           {caPath ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.sysInstallTitle')}</div>
-              {sysInstallRows.map(row => (
-                <div key={row.os} style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
-                  <span
-                    className="badge"
-                    style={{
-                      flexShrink: 0, minWidth: '60px', justifyContent: 'center',
-                      textTransform: 'none', letterSpacing: 0,
-                      color: 'var(--text-muted)', border: '1px solid var(--card-border)',
-                    }}
-                  >
-                    {row.os}
-                  </span>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
-                    <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', overflowWrap: 'anywhere' }}>{row.cmd}</code>
-                    {row.hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}>{row.hint}</div>}
-                  </div>
+              {sysInstallRows.map(row => <TrustCmdRow key={row.os} {...row} />)}
+              <details
+                open={removeOpen}
+                onToggle={e => setRemoveOpen((e.target as HTMLDetailsElement).open)}
+                style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}
+              >
+                <summary style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', listStyle: 'none' }}>
+                  <ChevronDown
+                    size={12}
+                    style={{ flexShrink: 0, transform: removeOpen ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
+                  />
+                  <span>{t('forwardProxy.sysRemoveTitle')}</span>
+                </summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '10px' }}>
+                  {sysRemoveRows.map(row => <TrustCmdRow key={`remove-${row.os}`} {...row} />)}
+                  <div style={{ color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{t('forwardProxy.sysRemoveNote')}</div>
                 </div>
-              ))}
+              </details>
             </div>
           ) : (
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('common.loading')}</div>

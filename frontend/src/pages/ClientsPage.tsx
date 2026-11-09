@@ -233,6 +233,10 @@ export const ClientsPage: React.FC = () => {
    *  reads it (null = older gateway without the field, banner suppressed). */
   const [fpEnabled, setFpEnabled] = useState<boolean | null>(null);
   const [fpRunning, setFpRunning] = useState<boolean | null>(null);
+  /** Exact MITM CA path (from the console CA card) for the trust hints —
+   *  the CA is machine-wide now, so the hint must print the real path rather
+   *  than assume it lives under this book-set's OCR_HOME. */
+  const [caPath, setCaPath] = useState('');
   const loadClients = async () => {
     try {
       const data = await api.getStatus();
@@ -308,6 +312,7 @@ export const ClientsPage: React.FC = () => {
     api.getApiKeys().then(r => setApiKeys((r.keys || []).filter(k => k.enabled))).catch(() => {});
     api.getModelProfiles().then(p => { setProfiles(p); setProfilesReady(true); }).catch(() => setProfilesReady(true));
     api.getClientProfileMemory().then(m => { memRef.current = m; setMem(m); }).catch(() => { memRef.current = {}; setMem({}); });
+    api.getProxyCaMeta().then(m => setCaPath(m.path)).catch(() => {});
   }, []);
 
   // Cursor's model surface is plugin config, not the launcher adapter. Load it
@@ -1246,7 +1251,7 @@ export const ClientsPage: React.FC = () => {
 
                     {(c.name === 'opencode-proxy' || c.name === 'cursor') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
-                        {t(c.name === 'cursor' ? 'clients.cursorHint' : 'clients.proxyHint')}
+                        {t(c.name === 'cursor' ? 'clients.cursorHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
                       </div>
                     )}
 
