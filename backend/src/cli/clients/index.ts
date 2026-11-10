@@ -9,7 +9,8 @@ import { GrokClientAdapter } from './grok.js';
 import { OmpClientAdapter } from './omp.js';
 import { KimiClientAdapter } from './kimi.js';
 import { OpenClawClientAdapter } from './openclaw.js';
-import { CursorClientAdapter } from './cursor.js';
+import { CursorProxyClientAdapter } from './cursor-proxy.js';
+import { QoderProxyClientAdapter } from './qoder-proxy.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
@@ -23,7 +24,8 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   grok: new GrokClientAdapter(),
   kimi: new KimiClientAdapter(),
   openclaw: new OpenClawClientAdapter(),
-  cursor: new CursorClientAdapter(),
+  'cursor-proxy': new CursorProxyClientAdapter(),
+  'qoder-proxy': new QoderProxyClientAdapter(),
 };
 
 export function getClientAdapter(name: string): ClientAdapter | null {
@@ -49,7 +51,7 @@ export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
           };
         }
       }
-      return status;
+      return { ...status, hookKind: adapter.hookKind };
     })
   );
 }

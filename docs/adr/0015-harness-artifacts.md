@@ -69,9 +69,10 @@
 
 ## Context
 
-The gateway already owns a **client** relationship with ten runtimes (`SupportedClient`: `opencode`,
-`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`). That relationship is about **traffic**: an adapter
-writes the runtime's model/auth config so requests flow through the gateway, and stops there.
+The gateway already owns a **client** relationship with twelve runtimes (`SupportedClient`: `opencode`,
+`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `cursor-proxy`,
+`qoder-proxy`). That relationship is about **traffic**: an adapter makes the runtime's requests flow
+through the gateway (config rewrite, service env, or a proxy launcher), and stops there.
 
 What the runtimes can additionally be given — **skills** (instruction folders), **MCP servers** (tool
 backends), **plugins** (runtime plugins/packages) — is otherwise installed by each vendor's own
@@ -99,7 +100,8 @@ deliberately does not.
 | artifact | one installable unit of a given kind | manifest record + materialized copies |
 
 `opencode-proxy` is a **hook mode of the same runtime**, not a second artifact host: the harness domain
-exposes exactly one `opencode` target. Harness state never enters the routing truth chain, never touches
+exposes exactly one `opencode` target. The same shape holds for `cursor-proxy` (host `cursor`) and
+`qoder-proxy` (no host yet). Harness state never enters the routing truth chain, never touches
 credentials (ADR-0006), and never reads provider definitions (ADR-0010).
 
 ### D2 — Host landings live in one adapter per host
@@ -186,8 +188,9 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   landing). A runtime launched from a shell
   with a different override is invisible here, so a copy on a lower-precedence root is **never**
   reported as "not read".
-- **`host ≠ SupportedClient`.** Cursor/VS Code/Zed/Windsurf are artifact hosts that will never be
-  traffic clients; the traffic enum is not widened for them.
+- **`host ≠ SupportedClient`.** Cursor is both an artifact host and a proxy-access traffic client
+  (`cursor-proxy`); the host id stays `cursor` because the harness domain reads artifacts, not traffic.
+  VS Code/Zed/Windsurf are artifact hosts only; the traffic enum is not widened for them.
 - **Scope — global and project.** The accept list is one constant, `ENABLED_SCOPES`
   (`harness/scopes.ts`), and it holds `['global', 'project']`. Everything product-facing reads it:
   the install/edit routes refuse anything else (`unsupported_scope`), `scanInventory` reads the

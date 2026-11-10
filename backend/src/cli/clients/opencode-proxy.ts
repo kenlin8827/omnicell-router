@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ClientAdapter, ClientActionResult, resolveForwardProxyEndpoint, runCommand, type CommandResult, type ForwardProxyEndpoint } from './base.js';
+import { ClientAdapter, ClientActionResult, resolveForwardProxyEndpoint, type ForwardProxyEndpoint } from './base.js';
+import { runCommand, type CommandResult } from '../../utils/run-command.js';
 import { ClientHookStatus } from '../types.js';
 import { getOcrHomeDir } from '../paths.js';
-import { resolveCaDir } from '../../forward-proxy/ca.js';
+import { caCertPath } from '../../forward-proxy/ca.js';
 
 /**
  * OpenCode "proxy mode" client adapter.
@@ -42,10 +43,6 @@ import { resolveCaDir } from '../../forward-proxy/ca.js';
 
 const PROXY_ENV_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS'] as const;
 const LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,::1';
-
-function defaultCaPath(): string {
-  return path.join(resolveCaDir(), 'ca.pem');
-}
 
 /** Stable sidecar recording the service env values we replaced (teardown restores them). */
 function metaPath(): string {
@@ -156,7 +153,7 @@ function looksLikeOurs(key: string, value: string, fp: ForwardProxyEndpoint | nu
   if (fp && v === fp.url) return true;
   if (key === 'NO_PROXY') return v.replace(/\s/g, '') === LOOPBACK_NO_PROXY;
   if (key === 'NODE_EXTRA_CA_CERTS') {
-    const ours = path.resolve(fp?.caPath || defaultCaPath());
+    const ours = path.resolve(fp?.caPath || caCertPath());
     try {
       return path.resolve(v) === ours;
     } catch {
@@ -168,15 +165,16 @@ function looksLikeOurs(key: string, value: string, fp: ForwardProxyEndpoint | nu
 
 export class OpenCodeProxyClientAdapter implements ClientAdapter {
   name = 'opencode-proxy' as const;
+  hookKind = 'service-env' as const;
   displayName = 'OpenCode (Proxy Mode)';
 
   getConfigPath(): string {
     // Proxy mode owns no client config file; the meaningful artifact is the
     // MITM CA written into opencode's trust store (NODE_EXTRA_CA_CERTS).
-    return resolveForwardProxyEndpoint()?.caPath || defaultCaPath();
+    return resolveForwardProxyEndpoint()?.caPath || caCertPath();
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const fp = resolveForwardProxyEndpoint();
     const probe = await probeServiceEnv();
     const exists = probe.ok; // CLI reachable AND the v2 `service` subcommand works

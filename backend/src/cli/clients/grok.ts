@@ -25,6 +25,7 @@ import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
  */
 export class GrokClientAdapter implements ClientAdapter {
   name = 'grok' as const;
+  hookKind = 'config' as const;
   displayName = 'Grok CLI';
 
   /** Provider table id this adapter owns inside `[model_providers]`. */
@@ -38,7 +39,7 @@ export class GrokClientAdapter implements ClientAdapter {
     return path.join(os.homedir(), '.grok', 'config.toml');
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

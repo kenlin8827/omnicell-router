@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop, getRunningPid, getDaemonInfo } from './daemon.js';
 import { setupClient, teardownClient } from './clients/index.js';
-import { defaultGatewayPort } from './clients/base.js';
-import { runCursorLauncher } from './clients/cursor.js';
+import { defaultGatewayPort, type ClientActionWarning } from './clients/base.js';
+import { runCursorLauncher } from './clients/cursor-proxy.js';
+import { runQoderLauncher } from './clients/qoder-proxy.js';
 import { registerGlobalShims, unregisterGlobalShims } from './shim.js';
 import { CliAction, SupportedClient } from './types.js';
 import { APP_VERSION } from '../version.js';
@@ -36,6 +37,21 @@ ${C.cyan}${C.bold}  ⚡ OmniCellRouter (OCR)${C.reset} ${C.dim}v${APP_VERSION}${
 `);
 }
 
+/** Post-setup advisories as CLI lines — the console renders the same codes as
+ *  a warning toast; a CLI hook must not look healthy when HTTPS will fail. */
+function formatClientWarnings(warnings: ClientActionWarning[] | undefined): string[] {
+  return (warnings ?? []).map((w) => {
+    switch (w.code) {
+      case 'ca_not_trusted':
+        return `The OS trust store does not contain the CA — HTTPS clients will fail TLS until you import ${w.params?.path ?? 'the MITM CA'}.`;
+      case 'ca_trust_unknown':
+        return 'CA trust could not be verified on this platform — check the Proxy Access setup wizard if HTTPS fails.';
+      case 'proxy_not_running':
+        return `The forward proxy is not running on port ${w.params?.port ?? '?'} — start the gateway before launching.`;
+    }
+  });
+}
+
 function printHelp(): void {
   printBanner();
   console.log(`${C.bold}USAGE:${C.reset}
@@ -59,10 +75,13 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.magenta}ocr setup codex${C.reset}         Hook Codex / OpenAI-compatible CLI to local OCR gateway
   ${C.magenta}ocr setup pi${C.reset}            Hook Pi coding agent (models.json provider) to local OCR gateway
   ${C.magenta}ocr setup dsh${C.reset}           Hook DeepSeek Harness (web profile patch) to local OCR gateway
-  ${C.magenta}ocr setup cursor${C.reset}        Hook Cursor through the OCR forward proxy (writes the launchers)
+  ${C.magenta}ocr setup cursor-proxy${C.reset}  Hook Cursor through the OCR forward proxy (writes the launchers)
+  ${C.magenta}ocr setup qoder-proxy${C.reset}   Hook Qoder (desktop + qodercli) through the OCR forward proxy
 
   ${C.magenta}ocr cursor${C.reset} [args]        Launch Cursor through the OCR launcher (run setup first)
   ${C.magenta}ocr cursor-agent${C.reset} [args]  Launch the cursor-agent CLI through the OCR launcher
+  ${C.magenta}ocr qoder${C.reset} [args]         Launch Qoder through the OCR launcher
+  ${C.magenta}ocr qoder-cli${C.reset} [args]     Launch the qodercli CLI through the OCR launcher
 
   ${C.yellow}ocr teardown opencode${C.reset}   Unhook OpenCode and restore original configuration
   ${C.yellow}ocr teardown opencode-proxy${C.reset} Unhook OpenCode proxy mode and restore service env
@@ -70,7 +89,8 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown codex${C.reset}      Unhook Codex and restore standard settings
   ${C.yellow}ocr teardown pi${C.reset}         Unhook Pi and remove the OCR provider entry
   ${C.yellow}ocr teardown dsh${C.reset}        Unhook DeepSeek Harness and remove the OCR provider route
-  ${C.yellow}ocr teardown cursor${C.reset}     Unhook Cursor and remove the OCR launchers
+  ${C.yellow}ocr teardown cursor-proxy${C.reset} Unhook Cursor and remove the OCR launchers
+  ${C.yellow}ocr teardown qoder-proxy${C.reset}  Unhook Qoder and remove both OCR launchers
 
 
 
@@ -86,6 +106,19 @@ ${C.bold}SYSTEM COMMANDS:${C.reset}
   ocr --version, -v       Show current OCR version
   ocr --help, -h          Display this help manual
 `);
+}
+/** Bare launch verbs name the target tool, never a hook target: point the
+ *  operator at the right id instead of the generic unknown-client message. */
+const LAUNCH_VERB_HOOK_TARGETS: Record<string, SupportedClient> = {
+  cursor: 'cursor-proxy',
+  'cursor-agent': 'cursor-proxy',
+  qoder: 'qoder-proxy',
+  'qoder-cli': 'qoder-proxy',
+};
+
+function launchVerbHint(target: string, verb: 'setup' | 'teardown'): string | null {
+  const hookTarget = LAUNCH_VERB_HOOK_TARGETS[target.toLowerCase()];
+  return hookTarget ? `'${target}' is a launch verb, not a hook target. Run \`ocr ${verb} ${hookTarget}\`.` : null;
 }
 
 async function handleStatus(): Promise<void> {
@@ -240,32 +273,45 @@ async function handleEnvCommand(args: string[]): Promise<void> {
 /**
  * Flags a caller may send through a passthrough verb to ask the TARGET for
  * information; used to explain a silent detach instead of exiting 0 with no
- * output (see `handleCursorLaunch`).
+ * output (see `reportLaunch`).
  */
 const TARGET_INFO_FLAGS = new Set(['-h', '--help', 'help', '-v', '-V', '--version', 'version']);
 
-/**
- * `ocr cursor` / `ocr cursor-agent` are PASSTHROUGH verbs: every remaining
- * argument belongs to the target tool (`--help` and `--version` included), so
- * they are dispatched before OCR's own flag parsing.
- */
-async function handleCursorLaunch(action: 'cursor' | 'cursor-agent', argv: string[]): Promise<void> {
-  const res = await runCursorLauncher(action === 'cursor' ? 'ide' : 'agent', argv);
+/** Shared reporting for every launcher-backed passthrough verb. */
+async function reportLaunch(
+  verb: string,
+  res: { ok: boolean; code: number; detached: boolean; message?: string },
+  argv: string[],
+): Promise<void> {
   if (!res.ok) {
     if (res.message) console.error(`${C.red}✗ ${res.message}${C.reset}`);
     process.exitCode = res.code || 1;
     return;
   }
-  // The win32/darwin IDE launcher detaches Cursor on purpose, so the target's
-  // own stdio and exit code never come back. Say so instead of exiting 0 in
-  // silence when the caller asked the target for help/version output.
+  // The win32/darwin desktop launcher detaches the app on purpose, so the
+  // target's own stdio and exit code never come back. Say so instead of
+  // exiting 0 in silence when the caller asked the target for help/version.
   if (res.detached && argv.some(a => TARGET_INFO_FLAGS.has(a))) {
     console.error(
-      `${C.dim}\`ocr ${action}\` starts the target detached on ${process.platform}, so its --help/--version output and exit code belong to the app it launches.${C.reset}`
+      `${C.dim}\`ocr ${verb}\` starts the target detached on ${process.platform}, so its --help/--version output and exit code belong to the app it launches.${C.reset}`
     );
   }
   // exitCode, not process.exit: a piped stdout/stderr must be flushed first.
   process.exitCode = res.code;
+}
+
+/**
+ * `ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` are
+ * PASSTHROUGH verbs: every remaining argument belongs to the target tool
+ * (`--help` and `--version` included), so they are dispatched before OCR's own
+ * flag parsing.
+ */
+async function handleClientLaunch(action: 'cursor' | 'cursor-agent' | 'qoder' | 'qoder-cli', argv: string[]): Promise<void> {
+  if (action === 'qoder' || action === 'qoder-cli') {
+    await reportLaunch(action, await runQoderLauncher(action === 'qoder' ? 'desktop' : 'cli', argv), argv);
+    return;
+  }
+  await reportLaunch(action, await runCursorLauncher(action === 'cursor' ? 'ide' : 'agent', argv), argv);
 }
 
 async function main(): Promise<void> {
@@ -278,8 +324,8 @@ async function main(): Promise<void> {
   const action = (args[0] || 'status').toLowerCase() as CliAction;
   // Passthrough verbs own their remaining flags (`--help`/`--version` mean the
   // TARGET tool's help/version), so they never enter OCR's own flag parsing.
-  if (action === 'cursor' || action === 'cursor-agent') {
-    await handleCursorLaunch(action, args.slice(1));
+  if (action === 'cursor' || action === 'cursor-agent' || action === 'qoder' || action === 'qoder-cli') {
+    await handleClientLaunch(action, args.slice(1));
     return;
   }
 
@@ -375,12 +421,21 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok | kimi | openclaw | cursor>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok | kimi | openclaw | cursor-proxy | qoder-proxy>\``);
+        process.exit(1);
+      }
+
+      const launchHint = launchVerbHint(client, 'setup');
+      if (launchHint) {
+        console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
       const res = await setupClient(client, { port });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
+        for (const line of formatClientWarnings(res.warnings)) {
+          console.log(`${C.yellow}⚠ ${line}${C.reset}`);
+        }
       } else {
         console.error(`${C.red}✗ ${res.message}${C.reset}`);
         process.exit(1);
@@ -392,7 +447,12 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok | kimi | openclaw | cursor>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok | kimi | openclaw | cursor-proxy | qoder-proxy>\``);
+        process.exit(1);
+      }
+      const launchHint = launchVerbHint(client, 'teardown');
+      if (launchHint) {
+        console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
       const res = await teardownClient(client);

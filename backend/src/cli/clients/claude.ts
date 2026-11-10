@@ -14,6 +14,7 @@ import { ClientHookStatus } from '../types.js';
 
 export class ClaudeClientAdapter implements ClientAdapter {
   name = 'claude' as const;
+  hookKind = 'config' as const;
   displayName = 'Claude Code / Desktop';
 
   getConfigPath(): string {
@@ -26,7 +27,7 @@ export class ClaudeClientAdapter implements ClientAdapter {
     return candidateClaudeJson;
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

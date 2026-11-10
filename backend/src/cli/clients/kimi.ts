@@ -34,6 +34,7 @@ import { resolveClientModelMeta } from './model-meta.js';
  */
 export class KimiClientAdapter implements ClientAdapter {
   name = 'kimi' as const; // wire identity — stable across renames; the PRODUCT is Kimi Code CLI (Moonshot).
+  hookKind = 'config' as const;
   displayName = 'Kimi Code CLI';
 
   /**
@@ -60,7 +61,7 @@ export class KimiClientAdapter implements ClientAdapter {
     return path.join(os.homedir(), '.kimi-code', 'config.toml');
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

@@ -191,6 +191,7 @@ async function buildModelEntries(ids: string[], contextWindow?: number): Promise
 
 export class PiClientAdapter implements ClientAdapter {
   name = 'pi' as const;
+  hookKind = 'config' as const;
   displayName = 'Pi Coding Agent';
 
   getConfigPath(): string {
@@ -205,7 +206,7 @@ export class PiClientAdapter implements ClientAdapter {
     return path.join(path.dirname(this.getConfigPath()), 'settings.json');
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
+import { ClientHookKind, ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
 import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
-import { resolveCaDir } from '../../forward-proxy/ca.js';
+import { caCertPath } from '../../forward-proxy/ca.js';
 import type { RouterConfig } from '../../config/types.js';
+import { runCommand } from '../../utils/run-command.js';
+import { getForwardProxyStatus } from '../../forward-proxy/status.js';
+import { probeCaTrustedCached } from '../../forward-proxy/ca-trust.js';
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
 export const OCR_DEFAULT_V1_URL = `${OCR_DEFAULT_URL}/v1`;
@@ -95,11 +97,27 @@ export interface ClientActionResult {
   reasonCode?: string;
   /** Template params for the reasonCode's i18n string. */
   params?: Record<string, string>;
+  /** Advise-only findings from a SUCCESSFUL setup (CA trust, listener state). */
+  warnings?: ClientActionWarning[];
+}
+
+/**
+ * Non-blocking post-setup advisories: the setup itself succeeded and wrote the
+ * artifact, but the hooked client will still fail at USE time until the
+ * advisory is fixed. Rendered as a warning (never an error) so a launcher is
+ * never withheld because the operator still has to import the CA.
+ */
+export interface ClientActionWarning {
+  code: 'ca_not_trusted' | 'ca_trust_unknown' | 'proxy_not_running';
+  /** Template params for the console's i18n string. */
+  params?: Record<string, string>;
 }
 
 export interface ClientAdapter {
   name: SupportedClient;
   displayName: string;
+  /** Where the hook lands; the registry stamps it into every status row. */
+  hookKind: ClientHookKind;
   /**
    * Oldest CLI release whose config contract this adapter's writes still
    * honor — the compatibility floor, NOT the newest verified version. Set
@@ -110,7 +128,7 @@ export interface ClientAdapter {
   versionCmd?: string[];
   getConfigPath(): string;
   /** Async by contract: adapters may probe external processes (e.g. `opencode service get env`); never block the event loop. */
-  getStatus(): Promise<ClientHookStatus>;
+  getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>>;
   /**
    * Model slots: slotKey → model id | 'auto' (intelligent routing default).
    * Only slots present in the record are written; absent slots stay untouched
@@ -153,6 +171,8 @@ export interface ForwardProxyEndpoint {
   url: string;
   port: number;
   caPath: string;
+  /** `forwardProxy.requireCredential`: launchers must carry the key in the URL. */
+  requireCredential: boolean;
 }
 
 /**
@@ -172,59 +192,35 @@ export function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
   // `host` is a LISTEN address — the client-facing URL must stay reachable
   // from the client on the same machine, so wildcard binds normalize to loopback.
   const host = !fp.host || fp.host === '0.0.0.0' || fp.host === '::' ? '127.0.0.1' : fp.host;
-  return { url: `http://${host}:${port}`, port, caPath: path.join(resolveCaDir(fp.caDir), 'ca.pem') };
-}
-
-/** Result of a one-shot command run: exit status plus captured output. */
-export interface CommandResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Quote ONE argv element for a cmd.exe command line.
- *
- * Single source for both Windows spawn paths (`runCommand` for CLI shims, the
- * Cursor launcher passthrough) so they cannot drift: an arg carrying spaces or
- * cmd metacharacters gets wrapped in double quotes and an inner quote is
- * doubled. `%` inside double quotes is still cmd-expanded — paths containing
- * `%` are out of scope for both callers.
- */
-export function quoteWindowsArg(arg: string): string {
-  return /[\s"%^&|<>()]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg;
-}
-
-/** Array form of {@link quoteWindowsArg}. */
-export function quoteWindowsArgs(args: string[]): string[] {
-  return args.map(quoteWindowsArg);
+  return {
+    url: `http://${host}:${port}`,
+    port,
+    caPath: caCertPath(fp.caDir),
+    requireCredential: fp.requireCredential === true,
+  };
 }
 
 /**
- * Asynchronous one-shot command runner with a timeout; never throws.
+ * Post-setup advisories for a launcher hook: the launcher is written, but the
+ * hooked client still fails at USE time until the listener runs and the platform
+ * store trusts the MITM root. Shared by the launcher adapters so the code set and
+ * the force semantics cannot drift adapter by adapter. (A `service-env` hook
+ * writes NODE_EXTRA_CA_CERTS and needs none of this.)
  *
- * Windows: CLI commands may be npm `.cmd` shims, so the spawn goes through
- * cmd.exe and args are pre-quoted by {@link quoteWindowsArgs}. Other platforms
- * spawn directly with an argv array.
+ * The CA verdict is FORCED: a cached pre-install "trusted" must never silence
+ * the warning (the TTL cache still absorbs repeated status polls).
  */
-export async function runCommand(cmd: string, args: string[], timeoutMs = 5000): Promise<CommandResult> {
-  const isWin = process.platform === 'win32';
-  const finalArgs = isWin ? quoteWindowsArgs(args) : args;
-  let resolve: (r: CommandResult) => void = () => {};
-  const promise = new Promise<CommandResult>(r => {
-    resolve = r;
-  });
-  let stdout = '';
-  let stderr = '';
-  try {
-    const proc = spawn(cmd, finalArgs, { timeout: timeoutMs, windowsHide: true, shell: isWin });
-    proc.stdout?.on('data', (c: Buffer) => (stdout += String(c)));
-    proc.stderr?.on('data', (c: Buffer) => (stderr += String(c)));
-    proc.on('error', err => resolve({ ok: false, stdout, stderr: String(err) }));
-    proc.on('close', code => resolve({ ok: code === 0, stdout, stderr }));
-  } catch (err) {
-    resolve({ ok: false, stdout, stderr: String(err) });
+export async function collectHookWarnings(fp: ForwardProxyEndpoint, port: number): Promise<ClientActionWarning[]> {
+  const warnings: ClientActionWarning[] = [];
+  if (!getForwardProxyStatus().running) {
+    warnings.push({ code: 'proxy_not_running', params: { port: String(port) } });
   }
-  return promise;
-
+  const { trusted } = await probeCaTrustedCached(fp.caPath, { force: true });
+  if (trusted === false) {
+    warnings.push({ code: 'ca_not_trusted', params: { path: fp.caPath } });
+  } else if (trusted === 'unknown') {
+    warnings.push({ code: 'ca_trust_unknown' });
+  }
+  return warnings;
 }
+

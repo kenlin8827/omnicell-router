@@ -10,7 +10,7 @@
 
 ## 背景
 
-网关与十个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器把运行时的模型/鉴权配置写好，让请求流经网关，到此为止。
+网关与十二个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`、`cursor-proxy`、`qoder-proxy`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器让运行时的请求流经网关（改写配置、设置服务环境，或生成代理启动器），到此为止。
 
 运行时还能获得的东西——**技能**（指令目录）、**MCP 服务**（工具后端）、**插件**（运行时插件/包）——过去只能由各家 CLI 装进各自目录，网关里没有任何记录。三个后果：
 
@@ -30,7 +30,7 @@
 | harness | 该运行时作为**制品宿主**看的那一面（技能 / MCP / 插件） | `<ocrHome>/harness/` |
 | artifact | 某一类的一个可安装单元 | manifest 记录 + 物化副本 |
 
-`opencode-proxy` 是同一运行时的**挂载模式**，不是第二个宿主：harness 域只有一个 `opencode` 目标。harness 状态永不进入路由真相链、永不触碰凭证（ADR-0006）、永不读取 provider 定义（ADR-0010）。
+`opencode-proxy` 是同一运行时的**挂载模式**，不是第二个宿主：harness 域只有一个 `opencode` 目标。`cursor-proxy`（宿主 `cursor`）与 `qoder-proxy`（尚无宿主）同理。harness 状态永不进入路由真相链、永不触碰凭证（ADR-0006）、永不读取 provider 定义（ADR-0010）。
 
 ### D2 — 宿主落点写在每宿主一个的适配器里
 
@@ -71,7 +71,7 @@
 - **归属与可读是两个答案，控制台两个都要问。** `skillOwner()` 回答"这个副本归谁"（安装目标、claim、卸载）；`skillReaders()` 回答"谁能**加载**它"（`CopyView.readers`，归属者在最前）。技能页的 harness 轨道按**可读性**筛选——装在 `.agents/skills` 里的一份技能对十四个运行时都可用，用归属去建轨道只会在一个条目下显示它、把另外十三个藏起来。写入仍然只认归属者（`KIND_META.skill.installAxis = 'skills-owner'`）：轨道是镜头，绝不是扇出的许可。
 - **存在性是实测的，未探测到的宿主不进轨道。** 每个适配器声明 `presence` 标记——PATH 上可探测的可执行名和/或其配置目录——`hostDetected()` 依据这些标记加上该宿主任一全局技能根是否存在来作答（运行时删了但技能树还在，就仍然可见，否则它的副本将无处可管）。控制台轨道只显示已探测到的宿主，外加行已落地的宿主；`universal` 恒为已探测，于是一台还没装任何运行时的机器仍有落点。目录表本身保持静态——存在性是每个机器上 hosts 端点的实测，绝不改动 `HOSTS` 的成员。
 - **根是通过本进程量出来的。** `adapter.skillRoots(ctx, scope)` 给出候选根，带 `origin: 'default' | 'env-override'` 与优先级序号；`OPENCODE_CONFIG_DIR` 会改变 opencode 的根，`PI_CONFIG_DIR` 会改变 omp 的根（DSH 声明 `DSH_HOME` 但没有技能落点）。从别的 shell 用不同覆盖启动的运行时在这里是不可见的，因此低优先级根上的副本**绝不**被报告成"没读到"。
-- **`host ≠ SupportedClient`。** Cursor / VS Code / Zed / Windsurf 永远不是流量客户端，但它们是制品宿主；不会为了它们扩大流量枚举。
+- **`host ≠ SupportedClient`。** Cursor 既是制品宿主，也是代理接入的流量客户端（`cursor-proxy`）；宿主 id 仍是 `cursor`，因为 harness 域读的是制品、不是流量。VS Code / Zed / Windsurf 只是制品宿主，不为它们扩大流量枚举。
 - **范围——全局与项目。** 可接受范围由唯一常量 `ENABLED_SCOPES`（`harness/scopes.ts`）给出，为 `['global', 'project']`。所有面向产品的路径都读它：安装/编辑路由对其它值回答 `unsupported_scope`，`scanInventory` 在控制台所选项目根下读取项目级技能根 / 插件来源 / MCP 落地，控制台把每个品类的已装视图拆成全局/项目两个页签。项目落点就是适配器声明的东西——`SkillsSpec.project`、`configProject`、`looseDir.project` 每个宿主只拼写一次——加上写入器的 `scope` 参数。两个与范围相关的细节：CLI 落地的项目级 MCP（§D8.13）以**项目根作为子进程 cwd** 运行运行时自己的命令，因为 claude `--scope project` / grok `-s project` 按 cwd 定位落地——而 codex 的 `mcp add`/`mcp remove` 根本没有范围语法，适配器直接**拒绝**项目范围而不是静默写全局配置；`external` 副本的 `path` 是身份令牌而非路径，因此 manifest 为每个项目级副本记录 `projectRoot` 作为唯一的项目归属。卸载守卫保留**两个**范围：任一范围下登记的副本都可卸载。范围能力是按宿主×品类给出的，而不是构建级统一：`HostAdapter.supportedScopes(kind)` 是所有消费者读取的答案，在 `BaseHostAdapter` 中从该品类自己的声明派生一次——项目级插件落地仅当 spec 声明了它才存在（`configProject`+`container`、`declared.project`、`looseDir.project`、带 `{scope}` 令牌的 marketplace 命令，或随范围变化的 `subprocessArgs`）；`PluginSpec`/`HostMcpSpec` 上的显式 `scopes?` 覆盖用于声明无法承载的情况（codex MCP：项目文件可读观察，但 `codex mcp add` 没有项目范围语法，因此 spec 回答 `['global']`；openclaw MCP 同为仅全局——定义按厂商设计集中在 `~/.openclaw/openclaw.json`，不存在项目落点）。`planPlugin`/`planMcp` 拒绝列表中不存在的范围——落全局却让 manifest 记 `project` 会让 manifest、清单盘点与卸载各持一份真相——`/hosts` 以 `kindScopes` 提供该矩阵，控制台从而绝不提供写入器会拒绝的范围（隐藏 Project 芯片，提交路径把过期的选择纠正为 `global`）。技能名会规整为 `^[a-z0-9]+(-[a-z0-9]+)*$`，且解析出的目标必须留在根内（`adapter.skillTarget` 拒绝任何越界）。
 - **`readsUniversal`** 记录该运行时是否原生读取跨代理的 `.agents` 目录；它决定别名/归属关系，也决定哪些宿主不需要厂商专属写入就能接受技能副本。
 - **共享集只有一个排除项，且默认勾选。** 钉住某个运行时的技能页会列出该运行时能**加载**的每一行，因此归 `universal`（共享 `.agents` 目录，十个运行时都读）的行会在每个轨道条目下重复出现，把真正属于该运行时的行挤下去。`hideShared` 开关按副本归属（`row.hosts` 含共享宿主）把它们筛掉。它是一个 facet 而不是模式——筛选的是来源 chip 计数所用的同一张表，所以每个 chip 的数字仍然诚实——并且在无意义的地方不出现：MCP/插件页（那里没有共享落点）、共享条目本身（那会把要收窄的列表清空），以及筛掉共享后不剩任何私有行的页面。最后这道闸门同时守着**默认值**：开关出厂即勾选，所以技能全在共享树里的运行时仍然打开完整列表。开关上带着它当前隐藏的条数，被隐藏的集合永远有账可查。

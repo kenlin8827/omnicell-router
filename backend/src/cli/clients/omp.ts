@@ -251,6 +251,7 @@ export function resolveOmpModelsPath(dir: string): string {
 
 export class OmpClientAdapter implements ClientAdapter {
   name = 'omp' as const;
+  hookKind = 'config' as const;
   displayName = 'OMP';
 
   /** models.yml (or models.yaml when only that exists) — the hook target. */
@@ -263,7 +264,7 @@ export class OmpClientAdapter implements ClientAdapter {
     return path.join(path.dirname(this.getConfigPath()), 'config.yml');
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

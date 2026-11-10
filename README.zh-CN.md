@@ -107,11 +107,14 @@ ocr setup codex         # 将 Codex / OpenAI CLI 接入 OCR
 ocr setup pi            # 将 Pi 接入 OCR
 ocr setup kimi          # 将 Kimi CLI 接入 OCR
 ocr setup openclaw      # 将 OpenClaw 接入 OCR
-ocr setup cursor        # 通过 OCR 前置代理 + Cursor Gateway 插件接入 Cursor
+ocr setup cursor-proxy  # 通过 OCR 前置代理 + Cursor Gateway 插件接入 Cursor
+ocr setup qoder-proxy   # 通过 OCR 前置代理 + qoder-gateway 插件接入 Qoder
 
 # 通过 OCR 托管的启动脚本运行（setup 之后）
 ocr cursor              # 以代理环境启动 Cursor IDE
 ocr cursor-agent        # 以代理环境运行 cursor-agent CLI
+ocr qoder               # 以代理环境启动 Qoder 桌面版
+ocr qoder-cli           # 以代理环境运行 qodercli CLI
 
 # 卸载客户端代理挂载
 ocr teardown opencode   # 恢复 OpenCode 直连
@@ -295,6 +298,8 @@ main();
 * `X-OCR-Cost-USD`: 本次请求实际花费金额（美元）。
 * `X-OCR-Saved-USD`: 相较于 plus 基准模型所节约的金额。
 * `X-OCR-Latency-MS`: 网关端到端处理耗时（毫秒）。
+* `X-OCR-TTFT-MS`: 落定尝试的首个转发 chunk 等待耗时（仅流式轮次）。
+* `X-OCR-Gen-MS`: 首个转发 chunk 到流结束的解码窗口（仅流式轮次）；completion tokens ÷ 该窗口即解码速率。
 
 ### 2. 核心管理接口一览
 

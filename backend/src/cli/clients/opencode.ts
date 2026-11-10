@@ -121,13 +121,14 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
 
 export class OpenCodeClientAdapter implements ClientAdapter {
   name = 'opencode' as const;
+  hookKind = 'config' as const;
   displayName = 'OpenCode';
 
   getConfigPath(): string {
     return getOpenCodeConfigPath();
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

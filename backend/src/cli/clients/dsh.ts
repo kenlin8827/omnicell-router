@@ -67,6 +67,7 @@ const hookRoute = (entries: any[]): any | undefined =>
 
 export class DshClientAdapter implements ClientAdapter {
   name = 'dsh' as const;
+  hookKind = 'config' as const;
   displayName = 'DeepSeek Harness';
 
   /**
@@ -95,7 +96,7 @@ export class DshClientAdapter implements ClientAdapter {
       .sort();
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const files = this.existingPatchFiles();
     const exists = files.length > 0;
 

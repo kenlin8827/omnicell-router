@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CursorClientAdapter, CURSOR_NO_PROXY, LEGACY_MODELS_JSON_PATH, agentLauncherPath, buildCursorLaunchers, launcherPath, pemBundleContainsCa, runCursorLauncher } from '../src/cli/clients/cursor.js';
+import { CursorProxyClientAdapter, CURSOR_NO_PROXY, agentLauncherPath, buildCursorLaunchers, launcherPath, runCursorLauncher } from '../src/cli/clients/cursor-proxy.js';
+import { pemBundleContainsCa } from '../src/forward-proxy/ca-trust.js';
 import { getEnvPaths } from '../src/config/env.js';
 
 /**
@@ -261,21 +262,20 @@ describe('Cursor launcher scripts', () => {
 });
 
 describe('Cursor adapter teardown', () => {
-  it('removes BOTH launchers and the legacy models artifact, not only the IDE one', async () => {
+  it('removes BOTH launchers, not only the IDE one', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cursor-launcher-'));
     const previous = process.env.OCR_HOME;
     process.env.OCR_HOME = home;
     try {
       // Fixture derived from the exported helpers, never re-spelled here: the
-      // filename, the platform extension and the legacy path are the adapter's
-      // contract, so a rename must fail THIS test only where it really broke.
-      const files = [launcherPath(), agentLauncherPath(), path.join(home, LEGACY_MODELS_JSON_PATH)];
+      // filename and platform extension are the adapter's contract.
+      const files = [launcherPath(), agentLauncherPath()];
       for (const file of files) {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, 'managed');
       }
 
-      const result = await new CursorClientAdapter().teardown();
+      const result = await new CursorProxyClientAdapter().teardown();
 
       assert.equal(result.success, true);
       for (const file of files) assert.equal(fs.existsSync(file), false);
@@ -306,7 +306,7 @@ describe('Cursor adapter status', () => {
       fs.mkdirSync(path.dirname(agentLauncherPath()), { recursive: true });
       fs.writeFileSync(agentLauncherPath(), 'managed');
 
-      const status = await new CursorClientAdapter().getStatus();
+      const status = await new CursorProxyClientAdapter().getStatus();
 
       // The card must be able to render every owned path (the hint promises
       // two launchers) — a single `configPath` would hide the CLI one.
@@ -384,7 +384,7 @@ if (process.platform !== 'win32') {
           assert.equal(fs.statSync(p).mode & 0o111, 0, `precondition: ${path.basename(p)} is not executable`);
         }
 
-        const result = await new CursorClientAdapter().setup();
+        const result = await new CursorProxyClientAdapter().setup();
 
         assert.equal(result.success, true);
         for (const p of targets) {
@@ -432,7 +432,7 @@ describe('ocr cursor passthrough', () => {
     await withSandbox(async () => {
       const ide = await runCursorLauncher('ide', []);
       assert.equal(ide.ok, false);
-      assert.match(ide.message ?? '', /ocr setup cursor/);
+      assert.match(ide.message ?? '', /ocr setup cursor-proxy/);
 
       const agent = await runCursorLauncher('agent', []);
       assert.equal(agent.ok, false);

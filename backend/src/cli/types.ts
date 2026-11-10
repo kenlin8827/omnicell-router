@@ -10,13 +10,18 @@ export type CliAction =
   | 'teardown'
   | 'install-shims'
   | 'uninstall-shims'
+  /** Passthrough launch verbs — the argument after `ocr` names the TARGET
+   *  tool, not a hook id. Never fold these into `SupportedClient`: the hooks
+   *  are `cursor-proxy` / `qoder-proxy`. */
   | 'cursor'
   | 'cursor-agent'
+  | 'qoder'
+  | 'qoder-cli'
   | 'env'
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'cursor';
+export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'cursor-proxy' | 'qoder-proxy';
 
 export interface CliOptions {
   action: CliAction;
@@ -39,9 +44,18 @@ export interface DaemonInfo {
   version: string;
 }
 
+/** How an adapter applies its hook. `config` rewrites the client's own config
+ *  file; `launcher` publishes proxy launch scripts; `service-env` sets a
+ *  managed service's environment. The last two are forward-proxy hooks: they
+ *  write no API key and route traffic through the inbound proxy. */
+export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+
 export interface ClientHookStatus {
   name: SupportedClient;
   displayName: string;
+  /** Where the hook lands, stamped by the registry from `ClientAdapter.hookKind`
+   *  (`getStatus` does not produce it). */
+  hookKind: ClientHookKind;
   configPath: string;
   exists: boolean;
   hooked: boolean;

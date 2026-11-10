@@ -14,6 +14,7 @@ import { ClientHookStatus } from '../types.js';
 
 export class CodexClientAdapter implements ClientAdapter {
   name = 'codex' as const;
+  hookKind = 'config' as const;
   displayName = 'Codex / OpenAI CLI';
 
   getConfigPath(): string {
@@ -26,7 +27,7 @@ export class CodexClientAdapter implements ClientAdapter {
     return candidateCodex;
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

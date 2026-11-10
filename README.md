@@ -110,11 +110,14 @@ ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
 ocr setup pi            # Hook Pi coding agent to route via OCR
 ocr setup kimi          # Hook Kimi CLI to route via OCR
 ocr setup openclaw      # Hook OpenClaw to route via OCR
-ocr setup cursor        # Hook Cursor via the OCR forward proxy + Cursor Gateway plugin
+ocr setup cursor-proxy  # Hook Cursor via the OCR forward proxy + Cursor Gateway plugin
+ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + qoder-gateway plugin
 
 # Launch through the OCR-managed launchers (after setup)
 ocr cursor              # Start the Cursor IDE with the proxy env applied
 ocr cursor-agent        # Run the cursor-agent CLI with the proxy env applied
+ocr qoder               # Start the Qoder desktop app with the proxy env applied
+ocr qoder-cli           # Run the Qoder CLI with the proxy env applied
 
 # Teardown hooks
 ocr teardown opencode   # Restore OpenCode to direct connection
@@ -296,6 +299,8 @@ Every proxied response carries diagnostic metadata:
 * `X-OCR-Cost-USD`: Calculated cost for the execution turn.
 * `X-OCR-Saved-USD`: Net savings compared to the baseline tier.
 * `X-OCR-Latency-MS`: Gateway execution latency in milliseconds.
+* `X-OCR-TTFT-MS`: Time to first forwarded chunk of the committed attempt (streamed turns only).
+* `X-OCR-Gen-MS`: Decode window from that first chunk to stream end (streamed turns only); completion tokens ÷ this window is the decode rate.
 
 ### 2. Core Administration Endpoints
 
