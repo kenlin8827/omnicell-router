@@ -22,7 +22,7 @@ import { recordRateLimitEvent } from '../ratelimit/event-log.js';
  * implementation of the frozen TransportContext terminal-send discipline
  * (Fastify shim, node-http, now callback sink).
  *
- * Key binding (ADR-0017 §5): OCR-routed turns REQUIRE an identity — the
+ * Key binding (ADR-0017 §4): OCR-routed turns REQUIRE an identity — the
  * CONNECT credential of the tunnel, else the plugin's console-picked
  * `accountKeyId`. With neither, the turn is refused with 401: proxy admission
  * is transport, model usage is keyed. When a key is present its inbound

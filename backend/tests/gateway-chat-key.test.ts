@@ -1,5 +1,5 @@
 /**
- * Gateway-driven completions and their bound API key (ADR-0017 §5).
+ * Gateway-driven completions and their bound API key (ADR-0017 §4).
  *
  * ONLY OCR-routed completions reach this seam — vendor-native traffic is
  * relayed byte-verbatim upstream and never needs a key. The tests pin the

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-11-05。
+已实现 — 2026-11-05。修订 2026-11-10：参考实现的厂商细节（协议语料与 RPC 集、抓取数字、operator 设置、测试开关）改由各插件自己的仓库记录 —— 本记录只陈述宿主契约，§4 降为指针加进程内 key seam。
 
 ## 背景
 
@@ -11,7 +11,7 @@
 - 插件清单的 `type` 字段是声明好的扩展轴（`plugins/types.ts`），但只有一种类型 `'model-service'` —— 承载出站方向的厂商协议知识（原生传输、凭证链、vendored 厂商二进制）。
 - ADR-0008 的入站 surface 表是封闭的：四个 wire 别名，其余一律 404。协议既非 OpenAI 亦非 Anthropic 形态的厂商客户端（Cursor：ConnectRPC + protobuf over HTTP/2 打到 `api2.cursor.sh`，且端点不可配置）没有任何合法的入站路径。
 
-Cursor 无法通过配置指向自定义端点 —— 它的 AI 流量硬编码到自己的 API 域名。唯一可行的集成拓扑是 TLS 拦截：让客户端指向入站 forward proxy（ADR-0008 §3），然后应答/中继解密后的流量。这正是 `plugins/types.ts` 早已为插件保留的那类厂商协议知识：后续阶段才会用到的 vendored .proto 集（阶段 2 才锁定到已验证的 Cursor 版本，见 §4）、帧编解码器、版本漂移提取工具。它们不应进入 core。
+Cursor 无法通过配置指向自定义端点 —— 它的 AI 流量硬编码到自己的 API 域名。唯一可行的集成拓扑是 TLS 拦截：让客户端指向入站 forward proxy（ADR-0008 §3），然后应答/中继解密后的流量。这正是 `plugins/types.ts` 早已为插件保留的那类厂商协议知识：vendored .proto 集（锁定到已验证的客户端版本）、帧编解码器、版本漂移提取工具。它们不应进入 core。
 
 ## 决策
 
@@ -39,15 +39,9 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 - 后果：**不装任何插件**时，gRPC/Connect 客户端被完整透明代理 —— 完整 HTTP/2 语义、完整 access-log 捕获 —— 而不是被降级成 464。vendor 语义（Cursor 的 Connect 路由、模型目录）仍然需要插件；属于核心的只是传输。
 - 网关中继走同一条腿：client gateway 通过 host SDK 的 `relayUpstream` 中继其认领主机，该调用跑的正是这些转发器，带 ADR-0018 **准入**门（`reject` → 任何拨号之前先 403，返回 `{ rejected: true }`）、**实时**规则表 egress、ADR-0019 上游信任与 h2/h1 回落。上游 scheme 由调用方声明 —— `opts.secure`（缺省 `true` = TLS；`false` = 明文源站）—— 声明明文源站**不**绕过其他任何东西：准入门与实时规则表 egress 与 TLS 腿完全一致（明文腿本来就没有证书可信任），且 h2 腿仅支持 TLS，所以明文源站由 h1 腿服务。插件永不自己拨号上游 —— 裸 `http2.connect`/`https.request` 会静默绕过全部。
 
-### 4. 参考实现：`cursor-gateway`
+### 4. 参考实现、进程内 key seam 与环路护栏
 
-仓库 dev 插件树携带分阶段参考实现（`plugins/cursor-gateway/`，独立仓库；此处不跟踪）：
-
-- **阶段 1（已发布，0.1.0）** —— OBSERVE。认领四个 Cursor 主机，把每个解密交换经核心 host SDK（`relayUpstream`）逐字节中继上游；两个方向都抓取进按天 JSONL feed，Connect 帧由解码器在**读取时**解析。Cursor 继续打真实后端；抓取永不改写流量。
-- **阶段 2+（dev 插件已发布）** —— OWN。解码并回答三条推理线（`agent.v1.AgentService/Run`、`aiserver.v1.InferenceService/RunInference`、旧版 `ChatService/StreamUnifiedChat…`），合并或替换模型目录，并路由被请求的 id：开启 `catalogReplace` 时目录**就是** OCR 列表，于是每个请求都在网关内回答（列表外的遗留 key 如 `auto` 回落到配置的默认模型，而不是与已公布的列表矛盾）；否则 OCR 命名空间的 id 走 `host.chat`，其余 id 逐字节中继给 Cursor。客户端的 MCP 工具定义随 agent 线作为额外 function spec 传递。插件面向 operator 的 `mockGetMe` 开关（`mockEmail` 覆盖地址）由插件本地用合成身份回答 `aiserver.v1.DashboardService/GetMe`（Cursor 的登录校验），没有可用 Cursor 会话也能演练接管链路；其他账户/仪表盘 RPC 仍按原样转发。另一个仅用于测试的 `mockPlan` 开关会在回程改写 `/auth/full_stripe_profile` 的会员字段，让客户端选择器在免费账户上渲染注入的条目——上游资料不动，Cursor 服务端鉴权照常生效。
-- 线格式：Connect 帧 `[1B flags][4B BE length][payload]`，0x01 gzip，EndStream JSON 位于 `0x02`（Connect 标准）或 `0x80`（Cursor 旧标记）—— 阶段 1 是无 schema 预览；阶段 2 vendor 锁定到已验证 Cursor 版本的 proto，客户端升级后重跑提取器。
-
-**第二参考实现：`qoder-gateway`**（`plugins/qoder-gateway/`，独立仓库；此处不跟踪）。Qoder 无法指向自定义端点，所以插件同时认领**国际版与中国版**的 vendor 主机 —— 国际版（chat 走 `api2-v2.qoder.sh`，目录与控制面是 `api1..3`/`center`，另有 `openapi`、`qts2`）与中国版（`gateway.qoder.com.cn`、`openapi.qoder.com.cn`）—— 登录主机不认领，继续透传。它接管两个 gRPC 推理 RPC `model.chat.ChatService/ChatCompletion[Stream]`（用 CLI 附带的 `chat.proto` 解码，仅当模型属于 OCR 命名空间 —— `ocr/<ref>`、裸档位别名或 `forceModel` —— 时才走 `host.chat`；**所有**官方 key（`auto`、`qlite`……）以及任何 `custom_model`（BYOK）请求都连同 `preface` 逐字节中继），**以及** HTTP SSE `.../agent_chat_generation` 面（COSY 解密后已是 OpenAI 形状；无法解码的请求体连 `preface` 一起中继；SSE 载荷目前没有 BYOK 标记，所以 gRPC 的 `custom_model` 守卫没有 SSE 对应物）。`catalogReplace` 反转该默认：公布的列表就是 OCR 列表，于是每个非 BYOK 请求都在网关内回答，遗留的官方 key 回落到配置的默认模型。模型目录由上游 scene map（用随包的 `qoder-auth.wasm` 做 COSY 解密）合并，或直接替换；合并结果回**明文**，因为客户端解析器在解密失败时会回退到原始文本；同一份合并结果还会被种入客户端加密的 `catalog-v<N>` 缓存，因为桌面守护进程常常根本不去请求（append 播种会裁掉当前 registry 已不再公布的 `ocr/*` 行；`interceptChat` 关闭时不播种）。线格式：标准 gRPC `[1B 压缩标志][4B BE 长度][payload]`，gzip 标志为 1，`grpc-status` 放在 HTTP/2 trailer 里；网关 401/403/429/5xx 映射为 UNAUTHENTICATED/PERMISSION_DENIED/RESOURCE_EXHAUSTED/UNAVAILABLE，`retry-after` 随 trailer 下发。`qoder` 客户端适配器的启动器覆盖三条腿：`--proxy-server`（Chromium）、小写 `http_proxy`/`https_proxy`（undici fetch）与 `grpc_proxy`（grpc-js 优先读取它）；CLI 启动器另加 `NODE_EXTRA_CA_CERTS`/`--use-system-ca`，而桌面启动器对该进程关闭 TLS 校验（`NODE_TLS_REJECT_UNAUTHORIZED=0`），因为它的守护进程忽略除内置库以外的所有 CA 存储。`forwardProxy.requireCredential` 打开时，控制台会把绑定的 key 写进启动器 URL（`http://ocr:<key>@127.0.0.1:<port>`），让 Node/gRPC 腿无需交互即可认证；带凭据写出的启动器权限为仅属主（0700）。
+两个 client-gateway 插件是这套契约的验收证据 —— `cursor-gateway`（Connect/protobuf over h2）与 `qoder-gateway`（gRPC 加一条 HTTP SSE 腿）。它们各自是独立仓库，克隆在 `plugins/<id>/`（此处不跟踪）、经控制台安装，**不**随本仓库发行；因此它们的厂商知识（RPC 集与帧编解码、目录合并、抓取写路径与保留期、operator 设置、测试开关）记录在**它们各自的仓库**里，在那里变更无需修订本记录。本 ADR 只写宿主侧：网关被交付的 seam（§1）、不能认领什么（§2）、它骑的传输（§3）、它接入的观测切分（§5）与控制台面（§6、§7）。
 
 - **环路护栏。** OCR 自己的 `qoder` provider 拨的是同一批上游主机。provider 出站必须保持直连（或经外部代理）：把 `forwardProxy.proxy.url` 或后端进程的 `https_proxy` / `grpc_proxy` 指到 OCR 自己的入站代理，网关就会截获 OCR 自己的出站拨号并递归 —— 准入门无法区分两者。
 
@@ -57,17 +51,17 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 想让自己的流量可见的网关注册的是**解析器**（dissector），而不是一个视图。Wireshark 模型，按阶段拆开：
 
-- **抓取（插件，写路径）** —— 插件把每个解密块直接流式写入旁挂文件 `<ocrHome>/plugins/traffic/<id>/bodies/<YYYYMMDD>/<exchangeId>-<side>.bin`，并往当天的 JSONL 追加**一行**元数据（头、字节数、状态、腿、文件引用）。内存里不缓冲任何东西：一次长 `StreamChat` 的代价是 O(chunk)，不是 O(body)。body **绝不为存储而截断** —— 唯一的天花板是失控保护（每侧 64 MiB），它停下写入并打上诚实的 `truncated` 标记。超过 7 个按天目录的 body 由插件自己的写路径清理。
+- **抓取（插件，写路径）** —— 插件把每个解密块直接流式写入旁挂文件 `<ocrHome>/plugins/traffic/<id>/bodies/<YYYYMMDD>/<exchangeId>-<side>.bin`，并往当天的 JSONL 追加**一行**元数据（头、字节数、状态、腿、文件引用）。内存里不缓冲任何东西：一次长 `StreamChat` 的代价是 O(chunk)，不是 O(body)。body **绝不为存储而截断** —— 唯一的天花板是插件自己声明的失控保护（具体数字随插件文档），它停下写入并打上诚实的 `truncated` 标记。按天目录的保留同样由插件自己的写路径清理。
 - **解码（插件，读路径）** —— 后端在**读取时**用抓到的字节调用插件的 `dissect(exchange)`，返回具名的协议层。协议知识因此留在拥有那条线的插件里；控制台渲染它从未听说过的层。
 - **展示（核心路由，读路径）** —— 路由每侧只读一个固定**窗口**（解析器 32 KiB，内联 hex 预览 1 KiB），只下发字节数与文件引用，永不下发 payload。`/api/admin/traffic-body/:token` 流式返回完整抓取以供下载 —— 与 proxy 日志用的是**同一个**中立端点，所以控制台永不知道是哪个子系统存的字节；全保真一键可得，而浏览器的 DOM 永不会收到几兆的 body。
 - **一条时间线，一套筛选** —— 被解析的行并入既有的 proxy access-log 表（不新开 tab，不新开视图）。各列分类的是传输，不是厂商：type（`http` / `connect`）、protocol（`h1` / `h2` / `ws` / connect-rpc）、host、method、path、status、duration、↑/↓ body 字节数。
 - **一个抽屉，一个解码器注册表** —— 每一行（proxy 或 gateway）都由**同一个**详情组件按归一化的单侧模型（头、字节、层、下载引用）渲染；行的种类只负责构建这个模型。一个 body 就是字节加上一串声称能解它的解码器：`hex` 是**兜底**解码器（Wireshark 的 `data` —— 永远适用，即回退项），内置 `text` / `json` / `image` / `pdf`，而每个插件解析层都排在它们之上。默认视图是排名最高且适用的解码器，于是协议知识无需 UI 里的排序逻辑就压过 hex，新增一种格式只是注册表里多一项 —— 永不新增一个分支。层输出由解析器打上**单侧标记**（`req` / `res`）：空响应 body 绝不能以已解码的样子出现。
 
-后果：控制台永不学习厂商协议，未声明解析器的插件干脆不出现。保留期、feed 布局与尾部上限属于核心路由；字节归属属于插件。
+后果：控制台永不学习厂商协议，未声明解析器的插件干脆不出现。feed 布局与尾部上限属于核心路由（另加控制台的按需清空/删除）；字节归属与写路径清扫属于插件。
 
 ### 6. 控制台归属
 
-`/admin/clients` 新增 `cursor-proxy` 与 `qoder-proxy` 作为代理接入客户端（`SupportedClient`、`CursorProxyClientAdapter`、`QoderProxyClientAdapter`）。setup 无法写厂商配置文件 —— 它 (a) 要求 `forwardProxy.enabled`，(b) 写 `cursor-launcher.cmd|.sh|.command`（CLI 存在时再写 `cursor-agent-launcher.*`）以及 Qoder 桌面/CLI 启动器，对 Chromium 腿设 `--proxy-server`，对 Node/gRPC 腿设小写 `http(s)_proxy`/`grpc_proxy` + `NODE_EXTRA_CA_CERTS` + `NO_PROXY`。阶段 1 不发布模型广告：插件的模型目录随网关插件到来。按应用启动器是刻意的：不接管系统代理（那会和 Clash/v2ray 抢同一组注册表键），也不上内核重定向器。CA 信任保持 forward-proxy CA 原样（不新增信任材料）；安装仍是 operator 显式动作。状态探测按平台取证 —— Windows 查 Root 存储（`certutil`）、macOS 用 `security verify-cert` 走 SSL 信任策略、Linux 查锚点目录 + 合并 bundle + Chromium/Electron 实际读取的 NSS 数据库 —— 探测无法执行时返回 `unknown`，绝不猜。代理注入只在进程启动时生效：Dock / 开始菜单 / `.desktop` 启动会绕过启动器，已运行的单实例会吞掉后来的启动器调用。macOS 的 `.command` 以脱离方式启动 Cursor（`nohup … &`），所以关掉双击它的那个终端窗口不会带走 Cursor；Linux 的 `.sh` 保留 `exec`，因为它本身就是那个终端会话。teardown 只删除该适配器拥有的启动器，永不触碰 CA，永不触碰客户端自身文件；CLI 已不在时 setup 会清掉过期的 CLI 启动器。状态回显同时发布**两条**启动器路径（`configPath` 加 `artifacts` 里的 CLI 启动器 —— 仅当 CLI 已安装或此前 setup 留下的启动器文件仍在时才发布，否则 `artifacts` 缺省不存在），控制台卡片据此列出 setup 拥有的每一个启动器，而不是只显示 IDE 那一个。`ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` 是直通动词：直接执行托管启动器（转发 stdio 与**启动器**的退出码，被信号终止时为 `128+signum`），不再另行推导 env —— 命令行与双击共用同一份契约。Windows/macOS 的 IDE 启动器是刻意脱离的（`start`/`nohup`），因此那里的退出码属于启动器，`--help`/`--version` 的输出属于它启动的应用而非 `ocr …` —— CLI 会明说这一点，而不是静默退出 0；Linux 的 `.sh` 与两个 agent 启动器保持挂接，转发真实退出码。
+`/admin/clients` 新增 `cursor-proxy` 与 `qoder-proxy` 作为代理接入客户端（`SupportedClient`、`CursorProxyClientAdapter`、`QoderProxyClientAdapter`）。setup 无法写厂商配置文件 —— 它 (a) 要求 `forwardProxy.enabled`，(b) 写 `cursor-launcher.cmd|.sh|.command`（CLI 存在时再写 `cursor-agent-launcher.*`）以及 Qoder 桌面/CLI 启动器，对 Chromium 腿设 `--proxy-server`，对 Node/gRPC 腿设小写 `http(s)_proxy`/`grpc_proxy` + `NODE_EXTRA_CA_CERTS` + `NO_PROXY`。控制台卡片的模型面属于插件：没有已加载的网关插件时，启动器只产出透明代理，不公布任何 OCR 目录。按应用启动器是刻意的：不接管系统代理（那会和 Clash/v2ray 抢同一组注册表键），也不上内核重定向器。CA 信任保持 forward-proxy CA 原样（不新增信任材料）；安装仍是 operator 显式动作。状态探测按平台取证 —— Windows 查 Root 存储（`certutil`）、macOS 用 `security verify-cert` 走 SSL 信任策略、Linux 查锚点目录 + 合并 bundle + Chromium/Electron 实际读取的 NSS 数据库 —— 探测无法执行时返回 `unknown`，绝不猜。代理注入只在进程启动时生效：Dock / 开始菜单 / `.desktop` 启动会绕过启动器，已运行的单实例会吞掉后来的启动器调用。macOS 的 `.command` 以脱离方式启动 Cursor（`nohup … &`），所以关掉双击它的那个终端窗口不会带走 Cursor；Linux 的 `.sh` 保留 `exec`，因为它本身就是那个终端会话。teardown 只删除该适配器拥有的启动器，永不触碰 CA，永不触碰客户端自身文件；CLI 已不在时 setup 会清掉过期的 CLI 启动器。状态回显同时发布**两条**启动器路径（`configPath` 加 `artifacts` 里的 CLI 启动器 —— 仅当 CLI 已安装或此前 setup 留下的启动器文件仍在时才发布，否则 `artifacts` 缺省不存在），控制台卡片据此列出 setup 拥有的每一个启动器，而不是只显示 IDE 那一个。`ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` 是直通动词：直接执行托管启动器（转发 stdio 与**启动器**的退出码，被信号终止时为 `128+signum`），不再另行推导 env —— 命令行与双击共用同一份契约。Windows/macOS 的 IDE 启动器是刻意脱离的（`start`/`nohup`），因此那里的退出码属于启动器，`--help`/`--version` 的输出属于它启动的应用而非 `ocr …` —— CLI 会明说这一点，而不是静默退出 0；Linux 的 `.sh` 与两个 agent 启动器保持挂接，转发真实退出码。
 
 **setup 绝不以该状态作为闸门。** 成功的 hook 在写入结果旁附带 advisory —— `ca_not_trusted` /
 `ca_trust_unknown` / `proxy_not_running`（共享构造器，`cli/clients/base.ts` 的
@@ -91,11 +85,11 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 控制台：`GET /api/admin/plugins/:id/config` 返回 `{schema, values}`，`PUT` 校验 + 持久化 + 触发插件可选的 `onConfigChange(config)`（钩子失败绝不回滚已持久化的保存；合并值无论如何都会通过 `config()` 到达插件）。无 schema 的插件不暴露任何字段并拒绝写入 —— 不存在自由参数袋。
 
-`cursor-gateway` 使用该机制承载它的整个 operator 面：抓包（`logFrames`、`previewBytes`）、模型目录（`model` 写入 Cursor 的默认模型 RPC，`forceModel`，`modelListMode` 及其 `models`/`accountKeyId`，`catalogReplace`）、Agent 循环（`maxTurns`、`toolTimeoutMs`、`heartbeatMs`、`maxResultChars`、`contextMaxChars`、`systemPrompt`）、接管范围（`interceptAgent` / `interceptDesktop` / `interceptLegacy`，以及后者的旧版开关）与合成 `GetMe` 应答（`mockGetMe` / `mockEmail` / `mockPlan`）。Client Hub 卡片只编辑该 schema 的模型目录子集；Plugins 页抽屉渲染其余字段。
+网关用该机制承载它的整个 operator 面 —— 抓包、模型目录、循环、接管范围、测试开关。**哪些字段**属于插件的声明，记录在它自己的仓库里，绝不在此枚举：schema 增删或改名不该需要修订本记录。Client Hub 卡片只编辑该 schema 的模型目录子集；Plugins 页抽屉渲染其余字段。卡片从声明中推导该子集的词表——UI「不设置」对应的枚举值与承载所选 key id 的 `apiKey` 控件字段（host 的 `chat()` seam 按 `accountKeyId` 取绑定 key，所以**这一个** key 是契约；「不设置」的拼写不是）——保存时绝不写入另一网关的拼写：host 会按未知键丢弃或按枚举校验失败回落，静默丢掉操作者的模型列表选择。
 
 ## 后果
 
-- 厂商入站协议可插拔，core 不再增长；proto 语料与其漂移工具在阶段 2 vendored 之后随需要它们的插件走（§4，安装即授权）。**传输**是另一半，而且它不动：h2 重发属于核心（§3），并通过 `relayUpstream`（ADR-0018 准入门 + 实时规则表 egress + ADR-0019 上游信任 + h2/h1 回落）暴露给网关，所以插件作者只需要写语义或观测——什么都不装的运维方同样得到可用且完整落日志的 h2/gRPC 透传。
+- 厂商入站协议可插拔，core 不再增长；proto 语料与其漂移工具随需要它们的插件走（安装即授权）。**传输**是另一半，而且它不动：h2 重发属于核心（§3），并通过 `relayUpstream`（ADR-0018 准入门 + 实时规则表 egress + ADR-0019 上游信任 + h2/h1 回落）暴露给网关，所以插件作者只需要写语义或观测——什么都不装的运维方同样得到可用且完整落日志的 h2/gRPC 透传。
 - 网关中继永不静默绕过 forward-proxy 策略：`relayUpstream` 是唯一拨号路径，应用 ADR-0018 准入门、实时规则表 egress 与 ADR-0019 信任。插件自己拨号上游是缺陷，不是优化。
 - TransportContext 多了第三个实现（回调 sink 的网关 seam）—— 终端发送纪律由三个实现共同背书，插件补全对路由/熔断/捕获而言与原生腿补全无法区分。
 - Bun http2 服务端的怪癖（terminator 回调时刻 `alpnProtocol` 不可靠）已固化为 preface 嗅探规则 —— 不要"简化"回纯 ALPN 路由。同一族的怪癖、同一条规矩：ALPN **顺序**是服务端偏好决策（实测，不靠假定），且 h2 兼容 IncomingMessage 会丢弃无人监听时发出的块 —— 所以 h2 请求体头部必须在第一个 await 之前同步捕获。
