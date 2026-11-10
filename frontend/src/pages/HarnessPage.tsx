@@ -22,7 +22,8 @@ import {
 } from '../lib/api';
 import { ProjectsDialog } from '../components/ProjectsDialog';
 import { SegGroup } from '../components/SegGroup';
-import { Field } from '../components/Form';
+import { RadioGroup, type RadioGroupOption } from '../components/RadioGroup';
+import { Field, FormSection } from '../components/Form';
 import { Switch } from '../components/Switch';
 import { Combobox, type ComboboxOption } from '../components/Combobox';
 import { SuggestInput } from '../components/SuggestInput';
@@ -31,8 +32,7 @@ import { ScrollTable, type ScrollTableColumn } from '../components/ScrollTable';
 import { Pagination } from '../components/Pagination';
 import { Dialog } from '../components/Dialog';
 import { DsnBuilder } from '../components/DsnBuilder';
-import { README_MD_REMARK_PLUGINS, README_MD_REHYPE_PLUGINS, README_MD_COMPONENTS } from '../lib/readme-markdown';
-import ReactMarkdown from 'react-markdown';
+import { ReadmeMarkdown, readmeBaseHref } from '../lib/readme-markdown';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useI18n } from '../i18n/I18nContext';
@@ -40,6 +40,7 @@ import { HarnessSourcesDrawer } from '../components/HarnessSourcesDrawer';
 import { BrandIcon } from '../components/BrandIcons';
 import { FONT_MONO } from '../lib/fonts';
 import { repoOfKey } from '../lib/harness-keys';
+import { DSH_PROFILE_NAME_RE } from '../lib/defaults';
 import { argRowTokens, argRowsFromArgv, formatArgLine, parseArgLine } from '../lib/mcp-args';
 import { RUNTIME_BADGE, runtimeNeedsAttention } from '../lib/mcp-runtime';
 import { isDsnFlag, maskDsn } from '../lib/dsn';
@@ -57,10 +58,10 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
  *
  * The third axis is the HARNESS, and it exists for all three kinds — but it answers a different
  * question per kind, and that difference is the whole point of the rail copy:
- *   · skills     — one `.agents/skills` tree is loaded by up to fourteen runtimes, but the rail lists
+ *   · skills     — one `.agents/skills` tree is loaded by up to fifteen runtimes, but the rail lists
  *                  only runtimes whose CLI is installed on this machine — WRITES stay owner-only
  *                  (`KIND_META.skill.installAxis`): materializing the same directory once per
- *                  reader would be fourteen writes of one tree.
+ *                  reader would be fifteen writes of one tree.
  *   · mcp        — an MCP server is one payload written into ONE OR MORE clients' config files, so
  *                  the page is pinned to one landing harness and the install may fan out from there.
  *   · plugins — code against ONE runtime's plugin API, so the runtime is part of the artifact's
@@ -91,9 +92,9 @@ interface KindMeta {
    * Which hosts an install may write to.
    *
    * `landing` — the verified landing flag decides (an MCP config, a plugin API).
-   * `skills-owner` — the OWNER of a skills directory decides, never its readers: fourteen runtimes read
+   * `skills-owner` — the OWNER of a skills directory decides, never its readers: fifteen runtimes read
    * one `.agents/skills` tree, so offering every reader as a target would write the same directory
-   * fourteen times. The rail still lists the owner's page (that is the one-click integrated set).
+   * fifteen times. The rail still lists the owner's page (that is the one-click integrated set).
    */
   installAxis: 'landing' | 'skills-owner';
   /** URL segment carrying the harness id: `/harness/<route>/<harness>`. */
@@ -122,7 +123,7 @@ interface KindMeta {
 
 const KIND_META: Record<Kind, KindMeta> = {
   skill: {
-    // A skill lands in a DIRECTORY, and one directory is read by up to fourteen runtimes. The rail lists
+    // A skill lands in a DIRECTORY, and one directory is read by up to fifteen runtimes. The rail lists
     // the OWNER (the one-click installable set) — writes stay owner-only (`installAxis`), or the
     // same tree would be materialized once per reader.
     landing: 'hasSkills',
@@ -200,6 +201,9 @@ const MARKET_SORT_KEY: Record<string, string> = {
   downloads: 'harness.marketSortDownloads',
   relevance: 'harness.marketSortRelevance',
   recent: 'harness.marketSortRecent',
+  'all-time': 'harness.marketSortAllTime',
+  trending: 'harness.marketSortTrending',
+  hot: 'harness.marketSortHot',
 };
 
 /** Market context line (under the source chips), keyed by the browse adapter's `noteCode` (the
@@ -209,6 +213,9 @@ const NOTE_KEY: Record<string, string> = {
   'pi-dev': 'harness.marketNote.piDev',
   'clawhub-catalog': 'harness.marketNote.clawhubCatalog',
   'clawhub-search': 'harness.marketNote.clawhubSearch',
+  'skills-sh-board': 'harness.marketNote.skillsShBoard',
+  'skills-sh-search': 'harness.marketNote.skillsShSearch',
+  'dsh-plugin-net': 'harness.marketNote.dshPluginNet',
 };
 
 /** Why the market could not be read, keyed by the backend's `reason`. The backend's English
@@ -343,6 +350,8 @@ interface Row {
   origin?: HarnessDiscoveredArtifact['origin'];
   /** Version the runtime's own store records — rendered as `@x.y.z` beside the name. */
   version?: string;
+  /** DSH only: installed but absent from the selected `dsh.profile.bundles`. */
+  enabled?: boolean;
   /** How to undo the runtime's own install record; present for a discovered plugin row. */
   removal?: HarnessDiscoveredArtifact['removal'];
   /**
@@ -366,7 +375,7 @@ const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text
  */
 /** Installed-row name. `onOpen` turns it into the detail dialog's opener; a row with no public
  *  identity (a manual MCP server) still opens — the dialog simply has less to say. */
-const NameCell: React.FC<{ row: Row; onOpen?: (row: Row) => void }> = ({ row, onOpen }) => (
+const NameCell: React.FC<{ row: Row; onOpen?: (row: Row) => void; disabledLabel?: string }> = ({ row, onOpen, disabledLabel }) => (
   <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, maxWidth: '100%', fontWeight: 'var(--font-semibold)' }}>
     {onOpen ? (
       <button type="button" className="harness-detail-link" onClick={() => onOpen(row)}>
@@ -377,6 +386,9 @@ const NameCell: React.FC<{ row: Row; onOpen?: (row: Row) => void }> = ({ row, on
     )}
     {row.version && (
       <span style={{ ...MONO, fontWeight: 'var(--font-regular)', color: 'var(--text-dim)', flex: '0 0 auto' }}>@{row.version}</span>
+    )}
+    {row.enabled === false && disabledLabel && (
+      <span className="chip" style={{ flex: '0 0 auto', fontWeight: 'var(--font-regular)' }}>{disabledLabel}</span>
     )}
   </span>
 );
@@ -924,8 +936,8 @@ const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: stri
  *
  * Two answers, one predicate: ownership (`copy.host`) is who the copy is recorded under — the
  * landing that was written; readership (`copy.readers`, skills only) is every runtime that loads
- * that directory. A skill materialized once in `.agents/skills` is read by fourteen runtimes, so asking
- * only about `host` would show it under one rail entry and hide it under the other thirteen.
+ * that directory. A skill materialized once in `.agents/skills` is read by fifteen runtimes, so asking
+ * only about `host` would show it under one rail entry and hide it under the other fourteen.
  */
 const copyServes =
   (harnessId: string) =>
@@ -954,10 +966,21 @@ const rowServes = (harnessId: string) => (item: HarnessDiscoveredArtifact): bool
  *
  * `universal` is a HOST id, not a runtime: it owns that directory (first adapter in registry order)
  * and every `readsUniversal` runtime loads it. So on a skills page pinned to one runtime, a row whose
- * copies carry this host is NOT private to that runtime — the same row sits under all fourteen rail
+ * copies carry this host is NOT private to that runtime — the same row sits under all fifteen rail
  * entries, which is exactly why the pinned page cannot answer "what is actually mine" on its own.
  */
 const SHARED_HOST = 'universal';
+
+/** Up to this many profile choices, render radio cards; beyond it, the filterable combobox. */
+const PROFILE_RADIO_MAX = 5;
+
+/** Sentinel for "type a profile name that does not exist yet". The backend validates the real
+ *  name; the vendor CLI creates the profile on the first install. */
+const CUSTOM_PROFILE = '__custom_profile__';
+
+/** Id accepted by the backend install-log ring; UUID when the browser exposes it. */
+const newInstallLogId = (): string =>
+  globalThis.crypto?.randomUUID?.() ?? `log-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 /**
  * Health predicate for ONE artifact — the rail counts artifacts, the table counts rows, and both
@@ -1164,6 +1187,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [fallbackProjectId, setFallbackProjectId] = useState<string | null>(null);
   const [projectsDialogOpen, setProjectsDialogOpen] = useState(false);
   const [installScope, setInstallScope] = useState<'global' | 'project'>('global');
+  /** Per-profile plugin stores (DSH): the profile the open install sheet targets. */
+  const [installProfile, setInstallProfile] = useState('');
+  /** Free-text profile name, used when the operator picks the custom row. */
+  const [customProfile, setCustomProfile] = useState('');
   const [installProjectId, setInstallProjectId] = useState<string | null>(null);
   /** Host catalog — declared before the page-tab gate and the scope helpers that consult it. */
   const [hosts, setHosts] = useState<HarnessHostView[]>([]);
@@ -1341,12 +1368,23 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [detailFull, setDetailFull] = useState(false);
   /** README translation, keyed to the exact source it was made from (`src`), exactly like `tr`:
    *  a re-read row whose body changed must not keep yesterday's translation. */
-  const [detailTr, setDetailTr] = useState<{ src: string; text: string; model: string; truncated: boolean } | null>(null);
+  const [detailTr, setDetailTr] = useState<{ src: string; text: string; model: string } | null>(null);
   const [detailTrBusy, setDetailTrBusy] = useState(false);
+  /** Chunk progress of a running translation, drawn in the button. Null outside a run. */
+  const [detailProgress, setDetailProgress] = useState<{ done: number; total: number } | null>(null);
+  /** Seconds since the current translation started: proves the run is alive while all workers wait. */
+  const [detailElapsed, setDetailElapsed] = useState(0);
   /** Per-dialog view toggle: the translation is shown until the operator asks for the source text. */
   const [detailShowSrc, setDetailShowSrc] = useState(false);
+  /** The README arrived in the console's own language (the backend followed its localized edition or
+   *  detected the script): translating it again is pure waste, so the button is not offered. */
+  const detailReadmeLocalized = !!detail?.readmeLang && detail.readmeLang === lang;
   const [installHosts, setInstallHosts] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
+  /** Mirrored stdout/stderr of the running plugin install (empty outside one). */
+  const [installLog, setInstallLog] = useState('');
+  /** Set while the post-install result is on screen; the footer stops being an install action. */
+  const [installSuccess, setInstallSuccess] = useState<string | null>(null);
   /** Gate 3: the plan the backend refuses to execute until a human reads it. Kept separately from
    *  `installTarget` so the confirmation dialog can show the exact commands on its own surface. */
   const [installGate, setInstallGate] = useState<{ targets: HarnessInstallTarget[]; skillDir?: string } | null>(null);
@@ -1416,7 +1454,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
   const [hostFilter, setHostFilter] = useState('');
   /** Hide the rows that live in the shared `.agents` tree — ON by default. The shared set is the SAME
-   *  under every rail entry (fourteen runtimes read it), so leading a pinned page with it hides the one
+   *  under every rail entry (fifteen runtimes read it), so leading a pinned page with it hides the one
    *  thing that page exists to answer: what was installed for THIS runtime. The rail cannot express
    *  that complement, and the switch is one tick away for anyone who wants the full list back. */
   const [hideShared, setHideShared] = useState(true);
@@ -1636,40 +1674,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  Hosts OUTSIDE this set are never admitted by default, however installed they are. */
   const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true, openclaw: true };
 
-  /** The anchoring order for one-click hosts: market share first (claude, codex,
-   *  opencode, grok, kimi, openclaw), then the niche pi/dsh/omp. Only config-hook
-   *  hosts appear; `opencode-proxy` folds to `opencode`, while Cursor/Qoder proxy
-   *  hooks are not one-click hosts. */
-  const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'kimi', 'openclaw', 'pi', 'dsh', 'omp'];
-
-  /** Popularity ranking for hosts OUTSIDE the clients set (curated — the host catalog carries no
-   *  download signal); hosts missing here fall back to catalog order after the ranked ones. */
-  const HOST_POPULARITY: Record<string, number> = {
-    cursor: 1,
-    'gemini-cli': 2,
-    windsurf: 3,
-    zed: 4,
-    cline: 5,
-    amp: 6,
-  };
-
-  /** Rank offset for hosts absent from the popularity table — after every ranked one. */
-  const HOST_POPULARITY_FALLBACK = 100;
-
   /** ONE comparator for BOTH rail containers: `universal` pinned FIRST (always visible, top of
-   *  the primary container), then clients-integrated hosts anchor to the Clients page's adapter
-   *  order, everything else follows the popularity table (catalog order breaking ties). The order
-   *  is a pure function of the host catalog — no click, selection or expand state feeds it, so
-   *  interacting with the rail can never reshuffle either container. */
+   *  the primary container), then the backend's popularity rank — the SAME rank that orders the
+   *  Clients page's adapter roster (ADR-0015). Catalog order breaks ties. The order is a pure
+   *  function of the host catalog — no click, selection or expand state feeds it, so interacting
+   *  with the rail can never reshuffle either container. */
   const compareHosts = useCallback((a: HarnessHostView, b: HarnessHostView) => {
-    const rank = (h: HarnessHostView): number => {
-      if (h.id === SHARED_HOST) return -1;
-      const ci = CLIENT_ORDER.indexOf(h.id);
-      if (ci >= 0) return ci;
-      const pop = HOST_POPULARITY[h.id];
-      return pop === undefined ? CLIENT_ORDER.length + HOST_POPULARITY_FALLBACK : CLIENT_ORDER.length + pop;
-    };
-    return rank(a) - rank(b);
+    return (a.id === SHARED_HOST ? -1 : a.rank) - (b.id === SHARED_HOST ? -1 : b.rank);
   }, []);
 
   /** Primary-container membership, INDEPENDENT of every interaction: exactly the clients
@@ -1786,6 +1797,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         state: 'local',
         ...(item.origin ? { origin: item.origin } : {}),
         ...(item.version ? { version: item.version } : {}),
+        ...(item.enabled === undefined ? {} : { enabled: item.enabled }),
         ...(item.removal ? { removal: item.removal } : {}),
         ...(runtime ? { runtime } : {}),
       };
@@ -1873,7 +1885,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /**
    * Hosts the dialog may write to — and the caliber differs per kind, which is why this used to be
-   * wrong for MCP: skills are LOCATIONS, not readers (fourteen hosts read the same project
+   * wrong for MCP: skills are LOCATIONS, not readers (fifteen hosts read the same project
    * `.agents/skills`), so a host with no skills root, or one that is an alias of another host's
    * directory, is not a target. MCP and plugins need their OWN verified landing — a shared skills
    * directory says nothing about having a server config to merge into or a package manager to run.
@@ -1902,8 +1914,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * lists it would describe one artifact two ways.
    */
   const installIndex = useMemo(() => {
-    const index = new Map<string, { host: string; scope: string; state: string; path: string; projectRoot?: string }[]>();
-    const put = (key: string | null | undefined, copy: { host: string; scope: string; state: string; path: string; projectRoot?: string }) => {
+    const index = new Map<string, { host: string; scope: string; state: string; path: string; profile?: string; projectRoot?: string }[]>();
+    const put = (key: string | null | undefined, copy: { host: string; scope: string; state: string; path: string; profile?: string; projectRoot?: string }) => {
       if (!key) return;
       const list = index.get(key) ?? [];
       list.push(copy);
@@ -1927,20 +1939,25 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * so the repo prefix is the honest match there and the exact per-target answer waits for the
    * install sheet.
    */
-  const installsFor = (item: HarnessMarketItem): { host: string; scope: string; state: string; path: string; projectRoot?: string }[] => {
+  const installsFor = (item: HarnessMarketItem): { host: string; scope: string; state: string; path: string; profile?: string; projectRoot?: string }[] => {
     if (item.installKind !== 'skill') return installIndex.get(item.key) ?? [];
     const prefix = `${item.key.replace(/^github:/, 'gh:')}#`;
-    const out: { host: string; scope: string; state: string; path: string; projectRoot?: string }[] = [];
+    const out: { host: string; scope: string; state: string; path: string; profile?: string; projectRoot?: string }[] = [];
     for (const [key, copies] of installIndex) if (key.startsWith(prefix)) out.push(...copies);
     return out;
   };
 
-  /** A clean copy blocks only the same host and installation destination. */
+  /** Profile names a DSH host can receive a copy into (empty for other hosts). */
+  const profilesForHost = (host: string): string[] =>
+    host === 'dsh' ? (hosts.find((h) => h.id === 'dsh')?.profiles?.map((p) => p.name) ?? []) : [];
+
+  /** A clean copy blocks only the same host, destination and (for DSH) profile. */
   const takenOn = (
     item: HarnessMarketItem,
     host: string,
     scope = installScope,
     projectId = installProjectId,
+    profileName = installProfileValue || 'web',
   ): boolean => {
     const project = scope === 'project' ? projects.find((p) => p.id === projectId) : null;
     const norm = (value: string): string => value.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
@@ -1948,12 +1965,25 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       copy.host === host &&
       copy.scope === scope &&
       copy.state !== 'missing' &&
+      (host !== 'dsh' || (copy.profile ?? 'web') === profileName) &&
       (scope === 'global' ||
         (!!project &&
           (copy.projectRoot
             ? norm(copy.projectRoot) === norm(project.path)
             : norm(copy.path).startsWith(`${norm(project.path)}/`)))),
     );
+  };
+
+  /** Free means ANY destination for the host; DSH must leave at least one profile open. */
+  const hostFree = (
+    item: HarnessMarketItem,
+    host: string,
+    scope = installScope,
+    projectId = installProjectId,
+  ): boolean => {
+    if (host !== 'dsh') return !takenOn(item, host, scope, projectId);
+    const names = profilesForHost(host);
+    return (names.length ? names : ['web']).some((name) => !takenOn(item, host, scope, projectId, name));
   };
 
   /** Candidate hosts for an install kind: a single-target kind (an plugin is code against ONE
@@ -1966,8 +1996,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /** Targets this market row could still be installed to, right now (current page + scope). */
   const freeTargets = (item: HarnessMarketItem): number => {
-    const hosts = hostsForKind(item.installKind);
-    return hosts.filter((host) => !takenOn(item, host)).length;
+    const hostIds = hostsForKind(item.installKind);
+    return hostIds.filter((host) => hostFree(item, host)).length;
   };
 
   /** The market stays actionable when the item has a free target in another project scope —
@@ -1978,7 +2008,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     projects.some((project) =>
       hostsForKind(item.installKind)
         .filter((host) => kindScopesFor(host, item.installKind).includes('project'))
-        .some((host) => !takenOn(item, host, 'project', project.id))
+        .some((host) => hostFree(item, host, 'project', project.id))
     );
 
   /** Open the detail dialog for one row: paint the row immediately, then fill in the README and the
@@ -1993,6 +2023,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     setDetailFailure(null);
     setDetailFull(false);
     setDetailTr(null);
+    setDetailTrBusy(false);
+    setDetailProgress(null);
     setDetailShowSrc(false);
     const req = ++detailReqRef.current;
     setDetailLoading(true);
@@ -2005,6 +2037,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           ? { key: subject.packageKey }
           : {}),
         ...(subject.repo ? { repo: subject.repo } : {}),
+        // The console language lets the backend serve the README's own localized edition (its
+        // `English | Chinese` switcher) and report `readmeLang`, so no translation is spent on a
+        // document that already exists in this language.
+        lang,
       })
       .then((res) => {
         if (detailReqRef.current === req) setDetail(res.detail);
@@ -2017,32 +2053,57 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       });
   };
 
-  /** Translate the README into the console language. Long-form: the backend translates prose in
-   *  chunks, keeps fenced code verbatim, and reports `truncated` when the document outran the budget
-   *  (the tail then stays in the source language instead of vanishing). */
-  const translateDetail = async () => {
+  /** Translate the README into the console language. Long-form: the backend translates every prose
+   *  segment in chunks, keeps fenced code verbatim, and rejoins the document in order. A README is
+   *  tens of seconds of model output, so the stream reports chunk progress for the button. `refresh`
+   *  re-translates a document that already has a cached rendering — the button says so once one
+   *  exists. */
+  const translateDetail = async (refresh = false) => {
     const body = detail?.readme;
     if (!body || detailTrBusy) return;
     const req = detailReqRef.current;
     setDetailTrBusy(true);
+    setDetailProgress(null);
     try {
-      const res = await api.harnessTranslate({ text: body, lang, format: 'markdown' });
-      if (detailReqRef.current !== req) return; // the dialog moved on to another row
-      setDetailTr({ src: body, text: res.text, model: res.model, truncated: res.truncated === true });
+      const res = await api.harnessTranslateStream({ text: body, lang, refresh }, (done, total) => {
+        // A late event from a dialog that moved on must not repaint the new row's button.
+        if (detailReqRef.current === req) setDetailProgress({ done, total });
+      });
+      if (detailReqRef.current !== req) return;
+      setDetailTr({ src: body, text: res.text, model: res.model });
       setDetailShowSrc(false);
     } catch (e) {
-      toast.error(`${t('harness.translateFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+      // A run for a dialog that moved on must not toast over the new row.
+      if (detailReqRef.current === req) {
+        toast.error(`${t('harness.translateFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
-      setDetailTrBusy(false);
+      // The new dialog owns its own busy flag: only the run that still owns the dialog clears it.
+      if (detailReqRef.current === req) {
+        setDetailProgress(null);
+        setDetailTrBusy(false);
+      }
     }
   };
+
+  // Elapsed seconds while a translation runs. Chunk progress only moves when a request RETURNS, and a
+  // slow or throttled chunk can hold every worker for tens of seconds — a ticking clock is the honest
+  // signal that the run is still alive instead of frozen.
+  useEffect(() => {
+    if (!detailTrBusy) return;
+    const started = Date.now();
+    setDetailElapsed(0);
+    const id = setInterval(() => setDetailElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [detailTrBusy]);
+
 
   // Re-open = re-use: a README translated on a previous visit comes back from the CACHE with no
   // model call and no extra click — the read is cache-only, exactly like the description pre-seed
   // the tables run on mount. A miss is silent; the dialog simply keeps the source text.
   useEffect(() => {
     const body = detail?.readme;
-    if (!body || detailTr) return;
+    if (!body || detailTr || detailReadmeLocalized) return;
     const req = detailReqRef.current;
     let cancelled = false;
     void api
@@ -2050,7 +2111,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       .then(({ translations }) => {
         const hit = translations[body];
         if (cancelled || !hit || detailReqRef.current !== req) return;
-        setDetailTr({ src: body, text: hit.text, model: hit.model, truncated: hit.truncated === true });
+        setDetailTr({ src: body, text: hit.text, model: hit.model });
       })
       .catch(() => {
         /* a cache miss is not an error the operator needs to see */
@@ -2058,7 +2119,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     return () => {
       cancelled = true;
     };
-  }, [detail?.readme, detailTr, lang]);
+  }, [detail?.readme, detailTr, detailReadmeLocalized, lang]);
 
   /** Install action for one market row: starts at once when a single free target leaves the sheet
    *  nothing to ask (see `startInstall`); disabled when every reachable target is taken. */
@@ -2091,6 +2152,20 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** The one harness a single-target install writes to. Absent when this page pins none — a skills
    *  page has no runtime axis, so there is nowhere to write an plugin package. */
   const singleTarget = installHostOffers.find((o) => o.value === harness);
+  /** Per-profile plugin target for the open sheet (DSH): its adapter offers the profiles. */
+  const profileChoices = singleTarget?.value === 'dsh' ? (hosts.find((h) => h.id === 'dsh')?.profiles ?? []) : [];
+  const profileSelection =
+    installProfile === CUSTOM_PROFILE
+      ? CUSTOM_PROFILE
+      : profileChoices.some((p) => p.name === installProfile)
+        ? installProfile
+        : (profileChoices[0]?.name ?? '');
+  const customProfileName = customProfile.trim();
+  const customProfileValid = DSH_PROFILE_NAME_RE.test(customProfileName);
+  const installProfileValue =
+    profileSelection === CUSTOM_PROFILE ? customProfileName : profileSelection;
+  const profileSelectionValid =
+    profileSelection !== CUSTOM_PROFILE || customProfileValid;
   /** Shown in place of the target chips when nothing here can take the install. Null for skills: a
    *  skill's landing list is its owned locations, which the chips already enumerate honestly. */
   const missingLanding = installMeta.rail ? (
@@ -2528,6 +2603,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * The cell IS the affordance — pressing it resolves exactly the row the operator is looking at,
    * never the whole page. `starPending` swallows a double click on the same cell; `disabled` covers
    * the moment a different lookup is already in flight.
+   *
+   * The box is the shared icon-button contract (`.btn-icon`): a local inline height lost to
+   * `.btn-sm`'s min-height and rendered a narrow 22×30 pill instead of a square.
    */
   const starFetchButton = (repo: string) => {
     const busy = starPending.includes(repo);
@@ -2540,7 +2618,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         title={hint}
         aria-label={hint}
         onClick={() => void resolveStars([repo])}
-        style={{ height: 22, minWidth: 22, padding: 0 }}
       >
         <Star size={11} aria-hidden style={busy ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
       </button>
@@ -2690,6 +2767,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const mcpSheetProjectOk = harness !== '' ? projectScopeAllowed([harness], 'mcp') : false;
   const mcpSheetScope: 'global' | 'project' = installScope === 'project' && mcpSheetProjectOk ? 'project' : 'global';
 
+  /** Close the install sheet and drop per-attempt state, so the next open never shows old output. */
+  const closeInstall = () => {
+    setInstallTarget(null);
+    setInstallSuccess(null);
+    setInstallLog('');
+    setCustomProfile('');
+  };
+
   /**
    * Install ONE market row into ONE explicit host set. The core of every install path — the
    * confirm-dialog button, the single-target fast path and the gate acknowledgement all funnel
@@ -2697,6 +2782,19 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    */
   const runInstall = async (target: HarnessMarketItem, hosts: string[], skillDir?: string, confirmed = false) => {
     setInstallBusy(true);
+    const installLogId = confirmed && target.installKind === 'plugin' ? newInstallLogId() : undefined;
+    let poller: number | undefined;
+    if (installLogId) {
+      setInstallLog(t('harness.installLogWaiting'));
+      poller = window.setInterval(() => {
+        void api
+          .harnessInstallLog(installLogId)
+          .then((log) => setInstallLog(log.lines.join('\n') || t('harness.installLogWaiting')))
+          .catch(() => {});
+      }, 800);
+    } else {
+      setInstallLog('');
+    }
     try {
       // A picker re-send must REPLACE the row's stale `#dir` pin, not append to it — the key arrives
       // as `github:<owner/repo>#<stale-dir>` and the chosen directory becomes the only pin.
@@ -2716,6 +2814,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         // carries an `npm:` key, so without this the record would claim npm was the only place the
         // operator saw it.
         listedOn: [target.sourceId],
+        // The row's own line is what an installed row shows when the install resolves no registry
+        // document and the copy has no readable manifest (a native-marketplace plugin).
+        ...(target.description ? { description: target.description } : {}),
         // A GIT-BACKED plugin row installs through the runtime's OWN marketplace chain: the row's
         // repository and manifest-declared marketplace name are the identity the CLI needs. An npm
         // row can still show a repository (Pi's catalog links every package to its GitHub page) —
@@ -2730,6 +2831,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               },
             }
           : {}),
+        // A per-profile runtime (DSH) needs the chosen target; every other host has one implicit
+        // landing, and the field is omitted there.
+        ...(target.installKind === 'plugin' && profileChoices.length > 0 && installProfileValue
+          ? { profile: installProfileValue }
+          : {}),
+        ...(installLogId ? { installLogId } : {}),
         ...(confirmed ? { confirm: true } : {}),
       });
       toast.success(`${t('harness.installDone')}: ${res.name} → ${res.copies.map((c) => c.host).join(', ')}`);
@@ -2738,7 +2845,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       if (res.skipped.length > 0) {
         toast.error(`${t('harness.installPartial')}: ${res.skipped.map((s) => `${s.host} (${s.code})`).join(', ')}`);
       }
-      setInstallTarget(null);
+      setInstallSuccess(res.name);
       setInstallGate(null);
       setSkillPick(null);
       // Land on the view that now holds the copy: a project install must not jump to global.
@@ -2770,6 +2877,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       }
       toast.error(t('harness.installFailed') + ': ' + (e instanceof Error ? e.message : String(e)));
     } finally {
+      if (poller !== undefined) window.clearInterval(poller);
+      if (installLogId) {
+        const final = await api.harnessInstallLog(installLogId).catch(() => null);
+        if (final) setInstallLog(final.lines.join('\n') || final.error || '');
+      }
       setInstallBusy(false);
     }
   };
@@ -2815,12 +2927,21 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       }
       // A package-less MCP key has no form prefill: fall through to the resolver install path.
     }
-    const free = hostsForKind(item.installKind).filter((host) => !takenOn(item, host));
+    const free = hostsForKind(item.installKind).filter((host) => hostFree(item, host));
     // Default to ONE host — the page's pinned landing harness when it can take the install, else
     // the shared Universal tree — never a pre-ticked fan-out across every free host.
     const preferred = free.includes(harness) ? harness : free.includes(SHARED_HOST) ? SHARED_HOST : free[0];
     setInstallHosts(preferred ? [preferred] : []);
     setInstallTarget(item);
+    setInstallSuccess(null);
+    setInstallLog('');
+    const dshProfiles = hosts.find((host) => host.id === 'dsh')?.profiles ?? [];
+    const freeProfile = dshProfiles.find(
+      (profile) => !takenOn(item, 'dsh', installScope, installProjectId, profile.name)
+    );
+    setInstallProfile(freeProfile?.name ?? dshProfiles[0]?.name ?? '');
+    // A name typed for the previous row must not pre-fill the next sheet's "Custom…" field.
+    setCustomProfile('');
   };
 
   /** Gate acknowledgement: re-send the SAME request with `confirm: true`. */
@@ -4137,7 +4258,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * `copyServes` is the same predicate the rail counts with, so the removal dialog can never disagree
    * with the list that opened it: on a skills page it answers by READERSHIP (the shared
-   * `.agents/skills` tree is one copy owned by `universal` and read by fourteen runtimes, so it belongs to
+   * `.agents/skills` tree is one copy owned by `universal` and read by fifteen runtimes, so it belongs to
    * every rail entry that reads it), on MCP/plugin pages by the copy's own host. No harness on the
    * page (before the catalog resolves) means no scope to narrow by — every copy is in scope.
    */
@@ -4266,7 +4387,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         items: [
           {
             artifactId: picker.row.artifact?.id ?? null,
-            copies: picked.map((c) => ({ scope: c.scope, host: c.host, path: c.path })),
+            copies: picked.map((c) => ({
+              scope: c.scope,
+              host: c.host,
+              path: c.path,
+              ...(c.profile ? { profile: c.profile } : {}),
+            })),
             // A discovered row's record is the target: the scan already resolved which file and
             // container hold it, so the plan does not have to re-guess the runtime's layout.
             ...(picker.row.removal ? { removal: picker.row.removal } : {}),
@@ -4473,8 +4599,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * Readership is what makes this mandatory rather than decorative. A skills page is pinned to one
    * runtime but shows every row that runtime can LOAD, and two such rows can live in different
-   * places: one in the shared `.agents/skills` tree (`Universal` — fourteen runtimes load it, so removing
-   * it touches all fourteen) and one in that runtime's own directory (`OpenCode` — private to it). With
+   * places: one in the shared `.agents/skills` tree (`Universal` — fifteen runtimes load it, so removing
+   * it touches all fifteen) and one in that runtime's own directory (`OpenCode` — private to it). With
    * no tag, a pinned page reads as if every row were scoped to the pinned harness, which is exactly
    * the claim it must not make. The chip's tooltip is the copy's real path, so "which directory am I
    * about to remove" never needs a second click.
@@ -4488,7 +4614,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
       {shown.slice(0, limit).map((host) => {
-        const paths = row.copies.filter((copy) => copy.host === host).map((copy) => copy.path);
+        const paths = row.copies
+          .filter((copy) => copy.host === host)
+          .map((copy) => (copy.profile ? `${copy.profile}: ${copy.path}` : copy.path));
         return (
           <span
             key={host}
@@ -4505,6 +4633,31 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         <span className="chip" style={{ fontSize: 'var(--text-xs)', padding: '1px 7px' }}>+{shown.length - limit}</span>
       )}
     </div>
+    );
+  };
+
+  /** DSH plugin profile pills. The host chip names the runtime; these name the profiles it landed in.
+   *  Legacy unprofiled copies meant `web`, so they still read correctly. */
+  const profileChips = (row: Row) => {
+    if (kind !== 'plugin') return null;
+    const profiles = new Set<string>();
+    for (const copy of row.copies) {
+      if (copy.host === 'dsh') profiles.add(copy.profile ?? 'web');
+    }
+    if (profiles.size === 0) return null;
+    return (
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {[...profiles].sort().map((profile) => (
+          <span
+            key={profile}
+            className="chip"
+            title={`${t('harness.installProfile')}: ${profile}`}
+            style={{ fontSize: 'var(--text-xs)', padding: '1px 7px' }}
+          >
+            {profile}
+          </span>
+        ))}
+      </div>
     );
   };
   /**
@@ -4592,6 +4745,30 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** The README actually rendered: the translation while it is valid AND not dismissed. */
   const detailReadme =
     detail?.readme && detailTr && detailTr.src === detail.readme && !detailShowSrc ? detailTr.text : (detail?.readme ?? null);
+  /** Where the README's relative links resolve to. The registry's `repository` field wins over the
+   *  row's own (an npm row usually names its repo only in the detail answer), and a row with no
+   *  source page leaves them unresolved — `ReadmeMarkdown` then drops the click instead of sending
+   *  it to a console route that does not exist. */
+  const readmeBase = detailSubject
+    ? readmeBaseHref({
+        repo: detail?.repo ?? detailSubject.repo,
+        path: detail?.readmePath,
+        packageKey: detailSubject.packageKey,
+        url: detailSubject.url,
+      })
+    : undefined;
+  /** A rendering for THIS source already exists (translated now or seeded from the cache): the
+   *  header button re-translates instead of asking the cache the same question again. */
+  const detailTranslated = !!detail?.readme && detailTr?.src === detail.readme;
+  /** Busy label: chunk progress while a run reports it, the generic wording otherwise. */
+  const detailTranslateLabel = detailTrBusy
+    ? detailProgress
+      ? t('harness.detailTranslatingProgress', { ...detailProgress, secs: detailElapsed })
+      : t('harness.detailTranslating')
+    : detailTranslated
+      ? t('harness.detailRetranslate')
+      : t('harness.detailTranslate');
+
   /** One-line description, translated when the shared cache already has it (same rule as `descCell`). */
   const detailDescEntry = detailSubject ? tr[detailSubject.key] : undefined;
   const detailDesc = detailSubject?.description
@@ -4606,22 +4783,41 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     <>
       {/* Page-level tabs: the two views share one artifact set, so they are two views of one page
           rather than two screens. Sits outside the cards so no card scroll takes it away. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
-        <SegGroup
-          value={tab}
-          onChange={(v) => setTab(v as 'global' | 'project' | 'market')}
-          size="lg"
-          // Every kind forks the installed view into global/project tabs, aligned with the market
-          // tab in the same group.
-          options={[
-            { value: 'global', label: t('harness.viewGlobal', { kind: t(meta.scopeKindKey) }) },
-            ...(projectTabOk
-              ? [{ value: 'project', label: t('harness.viewProject', { kind: t(meta.scopeKindKey) }) }]
-              : []),
-            { value: 'market', label: t(meta.marketKey) },
-          ]}
-        />
-        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>{breadcrumb()}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, flexWrap: 'wrap' }}>
+        {/* The switch never shrinks: its own `overflow: hidden` makes it a zero-min-width flex item,
+            so a squeezed row clipped the trailing tab to a sliver instead of letting the breadcrumb
+            truncate. */}
+        <div style={{ flex: '0 0 auto' }}>
+          <SegGroup
+            value={tab}
+            onChange={(v) => setTab(v as 'global' | 'project' | 'market')}
+            size="lg"
+            // Every kind forks the installed view into global/project tabs, aligned with the market
+            // tab in the same group.
+            options={[
+              { value: 'global', label: t('harness.viewGlobal', { kind: t(meta.scopeKindKey) }) },
+              ...(projectTabOk
+                ? [{ value: 'project', label: t('harness.viewProject', { kind: t(meta.scopeKindKey) }) }]
+                : []),
+              { value: 'market', label: t(meta.marketKey) },
+            ]}
+          />
+        </div>
+        <span
+          title={breadcrumb()}
+          style={{
+            flex: '1 1 160px',
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--text-dim)',
+            fontFamily: FONT_MONO,
+          }}
+        >
+          {breadcrumb()}
+        </span>
         {tab === 'market' && (
           <button
             type="button"
@@ -4635,15 +4831,28 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         )}
       </div>
 
-      {/* ── Header: scope totals + rescan (global / project inventory) ───────── */}
+      {/* ── One list: tracked + local ────────────────────────────────────── */}
       {(tab === 'global' || tab === 'project') && (
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', flex: '0 0 auto' }}>
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
+        {/* Wrap instead of squeezing: on a narrow window the action group drops to its own line
+            rather than crushing the title. */}
         <div className="card-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
+          {/* ONE title line for the scope and its count. This card used to sit under a header card
+              that repeated both — title, count and a rescan button — for a whole extra card's
+              padding. The scope name lives here, the count is its dim suffix, and when a filter
+              narrows the list the suffix says how much of the whole is on screen. */}
           <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <Boxes size={18} color="var(--accent)" />
             <span>{tab === 'project' ? t('harness.viewProject', { kind: t(meta.scopeKindKey) }) : t(meta.titleKey)}</span>
             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-              {inventory ? `${installedNoun} ${total}` : t('harness.subtitle')}
+              {inventory ? (
+                <>
+                  {installedNoun} {rows.length}
+                  {rows.length !== total ? ` / ${total}` : ''}
+                </>
+              ) : (
+                t('harness.subtitle')
+              )}
             </span>
             {tab === 'project' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: '8px' }}>
@@ -4692,7 +4901,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginLeft: 'auto' }}>
+          {/* Actions stay on the title line and never shrink: a squeezed flex item wraps its
+              label one character per line, which is how this toolbar broke before. */}
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: '0 0 auto', marginLeft: 'auto' }}>
             {kind === 'mcp' && harness && hosts.some((h) => h.id === harness && h.hasMcp && h.detected) && (
               <button
                 className="btn btn-sm"
@@ -4723,7 +4934,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 <span>{t('harness.mcpAdd')}</span>
               </button>
             )}
-<button
+            <button
               className="btn btn-sm"
               onClick={() => void load()}
               disabled={loading}
@@ -4735,27 +4946,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               />
               <span>{loading ? t('harness.scanning') : t('harness.scan')}</span>
             </button>
-          </div>
-        </div>
-      </div>
-      )}
-
-      {/* ── One list: tracked + local ────────────────────────────────────── */}
-      {(tab === 'global' || tab === 'project') && (
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
-        {/* Wrap instead of squeezing: on a narrow window the action group drops to its own line
-            rather than crushing the title. */}
-        <div className="card-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
-          <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <span>{installedNoun}</span>
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginLeft: '8px' }}>{rows.length}</span>
-            </div>
-
-          </div>
-          {/* Actions stay on the title line and never shrink: a squeezed flex item wraps its
-              label one character per line, which is how this toolbar broke before. */}
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: '0 0 auto' }}>
             {kind === 'mcp' && runtimeProbing && (
               <span
                 style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
@@ -4803,47 +4993,46 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             />
           </div>
         </div>
-        {/* Source sub-tabs — the same helper the market tab uses, so switching between the two views
-            never changes which sources EXIST. Here only the sources that landed something are
-            rendered: a facet with nothing behind it can only ever empty the table, and the market tab
-            is where the full registry (including a source that cannot serve) stays visible. */}
-        {installedCatalogs.length > 0 && (
-          <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px' }}>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
-            <button
-              className="chip"
-              aria-pressed={activeCatalog === 'all'}
-              aria-label={t('harness.sourceCountAria', { name: t('harness.filterAll'), count: catalogCounts.all ?? 0 })}
-              onClick={() => setActiveCatalog('all')}
-            >
-              {t('harness.filterAll')}
-              <span className="chip-count" aria-hidden>
-                {catalogCounts.all ?? 0}
-              </span>
-            </button>
-            {installedCatalogs.map((cat) => (
+        {/* ONE filter row: the source facets, the host picker and the query all narrow the same
+            list, so they share a line — three stacked rows cost a table's worth of height on every
+            visit. The search field takes whatever width the card can spare. Only sources that landed
+            something are rendered: a facet with nothing behind it can only ever empty the table, and
+            the market tab is where the full registry (including a source that cannot serve) stays
+            visible. */}
+        <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px', gap: '8px' }}>
+          {installedCatalogs.length > 0 && (
+            <>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
               <button
-                key={cat}
                 className="chip"
-                aria-pressed={activeCatalog === cat}
-                aria-label={t('harness.sourceCountAria', {
-                  name: cat === 'default' ? t('harness.srcMgmt.defaultCatalog') : cat,
-                  count: catalogCounts[cat] ?? 0,
-                })}
-                onClick={() => setActiveCatalog(cat)}
+                aria-pressed={activeCatalog === 'all'}
+                aria-label={t('harness.sourceCountAria', { name: t('harness.filterAll'), count: catalogCounts.all ?? 0 })}
+                onClick={() => setActiveCatalog('all')}
               >
-                {formatCatalog(cat)}
+                {t('harness.filterAll')}
                 <span className="chip-count" aria-hidden>
-                  {catalogCounts[cat] ?? 0}
+                  {catalogCounts.all ?? 0}
                 </span>
               </button>
-            ))}
-          </div>
-        )}
-        {/* Filters get their own row: host and query both narrow the same list, so they share a line
-            and the search field takes all the width the card can spare. The host picker is absent on a
-            landing page — one harness there, nothing to narrow. */}
-        <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px', gap: '8px' }}>
+              {installedCatalogs.map((cat) => (
+                <button
+                  key={cat}
+                  className="chip"
+                  aria-pressed={activeCatalog === cat}
+                  aria-label={t('harness.sourceCountAria', {
+                    name: cat === 'default' ? t('harness.srcMgmt.defaultCatalog') : cat,
+                    count: catalogCounts[cat] ?? 0,
+                  })}
+                  onClick={() => setActiveCatalog(cat)}
+                >
+                  {formatCatalog(cat)}
+                  <span className="chip-count" aria-hidden>
+                    {catalogCounts[cat] ?? 0}
+                  </span>
+                </button>
+              ))}
+            </>
+          )}
           {!landing && (
             <Combobox
               value={hostFilter}
@@ -5010,7 +5199,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {pageRows.map((row) => (
                     <tr key={row.key}>
                       <td style={{ ...TD, fontWeight: 'var(--font-semibold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <NameCell row={row} onOpen={(r) => openDetail(subjectFromRow(r))} />
+                        <NameCell row={row} onOpen={(r) => openDetail(subjectFromRow(r))} disabledLabel={t('harness.pluginDisabled')} />
                       </td>
                       <td style={TD}>{descCell(row)}</td>
                       <td
@@ -5019,7 +5208,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       >
                         {channelLabel(row)}
                       </td>
-                      <td style={TD}>{hostChips(row)}</td>
+                      <td style={TD}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {hostChips(row)}
+                          {profileChips(row)}
+                        </div>
+                      </td>
                       {showStarColumn && <td style={TD_CENTER}>{installedStar(row)}</td>}
                       {showStateColumn && <td style={TD_CENTER}>{stateBadge(row)}</td>}
                       <td style={TD_CENTER}>
@@ -5056,13 +5250,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <NameCell row={row} onOpen={(r) => openDetail(subjectFromRow(r))} />
+                      <NameCell row={row} onOpen={(r) => openDetail(subjectFromRow(r))} disabledLabel={t('harness.pluginDisabled')} />
                       <span style={{ flex: 1 }} />
                       {installedStar(row)}
                       {stateBadge(row)}
                     </div>
                     {descCell(row, true)}
                     {hostChips(row, row.hosts.length)}
+                    {profileChips(row)}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, marginTop: 'auto' }}>
                       <span
                         style={{
@@ -5164,6 +5359,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               // plan refuses it). An out-of-scope copy is merely NOT PRESELECTED — still tickable, so
               // "remove everywhere" stays one plan.
               const disabled = copy.state === 'foreign';
+              const hostLabel = copy.host === 'dsh' ? 'DSH' : hostName(copy.host);
               return (
                 <label
                   key={copy.path}
@@ -5194,9 +5390,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   />
                   <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-medium)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                     <HostIcon host={copy.host} size={14} />
-                    {copy.host}
+                    {hostLabel}
                   </span>
-                  <span style={{ ...MONO, color: 'var(--text-dim)' }}>{copy.scope}</span>
+                  <span style={{ ...MONO, color: 'var(--text-dim)' }}>
+                    {copy.scope === 'global' ? t('harness.scopeGlobal') : t('harness.scopeProject')}
+                  </span>
+                  {copy.profile && (
+                    <span style={{ ...MONO, color: 'var(--text-dim)' }}>{copy.profile}</span>
+                  )}
                   <span style={{ flex: 1 }} />
                   {copy.state === 'dirty' && (
                     /* The ONLY place drift is spoken: removing this copy would take the edits with
@@ -5206,7 +5407,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {copy.external ? (
                     /* `path` is an identity token for a package-manager-owned copy, not a directory
                        to reveal — showing a folder icon would promise a path that does not exist. */
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.extManaged')}</span>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                      {t('harness.extManaged').replace('{host}', hostLabel)}
+                    </span>
                   ) : (
                     <span
                       data-tip={copy.path}
@@ -5229,20 +5432,21 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               );
             })}
             {/* What the removal will physically do, when the shape is known up front (a discovered
-                row carries it). Everything else is spelled out by the dialog subtitle: a path goes to
-                the trash, a config member leaves its own file. */}
+                row carries it). One line only: a runtime-store declaration adds the half the sentence
+                would otherwise omit (the package survives), riding on the same line instead of a
+                second paragraph of the same shape. */}
             {picker.row.removal && (
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
                 {picker.row.removal.op === 'trash-path'
                   ? t('harness.removeNoteTrash')
                   : picker.row.removal.op === 'cli-remove'
                     ? t('harness.removeNoteCli')
-                    : t('harness.removeNoteConfig').replace('{file}', picker.row.removal.file)}
-              </span>
-            )}
-            {picker.row.removal?.op === 'drop-entry' && picker.row.origin === 'runtime-store' && (
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-                {t('harness.removeNoteDecl').replace('{file}', picker.row.removal.file)}
+                    : picker.row.removal.op === 'plugin-remove'
+                      ? t('harness.removeNotePluginCli')
+                      : t('harness.removeNoteConfig').replace('{file}', picker.row.removal.file)}
+                {picker.row.removal.op === 'drop-entry' && picker.row.origin === 'runtime-store'
+                  ? ` ${t('harness.removeNoteDecl')}`
+                  : null}
               </span>
             )}
           </div>
@@ -5258,11 +5462,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           }
           subtitle={installTarget.repo ?? installTarget.key}
           onClose={() => {
-            setInstallTarget(null);
-            setInstallGate(null);
+            closeInstall();
           }}
           closeLabel={t('combobox.close')}
           width={installGate ? 560 : 460}
+          backdropClose={!installBusy}
+          closeDisabled={installBusy}
           footerRight={
             installGate ? (
               <>
@@ -5279,15 +5484,23 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
                 </button>
               </>
+            ) : installSuccess ? (
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={installBusy}
+                onClick={closeInstall}
+              >
+                {t('common.close')}
+              </button>
             ) : (
               <>
-                <button className="btn btn-sm" onClick={() => setInstallTarget(null)} disabled={installBusy}>
+                <button className="btn btn-sm" onClick={closeInstall} disabled={installBusy}>
                   {t('common.cancel')}
                 </button>
                 <button
                   className="btn btn-sm"
                   onClick={() => void doInstall()}
-                  disabled={installBusy || installTargetHosts().length === 0 || (sheetScope === 'project' && !installProjectId)}
+                  disabled={installBusy || installTargetHosts().length === 0 || (sheetScope === 'project' && !installProjectId) || !profileSelectionValid}
                 >
                   <Download size={12} aria-hidden />
                   <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
@@ -5305,26 +5518,105 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               descKey={'harness.installGateDesc'}
             />
           ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div className="install-sheet">
             {/* Fast-path installs run with this sheet already open (see startInstall): without a
                 visible state the only busy signal would be the disabled footer button. */}
             {installBusy && (
-              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <div className="form-hint" role="status">
                 {t('harness.installing')}
-              </span>
+              </div>
             )}
+            {installTarget?.installKind === 'plugin' &&
+              singleTarget?.value === 'dsh' &&
+              profileChoices.length > 0 && (
+                <FormSection title={t('harness.installProfile')}>
+                  {/* Every card carries its state as a second line, so the row keeps one uniform
+                      height and the sheet never repeats the selection underneath it. */}
+                  <div className="install-profile">
+                    {profileChoices.length <= PROFILE_RADIO_MAX ? (
+                      <RadioGroup
+                        value={profileSelection}
+                        onChange={setInstallProfile}
+                        ariaLabel={t('harness.installProfile')}
+                        options={[
+                          ...profileChoices.map((profile): RadioGroupOption => {
+                            const installed = installTarget
+                              ? takenOn(installTarget, 'dsh', installScope, installProjectId, profile.name)
+                              : false;
+                            return {
+                              value: profile.name,
+                              label: profile.name,
+                              ...(installed
+                                ? { description: t('harness.profileInstalled') }
+                                : profile.exists
+                                  ? {}
+                                  : { description: t('harness.profileWillInitialize') }),
+                            };
+                          }),
+                          // The sentinel lives in BOTH branches: the radio path is the one a small DSH
+                          // install gets (<= 5 profiles), and it is exactly the first-install case
+                          // where an operator names a new profile instead of picking an existing one.
+                          { value: CUSTOM_PROFILE, label: t('harness.profileCustom') },
+                        ]}
+                      />
+                    ) : (
+                      <Combobox
+                        value={profileSelection}
+                        onChange={setInstallProfile}
+                        options={[
+                          ...profileChoices.map((profile) => {
+                            const installed = installTarget
+                              ? takenOn(installTarget, 'dsh', installScope, installProjectId, profile.name)
+                              : false;
+                            return {
+                              value: profile.name,
+                              label: profile.name,
+                              ...(installed
+                                ? { meta: t('harness.profileInstalled') }
+                                : profile.exists
+                                  ? {}
+                                  : { meta: t('harness.profileWillInitialize') }),
+                            };
+                          }),
+                          {
+                            value: CUSTOM_PROFILE,
+                            label: t('harness.profileCustom'),
+                          },
+                        ]}
+                      />
+                    )}
+                  </div>
+                  {profileSelection === CUSTOM_PROFILE && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <input
+                        className="input"
+                        value={customProfile}
+                        onChange={(e) => setCustomProfile(e.target.value)}
+                        placeholder={t('harness.profileCustomPlaceholder')}
+                        aria-label={t('harness.installProfile')}
+                        maxLength={64}
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                      {customProfileName && !customProfileValid && (
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>
+                          {t('harness.profileCustomInvalid')}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </FormSection>
+              )}
             {/* Install Scope selector: Global vs Project */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4 }}>
-              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
-              <div style={{ display: 'flex', gap: 8 }}>
+            <FormSection title={t('harness.installScope')}>
+              <div className="chip-row">
                 <button
                   type="button"
                   className="chip"
                   aria-pressed={sheetScope === 'global'}
                   onClick={() => setInstallScope('global')}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', padding: '4px 10px' }}
                 >
-                  <Globe size={12} />
+                  <Globe size={12} aria-hidden />
                   <span>{t('harness.scopeGlobal')}</span>
                 </button>
                 {/* Project is offered only when every target host declares a project landing for
@@ -5336,20 +5628,18 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     className="chip"
                     aria-pressed={sheetScope === 'project'}
                     onClick={() => setInstallScope('project')}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', padding: '4px 10px' }}
                   >
-                    <FolderGit2 size={12} />
+                    <FolderGit2 size={12} aria-hidden />
                     <span>{t('harness.scopeProject')}</span>
                   </button>
                 )}
               </div>
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+              <div className="form-hint">
                 {sheetScope === 'global' ? t('harness.scopeGlobalHint') : t('harness.scopeProjectHint')}
-              </span>
+              </div>
 
               {sheetScope === 'project' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                  <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
+                <Field label={t('harness.targetProject')}>
                   {projects.length === 0 ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
@@ -5357,7 +5647,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                         type="button"
                         className="btn btn-sm"
                         onClick={() => setProjectsDialogOpen(true)}
-                        style={{ fontSize: 'var(--text-xs)', padding: '2px 8px' }}
                       >
                         {t('projects.add')}
                       </button>
@@ -5384,33 +5673,25 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       </button>
                     </div>
                   )}
-                </div>
+                </Field>
               )}
-            </div>
+            </FormSection>
 
-<label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
-            {installMeta.installMode === 'single' ? (
-              /* One runtime is the whole target set (an plugin is code against ONE plugin API), so
-                 the harness is rendered as a fixed chip rather than a choice the backend refuses. */
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {singleTarget ? (
+            <FormSection title={t('harness.installHost')}>
+              {installMeta.installMode === 'single' ? (
+                singleTarget ? (
                   <>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      <span
-                        className="chip"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', padding: '3px 9px' }}
-                      >
-                        {singleTarget.icon}
-                        {singleTarget.label}
-                      </span>
+                    {/* One runtime is the whole target set (a plugin is code against ONE plugin
+                        API), so the landing is a fixed card: a chip here would read as a toggle the
+                        operator forgot to press. */}
+                    <div className="install-target">
+                      {singleTarget.icon}
+                      <span>{singleTarget.label}</span>
                     </div>
                     {installMeta.singleHintKey && (
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                      <div className="form-hint">
                         {t(installMeta.singleHintKey, { name: singleTarget.label })}
-                      </span>
-                    )}
-                    {installTarget && takenOn(installTarget, singleTarget.value) && (
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>{t('harness.targetInstalled')}</span>
+                      </div>
                     )}
                   </>
                 ) : (
@@ -5418,54 +5699,79 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                      is no harness to write into). Say so instead of rendering an empty chip row
                      beside a live-looking Install button. */
                   missingLanding
-                )}
-              </div>
-            ) : installHostOffers.length === 0 ? (
-              /* Same honesty for the multi case: nothing here has a landing of its own. */
-              missingLanding
-            ) : (
-              /* Chips, not a combobox: the payload is written once, so a second host costs a copy
-                 rather than another download (and one MCP server in several clients is the point). */
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {installHostOffers.map((o) => {
-                  const on = installHosts.includes(o.value);
-                  // The backend refuses a target that already holds a clean copy (`exists`); showing
-                  // that here turns a failed confirm into a visible state.
-                  const taken = takenOn(installTarget, o.value);
-                  return (
-                    <button
-                      key={o.value}
-                      className="chip"
-                      aria-pressed={on && !taken}
-                      disabled={taken}
-                      title={taken ? t('harness.targetInstalled') : undefined}
-                      onClick={() =>
-                        setInstallHosts((prev) =>
-                          prev.includes(o.value) ? prev.filter((v) => v !== o.value) : [...prev, o.value]
-                        )
-                      }
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        fontSize: 'var(--text-sm)',
-                        padding: '3px 9px',
-                        ...(taken ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
-                      }}
-                    >
-                      {o.icon}
-                      {o.label}
-                    </button>
-                  );
-                })}
+                )
+              ) : installHostOffers.length === 0 ? (
+                /* Same honesty for the multi case: nothing here has a landing of its own. */
+                missingLanding
+              ) : (
+                /* Chips, not a combobox: the payload is written once, so a second host costs a copy
+                   rather than another download (and one MCP server in several clients is the point). */
+                <div className="chip-row">
+                  {installHostOffers.map((o) => {
+                    const on = installHosts.includes(o.value);
+                    // The backend refuses a target that already holds a clean copy (`exists`); showing
+                    // that here turns a failed confirm into a visible state.
+                    const taken = takenOn(installTarget, o.value);
+                    return (
+                      <button
+                        key={o.value}
+                        className="chip"
+                        aria-pressed={on && !taken}
+                        disabled={taken}
+                        title={taken ? t('harness.targetInstalled') : undefined}
+                        onClick={() =>
+                          setInstallHosts((prev) =>
+                            prev.includes(o.value) ? prev.filter((v) => v !== o.value) : [...prev, o.value]
+                          )
+                        }
+                      >
+                        {o.icon}
+                        {o.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {installTarget && installHostOffers.some((o) => takenOn(installTarget, o.value)) && (
+                <div className="install-notice" role="note">
+                  <Info size={14} aria-hidden />
+                  <div>
+                    <strong>{t('harness.targetInstalled')}</strong>
+                    <span>{t('harness.targetTakenHint')}</span>
+                  </div>
+                </div>
+              )}
+            </FormSection>
+            {installSuccess && (
+              <div className="form-hint" style={{ color: 'var(--accent-emerald)' }}>
+                {t('harness.installDone')}: {installSuccess}
               </div>
             )}
-            {installTarget &&
-              installHostOffers.some((o) => takenOn(installTarget, o.value)) && (
-                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>
-                  {t('harness.targetTakenHint')}
-                </span>
-              )}
+            {installLog && (
+              <details open style={{ marginTop: 4 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                  {t('harness.installLog')}
+                </summary>
+                <pre
+                  style={{
+                    margin: '6px 0 0',
+                    maxHeight: 180,
+                    overflow: 'auto',
+                    padding: 8,
+                    borderRadius: 6,
+                    background: 'var(--surface-2)',
+                    color: 'var(--text-dim)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    lineHeight: 1.45,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {installLog}
+                </pre>
+              </details>
+            )}
           </div>
           )}
         </Dialog>
@@ -5923,17 +6229,19 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           width={900}
           headerActions={
             <>
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={!detail?.readme || detailTrBusy}
-                title={detailTrBusy ? t('harness.detailTranslating') : t('harness.detailTranslate')}
-                onClick={() => void translateDetail()}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
-              >
-                <Globe size={12} aria-hidden />
-                <span>{detailTrBusy ? t('harness.detailTranslating') : t('harness.detailTranslate')}</span>
-              </button>
+              {!detailReadmeLocalized && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={!detail?.readme || detailTrBusy}
+                  title={detailTranslateLabel}
+                  onClick={() => void translateDetail(detailTranslated)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                >
+                  <Globe size={12} aria-hidden />
+                  <span>{detailTranslateLabel}</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-sm"
@@ -6040,22 +6348,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 >
                   {detailShowSrc ? t('harness.origBadge') : t('harness.mtBadge')}
                 </button>
-                {detailTr.truncated && (
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.detailTruncated')}</span>
-                )}
               </div>
             )}
             {!detailLoading && detailReadme && (
               <div className="md-well" style={{ fontSize: 'var(--text-md)' }}>
                 {/* README surface: raw HTML is PARSED and sanitized here (see lib/readme-markdown) —
                     a plugin page written in `<div align="center">` must not render as nothing. */}
-                <ReactMarkdown
-                  remarkPlugins={README_MD_REMARK_PLUGINS}
-                  rehypePlugins={README_MD_REHYPE_PLUGINS}
-                  components={README_MD_COMPONENTS}
-                >
-                  {detailReadme}
-                </ReactMarkdown>
+                <ReadmeMarkdown source={detailReadme} base={readmeBase} />
               </div>
             )}
             {!detailLoading && !detailReadme && !detailProblem && detailSubject.url && (

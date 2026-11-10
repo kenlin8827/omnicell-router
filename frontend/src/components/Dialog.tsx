@@ -20,6 +20,8 @@ export type DialogProps = {
   onClose: () => void;
   /** i18n label used as the × button's title and aria-label. */
   closeLabel: string;
+  /** Disable every dismissal path (×, Escape, backdrop) without unmounting the dialog. */
+  closeDisabled?: boolean;
   /** Allow dismissing via backdrop press+release and Escape (default true).
    * False for dialogs whose accidental dismissal loses data (e.g. a one-time
    * secret reveal) — they close only through their explicit buttons. */
@@ -56,6 +58,7 @@ export const Dialog: React.FC<DialogProps> = ({
   onClose,
   closeLabel,
   backdropClose = true,
+  closeDisabled = false,
   width = 660,
   maxSize,
   blur = false,
@@ -64,13 +67,13 @@ export const Dialog: React.FC<DialogProps> = ({
   useBodyScrollLock(true);
 
   useEffect(() => {
-    if (!backdropClose) return;
+    if (!backdropClose || closeDisabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, backdropClose]);
+  }, [onClose, backdropClose, closeDisabled]);
 
   // Backdrop click closes only when press AND release both happen on the
   // overlay itself — a drag that starts inside the form (text selection)
@@ -80,6 +83,9 @@ export const Dialog: React.FC<DialogProps> = ({
   // Marker for layered-Escape handling: an overlay beneath this dialog (e.g.
   // the capture focus view's own window-level Escape listener) sees the node
   // and yields the key to the topmost dialog.
+  // `closeDisabled` gates the backdrop too: it is documented as "every dismissal path", and a
+  // caller that blocks the × while a request runs must not leave Escape as a side door.
+  const backdropDismissible = backdropClose && !closeDisabled;
   return createPortal(
     <div
       data-ocr-dialog=""
@@ -94,8 +100,8 @@ export const Dialog: React.FC<DialogProps> = ({
         justifyContent: 'center',
         padding: full ? 0 : '16px',
       }}
-      onMouseDown={backdropClose ? (e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; } : undefined}
-      onMouseUp={backdropClose ? (e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); } : undefined}
+      onMouseDown={backdropDismissible ? (e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; } : undefined}
+      onMouseUp={backdropDismissible ? (e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); } : undefined}
     >
       <div
         className="card"
@@ -131,6 +137,7 @@ export const Dialog: React.FC<DialogProps> = ({
               className="btn btn-sm"
               style={{ display: 'flex', alignItems: 'center', height: 24, padding: '0 6px' }}
               onClick={onClose}
+              disabled={closeDisabled}
               title={closeLabel}
               aria-label={closeLabel}
             >

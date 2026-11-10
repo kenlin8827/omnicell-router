@@ -415,7 +415,7 @@ kbd {
 .btn:hover { box-shadow: none; transform: none; }
 .btn:active { transform: scale(0.97); }
 .btn-sm { min-height: 30px; }
-.btn-icon { min-width: 30px; height: 30px; }
+.btn-icon { min-width: 30px; height: 30px; padding: 0 6px; }
 .input { min-height: 36px; border-radius: var(--shell-control-radius); transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease; }
 .input::placeholder, input::placeholder, textarea::placeholder { color: var(--text-dim); opacity: 0.78; }
 .scroll-table-body tr, tbody tr { transition: background 120ms ease; }

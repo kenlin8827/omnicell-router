@@ -96,3 +96,78 @@ export function groupVisibleFields(
   }
   return groups;
 }
+
+/**
+ * The vocabulary one gateway card must speak: the enum value persisted for the
+ * UI's "None" and the schema field holding the picked key's `apiKeys[].id`.
+ * Both are DECLARED by the manifest (ADR-0017 §7). The shipped gateways agree
+ * on the key field (`accountKeyId`) but not on the unset spelling (`all` on
+ * cursor-gateway, `none` on qoder-gateway), and a future gateway may name the
+ * field anything. Hardcoding either spelling makes a save silently lose the
+ * value: the host drops an unknown key and falls back on a failed enum, with a
+ * warning.
+ */
+export interface GatewayVocabulary {
+  /** Enum value the UI's "None" mode persists (`all`, `none`, …). */
+  unsetMode: string;
+  /** Schema field carrying the picked key id; '' = the gateway has no
+   *  `apiKey` control and the card persists no binding. */
+  keyField: string;
+}
+
+export function gatewayVocabulary(schema: PluginConfigFieldInfo[]): GatewayVocabulary {
+  const mode = schema.find((field) => field.key === 'modelListMode');
+  const key = schema.find((field) => field.control === 'apiKey');
+  return {
+    // `custom` / `follow` are the two labeled states; the remaining declared
+    // value is the gateway's "unset" spelling.
+    unsetMode: mode?.values?.find((value) => value !== 'custom' && value !== 'follow') ?? 'none',
+    keyField: key?.key ?? '',
+  };
+}
+
+/** The Client Hub card's model-catalog draft for one gateway. */
+export interface GatewayCfgDraft extends GatewayVocabulary {
+  model: string;
+  forceModel: boolean;
+  catalogReplace: boolean;
+  /** UI-level mode; `gatewayModeValue` maps `none` to the plugin's spelling. */
+  modelListMode: 'none' | 'custom' | 'follow';
+  models: string[];
+  /** `apiKeys[].id` held by the plugin's key field ('' = unbound). */
+  boundKeyId: string;
+  /** Original values, so a save never drops unrelated plugin settings. */
+  values: Record<string, unknown>;
+}
+
+export function parseGatewayCfg(
+  values: Record<string, unknown>,
+  vocabulary: GatewayVocabulary
+): GatewayCfgDraft {
+  const modelListMode =
+    values.modelListMode === 'custom' || values.modelListMode === 'follow'
+      ? values.modelListMode
+      : 'none';
+  const bound = vocabulary.keyField ? values[vocabulary.keyField] : undefined;
+  return {
+    ...vocabulary,
+    model: String(values.model ?? 'auto').replace(/^ocr\//, ''),
+    forceModel: values.forceModel === true,
+    catalogReplace: values.catalogReplace === true,
+    modelListMode,
+    models: Array.isArray(values.models)
+      ? values.models.map((id) => String(id).replace(/^ocr\//, ''))
+      : [],
+    boundKeyId: typeof bound === 'string' ? bound : '',
+    values,
+  };
+}
+
+/** Persisted enum value for a UI mode: `none` is console vocabulary, while
+ *  `custom` and `follow` are declared by both gateways. */
+export function gatewayModeValue(
+  vocabulary: GatewayVocabulary,
+  mode: GatewayCfgDraft['modelListMode']
+): string {
+  return mode === 'none' ? vocabulary.unsetMode : mode;
+}

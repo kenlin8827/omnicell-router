@@ -9,6 +9,7 @@ import { api, SourceOutcomeError, type HarnessCatalogSource, type HarnessMarketp
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from './ConfirmProvider';
 import { RUNTIME_BADGE, type McpRuntimeVerdict } from '../lib/mcp-runtime';
+import { needsHostDetection } from '../lib/harness-source-gate';
 
 /**
  * Market source maintenance drawer (ADR-0015 §D9/§D10/§D11), ONE AXIS AT A TIME.
@@ -435,8 +436,8 @@ export const HarnessSourcesDrawer: React.FC<{
         // Phase 1 — probe before writing. The probe is skipped when Check already cached the
         // hosts this session; both the refusal (this harness unsupported) and the scope dialog
         // (several harnesses supported) are decided by the detected hosts either way, so a
-        // Check-then-Add flow must reach the same gates. An MCP package probe declares no
-        // hosts at all and the source is shared by definition, so it takes the direct path.
+        // Check-then-Add flow must reach the same gates. Package sources — an MCP npm/PyPI source
+        // and an npm PLUGIN source alike — publish no form at all and take the direct path.
         let hosts = checkedHosts;
         if (hosts.length === 0) {
           const chk = await api.harnessPluginCheckSource(scope, url.trim(), { type: sourceType, kind });
@@ -446,7 +447,9 @@ export const HarnessSourcesDrawer: React.FC<{
           }
           hosts = chk.hosts ?? [];
         }
-        if (!isMcp) {
+        // The gate and the scope dialog are FORM checks (ADR-0015 §D10), so only a repository
+        // source runs them; `needsHostDetection` owns that rule for both axes.
+        if (!isMcp && needsHostDetection(sourceType, url)) {
           setCheckedHosts(hosts);
           if (!hosts.includes(harness)) {
             setNote(sourceNote('unsupported_here', { hosts: hosts.join(', ') || 'none' }));

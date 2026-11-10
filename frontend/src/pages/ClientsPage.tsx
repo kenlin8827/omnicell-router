@@ -11,6 +11,7 @@ import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
 import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
+import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, type GatewayCfgDraft } from '../lib/plugin-config';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -83,40 +84,9 @@ const virtualDefaultFor = (clientName: string): string[] =>
 /** A gateway plugin's model surface lives in its plugin config but is edited
  *  HERE (client card), not on the Plugins page: the model list is part of "how
  *  this client connects", while the plugin page keeps protocol/runtime
- *  settings. The raw values object is retained so a save never drops unrelated
- *  plugin settings. */
-interface GatewayCfgDraft {
-  model: string;
-  forceModel: boolean;
-  catalogReplace: boolean;
-  modelListMode: 'none' | 'custom' | 'follow';
-  models: string[];
-  /** `apiKeys[].id` the OCR-routed completions are charged to ('' = unbound). */
-  accountKeyId: string;
-  values: Record<string, unknown>;
-}
-
-const parseGatewayCfg = (values: Record<string, unknown>): GatewayCfgDraft => {
-  const modelListMode =
-    values.modelListMode === 'custom' || values.modelListMode === 'follow'
-      ? values.modelListMode
-      : 'none';
-  const model = String(values.model ?? 'auto').replace(/^ocr\//, '');
-  // `none` advertises only auto* tiers, but a configured concrete default is
-  // NOT inert: routing resolves it against the full registry (forceModel and
-  // unpinned requests), so the form must show what will actually run.
-  return {
-    model,
-    forceModel: values.forceModel === true,
-    catalogReplace: values.catalogReplace === true,
-    modelListMode,
-    models: Array.isArray(values.models)
-      ? values.models.map((id) => String(id).replace(/^ocr\//, ''))
-      : [],
-    accountKeyId: typeof values.accountKeyId === 'string' ? values.accountKeyId : '',
-    values,
-  };
-};
+ *  settings. The draft shape and its schema-derived vocabulary live in
+ *  `lib/plugin-config`: the card speaks each gateway's DECLARED spelling, never
+ *  one gateway's. */
 
 /** Same model ids, order-insensitive: the chip wall is an unordered set. */
 function sameModelSelection(a: string[], b: string[]): boolean {
@@ -372,7 +342,7 @@ export const ClientsPage: React.FC = () => {
     opencodeApi.getPluginConfig(expandedPluginId)
       .then((cfg) => {
         if (!alive) return;
-        const parsed = parseGatewayCfg(cfg.values ?? {});
+        const parsed = parseGatewayCfg(cfg.values ?? {}, gatewayVocabulary(cfg.schema ?? []));
         setGatewayCfg((prev) => ({ ...prev, [expandedPluginId]: parsed }));
 
       })
@@ -407,9 +377,9 @@ export const ClientsPage: React.FC = () => {
   useEffect(() => {
     if (!expandedPluginId) return;
     const parsed = gatewayCfg[expandedPluginId];
-    if (!parsed?.accountKeyId) return;
+    if (!parsed?.boundKeyId) return;
     const clientName = CLIENT_BY_GATEWAY_PLUGIN[expandedPluginId];
-    const bound = apiKeys.find((k) => k.id === parsed.accountKeyId);
+    const bound = apiKeys.find((k) => k.id === parsed.boundKeyId);
     if (!bound) return;
     setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.key }));
   }, [expandedPluginId, gatewayCfg, apiKeys]);
@@ -418,7 +388,7 @@ export const ClientsPage: React.FC = () => {
    *  such a save the client must re-read its own model list. Follow mode always
    *  re-snapshots the key's allowed list at save time, so it counts too. */
   const gatewayCatalogDirty = (draft: GatewayCfgDraft): boolean => {
-    const base = parseGatewayCfg(draft.values ?? {});
+    const base = parseGatewayCfg(draft.values ?? {}, draft);
     return (
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
@@ -462,21 +432,22 @@ export const ClientsPage: React.FC = () => {
         setKeyModels((prev) => ({ ...prev, [picked.id]: view }));
         models = view.models.filter((model) => model.allowed).map((model) => model.id);
       }
-      // `none` still advertises the auto* tier block, but the default may stay
-      // a concrete registry id: forceModel (and unpinned requests) resolve it
-      // against the full registry even when the list hides it.
+      // The unset mode may hide the concrete default from the list, but a
+      // configured id stays a real routing target: forceModel and unpinned
+      // requests resolve it against the full registry.
       const model = draft.model;
       const values = {
         ...draft.values,
         model,
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
-        modelListMode: draft.modelListMode,
+        // Persist the plugin's own unset spelling — `none` is UI vocabulary.
+        modelListMode: gatewayModeValue(draft, draft.modelListMode),
         models,
-        accountKeyId: picked.id,
+        ...(draft.keyField ? { [draft.keyField]: picked.id } : {}),
       };
       const res = await opencodeApi.putPluginConfig(pluginId, values);
-      setGatewayCfg((prev) => ({ ...prev, [pluginId]: parseGatewayCfg(res.values ?? values) }));
+      setGatewayCfg((prev) => ({ ...prev, [pluginId]: parseGatewayCfg(res.values ?? values, draft) }));
       // Only a catalog-shaped save needs the client to re-read its list; a
       // dropped value (warning) means the advertised list did NOT change.
       setGatewaySavedNotice((prev) => ({ ...prev, [pluginId]: catalogChanged && res.warnings.length === 0 }));
@@ -502,7 +473,7 @@ export const ClientsPage: React.FC = () => {
    *  apply it, exactly like the explicit Save button would. */
   const gatewayDraftDirty = (draft: GatewayCfgDraft | undefined, clientName: string): boolean => {
     if (!draft) return false;
-    const base = parseGatewayCfg(draft.values ?? {});
+    const base = parseGatewayCfg(draft.values ?? {}, draft);
     const pickedId = apiKeySel[clientName] ? keyIdOf(apiKeySel[clientName]) : '';
     return (
       draft.model !== base.model ||
@@ -510,7 +481,7 @@ export const ClientsPage: React.FC = () => {
       draft.catalogReplace !== base.catalogReplace ||
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
-      draft.accountKeyId !== pickedId
+      draft.boundKeyId !== pickedId
     );
   };
 
@@ -526,7 +497,7 @@ export const ClientsPage: React.FC = () => {
     // by stable id, never the raw token). A stale id (deleted/disabled key)
     // seeds nothing — setup then demands a fresh pick. Gateway clients are
     // excluded: their picker belongs to the plugin card and seeds from the
-    // stored `accountKeyId`, so a stale setup memory must never masquerade as
+    // stored gateway binding, so a stale setup memory must never masquerade as
     // the current binding (saving the card would then rewrite the binding).
     setApiKeySel(prev => {
       const next = { ...prev };
@@ -1236,7 +1207,11 @@ export const ClientsPage: React.FC = () => {
             const followKey = apiKeys.find((key) => key.key === (apiKeySel[c.name] || ''));
             const followView = followKey ? keyModels[followKey.id] : undefined;
             const listed = mode === 'none'
-              ? VIRTUAL_TIER_IDS
+              // "Unset" is gateway-defined: `all` advertises the whole
+              // registry, the tier-only spelling advertises auto*.
+              ? draft.unsetMode === 'all'
+                ? models.map((model) => model.id)
+                : VIRTUAL_TIER_IDS
               : mode === 'custom'
                 ? draft.models
                 : followView
@@ -1367,7 +1342,7 @@ export const ClientsPage: React.FC = () => {
                         { marginBottom: 0 },
                       )}
                       <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-                        {t('clients.modelModeNoneHint')}
+                        {t(draft.unsetMode === 'all' ? 'clients.modelModeAllHint' : 'clients.modelModeNoneHint')}
                       </div>
                     </>
                   )}

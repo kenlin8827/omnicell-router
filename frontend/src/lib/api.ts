@@ -1,3 +1,5 @@
+import type { Lang } from '../i18n/types';
+
 /** Credential methods a plugin's connect card may offer (backend PluginAuthType). */
 export type PluginAuthType = 'webLogin' | 'key';
 
@@ -1458,6 +1460,8 @@ export interface HarnessCopyView {
    */
   external?: boolean;
   path: string;
+  /** Per-profile runtime store (DSH): the profile this copy belongs to. */
+  profile?: string;
   /** Set on project-scope copies — the only project attribution for an external token copy. */
   projectRoot?: string;
   state: 'clean' | 'dirty' | 'missing' | 'foreign' | 'untracked';
@@ -1466,7 +1470,7 @@ export interface HarnessCopyView {
   /**
    * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
    * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
-   * tree is read by up to fourteen runtimes), which is what the skills page's harness rail selects by.
+   * tree is read by up to fifteen runtimes), which is what the skills page's harness rail selects by.
    */
   readers?: string[];
 }
@@ -1507,6 +1511,8 @@ export interface HarnessDiscoveredArtifact {
   /** Version the runtime's store records for it, when a lock file answers. */
   version?: string;
   canonicalKey?: string;
+  /** DSH only: `false` = installed dependency not selected in `dsh.profile.bundles`. */
+  enabled?: boolean;
   /**
    * The inverse of the runtime's own install record — computed by the backend from the shape the
    * scan read (`trash-path` for a real file, `drop-entry` for one string in `plugin[]`/`packages[]`,
@@ -1517,7 +1523,8 @@ export interface HarnessDiscoveredArtifact {
   | { op: 'trash-path'; path: string }
   | { op: 'drop-entry'; file: string; container: string; entry: string }
   | { op: 'drop-server'; file: string; container: string; entry: string }
-  | { op: 'cli-remove'; host: string; entry: string };
+  | { op: 'cli-remove'; host: string; entry: string }
+  | { op: 'plugin-remove'; host: string; entry: string; profile?: string };
 }
 
 export interface HarnessInventoryResponse {
@@ -1731,6 +1738,12 @@ export interface HarnessMarketDetail {
   /** ISO publish date (npm latest) / last push (GitHub). */
   publishedAt?: string;
   updatedAt?: string;
+  /** Language the README is actually written in, when the backend could tell: a selected localized
+   *  edition, or script detection (zh/ja/ko). Equal to the UI language means NO translation is needed. */
+  readmeLang?: Lang;
+  /** Repository-relative path of the served README (a localized edition is a real file): relative
+   *  links and images resolve against its directory. Absent means the repository root. */
+  readmePath?: string;
   language?: string;
   stars?: number;
   topics?: string[];
@@ -1751,6 +1764,9 @@ export interface HarnessMarketDetail {
 export interface HarnessHostView {
   id: string;
   label: string;
+  /** Popularity order shared with the Clients page (1 = most popular). The rail sorts by it;
+   *  `universal` is unranked here and pinned first by id. */
+  rank: number;
   /** Present on this machine (executable on PATH, config dir, or an existing skills root). The
    *  console rail hides undetected hosts — but never one whose rows are already landed. */
   detected: boolean;
@@ -1766,6 +1782,8 @@ export interface HarnessHostView {
   kindScopes: Record<'skill' | 'mcp' | 'plugin', ('global' | 'project')[]>;
   /** Resolved roots per accepted scope; a scope absent from `kindScopes` has no key here. */
   roots: { global: HarnessRootView[] };
+  /** Per-profile plugin stores (DSH): selectable install targets. Absent = one implicit landing. */
+  profiles?: { name: string; exists: boolean }[];
   /** Host that owns this host's directory per scope — differs from `id` when hosts share a path. */
   owner: { global: string | null };
 }
@@ -1972,6 +1990,29 @@ export class SourceOutcomeError extends Error {
     this.name = 'SourceOutcomeError';
     this.reason = reason;
     this.params = params;
+  }
+}
+
+/**
+ * Read an NDJSON response body, handing each non-empty line to `onLine`.
+ *
+ * Two console surfaces stream this shape (capture replay and README translation progress): the
+ * framing lives here so the decoder, the buffer and the partial-line rule cannot drift apart.
+ */
+async function readNdjsonLines(res: Response, onLine: (line: string) => void): Promise<void> {
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) onLine(line);
+    }
   }
 }
 
@@ -3151,7 +3192,15 @@ export const api = {
    * cannot be used as a generic proxy. A row with nothing readable still answers (`readFrom: 'none'`)
    * because the dialog is built on the fields the browse answer already carried.
    */
-  async harnessDetail(params: { source?: string; channel?: string; key?: string; repo?: string }): Promise<{
+  async harnessDetail(params: {
+    source?: string;
+    channel?: string;
+    key?: string;
+    repo?: string;
+    /** Console language: the backend prefers the README's own localized edition and reports
+     *  `readmeLang`, so an already-localized page is shown instead of translated. */
+    lang?: Lang;
+  }): Promise<{
     status: string;
     source: string;
     detail: HarnessMarketDetail;
@@ -3161,6 +3210,7 @@ export const api = {
     else if (params.source) search.set('source', params.source);
     if (params.key) search.set('key', params.key);
     if (params.repo) search.set('repo', params.repo);
+    if (params.lang) search.set('lang', params.lang);
     const res = await fetch(`/api/admin/harness/detail?${search.toString()}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
@@ -3188,6 +3238,12 @@ export const api = {
     listedOn?: string[];
     /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
     marketplace?: { repo: string; plugin: string; name: string };
+    /** The market row's one-line description; the manifest keeps it when no resolver provides one. */
+    description?: string;
+    /** Per-profile plugin store (DSH): the profile this install lands in. */
+    profile?: string;
+    /** Console-generated id for the live install log (plugin subprocess output). */
+    installLogId?: string;
     hosts: string[];
     scope?: 'global' | 'project';
     projectRoot?: string;
@@ -3223,6 +3279,14 @@ export const api = {
       err.skipped = data?.skipped;
       throw err;
     }
+    return data;
+  },
+
+  /** Poll one live install's mirrored output (see POST /harness/install's `installLogId`). */
+  async harnessInstallLog(id: string): Promise<{ status: string; lines: string[]; done: boolean; error?: string }> {
+    const res = await fetch(`/api/admin/harness/install-log/${encodeURIComponent(id)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
     return data;
   },
 
@@ -3317,16 +3381,21 @@ export const api = {
   /**
    * Translate one description into the console language (derived cache; may call the gateway).
    *
-   * `format: 'markdown'` selects the long-form contract (a README): prose is translated in chunked
-   * runs, fenced code is preserved verbatim, and `truncated` says the document outran the budget so
-   * its tail came back in the source language.
+   * `format: 'markdown'` selects the long-form contract (a README): every prose segment is
+   * translated in chunks (fenced code preserved verbatim) and rejoined in document order. `refresh`
+   * (long-form only) re-translates a document that already has a cached rendering, replacing it on
+   * success.
    */
-  async harnessTranslate(body: { text: string; lang: string; format?: 'markdown' }): Promise<{
+  async harnessTranslate(body: {
+    text: string;
+    lang: string;
+    format?: 'markdown';
+    refresh?: boolean;
+  }): Promise<{
     status: string;
     text: string;
     cached: boolean;
     model: string;
-    truncated?: boolean;
   }> {
     const res = await fetch('/api/admin/harness/translate', {
       method: 'POST',
@@ -3340,6 +3409,48 @@ export const api = {
       throw error;
     }
     return data;
+  },
+
+  /**
+   * Long-form translation with live progress. The server answers NDJSON: `progress` events carry
+   * (completed chunks, total) while the README is translated, then exactly one `result` or `error`.
+   * Resolves with the final rendering; a streamed error rejects like the plain route does.
+   */
+  async harnessTranslateStream(
+    body: { text: string; lang: string; refresh?: boolean },
+    onProgress: (done: number, total: number) => void
+  ): Promise<{ text: string; cached: boolean; model: string }> {
+    const res = await fetch('/api/admin/harness/translate-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, format: 'markdown' }),
+    });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => undefined);
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      error.code = data?.code;
+      throw error;
+    }
+    const out: { value?: { text: string; cached: boolean; model: string } } = {};
+    let failure: string | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return; // A malformed line must not kill the stream — skip it.
+      }
+      if (evt.type === 'progress' && typeof evt.done === 'number' && typeof evt.total === 'number') {
+        onProgress(evt.done, evt.total);
+      } else if (evt.type === 'result' && typeof evt.text === 'string') {
+        out.value = { text: evt.text, cached: evt.cached === true, model: typeof evt.model === 'string' ? evt.model : '' };
+      } else if (evt.type === 'error') {
+        failure = typeof evt.message === 'string' && evt.message ? evt.message : 'translation failed';
+      }
+    });
+    if (failure) throw new Error(failure);
+    if (!out.value) throw new Error('translation stream ended without a result');
+    return out.value;
   },
 
   /** Batch translation, one chunk per call (the page walks the list in chunks). */
@@ -3367,7 +3478,7 @@ export const api = {
    *  store instead of the description one, so a page translated yesterday opens translated. */
   async harnessTranslations(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
     status: string;
-    translations: Record<string, { text: string; model: string; truncated?: boolean }>;
+    translations: Record<string, { text: string; model: string }>;
   }> {
     const res = await fetch('/api/admin/harness/translations', {
       method: 'POST',
@@ -3967,35 +4078,23 @@ export const api = {
       onEvent({ type: 'error', message: json?.message || `HTTP ${res.status}` });
       return;
     }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    for (; ;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        try {
-          const raw = JSON.parse(line) as Record<string, unknown>;
-          if (typeof raw.type === 'string') {
-            onEvent(raw as unknown as CaptureReplayStreamEvent);
-          } else if (raw.status === 'ok' && typeof raw.body === 'string') {
-            // Legacy (pre-NDJSON) gateway: one whole-payload JSON answer.
-            // Convert so the dialog still renders instead of erroring.
-            onEvent({ type: 'chunk', text: raw.body });
-            onEvent({ type: 'end', truncated: Boolean(raw.truncated) });
-          } else if (raw.status === 'error') {
-            onEvent({ type: 'error', message: String(raw.message || 'replay failed') });
-          }
-        } catch {
-          // A malformed line must not kill the stream — skip it.
+    await readNdjsonLines(res, (line) => {
+      try {
+        const raw = JSON.parse(line) as Record<string, unknown>;
+        if (typeof raw.type === 'string') {
+          onEvent(raw as unknown as CaptureReplayStreamEvent);
+        } else if (raw.status === 'ok' && typeof raw.body === 'string') {
+          // Legacy (pre-NDJSON) gateway: one whole-payload JSON answer.
+          // Convert so the dialog still renders instead of erroring.
+          onEvent({ type: 'chunk', text: raw.body });
+          onEvent({ type: 'end', truncated: Boolean(raw.truncated) });
+        } else if (raw.status === 'error') {
+          onEvent({ type: 'error', message: String(raw.message || 'replay failed') });
         }
+      } catch {
+        // A malformed line must not kill the stream — skip it.
       }
-    }
+    });
   },
 };
 

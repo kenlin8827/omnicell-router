@@ -32,7 +32,6 @@ const GATEWAY_CLIENT_FACING_FIELDS: Record<string, true> = {
   forceModel: true,
   modelListMode: true,
   models: true,
-  accountKeyId: true,
   catalogReplace: true,
 };
 
@@ -272,7 +271,10 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
       // plugins, so the console resolves the key's allowed models here and
       // stores the resulting ids. Re-save after changing the key's policy.
       if (isClientGateway(plugin.id) && next.modelListMode === 'follow') {
-        const keyId = String(next.accountKeyId ?? '');
+        // The binding field is the gateway's OWN declaration (`accountKeyId`
+        // today), never a hardcoded name.
+        const keyField = schema.find((field) => field.control === 'apiKey')?.key;
+        const keyId = keyField ? String(next[keyField] ?? '') : '';
         if (!keyId) {
           toast.error(t('clients.followNoKey'));
           return;
@@ -426,7 +428,15 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
   // — and the backend still validates it. Grouping inherits the same rule: an
   // all-hidden section renders no heading at all.
   const configGroups = groupVisibleFields(
-    isClientGateway(plugin.id) ? schema.filter((field) => GATEWAY_CLIENT_FACING_FIELDS[field.key] !== true) : schema,
+    isClientGateway(plugin.id)
+      ? schema.filter(
+          (field) =>
+            GATEWAY_CLIENT_FACING_FIELDS[field.key] !== true &&
+            // The picked-key field is card state too, whatever the gateway
+            // names it — its `control` is the contract.
+            field.control !== 'apiKey'
+        )
+      : schema,
     sections,
     draft
   );

@@ -108,7 +108,7 @@ export const App: React.FC = () => {
             plugin package, an MCP server config) the runtime is part of the artifact's identity,
             so it must survive reload, bookmark and Back/Forward. The bare routes above redirect
             into the first harness that has a verified landing. A skill's rail selects a READER
-            (fourteen runtimes load one `.agents/skills` tree), and it is in the URL for the same
+            (fifteen runtimes load one `.agents/skills` tree), and it is in the URL for the same
             reason: which runtime you are looking at is a location, not view state. */}
         <Route path="harness/plugins/:harness" element={<HarnessPage kind="plugin" />} />
         <Route path="harness/skills/:harness" element={<HarnessPage kind="skill" />} />

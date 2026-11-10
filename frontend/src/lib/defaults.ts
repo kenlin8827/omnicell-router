@@ -50,3 +50,10 @@ export const DEFAULT_PROBE_INTERVAL_MS = 60_000;
  *  `CREDENTIAL_WEIGHT_MAX` (backend/src/config/defaults.ts). Integers >= 1;
  *  absence = 1. Weights only shape the NEW-session hash spread. */
 export const CREDENTIAL_WEIGHT_MAX = 100;
+
+/** DSH profile-name rule — mirrors backend `DSH_PROFILE_NAME`
+ *  (backend/src/harness/host/adapters/dsh.ts, applied by `dshProfileError`). The backend stays
+ *  authoritative; this copy exists only so the console's "Custom…" field can refuse a name the
+ *  vendor CLI would reject, instead of sending the install and showing its error. Update both in
+ *  the same commit. */
+export const DSH_PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
