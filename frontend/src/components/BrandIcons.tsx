@@ -3,15 +3,18 @@ import React from 'react';
 /**
  * Client brand logos, auto-discovered from SVG files on disk.
  *
- * Drop a `frontend/src/assets/brands/<clientName>.svg` file (24x24 viewBox,
- * Simple-Icons style) and it is picked up automatically — no TSX change.
- * File basenames map 1:1 to backend client adapter names (opencode/claude/codex,
- * see backend/src/cli/clients/index.ts).
+ * TWO asset shapes, both keyed by file basename (which maps 1:1 to backend
+ * client adapter names):
  *
- * Loaded at BUILD time via import.meta.glob('?raw', eager): Vite reads the
- * files from disk and inlines them into the bundle — zero runtime HTTP
- * requests, offline/intranet safe. Rendered monochrome via currentColor
- * (theme-safe: colors come from CSS variables, never hardcoded brand hexes).
+ * - `<clientName>.svg` — monochrome mark, 24x24 viewBox, no fills. Rendered
+ *   inline, `fill="currentColor"` (theme-safe: colors come from CSS variables).
+ * - `<clientName>.color.svg` — the vendor's own app icon/tile, colors and its
+ *   own viewBox intact. Rendered as an `<img>` of the built asset URL, so the
+ *   brand colors survive and the SVG is never mutated.
+ *
+ * Loaded at BUILD time (eager globs): Vite inlines the monochrome content and
+ * emits the color assets — zero runtime HTTP requests beyond the cached asset,
+ * offline/intranet safe.
  *
  * Sources: simple-icons (https://simpleicons.org, CC0-1.0). Note: the OpenAI
  * mark was removed from upstream simple-icons (v15+) at OpenAI's request, so
@@ -20,13 +23,23 @@ import React from 'react';
  * three tile paths on an 800x800 grid), rescaled to 24x24 and flattened to
  * monochrome — the colored tiles become untagged subpaths so the wrapper's
  * fill="currentColor" themes it with the rest of the row.
+ * qoder.color.svg is the Qoder app icon shipped in `plugins/qoder/logo.svg`.
  */
 const BRAND_SVGS: Record<string, string> = {};
 for (const [file, raw] of Object.entries(
   import.meta.glob('../assets/brands/*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 )) {
+  if (file.endsWith('.color.svg')) continue;
   const name = file.split('/').pop()!.replace(/\.svg$/, '');
   BRAND_SVGS[name] = raw;
+}
+
+const COLOR_SVGS: Record<string, string> = {};
+for (const [file, url] of Object.entries(
+  import.meta.glob('../assets/brands/*.color.svg', { query: '?url', import: 'default', eager: true }) as Record<string, string>
+)) {
+  const name = file.split('/').pop()!.replace(/\.color\.svg$/, '');
+  COLOR_SVGS[name] = url;
 }
 
 /** Strip the file's own <svg> wrapper; we re-host the inner content in a sized, currentColor svg. */
@@ -42,7 +55,21 @@ interface BrandIconProps {
 }
 
 export const BrandIcon: React.FC<BrandIconProps> = ({ name, size = 18, fallback = null }) => {
-  const raw = BRAND_SVGS[name.toLowerCase().trim()];
+  const key = name.toLowerCase().trim();
+  const colored = COLOR_SVGS[key];
+  if (colored) {
+    return (
+      <img
+        src={colored}
+        width={size}
+        height={size}
+        alt=""
+        aria-hidden="true"
+        style={{ flexShrink: 0 }}
+      />
+    );
+  }
+  const raw = BRAND_SVGS[key];
   if (!raw) return <>{fallback}</>;
   return (
     <svg

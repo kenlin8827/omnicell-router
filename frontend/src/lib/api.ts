@@ -40,16 +40,17 @@ export interface GatewayMetrics {
   };
 }
 
+/** Where a client hook lands — mirrors backend `ClientHookKind`. */
+export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+
 export interface ClientStatus {
   name: string;
   displayName: string;
-  /** The harness host this client's artifacts land in (backend `ClientAdapter.harness`); `null` =
-   *  traffic-only client with no landing. Absent on older gateways — callers fall back to `name`. */
-  harness?: string | null;
+  /** Where the hook lands (backend `ClientAdapter.hookKind`). */
+  hookKind: ClientHookKind;
   configPath: string;
   exists: boolean;
   hooked: boolean;
-  targetProvider: string;
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
@@ -69,6 +70,14 @@ export interface ClientStatus {
 export interface ClientArtifact {
   path: string;
   exists: boolean;
+}
+
+/** Advise-only finding from a SUCCESSFUL client setup (backend
+ *  `ClientActionWarning`): the artifact was written, but the client will still
+ *  fail at use time until this is fixed. */
+export interface ClientActionWarning {
+  code: 'ca_not_trusted' | 'ca_trust_unknown' | 'proxy_not_running';
+  params?: Record<string, string>;
 }
 
 /** Mirrors backend ModelProfileBinding (profile-link echo from the OCR sidecar meta). */
@@ -540,6 +549,20 @@ export interface CaMeta {
   subject: string;
   notBefore: string;
   notAfter: string;
+}
+
+/**
+ * Platform trust state of the MITM CA — mirrors the backend
+ * `GET /api/admin/proxy/ca/trust` answer. `unknown` means the probe could not
+ * run (missing platform tool / permissions), NOT "not trusted".
+ */
+export interface CaTrustResponse {
+  trusted: boolean | 'unknown';
+  /** Absolute PEM path the probe inspected. */
+  caPath: string;
+  /** Epoch ms of the probe that produced this answer; ABSENT when no probe ran
+   *  (there is no CA file to identify yet). */
+  checkedAt?: number;
 }
 
 /**
@@ -2054,6 +2077,17 @@ export const api = {
     const { status: _status, ...meta } = (await res.json()) as CaMeta & { status?: string };
     return meta;
   },
+  /**
+   * Is the CA trusted by the platform store? Tri-state and cached 60s in the
+   * backend; `force` bypasses the cache for an operator re-check right after
+   * installing the certificate.
+   */
+  async getProxyCaTrust(force = false): Promise<CaTrustResponse> {
+    const res = await fetch(`/api/admin/proxy/ca/trust${force ? '?force=1' : ''}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { status: _status, ...trust } = (await res.json()) as CaTrustResponse & { status?: string };
+    return trust;
+  },
 
   /**
    * Lint + dry-run the forward-proxy rule table (ADR-0018). The backend runs the
@@ -2340,7 +2374,7 @@ export const api = {
       /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
       profile?: { id: string; bindings: Record<string, string> };
     }
-  ): Promise<{ status: string; message: string }> {
+  ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

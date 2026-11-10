@@ -238,6 +238,7 @@ export const AutoPage: React.FC = () => {
                   onChange={v => setDecisionCache({ enabled: v })}
                 />
               </label>
+              {(decisionCache.enabled ?? true) && (<>
               <div style={{ display: 'flex', gap: '12px' }}>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>{t('auto.cacheTtl')}</label>
@@ -258,6 +259,7 @@ export const AutoPage: React.FC = () => {
                   />
                 </div>
               </div>
+              </>)}
             </div>
           </div>
 

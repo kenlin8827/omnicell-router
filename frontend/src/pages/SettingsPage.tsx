@@ -427,6 +427,7 @@ export const SettingsPage: React.FC = () => {
                 onChange={v => setConfig({ ...config, cache: { ...config.cache, enabled: v } })}
               />
             </label>
+            {(config.cache?.enabled ?? true) && (<>
             <div>
               <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheSim')}</label>
               <input
@@ -446,6 +447,7 @@ export const SettingsPage: React.FC = () => {
                 className="input"
               />
             </div>
+            </>)}
           </div>
 
           {/* Section 3: Request Capture (hot-applied — no restart needed) */}

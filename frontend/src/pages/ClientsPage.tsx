@@ -8,7 +8,7 @@ import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
-import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
@@ -18,10 +18,10 @@ import { FONT_MONO } from '../lib/fonts';
 import { copyToClipboard } from '../lib/clipboard';
 /**
  * Slots to render for a client. An explicit `[]` means the client is
- * slot-less by design (opencode-proxy routes traffic transparently and keeps
- * opencode-native models — no model picker).
+ * slot-less by design (proxy hooks route traffic transparently and keep the
+ * client's native models — no model picker).
  */
-const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string; description?: string }[] => c.modelSlots;
+const clientSlots = (c: ClientStatus | undefined): { key: string; value?: string; default?: string; description?: string }[] => c?.modelSlots ?? [];
 
 /**
  * Clients whose adapter honors `extraModels` (setup writes main + extras as a
@@ -42,7 +42,9 @@ const CLIENT_REASON_KEY: Record<string, string> = {
   forward_proxy_disabled: 'clients.cursorErrForwardProxyDisabled',
   forward_proxy_ca_missing: 'clients.cursorErrCaMissing',
   cursor_not_found: 'clients.cursorErrNotFound',
-  not_active: 'clients.cursorErrNotActive',
+  qoder_not_found: 'clients.qoderErrNotFound',
+  not_active: 'clients.clientErrNotActive',
+  proxy_credential_required: 'clients.gatewayKeyRequired',
   remove_failed: 'clients.cursorErrRemoveFailed',
 };
 
@@ -78,34 +80,66 @@ const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 const virtualDefaultFor = (clientName: string): string[] =>
   clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
 
-/** Cursor's model surface lives in the plugin config but is edited HERE (client
- *  card), not on the Plugins page: the model list is part of "how this client
- *  connects", while the plugin page keeps protocol/runtime settings. The raw
- *  values object is retained so a save never drops unrelated plugin settings. */
-interface CursorCfgDraft {
+/** A gateway plugin's model surface lives in its plugin config but is edited
+ *  HERE (client card), not on the Plugins page: the model list is part of "how
+ *  this client connects", while the plugin page keeps protocol/runtime
+ *  settings. The raw values object is retained so a save never drops unrelated
+ *  plugin settings. */
+interface GatewayCfgDraft {
   model: string;
   forceModel: boolean;
   catalogReplace: boolean;
-  modelListMode: 'all' | 'custom' | 'follow';
+  modelListMode: 'none' | 'custom' | 'follow';
   models: string[];
-  followKeyId: string;
+  /** `apiKeys[].id` the OCR-routed completions are charged to ('' = unbound). */
+  accountKeyId: string;
   values: Record<string, unknown>;
 }
 
-const parseCursorCfg = (values: Record<string, unknown>): CursorCfgDraft => ({
-  model: String(values.model ?? 'auto').replace(/^ocr\//, ''),
-  forceModel: values.forceModel === true,
-  catalogReplace: values.catalogReplace === true,
-  modelListMode:
+const parseGatewayCfg = (values: Record<string, unknown>): GatewayCfgDraft => {
+  const modelListMode =
     values.modelListMode === 'custom' || values.modelListMode === 'follow'
       ? values.modelListMode
-      : 'all',
-  models: Array.isArray(values.models)
-    ? values.models.map((id) => String(id).replace(/^ocr\//, ''))
-    : [],
-  followKeyId: typeof values.followKeyId === 'string' ? values.followKeyId : '',
-  values,
-});
+      : 'none';
+  const model = String(values.model ?? 'auto').replace(/^ocr\//, '');
+  // `none` advertises only auto* tiers, but a configured concrete default is
+  // NOT inert: routing resolves it against the full registry (forceModel and
+  // unpinned requests), so the form must show what will actually run.
+  return {
+    model,
+    forceModel: values.forceModel === true,
+    catalogReplace: values.catalogReplace === true,
+    modelListMode,
+    models: Array.isArray(values.models)
+      ? values.models.map((id) => String(id).replace(/^ocr\//, ''))
+      : [],
+    accountKeyId: typeof values.accountKeyId === 'string' ? values.accountKeyId : '',
+    values,
+  };
+};
+
+/** Same model ids, order-insensitive: the chip wall is an unordered set. */
+function sameModelSelection(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+/** Proxy clients whose model surface is owned by a client-gateway plugin. */
+const GATEWAY_PLUGIN_BY_CLIENT: Record<string, string> = {
+  'cursor-proxy': 'cursor-gateway',
+  'qoder-proxy': 'qoder-gateway',
+};
+
+const CLIENT_BY_GATEWAY_PLUGIN: Record<string, string> = Object.fromEntries(
+  Object.entries(GATEWAY_PLUGIN_BY_CLIENT).map(([client, plugin]) => [plugin, client]),
+);
+
+interface GatewayPluginState {
+  installed: boolean;
+  loaded: boolean;
+  disabled: boolean;
+  /** Full plugin view for the in-place settings drawer (name/version). */
+  view: PluginViewInfo | null;
+}
 
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
@@ -125,26 +159,23 @@ export const ClientsPage: React.FC = () => {
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
   /** Per-client context window in tokens (claude compaction envs; default 256K) */
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
-  /** Cursor is plugin-driven, not a config-writing adapter: its model surface
-   *  lives in the Cursor Gateway plugin config but is edited on THIS client card —
-   *  client-facing model selection belongs beside the client, while the
-   *  Plugins page keeps protocol/runtime settings. */
-  const [cursorCfg, setCursorCfg] = useState<CursorCfgDraft | null>(null);
-  const [cursorCfgBusy, setCursorCfgBusy] = useState(false);
-  /** Loaded/disabled state of the `cursor-gateway` plugin. Without it the proxy can
-   *  still be installed, but Cursor sees no OCR catalog: the card must say so
-   *  instead of advertising a model list that does not exist. */
-  const [cursorGatewayPlugin, setCursorGatewayPlugin] = useState<{
-    installed: boolean;
-    loaded: boolean;
-    disabled: boolean;
-    /** Full plugin view for the in-place settings drawer (name/version). */
-    view: PluginViewInfo | null;
-  } | null>(null);
+  /** Gateway-backed clients are plugin-driven, not config-writing adapters:
+   *  each model surface lives in its plugin config but is edited on THIS client
+   *  card. Keyed by PLUGIN id (the config owner). */
+  const [gatewayCfg, setGatewayCfg] = useState<Record<string, GatewayCfgDraft>>({});
+  const [gatewayCfgBusy, setGatewayCfgBusy] = useState<Record<string, boolean>>({});
+  /** Post-save hint per plugin id: the catalog is live in the gateway already,
+   *  but the CLIENT caches its own model list — point at an app restart instead
+   *  of a hook teardown, which never refreshes that list. */
+  const [gatewaySavedNotice, setGatewaySavedNotice] = useState<Record<string, boolean>>({});
+  /** Loaded/disabled state per gateway plugin. Without it the proxy can still be
+   *  installed, but the client sees no OCR catalog: the card must say so instead
+   *  of advertising a model list that does not exist. */
+  const [gatewayPlugins, setGatewayPlugins] = useState<Record<string, GatewayPluginState>>({});
   /** In-place plugin settings drawer. It edits only the protocol/runtime keys —
    *  the model surface stays in the card editor — so opening it never navigates
    *  away or drops this card's draft. */
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedPlugin, setAdvancedPlugin] = useState<PluginViewInfo | null>(null);
   /** Per-client extra concrete models (model-list editors: opencode/dsh/pi) */
   const [extraSel, setExtraSel] = useState<Record<string, string[]>>({});
   /** Per-client custom virtual-tier draft (custom mode): the explicit set the
@@ -216,8 +247,8 @@ export const ClientsPage: React.FC = () => {
    *  edits and opening a form is always a deliberate user action. */
   const [expanded, setExpanded] = useState<string | null>(null);
   /** Access-mode tabs: 'hook' = setup adapters writing tokens/models into the
-   *  client's own config, 'proxy' = OpenCode proxy mode (MITM service env),
-   *  'manual' = the hookup guide for anything the gateway can't auto-hook. */
+   *  client's own config, 'proxy' = forward-proxy hooks (service env or launcher
+   *  scripts), 'manual' = the hookup guide for anything the gateway can't auto-hook. */
   const [activeTab, setActiveTab] = useState<'hook' | 'proxy' | 'manual'>('hook');
   /** Manual-tab connectivity probe: optional API key draft + last result. */
   const [manualKey, setManualKey] = useState('');
@@ -237,10 +268,17 @@ export const ClientsPage: React.FC = () => {
    *  the CA is machine-wide now, so the hint must print the real path rather
    *  than assume it lives under this book-set's OCR_HOME. */
   const [caPath, setCaPath] = useState('');
+  /** OS trust verdict for the MITM CA — the proxy tab's prerequisite banner
+   *  names it before the operator hooks a launcher and discovers TLS failures
+   *  only at use time. */
+  const [caTrust, setCaTrust] = useState<CaTrustResponse | null>(null);
   const loadClients = async () => {
     try {
       const data = await api.getStatus();
-      setClients(data.clients || []);
+      // ONE normalization point: every filter/card below reads `hookKind`
+      // unconditionally, and a gateway predating the field must classify as
+      // 'config' (keeps the API-key gate) rather than as a keyless proxy hook.
+      setClients((data.clients || []).map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
       if (data.port) setPort(String(data.port));
       setFpEnabled(data.forwardProxy ? data.forwardProxy.enabled : null);
       setFpRunning(data.forwardProxy ? data.forwardProxy.running : null);
@@ -261,20 +299,24 @@ export const ClientsPage: React.FC = () => {
         }
         return next;
       });
-      // Cursor's takeover/model summary depends on the plugin, not the launcher
-      // adapter: re-read it on every status refresh so installing/enabling the
-      // plugin in the Plugins page updates this card without a full reload.
+      // A proxy client's model surface is owned by its gateway PLUGIN, not by
+      // the launcher adapter: re-read the plugin list on every status refresh
+      // so installing/enabling it updates the cards without a full reload.
       opencodeApi.listPlugins()
-        .then(res => {
-          const plugin = (res.plugins || []).find(p => p.id === 'cursor-gateway');
-          setCursorGatewayPlugin({
-            installed: !!plugin,
-            loaded: !!plugin?.loaded && !plugin?.disabled,
-            disabled: !!plugin?.disabled,
-            view: plugin ?? null,
-          });
+        .then((res) => {
+          const next: Record<string, GatewayPluginState> = {};
+          for (const id of new Set(Object.values(GATEWAY_PLUGIN_BY_CLIENT))) {
+            const plugin = (res.plugins || []).find((p) => p.id === id);
+            next[id] = {
+              installed: !!plugin,
+              loaded: !!plugin?.loaded && !plugin?.disabled,
+              disabled: !!plugin?.disabled,
+              view: plugin ?? null,
+            };
+          }
+          setGatewayPlugins(next);
         })
-        .catch(err => console.error('cursor-gateway plugin status:', err));
+        .catch(err => console.error('gateway plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
       // seeded from the slot echo (bare ref / native pin verbatim), then the
       // profile-link echo re-tags linked roles to `slot:<key>`.
@@ -313,75 +355,163 @@ export const ClientsPage: React.FC = () => {
     api.getModelProfiles().then(p => { setProfiles(p); setProfilesReady(true); }).catch(() => setProfilesReady(true));
     api.getClientProfileMemory().then(m => { memRef.current = m; setMem(m); }).catch(() => { memRef.current = {}; setMem({}); });
     api.getProxyCaMeta().then(m => setCaPath(m.path)).catch(() => {});
+    api.getProxyCaTrust().then(setCaTrust).catch(() => {});
   }, []);
 
-  // Cursor's model surface is plugin config, not the launcher adapter. Load it
-  // only when the card is opened AND the plugin is loaded; a missing/disabled
-  // plugin has no config endpoint and must not look like an empty catalog.
+  const expandedPluginId = expanded ? GATEWAY_PLUGIN_BY_CLIENT[expanded] : undefined;
+
+  // A gateway client's model surface is plugin config, not the launcher
+  // adapter. Load it only when the card is opened AND the plugin is loaded; a
+  // missing/disabled plugin has no config endpoint and must not look like an
+  // empty catalog.
   useEffect(() => {
-    if (expanded !== 'cursor' || cursorCfg || !cursorGatewayPlugin?.loaded) return;
+    if (!expandedPluginId) return;
+    if (gatewayCfg[expandedPluginId] || !gatewayPlugins[expandedPluginId]?.loaded) return;
     let alive = true;
-    setCursorCfgBusy(true);
-    opencodeApi.getPluginConfig('cursor-gateway')
-      .then(cfg => {
+    setGatewayCfgBusy((prev) => ({ ...prev, [expandedPluginId]: true }));
+    opencodeApi.getPluginConfig(expandedPluginId)
+      .then((cfg) => {
         if (!alive) return;
-        setCursorCfg(parseCursorCfg(cfg.values ?? {}));
+        const parsed = parseGatewayCfg(cfg.values ?? {});
+        setGatewayCfg((prev) => ({ ...prev, [expandedPluginId]: parsed }));
+
       })
-      .catch(err => { if (alive) console.error('cursor-gateway plugin config:', err); })
-      .finally(() => { if (alive) setCursorCfgBusy(false); });
+      .catch((err) => { if (alive) console.error(`${expandedPluginId} plugin config:`, err); })
+      .finally(() => {
+        if (alive) setGatewayCfgBusy((prev) => ({ ...prev, [expandedPluginId]: false }));
+      });
     return () => { alive = false; };
-  }, [expanded, cursorCfg, cursorGatewayPlugin?.loaded]);
+  }, [expandedPluginId, gatewayCfg, gatewayPlugins, apiKeys]);
 
-  // Follow mode on the Cursor card is the same snapshot idea as the clients
-  // above: load the picked key's effective view for a live preview; Save writes
-  // the snapshot into the plugin config.
+  // Follow mode on a gateway card is the same snapshot idea as the clients
+  // above: the card's picked key is the single source, so its effective view
+  // is loaded for the live preview; Save writes the snapshot into the plugin.
   useEffect(() => {
-    const keyId = cursorCfg?.followKeyId;
-    if (!cursorCfg || cursorCfg.modelListMode !== 'follow' || !keyId || keyModels[keyId]) return;
-    api.getKeyModels(keyId)
-      .then((view) => setKeyModels((prev) => ({ ...prev, [keyId]: view })))
-      .catch(() => {});
-  }, [cursorCfg?.modelListMode, cursorCfg?.followKeyId, keyModels]);
+    const pending = new Set<string>();
+    for (const [pluginId, draft] of Object.entries(gatewayCfg)) {
+      if (draft.modelListMode !== 'follow') continue;
+      const clientName = CLIENT_BY_GATEWAY_PLUGIN[pluginId];
+      const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+      if (picked && !keyModels[picked.id]) pending.add(picked.id);
+    }
+    for (const keyId of pending) {
+      api.getKeyModels(keyId)
+        .then((view) => setKeyModels((prev) => ({ ...prev, [keyId]: view })))
+        .catch(() => {});
+    }
+  }, [gatewayCfg, keyModels, apiKeySel, apiKeys]);
 
-  const saveCursorCfg = async (): Promise<void> => {
-    if (!cursorCfg) return;
-    setCursorCfgBusy(true);
+  // Seed the gateway card's key picker from the stored binding once BOTH the
+  // plugin config and the key list are available (they load independently).
+  // An in-page pick always wins; this only fills an empty slot.
+  useEffect(() => {
+    if (!expandedPluginId) return;
+    const parsed = gatewayCfg[expandedPluginId];
+    if (!parsed?.accountKeyId) return;
+    const clientName = CLIENT_BY_GATEWAY_PLUGIN[expandedPluginId];
+    const bound = apiKeys.find((k) => k.id === parsed.accountKeyId);
+    if (!bound) return;
+    setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.key }));
+  }, [expandedPluginId, gatewayCfg, apiKeys]);
+
+  /** Catalog-relevant draft fields differ from the committed values — after
+   *  such a save the client must re-read its own model list. Follow mode always
+   *  re-snapshots the key's allowed list at save time, so it counts too. */
+  const gatewayCatalogDirty = (draft: GatewayCfgDraft): boolean => {
+    const base = parseGatewayCfg(draft.values ?? {});
+    return (
+      draft.model !== base.model ||
+      draft.forceModel !== base.forceModel ||
+      draft.catalogReplace !== base.catalogReplace ||
+      draft.modelListMode !== base.modelListMode ||
+      !sameModelSelection(draft.models, base.models) ||
+      draft.modelListMode === 'follow'
+    );
+  };
+
+  /** Persist the card's model-catalog draft into the plugin config. Returns
+   *  false when nothing was saved (no draft, no usable key, write failed) —
+   *  the takeover path uses that to refuse a half-applied hook. */
+  const saveGatewayCfg = async (pluginId: string): Promise<boolean> => {
+    const draft = gatewayCfg[pluginId];
+    if (!draft) return false;
+    const catalogChanged = gatewayCatalogDirty(draft);
+    // Every OCR-routed completion is charged to this key (ADR-0017): limits,
+    // model access and usage attribution all hang on it, so the card cannot
+    // save an unbound gateway.
+    const clientName = CLIENT_BY_GATEWAY_PLUGIN[pluginId];
+    const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+    if (!picked) {
+      toast.error(t('clients.apiKeyRequired'));
+      return false;
+    }
+    // A dead key would make every OCR-routed turn 401 at dispatch; refuse the
+    // save instead of persisting a binding that looks configured.
+    const expiry = picked.expiresAt ? Date.parse(picked.expiresAt) : NaN;
+    if (picked.enabled === false || (!Number.isNaN(expiry) && expiry <= Date.now())) {
+      toast.error(t('clients.apiKeyUnusable'));
+      return false;
+    }
+    setGatewayCfgBusy((prev) => ({ ...prev, [pluginId]: true }));
     try {
-      let models = cursorCfg.models;
-      if (cursorCfg.modelListMode === 'follow') {
-        const keyId = cursorCfg.followKeyId;
-        if (!keyId) {
-          toast.error(t('clients.followNoKey'));
-          return;
-        }
-        const view = keyModels[keyId] ?? (await api.getKeyModels(keyId));
-        if (!keyModels[keyId]) setKeyModels((prev) => ({ ...prev, [keyId]: view }));
+      let models = draft.models;
+      if (draft.modelListMode === 'follow') {
+        // Always re-read: the snapshot must reflect the key's policy at save
+        // time, never a list cached before the operator changed it.
+        const view = await api.getKeyModels(picked.id);
+        setKeyModels((prev) => ({ ...prev, [picked.id]: view }));
         models = view.models.filter((model) => model.allowed).map((model) => model.id);
       }
+      // `none` still advertises the auto* tier block, but the default may stay
+      // a concrete registry id: forceModel (and unpinned requests) resolve it
+      // against the full registry even when the list hides it.
+      const model = draft.model;
       const values = {
-        ...cursorCfg.values,
-        model: cursorCfg.model,
-        forceModel: cursorCfg.forceModel,
-        catalogReplace: cursorCfg.catalogReplace,
-        modelListMode: cursorCfg.modelListMode,
+        ...draft.values,
+        model,
+        forceModel: draft.forceModel,
+        catalogReplace: draft.catalogReplace,
+        modelListMode: draft.modelListMode,
         models,
-        followKeyId: cursorCfg.followKeyId,
+        accountKeyId: picked.id,
       };
-      const res = await opencodeApi.putPluginConfig('cursor-gateway', values);
-      setCursorCfg(parseCursorCfg(res.values ?? values));
+      const res = await opencodeApi.putPluginConfig(pluginId, values);
+      setGatewayCfg((prev) => ({ ...prev, [pluginId]: parseGatewayCfg(res.values ?? values) }));
+      // Only a catalog-shaped save needs the client to re-read its list; a
+      // dropped value (warning) means the advertised list did NOT change.
+      setGatewaySavedNotice((prev) => ({ ...prev, [pluginId]: catalogChanged && res.warnings.length === 0 }));
       // The backend drops keys the running plugin build does not declare (a
       // gateway started before the manifest listed them), so a plain success
       // toast would report a save that silently lost the model choice.
       if (res.warnings.length > 0) {
-        toast.warning(t('clients.cursorSaveDropped', { warnings: res.warnings.join('; ') }));
+        toast.warning(t('clients.gatewaySaveDropped', { warnings: res.warnings.join('; ') }));
       } else {
         toast.success(t('pluginPage.configSaved'));
       }
+      return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
-      setCursorCfgBusy(false);
+      setGatewayCfgBusy((prev) => ({ ...prev, [pluginId]: false }));
     }
+  };
+
+  /** The catalog draft no longer matches the values it was parsed from — the
+   *  operator changed a mode/chip/default and expects the next takeover to
+   *  apply it, exactly like the explicit Save button would. */
+  const gatewayDraftDirty = (draft: GatewayCfgDraft | undefined, clientName: string): boolean => {
+    if (!draft) return false;
+    const base = parseGatewayCfg(draft.values ?? {});
+    const pickedId = apiKeySel[clientName] ? keyIdOf(apiKeySel[clientName]) : '';
+    return (
+      draft.model !== base.model ||
+      draft.forceModel !== base.forceModel ||
+      draft.catalogReplace !== base.catalogReplace ||
+      draft.modelListMode !== base.modelListMode ||
+      !sameModelSelection(draft.models, base.models) ||
+      draft.accountKeyId !== pickedId
+    );
   };
 
   /** Seed selections once BOTH sources are in: the committed form memory
@@ -394,11 +524,14 @@ export const ClientsPage: React.FC = () => {
     if (mem === null || !profilesReady) return;
     // API-key form memory: the last-written key re-seeds the picker (resolved
     // by stable id, never the raw token). A stale id (deleted/disabled key)
-    // seeds nothing — setup then demands a fresh pick.
+    // seeds nothing — setup then demands a fresh pick. Gateway clients are
+    // excluded: their picker belongs to the plugin card and seeds from the
+    // stored `accountKeyId`, so a stale setup memory must never masquerade as
+    // the current binding (saving the card would then rewrite the binding).
     setApiKeySel(prev => {
       const next = { ...prev };
       for (const c of clients) {
-        if (next[c.name] !== undefined) continue;
+        if (next[c.name] !== undefined || GATEWAY_PLUGIN_BY_CLIENT[c.name]) continue;
         const id = mem[c.name]?.apiKeyId;
         const k = id ? apiKeys.find(x => x.id === id) : undefined;
         if (k) next[c.name] = k.key;
@@ -602,6 +735,26 @@ export const ClientsPage: React.FC = () => {
   const handleToggle = async (clientName: string, action: 'setup' | 'teardown') => {
     setLoading(true);
     try {
+      // A gateway client's model list is the plugin config, not the launcher
+      // adapter — takeover must apply the catalog draft the card is showing,
+      // or the hook lands with the plugin still on its old list (the classic
+      // "picked follow, still only auto + tiers" report). The explicit Save
+      // button keeps the same contract; this only mirrors it.
+      const gatewayPluginId = GATEWAY_PLUGIN_BY_CLIENT[clientName];
+      if (action === 'setup' && gatewayPluginId) {
+        // Every OCR-routed turn is charged to the bound key; a takeover without
+        // one produces a hooked client that 401s on every OCR model. Refuse it
+        // here instead of letting setup succeed half-configured.
+        const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+        const expiry = picked?.expiresAt ? Date.parse(picked.expiresAt) : NaN;
+        if (!picked || picked.enabled === false || (!Number.isNaN(expiry) && expiry <= Date.now())) {
+          toast.error(t('clients.gatewayKeyRequired'));
+          return;
+        }
+        if (gatewayDraftDirty(gatewayCfg[gatewayPluginId], clientName)) {
+          if (!(await saveGatewayCfg(gatewayPluginId))) return;
+        }
+      }
       let extras = extraSel[clientName] || [];
       let virtuals: string[] | undefined;
       if (action === 'setup' && supportsExtraModels(clientName)) {
@@ -634,10 +787,11 @@ export const ClientsPage: React.FC = () => {
       }
       // The picker is mandatory for key-writing clients: without an explicit
       // key there is nothing to write — refuse rather than silently keep the
-      // previous token. opencode-proxy writes no key (it only persists the
-      // service env: forward proxy, NO_PROXY, MITM CA), so it is exempt —
-      // its form doesn't even render the key picker.
-      const keyless = clientName === 'opencode-proxy' || clientName === 'cursor';
+      // previous token. Proxy hooks write no key at all (service env or
+      // launcher scripts), so they are exempt — their form does not even
+      // render the key picker.
+      const hookKind = clients.find(c => c.name === clientName)?.hookKind ?? 'config';
+      const keyless = hookKind !== 'config';
       if (action === 'setup' && !keyless && !(apiKeySel[clientName] || '')) {
         toast.error(t('clients.apiKeyRequired'));
         return;
@@ -646,7 +800,7 @@ export const ClientsPage: React.FC = () => {
       const agentPayload = opencodeAgentPayload(clientName);
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
-        ...(keyless ? {} : { apiKey: apiKeySel[clientName] }),
+        ...(keyless && !gatewayPluginId ? {} : { apiKey: apiKeySel[clientName] }),
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
         ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
@@ -659,11 +813,30 @@ export const ClientsPage: React.FC = () => {
       setActionNotice(
         clientName === 'opencode-proxy'
           ? t(action === 'setup' ? 'clients.proxySetupOk' : 'clients.proxyTeardownOk')
-          : clientName === 'cursor'
+          : clientName === 'cursor-proxy'
             ? t(action === 'setup' ? 'clients.cursorSetupOk' : 'clients.cursorTeardownOk')
-            : (res.message || 'Updated')
+            : clientName === 'qoder-proxy'
+              ? t(action === 'setup' ? 'clients.qoderSetupOk' : 'clients.qoderTeardownOk')
+              : (res.message || 'Updated')
       );
+      // Setup succeeded, but the hooked client can still fail at USE time
+      // (untrusted CA, proxy not listening). Advise, never block: the CA is
+      // routinely imported right after hooking.
+      if (action === 'setup' && res.warnings?.length) {
+        // Show ALL advisories: a listener warning must not hide the CA one.
+        toast.warning(res.warnings.map(warn => t(
+          warn.code === 'ca_not_trusted'
+            ? 'clients.warnCaNotTrusted'
+            : warn.code === 'ca_trust_unknown'
+              ? 'clients.warnCaTrustUnknown'
+              : 'clients.warnProxyNotRunning',
+          warn.params,
+        )).join(' '));
+      }
       if (action === 'setup') {
+        // The hook's forced probe just refreshed the backend cache; mirror it so
+        // the tab banner agrees with the toast immediately.
+        api.getProxyCaTrust().then(setCaTrust).catch(() => {});
         // Write-through: the memory mirrors the drafts this setup just
         // applied — the same selections the payload was built from.
         rememberDraft(clientName);
@@ -739,7 +912,7 @@ export const ClientsPage: React.FC = () => {
     // snapshot restores manual picks; the slot's role default is the last
     // resort — the live echo is deliberately NOT consulted.
     const slots: Record<string, string> = {};
-    for (const s of clientSlots(c || ({ name: clientName } as ClientStatus))) {
+    for (const s of clientSlots(c)) {
       const tag = memTags[s.key];
       slots[s.key] = s.key !== 'main' && tag ? `slot:${tag}` : (memModels[s.key] || s.default || 'auto');
     }
@@ -754,7 +927,7 @@ export const ClientsPage: React.FC = () => {
       // the committed agentModels restore manual refs, everything else blanks.
       setBindSel(prev => {
         const draft: Record<string, string> = {};
-        for (const s of clientSlots(c || ({ name: clientName } as ClientStatus))) {
+        for (const s of clientSlots(c)) {
           if (s.key === 'main') continue;
           draft[s.key] = memTags[s.key] ? `slot:${memTags[s.key]}` : (memAgent[s.key] || '');
         }
@@ -986,7 +1159,7 @@ export const ClientsPage: React.FC = () => {
   /** Chip wall for the model-list editor (follow snapshot / custom picks).
    *  Long lists truncate to the first MODEL_CHIP_LIMIT chips with a "+N more"
    *  toggle — 85 flat chips bury the rest of the card (user escalation). */
-  const renderModelChips = (clientName: string, ids: string[], onRemove?: (id: string) => void, trailing?: React.ReactNode) => {
+  const renderModelChips = (clientName: string, ids: string[], onRemove?: (id: string) => void, trailing?: React.ReactNode, cell?: React.CSSProperties) => {
     const open = !!extrasOpen[clientName];
     const truncated = !open && ids.length > MODEL_CHIP_LIMIT;
     const shown = truncated ? ids.slice(0, MODEL_CHIP_LIMIT) : ids;
@@ -998,7 +1171,7 @@ export const ClientsPage: React.FC = () => {
       fontFamily: FONT_MONO,
     };
     return (
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px', marginBottom: '6px', ...cell }}>
         {shown.map(id => (
           <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', ...chipStyle }}>
             {id}
@@ -1033,6 +1206,239 @@ export const ClientsPage: React.FC = () => {
     );
   };
 
+  /** Inline model-catalog editor for a gateway-backed client. The plugin owns
+   *  the catalog; this card edits the model-catalog subset of its config
+   *  (mode / snapshot / replace / default / force), while the Plugins drawer
+   *  holds the protocol/runtime keys. Same contract for every gateway client. */
+  const renderGatewayCatalog = (c: ClientStatus) => {
+    const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
+    if (!pluginId) return null;
+    const plugin = gatewayPlugins[pluginId];
+    const draft = gatewayCfg[pluginId];
+    const busy = !!gatewayCfgBusy[pluginId];
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: 'var(--text-xs)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
+          {t('clients.gatewayModels', { client: c.displayName })}{' '}
+          <InfoTip text={t('clients.gatewayModelsInfo', { client: c.displayName })} />
+        </div>
+        {plugin && !plugin.loaded ? (
+          <div style={{ color: 'var(--warning, #eab308)', lineHeight: 'var(--leading-normal)' }}>
+            {plugin.installed
+              ? t(plugin.disabled ? 'clients.gatewayPluginDisabled' : 'clients.gatewayPluginNotLoaded', { client: c.displayName })
+              : t('clients.gatewayPluginMissing', { client: c.displayName })}
+          </div>
+        ) : busy && !draft ? (
+          <div style={{ color: 'var(--text-dim)' }}>{t('common.loading')}</div>
+        ) : draft ? (
+          (() => {
+            const mode = draft.modelListMode;
+            const followKey = apiKeys.find((key) => key.key === (apiKeySel[c.name] || ''));
+            const followView = followKey ? keyModels[followKey.id] : undefined;
+            const listed = mode === 'none'
+              ? VIRTUAL_TIER_IDS
+              : mode === 'custom'
+                ? draft.models
+                : followView
+                  ? followView.models.filter((model) => model.allowed).map((model) => model.id)
+                  : draft.models;
+            const visible = [...new Set(listed)];
+            const defaultOptions = [...new Set([
+              draft.model,
+              ...visible,
+            ].filter(Boolean))];
+            const update = (patch: Partial<GatewayCfgDraft>): void => {
+              // The notice describes the last COMMITTED save — a new draft edit
+              // makes it stale (the next save re-raises it when needed).
+              setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
+              setGatewayCfg((prev) => (prev[pluginId] ? { ...prev, [pluginId]: { ...prev[pluginId], ...patch } } : prev));
+            };
+            return (
+              /* Form layout: one label column (sized by the widest label, so
+                 every label starts on the same rail) and one value column.
+                 Everything that is not a label is a VALUE of its row: the mode
+                 toggles, the chip wall and the replace toggle belong to the
+                 model-list row; the force toggle belongs to the default-model
+                 row; the actions close the value column. Baselines align so a
+                 label sits on the text line of the control it names. */
+              <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: '8px', rowGap: '12px', alignItems: 'baseline' }}>
+                <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                  {t('clients.gatewayApiKey')}{' '}
+                  <InfoTip text={t('clients.gatewayApiKeyHint')} />
+                </span>
+                <Combobox
+                  style={{ gridColumn: 2, minWidth: 0 }}
+                  value={apiKeySel[c.name] || ''}
+                  onChange={(v) => {
+                    setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
+                    setApiKeySel((prev) => ({ ...prev, [c.name]: v }));
+                  }}
+                  options={apiKeys.map((key) => ({
+                    value: key.key,
+                    label: key.name,
+                    meta: key.key.length > 12 ? `${key.key.slice(0, 8)}…${key.key.slice(-4)}` : undefined,
+                  }))}
+                  placeholder={t('clients.apiKeySelect')}
+                  panelMinWidth={320}
+                />
+                {!apiKeySel[c.name] ? (
+                  <span style={{ gridColumn: '1 / -1', color: 'var(--warning)', fontSize: 'var(--text-xs)' }}>
+                    {t('clients.gatewayKeyRequired')}
+                  </span>
+                ) : null}
+
+                <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayModelList')}</span>
+                <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {(['none', 'custom', 'follow'] as const).map((uiMode) => {
+                      const active = mode === uiMode;
+                      return (
+                        <button
+                          key={uiMode}
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={busy}
+                          onClick={() =>
+                            update({ modelListMode: uiMode })
+                          }
+                          style={active
+                            ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
+                            : undefined}
+                        >
+                          {t(uiMode === 'none'
+                            ? 'clients.modelModeNone'
+                            : uiMode === 'custom'
+                              ? 'clients.modelModeCustom'
+                              : 'clients.modelModeFollow')}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {mode === 'follow' && (
+                    !followKey ? (
+                      <div style={{ color: 'var(--accent-amber)' }}>{t('clients.followNoKey')}</div>
+                    ) : !followView ? (
+                      <div style={{ color: 'var(--text-dim)' }}>{t('clients.followLoading')}</div>
+                    ) : (
+                      <>
+                        {renderModelChips(c.name, visible, undefined, undefined, { marginBottom: 0 })}
+                        <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                          {t('clients.followCount', { n: visible.length })} · {t('clients.gatewayFollowSnapshot')}
+                        </div>
+                      </>
+                    )
+                  )}
+
+                  {mode === 'custom' && (
+                    <>
+                      <Combobox
+                        value=""
+                        onChange={(id) => {
+                          if (id && !draft.models.includes(id)) {
+                            update({ models: [...draft.models, id] });
+                          }
+                        }}
+                        options={models
+                          .filter((model) => !draft.models.includes(model.id))
+                          .map((model) => ({ value: model.id, label: model.id }))}
+                        placeholder={t('clients.addModel')}
+                        panelMinWidth={320}
+                      />
+                      {renderModelChips(
+                        c.name,
+                        draft.models,
+                        (id) => update({ models: draft.models.filter((model) => model !== id) }),
+                        undefined,
+                        { marginBottom: 0 },
+                      )}
+                    </>
+                  )}
+
+                  {mode === 'none' && (
+                    <>
+                      {renderModelChips(
+                        c.name,
+                        visible,
+                        undefined,
+                        <span style={{ color: 'var(--text-dim)' }}>
+                          {t(draft.catalogReplace ? 'clients.gatewayReplaceSummary' : 'clients.gatewayAppendSummary', { n: visible.length })}
+                        </span>,
+                        { marginBottom: 0 },
+                      )}
+                      <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                        {t('clients.modelModeNoneHint')}
+                      </div>
+                    </>
+                  )}
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.catalogReplace}
+                      disabled={busy}
+                      onChange={(e) => update({ catalogReplace: e.target.checked })}
+                    />
+                    {t('clients.gatewayReplace', { client: c.displayName })}
+                  </label>
+                </div>
+
+                <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
+                <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                  <Combobox
+                    style={{ minWidth: 0 }}
+                    value={draft.model}
+                    onChange={(model) => update({ model })}
+                    options={defaultOptions.map((id) => ({ value: id, label: id }))}
+                    placeholder={t('clients.gatewayDefaultModel')}
+                    panelMinWidth={320}
+                  />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                    <input
+                      type="checkbox"
+                      checked={draft.forceModel}
+                      disabled={busy}
+                      onChange={(e) => update({ forceModel: e.target.checked })}
+                    />
+                    {t('clients.gatewayForceModel')}
+                  </label>
+                </div>
+
+                <div style={{ gridColumn: 2, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={busy}
+                    onClick={() => void saveGatewayCfg(pluginId)}
+                  >
+                    {t('pluginPage.configSave')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={!plugin?.view}
+                    onClick={() => setAdvancedPlugin(plugin?.view ?? null)}
+                  >
+                    {t('clients.gatewayAdvancedSettings')}
+                  </button>
+                </div>
+                {gatewaySavedNotice[pluginId] && (
+                  <div style={{ gridColumn: '1 / -1', padding: '8px 10px', borderRadius: '6px', background: 'color-mix(in srgb, var(--accent) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)', color: 'var(--text-muted)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-normal)' }}>
+                    {t('clients.gatewayCatalogRestartNotice', { client: c.displayName })}
+                  </div>
+                )}
+              </div>
+            );
+          })()
+        ) : (
+          <Link className="btn btn-sm" to={plugin?.installed ? `/plugins?plugin=${pluginId}` : '/plugins'}>
+            {plugin?.installed ? t('clients.gatewayConfigureModels') : t('clients.gatewayInstallPlugin')}
+          </Link>
+        )}
+      </div>
+    );
+  };
+
   // Owned files are listed the same way on every card (Cursor's launcher-only
   // card and the config-path card alike): one renderer keeps the icon, spacing
   // and wrap behavior in a single place.
@@ -1045,10 +1451,12 @@ export const ClientsPage: React.FC = () => {
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
-    // Cursor's launcher only exists to feed the Cursor Gateway plugin. Hooking it
-    // without a loaded plugin would proxy every request transparently while
-    // the UI claims OCR is active — block the setup, never the teardown.
-    const pluginBlocked = c.name === 'cursor' && cursorGatewayPlugin !== null && !cursorGatewayPlugin.loaded;
+    // A proxy client's launcher only exists to feed its gateway plugin.
+    // Hooking without a loaded plugin would proxy every request transparently
+    // while the UI claims OCR is active — block the setup, never the teardown.
+    const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
+    const gatewayPlugin = pluginId ? gatewayPlugins[pluginId] : undefined;
+    const pluginBlocked = !!pluginId && gatewayPlugin !== undefined && !gatewayPlugin.loaded;
     return c.hooked ? (
       <button
         className="btn btn-danger btn-sm"
@@ -1065,7 +1473,7 @@ export const ClientsPage: React.FC = () => {
         style={stretched ? { flex: 1 } : undefined}
         onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup'); }}
         disabled={loading || pluginBlocked}
-        title={pluginBlocked ? t('clients.cursorGatewayPluginRequired') : undefined}
+        title={pluginBlocked ? t('clients.gatewayPluginRequired', { client: c.displayName }) : undefined}
       >
         <ArrowUpRight size={12} />
         <span>{t('clients.setupBtn')}</span>
@@ -1115,17 +1523,27 @@ export const ClientsPage: React.FC = () => {
             ]}
           />
         </div>
-        {/* Proxy-tab prerequisite: the opencode-proxy adapter persists the
-            service env pointing at the inbound forward proxy — without it the
-            takeover is dead on arrival, so say so BEFORE the setup button. */}
-        {activeTab === 'proxy' && (fpEnabled === false || fpRunning === false) && (
+        {/* Proxy-tab prerequisite: every proxy hook needs the inbound forward
+            proxy (service env or launcher) — without it the takeover is dead
+            on arrival, so say so BEFORE the setup button. */}
+        {activeTab === 'proxy' && (fpEnabled === false || fpRunning === false || caTrust?.trusted === false) && (
           <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)', color: 'var(--accent-amber)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
             <X size={14} />
             <span style={{ flex: 1 }}>
-              {t(fpEnabled === false ? 'clients.fpPrereqOff' : 'clients.fpPrereqDown')}
+              {t(
+                fpEnabled === false
+                  ? 'clients.fpPrereqOff'
+                  : fpRunning === false
+                    ? 'clients.fpPrereqDown'
+                    : 'clients.warnCaNotTrusted',
+                { path: caPath || '<appData>/forward-proxy/ca.pem' },
+              )}
             </span>
-            <Link to="/proxy-access" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>
-              {t('nav.proxyAccess')} →
+            <Link
+              to={fpEnabled === false || fpRunning === false ? '/proxy-access' : '/proxy-access?view=wizard'}
+              style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}
+            >
+              {t(fpEnabled === false || fpRunning === false ? 'nav.proxyAccess' : 'forwardProxy.helpTitle')} →
             </Link>
           </div>
         )}
@@ -1147,10 +1565,9 @@ export const ClientsPage: React.FC = () => {
             quick action, expanding reveals the progressive setup form. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {clients.filter(c => activeTab === 'proxy'
-            ? c.name === 'opencode-proxy' || c.name === 'cursor'
+            ? c.hookKind !== 'config'
             : activeTab === 'hook'
-              && c.name !== 'opencode-proxy'
-              && c.name !== 'cursor'
+              && c.hookKind === 'config'
               && (!filter || [c.displayName, c.name, c.configPath].some(v => (v || '').toLowerCase().includes(filter.toLowerCase())))).map(c => {
             const open = expanded === c.name;
             const toggle = () => setExpanded(prev => (prev === c.name ? null : c.name));
@@ -1183,7 +1600,7 @@ export const ClientsPage: React.FC = () => {
                     style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: open ? 'rotate(180deg)' : 'none' }}
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>
-                    <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
+                    <BrandIcon name={c.name.replace(/-proxy$/, '')} size={18} />
                     {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
                   </span>
                   <span
@@ -1217,10 +1634,10 @@ export const ClientsPage: React.FC = () => {
 
                 {open && (
                   <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    {c.name === 'cursor' ? (
-                      // Cursor owns launcher scripts, not a config file: every
+                    {c.hookKind === 'launcher' ? (
+                      // Launcher hooks own scripts, not a config file: every
                       // launcher setup writes is listed with its own existence
-                      // mark (the CLI launcher only exists while cursor-agent
+                      // mark (the CLI launcher only exists while the vendor CLI
                       // is installed).
                       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
                         {t('clients.launcherPaths')}
@@ -1249,195 +1666,16 @@ export const ClientsPage: React.FC = () => {
                       </>
                     )}
 
-                    {(c.name === 'opencode-proxy' || c.name === 'cursor') && (
+                    {(c.hookKind !== 'config') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
-                        {t(c.name === 'cursor' ? 'clients.cursorHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
+                        {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
                       </div>
                     )}
 
-                    {c.name === 'cursor' && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: 'var(--text-xs)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
-                          {t('clients.cursorModels')} <InfoTip text={t('clients.cursorModelsInfo')} />
-                        </div>
-                        {cursorGatewayPlugin && !cursorGatewayPlugin.loaded ? (
-                          <div style={{ color: 'var(--warning, #eab308)', lineHeight: 'var(--leading-normal)' }}>
-                            {cursorGatewayPlugin.installed
-                              ? t(cursorGatewayPlugin.disabled ? 'clients.cursorGatewayPluginDisabled' : 'clients.cursorGatewayPluginNotLoaded')
-                              : t('clients.cursorGatewayPluginMissing')}
-                          </div>
-                        ) : cursorCfgBusy && !cursorCfg ? (
-                          <div style={{ color: 'var(--text-dim)' }}>{t('common.loading')}</div>
-                        ) : cursorCfg ? (
-                          (() => {
-                            const mode = cursorCfg.modelListMode;
-                            const followKey = apiKeys.find((key) => key.id === cursorCfg.followKeyId);
-                            const followView = followKey ? keyModels[followKey.id] : undefined;
-                            const listed = mode === 'all'
-                              ? models.map((model) => model.id)
-                              : mode === 'custom'
-                                ? cursorCfg.models
-                                : followView
-                                  ? followView.models.filter((model) => model.allowed).map((model) => model.id)
-                                  : cursorCfg.models;
-                            const visible = [...new Set(listed)];
-                            const defaultOptions = [...new Set([
-                              cursorCfg.model,
-                              ...(mode === 'all' ? models.map((model) => model.id) : visible),
-                            ].filter(Boolean))];
-                            const update = (patch: Partial<CursorCfgDraft>): void =>
-                              setCursorCfg((prev) => (prev ? { ...prev, ...patch } : prev));
-                            return (
-                              <>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                  {(['none', 'custom', 'follow'] as const).map((uiMode) => {
-                                    const target = uiMode === 'none' ? 'all' : uiMode;
-                                    const active = mode === target;
-                                    return (
-                                      <button
-                                        key={uiMode}
-                                        type="button"
-                                        className="btn btn-sm"
-                                        disabled={cursorCfgBusy}
-                                        onClick={() => update({ modelListMode: target })}
-                                        style={active
-                                          ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
-                                          : undefined}
-                                      >
-                                        {t(uiMode === 'none'
-                                          ? 'clients.modelModeNone'
-                                          : uiMode === 'custom'
-                                            ? 'clients.modelModeCustom'
-                                            : 'clients.modelModeFollow')}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-
-                                {mode === 'follow' && (
-                                  <>
-                                    <Combobox
-                                      value={cursorCfg.followKeyId}
-                                      onChange={(keyId) => update({ followKeyId: keyId })}
-                                      options={apiKeys.map((key) => ({
-                                        value: key.id,
-                                        label: key.name,
-                                        meta: key.key.length > 12 ? `${key.key.slice(0, 8)}…${key.key.slice(-4)}` : undefined,
-                                      }))}
-                                      placeholder={t('clients.followKeyPlaceholder')}
-                                      clearable
-                                      panelMinWidth={320}
-                                    />
-                                    {!followKey ? (
-                                      <div style={{ color: 'var(--accent-amber)' }}>{t('clients.followNoKey')}</div>
-                                    ) : !followView ? (
-                                      <div style={{ color: 'var(--text-dim)' }}>{t('clients.followLoading')}</div>
-                                    ) : (
-                                      <>
-                                        {renderModelChips('cursor', visible)}
-                                        <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-                                          {t('clients.followCount', { n: visible.length })} · {t('clients.followSnapshot')}
-                                        </div>
-                                      </>
-                                    )}
-                                  </>
-                                )}
-
-                                {mode === 'custom' && (
-                                  <>
-                                    <Combobox
-                                      value=""
-                                      onChange={(id) => {
-                                        if (id && !cursorCfg.models.includes(id)) {
-                                          update({ models: [...cursorCfg.models, id] });
-                                        }
-                                      }}
-                                      options={models
-                                        .filter((model) => !cursorCfg.models.includes(model.id))
-                                        .map((model) => ({ value: model.id, label: model.id }))}
-                                      placeholder={t('clients.addModel')}
-                                      panelMinWidth={320}
-                                    />
-                                    {renderModelChips(
-                                      'cursor',
-                                      cursorCfg.models,
-                                      (id) => update({ models: cursorCfg.models.filter((model) => model !== id) }),
-                                    )}
-                                  </>
-                                )}
-
-                                {mode === 'all' && renderModelChips(
-                                  'cursor',
-                                  visible,
-                                  undefined,
-                                  <span style={{ color: 'var(--text-dim)' }}>
-                                    {t(cursorCfg.catalogReplace ? 'clients.cursorReplaceSummary' : 'clients.cursorAppendSummary', { n: visible.length })}
-                                  </span>,
-                                )}
-
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={cursorCfg.catalogReplace}
-                                    disabled={cursorCfgBusy}
-                                    onChange={(e) => update({ catalogReplace: e.target.checked })}
-                                  />
-                                  {t('clients.cursorReplace')}
-                                </label>
-
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <span style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>{t('clients.cursorDefaultModel')}</span>
-                                  <Combobox
-                                    style={{ flex: 1, minWidth: 0 }}
-                                    value={cursorCfg.model}
-                                    onChange={(model) => update({ model })}
-                                    options={defaultOptions.map((id) => ({ value: id, label: id }))}
-                                    placeholder={t('clients.cursorDefaultModel')}
-                                    panelMinWidth={320}
-                                  />
-                                </div>
-
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={cursorCfg.forceModel}
-                                    disabled={cursorCfgBusy}
-                                    onChange={(e) => update({ forceModel: e.target.checked })}
-                                  />
-                                  {t('clients.cursorForceModel')}
-                                </label>
-
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <button
-                                    type="button"
-                                    className="btn btn-primary btn-sm"
-                                    disabled={cursorCfgBusy}
-                                    onClick={() => void saveCursorCfg()}
-                                  >
-                                    {t('pluginPage.configSave')}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    disabled={!cursorGatewayPlugin?.view}
-                                    onClick={() => setAdvancedOpen(true)}
-                                  >
-                                    {t('clients.cursorAdvancedSettings')}
-                                  </button>
-                                </div>
-                              </>
-                            );
-                          })()
-                        ) : (
-                          <Link className="btn btn-sm" to={cursorGatewayPlugin?.installed ? '/plugins?plugin=cursor-gateway' : '/plugins'}>
-                            {cursorGatewayPlugin?.installed ? t('clients.cursorConfigureModels') : t('clients.cursorInstallPlugin')}
-                          </Link>
-                        )}
-                      </div>
-                    )}
+                    {renderGatewayCatalog(c)}
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
-                {(c.name !== 'opencode-proxy' && c.name !== 'cursor') && (
+                {(c.hookKind === 'config') && (
                   <div style={{ gridColumn: '1 / -1' }}>
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
                     <Combobox
@@ -1786,10 +2024,10 @@ export const ClientsPage: React.FC = () => {
           )}
         </div>
       </div>
-      {advancedOpen && cursorGatewayPlugin?.view ? (
+      {advancedPlugin ? (
         <PluginConfigDrawer
-          plugin={cursorGatewayPlugin.view}
-          onClose={() => setAdvancedOpen(false)}
+          plugin={advancedPlugin}
+          onClose={() => setAdvancedPlugin(null)}
           showClientsGuide={false}
         />
       ) : null}

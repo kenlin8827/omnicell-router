@@ -32,6 +32,7 @@ import { MD_COMPONENTS, MD_PLUGINS } from '../components/Prose';
 import { copyToClipboard } from '../lib/clipboard';
 import { FONT_MONO } from '../lib/fonts';
 import type { PlaygroundPresetQuestion } from '../i18n/types';
+import { decodeRate, formatRate } from '../lib/format';
 
 /** The observation header names — one place, so header and summary parsing
  *  read the SAME vocabulary (the summary frame reuses the header keys). */
@@ -47,6 +48,9 @@ const HDR = {
   session: 'X-OCR-Session-ID',
   trace: 'X-OCR-Trace-ID',
   latency: 'X-OCR-Latency-MS',
+  /** Gateway-measured decode window (first streamed chunk → stream end) —
+   *  present only when the committed attempt streamed; the tok/s denominator. */
+  genMs: 'X-OCR-Gen-MS',
   thinkRequested: 'X-OCR-Thinking-Requested',
   thinkActual: 'X-OCR-Thinking-Actual',
   thinkSource: 'X-OCR-Thinking-Source',
@@ -74,6 +78,8 @@ interface TurnFacts {
   sessionId?: string;
   traceId?: string;
   latencyMs?: string;
+  /** Gateway-reported decode window; absent on buffered (non-streamed) turns. */
+  genMs?: string;
   thinking?: string;
   thinkingSource?: string;
 }
@@ -164,6 +170,7 @@ const readFacts = (get: (name: string) => string | undefined, status: number): T
   sessionId: nonEmpty(get(HDR.session)),
   traceId: nonEmpty(get(HDR.trace)),
   latencyMs: nonEmpty(get(HDR.latency)),
+  genMs: nonEmpty(get(HDR.genMs)),
   thinking: nonEmpty(get(HDR.thinkActual)) ?? nonEmpty(get(HDR.thinkRequested)),
   thinkingSource: nonEmpty(get(HDR.thinkSource)),
 });
@@ -338,8 +345,8 @@ const jsonWell: React.CSSProperties = {
   color: 'var(--text-dim)',
 };
 
-const FactChip: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <span style={chipStyle} title={`${label}: ${value}`}>
+const FactChip: React.FC<{ label: string; value: string; tip?: string }> = ({ label, value, tip }) => (
+  <span style={chipStyle} title={tip ?? `${label}: ${value}`}>
     {label} <span style={{ color: 'var(--text-main)', fontFamily: FONT_MONO }}>{value}</span>
   </span>
 );
@@ -351,6 +358,21 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
   const { t } = useI18n();
   const isUser = turn.role === 'user';
   const facts = turn.facts;
+  // Decode-TPS from the gateway-measured window: completion tokens ÷ genMs,
+  // the exact pair the console uses. A buffered turn carries no window, so the
+  // chip shows '—' rather than a rate synthesized from client-side timing.
+  const genMs = facts?.genMs !== undefined ? Number(facts.genMs) : undefined;
+  const rate = turn.usage?.completion_tokens !== undefined ? decodeRate(turn.usage.completion_tokens, genMs) : null;
+  // Friendly layer vocabulary for the chip; the raw enum stays in the wire
+  // contract, the tooltip carries the full semantics.
+  const layerLabel =
+    facts?.layer === 'layer0'
+      ? t('chat.layer0')
+      : facts?.layer === 'entry'
+        ? t('chat.layerEntry')
+        : facts?.layer === 'layer2'
+          ? t('chat.layer2')
+          : facts?.layer;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: isUser ? 'flex-end' : 'flex-start' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
@@ -431,9 +453,20 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {facts.model && <FactChip label={t('chat.factModel')} value={facts.model} />}
           {facts.tier && <FactChip label={t('chat.factTier')} value={facts.tier} />}
-          {facts.layer && <FactChip label={t('chat.factLayer')} value={facts.layer} />}
+          {facts.layer && layerLabel && (
+            <FactChip label={t('chat.factLayer')} value={layerLabel} tip={t('chat.factLayerTip')} />
+          )}
           {facts.latencyMs && <FactChip label={t('chat.factLatency')} value={`${facts.latencyMs} ms`} />}
-          {facts.failoverPath && <FactChip label={t('chat.factFailover')} value={facts.failoverPath} />}
+          {turn.usage && (
+            <FactChip label={t('chat.factRate')} value={formatRate(rate)} tip={t('chat.factRateTip')} />
+          )}
+          {/* Failover narrative only when it tells a story. The gateway pushes the
+              first candidate into the path on EVERY routed turn (X-OCR-Failover
+              "false"), so rendering it unconditionally would claim a failover
+              that never happened — the same rule SessionsPage applies. */}
+          {facts.failover === 'true' && facts.failoverPath && facts.failoverPath.split(' -> ').length > 1 && (
+            <FactChip label={t('chat.factFailover')} value={facts.failoverPath} />
+          )}
           {facts.thinking && (
             <FactChip
               label={t('chat.factThinking')}

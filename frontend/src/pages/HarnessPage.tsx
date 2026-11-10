@@ -1631,13 +1631,15 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     [landingHosts, requestedHarness]
   );
 
-  /** The hosts the ONE-CLICK integration covers — the backend `ClientAdapter.harness` values
-   *  (frontend mirror; opencode/opencode-proxy fold to one). Hosts OUTSIDE this set are never
-   *  admitted by default, however installed they are. */
+  /** The hosts the ONE-CLICK integration covers — a frontend mirror of the
+   *  harness host set, not the client ids (`opencode-proxy` folds to `opencode`).
+   *  Hosts OUTSIDE this set are never admitted by default, however installed they are. */
   const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true, openclaw: true };
 
-  /** The anchoring order: the Clients page's adapter order (backend insertion order — by market
-   *  share: claude, codex, opencode, grok, kimi, openclaw, then the niche pi/dsh/omp), mirrored. */
+  /** The anchoring order for one-click hosts: market share first (claude, codex,
+   *  opencode, grok, kimi, openclaw), then the niche pi/dsh/omp. Only config-hook
+   *  hosts appear; `opencode-proxy` folds to `opencode`, while Cursor/Qoder proxy
+   *  hooks are not one-click hosts. */
   const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'kimi', 'openclaw', 'pi', 'dsh', 'omp'];
 
   /** Popularity ranking for hosts OUTSIDE the clients set (curated — the host catalog carries no

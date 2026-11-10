@@ -24,17 +24,24 @@ import { humanizeKey } from '../lib/format';
  * navigating away and discarding its own draft.
  */
 
-/** Cursor's model surface is a CLIENT concern and is edited in Client Hub →
- *  Cursor. These keys stay in the schema (the storage contract) but are not
- *  rendered a second time here — one source, one editor. */
-const CURSOR_CLIENT_FACING_FIELDS: Record<string, true> = {
+/** A gateway's model surface is a CLIENT concern and is edited in Client Hub.
+ *  These keys stay in the schema (the storage contract) but are not rendered a
+ *  second time here — one source, one editor. */
+const GATEWAY_CLIENT_FACING_FIELDS: Record<string, true> = {
   model: true,
   forceModel: true,
   modelListMode: true,
   models: true,
-  followKeyId: true,
+  accountKeyId: true,
   catalogReplace: true,
 };
+
+/** Plugins whose model surface is edited on a Client Hub card. */
+const GATEWAY_PLUGIN_CLIENT: Record<string, string> = {
+  'cursor-gateway': 'Cursor',
+  'qoder-gateway': 'Qoder',
+};
+const isClientGateway = (id: string): boolean => GATEWAY_PLUGIN_CLIENT[id] !== undefined;
 
 /** The schema key is metadata, not a heading: printing it beside every label
  *  repeated the row it belonged to and turned the form into a wall of
@@ -264,8 +271,8 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
       // never receives the key secret and core exposes no key-policy lookup to
       // plugins, so the console resolves the key's allowed models here and
       // stores the resulting ids. Re-save after changing the key's policy.
-      if (plugin.id === 'cursor-gateway' && next.modelListMode === 'follow') {
-        const keyId = String(next.followKeyId ?? '');
+      if (isClientGateway(plugin.id) && next.modelListMode === 'follow') {
+        const keyId = String(next.accountKeyId ?? '');
         if (!keyId) {
           toast.error(t('clients.followNoKey'));
           return;
@@ -419,7 +426,7 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
   // — and the backend still validates it. Grouping inherits the same rule: an
   // all-hidden section renders no heading at all.
   const configGroups = groupVisibleFields(
-    plugin.id === 'cursor-gateway' ? schema.filter((field) => CURSOR_CLIENT_FACING_FIELDS[field.key] !== true) : schema,
+    isClientGateway(plugin.id) ? schema.filter((field) => GATEWAY_CLIENT_FACING_FIELDS[field.key] !== true) : schema,
     sections,
     draft
   );
@@ -466,9 +473,9 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
           </div>
         ) : (
           <>
-            {showClientsGuide && plugin.id === 'cursor-gateway' && (
+            {showClientsGuide && isClientGateway(plugin.id) && (
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '12px' }}>
-                {t('pluginPage.cursorModelsMoved')}{' '}
+                {t('pluginPage.gatewayModelsMoved', { client: GATEWAY_PLUGIN_CLIENT[plugin.id] })}{' '}
                 <Link to="/clients">{t('pluginPage.cursorOpenClients')}</Link>
               </div>
             )}

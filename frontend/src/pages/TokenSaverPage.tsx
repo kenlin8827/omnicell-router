@@ -89,7 +89,10 @@ const Section: React.FC<{
     <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: children ? '12px' : 0 }}>
       {desc}
     </div>
-    {enabled && children}
+    {/* Always rendered: a section's setup material (install commands, sidecar
+        control) must be readable while the feature is off. Gate the settings
+        that only matter when enabled inside the section itself. */}
+    {children}
   </div>
 );
 
@@ -313,6 +316,7 @@ export const TokenSaverPage: React.FC = () => {
                 <span>{t('tokenSaver.headroomAutoStartShort')}</span>
               </label>
             </div>
+            {(headroom.enabled ?? false) && (<>
             <div>
               <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('tokenSaver.headroomUrl')}
@@ -360,6 +364,7 @@ export const TokenSaverPage: React.FC = () => {
                 <span>{t('tokenSaver.headroomCompressUser')}</span>
               </label>
             </div>
+            </>)}
           </div>
         </Section>
 
@@ -370,16 +375,18 @@ export const TokenSaverPage: React.FC = () => {
           onToggle={v => setCompression({ ...compression, caveman: { ...caveman, enabled: v } })}
           enableLabel={t('tokenSaver.cavemanEnable')}
         >
-          <div style={{ width: '240px' }}>
-            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-              {t('tokenSaver.cavemanLevel')}
-            </label>
-            <Combobox
-              value={caveman.level || 'full'}
-              onChange={v => setCompression({ ...compression, caveman: { ...caveman, level: v } })}
-              options={CAVEMAN_LEVELS.map(lv => ({ value: lv, label: lv }))}
-            />
-          </div>
+          {(caveman.enabled ?? false) && (
+            <div style={{ width: '240px' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('tokenSaver.cavemanLevel')}
+              </label>
+              <Combobox
+                value={caveman.level || 'full'}
+                onChange={v => setCompression({ ...compression, caveman: { ...caveman, level: v } })}
+                options={CAVEMAN_LEVELS.map(lv => ({ value: lv, label: lv }))}
+              />
+            </div>
+          )}
         </Section>
       </div>
     </div>

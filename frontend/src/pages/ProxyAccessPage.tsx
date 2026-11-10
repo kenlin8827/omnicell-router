@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
-import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta } from '../lib/api';
+import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta, type CaTrustResponse } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -38,6 +38,8 @@ const PAGE_SIZES = [20, 50, 100, 200];
 
 interface ForwardProxyShape {
   enabled?: boolean;
+  /** Strict mode: every connection needs a key, loopback included (hot-applies). */
+  requireCredential?: boolean;
   port?: number;
   /** Listen address — boot-frozen like port (shape of the listening socket). */
   host?: string;
@@ -1435,7 +1437,7 @@ const TrustCmdRow: React.FC<{ os: string; cmd: string; hint?: string }> = ({ os,
       {os}
     </span>
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
-      <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', overflowWrap: 'anywhere' }}>{cmd}</code>
+      <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{cmd}</code>
       {hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}>{hint}</div>}
     </div>
   </div>
@@ -1593,6 +1595,10 @@ export const ProxyAccessPage: React.FC = () => {
    *  wizard on "Loading…": fall back to the documented `<appData>` placeholder
    *  the help copy already uses, so every snippet still renders. */
   const [caMetaFailed, setCaMetaFailed] = useState(false);
+  /** Platform trust of the CA — tri-state (`unknown` ≠ not trusted). Probed on
+   *  mount and on demand, NEVER polled: the backend probe spawns OS tools. */
+  const [caTrust, setCaTrust] = useState<CaTrustResponse | null>(null);
+  const [caTrustBusy, setCaTrustBusy] = useState(false);
   const [caDetailsOpen, setCaDetailsOpen] = useState(false);
   /** Uninstall commands are a rare, destructive follow-up — collapsed by
    *  default so the trust step stays install-only until asked. */
@@ -1601,7 +1607,12 @@ export const ProxyAccessPage: React.FC = () => {
   /** Current wizard step id */
   const [step, setStep] = useState('1');
   /** Page view tab: access configuration / system proxy / setup wizard / traffic log. */
-  const [view, setView] = useState<'config' | 'sys' | 'wizard' | 'log'>('config');
+  const [view, setView] = useState<'config' | 'sys' | 'wizard' | 'log'>(() => {
+    // Deep link from the Clients proxy tab: `/proxy-access?view=wizard` opens
+    // the trust step directly, so the CA warning is one click from its fix.
+    const v = new URLSearchParams(window.location.search).get('view');
+    return v === 'sys' || v === 'wizard' || v === 'log' ? v : 'config';
+  });
   /** Config-tab fold state: the traffic-log and miss-policy groups (advanced) default collapsed. */
   const [fold, setFold] = useState({ log: false, miss: false });
   /** The rule table (ADR-0018). Order is the semantics — the ↑↓ buttons are the
@@ -1678,6 +1689,19 @@ export const ProxyAccessPage: React.FC = () => {
       alive = false;
     };
   }, []);
+
+  /** `force` bypasses the backend's 60s TTL — required after an install, or
+   *  the re-check would replay the pre-install verdict. */
+  const loadCaTrust = useCallback((force = false) => {
+    setCaTrustBusy(true);
+    api.getProxyCaTrust(force)
+      .then(r => setCaTrust(r))
+      .catch(() => setCaTrust(null))
+      .finally(() => setCaTrustBusy(false));
+  }, []);
+  useEffect(() => {
+    loadCaTrust();
+  }, [loadCaTrust]);
 
   // Runtime status poll — the chip must reflect a FAILED start (the gateway
   // keeps serving; only the proxy is absent) as clearly as a running one.
@@ -1838,6 +1862,48 @@ export const ProxyAccessPage: React.FC = () => {
       ]
     : [];
 
+  // ── CA trust chip (tri-state: `unknown` is NOT a failure) ──
+  const caTrustLabel = caTrust?.trusted === true
+    ? t('forwardProxy.caTrustTrusted')
+    : caTrust?.trusted === false
+      ? t('forwardProxy.caTrustNotTrusted')
+      : t('forwardProxy.caTrustUnknown');
+  const caTrustColor = caTrust?.trusted === true
+    ? 'var(--accent-emerald)'
+    : caTrust?.trusted === false
+      ? '#f87171'
+      : 'var(--text-dim)';
+  // One row, rendered in the config card AND in the trust step: installing the
+  // root is the page's first action and its first support question.
+  const caTrustRow = caTrust ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: 'var(--text-sm)' }}>
+      <span
+        className="badge"
+        style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: caTrustColor, background: 'var(--chip-bg)' }}
+      >
+        {caTrustLabel}
+      </span>
+      <InfoTip text={t('forwardProxy.caTrustHint')} />
+      <button className="btn btn-sm" style={{ gap: '6px' }} disabled={caTrustBusy} onClick={() => loadCaTrust(true)}>
+        <RefreshCw size={12} />
+        <span>{t('forwardProxy.caTrustRecheck')}</span>
+      </button>
+      {caTrust?.trusted === false && view !== 'wizard' && (
+        <button
+          className="btn btn-sm"
+          style={{ gap: '6px' }}
+          onClick={() => {
+            setStep('1');
+            setView('wizard');
+          }}
+        >
+          <BookOpen size={12} />
+          <span>{t('forwardProxy.caTrustOpenWizard')}</span>
+        </button>
+      )}
+    </div>
+  ) : null;
+
   const steps: { id: string; title: string; body: React.ReactNode }[] = [
     {
       id: '1',
@@ -1846,6 +1912,7 @@ export const ProxyAccessPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep2')}</div>
           <pre style={preStyle}>{caPath ? t('forwardProxy.helpStep2Code', { caPath }) : t('common.loading')}</pre>
+          {caTrustRow}
           {caPath ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.sysInstallTitle')}</div>
@@ -1914,6 +1981,13 @@ export const ProxyAccessPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep3')}</div>
           <pre style={preStyle}>{t('forwardProxy.helpStep3Code', { port })}</pre>
+          {/* Only while the credential requirement is on: the env vars above
+              alone leave Chromium-based clients stuck at the auth prompt. */}
+          {fp.requireCredential === true && (
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+              {t('forwardProxy.helpStep3Auth')}
+            </div>
+          )}
         </div>
       ),
     },
@@ -1989,6 +2063,7 @@ export const ProxyAccessPage: React.FC = () => {
           />
           <span>{statusText}</span>
         </div>
+        {caTrustRow && <div style={{ marginBottom: '16px' }}>{caTrustRow}</div>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '720px' }}>
           {/* ── Section 1: listener & enable ── */}
@@ -2032,6 +2107,18 @@ export const ProxyAccessPage: React.FC = () => {
                   {t('forwardProxy.maxConnectionsHint')}
                 </div>
               </div>
+              <label style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span style={{ display: 'block' }}>
+                  {t('forwardProxy.requireCredential')}
+                  <span style={{ display: 'block', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px', lineHeight: 'var(--leading-normal)' }}>
+                    {t('forwardProxy.requireCredentialHint')}
+                  </span>
+                </span>
+                <Switch
+                  checked={fp.requireCredential ?? false}
+                  onChange={v => setFp({ ...fp, requireCredential: v })}
+                />
+              </label>
             </div>
           </div>
 

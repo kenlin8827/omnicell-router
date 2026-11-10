@@ -195,7 +195,7 @@ export const OverviewPage: React.FC = () => {
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                  <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
+                  <BrandIcon name={c.name.replace(/-proxy$/, '')} size={18} />
                   <div>
                     <div style={{ fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-md)' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
