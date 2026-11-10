@@ -15,7 +15,7 @@ import { ClientHookStatus } from '../types.js';
 export class CodexClientAdapter implements ClientAdapter {
   name = 'codex' as const;
   hookKind = 'config' as const;
-  displayName = 'Codex / OpenAI CLI';
+  displayName = 'Codex';
 
   getConfigPath(): string {
     const home = os.homedir();

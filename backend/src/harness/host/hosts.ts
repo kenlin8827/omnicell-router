@@ -24,7 +24,7 @@ export const HOSTS: HostDef[] = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
   { id: 'pi', label: 'Pi' },
-  { id: 'dsh', label: 'DSH' },
+  { id: 'dsh', label: 'DeepSeek Harness' },
   { id: 'omp', label: 'OMP' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'gemini-cli', label: 'Gemini CLI' },

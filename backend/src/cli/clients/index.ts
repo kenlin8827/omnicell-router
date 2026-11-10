@@ -12,6 +12,7 @@ import { OpenClawClientAdapter } from './openclaw.js';
 import { CursorProxyClientAdapter } from './cursor-proxy.js';
 import { QoderProxyClientAdapter } from './qoder-proxy.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
+import { popularityRank } from '../../utils/popularity.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
   opencode: new OpenCodeClientAdapter(),
@@ -28,13 +29,21 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   'qoder-proxy': new QoderProxyClientAdapter(),
 };
 
+/** One-click roster order — the same popularity rank the harness rail uses (ADR-0015). */
+const ORDERED_ADAPTERS = Object.values(adapters).sort(
+  (a, b) => popularityRank(a.name) - popularityRank(b.name)
+);
+
+/** CLI usage hint: every target, most popular first. */
+export const CLIENT_TARGETS = ORDERED_ADAPTERS.map((adapter) => adapter.name).join(' | ');
+
 export function getClientAdapter(name: string): ClientAdapter | null {
   const normalized = name.toLowerCase().trim() as SupportedClient;
   return adapters[normalized] || null;
 }
 
 export function getAllClientAdapters(): ClientAdapter[] {
-  return Object.values(adapters);
+  return [...ORDERED_ADAPTERS];
 }
 
 export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {

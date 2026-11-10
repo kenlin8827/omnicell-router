@@ -177,7 +177,11 @@ async function runFile(file: string): Promise<FileResult> {
     const fd = fs.openSync(logFile, 'w');
     let child: Subprocess;
     try {
-      child = Bun.spawn(['bun', 'test', '--no-env-file', file], {
+      // The per-FILE kill below is the real budget. `--timeout` only lifts Bun's 5 s PER-TEST
+      // default, which a server boot cannot reliably meet while eight files share the CPU — one
+      // slow boot then reports as a permanent failure in a file that is otherwise green. The
+      // assertion is about the answer, never about startup latency.
+      child = Bun.spawn(['bun', 'test', '--no-env-file', '--timeout', '20000', file], {
         cwd: sandbox,
         env: childEnv,
         stdout: fd,

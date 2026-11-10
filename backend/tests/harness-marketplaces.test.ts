@@ -31,6 +31,7 @@ import { PI_PROBE_OPTIONS } from '../src/harness/plugin/adapters/pi-github.js';
 import { harvestIndex, readIndex } from '../src/harness/plugin/catalog.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
 import { allHostProbes } from '../src/harness/plugin/adapters/index.js';
+import { DSH_PROBE_OPTIONS, dshBundleOf } from '../src/harness/plugin/adapters/dsh.js';
 
 /**
  * Operator git-marketplace sources (ADR-0015 §D6 git-repo type): probe recognition (manifest
@@ -413,6 +414,100 @@ describe('extension-dir grammar + slug derivation', () => {
     expect(probe.snapshot.hosts).toContain('claude');
     expect(probe.snapshot.manifest?.name).toBe('ponytail');
   });
+
+describe('dsh form: a bundle is a ROOT package.json that DECLARES dsh.bundle', () => {
+  /** A DSH bundle repository: the vendor form is the package manifest itself (no directory). */
+  const dshTree = [
+    { path: 'package.json', type: 'blob' },
+    { path: 'cordis.patch.yml', type: 'blob' },
+    { path: 'skills/ponytail/SKILL.md', type: 'blob' },
+  ];
+  const bundleJson = JSON.stringify({
+    name: 'dsh-plugin-codegraph',
+    description: 'Structural code intelligence for DeepSeek Harness',
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
+  });
+
+  it('reads a dsh.bundle declaration and nothing else', () => {
+    expect(dshBundleOf(JSON.parse(bundleJson))).toEqual({ patch: './cordis.patch.yml' });
+    // Every repository ships a package.json: absence of the declaration is NOT the form.
+    expect(dshBundleOf({ name: 'ordinary-app' })).toBeNull();
+    expect(dshBundleOf({ dsh: { bundle: {} } })).toBeNull();
+    expect(dshBundleOf({ dsh: { bundle: { patch: '   ' } } })).toBeNull();
+    expect(dshBundleOf('package.json')).toBeNull();
+  });
+
+  it('is DETECTED for dsh and yields the bundle as a row', async () => {
+    sandboxHome();
+    const entry = { slug: 'pony-dsh', repo: 'owner/repo', enabled: true, addedAt: 0, rescan: { enabled: false, intervalMs: 86_400_000 }, harness: 'dsh' as const };
+    const probe = await probeMarketplace(entry, fakeFetch({ tree: dshTree, packageJson: bundleJson }), {
+      ...DSH_PROBE_OPTIONS,
+      hosts: allHostProbes(),
+    });
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) return;
+    // The support gate answers from snapshot.hosts: dsh must be among the detected forms.
+    expect(probe.snapshot.hosts).toContain('dsh');
+    expect(probe.snapshot.plugins.map((p) => p.name)).toEqual(['dsh-plugin-codegraph']);
+  });
+
+  it('does NOT claim dsh for an ordinary package.json, and invents no host when nothing is detected', async () => {
+    sandboxHome();
+    const entry = { slug: 'pony-plain', repo: 'owner/repo', enabled: true, addedAt: 0, rescan: { enabled: false, intervalMs: 86_400_000 }, harness: 'dsh' as const };
+    const probe = await probeMarketplace(entry, fakeFetch({ tree: dshTree, packageJson: JSON.stringify({ name: 'ordinary-app' }) }), {
+      ...DSH_PROBE_OPTIONS,
+      hosts: allHostProbes(),
+    });
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) return;
+    // No form was detected, so the honest answer is an empty list — never the first served harness.
+    expect(probe.snapshot.hosts).toEqual([]);
+  });
+
+  it('registers a DSH bundle repository from the dsh tab instead of refusing it', async () => {
+    sandboxHome();
+    const app = fastify();
+    registerHarnessRoutes(app, { marketplaceFetch: fakeFetch({ tree: dshTree, packageJson: bundleJson }) });
+    const added = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/plugins/dsh/sources',
+      payload: { url: 'owner/repo' },
+    });
+    expect(added.statusCode).toBe(200);
+    expect((JSON.parse(added.body) as { reason?: string }).reason).toBe('registered');
+  });
+});
+
+describe('form detection is a UNION of the directory and the root manifest', () => {
+  /** The bug this pins: detection used to short-circuit on a host's directory default, so a
+   *  repository shipping the VENDOR-DOCUMENTED root manifest alone (kimi, openclaw) was refused —
+   *  and hosts with a catalog-only form (universal, omp) had no detectable form at all. */
+  async function hostsFor(tree: { path: string; type: string }[], extra: Record<string, string> = {}): Promise<string[]> {
+    sandboxHome();
+    const entry = { slug: 'probe-union', repo: 'owner/repo', enabled: true, addedAt: 0, rescan: { enabled: false, intervalMs: 86_400_000 } };
+    const probe = await probeMarketplace(entry, fakeFetch({ tree, ...extra }), { persist: false, hosts: allHostProbes() });
+    expect(probe.ok).toBe(true);
+    return probe.ok ? probe.snapshot.hosts : [];
+  }
+
+  it('detects a root manifest even when the same host also declares a form directory', async () => {
+    expect(await hostsFor([{ path: 'kimi.plugin.json', type: 'blob' }], { kimiJson: JSON.stringify({ name: 'pony-kimi' }) })).toContain('kimi');
+    expect(await hostsFor([{ path: 'openclaw.plugin.json', type: 'blob' }], { pluginJson: JSON.stringify({ id: 'pony-claw' }) })).toContain('openclaw');
+    // The directory remains a form too (vendor fallback for kimi).
+    expect(await hostsFor([{ path: '.kimi-plugin/plugin.json', type: 'blob' }])).toContain('kimi');
+  });
+
+  it('detects catalog-keyed hosts: universal reads `.agents/plugins`, omp reads `.omp-plugin`', async () => {
+    expect(await hostsFor([{ path: '.agents/plugins/marketplace.json', type: 'blob' }])).toContain('universal');
+    expect(await hostsFor([{ path: '.omp-plugin/marketplace.json', type: 'blob' }])).toContain('omp');
+  });
+
+  it('detects omp on a claude-form repository — the vendor documents that fallback', async () => {
+    const hosts = await hostsFor([{ path: '.claude-plugin/marketplace.json', type: 'blob' }]);
+    expect(hosts).toContain('claude');
+    expect(hosts).toContain('omp');
+  });
+});
 
   it('accepts every operator spelling of a GitHub repository, and only those', () => {
     for (const input of [

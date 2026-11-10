@@ -68,9 +68,11 @@ export interface CopyRecord {
   rootId: string;
   /**
    * Absolute on-disk path for a copy we materialized. For an `external` copy this is an OPAQUE
-   * IDENTITY TOKEN (`<canonicalKey>#<harness>`), NOT a filesystem path — see `external`.
+   * IDENTITY TOKEN (`<canonicalKey>#<harness>[@<profile>]`), NOT a filesystem path — see `external`.
    */
   path: string;
+  /** Per-profile runtime store (DSH): the profile this copy was installed into. */
+  profile?: string;
   /**
    * Project-scope attribution: the repo this copy was installed for. An `external` copy carries an
    * opaque identity token in `path`, so this is the ONLY way to attribute such a copy to a project.
@@ -160,6 +162,8 @@ export interface CopyView {
   rootId: string;
   /** Identity token, not a location, when `external` is true. */
   path: string;
+  /** Per-profile runtime store (DSH): the profile this copy belongs to. */
+  profile?: string;
   /** Set on project-scope copies — the only project attribution for an external token copy. */
   projectRoot?: string;
   /** Package-manager-managed (no own path) — the console shows "managed by the runtime", never a path. */
@@ -171,7 +175,7 @@ export interface CopyView {
    * Skill copies only: every host whose skills roots resolve to this directory, owner FIRST.
    *
    * `host` answers ownership (one directory, one owner — install/claims/removal), this answers
-   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to fourteen runtimes). Absent for
+   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to fifteen runtimes). Absent for
    * config-shaped copies, where the file IS the landing and its host is the only reader.
    */
   readers?: HarnessHostId[];
@@ -261,7 +265,10 @@ export type DiscoveredRemoval =
   | { op: 'drop-entry'; file: string; container: string; entry: string }
   | { op: 'drop-server'; file: string; container: string; entry: string }
   /** A CLI-materialized landing: removal runs the runtime's own verb (§D8.13), never a file edit. */
-  | { op: 'cli-remove'; host: HarnessHostId; entry: string };
+  | { op: 'cli-remove'; host: HarnessHostId; entry: string }
+  /** An installed package whose runtime store is package-manager-owned (DSH): removal runs the
+   *  runtime's own package-manager verb, which also deselects the bundle. */
+  | { op: 'plugin-remove'; host: HarnessHostId; entry: string; profile?: string };
 
 export interface DiscoveredArtifact {
   /**
@@ -304,6 +311,9 @@ export interface DiscoveredArtifact {
    * known, and ABSENT only when it is not — a row without it cannot be removed from this console.
    */
   removal?: DiscoveredRemoval;
+  /** DSH only: `false` = the package is a dependency but is not selected in
+   *  `dsh.profile.bundles`; absent on every other host. */
+  enabled?: boolean;
 }
 
 export interface InventoryResponse {

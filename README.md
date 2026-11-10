@@ -104,13 +104,16 @@ ocr stop                # Stop running gateway daemon
 ocr restart             # Restart gateway daemon
 
 # Client integrations (one-command setup)
-ocr setup opencode      # Hook OpenCode to route via OCR
-ocr setup claude        # Hook Claude Code / Desktop to route via OCR
+ocr setup claude        # Hook Claude Code to route via OCR
 ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
-ocr setup pi            # Hook Pi coding agent to route via OCR
-ocr setup kimi          # Hook Kimi CLI to route via OCR
-ocr setup openclaw      # Hook OpenClaw to route via OCR
 ocr setup cursor-proxy  # Hook Cursor via the OCR forward proxy + Cursor Gateway plugin
+ocr setup dsh           # Hook DeepSeek Harness to route via OCR
+ocr setup opencode      # Hook OpenCode to route via OCR
+ocr setup pi            # Hook Pi coding agent to route via OCR
+ocr setup openclaw      # Hook OpenClaw to route via OCR
+ocr setup omp           # Hook OMP (oh-my-pi) to route via OCR
+ocr setup kimi          # Hook Kimi Code CLI to route via OCR
+ocr setup grok          # Hook Grok CLI to route via OCR
 ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + qoder-gateway plugin
 
 # Launch through the OCR-managed launchers (after setup)

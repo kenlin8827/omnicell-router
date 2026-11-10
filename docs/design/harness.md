@@ -38,7 +38,7 @@ pick (an unknown or missing segment is replaced, never pushed, so a stale bookma
 valid). The rail's TITLE is fixed — one column header, `HARNESS`, on all three pages, because it is the
 same control everywhere. What the pick MEANS differs, and the hint under the rail says which: on
 Plugins the runtime is the artifact's identity; on MCP it is the config landing the install fans out
-from; on Skills it is a READER — fourteen runtimes load one `.agents/skills` tree, so the rail narrows to
+from; on Skills it is a READER — fifteen runtimes load one `.agents/skills` tree, so the rail narrows to
 "what this runtime can load" while writes stay owner-only (`skillReaders()` / `skillOwner()`,
 ADR-0015 §D2).
 
@@ -64,11 +64,10 @@ string for. A browse answer's `note` follows the same rule through its `noteCode
 
 Chip ORDER is the registry array order, so it is a deliberate choice and not an accident of the
 list: the market opens on the first enabled+browsable source, and the array's principle is
-low-noise first — the order follows how far a row's claim reaches. Two built-in directories remain
-(owner decision, 2026-10-31, ADR-0015 §D6): ClawHub for skills and pi.dev for plugins, each a
-catalog whose row IS the artifact; operator git marketplaces are FEDERATED into the same answer,
-not chips of their own (§D12). GitHub and npm survive as INSTALL RESOLVERS, never as discovery
-chips. A disabled
+low-noise first — the order follows how far a row's claim reaches. Built-in directories are code,
+not a closed list (owner decision revised 2026-11-10): ClawHub + skills.sh for skills, pi.dev +
+dsh-plugin.net for plugins; operator git marketplaces are FEDERATED into the same answer, not chips
+of their own (§D12). GitHub and npm survive as INSTALL RESOLVERS, never as discovery chips. A disabled
 chip, when one exists, also sorts behind the live ones: a dead chip in front of a working
 catalogue reads as "the market is broken".
 
@@ -154,7 +153,7 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
   badges in the header; nothing is card-only or list-only, so a bug reproduces in both.
 - The **host tag is a row field, not page chrome.** A pinned page shows every row the selected
   runtime can *load*, while ownership stays per copy: one skill sits in the shared `.agents/skills`
-  tree (`Universal`, read by fourteen runtimes) and another in the runtime's own directory (that runtime
+  tree (`Universal`, read by fifteen runtimes) and another in the runtime's own directory (that runtime
   only). Dropping the tag because "the page is already pinned" makes a reader-scoped row look
   runtime-scoped, so it renders in both layouts, labelled with the host catalog's own name and
   tooltipped with the copy's real path.
@@ -167,8 +166,8 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
 ## 4. Host × kind matrix
 
 `√` supported · `(CLI)` the landing is materialized by the runtime's own command, its config is
-read-only observation · `—` not applicable. Counts: 18 hosts in the catalog, 15 with a skills
-location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 11 with a plugin landing.
+read-only observation · `—` not applicable. Counts: 18 hosts in the catalog, 16 with a skills
+location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 12 with a plugin landing.
 
 | host | skills | mcp | plugins | notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -177,7 +176,7 @@ location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 11 with a p
 | claude | √ | √ (CLI) | √ | `claude mcp add-json … --scope user` → `~/.claude.json`; project `.mcp.json` is read-only; `claude plugin install <id> --scope user\|project` |
 | codex | √ | √ (CLI) | √ | `codex mcp add` → `~/.codex/config.toml` (TOML, read-only, global-only); marketplace chain `codex plugin …` |
 | pi | √ | √ | √ | `~/.pi/agent/mcp.json` · `mcpServers`; `pi install npm:<spec>` runs npm lifecycle scripts |
-| dsh | — | — | — | profile-based runtime; no verified landing |
+| dsh | √ | — | √ | skills: `$DSH_HOME/skills` / `.dsh/skills` — plus the shared tree; plugins: profile-based runtime: `dsh plugin --profile <name> add <spec>`; record `$DSH_HOME/profiles/<name>/package.json` · `dsh.profile.bundles`, filtered by `dependencies`; the console offers every initialized profile, default `web`; `desktop` uses the desktop-bundled launcher and requires the app to be fully quit |
 | omp | √ | √ | √ | `~/.omp/agent/mcp.json` + project `.omp/mcp.json`; marketplace chain + loose `.omp/extensions` roots |
 | cursor | √ | — | √ | `/add-plugin {plugin}` — interactive chain, displayed at gate 3 and never spawned |
 | gemini-cli | √ | — | — | `~/.gemini/skills` / `.gemini/skills` — plus the shared tree |
@@ -196,8 +195,8 @@ holds for `cursor-proxy` — its harness host is `cursor`, the artifact landing,
 (Qoder has no harness host yet). Hosts are **not** `SupportedClient`: VS Code/Zed/Windsurf remain
 artifact hosts only, and welding the two vocabularies would pollute the traffic domain (ADR-0015 §D2).
 
-**A host is a reader, not a location.** Fourteen hosts read the project `.agents/skills` tree and
-fourteen read the global one (claude is the only skills host outside that shared set), so one
+**A host is a reader, not a location.** Fifteen hosts read the project `.agents/skills` tree and
+fifteen read the global one (claude is the only skills host outside that shared set), so one
 directory has many readers and exactly one owner: the first adapter in registry
 order that resolves to that path (`skillOwner()` in `adapters/index.ts`). Installation, the inventory
 scan and the console all apply that rule. Without it the same directory is recorded as `codex` by an
@@ -297,6 +296,7 @@ type CopyState = {
   host: HostId;                        // harness host, NOT SupportedClient (ADR-0015 §D2)
   rootId: string;                      // display hint only; absolute `path` is the identity
   path: string;                        // reconcile key (claims.json is keyed by this)
+  profile?: string;                    // per-profile runtime store (DSH): web / desktop / custom
   state: 'clean' | 'dirty' | 'missing' | 'foreign' | 'untracked';
   placement: 'materialized' | 'verified' | 'unverified';   // orthogonal axis, not a state
   contentHash?: string;
@@ -373,7 +373,8 @@ All under the existing `/api/admin/*` auth + CSRF gate. Reads are cheap; every w
 | `POST /install` | resolve + write | MCP / plugin answer `confirm_required` with the plan first |
 | `POST /plan` | dry run, `action: 'remove'` | returns `planId` + ops; writes nothing; 10-minute TTL |
 | `POST /apply` | execute a removal plan | 409 when stale / unknown / needs `discardLocalEdits` |
-| `POST /translate` | one description | cache-backed, via the gateway's own surface |
+| `POST /translate` | one description, or a README with `format: 'markdown'` | cache-backed, via the gateway's own surface; `refresh: true` (long-form only) skips the cached rendering and replaces it on success |
+| `POST /translate-stream` | README translation (`format: 'markdown'` only) with progress | NDJSON: `progress` (`{done,total}` after the chunk plan and each completed chunk), then one `result` or `error`; same cache/`refresh`/failure rules as `/translate` |
 | `POST /translate-batch` | ≤50 descriptions | per-item errors, never one failure for the batch |
 | `POST /translations` | cache-only seed for a page | no upstream call |
 | `GET /mcp/entry?harness&scope&name` | read one MCP entry for editing | `launch` + `setKeys` (keys whose value is not a bare `{env:X}`); never returns a secret value |
@@ -534,8 +535,9 @@ raw JSON ──► source normalizer ──► ArtifactSummary / ArtifactDetail 
 ```
 
 The rows below record measurements at the stated date. Sources removed by later amendments (npm
-browse, the MCP official registry, Smithery, skills.sh, the OpenCode catalogs) stay as measurement
-history only; ADR-0015 §D6 is the shipped set.
+browse, the MCP official registry, Smithery, the OpenCode catalogs) stay as measurement history
+only; skills.sh was re-shipped 2026-11-10 through the site's own boards (never its OIDC API), and
+ADR-0015 §D6 is the shipped set.
 
 Measured availability, 2026-10-24 — every adapter degrades to `unavailable` + reason instead of
 throwing:
@@ -609,7 +611,7 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
 | probe-driven `placement` | `materialized` → `verified` with evidence only |
 | runtime MCP status | opencode v2 `/api/mcp` joined by `(host, server)`; `needs_auth`/`failed` surface as row issues, healthy live states are displayed |
 | removal ops keyed on landing shape | `move-to-trash` / `drop-entry` / `drop-server` / `prune-record` |
-| source adapters: ClawHub (skills), pi.dev (plugins), operator git marketplaces (plugin/skill axes), GitHub + npm as install resolvers | ClawHub installs from its own versioned store; git marketplaces install through each runtime's own command chain |
+| source adapters: ClawHub + skills.sh (skills), pi.dev + dsh-plugin.net (plugins), operator git marketplaces (plugin/skill axes), GitHub + npm as install resolvers | ClawHub installs from its own versioned store; skills.sh installs through the GitHub writer; git marketplaces install through each runtime's own command chain; DSH rows land through the vendor CLI |
 | console: three pages, harness rail, installed/market tabs, list ⇄ card, description translation | — |
 
 Not shipped — see ADR-0015 "Deferred" for the authoritative list: MCP landings beyond
@@ -661,8 +663,8 @@ echoed verbatim.
 
 ## 13. Open items
 
-- `dsh` row of the matrix: `dsh.ts` is profile-based, and no landing has been verified for it.
-  Unsupported until one is.
+- `dsh` still has no verified MCP landing. Its skills landing is the vendor's filesystem provider
+  (shipped 2026-11-10) and its PLUGIN landing is per profile.
 - OpenCode global skills: `~/.agents/skills` (universal) or `~/.config/opencode/skills`; never both.
 - Additional MCP landings (claude, codex, cursor) must be verified against vendor docs before entering
   `HOSTS`; an unverified landing is not wired. opencode, pi and omp are wired (§ADR-0015 D8.13):
@@ -720,11 +722,11 @@ row the other tab lists — a tab switch is the shortest confirmation loop.
 
 | Concern | Decision |
 | :--- | :--- |
-| Live sources | ClawHub (skills; its catalog + its own search endpoint, rows installing from the registry's own versioned store) and pi.dev's catalog (plugins) — the two built-in directories. Operator git marketplaces federate into the plugin/skill answer. GitHub and npm are install resolvers only (ADR-0015 §D6) |
+| Live sources | ClawHub and skills.sh (skills; the latter reads the site's own boards + search and installs through the GitHub writer), pi.dev and dsh-plugin.net (plugins; DSH reads the reviewed snapshot plus the full `/plugins` catalogue — ≈5.9k repos with a root bundle manifest — decoded from its content-hashed `catalog-data-*.js` chunks, never evaluated) — the built-in directories. Operator git marketplaces federate into the plugin/skill answer. GitHub and npm are install resolvers only (ADR-0015 §D6) |
 | Normalized shape | the adapter maps a vendor payload to `MarketItem` once; the page never learns a vendor's JSON |
 | Search budget | anonymous GitHub search allows 10 req/min, and the backend cache is keyed by the EXACT query string — so a distinct prefix is a distinct upstream call. The field therefore spends nothing while typing: a query reaches the network only when COMMITTED (Enter, a source switch, clearing the field), and committing the already-shown query is not a new axis (a repeated Enter costs nothing). Committed queries are still cached 60 s |
 | Refresh | one button beside the source chips re-reads the SHOWN page under the current source/query/order — it sends `refresh=1`, and the backend evicts only that source's cache family before dispatch, so the rows come back newly read instead of 60 s old. The axis never changes (a re-search) and the page never moves (a re-page); while a read is in flight the button is disabled, so a second click cannot spend a second call |
-| Paging | the console asks for `page=N` and never slices a response itself: ClawHub pages by its own cursor, pi.dev by its own `&page`, and an operator source by its snapshot slice — a console page is a slice of the upstream pages it straddles. `hasMore` — never "the page looked full" — is what enables "next", and the spinner runs from the commit over the dimmed previous page rather than a blank one. Both tabs render the SHARED pager (`frontend/src/components/Pagination.tsx`, summary + size selector left, page buttons right) — a page never grows its own pager. A source whose count is only a WINDOW answers `totalScope: 'window'`: the pager keeps the number for its page buttons but hides the summary, because "1-24 / 200" must not read as the catalog's size. ClawHub's SEARCH is that case (its endpoint has no paging parameter); its catalog pages by cursor chain |
+| Paging | the console asks for `page=N` and never slices a response itself: ClawHub pages by its own cursor, pi.dev by its own `&page`, skills.sh by the site's 200-row board pages, and an operator source by its snapshot slice — a console page is a slice of the upstream pages it straddles. `hasMore` — never "the page looked full" — is what enables "next", and the spinner runs from the commit over the dimmed previous page rather than a blank one. Both tabs render the SHARED pager (`frontend/src/components/Pagination.tsx`, summary + size selector left, page buttons right) — a page never grows its own pager. A source whose count is only a WINDOW answers `totalScope: 'window'`: the pager keeps the number for its page buttons but hides the summary, because "1-24 / 200" must not read as the catalog's size. ClawHub's SEARCH and skills.sh's SEARCH are that case (their endpoints have no paging parameter); ClawHub's catalog and skills.sh's boards page by the source's own chain |
 | Download | one tarball request per install (`/repos/:r/tarball/:sha`), unpacked by a minimal tar reader. `raw.githubusercontent` is unreachable from some networks and the blob API would spend the whole hourly budget |
 | Order of writes | store first (content-addressed by commit), then the host copy, then the manifest — a failure leaves no half-installed skill |
 | Conflicts | an existing target or a foreign claim is refused before any download |

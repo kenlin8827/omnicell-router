@@ -197,6 +197,83 @@ describe('readMarketDetail', () => {  it('reads the npm document and never touch
 });
 
 /**
+ * A README often ships its own translations. When the console's language already has one, the
+ * author's edition is served AS the body — no model call, and no "translate" affordance in the
+ * console. The link is third-party content, so it is narrowed to a same-repo Markdown file.
+ */
+describe('readMarketDetail — localized README', () => {
+  const zhBody = `# 标题\n\n${'这是中文正文，用来证明脚本识别成功。'.repeat(12)}`;
+  const englishBody =
+    '<p align="center"><strong>English</strong> | <a href="README_ZH.md">简体中文</a></p>\n\n# Title\n\nThe English body.';
+  const npmDoc = (readme: string) => ({
+    name: 'pkg',
+    readme,
+    repository: { url: 'https://github.com/owner/repo.git' },
+    'dist-tags': { latest: '1.0.0' },
+    time: { modified: '2026-01-01T00:00:00Z' },
+  });
+
+  it('serves the linked Chinese edition instead of the English body', async () => {
+    const { impl, calls } = stubFetch((url) =>
+      url.includes('raw.githubusercontent.com') ? textResponse(zhBody) : jsonResponse(npmDoc(englishBody))
+    );
+    const detail = await readMarketDetail({ key: 'npm:pkg', lang: 'zh' }, impl);
+
+    expect(detail.readmeLang).toBe('zh');
+    expect(detail.readmePath).toBe('README_ZH.md');
+    expect(detail.readme).toContain('这是中文正文');
+    expect(detail.readme).not.toContain('The English body');
+    expect(calls.map((c) => c.url)).toContain('https://raw.githubusercontent.com/owner/repo/HEAD/README_ZH.md');
+  });
+
+  it('skips an unusable switcher link and follows the next same-repo edition', async () => {
+    // The first Chinese-labeled link is an external translation page, the second is the real file.
+    const readme =
+      '<a href="https://docs.example.com/zh">中文</a> | <a href="docs/README.zh-CN.md">简体中文</a>\n\n# Title\n\nThe English body.';
+    const { impl, calls } = stubFetch((url) =>
+      url.includes('README.zh-CN.md') ? textResponse(zhBody) : jsonResponse(npmDoc(readme))
+    );
+    const detail = await readMarketDetail({ key: 'npm:pkg', lang: 'zh' }, impl);
+
+    expect(detail.readmeLang).toBe('zh');
+    expect(detail.readmePath).toBe('docs/README.zh-CN.md');
+    expect(calls.map((c) => c.url)).toContain(
+      'https://raw.githubusercontent.com/owner/repo/HEAD/docs/README.zh-CN.md'
+    );
+  });
+
+  it('marks an already-Chinese README as Chinese without fetching anything else', async () => {
+    const { impl, calls } = stubFetch(() => jsonResponse(npmDoc(zhBody)));
+    const detail = await readMarketDetail({ key: 'npm:zh-pkg', lang: 'zh' }, impl);
+
+    expect(detail.readmeLang).toBe('zh');
+    expect(calls.length).toBe(1);
+  });
+
+  it('ignores a traversal path and a link into another repository', async () => {
+    for (const [key, href] of [
+      ['npm:traversal', '../secret.md'],
+      ['npm:foreign', 'https://github.com/evil/repo/blob/main/README_ZH.md'],
+    ] as const) {
+      const readme = `<a href="${href}">简体中文</a>\n\n# Title\n\nEnglish body.`;
+      const { impl, calls } = stubFetch(() => jsonResponse(npmDoc(readme)));
+      const detail = await readMarketDetail({ key, lang: 'zh' }, impl);
+      expect(detail.readmeLang).toBeUndefined();
+      expect(calls.length).toBe(1);
+    }
+  });
+
+  it('does not consult the language switcher when no console language is given', async () => {
+    const { impl, calls } = stubFetch(() => jsonResponse(npmDoc(englishBody)));
+    const detail = await readMarketDetail({ key: 'npm:no-lang' }, impl);
+
+    expect(detail.readmeLang).toBeUndefined();
+    expect(detail.readme).toContain('The English body');
+    expect(calls.length).toBe(1);
+  });
+});
+
+/**
  * ClawHub rows carry neither an npm name nor a repository, so their long-form half comes from the
  * registry's OWN per-skill record. These cases pin that path: the identity is the row's owner/slug
  * (never its `url`), the published SKILL.md loses its YAML frontmatter before rendering, and the

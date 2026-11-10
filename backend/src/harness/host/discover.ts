@@ -5,6 +5,8 @@ import TOML from '@iarna/toml';
 import JSON5 from 'json5';
 import { HOST_ADAPTERS, isPluginHost, isMcpHost } from './adapters/index.js';
 import { mcpContainerAt } from './mcp-entry.js';
+import { arrayAtPath, valueAtPath } from '../config-file.js';
+import { oneLine } from '../common/text.js';
 import type { ExtSource } from './adapters/types.js';
 import type {
   CopyView,
@@ -241,26 +243,153 @@ function lockVersions(sources: ExtSource[], deps: DiscoveryDeps): Map<string, st
  * scan-length regression. Without it a machine full of runtime-installed plugins renders as a wall
  * of blank cards even though every one of them documents itself on disk.
  */
+function packageDirs(source: ExtSource, name: string): string[] {
+  const stores = source.nodeModules
+    ? Array.isArray(source.nodeModules)
+      ? source.nodeModules
+      : [source.nodeModules]
+    : source.lockPath
+      ? [path.join(path.dirname(source.lockPath), 'node_modules')]
+      : [];
+  return stores.map((store) => path.join(store, name));
+}
+
+function installedManifest(
+  source: ExtSource,
+  name: string,
+  deps: DiscoveryDeps
+): Record<string, unknown> | null {
+  for (const dir of packageDirs(source, name)) {
+    if (!deps.exists(dir)) continue;
+    try {
+      return deps.readJson(path.join(dir, 'package.json')) as Record<string, unknown> | null;
+    } catch {
+      // an unreadable manifest falls through to the next store
+    }
+  }
+  return null;
+}
+
 function packageDescription(source: ExtSource, name: string, deps: DiscoveryDeps): string | null {
-  if (!source.lockPath) return null;
+  const pkg = installedManifest(source, name, deps);
+  return pkg ? oneLine(pkg.description) : null;
+}
+
+/**
+ * A runtime store path segment: a package name or `@scope/name`. Separators, drive letters and
+ * `..` are not package names and are NEVER joined into a filesystem path.
+ */
+const PACKAGE_NAME = /^(?:@[\w.-]+\/)?[\w.-]+$/;
+
+/**
+ * The installed-store one-liner for a plugin whose manifest record carries none.
+ *
+ * A native-marketplace / git-backed install records no registry line (the runtime owns the clone),
+ * and an `external` copy's `path` is an identity token, not a location — so without this fallback
+ * the tracked row has no prose even though the runtime's own store holds the package's
+ * `package.json`. `discoverPlugins` already reads that manifest for the rows it reports; a TRACKED
+ * row is deliberately excluded from that scan, so this asks the same stores directly.
+ *
+ * Local reads only, first hit wins. Covers every shape discovery itself can describe:
+ *   · a declared package store (`nodeModules` or a `lockPath`'s sibling store), and
+ *   · a map store (`installed_plugins.json`) whose entry names the install path.
+ * Config-array / loose-dir rows hold no package of their own, so they have nothing to read.
+ *
+ * `profile` narrows a per-profile store (DSH); `nativeKey` is the runtime's own
+ * `<plugin>@<marketplace>` identity, the exact key a map store is written under.
+ */
+export function storeDescription(
+  sources: readonly ExtSource[],
+  harness: HarnessHostId,
+  names: readonly string[],
+  opts: { profile?: string; nativeKey?: string } = {},
+  deps: DiscoveryDeps = FS_DEPS
+): string | null {
+  const safeNames = names.filter(
+    (name) => PACKAGE_NAME.test(name) && !name.split('/').some((part) => part === '.' || part === '..')
+  );
+  const stores = sources.filter(
+    (source) => source.host === harness && (opts.profile === undefined || source.profile === opts.profile)
+  );
+  for (const source of stores) {
+    if (source.containerShape === 'map') {
+      const description = mapStoreDescription(source, safeNames, opts.nativeKey, deps);
+      if (description) return description;
+      continue;
+    }
+    if (source.nodeModules === undefined && source.lockPath === undefined) continue;
+    for (const name of safeNames) {
+      const description = packageDescription(source, name, deps);
+      if (description) return description;
+    }
+  }
+  return null;
+}
+
+/**
+ * Description for one member of a MAP-shaped runtime store (claude's
+ * `installed_plugins.json`): the entry's `installPath` holds the installed copy's own manifest.
+ * The exact `nativeKey` wins; a name match is the fallback when the runtime wrote a different
+ * marketplace spelling than the record captured.
+ */
+function mapStoreDescription(
+  source: ExtSource,
+  names: readonly string[],
+  nativeKey: string | undefined,
+  deps: DiscoveryDeps
+): string | null {
+  if (!deps.exists(source.path)) return null;
+  let parsed: unknown;
   try {
-    const dir = path.join(path.dirname(source.lockPath), 'node_modules', name);
-    if (!deps.exists(dir)) return null;
-    const pkg = deps.readJson(path.join(dir, 'package.json')) as { description?: unknown } | null;
-    return oneLine(pkg?.description);
+    parsed = deps.readJson(source.path);
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const container = Array.isArray(source.key) ? source.key[0] : source.key;
+  const map = container ? valueAtPath(parsed as Record<string, unknown>, container) : undefined;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
+  const wanted = new Set(names);
+  const pluginOf = (storeKey: string): string => {
+    const at = storeKey.lastIndexOf('@');
+    return at > 0 ? storeKey.slice(0, at) : storeKey;
+  };
+  const entries = Object.entries(map as Record<string, unknown>);
+  const named = entries.filter(([storeKey]) => wanted.has(pluginOf(storeKey)));
+  const exact = nativeKey ? entries.find(([storeKey]) => storeKey === nativeKey) : undefined;
+  const candidates = exact ? [exact, ...named] : named;
+  for (const [, value] of candidates) {
+    const entry = mapEntry(value);
+    if (!entry?.installPath) continue;
+    const description = mapDescription(entry.installPath, deps);
+    if (description) return description;
+  }
+  return null;
 }
 
-/** A card line, not a README: fold whitespace and cap the length. */
-const DESCRIPTION_MAX = 300;
+/**
+ * One member of a map-shaped store. Claude's v2 file holds an ARRAY per plugin (one entry per
+ * scope); its v1 file holds a single object. The first entry carrying an install path answers.
+ */
+function mapEntry(value: unknown): { version?: string; installPath?: string } | null {
+  let first: { version?: string; installPath?: string } | null = null;
+  for (const candidate of Array.isArray(value) ? value : [value]) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const entry = candidate as { version?: unknown; installPath?: unknown };
+    const parsed = {
+      ...(typeof entry.version === 'string' && entry.version ? { version: entry.version } : {}),
+      ...(typeof entry.installPath === 'string' && entry.installPath ? { installPath: entry.installPath } : {}),
+    };
+    if (parsed.installPath) return parsed;
+    first ??= parsed;
+  }
+  return first;
+}
 
-function oneLine(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const text = raw.replace(/\s+/g, ' ').trim();
-  if (!text) return null;
-  return text.length > DESCRIPTION_MAX ? `${text.slice(0, DESCRIPTION_MAX - 1)}…` : text;
+/** Exact version from the installed manifest — the fallback for a store whose lock is not npm JSON. */
+function packageVersion(source: ExtSource, name: string, deps: DiscoveryDeps): string | undefined {
+  const pkg = installedManifest(source, name, deps);
+  return pkg && typeof pkg.version === 'string' && pkg.version ? pkg.version : undefined;
 }
 
 /** Header-comment budget: enough for every license banner and doc block seen in the wild. */
@@ -338,6 +467,7 @@ function copyFor(source: ExtSource, parsed: ParsedSpec): CopyView {
     host: source.host,
     rootId: 'default',
     path: `${parsed.canonicalKey}#${source.host}`,
+    ...(source.profile ? { profile: source.profile } : {}),
     external: true,
     state: 'untracked',
     placement: 'unverified',
@@ -358,7 +488,16 @@ function copyFor(source: ExtSource, parsed: ParsedSpec): CopyView {
  */
 function removalFor(source: ExtSource, spec: string, container?: string): DiscoveredRemoval | undefined {
   if (source.kind === 'loose-dir') return { op: 'trash-path', path: spec };
-  if (!container) return undefined;
+  if (!container) {
+    return source.unselectedBundles
+      ? {
+          op: 'plugin-remove',
+          host: source.host,
+          entry: spec,
+          ...(source.profile ? { profile: source.profile } : {}),
+        }
+      : undefined;
+  }
   // A MAP-shaped runtime store owns its members (claude's `installed_plugins.json`): dropping the
   // member by its store key (NO spec prefix) is the exact inverse of the runtime's own install.
   if (source.containerShape === 'map') return { op: 'drop-server', file: source.path, container, entry: spec };
@@ -371,7 +510,8 @@ function rowFor(
   version: string | undefined,
   spec: string,
   container?: string,
-  description: string | null = null
+  description: string | null = null,
+  enabled?: boolean
 ): DiscoveredArtifact {
   const removal = removalFor(source, spec, container);
   return {
@@ -387,6 +527,7 @@ function rowFor(
     observedFrom: source.path,
     ...(version ? { version } : {}),
     canonicalKey: parsed.canonicalKey,
+    ...(enabled === undefined ? {} : { enabled }),
     ...(removal ? { removal } : {}),
   };
 }
@@ -405,10 +546,10 @@ export function discoverPlugins(
   const deps: DiscoveryDeps = { ...FS_DEPS, ...(opts.deps ?? {}) };
   const tracked = new Set(opts.tracked ?? []);
   /**
-   * `host|name` for git-marketplace artifacts this environment installed. A MAP-shaped store keys
-   * its members by `<name>@<marketplace>`, and the marketplace name need not be recorded in older
-   * manifests — the plugin NAME is the one shared fact, so it is the fallback that keeps one
-   * `claude plugin install` from being counted twice.
+   * `host|name` for plugin artifacts the manifest recorded under an identity a store cannot repeat
+   * (a marketplace's `<name>@<marketplace>` key, or a `github:` spec). The store names the package;
+   * the plugin NAME is then the only shared fact, so it is the fallback that keeps one install from
+   * being counted twice, on both the map-shaped and the declared-container paths.
    */
   const trackedNames = new Set(opts.trackedNames ?? []);
   const versions = lockVersions(sources, deps);
@@ -417,7 +558,7 @@ export function discoverPlugins(
   /** One manifest read per (store, package), not per source entry that names it. */
   const described = new Map<string, string | null>();
   const describe = (source: ExtSource, name: string): string | null => {
-    const key = `${source.lockPath ?? ''}|${name}`;
+    const key = `${source.nodeModules ?? source.lockPath ?? ''}|${name}`;
     if (!described.has(key)) described.set(key, packageDescription(source, name, deps));
     return described.get(key) ?? null;
   };
@@ -425,14 +566,21 @@ export function discoverPlugins(
   const add = (source: ExtSource, spec: string, container?: string): void => {
     const parsed = parsePluginSpec(spec);
     if (!parsed) return;
+    // A declared store repeats only the PACKAGE NAME, never the identity the manifest recorded for
+    // a Git or marketplace install (`github:owner/repo`, `mp-*`). The name is then the one shared
+    // fact; without it, one install answers twice — tracked by its market identity, discovered by
+    // its bare name (`trackedNames`).
+    if (trackedNames.has(trackedKey(source.host, parsed.name))) return;
     const key = trackedKey(source.host, parsed.canonicalKey);
     if (tracked.has(key) || seen.has(key)) return;
     seen.add(key);
-    const version = parsed.version ?? versions.get(parsed.name);
+    const version =
+      parsed.version ?? versions.get(parsed.name) ?? packageVersion(source, parsed.name, deps);
     // Two different self-descriptions, by what the row points at: a package in the runtime's store
     // answers from its own manifest, a local path from the material itself (`localDescription`).
     const description = parsed.local ? localDescription(parsed.local, deps) : describe(source, parsed.name);
-    rows.push(rowFor(source, parsed, version, spec, container, description));
+    const enabled = source.unselectedBundles ? container !== undefined : undefined;
+    rows.push(rowFor(source, parsed, version, spec, container, description, enabled));
   };
 
   for (const source of sources) {
@@ -465,12 +613,13 @@ export function discoverPlugins(
     // version and the on-disk install path whose own manifest answers the description.
     if (source.containerShape === 'map') {
       const container = Array.isArray(source.key) ? source.key[0] : source.key;
-      const map = (parsed as Record<string, unknown>)[container ?? ''] as Record<string, unknown> | undefined;
+      const map = container ? valueAtPath(parsed as Record<string, unknown>, container) : undefined;
       if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
       const prefix = source.specPrefix ?? `${source.host}:`;
       for (const [storeKey, value] of Object.entries(map)) {
-        if (!storeKey.includes('@') || !value || typeof value !== 'object') continue;
-        const entry = value as { version?: unknown; installPath?: unknown };
+        if (!storeKey.includes('@')) continue;
+        const entry = mapEntry(value);
+        if (!entry) continue;
         const parsedSpec = parsePluginSpec(`${prefix}${storeKey}`);
         if (!parsedSpec) continue;
         // The gateway installed a git-marketplace plugin under a market key this store cannot name;
@@ -479,18 +628,38 @@ export function discoverPlugins(
         const key = trackedKey(source.host, parsedSpec.canonicalKey);
         if (tracked.has(key) || seen.has(key)) continue;
         seen.add(key);
-        const description = mapDescription(String(entry.installPath ?? ''), deps);
-        rows.push(rowFor(source, parsedSpec, typeof entry.version === 'string' ? entry.version : undefined, storeKey, container, description));
+        const description = mapDescription(entry.installPath ?? '', deps);
+        rows.push(rowFor(source, parsedSpec, entry.version, storeKey, container, description));
       }
       continue;
     }
     // Every container spelling the host declares is read: v1 `plugin[]` and v2 `plugins[]` hold the
-    // same signal, and a machine migrated mid-version may still carry both.
+    // same signal, and a machine migrated mid-version may still carry both. A dot-path container
+    // names a nested array (DSH's `dsh.profile.bundles`), and `filterBy` keeps a bundle list's
+    // in-box entries out: only names the runtime also installed as dependencies are plugins.
     const containers = source.key === undefined ? [] : Array.isArray(source.key) ? source.key : [source.key];
+    const filterNode = source.filterBy ? valueAtPath(parsed as Record<string, unknown>, source.filterBy) : undefined;
+    const filterKeys =
+      filterNode && typeof filterNode === 'object' && !Array.isArray(filterNode)
+        ? new Set(Object.keys(filterNode as Record<string, unknown>))
+        : null;
     for (const container of containers) {
-      const entries = (parsed as Record<string, unknown>)[container];
-      if (!Array.isArray(entries)) continue;
-      for (const entry of entries) if (typeof entry === 'string') add(source, entry, container);
+      const entries = arrayAtPath(parsed as Record<string, unknown>, container);
+      if (!entries) continue;
+      for (const entry of entries) {
+        if (typeof entry !== 'string') continue;
+        if (filterKeys && !filterKeys.has(entry)) continue;
+        add(source, entry, container);
+      }
+    }
+    // A disabled bundle keeps its dependency but leaves the selected list. Its installed manifest
+    // still declares `dsh.bundle`, so it remains an installed plugin — just not an active layer.
+    if (source.unselectedBundles && filterKeys) {
+      for (const name of filterKeys) {
+        const pkg = installedManifest(source, name, deps);
+        if (!pkg || valueAtPath(pkg, source.unselectedBundles) === undefined) continue;
+        add(source, name);
+      }
     }
   }
 

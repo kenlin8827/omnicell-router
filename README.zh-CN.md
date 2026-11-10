@@ -101,13 +101,16 @@ ocr stop                # 停止后台网关守护进程
 ocr restart             # 重启后台网关
 
 # 一键挂载各大客户端代理
-ocr setup opencode      # 将 OpenCode 路由无缝接入 OCR
 ocr setup claude        # 将 Claude Code / Claude Desktop 接入 OCR
 ocr setup codex         # 将 Codex / OpenAI CLI 接入 OCR
-ocr setup pi            # 将 Pi 接入 OCR
-ocr setup kimi          # 将 Kimi CLI 接入 OCR
-ocr setup openclaw      # 将 OpenClaw 接入 OCR
 ocr setup cursor-proxy  # 通过 OCR 前置代理 + Cursor Gateway 插件接入 Cursor
+ocr setup dsh           # 将 DeepSeek Harness 接入 OCR
+ocr setup opencode      # 将 OpenCode 路由无缝接入 OCR
+ocr setup pi            # 将 Pi 接入 OCR
+ocr setup openclaw      # 将 OpenClaw 接入 OCR
+ocr setup omp           # 将 OMP (oh-my-pi) 接入 OCR
+ocr setup kimi          # 将 Kimi Code CLI 接入 OCR
+ocr setup grok          # 将 Grok CLI 接入 OCR
 ocr setup qoder-proxy   # 通过 OCR 前置代理 + qoder-gateway 插件接入 Qoder
 
 # 通过 OCR 托管的启动脚本运行（setup 之后）

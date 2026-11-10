@@ -268,6 +268,9 @@ describe('hosts route (capability flags)', () => {
     expect(byId.get('codex')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
     // A host with no MCP landing answers `false` — the flag is a capability, not a path guess.
     expect(byId.get('universal')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: false });
+    // DSH reads the vendor filesystem provider's roots; its plugin landing is per profile and it
+    // still has no verified MCP surface.
+    expect(byId.get('dsh')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: true });
     // Grok lands plugins through its native CLI chain (`grok plugin install <url> --trust`) and
     // MCP through its own CLI (§D8.13); kimi merges its dedicated mcp.json. OpenClaw matches
     // grok's shape (CLI-materialized MCP, `plugins install <spec> --force`) but is global-only —

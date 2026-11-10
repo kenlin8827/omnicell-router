@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getOcrHomeDir } from '../../cli/paths.js';
 import { resolveEnvName } from '../../config/env.js';
-import { readConfigJson, writeConfigJson } from '../config-file.js';
+import { arrayAtPath, readConfigJson, setArrayAtPath, valueAtPath, writeConfigJson } from '../config-file.js';
 import { parsePluginSpec } from './discover.js';
 import { HOST_ADAPTERS, adapterFor, isPluginHost, isMcpHost } from './adapters/index.js';
-import { defaultExec } from './writers/plugin.js';
+import { defaultExec, type ExecImpl } from './writers/plugin.js';
 import { echoArgv, MCP_CLI_TIMEOUT_MS } from './writers/mcp.js';
 import { mcpContainerAt, readMcpLandingFile } from './mcp-entry.js';
 import { recordApply } from './ledger.js';
@@ -44,6 +44,8 @@ export interface RemoveTarget {
   scope: 'global' | 'project';
   host: string;
   path: string;
+  /** Per-profile runtime store (DSH): the profile this target was read from. */
+  profile?: string;
 }
 
 export interface RemoveItem {
@@ -67,7 +69,7 @@ export interface PlanAction {
    */
   op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server' | 'cli-remove';
   /** The runtime's own remove command, for a `cli-remove` op — echoed by the plan, run by the apply. */
-  cli?: { echo: string; runs: { command: string; args: string[] }[] };
+  cli?: { echo: string; runs: { command: string; args: string[] }[]; timeoutMs?: number };
   /** Project-scope CLI verbs locate their landing by the subprocess's working directory. */
   cwd?: string;
   /** The manifest copy key: a resolved path, or the identity token for an `external` copy. */
@@ -233,20 +235,69 @@ function dropTargets(
 }
 
 /**
- * The declaration files a package-manager landing reads (pi's `settings.json`), when the adapter
- * names any. The first EXISTING file wins: a version ladder may list a v2 path and a legacy fallback.
+ * The declaration files a package-manager landing reads (pi's `settings.json`, DSH's per-profile
+ * `package.json`), when the adapter names any. Every EXISTING file is returned: a version ladder
+ * may list a v2 path and a legacy fallback, and a per-profile runtime has one file per profile.
  */
-function declaredFile(
+function declaredFiles(
   host: HarnessHostId,
   scope: HarnessScope,
   projectRoot: string | undefined
-): { file: string; container: string } | null {
+): { file: string; container: string }[] {
   const adapter = adapterFor(host);
-  if (!isPluginHost(adapter)) return null;
+  if (!isPluginHost(adapter)) return [];
   const declarations = adapter.declarations({ projectRoot: projectRoot ?? process.cwd() }, scope);
-  if (declarations.length === 0) return null;
-  const chosen = declarations.find((d) => fs.existsSync(d.file)) ?? declarations[0]!;
-  return { file: chosen.file, container: chosen.key };
+  // A per-profile runtime (DSH) records one declaration per profile. Its declaration inverse must
+  // visit ALL of them: an artifact installed in two profiles is one row, and dropping only the
+  // console's default profile would leave the other copy live.
+  return declarations.filter((d) => fs.existsSync(d.file)).map((d) => ({ file: d.file, container: d.key }));
+}
+
+/**
+ * The runtime's own package-removal verb for a declared dependency, when the host has one.
+ *
+ * A declaration edit alone is not a package-manager uninstall: it unhooks the bundle but leaves the
+ * dependency and its bytes in place. DSH's `removeBundle` does both (deselect, then `pnpm remove`),
+ * so the plan runs this command alone. `null` = the host has no such surface (pi's
+ * `packages[]` removal is declaration-only); `error` = the surface exists but is unavailable now.
+ */
+function pluginRemoveSpec(
+  host: HarnessHostId,
+  name: string,
+  scope: HarnessScope,
+  profile: string | undefined
+): { command: string; args: string[]; timeoutMs?: number } | { error: string } | null {
+  const adapter = adapterFor(host);
+  if (!isPluginHost(adapter) || !adapter.pluginRemoveArgs) return null;
+  const spec = adapter.pluginRemoveArgs(name, scope, profile);
+  return spec.ok
+    ? {
+        command: spec.command,
+        args: spec.args,
+        ...(spec.timeoutMs === undefined ? {} : { timeoutMs: spec.timeoutMs }),
+      }
+    : { error: spec.reason };
+}
+
+/** True when one of the host's declarations still lists the package as a dependency. */
+function dependencyInstalled(
+  host: HarnessHostId,
+  scope: HarnessScope,
+  profile: string | undefined,
+  entry: string,
+  projectRoot: string | undefined
+): boolean {
+  const adapter = adapterFor(host);
+  if (!isPluginHost(adapter)) return false;
+  for (const declaration of adapter.declarations({ projectRoot: projectRoot ?? process.cwd() }, scope)) {
+    if (profile && path.basename(path.dirname(declaration.file)) !== profile) continue;
+    if (!fs.existsSync(declaration.file)) continue;
+    const parsed = readConfigJson(declaration.file);
+    if (!parsed.ok) continue;
+    const deps = valueAtPath(parsed.config, 'dependencies');
+    if (deps && typeof deps === 'object' && !Array.isArray(deps) && Object.hasOwn(deps, entry)) return true;
+  }
+  return false;
 }
 
 /**
@@ -270,8 +321,8 @@ function matchingEntries(
   if (!parsed.ok) return null;
   const found: { container: string; entries: string[] }[] = [];
   for (const container of containers) {
-    const arr = parsed.config[container];
-    if (!Array.isArray(arr)) continue;
+    const arr = arrayAtPath(parsed.config, container);
+    if (!arr) continue;
     const entries = arr.filter((entry): entry is string => typeof entry === 'string');
     const exact = entries.filter((entry) => parsePluginSpec(entry)?.canonicalKey === artifact.canonicalKey);
     const chosen =
@@ -335,6 +386,44 @@ export function planRemove(items: RemoveItem[], opts?: { projectRoot?: string })
           artifactId: null,
           dirty: false,
           exists: true,
+        });
+        continue;
+      }
+      if (removal.op === 'plugin-remove') {
+        // An installed package that is not in the selected bundle list (DSH disabled bundle). The
+        // vendor's remove verb owns both records, so this is one CLI action, not a file edit.
+        const scope = item.copies[0]?.scope ?? 'global';
+        const profile = removal.profile ?? item.copies[0]?.profile;
+        if (!dependencyInstalled(removal.host, scope, profile, removal.entry, opts?.projectRoot)) {
+          blocked.push({
+            path: removal.entry,
+            code: 'not-found',
+            message: `'${removal.entry}' is not a dependency in profile '${profile ?? 'default'}'`,
+          });
+          continue;
+        }
+        const remove = pluginRemoveSpec(removal.host, removal.entry, scope, profile);
+        if (!remove) {
+          blocked.push({ path: removal.entry, code: 'not-found', message: `host '${removal.host}' has no package-removal verb` });
+          continue;
+        }
+        if ('error' in remove) {
+          blocked.push({ path: removal.entry, code: 'not-found', message: remove.error });
+          continue;
+        }
+        actions.push({
+          op: 'cli-remove',
+          path: `${removal.host}:${removal.entry}`,
+          host: removal.host,
+          artifactId: null,
+          dirty: false,
+          exists: false,
+          entry: removal.entry,
+          cli: {
+            echo: echoArgv(remove.command, remove.args),
+            runs: [{ command: remove.command, args: remove.args }],
+            ...(remove.timeoutMs === undefined ? {} : { timeoutMs: remove.timeoutMs }),
+          },
         });
         continue;
       }
@@ -414,12 +503,41 @@ export function planRemove(items: RemoveItem[], opts?: { projectRoot?: string })
       const isServer = removal.op === 'drop-server';
       const present = isServer
         ? !!container && removal.entry in container
-        : Array.isArray(parsed.config[removal.container]) && (parsed.config[removal.container] as unknown[]).includes(removal.entry);
+        : (arrayAtPath(parsed.config, removal.container) ?? []).includes(removal.entry);
       if (!present) {
         blocked.push({
           path: removal.file,
           code: 'not-found',
           message: `'${removal.entry}' is no longer in ${removal.container}${isServer ? '' : '[]'}`,
+        });
+        continue;
+      }
+      const pluginRemove =
+        descriptorHost && removal.op === 'drop-entry'
+          ? pluginRemoveSpec(descriptorHost, removal.entry, descriptorScope, item.copies[0]?.profile)
+          : null;
+      if (pluginRemove && 'error' in pluginRemove) {
+        blocked.push({ path: removal.file, code: 'not-found', message: pluginRemove.error });
+        continue;
+      }
+      if (pluginRemove) {
+        // The vendor's remove verb is `removeBundle`: it deselects the bundle AND removes the
+        // dependency. Repeating the declaration edit here would race that command on the same
+        // package.json (and could hide an orphaned dependency if pnpm then failed).
+        actions.push({
+          op: 'cli-remove',
+          path: path.resolve(removal.file),
+          host: descriptorHost!,
+          artifactId: null,
+          dirty: false,
+          // The file is the declaration, not the package location; the apply must not fingerprint it.
+          exists: false,
+          entry: removal.entry,
+          cli: {
+            echo: echoArgv(pluginRemove.command, pluginRemove.args),
+            runs: [{ command: pluginRemove.command, args: pluginRemove.args }],
+            ...(pluginRemove.timeoutMs === undefined ? {} : { timeoutMs: pluginRemove.timeoutMs }),
+          },
         });
         continue;
       }
@@ -478,28 +596,71 @@ export function planRemove(items: RemoveItem[], opts?: { projectRoot?: string })
           external.push({ path: copy.path, host: copy.host });
           continue;
         }
-        const declared = declaredFile(copy.host, copy.scope, copy.projectRoot ?? opts?.projectRoot);
-        const keys = declared && artifact ? matchingEntries(declared.file, [declared.container], artifact) : null;
-        if (declared && keys === null && artifact) {
-          blocked.push({ path: declared.file, code: 'unreadable', message: `cannot parse ${declared.file}; refusing a lossy rewrite` });
+        const pluginRemove =
+          artifact?.kind === 'plugin'
+            ? pluginRemoveSpec(copy.host, artifact.name, copy.scope, copy.profile)
+            : null;
+        if (pluginRemove && 'error' in pluginRemove) {
+          blocked.push({ path: copy.path, code: 'not-found', message: pluginRemove.error });
           continue;
         }
-        if (declared && keys && keys.length > 0 && artifact) {
+        if (pluginRemove && artifact) {
+          // `removeBundle` owns BOTH records: it deselects the bundle and runs `pnpm remove`. A
+          // manual drop first would make the command re-add nothing but leave the dependency if pnpm
+          // failed — the exact half-state this path must not create. Resolved BEFORE the declaration
+          // scan: that scan is the fallback for hosts without a removal verb, and for a per-profile
+          // runtime it visits EVERY profile's manifest — an unrelated corrupt one must not block a
+          // removal this verb performs on its own profile alone.
+          actions.push({
+            op: 'cli-remove',
+            path: copy.path,
+            host: copy.host,
+            artifactId: item.artifactId ?? null,
+            dirty: false,
+            exists: false,
+            entry: artifact.name,
+            cli: {
+              echo: echoArgv(pluginRemove.command, pluginRemove.args),
+              runs: [{ command: pluginRemove.command, args: pluginRemove.args }],
+              ...(pluginRemove.timeoutMs === undefined ? {} : { timeoutMs: pluginRemove.timeoutMs }),
+            },
+          });
+          external.push({ path: copy.path, host: copy.host });
+          continue;
+        }
+        const declarations = artifact ? declaredFiles(copy.host, copy.scope, copy.projectRoot ?? opts?.projectRoot) : [];
+        const drops: { file: string; container: string; entry: string }[] = [];
+        let unreadable: string | null = null;
+        for (const declaration of declarations) {
+          const keys = matchingEntries(declaration.file, [declaration.container], artifact!);
+          if (keys === null) {
+            unreadable = declaration.file;
+            break;
+          }
           for (const group of keys) {
             for (const entry of group.entries) {
-              actions.push({
-                op: 'drop-entry',
-                path: copy.path,
-                file: declared.file,
-                container: group.container,
-                entry,
-                host: copy.host,
-                artifactId: item.artifactId ?? null,
-                dirty: false,
-                // The token is not a location: nothing to stat, and the apply must not fingerprint it.
-                exists: false,
-              });
+              drops.push({ file: declaration.file, container: group.container, entry });
             }
+          }
+        }
+        if (unreadable) {
+          blocked.push({ path: unreadable, code: 'unreadable', message: `cannot parse ${unreadable}; refusing a lossy rewrite` });
+          continue;
+        }
+        if (drops.length > 0) {
+          for (const drop of drops) {
+            actions.push({
+              op: 'drop-entry',
+              path: copy.path,
+              file: drop.file,
+              container: drop.container,
+              entry: drop.entry,
+              host: copy.host,
+              artifactId: item.artifactId ?? null,
+              dirty: false,
+              // The token is not a location: nothing to stat, and the apply must not fingerprint it.
+              exists: false,
+            });
           }
           external.push({ path: copy.path, host: copy.host });
           continue;
@@ -672,11 +833,13 @@ export type ApplyResult =
 function applyDropEntry(file: string, container: string, entry: string): { ok: true } | { ok: false; reason: string } {
   const parsed = readConfigJson(file);
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
-  const arr = parsed.config[container];
-  if (!Array.isArray(arr)) return { ok: false, reason: `${container} is not an array in ${file}` };
+  const arr = arrayAtPath(parsed.config, container);
+  if (!arr) return { ok: false, reason: `${container} is not an array in ${file}` };
   const next = arr.filter((value) => value !== entry);
   if (next.length === arr.length) return { ok: false, reason: `'${entry}' is no longer in ${container}[]` };
-  parsed.config[container] = next;
+  if (!setArrayAtPath(parsed.config, container, next)) {
+    return { ok: false, reason: `${container} is not an array in ${file}` };
+  }
   return writeConfigJson(file, parsed.config);
 }
 
@@ -716,7 +879,7 @@ function externalPruneMessage(count: number, declared: boolean): string {
  * `drop-entry` / `drop-server` edit a runtime's config file through `createBackup` + `safeWriteJson`
  * — the same discipline that wrote the member — and never release the path's claim: the file still
  */
-export async function applyRemove(planId: string, opts: { discardLocalEdits?: boolean } = {}): Promise<ApplyResult> {
+export async function applyRemove(planId: string, opts: { discardLocalEdits?: boolean; execImpl?: ExecImpl } = {}): Promise<ApplyResult> {
   pruneExpired();
   const plan = plans.get(planId);
   if (!plan) return { ok: false, code: 'plan_unknown', message: 'plan expired or never existed' };
@@ -734,6 +897,7 @@ export async function applyRemove(planId: string, opts: { discardLocalEdits?: bo
     };
   }
 
+  const run = opts.execImpl ?? defaultExec;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const trashDir = path.join(trashRoot(), `${stamp}-${plan.planId.slice(0, 8)}`);
   const removed: string[] = [];
@@ -749,7 +913,7 @@ export async function applyRemove(planId: string, opts: { discardLocalEdits?: bo
       // with the runtime, and a "not found" answer from the CLI means the record was already stale.
       if (action.cli) {
         for (const step of action.cli.runs) {
-          const result = await defaultExec(step.command, step.args, MCP_CLI_TIMEOUT_MS, action.cwd);
+          const result = await run(step.command, step.args, action.cli.timeoutMs ?? MCP_CLI_TIMEOUT_MS, action.cwd);
           if (result.code !== 0) {
             return { ok: false, code: 'apply_failed', message: `${action.cli.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` };
           }

@@ -192,7 +192,7 @@ async function buildModelEntries(ids: string[], contextWindow?: number): Promise
 export class PiClientAdapter implements ClientAdapter {
   name = 'pi' as const;
   hookKind = 'config' as const;
-  displayName = 'Pi Coding Agent';
+  displayName = 'Pi';
 
   getConfigPath(): string {
     return path.join(os.homedir(), '.pi', 'agent', 'models.json');

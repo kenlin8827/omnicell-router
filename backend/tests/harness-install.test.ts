@@ -310,6 +310,21 @@ describe('installArtifact orchestration', () => {
     expect(result.artifactId).toBe('plugin:pi:npm:pi-demo');
     expect(readManifest().artifacts.find((a) => a.id === 'plugin:pi:npm:pi-demo')?.nativeKey).toBeUndefined();
   });
+
+  it('records the market row description for a native-marketplace install', async () => {
+    const result = await installArtifact({
+      key: 'github:acme/demo-plugin',
+      kind: 'plugin',
+      hosts: ['antigravity'],
+      scope: 'global',
+      marketplace: { repo: 'acme/demo-plugin', plugin: 'demo-plugin', name: 'demo-plugin' },
+      description: '  A demo\nplugin  ',
+      confirm: true,
+      execImpl: async () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+    expect(result.ok).toBe(true);
+    expect(readManifest().artifacts.find((a) => a.canonicalKey === 'github:acme/demo-plugin')?.description).toBe('A demo plugin');
+  });
 });
 
 describe('install route (host validation at the boundary)', () => {

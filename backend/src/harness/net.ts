@@ -42,6 +42,59 @@ export function describeFetchFailure(subject: string, error: unknown): string {
 }
 
 /**
+ * The most a text-shaped upstream answer may materialize in the gateway process.
+ *
+ * Every reader here parses a PAGE of rows (a board, a catalog chunk, a rendered HTML list), never an
+ * archive, so the largest honest answer is a few MiB. A body past this is refused instead of being
+ * buffered: an upstream that is broken or hostile must not be able to spend the gateway's memory,
+ * and the timeout alone does not bound bytes — a fast sender can stream far more than a slow one.
+ */
+export const MAX_UPSTREAM_TEXT_BYTES = 8 * 1024 * 1024;
+
+/** A body read that refused to exceed the cap, or the whole text. */
+export type CappedText =
+  | { ok: true; text: string }
+  | { ok: false; bytes: number; cap: number };
+
+/**
+ * Read a response body as text, refusing anything past `cap`.
+ *
+ * A declared `Content-Length` over the cap short-circuits before a byte is buffered; a chunked
+ * answer is counted as it streams and cancelled the moment it crosses the cap, so the overshoot is
+ * one chunk. Callers translate `{ ok: false }` into their own `FailureReason` — the vocabulary
+ * stays theirs, exactly like `fetchWithRetry`.
+ */
+export async function readTextCapped(res: Response, cap = MAX_UPSTREAM_TEXT_BYTES): Promise<CappedText> {
+  const declared = Number(res.headers.get('content-length') ?? '');
+  if (Number.isFinite(declared) && declared > cap) return { ok: false, bytes: declared, cap };
+  if (!res.body) return { ok: true, text: await res.text() };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > cap) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, bytes, cap };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return { ok: true, text: text + decoder.decode() };
+  } finally {
+    // A cancelled or failed stream may already have released the lock.
+    try {
+      reader.releaseLock();
+    } catch {
+      /* nothing left to release */
+    }
+  }
+}
+
+/**
  * How a market read retries a FAILED answer, declared once for every reader.
  *
  * A market read is an idempotent GET, so ANY failed answer earns another ask while attempts and
@@ -84,6 +137,19 @@ export const MARKET_RETRY: RetryPolicy = {
   factor: 2,
   budgetMs: 30_000,
   timeoutMs: 6_000,
+};
+
+/**
+ * The OPTIONAL enrichment policy: one retry, 5 s per attempt, 10 s total. For a read that makes an
+ * answer better but must never hold the answer itself (e.g. a README's localized edition) — a hard
+ * hang expires long before the market policy's 30 s would let the dialog open.
+ */
+export const OPTIONAL_READ_RETRY: RetryPolicy = {
+  attempts: 2,
+  firstDelayMs: 300,
+  factor: 2,
+  budgetMs: 10_000,
+  timeoutMs: 5_000,
 };
 
 /** An attempt is not worth starting with less than this left — it would time out on arrival. */

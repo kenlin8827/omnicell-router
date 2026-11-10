@@ -97,7 +97,6 @@ describe('translateMarkdown', () => {
       if ('code' in result) return;
       expect(result.text).toBe(doc);
       expect(result.cached).toBe(true);
-      expect(result.truncated).toBe(false);
       expect(called).toBe(false);
     } finally {
       globalThis.fetch = original;

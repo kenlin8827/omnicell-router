@@ -1,14 +1,15 @@
 import type { HarnessSourceView } from '../types.js';
 import { CLAWHUB_VIEW } from '../skill/clawhub.js';
 import { PI_DEV_VIEW } from '../plugin/adapters/pi-dev.js';
+import { DSH_PLUGIN_NET_VIEW } from '../plugin/adapters/dsh-plugin-net.js';
+import { SKILLS_SH_VIEW } from '../skill/skills-sh.js';
 
 /**
  * Default built-in market source views — one registry per axis, never a shared pool.
  *
  * The scope split follows the axis split:
- * - SKILL_VIEWS is GLOBAL. ClawHub is the skill axis' one curated directory (ADR-0015 §D6, owner
- *   decision) and declares no `hosts`: the same skill market serves every harness, so a skill
- *   registry is never a harness's private default.
+ * - SKILL_VIEWS is GLOBAL. ClawHub and skills.sh declare no `hosts`: the same skill directory
+ *   serves every harness, so a skill registry is never a harness's private default.
  * - MCP_DEFAULT_VIEWS and PLUGIN_DEFAULT_VIEWS are the PER-HARNESS tier: an MCP server or plugin
  *   lands in a specific runtime, so a view belongs to the harnesses whose landing can take it
  *   (`hosts`, resolved by `plugin/builtin.ts` for the console and the federated market). MCP has no
@@ -17,9 +18,9 @@ import { PI_DEV_VIEW } from '../plugin/adapters/pi-dev.js';
  * Operator-configured `mp-<slug>` sources join each axis' listings by what their snapshot carries;
  * they are synced bidirectionally with local agent environments.
  */
-export const SKILL_VIEWS: HarnessSourceView[] = [CLAWHUB_VIEW];
+export const SKILL_VIEWS: HarnessSourceView[] = [CLAWHUB_VIEW, SKILLS_SH_VIEW];
 export const MCP_DEFAULT_VIEWS: HarnessSourceView[] = [];
-export const PLUGIN_DEFAULT_VIEWS: HarnessSourceView[] = [PI_DEV_VIEW];
+export const PLUGIN_DEFAULT_VIEWS: HarnessSourceView[] = [PI_DEV_VIEW, DSH_PLUGIN_NET_VIEW];
 
 /** Every built-in view, in console chip order: the global skill directory, then the per-harness tier. */
 export const SOURCES: HarnessSourceView[] = [...SKILL_VIEWS, ...MCP_DEFAULT_VIEWS, ...PLUGIN_DEFAULT_VIEWS];

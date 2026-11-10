@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop, getRunningPid, getDaemonInfo } from './daemon.js';
-import { setupClient, teardownClient } from './clients/index.js';
+import { setupClient, teardownClient, CLIENT_TARGETS } from './clients/index.js';
 import { defaultGatewayPort, type ClientActionWarning } from './clients/base.js';
 import { runCursorLauncher } from './clients/cursor-proxy.js';
 import { runQoderLauncher } from './clients/qoder-proxy.js';
@@ -71,7 +71,7 @@ ${C.bold}USER INTERFACE:${C.reset}
 ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.magenta}ocr setup opencode${C.reset}      Hook OpenCode to route via local OCR gateway
   ${C.magenta}ocr setup opencode-proxy${C.reset} Hook OpenCode (proxy mode) via the OCR forward proxy
-  ${C.magenta}ocr setup claude${C.reset}        Hook Claude Code / Desktop to route via local OCR gateway
+  ${C.magenta}ocr setup claude${C.reset}        Hook Claude Code to route via local OCR gateway
   ${C.magenta}ocr setup codex${C.reset}         Hook Codex / OpenAI-compatible CLI to local OCR gateway
   ${C.magenta}ocr setup pi${C.reset}            Hook Pi coding agent (models.json provider) to local OCR gateway
   ${C.magenta}ocr setup dsh${C.reset}           Hook DeepSeek Harness (web profile patch) to local OCR gateway
@@ -421,7 +421,7 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok | kimi | openclaw | cursor-proxy | qoder-proxy>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <${CLIENT_TARGETS}>\``);
         process.exit(1);
       }
 
@@ -447,7 +447,7 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok | kimi | openclaw | cursor-proxy | qoder-proxy>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <${CLIENT_TARGETS}>\``);
         process.exit(1);
       }
       const launchHint = launchVerbHint(client, 'teardown');

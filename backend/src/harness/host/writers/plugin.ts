@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
+import { DSH_TIMEOUT_MS } from '../timeouts.js';
 import { hashFile } from '../../hash.js';
 import { adapterFor, isPluginHost } from '../adapters/index.js';
 import type { PluginHost, PluginMarketplaceInstall } from '../adapters/types.js';
@@ -64,12 +65,16 @@ export interface PluginApplyRequest {
   webApiDeps?: KimiWebDeps;
   /** Hard timeout for one subprocess run. */
   timeoutMs?: number;
+  /** Live mirror of subprocess output (the console's install-log view). */
+  onOutput?: (chunk: string, stream: 'stdout' | 'stderr') => void;
   /**
    * A GIT-BACKED row whose runtime installs it natively (ADR-0015 §D9 amendment): the writer runs
    * the host's own marketplace chain — register the repository, then install `<plugin>@<name>` —
    * instead of resolving a payload. `plugin`/`name` come from the source's own manifest.
    */
   marketplace?: { repo: string; plugin: string; name: string };
+  /** Per-profile plugin store (DSH): the profile this install lands in. Absent = adapter default. */
+  profile?: string;
 }
 
 export type ExecImpl = (
@@ -77,7 +82,9 @@ export type ExecImpl = (
   args: string[],
   timeoutMs: number,
   /** Working directory for the child — the install's `projectRoot` when a scope needs one. */
-  cwd?: string
+  cwd?: string,
+  /** Live mirror of the child's output for the console's install-log view. */
+  onOutput?: (chunk: string, stream: 'stdout' | 'stderr') => void
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** One argv the plan will run, echoed verbatim (`echo` is what gate 3 shows). */
@@ -215,12 +222,22 @@ function marketplaceRuns(
       return { ok: false, message: `incomplete marketplace command template '${argv.join(' ')}'` };
     }
     const items = filled as string[];
-    if (!items.every(safeArg)) return { ok: false, message: `unsafe marketplace command token in '${items.join(' ')}'` };
     const [command, ...args] = items as [string, ...string[]];
-    runs.push({ command, args, echo: items.join(' ') });
+    // The executable is adapter-supplied (a resolved absolute launcher may carry spaces and
+    // backslashes), so only the ARGS are operator/template data bounded by `safeArg`.
+    if (!command || /["\r\n]/.test(command) || !args.every(safeArg)) {
+      return { ok: false, message: `unsafe marketplace command token in '${items.join(' ')}'` };
+    }
+    runs.push({ command, args, echo: shellCommand(command, args) });
   }
   if (runs.length === 0) return { ok: false, message: 'marketplace chain is empty' };
   return { ok: true, runs };
+}
+
+/** Display/spawn spelling of one command line: a Windows launcher path with spaces must be quoted. */
+export function shellCommand(command: string, args: string[]): string {
+  const head = process.platform === 'win32' && /\s/.test(command) ? `"${command}"` : command;
+  return [head, ...args].join(' ');
 }
 
 /**
@@ -230,15 +247,27 @@ function marketplaceRuns(
  * `cli/clients/opencode-proxy.ts:runOpenCode`, and safe here because `safeSpec` already rejects
  * anything shell-shaped. Other platforms spawn directly with an argv array.
  */
-export function defaultExec(command: string, args: string[], timeoutMs: number, cwd?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+export function defaultExec(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  cwd?: string,
+  onOutput?: (chunk: string, stream: 'stdout' | 'stderr') => void
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const isWin = process.platform === 'win32';
   const finalArgs = isWin ? args.map((a) => (/\s"%^&|<>()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)) : args;
+  const spawnCommand = isWin && /\s/.test(command) ? `"${command}"` : command;
   // A scope-aware install (`claude --scope project`, `pi install --local`, `omp --scope project`)
   // resolves its landing from the child's cwd — anchor it to the verified project root, not to this
   // process's cwd (which is the gateway's, never the operator's project).
-  const child = spawn(command, finalArgs, {
+  const child = spawn(spawnCommand, finalArgs, {
     shell: isWin,
     windowsHide: true,
+    // Never hand the child an open stdin pipe. The vendor CLI forwards its own stdin to pnpm
+    // (`stdin: 'inherit'`), so a prompt — module purge, build approval — would wait forever on a
+    // pipe the gateway never writes or closes. `ignore` is the non-interactive contract these
+    // gated installs promise; a prompt then fails fast instead of hanging the request.
+    stdio: ['ignore', 'pipe', 'pipe'],
     // POSIX: a new process group, so the timeout can kill the whole tree (a package manager
     // spawns children that keep the pipes open). Windows has no group kill — `taskkill /T` below.
     ...(isWin ? {} : { detached: true }),
@@ -248,6 +277,13 @@ export function defaultExec(command: string, args: string[], timeoutMs: number, 
     let stdout = '';
     let stderr = '';
     let settled = false;
+    /** Set before the kill, so a `close` caused by the kill still reports the timeout, not exit 1. */
+    let timedOut = false;
+    const timeoutResult = (): { code: number; stdout: string; stderr: string } => ({
+      code: -1,
+      stdout,
+      stderr: `${stderr}\n${command}: timed out after ${timeoutMs}ms`,
+    });
     const finish = (result: { code: number; stdout: string; stderr: string }): void => {
       if (settled) return;
       settled = true;
@@ -267,23 +303,33 @@ export function defaultExec(command: string, args: string[], timeoutMs: number, 
       }
     };
     const timer = setTimeout(() => {
+      timedOut = true;
       killTree();
       // A shim that outlives its parent can hold the pipes open past the kill; the timeout is the
       // contract, so settle it here rather than hanging the install on a `close` that may not come.
-      setTimeout(
-        () => finish({ code: -1, stdout, stderr: `${stderr}\n${command}: timed out after ${timeoutMs}ms` }),
-        5000
-      ).unref?.();
+      setTimeout(() => finish(timeoutResult()), 5000).unref?.();
     }, timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+    child.stdout.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stdout += text;
+      onOutput?.(text, 'stdout');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      onOutput?.(text, 'stderr');
+    });
     child.on('error', (e: NodeJS.ErrnoException) => {
       // ENOENT here means the harness CLI itself is not on PATH — say that, not just `spawn failed`.
+      if (timedOut) {
+        finish(timeoutResult());
+        return;
+      }
       const message = e.code === 'ENOENT' ? `${command}: executable not found on PATH (${e.message})` : e.message;
       finish({ code: -1, stdout, stderr: `${stderr}${message}` });
     });
     child.on('close', (code) => {
-      finish({ code: code ?? -1, stdout, stderr });
+      finish(timedOut ? timeoutResult() : { code: code ?? -1, stdout, stderr });
     });
   });
 }
@@ -326,7 +372,7 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
     return { ok: true, targets };
   }
   if (req.marketplace) {
-    const chain = (adapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
+    const chain = (adapter as Partial<PluginHost>)?.marketplaceSpec?.(req.profile) ?? null;
     // No CLI chain: fall through to the webapi landing below when the runtime has one (kimi
     // web) — the repository URL is derived from the canonical key there. Refuse only when the
     // host has neither landing.
@@ -401,7 +447,7 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
   const ext = adapter;
   const spec = safeSpec(req.spec);
   if (!spec) return { ok: false, code: 'bad_request', message: `invalid package spec '${req.spec}'` };
-  const landing = ext.writeTarget({ projectRoot: req.projectRoot ?? process.cwd() }, req.scope);
+  const landing = ext.writeTarget({ projectRoot: req.projectRoot ?? process.cwd() }, req.scope, req.profile);
   if (!landing.ok) {
     targets.push({ host, op: 'config', refused: landing.reason, added: false });
     return { ok: true, targets };
@@ -413,14 +459,14 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
       targets.push({ host, op: 'config', refused: `host '${host}' declares no package-install grammar`, added: false });
       return { ok: true, targets };
     }
-    const args = landing.args(spec, req.scope);
+    const args = landing.args(spec, req.scope, req.profile);
     targets.push({
       host,
       op: 'subprocess',
       command: landing.command,
       args,
-      echo: [landing.command, ...args].join(' '),
-      runs: [{ command: landing.command, args, echo: [landing.command, ...args].join(' ') }],
+      echo: shellCommand(landing.command, args),
+      runs: [{ command: landing.command, args, echo: shellCommand(landing.command, args) }],
       added: true,
     });
     return { ok: true, targets };
@@ -444,13 +490,18 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
   return { ok: true, targets };
 }
 
+/** Opaque identity token for a runtime-store copy; the profile keeps per-profile stores distinct. */
+function externalToken(req: PluginApplyRequest, host: string): string {
+  return `${req.canonicalKey}#${host}${req.profile ? `@${req.profile}` : ''}`;
+}
+
 export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyResult> {
   const plan = planPlugin(req);
   if (!plan.ok) return { ok: false, code: plan.code, message: plan.message };
   // The harness is part of the identity: the same package installed into opencode and `pi` is two
   // artifacts, because each is code against a different plugin API (ADR-0015 §D2).
   const artifactId = `plugin:${req.harness}:${req.canonicalKey}`;
-  const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = req.timeoutMs ?? (req.harness === 'dsh' ? DSH_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const run = req.execImpl ?? defaultExec;
 
   const copies: { host: HarnessHostId; path?: string; external?: boolean; projectRoot?: string }[] = [];
@@ -491,7 +542,7 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       // External token copies carry no path to attribute by — `projectRoot` is the only marker.
       copies.push({
         host: target.host,
-        path: `${req.canonicalKey}#${target.host}`,
+        path: externalToken(req, target.host),
         external: true,
         ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
       });
@@ -504,7 +555,7 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       const chain = target.runs ?? [{ command: target.command!, args: target.args ?? [], echo: target.echo! }];
       let failed = false;
       for (const step of chain) {
-        const result = await run(step.command, step.args, timeoutMs, req.projectRoot);
+        const result = await run(step.command, step.args, timeoutMs, req.projectRoot, req.onOutput);
         runs.push({ host: target.host, command: step.echo, code: result.code, stdout: result.stdout, stderr: result.stderr });
         if (result.code !== 0) {
           skipped.push({ host: target.host, code: 'upstream', message: `${step.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` });
@@ -518,7 +569,7 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       // The run log above is the audit trail.
       copies.push({
         host: target.host,
-        path: `${req.canonicalKey}#${target.host}`,
+        path: externalToken(req, target.host),
         external: true,
         ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
       });
@@ -564,7 +615,14 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
   const manifest = readManifest();
   const now = new Date().toISOString();
   const previous = manifest.artifacts.find((a) => a.id === artifactId);
-  const kept = (previous?.copies ?? []).filter((c) => !copies.some((item) => item.path && item.path === c.path));
+  const legacyToken = `${req.canonicalKey}#${req.harness}`;
+  const kept = (previous?.copies ?? []).filter(
+    (c) =>
+      !copies.some((item) => item.path && item.path === c.path) &&
+      // A pre-profile token meant the console's default target (`web`); a fresh web install
+      // replaces it instead of accumulating a duplicate copy.
+      !(req.profile === 'web' && c.external === true && c.path === legacyToken)
+  );
   const contentHash = firstConfigHash ?? `subprocess:${runs.map((r) => `${r.host}@${r.code}`).join(',')}`;
   manifest.artifacts = [
     ...manifest.artifacts.filter((a) => a.id !== artifactId),
@@ -601,8 +659,9 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
           scope: req.scope,
           host: item.host,
           rootId: 'default',
-          path: item.path ?? `${req.canonicalKey}#${item.host}`,
+          path: item.path ?? externalToken(req, item.host),
           ...(item.external ? { external: true } : {}),
+          ...(req.profile ? { profile: req.profile } : {}),
           ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
           contentHash,
           placement: 'materialized' as const,

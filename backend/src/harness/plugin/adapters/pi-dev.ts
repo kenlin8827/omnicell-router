@@ -3,7 +3,7 @@ import { cache, CACHE_TTL_MS, registerBrowseCache, registerBrowseView, toCatalog
 import { catalogRegistry } from '../../common/catalog-registry.js';
 import type { BrowseResult, HostProbe, MarketItem } from '../../common/market.js';
 import { repoSlug } from '../../common/npm-catalog.js';
-import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from '../../net.js';
+import { describeFetchFailure, fetchFailureReason, fetchWithRetry, readTextCapped, type FailureReason } from '../../net.js';
 import { getHostAdapter } from '../../host/index.js';
 import type { HarnessHostId, HarnessSourceView } from '../../types.js';
 import type { CatalogRow, CatalogPage, CatalogSort, CatalogSource } from '../types.js';
@@ -301,7 +301,16 @@ export async function fetchPiDevCatalog(
 
   let html: string;
   try {
-    html = await res.text();
+    const body = await readTextCapped(res);
+    if (!body.ok) {
+      return {
+        ok: false,
+        code: 'upstream',
+        reason: 'badPayload',
+        message: `pi.dev catalog answered more than ${body.cap} bytes — refused`,
+      };
+    }
+    html = body.text;
   } catch (e) {
     return { ok: false, code: 'upstream', reason: fetchFailureReason(e), message: describeFetchFailure('pi.dev catalog', e) };
   }

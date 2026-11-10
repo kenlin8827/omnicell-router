@@ -195,4 +195,183 @@ describe('discovered row descriptor', () => {
     if ('error' in plan) expect(plan.error).toContain('not a config landing');
     expect(readJson(file)).toEqual({ packages: [] });
   });
+
+  it('drops a DSH bundle from the nested profile list it was read from', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-harness-dsh-'));
+    const profile = path.join(home, 'profiles', 'web', 'package.json');
+    fs.mkdirSync(path.dirname(profile), { recursive: true });
+    fs.writeFileSync(
+      profile,
+      JSON.stringify(
+        {
+          dependencies: { 'dsh-hello-plugin': '^0.1.0', 'keep-plugin': '^2.0.0' },
+          dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-hello-plugin', 'keep-plugin'] } },
+        },
+        null,
+        2
+      )
+    );
+    const previous = process.env.DSH_HOME;
+    const previousCli = process.env.DSH_CLI;
+    process.env.DSH_HOME = home;
+    process.env.DSH_CLI = 'dsh';
+    try {
+      const plan = planRemove([
+        {
+          artifactId: null,
+          copies: [{ scope: 'global', host: 'dsh', path: 'npm:dsh-hello-plugin#dsh' }],
+          removal: { op: 'drop-entry', file: profile, container: 'dsh.profile.bundles', entry: 'dsh-hello-plugin' },
+        },
+      ]);
+      if ('error' in plan) throw new Error(plan.error);
+      // `removeBundle` deselects the bundle AND runs `pnpm remove`; the plan must not duplicate the
+      // declaration edit before the vendor command.
+      expect(plan.actions).toHaveLength(1);
+      expect(plan.actions[0]).toMatchObject({
+        op: 'cli-remove',
+        entry: 'dsh-hello-plugin',
+        cli: { runs: [{ command: 'dsh', args: ['plugin', '--profile', 'web', 'remove', 'dsh-hello-plugin'] }] },
+      });
+      const calls: { command: string; args: string[] }[] = [];
+      const removed = await applyRemove(plan.planId, {
+        execImpl: async (command, args) => {
+          calls.push({ command, args });
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      });
+      expect(removed.ok).toBe(true);
+      expect(calls).toEqual([{ command: 'dsh', args: ['plugin', '--profile', 'web', 'remove', 'dsh-hello-plugin'] }]);
+      const after = readJson(profile) as { dsh: { profile: { bundles: string[] } }; dependencies: Record<string, string> };
+      // The stub records the argv but does not run pnpm, so the file keeps both records here; the
+      // real vendor command (smoke-tested) rewrites the dependency and bundle list together.
+      expect(after.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-hello-plugin', 'keep-plugin']);
+      expect(after.dependencies).toEqual({ 'dsh-hello-plugin': '^0.1.0', 'keep-plugin': '^2.0.0' });
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+      if (previousCli === undefined) delete process.env.DSH_CLI;
+      else process.env.DSH_CLI = previousCli;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('removes a tracked DSH dependency through the vendor CLI as well as the bundle list', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-harness-dsh-tracked-'));
+    const profile = path.join(home, 'profiles', 'web', 'package.json');
+    fs.mkdirSync(path.dirname(profile), { recursive: true });
+    fs.writeFileSync(
+      profile,
+      JSON.stringify(
+        {
+          dependencies: { 'dsh-hello-plugin': '^0.1.0' },
+          dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-hello-plugin'] } },
+        },
+        null,
+        2
+      )
+    );
+    const previous = process.env.DSH_HOME;
+    const previousCli = process.env.DSH_CLI;
+    process.env.DSH_HOME = home;
+    process.env.DSH_CLI = 'dsh';
+    try {
+      const installed = await applyPlugin({
+        sourceId: 'manual',
+        canonicalKey: 'manual:dsh-hello-plugin',
+        spec: 'dsh-hello-plugin',
+        trust: 'manual',
+        harness: 'dsh',
+        scope: 'global',
+        profile: 'web',
+        execImpl: async () => ({ code: 0, stdout: '', stderr: '' }),
+      });
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+      const copy = findArtifact(installed.artifactId)!.copies[0]!;
+      expect(copy.external).toBe(true);
+      expect(copy.profile).toBe('web');
+
+      const plan = planRemove([
+        {
+          artifactId: installed.artifactId,
+          copies: [{ scope: 'global', host: 'dsh', path: copy.path, profile: 'web' }],
+        },
+      ]);
+      if ('error' in plan) throw new Error(plan.error);
+      expect(plan.actions.map((action) => action.op)).toEqual(['cli-remove']);
+
+      const calls: { command: string; args: string[] }[] = [];
+      const removed = await applyRemove(plan.planId, {
+        execImpl: async (command, args) => {
+          calls.push({ command, args });
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      });
+      expect(removed.ok).toBe(true);
+      expect(calls).toEqual([{ command: 'dsh', args: ['plugin', '--profile', 'web', 'remove', 'dsh-hello-plugin'] }]);
+      const after = readJson(profile) as { dsh: { profile: { bundles: string[] } } };
+      expect(after.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-hello-plugin']);
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+      if (previousCli === undefined) delete process.env.DSH_CLI;
+      else process.env.DSH_CLI = previousCli;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('removes an installed-but-disabled DSH bundle through the vendor CLI', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-harness-dsh-disabled-'));
+    const profile = path.join(home, 'profiles', 'web', 'package.json');
+    fs.mkdirSync(path.dirname(profile), { recursive: true });
+    fs.writeFileSync(
+      profile,
+      JSON.stringify(
+        {
+          dependencies: { 'dsh-sleeping-plugin': '^1.0.0', 'keep-plugin': '^2.0.0' },
+          dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'keep-plugin'] } },
+        },
+        null,
+        2
+      )
+    );
+    const previous = process.env.DSH_HOME;
+    const previousCli = process.env.DSH_CLI;
+    process.env.DSH_HOME = home;
+    process.env.DSH_CLI = 'dsh';
+    try {
+      const item = {
+        artifactId: null as string | null,
+        copies: [{ scope: 'global' as const, host: 'dsh', path: 'npm:dsh-sleeping-plugin#dsh@web', profile: 'web' }],
+        removal: { op: 'plugin-remove' as const, host: 'dsh' as const, entry: 'dsh-sleeping-plugin', profile: 'web' },
+      };
+      const plan = planRemove([item]);
+      if ('error' in plan) throw new Error(plan.error);
+      expect(plan.blocked).toEqual([]);
+      expect(plan.actions[0]).toMatchObject({
+        op: 'cli-remove',
+        entry: 'dsh-sleeping-plugin',
+        cli: { runs: [{ command: 'dsh', args: ['plugin', '--profile', 'web', 'remove', 'dsh-sleeping-plugin'] }] },
+      });
+      const calls: { command: string; args: string[] }[] = [];
+      const removed = await applyRemove(plan.planId, {
+        execImpl: async (command, args) => {
+          calls.push({ command, args });
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      });
+      expect(removed.ok).toBe(true);
+      expect(calls).toEqual([{ command: 'dsh', args: ['plugin', '--profile', 'web', 'remove', 'dsh-sleeping-plugin'] }]);
+
+      const forged = planRemove([{ ...item, removal: { ...item.removal, entry: 'not-installed' } }]);
+      expect('error' in forged).toBe(true);
+      if ('error' in forged) expect(forged.error).toContain('not a dependency');
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+      if (previousCli === undefined) delete process.env.DSH_CLI;
+      else process.env.DSH_CLI = previousCli;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

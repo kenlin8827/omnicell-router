@@ -15,7 +15,7 @@ import { ClientHookStatus } from '../types.js';
 export class ClaudeClientAdapter implements ClientAdapter {
   name = 'claude' as const;
   hookKind = 'config' as const;
-  displayName = 'Claude Code / Desktop';
+  displayName = 'Claude Code';
 
   getConfigPath(): string {
     const home = os.homedir();

@@ -120,6 +120,19 @@ describe('claude discovery — the MAP-shaped runtime store', () => {
     expect(row.copies[0]).toMatchObject({ host: 'claude', external: true, state: 'untracked' });
   });
 
+  it('reads v2 entries, which are an ARRAY of scope records per plugin', () => {
+    const installPath = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'postman', 'postman', '2.2.0');
+    const rows = discoverPlugins([claudeSource], {
+      deps: deps({
+        [INSTALLED]: { version: 2, plugins: { 'postman@postman': [{ scope: 'user', installPath }] } },
+        [path.join(installPath, 'package.json')]: { description: 'Work with Postman from your agent' },
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.name).toBe('postman');
+    expect(rows[0]!.description).toBe('Work with Postman from your agent');
+  });
+
   it('the removal inverse is a drop-server member drop of the runtime key (no prefix)', () => {
     const rows = discoverPlugins([claudeSource], { deps: deps({ [INSTALLED]: STORE }) });
     expect(rows[0]!.removal).toEqual({

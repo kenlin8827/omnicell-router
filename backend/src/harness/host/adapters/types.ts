@@ -7,7 +7,7 @@ import type { McpLaunch } from '../../spi.js';
  * (ADR-0015 §D3 R3, §D8.8).
  *
  * WHY capabilities instead of one fat `HarnessHost` with `list/install/uninstall × skill|mcp|ext`:
- * the capability matrix is wildly asymmetric. In the current catalog fifteen hosts have a skills
+ * the capability matrix is wildly asymmetric. In the current catalog sixteen hosts have a skills
  * location, EIGHT have a verified MCP landing (four file merges: opencode, pi, omp, kimi; four
  * CLI-materialized: claude, codex, grok, openclaw) and ELEVEN have a verified plugin landing (any
  * declared write path: local config, subprocess or marketplace chain). A nine-method flat interface would be 162
@@ -21,8 +21,8 @@ import type { McpLaunch } from '../../spi.js';
  * become a forwarder. The split is: **the adapter answers WHERE, the writer answers HOW.**
  *
  * WHY skills are not a host capability at all: a skill lands in a DIRECTORY, and one directory is
- * read by up to fourteen hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
- * would invite writing the same tree fourteen times; skills live on the location level
+ * read by up to fifteen hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
+ * would invite writing the same tree fifteen times; skills live on the location level
  * (`skillRoots` / `skillTarget` on this interface, aggregated by `skillLocationRoots`).
  *
  * WHY one adapter per VERSION is not modelled: `opencode` v1 and v2 differ in landing SPELLINGS
@@ -48,9 +48,12 @@ export interface ExtSource {
   kind: 'config-array' | 'declared' | 'loose-dir';
   /** The config/declaration file, or the loose-file directory. */
   path: string;
+  /** Per-profile runtime store (DSH): which profile this source file belongs to. */
+  profile?: string;
   /**
    * Container key(s) inside `path` — `plugin`/`plugins` for a config array, `packages` for a
-   * declaration. A list because a runtime may have renamed the key between majors.
+   * declaration. A list because a runtime may have renamed the key between majors. A DOT PATH
+   * (`dsh.profile.bundles`) names a nested array (DSH's per-profile bundle list).
    */
   key?: string | string[];
   /** Lock file resolving this source's `npm:` specs to the version actually installed. */
@@ -61,6 +64,23 @@ export interface ExtSource {
   /** Spec prefix grammar for a map store (`claude:`) — the canonicalKey prefix and the parse
    *  grammar the row's key obeys. */
   specPrefix?: string;
+  /**
+   * Object container whose KEYS gate this array's entries (`dependencies` for DSH): a bundle list
+   * also names IN-BOX bundles that are not installed packages, and only the dependency keys prove
+   * which entries are out-of-tree plugins.
+   */
+  filterBy?: string;
+  /** The directories whose `node_modules/<name>/package.json` answers an installed package's
+   *  exact version and description (a pnpm store writes YAML, not the npm lock this scan reads).
+   *  A list is a precedence ladder: a profile-local store first, a runtime-hoisted one second. */
+  nodeModules?: string | string[];
+  /**
+   * Also list installed packages that declare this dotted manifest key but are NOT in the
+   * selected container (DSH: `dsh.bundle`). A bundle disabled in the running app leaves its
+   * dependency installed and only disappears from `dsh.profile.bundles`; without this scan the
+   * console would show it as gone and could never remove it.
+   */
+  unselectedBundles?: string;
 }
 
 /** Everything an adapter needs to answer for a scope. */
@@ -92,7 +112,7 @@ export interface PluginSpec {
   subprocess?: string;
   /** The subprocess install's argument grammar (`claude plugin install <id> --scope user`). A host
    *  that declares `subprocess` but no grammar refuses npm specs — the writer never invents one. */
-  subprocessArgs?: (spec: string, scope: HarnessScope) => string[];
+  subprocessArgs?: (spec: string, scope: HarnessScope, profile?: string) => string[];
   /** The runtime's OWN marketplace install chain (ADR-0015 §D9 amendment, 2026-10-31): a git-backed
    *  plugin is installed by registering its repository as a marketplace and then installing
    *  `<plugin>@<marketplace>` — never by copying payload files. */
@@ -153,7 +173,7 @@ export type PluginWriteTarget =
       op: 'subprocess';
       command: string;
       /** The runtime's OWN argument grammar — the adapter spells it, the writer never invents one. */
-      args?: (spec: string, scope: HarnessScope) => string[];
+      args?: (spec: string, scope: HarnessScope, profile?: string) => string[];
     }
   | { ok: false; reason: string };
 
@@ -241,13 +261,30 @@ export interface PluginHost extends HostAdapter {
   /** Loose plugin directories the runtime loads files from directly, for one scope. */
   looseDirs(ctx: AdapterContext, scope: HarnessScope): string[];
   /** Where an install for this host + scope lands (or the refusal reason). */
-  writeTarget(ctx: AdapterContext, scope: HarnessScope): PluginWriteTarget;
+  writeTarget(ctx: AdapterContext, scope: HarnessScope, profile?: string): PluginWriteTarget;
   /** The runtime's native marketplace install chain, or null when it has no CLI form. Present on
    *  a host that can install a git-backed plugin by registering the repository as a marketplace. */
-  marketplaceSpec?(): PluginMarketplaceInstall | null;
+  marketplaceSpec?(profile?: string): PluginMarketplaceInstall | null;
   /** The runtime's local REST install API, or null when it has none. Present on a host whose
    *  vendor ships a loopback server exposing the same install manager as its TUI (kimi web). */
   webApiSpec?(): NonNullable<PluginSpec['webApi']> | null;
+  /**
+   * Runtimes whose plugin store is per PROFILE (DSH) list the targets the console may choose.
+   * Absent = one implicit landing. `exists:false` means the vendor CLI initializes it on first use.
+   */
+  installProfiles?(): { name: string; exists: boolean }[];
+  /** Validate a profile name the runtime's own CLI would accept. Absent = profiles are unsupported. */
+  pluginProfileError?(profile: string): string | undefined;
+  /**
+   * argv for REMOVING one installed package through the runtime's own package manager (DSH). The
+   * runtime owns the dependency record and its store, so a declared-list edit alone would leave the
+   * package installed and its bundle dangling. Undefined = no package-manager removal surface.
+   */
+  pluginRemoveArgs?(
+    name: string,
+    scope: HarnessScope,
+    profile?: string
+  ): { ok: true; command: string; args: string[]; timeoutMs?: number } | { ok: false; reason: string };
 }
 
 /**

@@ -1,4 +1,13 @@
-import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from './net.js';
+import {
+  describeFetchFailure,
+  fetchFailureReason,
+  fetchWithRetry,
+  OPTIONAL_READ_RETRY,
+  type FailureReason,
+} from './net.js';
+import { scriptLanguage } from './lang.js';
+import { SLOW_CACHE_TTL_MS } from './common/market.js';
+import type { TranslationLang } from './translation.js';
 import { fetchClawHubSkill } from './skill/clawhub.js';
 
 /**
@@ -25,13 +34,17 @@ const NPM_REGISTRY = 'https://registry.npmjs.org';
 const GITHUB_API = 'https://api.github.com';
 /** READMEs run long (some plugins ship 200 KiB of markdown); the console renders one dialog. */
 const README_CAP = 120_000;
-/** Longer than a browse page's 60 s: a README does not change per keystroke, and the anonymous
- *  GitHub budget is 60 req/hour on a per-IP basis. */
-const CACHE_TTL_MS = 10 * 60_000;
 
 export interface MarketDetail {
   /** Markdown body, already capped. `null` when the row publishes none. */
   readme: string | null;
+  /** Language the returned README is actually written in, when known: the script of the body
+   *  (zh/ja/ko) or the language of a localized edition this reader selected. The console skips
+   *  machine translation when it equals the UI language. */
+  readmeLang?: TranslationLang;
+  /** Repository-relative path of the body, when the reader selected a file (a localized edition).
+   *  The console resolves relative links/images against this file's directory. */
+  readmePath?: string;
   /** Repository the body came from, when one could be resolved. */
   repo?: string;
   description?: string;
@@ -185,6 +198,117 @@ function isoFromMs(value: number | null | undefined): string | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? new Date(value).toISOString() : undefined;
 }
 
+/**
+ * The language names a README's own switcher uses (the `English | Chinese` strip at the top of many
+ * repos). Anchored and matched against a lowercased label, so "Chinese" never matches "Chinese
+ * medicine". Only the eight console languages are recognized — an unrecognized tab is ignored.
+ */
+const LANG_LINK_LABELS: Record<TranslationLang, RegExp> = {
+  zh: /^(?:简体中文|中文|简体|chinese|zh(?:-cn|-hans)?)$/,
+  en: /^(?:english|英文|en(?:-us|-gb)?)$/,
+  ja: /^(?:日本語|日语|japanese|ja)$/,
+  ko: /^(?:한국어|韩语|korean|ko)$/,
+  de: /^(?:deutsch|德语|german|de)$/,
+  fr: /^(?:français|法语|french|fr)$/,
+  es: /^(?:español|西班牙语|spanish|es)$/,
+  pt: /^(?:português|葡萄牙语|portuguese|pt(?:-br)?)$/,
+};
+
+/** Anchor text → a bare label: tags, entities and collapsed whitespace removed. */
+function anchorLabel(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/** Every README link whose LABEL names `lang`, in document order. Switchers are usually raw HTML
+ *  anchors, but Markdown links appear too, so both are read. All matches are returned because the
+ *  first one is not always usable (an external translation page, a traversal path): the reader
+ *  keeps looking for one that actually names this repository's file. */
+function findLangLinks(readme: string, lang: TranslationLang): string[] {
+  const hrefs: string[] = [];
+  for (const m of readme.matchAll(/<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    if (LANG_LINK_LABELS[lang].test(anchorLabel(m[2]!))) hrefs.push(m[1]!);
+  }
+  for (const m of readme.matchAll(/\[([^\]]+)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g)) {
+    if (LANG_LINK_LABELS[lang].test(anchorLabel(m[1]!))) hrefs.push(m[2]!);
+  }
+  return hrefs;
+}
+
+/**
+ * A link inside the README → a repo-relative Markdown path, or null.
+ *
+ * The README is untrusted third-party content, and this path is interpolated into a fetch, so it is
+ * narrowed hard: only Markdown files, no traversal, and a GitHub URL is accepted only when it names
+ * the SAME repository (a link to someone else's translated README is not our repository's file).
+ */
+function variantPath(href: string, repo: string): string | null {
+  let raw = href.trim();
+  if (!raw || raw.startsWith('#') || raw.startsWith('//')) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^https?:/i.test(raw)) return null;
+  const blob = /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+)\/blob\/[^/]+\/(.+)$/i.exec(raw);
+  const rawFile = /^https?:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/[^/]+\/(.+)$/i.exec(raw);
+  const owned = blob ?? rawFile;
+  if (owned) {
+    if (`${owned[1]}/${owned[2]}`.toLowerCase() !== repo.toLowerCase()) return null;
+    raw = owned[3]!;
+  } else if (/^https?:/i.test(raw)) {
+    return null;
+  }
+  raw = raw.split('#')[0]!.split('?')[0]!.replace(/^\.\//, '');
+  if (!/^[\w.\/-]+$/.test(raw)) return null;
+  if (raw.split('/').some((segment) => segment === '' || segment === '..')) return null;
+  if (!/\.(?:md|markdown)$/i.test(raw)) return null;
+  return raw;
+}
+
+/**
+ * The README's own localized edition, when the page links one. This is the preferable answer over
+ * machine translation: the author (or their community) already translated the document, including
+ * the parts a chunked model can only approximate.
+ *
+ * A fetched body is accepted only when its script matches the requested language for zh/ja/ko — a
+ * link labeled as Chinese that actually serves an English stub is rejected. Latin-script targets
+ * (en/es/fr/de/pt) rely on the author's label; their scripts cannot be told apart here.
+ */
+async function localizedReadme(
+  readme: string,
+  repo: string | null,
+  lang: TranslationLang,
+  fetchImpl: typeof fetch
+): Promise<{ body: string; path: string } | null> {
+  if (!repo) return null;
+  for (const href of findLangLinks(readme, lang)) {
+    const rel = variantPath(href, repo);
+    if (!rel) continue;
+    try {
+      const res = await fetchWithRetry(
+        `https://raw.githubusercontent.com/${repo}/HEAD/${encodeURI(rel)}`,
+        { headers: { 'User-Agent': 'omnicellrouter-harness' } },
+        OPTIONAL_READ_RETRY,
+        { fetchImpl }
+      );
+      if (!res.ok) continue;
+      const body = capReadme(await res.text());
+      // A stub, an error blob or a redirect page is not a localized edition.
+      if (!body || body.trim().length < 200) continue;
+      if (lang === 'zh' || lang === 'ja' || lang === 'ko') {
+        if (scriptLanguage(body) === lang) return { body, path: rel };
+        continue;
+      }
+      return { body, path: rel };
+    } catch {
+      // One unusable candidate must not hide a later usable one.
+    }
+  }
+  return null;
+}
+
 async function readNpm(pkg: string, fetchImpl: typeof fetch): Promise<ReadOutcome> {
   let res: Response;
   try {
@@ -334,7 +458,7 @@ async function readGithub(repo: string, fetchImpl: typeof fetch): Promise<ReadOu
  * row the console already holds.
  */
 export async function readMarketDetail(
-  input: { key?: string; repo?: string },
+  input: { key?: string; repo?: string; /** Console language: pick the README's localized edition. */ lang?: TranslationLang },
   fetchImpl: typeof fetch = fetch
 ): Promise<MarketDetail> {
   const pkg = packageFromKey(input.key);
@@ -343,9 +467,11 @@ export async function readMarketDetail(
   // key names exactly one source.
   const clawhub = pkg ? null : clawhubFromKey(input.key);
 
-  const cacheKey = `detail|${pkg ?? ''}|${repo ?? ''}|${clawhub ? `${clawhub.owner}/${clawhub.slug}` : ''}`;
+  const cacheKey = `detail|${pkg ?? ''}|${repo ?? ''}|${clawhub ? `${clawhub.owner}/${clawhub.slug}` : ''}|${input.lang ?? ''}`;
   const hit = cache.get(cacheKey);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.detail;
+  // The slow window, not the 60 s browse one: a README does not change per keystroke, and the
+  // anonymous GitHub budget is 60 req/hour per IP.
+  if (hit && Date.now() - hit.at < SLOW_CACHE_TTL_MS) return hit.detail;
 
   let detail: MarketDetail = { readme: null, readFrom: 'none', ...(repo ? { repo } : {}) };
   let problem: ReadOutcome['problem'];
@@ -393,6 +519,25 @@ export async function readMarketDetail(
     else if (detail.readme) problem = undefined;
   }
 
+  // Prefer a README that is ALREADY in the console's language — the author's localization beats a
+  // machine translation of the English one, and costs no model call. A body whose script already
+  // matches (zh/ja/ko) needs no fetch; otherwise the page's own switcher is followed.
+  if (input.lang && detail.readme) {
+    const detected = scriptLanguage(detail.readme);
+    if (detected === input.lang) {
+      detail = { ...detail, readmeLang: detected };
+    } else {
+      const localized = await localizedReadme(detail.readme, repoForReadme ?? null, input.lang, fetchImpl);
+      if (localized) {
+        detail = {
+          ...detail,
+          readme: capReadme(localized.body) ?? detail.readme,
+          readmeLang: input.lang,
+          readmePath: localized.path,
+        };
+      } else if (detected) detail = { ...detail, readmeLang: detected };
+    }
+  }
   if (problem) {
     detail = {
       ...detail,

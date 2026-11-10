@@ -107,9 +107,9 @@ describe('plugin catalog index tier', () => {
 
     const rows = readIndex('opencode');
     // DETECTED from the repository's own forms: opencode ships `.opencode/`, claude the manifest
-    // directory, pi its extension layer — and grok the vendor-verified `.claude-plugin/`
-    // equivalent (catalog order; grok's alias probe sits last).
-    expect(rows[0]!.hosts).toEqual(['opencode', 'claude', 'pi', 'grok']);
+    // directory, pi its extension layer — and grok honours the vendor-verified `.claude-plugin/`
+    // equivalent, while omp documents the same fallback (both alias probes sit last, catalog order).
+    expect(rows[0]!.hosts).toEqual(['opencode', 'claude', 'pi', 'grok', 'omp']);
     expect(rows[0]!.stars).toBe(42);
     expect(rows[0]!.surfaces).toEqual(['mp-plugsrc']);
 
@@ -171,7 +171,7 @@ describe('plugin catalog index tier', () => {
     cleanup();
     const claude = createPluginAdapter('claude', fakeFetch());
     const check = await claude.checkSource('https://github.com/acme/plugins');
-    expect(check).toEqual({ ok: true, skills: 2, mcps: 0, plugins: 2, hosts: ['opencode', 'claude', 'pi', 'grok'], marketplace: 'ponytail' });
+    expect(check).toEqual({ ok: true, skills: 2, mcps: 0, plugins: 2, hosts: ['opencode', 'claude', 'pi', 'grok', 'omp'], marketplace: 'ponytail' });
     expect(latestSnapshot('plugins')).toBeNull(); // dry-run left nothing behind
 
     const bad = await claude.checkSource('https://gitlab.com/acme/plugins');
