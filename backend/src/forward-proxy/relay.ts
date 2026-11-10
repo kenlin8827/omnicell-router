@@ -70,6 +70,24 @@ export function splice(
       a.destroy();
     } catch {}
   });
+  // `destroy()` on one side emits `close` WITHOUT `error`, so the error
+  // handlers above miss it. A policy sweep (strict credential mode) or an
+  // abrupt local close would otherwise leave the upstream half — and, for a
+  // MITM tunnel, the decrypted loopback socket — open until the OS reaps it.
+  // The socket is already fully closed here, so destroying the peer cannot cut
+  // a live half-close short.
+  a.on('close', () => {
+    if (b.destroyed) return;
+    try {
+      b.destroy();
+    } catch {}
+  });
+  b.on('close', () => {
+    if (a.destroyed) return;
+    try {
+      a.destroy();
+    } catch {}
+  });
   a.resume();
   b.resume();
   for (const s of [a, b]) {

@@ -32,7 +32,8 @@ import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
-import { describeCa, ensureCa, resolveCaDir } from '../forward-proxy/ca.js';
+import { caCertPath, describeCa, ensureCa, resolveCaDir } from '../forward-proxy/ca.js';
+import { probeCaTrustedCached } from '../forward-proxy/ca-trust.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
 import {
   lintRules,
@@ -2440,6 +2441,25 @@ export function registerConsoleRoutes(
       return { status: 'ok', ...describeCa(cfg.forwardProxy?.caDir) };
     } catch (err: any) {
       return reply.status(500).send({ status: 'error', message: err?.message || 'Failed to load CA' });
+    }
+  });
+  // 6a-ter. Trust state for the console card: does the platform store that
+  // clients verify against hold THIS CA? Tri-state on purpose — `unknown` means
+  // the probe could not run, never "not trusted". Cached 60s (the probe spawns
+  // platform tools); `force=1` bypasses the TTL for an operator re-check after
+  // an install.
+  app.get('/api/admin/proxy/ca/trust', async (req) => {
+    const cfg = loadConfig();
+    const caPath = caCertPath(cfg.forwardProxy?.caDir);
+    const force = String((req.query as Record<string, unknown> | undefined)?.force ?? '') === '1';
+    // Fail SOFT: the console renders a tri-state chip, so a probe that cannot
+    // run is `unknown`, never a 500 that makes the chip silently disappear.
+    // `checkedAt` stays absent while no probe ran (no PEM to identify).
+    if (!fs.existsSync(caPath)) return { status: 'ok', trusted: 'unknown' as const, caPath };
+    try {
+      return { status: 'ok', ...(await probeCaTrustedCached(caPath, { force })), caPath };
+    } catch {
+      return { status: 'ok', trusted: 'unknown' as const, caPath };
     }
   });
 

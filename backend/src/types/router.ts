@@ -228,6 +228,15 @@ export interface ExecutionResult {
   sessionLookupType?: SessionLookupType;
   traceId?: string;
   latencyMs: number;
+  /**
+   * Industry TTFT/TPS split of the committed attempt, measured at the relay:
+   * `ttftMs` = process start → first forwarded chunk, `genMs` = first chunk →
+   * fully drained stream. Both undefined when the turn never streamed
+   * (buffered execution, relay off, or a wire without a streaming executor),
+   * which is exactly when a decode rate must NOT be synthesized.
+   */
+  ttftMs?: number;
+  genMs?: number;
   failoverOccurred?: boolean;
   failoverAttempts?: number;
   failoverPath?: string[];

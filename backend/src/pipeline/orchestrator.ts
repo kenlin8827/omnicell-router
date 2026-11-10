@@ -55,6 +55,7 @@ import { SessionManager, SessionResolveResult } from '../session/session-manager
 import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
+import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
@@ -97,6 +98,14 @@ export interface ProcessContext {
    */
   clientRequest?: CaptureClientRequest;
   /**
+   * In-process key identity for entry points that authenticate OUTSIDE the
+   * Fastify preHandler (gateway-driven completions bound to a console-picked
+   * API key). Capture, trace and rate-limit attribution read it first;
+   * Fastify and MITM legs leave it undefined and resolve from the request.
+   * `id` + `name` only — the token never reaches this context.
+   */
+  clientKey?: CaptureKeyIdentity;
+  /**
    * Hands the client-exchange context to entry points with no Fastify
    * response lifecycle (the MITM interceptor), so THEY can finalize the
    * capture's gateway-response event when the raw response finishes.
@@ -105,6 +114,10 @@ export interface ProcessContext {
    */
   onClientExchange?: (ctx: ClientExchangeContext) => void;
 }
+
+/** Key attribution: the in-process binding wins, else the request's authInfo. */
+const keyIdentityOf = (ctx?: ProcessContext): CaptureKeyIdentity | undefined =>
+  ctx?.clientKey ?? captureKeyIdentity(ctx?.fastifyRequest ?? ctx?.clientRequest);
 
 /**
  * Pull a non-sensitive subset of inbound headers for the trace's
@@ -363,7 +376,7 @@ export class PipelineOrchestrator {
         messages: scanDirectives(normalizedMessages, gate.enabled ? gate.prefix : null)
           .messages,
       };
-      const keyIdentity = captureKeyIdentity(context?.fastifyRequest ?? context?.clientRequest);
+      const keyIdentity = keyIdentityOf(context);
       // Resolve ONCE here and hand the result to processInternal: cold-start
       // IDs carry fresh random entropy, so a second resolve of the same
       // request would mint a different ID and split capture from routing.
@@ -390,6 +403,7 @@ export class PipelineOrchestrator {
       const clientExchangeCtx = emitClientRequest({
         recorder: this.captureRecorder,
         req: context?.fastifyRequest ?? context?.clientRequest,
+        apiKey: keyIdentity,
         body: snapshotRequest,
         sessionId: captureSessionId,
         traceId: captureOutTraceId,
@@ -708,7 +722,7 @@ export class PipelineOrchestrator {
     const clientRef = SessionManager.clientRefOf(normalizedRequest);
     const sessionResolve = preResolvedSession ??
       this.sessionManager.resolveSessionId(normalizedRequest, {
-        keyId: captureKeyIdentity(context?.fastifyRequest ?? context?.clientRequest)?.id,
+        keyId: keyIdentityOf(context)?.id,
         headers: context?.headers,
         clientRef: clientRef ?? undefined,
       });
@@ -1822,7 +1836,7 @@ export class PipelineOrchestrator {
     let usageCredentialPrefix: string | undefined;
     {
       const rl = getRateLimiter();
-      const clientKeyId = captureKeyIdentity(context?.fastifyRequest)?.id;
+      const clientKeyId = keyIdentityOf(context)?.id;
       if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
       // The credential that SERVED (same chain-head degeneracy as the pool gate,
       // so single-credential providers carry usage too). `servedUsagePrefix`
@@ -1915,7 +1929,7 @@ export class PipelineOrchestrator {
       timestamp: startTime,
       // Key attribution on the lightweight session trajectory as well (works
       // even with capture disabled): which application's key drove this turn.
-      apiKey: captureKeyIdentity(context?.fastifyRequest),
+      apiKey: keyIdentityOf(context),
       request: {
         model: request.model || 'auto',
         userPromptSummary,
@@ -1994,6 +2008,8 @@ export class PipelineOrchestrator {
       sessionLookupType: sessionResolve.lookupType,
       traceId: sharedTraceId,
       latencyMs,
+      ttftMs,
+      genMs,
       // Reasoning-effort observability — server.ts reads these to set
       // X-OCR-Thinking-{Requested,Actual,Degraded} headers so the client
       // can see whether they got the level they asked for.

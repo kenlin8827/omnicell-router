@@ -31,6 +31,9 @@ import { DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 import { migrateConfig, toDiskConfig, toRuntimeConfig, SCHEMA_VERSION, type DiskConfig } from './schema.js';
+import { getRuntimeConfigRef, registerRuntimeConfigRef } from './runtime.js';
+
+export { getRuntimeConfigRef, registerRuntimeConfigRef };
 // Bootstrap levers (OCR_ENV / OCR_HOME) come from the REAL process environment
 // only — there is no .env loader. A file-based override would be a second,
 // cwd-dependent source of truth next to the envs/current pointer.
@@ -117,6 +120,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     port: DEFAULT_FORWARD_PROXY_PORT,
     host: DEFAULT_FORWARD_PROXY_HOST,
     maxConnections: DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
+    requireCredential: false, // opt-in: loopback clients must also present an API key
     // Rule table (ADR-0018): the fresh-install seed routes everything through
     // the outbound proxy policy, decrypted. Inert until BOTH this listener and
     // `proxy.enabled` are on, so it costs a fresh install nothing.
@@ -357,15 +361,20 @@ function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
   // The section carries exactly the keys `ForwardProxyConfig` declares. Any
   // other key a hand-edited file still holds — a retired key (`bypassHosts`,
   // `viaOutboundProxy`, `mitmHosts`, the interim `egress` / `egressRules` /
-  // `decryptRules` shapes) or a typo — is dropped here: never folded, never
-  // translated, never re-persisted on the next console save.
+  // `decryptRules` shapes, `authToken`) or a typo — is dropped here: never
+  // folded, never translated, never re-persisted on the next console save.
+  // `authToken` (the retired shared proxy secret — proxy auth is API-key only,
+  // ADR-0008) is the one that stings: an install that authenticated a loopback
+  // proxy with it lands on an UNauthenticated listener until a key exists and
+  // `forwardProxy.requireCredential` is on. Retired keys are never translated
+  // (ADR-0018 §6), so the ADR is where the operator learns this.
   const declared = {
     enabled: fp.enabled,
     port: fp.port,
     host: fp.host,
     caDir: fp.caDir,
-    authToken: fp.authToken,
     maxConnections: fp.maxConnections,
+    requireCredential: fp.requireCredential === true,
     accessLog: fp.accessLog,
     rules: fp.rules,
     upstreamTls: fp.upstreamTls,
@@ -878,37 +887,13 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
       for (const w of warnings) console.warn(`  - ${w}`);
     }
     // credentials overlay AND the limiter rule table through the SAME routine as
-    // saveConfig (the pre-fix here left runtimeConfigRef stale — the YAML
+    // saveConfig (the pre-fix here left the live snapshot stale — the YAML
     // editor violated the module's own hot-apply promise).
     syncRuntimeAuthView(loadConfig());
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
-}
-
-/**
- * Live reference to the RUNNING server's config object (registered by
- * createServer). The auth preHandler prefers `config.apiKeys` over a fresh
- * disk read (boot snapshot) — without syncing, a key edited via the UI or the
- * YAML editor would persist to config.yaml yet keep failing on the wire until
- * the next restart. Every config save refreshes the snapshot's keys in-place.
- */
-let runtimeConfigRef: RouterConfig | undefined;
-
-/** Called once by createServer so config saves can refresh the boot snapshot. */
-export function registerRuntimeConfigRef(cfg: RouterConfig): void {
-  runtimeConfigRef = cfg;
-}
-
-/**
- * Live config snapshot (createServer's object, hot-synced by saveConfig for
- * the fields the running gateway reads per request: apiKeys, webAuth).
- * Console-auth endpoints prefer it over a disk re-read so the gate and the
- * credential checks can never disagree.
- */
-export function getRuntimeConfigRef(): RouterConfig | undefined {
-  return runtimeConfigRef;
 }
 
 /**
@@ -921,35 +906,37 @@ export function getRuntimeConfigRef(): RouterConfig | undefined {
  * path, not just the visual one.
  */
 function syncRuntimeAuthView(fresh: RouterConfig): void {
-  if (runtimeConfigRef) {
-    runtimeConfigRef.apiKeys = fresh.apiKeys;
-    runtimeConfigRef.webAuth = fresh.webAuth;
-    runtimeConfigRef.credentials = fresh.credentials;
+  const live = getRuntimeConfigRef();
+  if (live) {
+    live.apiKeys = fresh.apiKeys;
+    live.webAuth = fresh.webAuth;
+    live.credentials = fresh.credentials;
     // quotaProbes/quota ride the SAME routine (iron rule: a raw-YAML
     // save must never leave the runtime view stale): the prober reads its
     // entry set off the live ref on every reloadConfig(), and the console
     // quota panel reads rejected/coverage state from it.
-    runtimeConfigRef.quotaProbes = fresh.quotaProbes;
-    runtimeConfigRef.quota = fresh.quota;
+    live.quotaProbes = fresh.quotaProbes;
+    live.quota = fresh.quota;
     // rateLimit (inbound grace) too: resolveActiveAuthConfig reads the boot
     // snapshot FIRST (`config.rateLimit?.inboundGraceMs ?? disk…` — the disk
     // arm never fires because loadConfig always resolves the section), so
     // without this line the grace knob would silently ignore every save.
-    runtimeConfigRef.rateLimit = fresh.rateLimit;
+    live.rateLimit = fresh.rateLimit;
     // classifier / routing / systemone hot-apply too (per-request reads only —
     // the decision layer resolves model/timeout/effortDecision per evaluate, the mode
     // lever per processInternal, the System One defaultModel per decision):
     // the /auto page's "restart to apply" era is over for everything it edits.
     // Sections with boot-time consumers (streaming executors, models,
     // tiers bootstrap) deliberately stay restart-only.
-    runtimeConfigRef.classifier = fresh.classifier;
-    runtimeConfigRef.routing = fresh.routing;
-    runtimeConfigRef.systemone = fresh.systemone;
+    live.classifier = fresh.classifier;
+    live.routing = fresh.routing;
+    live.systemone = fresh.systemone;
     // forwardProxy too — the MITM interceptor and the orchestrator's
     // unresolved-model policy read the live boot snapshot per request
     // (rules, unresolvedModel.onMiss/hosts), so a save must land here or the
-    // console's "takes effect immediately" promise is false.
-    runtimeConfigRef.forwardProxy = fresh.forwardProxy;
+    // console's "takes effect immediately" promise is false. Strict credential
+    // mode is read from the same object by the gateway plugin host.
+    live.forwardProxy = fresh.forwardProxy;
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober

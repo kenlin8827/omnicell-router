@@ -17,6 +17,8 @@ import { getOcrHomeDir, getSharedDataRootDir } from '../cli/paths.js';
  */
 
 export const CA_CN = 'OmniCellRouter Forward Proxy CA';
+/** PEM file name inside the resolved CA dir — one spelling for every consumer. */
+export const CA_CERT_FILENAME = 'ca.pem';
 const CA_DAYS = 3650;
 const LEAF_DAYS = 30;
 
@@ -84,15 +86,15 @@ export interface CaMaterial {
  */
 export function ensureCa(caDir: string, commonName: string = CA_CN): CaMaterial {
   fs.mkdirSync(caDir, { recursive: true });
-  const caCertPath = path.join(caDir, 'ca.pem');
+  const caCertFile = path.join(caDir, CA_CERT_FILENAME);
   const caKeyPath = path.join(caDir, 'ca-key.pem');
   const leafKeyPath = path.join(caDir, 'leaf-key.pem');
 
   let caCertPem: string;
   let caKeyPem: string;
   let leafKeyPem: string;
-  if (fs.existsSync(caCertPath) && fs.existsSync(caKeyPath) && fs.existsSync(leafKeyPath)) {
-    caCertPem = fs.readFileSync(caCertPath, 'utf8');
+  if (fs.existsSync(caCertFile) && fs.existsSync(caKeyPath) && fs.existsSync(leafKeyPath)) {
+    caCertPem = fs.readFileSync(caCertFile, 'utf8');
     caKeyPem = fs.readFileSync(caKeyPath, 'utf8');
     leafKeyPem = fs.readFileSync(leafKeyPath, 'utf8');
     const persistedCn = forge.pki.certificateFromPem(caCertPem).subject.getField('CN').value as string;
@@ -106,7 +108,7 @@ export function ensureCa(caDir: string, commonName: string = CA_CN): CaMaterial 
     leafKeyPem = generateRsaKeyPem();
     const caKey = forge.pki.privateKeyFromPem(caKeyPem);
     caCertPem = createCaCertPem(caKey, commonName);
-    fs.writeFileSync(caCertPath, caCertPem, { mode: 0o600 });
+    fs.writeFileSync(caCertFile, caCertPem, { mode: 0o600 });
     fs.writeFileSync(caKeyPath, caKeyPem, { mode: 0o600 });
     fs.writeFileSync(leafKeyPath, leafKeyPem, { mode: 0o600 });
   }
@@ -181,6 +183,16 @@ export function resolveCaDir(caDir?: string): string {
   return dir;
 }
 
+/**
+ * Absolute path of the PEM clients must trust. The proxy, the console CA card,
+ * the trust probe and the system-proxy hint all come through here — a second
+ * `path.join(..., 'ca.pem')` is the drift twin that points users at a
+ * certificate the proxy does not sign with.
+ */
+export function caCertPath(caDir?: string): string {
+  return path.join(resolveCaDir(caDir), CA_CERT_FILENAME);
+}
+
 /** Display-safe identity of the persisted CA (console CA card). */
 export interface CaMeta {
   /** Absolute path of the PEM clients must trust. */
@@ -196,7 +208,7 @@ export function describeCa(caDir?: string): CaMeta {
   const dir = resolveCaDir(caDir);
   const x509 = new crypto.X509Certificate(ensureCa(dir).caCertPem);
   return {
-    path: path.join(dir, 'ca.pem'),
+    path: path.join(dir, CA_CERT_FILENAME),
     fingerprintSha256: x509.fingerprint256,
     subject: x509.subject.split('\n').join(', '),
     notBefore: new Date(x509.validFrom).toISOString(),

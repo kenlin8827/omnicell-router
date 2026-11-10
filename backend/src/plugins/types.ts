@@ -362,8 +362,10 @@ export interface GatewayChatSink {
   /** One canonical OpenAI-shaped SSE frame, exactly as the /v1 wire writes it
    *  (`data: {…}\n\n`, terminating `data: [DONE]\n\n`). */
   onChunk(frame: string): void;
-  /** Non-stream terminal (stream:false). */
-  onJson(status: number, payload: unknown): void;
+  /** Non-stream terminal (stream:false). `headers` carries wire hints the
+   *  gateway should forward when its protocol has a header slot (429
+   *  Retry-After / RateLimit-*); plugins may ignore it. */
+  onJson(status: number, payload: unknown, headers?: Record<string, string>): void;
   /** Stream terminal (after the last onChunk). */
   onEnd(): void;
 }
@@ -383,6 +385,14 @@ export type GatewayRelayTap = AccessTap;
  * (same rule as ModelServicePluginHost: a packaged plugin never imports
  * backend modules by path).
  */
+/** Routing surface exposed to a client-gateway plugin. */
+export interface GatewayCatalog {
+  /** Virtual tier ids in canonical order (auto/lite/plus/pro/ultra). */
+  tiers: string[];
+  /** Registered model refs (gateway-visible ids, all kinds). */
+  models: { id: string; label?: string }[];
+}
+
 export interface ClientGatewayHost {
   log(...args: unknown[]): void;
   /** The live OCR home directory (bookkeeping, CA material paths). */
@@ -400,12 +410,7 @@ export interface ClientGatewayHost {
    *  breakers, captures all apply). `signal` aborts with the client. */
   chat(body: Record<string, unknown>, sink: GatewayChatSink, signal?: AbortSignal): Promise<void>;
   /** Current routing surface for AvailableModels-style fabrication. */
-  catalog(): {
-    /** Virtual tier ids in canonical order (auto/lite/plus/pro/ultra). */
-    tiers: string[];
-    /** Registered model refs (gateway-visible ids, all kinds). */
-    models: { id: string; label?: string }[];
-  };
+  catalog(): GatewayCatalog;
   /**
    * Relay a decrypted exchange upstream through the CORE transport policy:
    * `forwardProxy.rules` egress (direct / `proxy.url`) and upstream TLS trust

@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
+import { getRuntimeConfigRef } from '../config/runtime.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -28,6 +29,7 @@ import { getGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { invalidatePluginConfigCache, mergedPluginConfig, pluginConfigPath, writePluginConfig } from './config.js';
 import { assertSupportedPluginApi, isValidPluginId, validatePluginManifest } from './manifest.js';
 import { forwardH2 } from '../forward-proxy/h2-forward.js';
+import { getProxyCaller } from '../forward-proxy/caller-context.js';
 import { forwardTo, proxyFail, RULE_REJECTED_MESSAGE, type ForwardTarget } from '../forward-proxy/server.js';
 import { resolveUpstreamTls } from '../forward-proxy/upstream-tls.js';
 import { isRuleRejected } from '../forward-proxy/egress.js';
@@ -162,7 +164,17 @@ export function buildGatewayHostSdk(manifest: PluginManifest, dir: string): Clie
     chat: (body, sink, signal) => {
       const svc = getGatewayChatServices();
       if (!svc) return Promise.reject(new Error('gateway chat services not wired (forward proxy disabled?)'));
-      return svc.run(body, sink, signal);
+      // Identity precedence (ADR-0017): the CONNECT credential of the tunnel
+      // that carried this request wins; otherwise the plugin's console-picked
+      // key; with neither, gateway-chat refuses the OCR turn (401). Vendor-
+      // native requests never reach this seam. Strict mode is re-read HERE,
+      // not only at admission: a tunnel admitted before the operator enabled
+      // `requireCredential` must not keep spending the bound key.
+      const caller = getProxyCaller();
+      const bound = mergedPluginConfig(manifest.id, manifest.configSchema).accountKeyId;
+      const strict = getRuntimeConfigRef()?.forwardProxy?.requireCredential === true;
+      const keyId = caller?.keyId ?? (strict ? '' : (typeof bound === 'string' ? bound : ''));
+      return svc.run(body, sink, signal, { keyId });
     },
     catalog: () => getGatewayChatServices()?.catalog() ?? { tiers: [], models: [] },
     relayUpstream: async (req, res, opts) => {

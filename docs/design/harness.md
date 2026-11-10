@@ -191,9 +191,10 @@ location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 11 with a p
 | grok | √ | √ (CLI) | √ | `grok mcp add … [-s user\|project]` → `~/.grok/config.toml` / project `.grok/config.toml` (TOML, read-only); `grok plugin install {url} --trust` |
 | openclaw | √ | √ (CLI) | √ | `openclaw mcp add …` → `~/.openclaw/openclaw.json` (JSON5, read-only, global-only); `openclaw plugins install <spec> --force` |
 
-`opencode-proxy` never appears: it is a hook mode of `opencode`, not a separate host. Hosts are **not**
-`SupportedClient` — Cursor/VS Code/Zed will never be traffic clients, and welding the two would pollute
-the traffic domain (ADR-0015 §D2).
+`opencode-proxy` never appears: it is a hook mode of `opencode`, not a separate host. The same
+holds for `cursor-proxy` — its harness host is `cursor`, the artifact landing, not the traffic hook
+(Qoder has no harness host yet). Hosts are **not** `SupportedClient`: VS Code/Zed/Windsurf remain
+artifact hosts only, and welding the two vocabularies would pollute the traffic domain (ADR-0015 §D2).
 
 **A host is a reader, not a location.** Fourteen hosts read the project `.agents/skills` tree and
 fourteen read the global one (claude is the only skills host outside that shared set), so one

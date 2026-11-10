@@ -63,7 +63,10 @@ export interface TransportContext {
   readonly clientIp: string | undefined;
   readonly access: ModelAccessGate;
   /** Capture-only ProcessContext fields (node-http transport answers {} for capture=false surfaces). */
-  captureProcessContext(): Pick<ProcessContext, 'fastifyRequest' | 'clientRequest' | 'onClientExchange'>;
+  captureProcessContext(): Pick<
+    ProcessContext,
+    'fastifyRequest' | 'clientRequest' | 'onClientExchange' | 'clientKey'
+  >;
   sendJson(status: number, payload: unknown, headers?: Record<string, string>): void;
   /**
    * Raw upstream relay (the `direct` unresolved-model executor, ADR-0003

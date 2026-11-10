@@ -87,4 +87,10 @@ describe('forward-proxy: loading the rule table', () => {
     // …and the table is untouched by them: the default posture stands.
     assert.deepEqual(cfg.forwardProxy?.rules, [{ match: '*', ingress: 'intercept', egress: 'proxy' }]);
   });
+
+  it('reads `requireCredential` strictly: absent/junk is off, true is on', () => {
+    assert.equal(loadConfig(writeConfig({})).forwardProxy?.requireCredential, false);
+    assert.equal(loadConfig(writeConfig({ requireCredential: true })).forwardProxy?.requireCredential, true);
+    assert.equal(loadConfig(writeConfig({ requireCredential: 'yes' })).forwardProxy?.requireCredential, false);
+  });
 });

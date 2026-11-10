@@ -4,6 +4,7 @@ import { detectSurface } from '../surfaces/table.js';
 import { findGateway } from '../plugins/gateways.js';
 import { dispatchSurface } from '../surfaces/dispatch.js';
 import { createNodeHttpTransport, readRequestBody, sendPreDispatchError } from '../surfaces/transport-node-http.js';
+import { proxyCallerOf, runWithProxyCaller } from './caller-context.js';
 
 /**
  * Content-level LLM interception for the forward proxy.
@@ -19,9 +20,10 @@ import { createNodeHttpTransport, readRequestBody, sendPreDispatchError } from '
  * across legs, and capture pairing. This file holds NO protocol logic
  * anymore — transport primitives live in surfaces/transport-node-http.ts.
  *
- * POLICY EXEMPTION (deliberate): intercepted traffic carries no gateway key;
- * the authoritative note is in surfaces/transport-node-http.ts (the 'exempt'
- * ModelAccessGate). Do NOT "fix" it by inventing key headers here.
+ * POLICY: the native intercepted surfaces stay exempt — their wire carries no
+ * gateway key (authoritative note in surfaces/transport-node-http.ts; do NOT
+ * invent key headers here). Gateway-plugin completions are the exception:
+ * they inherit the CONNECT credential bound by `caller-context.ts` (ADR-0017).
  */
 
 export function createProxyInterceptor(
@@ -34,7 +36,7 @@ export function createProxyInterceptor(
     const gateway = findGateway(req);
     if (gateway) {
       try {
-        await gateway.handle(req, res);
+        await runWithProxyCaller(proxyCallerOf(req), () => gateway.handle(req, res));
       } catch {
         if (!res.headersSent) {
           try {

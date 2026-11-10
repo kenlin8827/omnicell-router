@@ -141,6 +141,16 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
     assert.equal('X-OCR-Variant' in buildChatOcrHeaders(chatResult(), 'auto'), false);
   });
 
+  it('7b. streamed turns append the TTFT / decode-window pair; buffered turns omit both', () => {
+    const streamed = buildChatOcrHeaders(chatResult({ ttftMs: 1234, genMs: 500 }), 'auto');
+    assert.equal(streamed['X-OCR-TTFT-MS'], '1234');
+    assert.equal(streamed['X-OCR-Gen-MS'], '500');
+    // The decode window is the token-rate denominator: no stream, no window.
+    const buffered = buildChatOcrHeaders(chatResult(), 'auto');
+    assert.equal('X-OCR-TTFT-MS' in buffered, false);
+    assert.equal('X-OCR-Gen-MS' in buffered, false);
+  });
+
   it('8. thinking + variant combine: 17 keys total', () => {
     const headers = buildChatOcrHeaders(
       chatResult({ requestedEffort: 'low', actualEffort: 'low', variantUsed: 'quick' }),

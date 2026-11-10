@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
+import { getProxyCaller } from '../src/forward-proxy/caller-context.js';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
 import { stageGateway, commitGateways, removeGateway } from '../src/plugins/gateways.js';
@@ -40,10 +41,11 @@ function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
 }
 
 /** Send CONNECT through the proxy; resolve once the 200 is received. */
-function connectViaProxy(proxyPort: number, targetHost: string): Promise<net.Socket> {
+function connectViaProxy(proxyPort: number, targetHost: string, secret?: string): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const sock = net.connect(proxyPort, '127.0.0.1', () => {
-      sock.write(`CONNECT ${targetHost}:443 HTTP/1.1\r\nHost: ${targetHost}:443\r\n\r\n`);
+      const auth = secret ? `Proxy-Authorization: Basic ${Buffer.from(`ocr:${secret}`).toString('base64')}\r\n` : '';
+      sock.write(`CONNECT ${targetHost}:443 HTTP/1.1\r\nHost: ${targetHost}:443\r\n${auth}\r\n`);
     });
     let buf = '';
     const onData = (d: Buffer) => {
@@ -247,6 +249,54 @@ describe('forward-proxy: client-gateway h2 leg', () => {
       tlsSock.destroy();
     } finally {
       removeGateway('test-stub-miss');
+      await handle.close();
+    }
+  });
+  it('CONNECT key credential is inherited by the gateway handler on the same tunnel', async () => {
+    let seen: { keyId?: string; name?: string } | undefined;
+    const stub: ClientGatewayPlugin = {
+      hosts: ['gw-caller.test'],
+      match: () => true,
+      handle: async (req, res) => {
+        for await (const _chunk of req) {
+          // drain the request body; identity is what this test asserts
+        }
+        seen = getProxyCaller();
+        res.writeHead(200, { 'content-type': 'application/connect+proto' });
+        res.write(frame(Buffer.from('{}', 'utf8'), 0x80));
+        res.end();
+      },
+    };
+    stageGateway('test-stub-caller', stub);
+    commitGateways();
+
+    const handle = await createForwardProxyServer({
+      port: 0,
+      host: '127.0.0.1',
+      caDir: tmpCaDir(),
+      intercept: createProxyInterceptor(fakeOrchestrator),
+      authRequired: true,
+      resolveApiKey: (secret) => (secret === 'sk-ocr-caller' ? { id: 'key-caller', name: 'Caller' } : undefined),
+    });
+
+    try {
+      const sock = await connectViaProxy(handle.port, 'gw-caller.test', 'sk-ocr-caller');
+      const tlsSock = await withTimeout(
+        new Promise<tls.TLSSocket>((resolve, reject) => {
+          const t = tls.connect(
+            { socket: sock, servername: 'gw-caller.test', ca: handle.caCertPem, ALPNProtocols: ['h2'], rejectUnauthorized: true },
+            () => resolve(t)
+          );
+          t.on('error', reject);
+        })
+      );
+      await withTimeout(
+        h2Request(tlsSock, 'https://gw-caller.test', { ':path': '/chat' }, frame(Buffer.from('{}')))
+      );
+      assert.deepEqual(seen, { keyId: 'key-caller', name: 'Caller' });
+      tlsSock.destroy();
+    } finally {
+      removeGateway('test-stub-caller');
       await handle.close();
     }
   });

@@ -2,7 +2,6 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
-import crypto from 'node:crypto';
 import { CertMinter, ensureCa } from './ca.js';
 import { peekClientHello } from './sni.js';
 import { splice, type SpliceDirection } from './relay.js';
@@ -32,6 +31,7 @@ import { createAccessTap, recordProxyConnect, recordProxyTunnel, type AccessTap 
 import { closeH2Pool, forwardH2, type H2UpstreamTls } from './h2-forward.js';
 import { createWsObserver } from './ws-frames.js';
 import { findGateway, listGatewayHosts } from '../plugins/gateways.js';
+import { markProxyCaller, type ProxyCaller } from './caller-context.js';
 import http2 from 'node:http2';
 
 /**
@@ -174,13 +174,6 @@ export interface ForwardProxyDeps {
    */
   maxConnections?: number;
   /**
-   * Basic proxy-auth token (any username). When set, every CONNECT and plain
-   * request must carry a matching `Proxy-Authorization` header or it gets 407.
-   * Unset = auth off (only legal on a loopback bind — see
-   * `assertForwardProxyBindSafety`). Boot snapshot — `liveForwardProxy` wins.
-   */
-  authToken?: string;
-  /**
    * Live `forwardProxy` config reader (the hot-apply runtime ref). When
    * present, `rules` is re-read per request — console saves take effect without
    * a gateway restart. Port/host/CA stay boot-frozen (they shape the listening
@@ -190,6 +183,19 @@ export interface ForwardProxyDeps {
   /** Returns true when the request was fully handled (intercepted). */
   intercept: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
   log?: (msg: string) => void;
+  /**
+   * Resolve an OCR API key from a proxy Basic password. The username is
+   * ignored (key names are not unique); the password IS the key secret.
+   * Wired to the live config snapshot so disable/expiry applies on the next
+   * admission. This is the ONLY proxy credential (ADR-0017).
+   */
+  resolveApiKey?: (secret: string) => { id: string; name: string } | undefined;
+  /**
+   * True when the proxy must authenticate every CONNECT / plain request
+   * (non-loopback bind). Boot-frozen so deleting every API key at runtime
+   * cannot silently open the listener.
+   */
+  authRequired?: boolean;
   /**
    * Extra TLS options for an upstream TLS client we originate (the transparent
    * h2 forward and the Upgrade relay). Production leaves this unset — the
@@ -266,6 +272,11 @@ interface HostTerminator {
 interface MitmTarget {
   host: string;
   port: number;
+  /**
+   * The OCR API key this tunnel authenticated as. CONNECT carries it; the
+   * decrypted requests of the same connection inherit it (ADR-0017).
+   */
+  caller?: ProxyCaller;
   /**
    * Close the CLIENT transport for this connection.
    *
@@ -730,6 +741,10 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     h2Leg: boolean
   ): Promise<void> {
     try {
+      // The CONNECT authority's per-connection entry also carries the
+      // authenticated caller; the gateway leg reads it via ALS (ADR-0017).
+      const mitmTarget = mitmTargets.get(req.socket?.remotePort ?? -1);
+      markProxyCaller(req, mitmTarget?.caller);
       if (await deps.intercept(req, res)) return;
       // h2 compatibility requests carry the target in `:authority` (there is
       // no `host` header) — accept either so gateway-declined h2 traffic can
@@ -741,7 +756,6 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       // used to be forwarded to 443 — a silent wrong-port forward. The CONNECT
       // port rides in on the per-connection `mitmTargets` entry (see
       // onDecryptedConnection), keyed by the loopback source port.
-      const mitmTarget = mitmTargets.get(req.socket?.remotePort ?? -1);
       const connectPort = mitmTarget?.port;
       if (mitmTarget) {
         (res as unknown as Record<symbol, () => void>)[MITM_ABORT] = mitmTarget.abort;
@@ -821,12 +835,14 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
    */
   const mitmTargets = new Map<number, MitmTarget>();
 
-  function hostTlsPort(host: string, targetPort: number): Promise<number> {
+  function hostTlsPort(host: string, targetPort: number, caller?: ProxyCaller): Promise<number> {
     const h2First = listGatewayHosts().has(host);
-    // Cache by host + CONNECT port + ALPN mode: a runtime gateway install flips
-    // a host's ALPN order and a second CONNECT to another port of the same host
-    // needs its own authority context, so neither may reuse a stale terminator.
-    const cacheKey = `${host}:${targetPort}|${h2First ? 'gateway' : 'plain'}`;
+    // Cache by host + CONNECT port + ALPN mode + authenticated key: a runtime
+    // gateway install flips a host's ALPN order, a second CONNECT to another
+    // port of the same host needs its own authority context, and two keys must
+    // never share a terminator — the decrypted connection inherits the key of
+    // the CONNECT that created it (ADR-0017 attribution).
+    const cacheKey = `${host}:${targetPort}|${h2First ? 'gateway' : 'plain'}|${caller?.keyId ?? ''}`;
     const live = terminators.get(cacheKey);
     if (live) {
       terminators.delete(cacheKey);
@@ -835,7 +851,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     }
     const inflight = pendingTerminators.get(cacheKey);
     if (inflight) return inflight.then((t) => t.port);
-    const created = createTerminator(host, targetPort, h2First, cacheKey).then(
+    const created = createTerminator(host, targetPort, h2First, cacheKey, caller).then(
       (t) => {
         pendingTerminators.delete(cacheKey);
         return t;
@@ -856,11 +872,12 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     host: string,
     targetPort: number,
     h2First: boolean,
-    cacheKey: string
+    cacheKey: string,
+    caller?: ProxyCaller
   ): Promise<HostTerminator> {
     return new Promise<HostTerminator>((resolve, reject) => {
       const { key, cert } = minter.get(host);
-      const target: Omit<MitmTarget, 'abort'> = { host, port: targetPort };
+      const target: Omit<MitmTarget, 'abort'> = { host, port: targetPort, ...(caller ? { caller } : {}) };
       let clientErrorLoggedAt = 0;
       /** One ledger row per dedupe window for a client that never got a request through. */
       const reportClientFailure = (reason: string): void => {
@@ -1037,6 +1054,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
           mitmTargets.set(localPort, {
             host: target.host,
             port: target.port,
+            ...(target.caller ? { caller: target.caller } : {}),
             abort: () => {
               if (abortRequested) return;
               abortRequested = true;
@@ -1400,7 +1418,8 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       } catch {}
       return;
     }
-    if (!authorize(req.headers['proxy-authorization'])) {
+    const auth = authorize(req.headers['proxy-authorization']);
+    if (!auth.ok) {
       if (shouldRecordPreAdmission(`407:${rawHost}`)) {
         recordProxyConnect({ host: rawHost, port, note: 'connect (407, missing or bad proxy auth)' });
       }
@@ -1409,6 +1428,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       } catch {}
       return;
     }
+    const caller = auth.caller;
     if (!admit(socket)) {
       // A raw socket may not be TLS-ready yet, so there is no status line to
       // write — closing it is the only honest answer.
@@ -1433,6 +1453,11 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     }
     socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     if (head && head.length) socket.unshift(head);
+
+    // A credential-less admission is legal only while the live config allows
+    // it; remember the opened tunnel so a later `requireCredential` save can
+    // retire it (admission itself is per-connection).
+    if (!caller) trackUnauthenticatedTunnel(socket);
 
     if (ruleTunnels(rawHost)) {
       recordProxyConnect({ host: rawHost, port, note: 'connect (blind tunnel)' });
@@ -1476,7 +1501,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         socket.pause();
         socket.removeListener('data', onData);
         log(peek.sni ? `MITM ${identity}` : `MITM ${identity} (no SNI, authority identity)`);
-        void startMitm(socket, buf, identity, port, peek.sni ? 'sni' : 'authority');
+        void startMitm(socket, buf, identity, port, peek.sni ? 'sni' : 'authority', caller);
         return;
       }
       if (total > MAX_HELLO_BYTES) {
@@ -1501,10 +1526,11 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     hello: Buffer,
     identity: string,
     connectPort: number,
-    by: 'sni' | 'authority'
+    by: 'sni' | 'authority',
+    caller: ProxyCaller | undefined
   ): Promise<void> {
     try {
-      const port = await hostTlsPort(identity, connectPort);
+      const port = await hostTlsPort(identity, connectPort, caller);
       recordProxyConnect({
         host: identity,
         port: connectPort,
@@ -1543,35 +1569,78 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
   });
 
   // ── inbound proxy auth (407) ──
-  // When `forwardProxy.authToken` is set, every CONNECT and plain request must
-  // present `Proxy-Authorization: Basic <base64 anyuser:token>`. The comparison
-  // is constant-time: the header comes off the network, and a byte-at-a-time
-  // compare leaks the token's length and prefix through timing.
-  const currentAuthToken = (): string | undefined => {
-    const live = deps.liveForwardProxy?.()?.authToken;
-    const token = String(live ?? deps.authToken ?? '').trim();
-    return token || undefined;
-  };
-  const authorize = (header: string | string[] | undefined): boolean => {
-    const expected = currentAuthToken();
-    if (!expected) return true;
+  // ONE credential: `Proxy-Authorization: Basic <any:keySecret>` (ADR-0017).
+  // Username is ignored — key names are not unique; the secret is resolved
+  // against the LIVE config by the injected resolver and becomes the tunnel's
+  // accounting identity. Loopback with no credential stays open (historical
+  // posture) unless `forwardProxy.requireCredential` is on; non-loopback binds
+  // set `authRequired`, so deleting every key at runtime fails closed instead
+  // of silently opening the proxy.
+  type AuthOutcome = { ok: true; caller?: ProxyCaller } | { ok: false };
+
+  /**
+   * The ONLY proxy credential (ADR-0017): the Basic password must resolve to
+   * an enabled, unexpired OCR API key, and the tunnel inherits its identity.
+   * Username is ignored (browsers and several SDKs cannot set one; key names
+   * are not unique). Loopback without a credential remains open (historical
+   * posture) unless `forwardProxy.requireCredential` is enabled; a non-loopback
+   * bind is `authRequired` and fails closed.
+   */
+  const authorize = (header: string | string[] | undefined): AuthOutcome => {
+    // Strict mode (hot-applies): `forwardProxy.requireCredential` closes the
+    // loopback loophole, so a gateway plugin's bound key can never act as the
+    // identity of an unauthenticated local process.
+    const required =
+      deps.authRequired === true || deps.liveForwardProxy?.()?.requireCredential === true;
     const raw = Array.isArray(header) ? header[0] : header;
-    if (!raw) return false;
+    if (!raw) return required ? { ok: false } : { ok: true };
     const scheme = /^Basic\s+(.+)$/i.exec(raw.trim());
-    if (!scheme) return false;
+    if (!scheme) return { ok: false };
     let decoded: string;
     try {
       decoded = Buffer.from(scheme[1], 'base64').toString('utf8');
     } catch {
-      return false;
+      return { ok: false };
     }
-    // Any username is accepted — the token is the secret (browsers and several
-    // SDKs cannot set a proxy username at all).
     const colon = decoded.indexOf(':');
-    const presented = Buffer.from(colon === -1 ? decoded : decoded.slice(colon + 1));
-    const want = Buffer.from(expected);
-    return presented.length === want.length && crypto.timingSafeEqual(presented, want);
+    const secret = colon === -1 ? decoded : decoded.slice(colon + 1);
+    const key = deps.resolveApiKey?.(secret);
+    return key ? { ok: true, caller: { keyId: key.id, name: key.name } } : { ok: false };
   };
+
+  // ── strict credential mode: retire tunnels admitted WITHOUT one ──
+  // Admission is per-connection, so a CONNECT opened before the operator
+  // enabled `forwardProxy.requireCredential` would otherwise keep its tunnel
+  // (and its capture/egress) until the client closed it. Track exactly those
+  // tunnels and close them as soon as the live config demands a credential;
+  // the timer only exists while at least one such tunnel is open.
+  const unauthenticatedTunnels = new Set<net.Socket>();
+  let strictSweep: NodeJS.Timeout | undefined;
+  function stopStrictSweepIfIdle(): void {
+    if (unauthenticatedTunnels.size === 0 && strictSweep) {
+      clearInterval(strictSweep);
+      strictSweep = undefined;
+    }
+  }
+  function trackUnauthenticatedTunnel(socket: net.Socket): void {
+    unauthenticatedTunnels.add(socket);
+    socket.once('close', () => {
+      unauthenticatedTunnels.delete(socket);
+      stopStrictSweepIfIdle();
+    });
+    if (strictSweep) return;
+    strictSweep = setInterval(() => {
+      if (deps.liveForwardProxy?.()?.requireCredential !== true) return;
+      for (const tunnel of unauthenticatedTunnels) {
+        try {
+          tunnel.destroy();
+        } catch {}
+      }
+      unauthenticatedTunnels.clear();
+      stopStrictSweepIfIdle();
+    }, 1000);
+    strictSweep.unref?.();
+  }
 
   // ── inbound socket cap ──
   // Every tunneled/MITM'd socket costs TWO fds (the accepted socket plus its
@@ -1618,7 +1687,8 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
   };
 
   async function handlePlainProxyRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    if (!authorize(req.headers['proxy-authorization'])) {
+    const auth = authorize(req.headers['proxy-authorization']);
+    if (!auth.ok) {
       const plainAuthHost = String(req.headers.host || req.socket.remoteAddress || 'unknown').split(':')[0];
       if (shouldRecordPreAdmission(`407:${plainAuthHost}`)) {
         recordProxyConnect({
@@ -1637,6 +1707,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       } catch {}
       return;
     }
+    markProxyCaller(req, auth.caller);
     let target: URL;
     let target0: URL;
     try {
@@ -1737,6 +1808,11 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
             terminator.srv.close();
           } catch {}
         }
+        if (strictSweep) {
+          clearInterval(strictSweep);
+          strictSweep = undefined;
+        }
+        unauthenticatedTunnels.clear();
         drainingTerminators.clear();
         try {
           proxy.close();

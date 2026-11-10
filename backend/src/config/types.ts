@@ -392,19 +392,20 @@ export interface ForwardProxyConfig {
    */
   rules?: ForwardProxyRule[];
   /**
-   * Basic proxy-auth token. When set, EVERY CONNECT and plain request must
-   * carry `Proxy-Authorization: Basic <base64 user:token>` (any username) or it
-   * is answered 407. When unset, auth is off — which is only allowed while the
-   * proxy listens on loopback: binding anywhere else without a token makes this
-   * machine an open MITM proxy for the LAN, so the start is REFUSED.
-   * Hot-applies on save. Same secret-in-config posture as `adminKey`.
-   */
-  authToken?: string;
-  /**
    * Concurrent inbound socket cap on the proxy listener; sockets opened past it
    * are destroyed immediately. Default 512, clamp 16..8192. Hot-applies on save.
    */
   maxConnections?: number;
+  /**
+   * Require an OCR API key on EVERY proxy connection, loopback included
+   * (default false). With this on, identity always travels with the client
+   * (`Proxy-Authorization: Basic <any>:<keySecret>`) and the client-gateway
+   * bound-key fallback (`accountKeyId`) stops applying — no process that can
+   * reach the loopback port can spend a bound key. Hot-applies on save; with
+   * no enabled key every request is refused (407), so the listener never
+   * degrades to open.
+   */
+  requireCredential?: boolean;
   caDir?: string; // MITM CA dir; default ~/.omnicell-router/forward-proxy
   /**
    * Upstream TLS trust for the proxy's ORIGIN legs (ADR-0019).
