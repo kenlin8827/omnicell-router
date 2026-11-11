@@ -316,6 +316,27 @@ export interface TranslationDict {
     breakersDesc: string;
     statusOffline: string;
   };
+  /** Dismissible "star the repository on GitHub" nudge on the Overview page
+   *  (components/StarReminder.tsx). */
+  starReminder: {
+    title: string;
+    body: string;
+    cta: string;
+    dismiss: string;
+    /** Header repository button tooltip before the CTA was used. */
+    footerStar: string;
+    /** Same tooltip after the operator starred — neutral wording. */
+    footerRepo: string;
+  };
+  /** Release update strip between the header and the page canvas
+   *  (components/Layout.tsx); the async check lives on the gateway
+   *  (backend/src/update/check.ts). */
+  update: {
+    /** Interpolates {version} (newest release) and {current} (this gateway). */
+    banner: string;
+    openRelease: string;
+    dismiss: string;
+  };
   tierPolicy: {
     title: string;
     desc: string;

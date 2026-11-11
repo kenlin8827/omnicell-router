@@ -407,6 +407,19 @@ export const enUS: TranslationDict = {
     breakersDesc: 'Gateway automatically maintains real-time health across providers (OpenAI, DeepSeek, Anthropic, Gemini, SiliconFlow).',
     statusOffline: '⚠ Cannot reach the gateway — dashboard data unavailable (auto-retry every 3s)',
   },
+  starReminder: {
+    title: 'Enjoying OmniCellRouter?',
+    body: 'If the gateway saves you time, a star on GitHub helps other operators find it.',
+    cta: 'Star on GitHub',
+    dismiss: 'Hide for now',
+    footerStar: 'Star us on GitHub',
+    footerRepo: 'GitHub repository',
+  },
+  update: {
+    banner: 'v{version} is available — you are on v{current}.',
+    openRelease: 'View release',
+    dismiss: 'Dismiss until the next version',
+  },
   tierPolicy: {
     title: 'Tier Composition Policies',
     desc: 'Member list order (top-down) = priority / failover; supports wildcards and thinking-level mapping. Changes apply immediately; written to config.yaml on save.',

@@ -6,9 +6,9 @@ import {
   FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Settings, Settings2, ShieldAlert,
-  ShieldCheck, Shuffle, Sliders, Sun, Users, Wallet, Waves, Waypoints, Zap, type LucideIcon,
+  ShieldCheck, Shuffle, Sliders, Sun, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
 } from 'lucide-react';
-import { api, type GatewayStatusResponse } from '../lib/api';
+import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../lib/api';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { resolveStoredTheme, resolveThemePreference, THEME_STORAGE_KEY, type ThemePreference } from '../lib/theme';
 import { useI18n } from '../i18n/I18nContext';
@@ -19,8 +19,14 @@ import { useToast } from './ToastProvider';
 import { Combobox } from './Combobox';
 import { QuotaPeek } from './QuotaPeek';
 import { CommandPalette, type CommandItem } from './CommandPalette';
+import { UpdateBanner } from './UpdateBanner';
 import { WindowControls } from './WindowControls';
 import { copyToClipboard } from '../lib/clipboard';
+import { GITHUB_REPO_URL } from '../lib/links';
+import { STAR_REMINDER_CHANGED_EVENT, isStarNudgeDone } from '../lib/starReminder';
+
+/** Latest release the operator dismissed; a NEWER release prompts again. */
+const UPDATE_DISMISSED_KEY = 'ocr_update_dismissed_version';
 
 interface NavItemDef {
   to: string;
@@ -145,6 +151,28 @@ export const Layout: React.FC = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY)));
+
+  /** Once the operator used the star CTA, the header repository button drops
+   *  its "star us" tooltip — it stays a plain repo link. Re-read on the shared
+   *  change event (same document) and on `storage` (another tab / window). */
+  const [starNudgeDone, setStarNudgeDone] = useState(isStarNudgeDone);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResponse | null>(null);
+  const [dismissedUpdate, setDismissedUpdate] = useState<string>(() => {
+    try {
+      return localStorage.getItem(UPDATE_DISMISSED_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  useEffect(() => {
+    const sync = () => setStarNudgeDone(isStarNudgeDone());
+    window.addEventListener(STAR_REMINDER_CHANGED_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(STAR_REMINDER_CHANGED_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
   const [webAuthActive, setWebAuthActive] = useState(false);
 
   useEffect(() => {
@@ -180,6 +208,32 @@ export const Layout: React.FC = () => {
     const interval = setInterval(refreshStatus, 3000);
     return () => clearInterval(interval);
   }, [refreshStatus]);
+
+  /** One background read per console load; while the gateway's GitHub call is
+   *  still in flight the answer is `checking: true` and a few short polls
+   *  collect the settled snapshot. Failures are silent — a gateway with no
+   *  egress must not grow an error strip for a display-only check. */
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const info = await api.getUpdateCheck();
+        if (cancelled) return;
+        setUpdateInfo(info);
+        attempts += 1;
+        if (info.checking && attempts < 5) timer = window.setTimeout(poll, 4000);
+      } catch {
+        // Display-only: older gateways and offline starts simply show nothing.
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   const currentRouteMeta = ROUTE_META_KEYS[location.pathname] ??
     Object.keys(ROUTE_META_KEYS)
@@ -268,18 +322,40 @@ export const Layout: React.FC = () => {
     setCollapsedGroups((previous) => ({ ...previous, [groupId]: !previous[groupId] }));
   };
 
+  const latestRelease = updateInfo?.updateAvailable ? updateInfo.latestVersion : null;
+  const showUpdate = Boolean(latestRelease && latestRelease !== dismissedUpdate);
+  const dismissUpdate = () => {
+    if (!latestRelease) return;
+    setDismissedUpdate(latestRelease);
+    try {
+      localStorage.setItem(UPDATE_DISMISSED_KEY, latestRelease);
+    } catch {
+      // Persistence is best-effort; the banner stays hidden for this mount.
+    }
+  };
+
   return (
     <div className="app-shell">
       {mobileOpen && <button className="sidebar-scrim" type="button" aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
       <aside className={`app-sidebar${compact ? ' is-compact' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
         <div className="brand-row">
-          <NavLink to="/" className="brand-link" aria-label="OmniCellRouter">
+          <NavLink to="/" className="brand-mark-link" aria-label="OmniCellRouter">
             <span className="brand-mark"><Zap size={19} strokeWidth={2.4} /></span>
-            <span className="brand-copy">
-              <strong>OmniCellRouter</strong>
-              <small>{t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}</small>
-            </span>
           </NavLink>
+          <div className="brand-copy">
+            <NavLink to="/" className="brand-name"><strong>OmniCellRouter</strong></NavLink>
+            <small>
+              {showUpdate && updateInfo && latestRelease ? (
+                <a className="brand-update" href={updateInfo.releaseUrl} target="_blank" rel="noreferrer"
+                  title={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}
+                  aria-label={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}>
+                  {t('nav.version', { version: status?.version ?? __APP_VERSION__ })} → {latestRelease}
+                </a>
+              ) : (
+                <>{t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}</>
+              )}
+            </small>
+          </div>
           <button type="button" className="app-icon-button sidebar-collapse" onClick={() => setCompact((value) => !value)}
             title={t(compact ? 'nav.expand' : 'nav.collapse')} aria-label={t(compact ? 'nav.expand' : 'nav.collapse')}>
             {compact ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
@@ -361,6 +437,15 @@ export const Layout: React.FC = () => {
             </div>
             <Combobox variant="ghost" value={themePreference} onChange={(value) => setThemePreference(resolveThemePreference(value))} options={themeOptions}
               style={{ width: 136, flexShrink: 0, padding: '7px 8px', fontSize: 'var(--text-sm)' }} />
+            {/* Repository link, same 36px icon-button anatomy as its neighbours:
+                the header's icon row is the one place a lone brand glyph reads
+                as native chrome. A plain anchor — the desktop shell's external
+                link interceptor routes it to the system browser. */}
+            <a className="app-icon-button header-github" href={GITHUB_REPO_URL} target="_blank" rel="noreferrer"
+              title={t(starNudgeDone ? 'starReminder.footerRepo' : 'starReminder.footerStar')}
+              aria-label={t(starNudgeDone ? 'starReminder.footerRepo' : 'starReminder.footerStar')}>
+              <Github size={16} />
+            </a>
             <span className="header-separator" />
             <button className="app-icon-button" onClick={handleRestartGateway} title={t('header.restart')} aria-label={t('header.restart')}>
               <RotateCcw size={16} />
@@ -376,6 +461,14 @@ export const Layout: React.FC = () => {
           </div>
           <WindowControls />
         </header>
+        {showUpdate && updateInfo && latestRelease && (
+          <UpdateBanner
+            currentVersion={updateInfo.currentVersion}
+            latestVersion={latestRelease}
+            releaseUrl={updateInfo.releaseUrl}
+            onDismiss={dismissUpdate}
+          />
+        )}
         <main className="app-main"><div className="page-canvas"><Outlet context={{ status, statusError, refreshStatus }} /></div></main>
       </div>
       <CommandPalette open={paletteOpen} items={commandItems} onClose={() => setPaletteOpen(false)} onSelect={(to) => navigate(to)} />

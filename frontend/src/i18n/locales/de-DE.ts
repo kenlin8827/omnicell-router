@@ -408,6 +408,19 @@ export const deDE: TranslationDict = {
     breakersDesc: 'Das Gateway pflegt automatisch die Echtzeit-Gesundheit der Anbieter (OpenAI, DeepSeek, Anthropic, Gemini, SiliconFlow).',
     statusOffline: '⚠ Gateway nicht erreichbar — Dashboard-Daten nicht verfügbar (automatischer Wiederholungsversuch alle 3 s)',
   },
+  starReminder: {
+    title: 'OmniCellRouter gefällt dir?',
+    body: 'Wenn dir das Gateway Zeit spart, hilft ein Stern auf GitHub anderen Betreibern, es zu finden.',
+    cta: 'Auf GitHub mit Stern markieren',
+    dismiss: 'Vorerst ausblenden',
+    footerStar: 'Gib uns einen Stern auf GitHub',
+    footerRepo: 'GitHub-Repository',
+  },
+  update: {
+    banner: 'v{version} ist verfügbar — du nutzt v{current}.',
+    openRelease: 'Release ansehen',
+    dismiss: 'Bis zur nächsten Version ausblenden',
+  },
   tierPolicy: {
     title: 'Tier-Zusammensetzungs-Politiken',
     desc: 'Die Reihenfolge der Mitgliederliste (oben nach unten) = Priorität / Failover; unterstützt Wildcards und Mapping von Denkstufen. Änderungen greifen sofort; beim Speichern wird in config.yaml geschrieben.',

@@ -408,6 +408,19 @@ export const frFR: TranslationDict = {
     breakersDesc: 'La passerelle maintient automatiquement la santé en temps réel des fournisseurs (OpenAI, DeepSeek, Anthropic, Gemini, SiliconFlow).',
     statusOffline: '⚠ La passerelle est injoignable — données du tableau de bord indisponibles (nouvel essai toutes les 3 s)',
   },
+  starReminder: {
+    title: 'OmniCellRouter vous est utile ?',
+    body: 'Si le gateway vous fait gagner du temps, une étoile sur GitHub aide d\'autres opérateurs à le trouver.',
+    cta: 'Mettre une étoile sur GitHub',
+    dismiss: 'Masquer pour le moment',
+    footerStar: 'Mettez-nous une étoile sur GitHub',
+    footerRepo: 'Dépôt GitHub',
+  },
+  update: {
+    banner: 'La v{version} est disponible — vous utilisez la v{current}.',
+    openRelease: 'Voir la version',
+    dismiss: 'Masquer jusqu\'à la prochaine version',
+  },
   tierPolicy: {
     title: 'Politiques de composition des paliers',
     desc: 'L’ordre de la liste de membres (de haut en bas) = priorité / bascule ; prend en charge les jokers et le mappage des niveaux de réflexion. Les changements s’appliquent immédiatement ; écrits dans config.yaml à l’enregistrement.',

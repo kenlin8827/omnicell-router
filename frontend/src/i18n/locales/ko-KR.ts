@@ -408,6 +408,19 @@ export const koKR: TranslationDict = {
     breakersDesc: '게이트웨이는 공급자(OpenAI, DeepSeek, Anthropic, Gemini, SiliconFlow)의 실시간 상태를 자동 관리합니다.',
     statusOffline: '⚠ 게이트웨이에 도달할 수 없습니다 — 대시보드 데이터를 사용할 수 없음 (3초마다 자동 재시도)',
   },
+  starReminder: {
+    title: 'OmniCellRouter가 마음에 드시나요?',
+    body: '게이트웨이가 시간을 아껴 준다면 GitHub 스타가 다른 운영자의 발견에 도움이 됩니다.',
+    cta: 'GitHub에서 스타 누르기',
+    dismiss: '잠시 숨기기',
+    footerStar: 'GitHub에서 스타를 눌러 주세요',
+    footerRepo: 'GitHub 저장소',
+  },
+  update: {
+    banner: 'v{version} 버전이 출시되었습니다 — 현재 v{current} 사용 중입니다.',
+    openRelease: '릴리스 보기',
+    dismiss: '다음 버전까지 숨기기',
+  },
   tierPolicy: {
     title: '티어 구성 정책',
     desc: '멤버 목록 순서(위에서 아래로) = 우선순위 / 페일오버. 와일드카드와 사고 수준 매핑을 지원합니다. 변경은 즉시 적용되며 저장 시 config.yaml 에 기록됩니다.',

@@ -408,6 +408,19 @@ export const jaJP: TranslationDict = {
     breakersDesc: 'ゲートウェイはプロバイダー（OpenAI、DeepSeek、Anthropic、Gemini、SiliconFlow）の健全性をリアルタイムで自動管理します。',
     statusOffline: '⚠ ゲートウェイに到達できません — ダッシュボードデータを取得できません（3 秒ごとに自動再試行）',
   },
+  starReminder: {
+    title: 'OmniCellRouter を気に入っていただけましたか？',
+    body: 'ゲートウェイが時間の節約になっていれば、GitHub のスターが他の運用者の目に留まる助けになります。',
+    cta: 'GitHub でスターを付ける',
+    dismiss: 'しばらく表示しない',
+    footerStar: 'GitHub でスターを付ける',
+    footerRepo: 'GitHub リポジトリ',
+  },
+  update: {
+    banner: 'v{version} が公開されています（現在 v{current}）。',
+    openRelease: 'リリースを見る',
+    dismiss: '次のバージョンまで表示しない',
+  },
   tierPolicy: {
     title: 'ティア構成ポリシー',
     desc: 'メンバーリストの順序（上から下）= 優先度 / フェイルオーバー。ワイルドカードと思考レベルのマッピングをサポート。変更は即時適用され、保存時に config.yaml に書き込まれます。',

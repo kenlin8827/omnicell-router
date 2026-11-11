@@ -406,6 +406,19 @@ export const esES: TranslationDict = {
     breakersDesc: 'La pasarela mantiene automáticamente la salud en tiempo real de los proveedores (OpenAI, DeepSeek, Anthropic, Gemini, SiliconFlow).',
     statusOffline: '⚠ No se puede alcanzar la pasarela — datos del panel no disponibles (reintento automático cada 3 s)',
   },
+  starReminder: {
+    title: '¿Te resulta útil OmniCellRouter?',
+    body: 'Si el gateway te ahorra tiempo, una estrella en GitHub ayuda a que otros operadores lo encuentren.',
+    cta: 'Dar una estrella en GitHub',
+    dismiss: 'Ocultar por ahora',
+    footerStar: 'Danos una estrella en GitHub',
+    footerRepo: 'Repositorio de GitHub',
+  },
+  update: {
+    banner: 'La v{version} ya está disponible — usas la v{current}.',
+    openRelease: 'Ver la versión',
+    dismiss: 'Ocultar hasta la próxima versión',
+  },
   tierPolicy: {
     title: 'Políticas de composición de categorías',
     desc: 'El orden de la lista de miembros (de arriba abajo) = prioridad / failover; admite comodines y mapeo de niveles de pensamiento. Los cambios se aplican de inmediato; se guardan en config.yaml al guardar.',

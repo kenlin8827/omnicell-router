@@ -13,6 +13,7 @@ import { api, type GatewayStatusResponse, type UsageStatsResponse } from '../lib
 import { decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
+import { StarReminder } from '../components/StarReminder';
 import { useI18n } from '../i18n/I18nContext';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -105,6 +106,9 @@ export const OverviewPage: React.FC = () => {
           />
         </div>
       </section>
+      {/* One-shot GitHub star nudge: self-gated on lifetime traffic and a
+          localStorage dismissal flag (see the component header). */}
+      <StarReminder requestCount={metrics?.totalRequests ?? 0} />
       <div className="metric-grid">
         <div className="card metric-card">
           <div className="metric-card-top"><span>{t('overview.requests')}</span><span className="metric-icon"><Activity size={16} /></span></div>

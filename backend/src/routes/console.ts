@@ -31,6 +31,7 @@ import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
+import { getUpdateChecker } from '../update/check.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { caCertPath, describeCa, ensureCa, resolveCaDir } from '../forward-proxy/ca.js';
 import { probeCaTrustedCached } from '../forward-proxy/ca-trust.js';
@@ -1115,6 +1116,14 @@ export function registerConsoleRoutes(
   };
 
   app.get('/api/admin/status', handleStatus);
+
+  // 3A1'. Release update check — display-only and cached in-process. The
+  // first console read starts the GitHub call in the background and answers
+  // `checking: true`; the console polls until the snapshot settles. A stale
+  // entry (success or failure TTL) triggers the next background refresh here,
+  // so every console load is an opportunity to learn about a new release
+  // without any request ever waiting on api.github.com.
+  app.get('/api/admin/update-check', async () => ({ status: 'ok', ...getUpdateChecker().status() }));
 
   // 3A2. Forward-proxy access log: every NON-intercepted HTTP exchange plus
   // CONNECT tunnel decisions (forward-proxy/access-log.ts — memory ring backed

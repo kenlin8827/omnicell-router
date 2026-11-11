@@ -395,6 +395,19 @@ export const zhCN: TranslationDict = {
     breakersDesc: '网关自动维护各模型提供商的实时健康指标。当出现连续失败或超时，自动转移到下游备选梯队，保障会话永不中断。',
     statusOffline: '⚠ 无法连接网关，看板数据不可用（每 3 秒自动重试）',
   },
+  starReminder: {
+    title: '用着顺手？',
+    body: '如果 OmniCellRouter 帮你省了时间，去 GitHub 点个 Star 能让更多运维发现它。',
+    cta: '去 GitHub 点 Star',
+    dismiss: '关闭，稍后再提醒',
+    footerStar: '在 GitHub 上点个 Star',
+    footerRepo: 'GitHub 仓库',
+  },
+  update: {
+    banner: 'v{version} 已发布，当前版本 v{current}。',
+    openRelease: '查看发布页',
+    dismiss: '关闭（下个版本再提醒）',
+  },
   tierPolicy: {
     title: '梯队策略',
     desc: '成员列表自上而下 = 优先级 / 故障转移顺序；支持通配符与思考级别映射。修改即时生效，保存后写入配置。',

@@ -408,6 +408,19 @@ export const ptBR: TranslationDict = {
     breakersDesc: 'O gateway mantém automaticamente a saúde em tempo real dos provedores (OpenAI, DeepSeek, Anthropic, Gemini, SiliconFlow).',
     statusOffline: '⚠ Não é possível alcançar o gateway — dados do painel indisponíveis (nova tentativa automática a cada 3s)',
   },
+  starReminder: {
+    title: 'Gostando do OmniCellRouter?',
+    body: 'Se o gateway economiza seu tempo, uma estrela no GitHub ajuda outros operadores a encontrá-lo.',
+    cta: 'Dar uma estrela no GitHub',
+    dismiss: 'Ocultar por enquanto',
+    footerStar: 'Dê uma estrela no GitHub',
+    footerRepo: 'Repositório no GitHub',
+  },
+  update: {
+    banner: 'A v{version} está disponível — você está na v{current}.',
+    openRelease: 'Ver release',
+    dismiss: 'Ocultar até a próxima versão',
+  },
   tierPolicy: {
     title: 'Políticas de composição de tiers',
     desc: 'A ordem da lista de membros (de cima para baixo) = prioridade / failover; suporta curingas e mapeamento de níveis de pensamento. As mudanças valem imediatamente; gravadas no config.yaml ao salvar.',

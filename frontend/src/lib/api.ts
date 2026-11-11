@@ -2016,9 +2016,33 @@ async function readNdjsonLines(res: Response, onLine: (line: string) => void): P
   }
 }
 
+/** Mirrors backend `UpdateCheckSnapshot` (backend/src/update/check.ts) plus the
+ *  route envelope. Display-only: `checking` means the gateway's background
+ *  GitHub call is still in flight. */
+export interface UpdateCheckResponse {
+  status: 'ok';
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  releaseName?: string;
+  publishedAt?: string;
+  checkedAt?: string;
+  checking: boolean;
+  error?: string;
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Release update check — cached in the gateway; the first read starts the
+   *  background GitHub call and answers `checking: true`. */
+  async getUpdateCheck(): Promise<UpdateCheckResponse> {
+    const res = await fetch('/api/admin/update-check');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
