@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { registerGlobalShims, unregisterGlobalShims } from '../src/cli/shim.js';
+import { spawnSync } from 'node:child_process';
+import { registerGlobalShims, shimStatus, unregisterGlobalShims } from '../src/cli/shim.js';
 
 /**
  * Two shim flavours share one bin dir: repo-checkout trampolines (shell out to
@@ -111,5 +112,89 @@ describe('CLI shim registration', () => {
       assert.deepEqual(fs.readdirSync(bin), [path.basename(foreign)]);
       assert.deepEqual(res.removed, []);
     });
+  });
+});
+
+describe('shim status (the desktop tray toggle reads this)', () => {
+  it('is installed after registration and empty again after uninstall', () => {
+    makeSandbox(({ repo, bin }) => {
+      // The toggle's verb must follow the files on disk: install -> remove is
+      // one round trip, so a menu that still says "install" after it worked
+      // (or "uninstall" after the operator deleted a shim) cannot happen.
+      registerGlobalShims(repo, bin, { writePath: false });
+      const installed = shimStatus(bin);
+      assert.equal(installed.installed, true);
+      assert.equal(installed.binDir, bin);
+      assert.equal(installed.shims.length, isWindows ? 4 : 2);
+      assert.ok(installed.shims.every((file) => path.dirname(file) === bin));
+
+      unregisterGlobalShims(repo, bin);
+      const gone = shimStatus(bin);
+      assert.equal(gone.installed, false);
+      assert.deepEqual(gone.shims, []);
+    });
+  });
+
+  it('a missing bin dir and a foreign same-named file both read as not installed', () => {
+    makeSandbox(({ bin }) => {
+      assert.equal(shimStatus(path.join(bin, 'nope')).installed, false);
+
+      // Same marker discipline as uninstall: our NAME is not our FILE.
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, isWindows ? 'ocr.cmd' : 'ocr'), '#!/bin/sh\necho not ours\n');
+      const status = shimStatus(bin);
+      assert.equal(status.installed, false);
+      assert.deepEqual(status.shims, []);
+    });
+  });
+});
+
+describe('shims-status CLI contract (what the desktop tray shells out to)', () => {
+  it('answers pure JSON + exit 0/1 through the dual entry, without booting a gateway', () => {
+    // The tray toggle reads ONLY two things: a parseable JSON line and the
+    // exit code (0 = installed). Both hold for the real entry point the desktop
+    // runs (`ocr-backend --cli …` → backend/src/index.ts), and the dual entry
+    // must never fall through to `main()` — a cliMode regression would turn a
+    // menu click into a second gateway boot instead of an answer.
+    //
+    // Sandboxed by redirecting the platform's data dir (LOCALAPPDATA / HOME),
+    // taken FROM the command's own reply so this test never re-derives the bin
+    // dir. `writePath: false` keeps the operator's PATH untouched.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-shims-status-'));
+    try {
+      const env = { ...process.env };
+      if (isWindows) env.LOCALAPPDATA = root;
+      else env.HOME = root;
+      const cliEntry = path.join(import.meta.dir, '..', 'src', 'index.ts');
+      const run = () =>
+        spawnSync(process.execPath, [cliEntry, '--cli', 'shims-status'], {
+          env,
+          encoding: 'utf8',
+          timeout: 60_000,
+        });
+
+      const empty = run();
+      assert.equal(empty.status, 1, `stderr: ${empty.stderr}`);
+      // No banner: stdout is one JSON document and nothing else.
+      const emptyReply = JSON.parse(empty.stdout) as { binDir: string; shims: string[]; installed: boolean };
+      assert.equal(emptyReply.installed, false);
+      assert.deepEqual(emptyReply.shims, []);
+      assert.ok(
+        emptyReply.binDir.startsWith(root),
+        `sandbox redirect failed, binDir = ${emptyReply.binDir}`
+      );
+
+      registerGlobalShims(path.join(root, 'no-repo'), emptyReply.binDir, {
+        writePath: false,
+        packagedInstall: true,
+      });
+      const installed = run();
+      assert.equal(installed.status, 0, `stderr: ${installed.stderr}`);
+      const reply = JSON.parse(installed.stdout) as { shims: string[]; installed: boolean };
+      assert.equal(reply.installed, true);
+      assert.equal(reply.shims.length, isWindows ? 4 : 2);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -1,4 +1,9 @@
 ; Custom NSIS hooks (tauri.conf.json bundle.windows.nsis.installerHooks).
+;
+; The installer script these macros are inserted into is the VENDORED template
+; `nsis/installer.nsi` (tauri.conf.json bundle.windows.nsis.template), a copy of
+; the stock tauri v2 template plus one added wizard page. Everything said below
+; about "the STOCK template" still holds: that code is stock and untouched.
 ; Upgrades must replace a RUNNING app: kill both binaries before file copy
 ; (otherwise the old images keep serving stale code) and auto-start the
 ; fresh build afterwards.

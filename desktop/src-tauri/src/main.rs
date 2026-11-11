@@ -281,6 +281,10 @@ struct GatewayState {
     /// Tray checkbox for the above; a failed enable/disable reverts it so
     /// the menu never claims a registration the OS refused.
     start_with_system_item: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    /// The one tray item that is NOT a checkbox: install-or-uninstall the
+    /// `ocr` command. It toggles, so its label is rewritten after every
+    /// action — the item must never offer a verb that does not apply.
+    cli_command_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 fn settings_path(home: &std::path::Path) -> std::path::PathBuf {
@@ -327,13 +331,117 @@ fn save_close_to_tray(home: &std::path::Path, enabled: bool) {
     save_setting(home, "closeToTray", serde_json::Value::Bool(enabled));
 }
 
-/// CLI-shim preference: `Some(true)` = registered, `Some(false)` = the operator
-/// declined the first-run offer, `None` = not asked yet.
+/// Whether the first-run "start with system" question has been ANSWERED.
+/// Deliberately not a mirror of the current state: the OS registration (Run
+/// key / LaunchAgent / XDG file) stays authoritative for that, so this only
+/// stops the offer from nagging after a yes or a no.
+fn autostart_asked(home: &std::path::Path) -> bool {
+    fs::read_to_string(settings_path(home))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("autostartPrompt").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+/// Register (or unregister) the login launch and mirror the result into the
+/// shell: the tray checkbox, the in-memory flag and — for an enable — the
+/// implied close-to-tray preference. ONE path for both callers (tray item /
+/// first-run offer) so the implied flip cannot drift between them.
+fn set_autostart(
+    app: &tauri::AppHandle,
+    enabled: bool,
+    home: &std::path::Path,
+) -> Result<(), String> {
+    let result = if enabled {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    };
+    result.map_err(|err| err.to_string())?;
+    let state = app.state::<GatewayState>();
+    state.start_with_system.store(enabled, Ordering::Relaxed);
+    {
+        let item = state.start_with_system_item.lock().unwrap();
+        if let Some(item) = item.as_ref() {
+            let _ = item.set_checked(enabled);
+        }
+    }
+    // A login launch exists to keep the gateway running; with tray residency
+    // off, the first window close would kill it and defeat the whole point.
+    // Flip the sibling checkbox (visible, persisted) — the operator can still
+    // turn it back off afterwards.
+    if enabled && !state.close_to_tray.load(Ordering::Relaxed) {
+        state.close_to_tray.store(true, Ordering::Relaxed);
+        {
+            let item = state.close_to_tray_item.lock().unwrap();
+            if let Some(item) = item.as_ref() {
+                let _ = item.set_checked(true);
+            }
+        }
+        save_close_to_tray(home, true);
+        shell_log(home, "close_to_tray = true (implied by start_with_system)");
+    }
+    Ok(())
+}
+
+/// Was the first-run CLI question ANSWERED: `Some(true)` = the operator said
+/// yes, `Some(false)` = declined, `None` = never asked.
+///
+/// Deliberately NOT "are the commands installed" — that is the marker-checked
+/// shim files on disk (`ocr shims-status`), which the tray toggle reads. This
+/// key only stops the offer from nagging again; after a tray uninstall it still
+/// says `true`, and that is correct: the question was answered.
 fn cli_shim_choice(home: &std::path::Path) -> Option<bool> {
     fs::read_to_string(settings_path(home))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("cliShims").and_then(|b| b.as_bool()))
+}
+
+/// One `ocr-backend --cli <action>` invocation, wired the same way for every
+/// shim action. No console of its own, so all three streams are silent; the
+/// outcome is the exit status.
+fn sidecar_cli(
+    home: &std::path::Path,
+    sidecar: &std::path::Path,
+    action: &str,
+) -> Command {
+    let mut cmd = Command::new(sidecar);
+    cmd.arg("--cli")
+        .arg(action)
+        // Pin the app's data root INTO the shim: the shell runs the gateway
+        // under its own OCR_HOME (Windows `%LOCALAPPDATA%\omnicell-router`)
+        // while the CLI default is `~/.omnicell-router`. Without this the
+        // installed `ocr` reads a different book-set than the app and cannot
+        // even see the gateway it is meant to control.
+        .env("OCR_HOME", home)
+        .env("PATH", sidecar_path_env())
+        // The shell has no console of its own; keep the registration silent.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// The tray toggle's state, and the uninstall action, both answered by the
+/// packaged binary itself (`ocr shims-status` / `ocr uninstall-shims`).
+///
+/// Deliberate: the shell must NOT re-derive the shim bin dir or the shim
+/// markers — that path literal lives in `backend/src/cli/paths.ts`, and a
+/// second copy here would silently report on the wrong directory the day it
+/// moves. For `shims-status` the exit code IS the answer (0 = installed); any
+/// failure to run it reads as "not installed", which is the safe verb: the
+/// menu then offers install, which is idempotent and repairs a broken shim.
+fn run_shim_action(home: &std::path::Path, sidecar: &std::path::Path, action: &str) -> bool {
+    match sidecar_cli(home, sidecar, action).status() {
+        Ok(status) => status.success(),
+        Err(err) => {
+            shell_log(home, &format!("cli {action} failed to run: {err}"));
+            false
+        }
+    }
 }
 
 /// Register the packaged gateway's `--cli` surface as `ocr` / `omnicell-router`.
@@ -353,23 +461,10 @@ fn install_cli_shims(home: &std::path::Path, sidecar: &std::path::Path) -> bool 
         save_setting(home, "cliShims", serde_json::Value::Bool(false));
         return false;
     }
-    let mut cmd = Command::new(sidecar);
-    cmd.arg("--cli")
-        .arg("install-shims")
-        // Pin the app's data root INTO the shim: the shell runs the gateway
-        // under its own OCR_HOME (Windows `%LOCALAPPDATA%\omnicell-router`)
-        // while the CLI default is `~/.omnicell-router`. Without this the
-        // installed `ocr` reads a different book-set than the app and cannot
-        // even see the gateway it is meant to control.
-        .env("OCR_HOME", home)
-        .env("PATH", sidecar_path_env())
-        // The shell has no console of its own; keep the registration silent.
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    match cmd.status() {
+    // The ONE action that also records the first-run ANSWER (`cliShims`): the
+    // dialog must not nag again, while the tray toggle stays the retry/repair
+    // path and reads its verb from the shims on disk.
+    match sidecar_cli(home, sidecar, "install-shims").status() {
         Ok(status) if status.success() => {
             save_setting(home, "cliShims", serde_json::Value::Bool(true));
             shell_log(home, "cli shims registered");
@@ -386,25 +481,111 @@ fn install_cli_shims(home: &std::path::Path, sidecar: &std::path::Path) -> bool 
     }
 }
 
-/// First-run offer: ask ONCE whether to register the `ocr` command. A login
-/// (autostart) launch never prompts — a hidden tray start must not block on a
-/// modal dialog; the question waits for the next visible launch.
+/// Parse the wizard's hand-off file: `autostart=<0|1>` and `cliShims=<0|1>`,
+/// one per line (see `OcrOptionsLeave` in `nsis/installer.nsi`). `None` means
+/// the page never ran, so the in-app prompt still owns that question.
+fn installer_choice_answers(text: &str) -> (Option<bool>, Option<bool>) {
+    let answer = |key: &str| {
+        text.lines().find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == key).then(|| matches!(v.trim(), "1" | "true"))
+        })
+    };
+    (answer("cliShims"), answer("autostart"))
+}
+
+/// Fold the NSIS wizard's answers (`installer-choice.ini` in OCR_HOME, written
+/// by the "Startup options" page of `nsis/installer.nsi`) into the SAME
+/// settings the in-app prompts read, so a wizard-answered install asks nothing.
+///
+/// Consume-once comes from those settings, not from the file: a stale file (the
+/// remove failed, or a relaunch before the write landed) cannot replay an
+/// answer the operator has since changed in the tray.
+fn consume_installer_choice(
+    app: &tauri::AppHandle,
+    home: &std::path::Path,
+    sidecar: &std::path::Path,
+) {
+    let path = home.join("installer-choice.ini");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let (cli, autostart) = installer_choice_answers(&text);
+    if let Some(cli) = cli {
+        save_setting(home, "cliShims", serde_json::Value::Bool(cli));
+        if cli {
+            // Same reason as the dialog path: registration shells out to the
+            // bundled gateway, so it must not block the event-loop thread.
+            let (home, sidecar) = (home.to_path_buf(), sidecar.to_path_buf());
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                // The tray toggle is labelled from the shims on disk, so a
+                // first-run/installer install must flip it NOW — the tray was
+                // built (with "install") before this answer arrived.
+                if install_cli_shims(&home, &sidecar) {
+                    refresh_cli_command_item(&handle, true);
+                }
+            });
+        }
+        shell_log(home, &format!("installer choice: cli shims = {cli}"));
+    }
+    if let Some(autostart) = autostart {
+        // The wizard's answer IS the answer: a checked box enables the login
+        // launch, an unchecked one records the decline so nothing asks again.
+        save_setting(home, "autostartPrompt", serde_json::Value::Bool(true));
+        if autostart {
+            match set_autostart(app, true, home) {
+                Ok(()) => shell_log(home, "installer choice: start_with_system = true"),
+                Err(err) => shell_log(
+                    home,
+                    &format!("start_with_system = true failed: {err}"),
+                ),
+            }
+        }
+        shell_log(home, &format!("installer choice: start_with_system = {autostart}"));
+    }
+    let _ = fs::remove_file(&path);
+}
+
+/// First-run offers, asked ONCE each on a VISIBLE launch. Both are opt-in OS
+/// registrations (`ocr` command on PATH, login launch), both remember the
+/// answer, and both are chained into ONE sequence: the second question is
+/// asked when the first dialog closes, so two modals never stack and neither
+/// question is starved by the other (an unanswered/failed first question must
+/// not suppress the second).
+///
+/// A Windows install answered both in the wizard already
+/// (`consume_installer_choice`): then the settings exist and nothing is asked.
+/// The dialogs remain the fallback for every path with no wizard — macOS dmg,
+/// Linux AppImage/deb, silent `/S` and passive `/P` installs, and upgrades
+/// from a build that predates the wizard page.
+///
+/// A login (autostart) launch never prompts — a hidden tray start must not
+/// block on a modal dialog; the questions wait for the next visible launch.
 ///
 /// Uses the ASYNC `show`, not `blocking_show`: setup owns the main thread and
 /// the plugin dispatches dialogs through the event loop, so blocking here would
-/// deadlock startup (documented by the plugin itself).
-fn offer_cli_shims(
+/// deadlock startup (documented by the plugin itself). The response callback
+/// runs on a worker thread, which is why the follow-up dialog is shown from a
+/// cloned `AppHandle` (its own `show` re-dispatches to the main thread).
+fn offer_first_run_choices(
     app: &tauri::App,
     home: &std::path::Path,
     sidecar: &std::path::Path,
     allow_prompt: bool,
 ) {
-    if cli_shim_choice(home).is_some() || !allow_prompt {
+    if !allow_prompt {
+        return;
+    }
+    consume_installer_choice(app.handle(), home, sidecar);
+    if cli_shim_choice(home).is_some() {
+        offer_autostart(app.handle(), home);
         return;
     }
     let labels = i18n::labels();
     let home = home.to_path_buf();
     let sidecar = sidecar.to_path_buf();
+    let handle = app.handle().clone();
     app.dialog()
         .message(labels.cli_prompt_message)
         .title(labels.cli_prompt_title)
@@ -414,14 +595,60 @@ fn offer_cli_shims(
                 // Registration shells out to the bundled gateway (blocking
                 // `status()`): keep it off the event-loop thread so the window
                 // never freezes while the shim is written.
+                let (home, sidecar) = (home.clone(), sidecar.clone());
+                let tray = handle.clone();
                 std::thread::spawn(move || {
-                    install_cli_shims(&home, &sidecar);
+                    // Flip the tray toggle to "remove": it was labelled
+                    // "install" when the menu was built, before this answer.
+                    if install_cli_shims(&home, &sidecar) {
+                        refresh_cli_command_item(&tray, true);
+                    }
                 });
             } else {
                 // Persist the DECLINE so the dialog never nags; the tray entry
                 // stays available for a later change of mind.
                 save_setting(&home, "cliShims", serde_json::Value::Bool(false));
                 shell_log(&home, "cli shims declined by operator");
+            }
+            offer_autostart(&handle, &home);
+        });
+}
+
+/// Second first-run question: should the shell register itself for OS login
+/// launch? Asked only when the install path had no wizard page to answer it.
+fn offer_autostart(app: &tauri::AppHandle, home: &std::path::Path) {
+    if autostart_asked(home) {
+        return;
+    }
+    // Already registered — the tray toggle of an earlier session, or an entry
+    // the operator made by hand. Nothing to ask, just stop offering.
+    if app.autolaunch().is_enabled().unwrap_or(false) {
+        save_setting(home, "autostartPrompt", serde_json::Value::Bool(true));
+        return;
+    }
+    let labels = i18n::labels();
+    let home = home.to_path_buf();
+    let handle = app.clone();
+    app.dialog()
+        .message(labels.autostart_prompt_message)
+        .title(labels.autostart_prompt_title)
+        .buttons(MessageDialogButtons::YesNo)
+        .show(move |accepted| {
+            // Answering either way settles the question: the tray checkbox is
+            // the way back in, so this prompt must not reappear.
+            save_setting(&home, "autostartPrompt", serde_json::Value::Bool(true));
+            if accepted {
+                match set_autostart(&handle, true, &home) {
+                    Ok(()) => shell_log(&home, "start_with_system = true"),
+                    // Locked-down policy / unwritable registry: the gateway
+                    // still works and the tray item stays for a manual retry.
+                    Err(err) => shell_log(
+                        &home,
+                        &format!("start_with_system = true failed: {err}"),
+                    ),
+                }
+            } else {
+                shell_log(&home, "start with system declined by operator");
             }
         });
 }
@@ -575,15 +802,27 @@ fn show_main(app: &tauri::AppHandle) {
 }
 
 /// System tray: left click raises the window, right click opens the menu
-/// (Open Console / Close-to-tray toggle / Start-with-system toggle / Quit).
-/// Quit goes through app.exit(0), which still runs the gateway cleanup in
-/// RunEvent::Exit.
+/// (Open Console / Close-to-tray toggle / Start-with-system toggle /
+/// Install-or-Remove OCR command / Quit). Quit goes through app.exit(0),
+/// which still runs the gateway cleanup in RunEvent::Exit.
 fn build_tray(
     app: &tauri::App,
     close_to_tray: bool,
     start_with_system: bool,
 ) -> tauri::Result<()> {
     let labels = i18n::labels();
+    // Install-or-uninstall is a TOGGLE, so its verb comes from the shims on
+    // disk at build time (`ocr shims-status`). One short self-exec (a few
+    // hundred ms, measured) before the first paint is the price of never
+    // showing a verb that does not apply — a persisted flag would lie the
+    // moment the operator deleted a shim by hand, and correcting the label a
+    // beat after the icon appears is a visible flicker on every launch.
+    let cli_home = app_home(app.handle());
+    let cli_sidecar = sidecar_path();
+    let cli_installed = cli_sidecar
+        .as_deref()
+        .map(|sidecar| run_shim_action(&cli_home, sidecar, "shims-status"))
+        .unwrap_or(false);
     let open = MenuItem::with_id(app, "open", labels.open, true, None::<&str>)?;
     let hide_on_close = CheckMenuItem::with_id(
         app,
@@ -601,7 +840,17 @@ fn build_tray(
         start_with_system,
         None::<&str>,
     )?;
-    let install_cli = MenuItem::with_id(app, "install_cli", labels.cli_install_menu, true, None::<&str>)?;
+    let install_cli = MenuItem::with_id(
+        app,
+        "install_cli",
+        if cli_installed {
+            labels.cli_uninstall_menu
+        } else {
+            labels.cli_install_menu
+        },
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -610,6 +859,7 @@ fn build_tray(
     let state = app.state::<GatewayState>();
     *state.close_to_tray_item.lock().unwrap() = Some(hide_on_close.clone());
     *state.start_with_system_item.lock().unwrap() = Some(start_at_login.clone());
+    *state.cli_command_item.lock().unwrap() = Some(install_cli.clone());
     TrayIconBuilder::with_id("main-tray")
         .icon(
             app.default_window_icon()
@@ -642,9 +892,11 @@ fn build_tray(
                 shell_log(&home, &format!("close_to_tray = {enabled}"));
             }
             "start_with_system" => {
-                // Unlike close-to-tray there is no desktop.json twin: the OS
-                // entry (Run key / LaunchAgent / XDG file) IS the setting, so
-                // the menu cannot disagree with what login will actually do.
+                // The OS entry (Run key / LaunchAgent / XDG file) stays the
+                // single truth for the CURRENT state; `autostartPrompt` only
+                // records that the first-run question was answered, so a tray
+                // toggle here must not write it (that would be the stale
+                // mirror this module refuses to keep).
                 let state = app.state::<GatewayState>();
                 let enabled = state
                     .start_with_system_item
@@ -658,38 +910,16 @@ fn build_tray(
                         .resource_dir()
                         .unwrap_or(std::env::temp_dir().into()),
                 );
-                let result = if enabled {
-                    app.autolaunch().enable()
-                } else {
-                    app.autolaunch().disable()
-                };
-                match result {
-                    Ok(()) => {
-                        state.start_with_system.store(enabled, Ordering::Relaxed);
-                        // A login launch exists to keep the gateway running; with
-                        // tray residency off, the first window close would kill it
-                        // and defeat the whole point. Flip the sibling checkbox
-                        // (visible, persisted) — the user can still turn it back
-                        // off afterwards.
-                        if enabled && !state.close_to_tray.load(Ordering::Relaxed) {
-                            state.close_to_tray.store(true, Ordering::Relaxed);
-                            if let Some(item) =
-                                state.close_to_tray_item.lock().unwrap().as_ref()
-                            {
-                                let _ = item.set_checked(true);
-                            }
-                            save_close_to_tray(&home, true);
-                            shell_log(&home, "close_to_tray = true (implied by start_with_system)");
-                        }
-                        shell_log(&home, &format!("start_with_system = {enabled}"));
-                    }
+                match set_autostart(app, enabled, &home) {
+                    Ok(()) => shell_log(&home, &format!("start_with_system = {enabled}")),
                     Err(err) => {
                         // Registration failed (locked-down policy, unwritable
                         // registry): put the checkbox back.
-                        if let Some(item) =
-                            state.start_with_system_item.lock().unwrap().as_ref()
                         {
-                            let _ = item.set_checked(!enabled);
+                            let item = state.start_with_system_item.lock().unwrap();
+                            if let Some(item) = item.as_ref() {
+                                let _ = item.set_checked(!enabled);
+                            }
                         }
                         shell_log(
                             &home,
@@ -699,26 +929,53 @@ fn build_tray(
                 }
             }
             "install_cli" => {
-                // Explicit opt-in path for operators who declined the first-run
-                // offer; idempotent, so it also repairs a broken shim.
-                let home = default_ocr_home(
-                    &app.path()
-                        .resource_dir()
-                        .unwrap_or(std::env::temp_dir().into()),
-                );
-                let sidecar = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.join(SIDECAR_FILE)));
-                match sidecar {
-                    Some(sidecar) => {
-                        // Blocking subprocess — off the tray thread so the menu
-                        // never stutters (cold start, worse under AV scanning).
-                        std::thread::spawn(move || {
-                            let installed = install_cli_shims(&home, &sidecar);
-                            shell_log(&home, &format!("cli shims install from tray: {installed}"));
+                // ONE item, two verbs: the label is read from the shims on disk,
+                // so a click either registers or removes the `ocr` command.
+                // Installing is idempotent repair (no confirmation); removing
+                // commands the operator may be using in scripts asks first.
+                let home = app_home(app);
+                let Some(sidecar) = sidecar_path() else {
+                    shell_log(&home, "cli shims: app dir unresolved");
+                    show_shim_outcome(app, &home, ShimAction::Install, false);
+                    return;
+                };
+                // Status runs on the tray thread: a short self-exec, and its
+                // answer decides what the click even MEANS.
+                if run_shim_action(&home, &sidecar, "shims-status") {
+                    let labels = i18n::labels();
+                    let app = app.clone();
+                    let confirm_home = home.clone();
+                    app.dialog()
+                        .message(labels.cli_uninstall_prompt_message)
+                        .title(labels.cli_command_title)
+                        .buttons(MessageDialogButtons::YesNo)
+                        .show(move |accepted| {
+                            if !accepted {
+                                shell_log(&confirm_home, "cli shims uninstall declined by operator");
+                                return;
+                            }
+                            // Blocking subprocess — off the tray thread so the
+                            // menu never stutters.
+                            let app = app.clone();
+                            std::thread::spawn(move || {
+                                let ok = run_shim_action(&confirm_home, &sidecar, "uninstall-shims");
+                                finish_shim_action(
+                                    &app,
+                                    &confirm_home,
+                                    &sidecar,
+                                    ShimAction::Uninstall,
+                                    ok,
+                                );
+                            });
                         });
-                    }
-                    None => shell_log(&home, "cli shims install from tray: app dir unresolved"),
+                } else {
+                    // Blocking subprocess — off the tray thread so the menu
+                    // never stutters (cold start, worse under AV scanning).
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let ok = install_cli_shims(&home, &sidecar);
+                        finish_shim_action(&app, &home, &sidecar, ShimAction::Install, ok);
+                    });
                 }
             }
             "quit" => app.exit(0),
@@ -736,6 +993,108 @@ fn build_tray(
         })
         .build(app)?;
     Ok(())
+}
+
+/// The two directions the tray toggle can take. Distinct from success: an
+/// action either ran or it did not, and the dialog says which.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShimAction {
+    Install,
+    Uninstall,
+}
+
+/// Answer a tray shim click VISIBLY and leave the menu item honest.
+///
+/// The registration itself is best-effort and silent (the first-run offer
+/// installs without a follow-up dialog), so a deliberate tray click must get
+/// its own verdict — success needs saying too, because the command only works
+/// in a terminal opened AFTER the PATH write.
+///
+/// The item is re-labelled from the shims actually on disk (`shims-status`),
+/// never from `ok`: `uninstall-shims` succeeds when there was nothing to
+/// remove, and a failed install may still have left a partial set behind. The
+/// menu shows what IS, not what we tried. Results are logged first; a failed
+/// action also points at the log, since the dialog can only carry one line.
+///
+/// Safe from a worker thread: the dialog plugin dispatches to the event loop.
+fn finish_shim_action(
+    app: &tauri::AppHandle,
+    home: &std::path::Path,
+    sidecar: &std::path::Path,
+    action: ShimAction,
+    ok: bool,
+) {
+    let installed = run_shim_action(home, sidecar, "shims-status");
+    refresh_cli_command_item(app, installed);
+    shell_log(
+        home,
+        &format!(
+            "cli shims {} from tray: ok = {ok} (installed = {installed})",
+            match action {
+                ShimAction::Install => "install",
+                ShimAction::Uninstall => "uninstall",
+            }
+        ),
+    );
+    show_shim_outcome(app, home, action, ok);
+}
+
+/// The dialog half of a tray shim click, split out for the one path that has no
+/// sidecar to ask (an unresolved app dir): there the item keeps the verb it
+/// already had, because the state is unknowable rather than false.
+fn show_shim_outcome(
+    app: &tauri::AppHandle,
+    home: &std::path::Path,
+    action: ShimAction,
+    ok: bool,
+) {
+    let labels = i18n::labels();
+    let body = match (action, ok) {
+        (ShimAction::Install, true) => labels.cli_install_ok_body,
+        (ShimAction::Install, false) => labels.cli_install_err_body,
+        (ShimAction::Uninstall, true) => labels.cli_uninstall_ok_body,
+        (ShimAction::Uninstall, false) => labels.cli_uninstall_err_body,
+    };
+    let body = if ok {
+        body.to_string()
+    } else {
+        format!(
+            "{}\n\n{}: {}",
+            body,
+            // Same "Log" word as the gateway-recovery dialog: one label for one
+            // concept, so no second spelling to keep in sync.
+            labels.gateway_down_log,
+            home.join("desktop.log").display()
+        )
+    };
+    app.dialog()
+        .message(body)
+        .title(labels.cli_command_title)
+        .buttons(MessageDialogButtons::Ok)
+        .show(|_| {});
+}
+
+/// Rewrite the toggle's verb. A menu item that still says "install" after a
+/// successful install is the bug this function exists to prevent.
+///
+/// Marched onto the main thread: native menu handles are main-thread state on
+/// macOS, and this runs from the shim worker. The dialog next to it is safe
+/// from any thread because the plugin dispatches through the event loop; the
+/// menu item is not.
+fn refresh_cli_command_item(app: &tauri::AppHandle, installed: bool) {
+    let handle = app.clone();
+    let _ = handle.clone().run_on_main_thread(move || {
+        let labels = i18n::labels();
+        let state = handle.state::<GatewayState>();
+        let item = state.cli_command_item.lock().unwrap();
+        if let Some(item) = item.as_ref() {
+            let _ = item.set_text(if installed {
+                labels.cli_uninstall_menu
+            } else {
+                labels.cli_install_menu
+            });
+        }
+    });
 }
 
 /// Best-effort append-only shell trace: <OCR_HOME>/desktop.log. The gateway's
@@ -760,6 +1119,25 @@ fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
         .map(|d| std::path::PathBuf::from(d).join("omnicell-router"))
         .unwrap_or_else(|_| resource_dir.join("data"))
+}
+
+/// The shell's data root, resolved from the app handle. One helper so the tray
+/// handlers (which have no resource dir in hand) cannot drift from `boot`'s.
+fn app_home(app: &tauri::AppHandle) -> std::path::PathBuf {
+    default_ocr_home(
+        &app.path()
+            .resource_dir()
+            .unwrap_or_else(|_| std::env::temp_dir()),
+    )
+}
+
+/// The bundled gateway binary next to the shell executable (Tauri's bundler
+/// strips the `-{target}` triple from externalBin). `None` means the app dir is
+/// unresolvable — every shim action needs it, so callers must report that.
+fn sidecar_path() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(SIDECAR_FILE)))
 }
 
 /// GUI parents (Explorer shortcut, macOS Finder/LaunchServices) freeze PATH
@@ -846,21 +1224,18 @@ fn boot(app: &tauri::App) -> Result<(), String> {
         .path()
         .resource_dir()
         .map_err(|e| format!("cannot resolve resource dir: {e}"))?;
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| format!("cannot resolve app dir: {e}"))?
-        .parent()
-        .expect("exe has a parent dir")
-        .to_path_buf();
-    let sidecar = exe_dir.join(SIDECAR_FILE);
+    let sidecar = sidecar_path().ok_or_else(|| "cannot resolve app dir".to_string())?;
     let home = default_ocr_home(&resource_dir);
     // Login launches keep the window hidden (tray only). Decided before the
     // window exists so the first frame never flashes on screen.
     let autostart_launch = is_autostart_launch();
 
-    // A desktop install ships no shell command of its own; the bundled gateway
-    // answers `--cli`. Ask ONCE (visible launches only) instead of registering
-    // behind the operator's back — the tray menu can install it later.
-    offer_cli_shims(app, &home, &sidecar, !autostart_launch);
+    // Two opt-in shell registrations, each asked once (visible launches only)
+    // and chained inside `offer_first_run_choices` instead of being written
+    // behind the operator's back: the `ocr` command (the bundled gateway
+    // answers `--cli`) and the OS login launch. Both stay reachable from the
+    // tray menu afterwards.
+    offer_first_run_choices(app, &home, &sidecar, !autostart_launch);
 
     // First-run default = 75% of the primary monitor (logical), clamped to a
     // usable minimum. After the first session the SAVED bounds take over
@@ -1063,6 +1438,7 @@ fn main() {
             close_to_tray_item: Mutex::new(None),
             start_with_system: AtomicBool::new(false),
             start_with_system_item: Mutex::new(None),
+            cli_command_item: Mutex::new(None),
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -1213,6 +1589,19 @@ mod monitor_tests {
         assert_eq!(verdict.error.as_deref(), Some("gateway process 1 exited"));
         assert_eq!(verdict.log.as_deref(), Some("C:/tmp/ocr.log"));
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn installer_choice_file_is_parsed_like_the_wizard_writes_it() {
+        // Exactly what `OcrOptionsLeave` writes: CRLF lines, both boxes on.
+        let both = "autostart=1\r\ncliShims=1\r\n";
+        assert_eq!(installer_choice_answers(both), (Some(true), Some(true)));
+        // Both boxes unchecked = two recorded DECLINES, not "unanswered".
+        let neither = "autostart=0\r\ncliShims=0\r\n";
+        assert_eq!(installer_choice_answers(neither), (Some(false), Some(false)));
+        // Silent/passive/update installs write no file: the dialogs keep owning
+        // both questions.
+        assert_eq!(installer_choice_answers(""), (None, None));
     }
 
     #[test]

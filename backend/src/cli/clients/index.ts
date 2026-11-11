@@ -13,6 +13,7 @@ import { CursorProxyClientAdapter } from './cursor-proxy.js';
 import { QoderProxyClientAdapter } from './qoder-proxy.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 import { popularityRank } from '../../utils/popularity.js';
+import { compareVersions } from '../../utils/semver.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
   opencode: new OpenCodeClientAdapter(),
@@ -63,17 +64,6 @@ export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
       return { ...status, hookKind: adapter.hookKind };
     })
   );
-}
-
-/** Semver-ish three-segment compare; missing segments count as 0. */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d !== 0) return d;
-  }
-  return 0;
 }
 
 export async function setupClient(

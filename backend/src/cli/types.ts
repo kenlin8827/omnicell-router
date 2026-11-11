@@ -10,6 +10,8 @@ export type CliAction =
   | 'teardown'
   | 'install-shims'
   | 'uninstall-shims'
+  /** Machine-readable shim state for the desktop tray toggle (JSON + exit code). */
+  | 'shims-status'
   /** Passthrough launch verbs — the argument after `ocr` names the TARGET
    *  tool, not a hook id. Never fold these into `SupportedClient`: the hooks
    *  are `cursor-proxy` / `qoder-proxy`. */

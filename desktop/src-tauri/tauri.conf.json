@@ -25,7 +25,19 @@
       },
       "nsis": {
         "installMode": "currentUser",
-        "installerHooks": "./installer-hooks.nsh"
+        "installerHooks": "./installer-hooks.nsh",
+        "template": "./nsis/installer.nsi",
+        "languages": [
+          "English",
+          "SimpChinese",
+          "Spanish",
+          "French",
+          "German",
+          "Japanese",
+          "Korean",
+          "PortugueseBR"
+        ],
+        "displayLanguageSelector": true
       }
     }
   }

@@ -4,7 +4,7 @@ import { setupClient, teardownClient, CLIENT_TARGETS } from './clients/index.js'
 import { defaultGatewayPort, type ClientActionWarning } from './clients/base.js';
 import { runCursorLauncher } from './clients/cursor-proxy.js';
 import { runQoderLauncher } from './clients/qoder-proxy.js';
-import { registerGlobalShims, unregisterGlobalShims } from './shim.js';
+import { registerGlobalShims, shimStatus, unregisterGlobalShims } from './shim.js';
 import { CliAction, SupportedClient } from './types.js';
 import { APP_VERSION } from '../version.js';
 import {
@@ -103,6 +103,7 @@ ${C.bold}ENVIRONMENTS (book-sets under ~/.omnicell-router/envs/):${C.reset}
 ${C.bold}SYSTEM COMMANDS:${C.reset}
   ocr install-shims       Register global \`ocr\` and \`omnicell-router\` commands to PATH
   ocr uninstall-shims     Remove the shims THIS install wrote (marker-checked)
+  ocr shims-status        JSON {binDir, shims, installed}; exit 0 = installed, 1 = not
   ocr --version, -v       Show current OCR version
   ocr --help, -h          Display this help manual
 `);
@@ -495,6 +496,18 @@ async function main(): Promise<void> {
         // instead of leaving a dangling directory silently behind.
         console.log(`${C.dim}PATH entries added by install-shims stay in place — remove ${res.binDir} from PATH if you no longer need it.${C.reset}`);
       }
+      break;
+    }
+
+    case 'shims-status': {
+      // Machine surface for the DESKTOP shell's tray toggle (see `shimStatus`):
+      // the shell labels the item install-or-uninstall from this answer instead
+      // of keeping its own preference flag, which would go stale the moment the
+      // operator removed the shims by hand. No banner (stdout must stay parseable)
+      // and no `process.exit` — the dual entry drains stdout via exitCode.
+      const status = shimStatus();
+      console.log(JSON.stringify(status));
+      process.exitCode = status.installed ? 0 : 1;
       break;
     }
 

@@ -10,7 +10,11 @@
 
 每个环境一个目录：`<home>/envs/<name>/`，内含 `config.yaml · data/ · models/ · catalog/ · traces/ · capture/ · webauth-secret · env.json`（`config/env.ts:241-255`）。`<home>` = `~/.omnicell-router`，被 `OCR_HOME` 整体覆写——唯一的沙箱杠杆（隔离测试器给每个测试文件自己的 `OCR_HOME` + `OCR_ENV=itest`；名字刻意避开引导层：沙箱一旦泄漏，启动即 fail-fast，而非静默写入操作者的真实 `default` 账本）。桌面应用用同一个引擎、但跑在它自己的 home 下（Windows 为 `%LOCALAPPDATA%\omnicell-router`）；它注册 `ocr` 命令时
 会把该 home **写死进**生成的 shim——shim 若不带 `OCR_HOME`，读到的就是 `~/.omnicell-router`，会把应用正在服务的网关
-报成"未运行"。一个安装只有一个 home，无论从哪个入口进入。进程级文件（`ocr.pid`、`ocr.log`、`ocr.info.json`）驻 `<home>` 根、不属于任何环境；`info.json` 记录活动环境名。`default` 是引导层：永远可解析、首启由脚手架创建、不可手工创建/改名/入废纸篓。`env.json` = schema-v1 元数据 `{name, type, createdAt, schemaVersion, description?, importedFrom?}`；名称语法 `^[a-z0-9][a-z0-9_-]{0,31}$` + 大小写不敏感去重。
+报成"未运行"。一个安装只有一个 home，无论从哪个入口进入。
+
+进程级文件（`ocr.pid`、`ocr.log`、`ocr.info.json`）驻 `<home>` 根、不属于任何环境；`info.json` 记录活动环境名。`default` 是引导层：永远可解析、首启由脚手架创建、不可手工创建/改名/入废纸篓。`env.json` = schema-v1 元数据 `{name, type, createdAt, schemaVersion, description?, importedFrom?}`；名称语法 `^[a-z0-9][a-z0-9_-]{0,31}$` + 大小写不敏感去重。
+
+该注册对应的托盘项是一个**开关**：它的状态 = 磁盘上带标记的 shim 文件，绝不是某个持久化偏好——`ocr shims-status`（JSON `{binDir, shims, installed}`，退出码 0 = 已安装）是唯一答案，shell 向打包后的二进制询问，而不是自己再推一遍 bin 目录（第二份路径字面量会在目录变动后静默汇报错地方）。PATH 成员资格刻意**不**计入状态：`uninstall-shims` 把操作者拥有的 PATH 条目留在原处，若把开关键在 PATH 上，shim 一被移除它就会翻回"已安装"。两个方向都通过原生对话框给出结果，且每次动作后重新读取标签——安装成功后菜单仍写"安装"、操作者手删 shim 后仍写"卸载"，正是此契约禁止的失效形态。
 
 legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`、无模式分支——前环境位置（repo-root `config.yaml`/`data`/`models`、`<home>/{catalog,traces,capture,webauth-secret}`）没有任何代码路径读取；升级的机器从脚手架默认起步，旧文件要就手抄。不发布迁移工具。`ensureEnvScaffold` 只建目录——带注释的 `config.yaml` 模板归配置层；`createEnv` 模板 = `blank | copy-current | copy-default`（只复制配置；数据永不复制）。
 

@@ -207,26 +207,70 @@ export function unregisterGlobalShims(_customRepoDir?: string, customBinDir?: st
   removed: string[];
 } {
   const binDir = customBinDir || getDefaultBinDir();
-  const markers = [SELF_MARKER, TRAMPOLINE_MARKER];
   const removed: string[] = [];
 
-  if (!fs.existsSync(binDir)) return { binDir, removed };
+  for (const target of productShimFiles(binDir)) {
+    try {
+      fs.rmSync(target);
+      removed.push(target);
+    } catch {
+      // benign — a locked shim is retried on the next uninstall
+    }
+  }
+  return { binDir, removed };
+}
 
+/**
+ * Marker-checked shim files this product wrote in `binDir`.
+ *
+ * The ONE definition of "are our commands installed": the tray toggle, the
+ * uninstall sweep and the `shims-status` payload all read it, so a menu that
+ * offers "uninstall" and an uninstall that finds nothing can never disagree.
+ * A product-named file with NEITHER marker belongs to the operator and is
+ * never counted (nor deleted).
+ */
+function productShimFiles(binDir: string): string[] {
+  if (!fs.existsSync(binDir)) return [];
+  const markers = [SELF_MARKER, TRAMPOLINE_MARKER];
+  const found: string[] = [];
   for (const name of COMMANDS) {
     for (const ext of process.platform === 'win32' ? WINDOWS_EXTENSIONS : ['', '.cmd', '.ps1']) {
       const target = path.join(binDir, `${name}${ext}`);
       if (!fs.existsSync(target)) continue;
       try {
         const body = fs.readFileSync(target, 'utf8');
-        if (!markers.some((marker) => body.includes(marker))) continue;
-        fs.rmSync(target);
-        removed.push(target);
+        if (markers.some((marker) => body.includes(marker))) found.push(target);
       } catch {
-        // benign — a locked shim is retried on the next uninstall
+        // unreadable = not provably ours
       }
     }
   }
-  return { binDir, removed };
+  return found;
+}
+
+export interface ShimStatus {
+  binDir: string;
+  /** Absolute paths of the marker-checked shim files on disk. */
+  shims: string[];
+  /** `shims.length > 0` — the tray toggle's state, and the `shims-status` exit code. */
+  installed: boolean;
+}
+
+/**
+ * Where our commands stand, as the DESKTOP shell needs to ask it.
+ *
+ * The shell must not re-derive the bin dir from `getDefaultBinDir()` (a second
+ * copy of that path literal is a drift twin that silently reports on the wrong
+ * directory after any relocation) — so the packaged binary answers here and
+ * the tray labels its toggle from the reply. PATH membership is deliberately
+ * NOT part of the state: `uninstall-shims` leaves operator-owned PATH entries
+ * alone, so keying the toggle on PATH would flip it back to "installed" the
+ * moment the shims were removed.
+ */
+export function shimStatus(customBinDir?: string): ShimStatus {
+  const binDir = customBinDir || getDefaultBinDir();
+  const shims = productShimFiles(binDir);
+  return { binDir, shims, installed: shims.length > 0 };
 }
 
 function ensureWindowsPath(binDir: string): void {

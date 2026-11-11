@@ -22,6 +22,7 @@ Source comments (`//`, `/* */`, JSDoc), identifiers, log messages: English only.
 - `backend/src/config/comments-zh.ts` `YAML_FIELD_COMMENTS_ZH` / `YAML_FILE_HEADER_ZH` (the zh-CN config comment dictionaries; ADR-0016: never written into the user's `config.yaml` — the console renders them dynamically; the en counterpart is `comments-en.ts`, English-only).
 - `backend/src/compression/caveman-prompts.ts` (the Chinese prompts are the feature).
 - `desktop/src-tauri/src/i18n.rs` (the native tray menu label table — the Rust shell builds it before any console document exists, so it cannot use the React tables; it follows the OS locale with the same eight languages, English fallback).
+- `desktop/src-tauri/nsis/installer.nsi` (`LangString OCR_*` only — the wizard's five first-run strings, one set per language declared in `tauri.conf.json` `bundle.windows.nsis.languages`; the installer runs before any console document exists and takes its language from NSIS / the OS locale, so it cannot use the React tables either).
 - Copy-paste console snippets (e.g. cURL samples in `pages/ApiKeysPage.tsx`) and test fixture strings.
 
 **User-facing UI text is never hardcoded** — it must go through `t('i18n.key')`. A hardcoded Chinese string in a `.tsx` is a bug; fix it.

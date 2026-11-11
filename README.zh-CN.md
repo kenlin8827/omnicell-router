@@ -80,10 +80,24 @@ curl -fsSL https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/ins
 （点 X 后网关继续运行）与「随系统启动」：开机自启时网关在托盘静默启动，不会弹出
 控制台窗口；需要时从「打开控制台」打开即可。
 
-桌面安装包会在首次可见启动时**询问**是否注册 `ocr` / `omnicell-router` 命令：
-打包的网关二进制支持 `--cli`，因此只有桌面版的机器无需 bun、node 或源码仓库也能用
-完整 CLI。拒绝会被记住；之后可从托盘菜单「安装 ocr 命令」补装，`ocr uninstall-shims`
-可移除。装出的 shim 会带上应用自己的数据根（`OCR_HOME`），所以 `ocr status` /
+**安装向导里有启动选项（Windows）**：NSIS 向导新增一页，两个**默认已勾选**的复选框——
+「登录时启动 OmniCellRouter」与「把 ocr 命令装到 PATH」。取消勾选即生效：答案以
+`%LOCALAPPDATA%\omnicell-router\installer-choice.ini` 交给应用，由应用在首次启动时
+自己落地（走自己的 autostart 插件与打包网关），随后删除该文件。**安装器本身从不写
+Run 键 / LaunchAgent**。没有向导的路径——macOS dmg、Linux AppImage/deb、静默 `/S`、
+被动 `/P` 以及升级——仍在首次可见启动时用两个原生对话框询问，回答同样会被记住，
+不会反复打扰。
+
+这一页在 `desktop/src-tauri/nsis/installer.nsi`，是 tauri NSIS 模板的 vendored 副本
+（tauri 的 installer hook 都在 Section 内执行，无法声明向导页）。文件头写了每次升级
+`@tauri-apps/cli` 时的重新同步步骤。
+
+桌面安装包会在首次可见启动时**询问**是否注册 `ocr` / `omnicell-router` 命令（若
+Windows 安装向导里已经答过，就不再问）：打包的网关二进制支持 `--cli`，因此只有桌面版的机器无需 bun、node 或源码仓库也能用
+完整 CLI。拒绝会被记住。托盘菜单项是一个开关，措辞取自磁盘上实际存在的 shim：
+「安装 OCR 命令」负责注册（幂等，因此也能修复损坏的 shim），「卸载 OCR 命令」先确认再
+删除。两种操作都会弹出对话框汇报结果，并在动作后重新读取菜单措辞，菜单不会给出不适用
+的动词。`ocr shims-status` 以 JSON 输出同一状态。装出的 shim 会带上应用自己的数据根（`OCR_HOME`），所以 `ocr status` /
 `ocr stop` 指向的就是桌面壳正在运行的那个网关，而不是另一份 CLI 默认目录。
 
 ---
