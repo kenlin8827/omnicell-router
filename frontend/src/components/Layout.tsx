@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Activity, AlertOctagon, Archive, ArrowDownLeft, ArrowLeftRight, ArrowUpRight,
-  BarChart3, Boxes, BrainCircuit, ChevronDown, ClipboardList, CloudDownload, Cpu,
-  FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
+  Activity, AlertOctagon, Archive, ArrowLeftRight,
+  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, ClipboardList, CloudDownload, Cpu,
+  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
-  Puzzle, RotateCcw, ScrollText, Search, Settings, Settings2, ShieldAlert,
-  ShieldCheck, Shuffle, Sliders, Sun, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
+  Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
+  ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../lib/api';
 import { gatewayBaseUrl } from '../lib/gateway-url';
@@ -52,13 +52,13 @@ interface NavGroupDef {
 const NAV_GROUP_DEFS: NavGroupDef[] = [
   { id: 'grp-overview', headingKey: 'nav.grpOverview', shortKey: 'nav.shortOverview', icon: Activity,
     items: [{ to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true }] },
-  { id: 'grp-access', headingKey: 'nav.grpAccess', shortKey: 'nav.shortAccess', icon: ArrowDownLeft, items: [
+  { id: 'grp-access', headingKey: 'nav.grpAccess', shortKey: 'nav.shortAccess', icon: Cable, items: [
     { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
     { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
     { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
-    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
+    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
   ] },
-  { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: ArrowUpRight, items: [
+  { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: Server, items: [
     { to: '/providers', labelKey: 'nav.providers', icon: Plug },
     { to: '/models', labelKey: 'nav.models', icon: Cpu },
     { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
@@ -74,7 +74,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
     { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
-    { to: '/breaker-rules', labelKey: 'nav.breakerRules', icon: Settings2 },
+    { to: '/breaker-rules', labelKey: 'nav.breakerRules', icon: Timer },
   ] },
   { id: 'grp-observability', headingKey: 'nav.grpObservability', shortKey: 'nav.shortObservability', icon: Waves, items: [
     { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
@@ -347,9 +347,17 @@ export const Layout: React.FC = () => {
   const trippedBreakers = status?.circuitBreakers?.tripped || 0;
   /** Rail click: selecting a group also re-opens a collapsed panel instead of
    *  leaving the click inert, which is the only way back out of compact mode. */
+  /** Rail click. Switching to a DIFFERENT group also opens that group's first
+   *  item: otherwise the panel shows a section whose rows are all unselected
+   *  while the header still names the page you came from, i.e. the click looks
+   *  like it did nothing. Re-clicking the group you are already in must NOT yank
+   *  you off a deep page — it only unfolds the panel. */
   const selectGroup = (groupId: string) => {
-    setActiveGroupId(groupId);
     setCompact(false);
+    if (groupId === activeGroupId) return;
+    setActiveGroupId(groupId);
+    const landing = NAV_GROUP_DEFS.find((group) => group.id === groupId)?.items[0];
+    if (landing) navigate(landing.to);
   };
   const activeGroupDef = NAV_GROUP_DEFS.find((group) => group.id === activeGroupId) ?? NAV_GROUP_DEFS[0];
   const navStyle = navPreference.style;
@@ -369,7 +377,7 @@ export const Layout: React.FC = () => {
     return (
       <NavLink key={item.to} to={item.to} end={item.end}
         className={({ isActive }) => `nav-item${isActive ? ' is-active' : ''}`}>
-        <Icon size={17} /><span className="nav-item-label">{t(item.labelKey)}</span>
+        <Icon size={18} /><span className="nav-item-label">{t(item.labelKey)}</span>
         {item.badge && <span className="nav-item-badge">{item.badge}</span>}
       </NavLink>
     );
@@ -408,7 +416,7 @@ export const Layout: React.FC = () => {
                   onClick={() => selectGroup(group.id)} title={t(group.headingKey)}
                   aria-label={t(group.headingKey)} aria-controls={showPanel ? 'nav-panel' : undefined}
                   aria-current={isActive ? 'true' : undefined}>
-                  <GroupIcon size={18} />
+                  <GroupIcon size={24} />
                   {railLabels && <span className="rail-btn-label">{t(group.shortKey)}</span>}
                 </button>
               );

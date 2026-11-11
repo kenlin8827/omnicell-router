@@ -15,11 +15,16 @@
  * item of the current group visible without scrolling.
  *
  * The rail additionally owns one sub-option: whether each glyph carries a short
- * caption. Captions are ON by default — eight glyphs alone are ambiguous
- * (`Layers`/`Zap` each appear twice in the item lists, and `Plug` is used by two
- * different groups), and an operator who has not yet learned the shapes should
- * not have to hover to find out which group a symbol opens. Turning them off
- * buys 8px back for the item list.
+ * caption. It is OFF by default, because the caption is the one piece of the
+ * shell that is pure duplication — the panel directly beside it already names
+ * the open group in its heading, so the rail was printing the same word twice
+ * inside 260px. Eight captions in a 68px column also force a 12px font next to
+ * a 14px item list (an inverted size/weight relation: the smaller column looked
+ * louder), and a 64px box cannot hold `Übersicht`/`Roteamento` without an
+ * ellipsis. Without captions the rail is a plain glyph column with a native
+ * tooltip and an accessible name on every button, which is the shape VSCode,
+ * Slack and Linear all settled on. Turning captions on widens the rail so the
+ * layout still never overlaps — see `--shell-rail-width` in shell.css.
  *
  * `flat` owns the other two sub-options. It is where a long list lives (39 rows
  * for the full catalogue), so it is the only style that needs a way to trade
@@ -61,7 +66,7 @@ export type NavDensity = 'comfortable' | 'compact';
 
 export const DEFAULT_NAV_PREFERENCE: NavPreference = {
   style: DEFAULT_NAV_STYLE,
-  railLabels: true,
+  railLabels: false,
   density: 'comfortable',
   collapsible: false,
 };
@@ -74,9 +79,9 @@ export function readNavPreference(): NavPreference {
   try {
     return {
       style: resolveNavStyle(localStorage.getItem(NAV_STYLE_STORAGE_KEY)),
-      // Only an explicit "0" turns captions off: a first-run console has no key
-      // yet, and the default is ON.
-      railLabels: localStorage.getItem(NAV_RAIL_LABELS_STORAGE_KEY) !== '0',
+      // Opt in only: an operator who never touched the setting keeps the glyph
+      // rail, and a first-run console has no key yet.
+      railLabels: localStorage.getItem(NAV_RAIL_LABELS_STORAGE_KEY) === '1',
       density: localStorage.getItem(NAV_ROW_DENSITY_STORAGE_KEY) === 'compact' ? 'compact' : 'comfortable',
       collapsible: localStorage.getItem(NAV_COLLAPSIBLE_STORAGE_KEY) === '1',
     };

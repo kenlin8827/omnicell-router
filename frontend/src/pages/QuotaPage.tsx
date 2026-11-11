@@ -300,18 +300,23 @@ export const QuotaPage: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%', minHeight: 0 }}>
-      {/* ── Page header: identity + refresh ───────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-        <Wallet size={20} color="var(--accent)" style={{ flexShrink: 0 }} />
-        <span style={{ fontSize: 'var(--text-xl)', fontWeight: 'var(--font-bold)', whiteSpace: 'nowrap' }}>{t('quotaPage.pageTitle')}</span>
-        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {t('quotaPage.pageSubtitle')}
-        </span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-          <button className="btn btn-sm" onClick={() => void refresh()} disabled={busy} title={t('quotaPage.refreshNow')}>
-            <RefreshCw size={12} style={isRefreshing() ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
-          </button>
+      {/* ── Page header: identity + refresh ──────────────────────────────────
+          Title row carries identity only; the subtitle sits on its own line at
+          --text-md (same scale as body/card titles) so the 16px heading does not
+          dangle a 12px footnote on the same baseline (see RouteEntriesPage). */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+          <Wallet size={20} color="var(--accent)" style={{ flexShrink: 0 }} />
+          <span style={{ fontSize: 'var(--text-xl)', fontWeight: 'var(--font-bold)', whiteSpace: 'nowrap' }}>{t('quotaPage.pageTitle')}</span>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+            <button className="btn btn-sm" onClick={() => void refresh()} disabled={busy} title={t('quotaPage.refreshNow')}>
+              <RefreshCw size={12} style={isRefreshing() ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+            </button>
+          </div>
         </div>
+        <p style={{ margin: 0, paddingLeft: '30px', fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)' }}>
+          {t('quotaPage.pageSubtitle')}
+        </p>
       </div>
 
       {data && !data.enabled && (

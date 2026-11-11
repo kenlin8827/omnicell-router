@@ -1,18 +1,28 @@
 /* Application shell and shared visual language. All colors derive from the active theme. */
 :root {
   --shell-header-height: 64px;
-  /* Rail style = rail + item list. Captions on the rail buttons are the default,
-     so the wider rail is the baseline and glyph-only borrows 8px back for the
-     list; `flat` is a single column and `compact` is the rail with its list
-     folded away. */
-  --shell-sidebar-width: 272px;
+  /* The sidebar's two top rows (rail mark + panel brand) draw the border that
+     continues the header's bottom border, so they MUST be the header's height —
+     they used to be a private 72px, which left an 8px step at the seam. */
+  --shell-brand-height: var(--shell-header-height);
+  /* Rail style = rail + item list. Glyph rail (no captions, the default) is
+     Material 3's 68px icon rail; turning captions on widens it to 80px so the
+     64×56 caption tiles fit. The sidebar width is derived, so either way the
+     item list keeps its 196px and nothing overlaps. */
+  --shell-rail-width: 80px;
+  --shell-rail-glyph-width: 68px;
+  --shell-rail-panel-width: 196px;
+  --shell-sidebar-width: calc(var(--shell-rail-width) + var(--shell-rail-panel-width));
   --shell-sidebar-narrow: 236px;
   --shell-sidebar-compact: 68px;
-  --shell-rail-width: 76px;
-  --shell-rail-glyph-width: 68px;
   --shell-content-max: 1720px;
   --shell-radius: 14px;
   --shell-control-radius: 9px;
+  /* One gutter for everything inside the sidebar panel: search field, section
+     labels, item tiles and footer all start on this line, so the column reads as
+     a single grid. One radius scale (--shell-control-radius) covers the search
+     field, the rail tiles and the item tiles for the same reason. */
+  --shell-nav-inset: 10px;
   --shell-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -67,7 +77,7 @@ button:focus-visible, a:focus-visible, [role='button']:focus-visible {
 }
 .app-rail .brand-mark-link {
   display: flex;
-  flex: 0 0 72px;
+  flex: 0 0 var(--shell-brand-height);
   align-items: center;
   justify-content: center;
   width: 100%;
@@ -79,50 +89,71 @@ button:focus-visible, a:focus-visible, [role='button']:focus-visible {
   flex: 1;
   flex-direction: column;
   align-items: center;
+  /* 4px is Material's rail item spacing: enough for eight tiles to read as eight
+     targets, tight enough that the column still scans as one list. */
   gap: 4px;
   width: 100%;
   min-height: 0;
-  padding: 8px 0 10px;
+  padding: 8px 0 12px;
   overflow-x: hidden;
   overflow-y: auto;
 }
 .rail-btn {
+  position: relative;
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 38px;
+  /* Glyph tile (56×48 in the 68px rail); captions switch it to 64×56. Both clear
+     the 44px pointer-target floor. `--rail-tile` mirrors the width so the selected
+     indicator can compute the gutter it has to cross to reach the rail's edge. */
+  --rail-tile: 56px;
+  width: var(--rail-tile);
+  height: 48px;
   color: var(--nav-section-text);
   cursor: pointer;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+  border: 0;
+  border-radius: var(--shell-control-radius);
+  transition: color 140ms ease, background 140ms ease;
 }
 .rail-btn svg { stroke-width: 1.8; }
-/* Captions are the default rail width; dropping them hands 8px back to the item
-   list instead of shrinking the whole sidebar. */
+.rail-btn:hover { color: var(--text-main); background: var(--well-bg); }
+/* Selected rail item: accent glyph plus a 2px bar flush to the rail's left edge.
+   A filled tile was tried twice and rejected — the tile is 56–64px wide but its
+   content is only 39px tall, so any fill reads as a large empty box around a
+   small glyph. The bar costs no visual area and still answers "which group am I
+   in" at a glance (VSCode activity bar uses the same mark). */
+.rail-btn.is-active { color: var(--accent); background: transparent; }
+.rail-btn.is-active::before {
+  content: '';
+  position: absolute;
+  /* (tile − rail) / 2 is exactly the gutter the tile sits in, so this lands on
+     x=0 of the rail at every rail width (68 glyph, 80 captions, 68 compact). */
+  left: calc((var(--rail-tile) - var(--shell-rail-width)) / 2);
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+}
+.rail-btn.is-active svg { stroke-width: 2.2; }
+.rail-btn.is-active .rail-btn-label { font-weight: var(--font-semibold); }
+/* Captions are opt-in (see lib/navStyle); they widen the rail, not the panel. */
 .app-sidebar.is-rail:not(.has-rail-labels) { --shell-rail-width: var(--shell-rail-glyph-width); }
-.app-sidebar.is-compact { --shell-rail-width: var(--shell-rail-glyph-width); }
-.rail-btn.has-caption { flex-direction: column; gap: 1px; height: 46px; }
+.app-sidebar.is-compact { --shell-rail-width: var(--shell-sidebar-compact); }
+.rail-btn.has-caption { flex-direction: column; gap: 3px; --rail-tile: 64px; height: 56px; }
 .rail-btn-label {
   max-width: 100%;
   overflow: hidden;
-  font-size: var(--text-2xs);
+  font-size: var(--text-sm);
   font-weight: var(--font-medium);
   line-height: 1;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .app-sidebar.is-compact .rail-btn-label { display: none; }
-.rail-btn:hover { color: var(--text-main); background: var(--well-bg); }
-.rail-btn.is-active {
-  color: var(--accent);
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.rail-btn.is-active svg { stroke-width: 2.2; }
+.app-sidebar.is-compact .rail-btn.has-caption { --rail-tile: 56px; height: 48px; }
 .rail-footer {
   display: flex;
   flex: 0 0 auto;
@@ -140,11 +171,11 @@ button:focus-visible, a:focus-visible, [role='button']:focus-visible {
 }
 .panel-brand {
   display: flex;
-  flex: 0 0 72px;
+  flex: 0 0 var(--shell-brand-height);
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 0 14px 0 16px;
+  padding: 0 var(--shell-nav-inset) 0 12px;
   border-bottom: 1px solid var(--divider);
 }
 .brand-mark-link { display: inline-flex; flex: 0 0 auto; margin-right: 3px; color: inherit; text-decoration: none; }
@@ -204,12 +235,12 @@ button:focus-visible, a:focus-visible, [role='button']:focus-visible {
 
 .sidebar-search {
   display: flex;
-  flex: 0 0 38px;
+  flex: 0 0 40px;
   align-items: center;
   gap: 9px;
   min-width: 0;
-  margin: 16px 14px 10px;
-  padding: 0 11px;
+  margin: 14px var(--shell-nav-inset) 10px;
+  padding: 0 var(--shell-nav-inset);
   color: var(--text-dim);
   font-size: var(--text-sm);
   text-align: left;
@@ -244,7 +275,7 @@ kbd {
   flex-direction: column;
   gap: 2px;
   min-height: 0;
-  padding: 2px 10px 16px;
+  padding: 2px var(--shell-nav-inset) 16px;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -252,7 +283,7 @@ kbd {
    the rail is what switches groups. */
 .panel-heading {
   flex: 0 0 auto;
-  padding: 2px 12px 6px;
+  padding: 4px var(--shell-nav-inset) 6px;
   color: var(--nav-section-text);
   font-size: var(--text-sm);
   font-weight: var(--font-semibold);
@@ -287,27 +318,31 @@ kbd {
 .app-sidebar.is-dense .sidebar-nav .panel-heading { padding-block: 1px 3px; }
 .app-sidebar.is-dense .sidebar-nav > .panel-heading:not(:first-child) { padding-top: 8px; }
 .app-sidebar.is-dense .sidebar-nav > .nav-group + .nav-group { margin-top: 8px; }
-.app-sidebar.is-dense .nav-item { min-height: 32px; padding: 4px 11px; }
+.app-sidebar.is-dense .nav-item { min-height: 32px; padding: 4px var(--shell-nav-inset); }
 .nav-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 10px;
   min-height: 40px;
-  padding: 8px 11px;
+  padding: 8px var(--shell-nav-inset);
   color: var(--nav-item-text);
+  /* 14px at medium, not semibold: nav labels are scanned, not read, so weight is
+     what the active row should win on. Semibold on every row (plus bold on the
+     selected one) made the whole column shout and flattened the selection.
+     M3 list item is 14sp, its rail label 12sp — that part was already right. */
   font-size: var(--text-base);
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-medium);
   text-decoration: none;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: var(--shell-control-radius);
   transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
 }
 .nav-item svg { flex: 0 0 auto; stroke-width: 1.8; }
 .nav-item:hover { color: var(--text-main); background: var(--well-bg); }
 .nav-item.is-active {
   color: var(--accent);
-  font-weight: var(--font-bold);
+  font-weight: var(--font-semibold);
   background: var(--accent-bg);
   border-color: color-mix(in srgb, var(--accent) 14%, transparent);
 }
@@ -338,7 +373,7 @@ kbd {
   gap: 6px;
   min-width: 0;
   min-height: 54px;
-  padding: 10px 12px;
+  padding: 10px var(--shell-nav-inset);
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -655,8 +690,14 @@ kbd {
 /* Shared page-intro and metric primitives. */
 .page-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
 .page-intro-copy { min-width: 0; }
-.page-intro h1 { color: var(--text-main); font-size: clamp(var(--text-4xl), 2vw, var(--text-5xl)); font-weight: var(--font-semibold); line-height: var(--leading-title); letter-spacing: var(--tracking-tight); }
-.page-intro p { max-width: 72ch; margin-top: 8px; color: var(--text-muted); font-size: var(--text-md); line-height: var(--leading-relaxed); }
+/* Page title is one step above .card-title (14px) and the header breadcrumb
+   (15px), not a hero billboard: a 24-28px h1 over 13px prose read as two
+   unrelated type scales in the same block. */
+.page-intro h1 { color: var(--text-main); font-size: var(--text-2xl); font-weight: var(--font-semibold); line-height: var(--leading-title); letter-spacing: var(--tracking-tight); }
+.page-intro p { max-width: 72ch; margin-top: 6px; color: var(--text-muted); font-size: var(--text-md); line-height: var(--leading-relaxed); }
+/* Provenance ("data source: …") is metadata, not prose: it gets its own
+   smaller mono line so it never wraps the description into three rows. */
+.page-intro p.page-intro-source { max-width: 72ch; margin-top: 4px; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .page-intro-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding-top: 3px; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .metric-card { position: relative; min-width: 0; padding: 20px; overflow: hidden; }
@@ -767,6 +808,9 @@ kbd {
 }
 @media (max-width: 640px) {
   :root { --shell-header-height: auto; }
+  /* The header wraps to auto height on phones, but the rail is a drawer there
+     and its brand row must keep a fixed height for the panel beside it. */
+  :root { --shell-brand-height: 64px; }
   .app-header { flex-wrap: wrap; gap: 6px; padding-block: 10px; }
   .header-heading { width: 100%; min-height: 36px; }
   .header-breadcrumb span, .header-breadcrumb i { display: none; }
@@ -784,7 +828,6 @@ kbd {
   .filter-toolbar { align-items: stretch; }
   .filter-toolbar > div:first-child { flex-basis: 100%; }
   .filter-toolbar > .input { flex: 1 1 140px; width: auto !important; }
-  .page-intro h1 { font-size: var(--text-4xl); }
   .settings-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;

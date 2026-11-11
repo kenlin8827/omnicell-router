@@ -232,7 +232,8 @@ export const ModelsPage: React.FC = () => {
       <section className="page-intro">
         <div className="page-intro-copy">
           <h1>{t('models.title')}</h1>
-          <p>{t('models.desc')}{source && <span> · {t('models.source', { source })}</span>}</p>
+          <p>{t('models.desc')}</p>
+          {source && <p className="page-intro-source">{t('models.source', { source })}</p>}
         </div>
         <div className="page-intro-actions">
           <button className="btn" onClick={load} disabled={loading}>
