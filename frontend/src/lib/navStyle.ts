@@ -15,16 +15,19 @@
  * item of the current group visible without scrolling.
  *
  * The rail additionally owns one sub-option: whether each glyph carries a short
- * caption. It is OFF by default, because the caption is the one piece of the
- * shell that is pure duplication — the panel directly beside it already names
- * the open group in its heading, so the rail was printing the same word twice
- * inside 260px. Eight captions in a 68px column also force a 12px font next to
- * a 14px item list (an inverted size/weight relation: the smaller column looked
- * louder), and a 64px box cannot hold `Übersicht`/`Roteamento` without an
- * ellipsis. Without captions the rail is a plain glyph column with a native
- * tooltip and an accessible name on every button, which is the shape VSCode,
- * Slack and Linear all settled on. Turning captions on widens the rail so the
- * layout still never overlaps — see `--shell-rail-width` in shell.css.
+ * caption. It is ON by default — the eight glyphs are app-specific, not a
+ * vocabulary the operator already knows (`Activity`/`Server`/`Cable`/`Shuffle`
+ * mean nothing until you have clicked them once), so a first-run console must
+ * not hide the group names behind a hover. Turning captions off drops the rail
+ * from 80px to 68px and hands the 12px back to the item list; it keeps the
+ * native tooltip and the accessible name either way, so nothing becomes
+ * unreachable — only less discoverable. A 64px tile cannot hold
+ * `Übersicht`/`Roteamento` whole, so long locales ellipsize in this mode; that
+ * is the one cost of the default.
+ *
+ * Selection is marked by a 2px bar flush to the rail's left edge plus the accent
+ * colour, never by a filled tile: the tile is 56–64px wide but its content is
+ * only 39px tall, so any fill reads as an empty box around a small glyph.
  *
  * `flat` owns the other two sub-options. It is where a long list lives (39 rows
  * for the full catalogue), so it is the only style that needs a way to trade
@@ -66,7 +69,7 @@ export type NavDensity = 'comfortable' | 'compact';
 
 export const DEFAULT_NAV_PREFERENCE: NavPreference = {
   style: DEFAULT_NAV_STYLE,
-  railLabels: false,
+  railLabels: true,
   density: 'comfortable',
   collapsible: false,
 };
@@ -79,9 +82,9 @@ export function readNavPreference(): NavPreference {
   try {
     return {
       style: resolveNavStyle(localStorage.getItem(NAV_STYLE_STORAGE_KEY)),
-      // Opt in only: an operator who never touched the setting keeps the glyph
-      // rail, and a first-run console has no key yet.
-      railLabels: localStorage.getItem(NAV_RAIL_LABELS_STORAGE_KEY) === '1',
+      // Only an explicit "0" turns captions off: a first-run console has no key
+      // yet and the default is ON, so an absent key must not read as "off".
+      railLabels: localStorage.getItem(NAV_RAIL_LABELS_STORAGE_KEY) !== '0',
       density: localStorage.getItem(NAV_ROW_DENSITY_STORAGE_KEY) === 'compact' ? 'compact' : 'comfortable',
       collapsible: localStorage.getItem(NAV_COLLAPSIBLE_STORAGE_KEY) === '1',
     };

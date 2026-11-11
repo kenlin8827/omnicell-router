@@ -168,6 +168,10 @@ button:focus-visible, a:focus-visible, [role='button']:focus-visible {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* Query container for the footer's priority rules below: the panel's width is
+     set by the nav style, not by the viewport, so a media query would fire at
+     the wrong widths. */
+  container-type: inline-size;
 }
 .panel-brand {
   display: flex;
@@ -395,6 +399,15 @@ kbd {
 .sidebar-footer button:hover { color: var(--text-main); }
 .sidebar-env { min-width: 0; overflow: hidden; }
 .sidebar-env span { overflow: hidden; max-width: 64px; white-space: nowrap; text-overflow: ellipsis; }
+/* Footer priority. Port + status dot identify the gateway and say whether it is
+   reachable; the quota chip is live state; the environment name is the only one
+   with a second route to the same fact (it links to /environments and the header
+   breadcrumb names it), so it is the first to go when the panel is tight. The
+   rail style's panel is 196px and the footer needs ~179px for all three, so the
+   flat style (236px) keeps the env chip and the rail style drops it. */
+@container (max-width: 200px) {
+  .sidebar-env { display: none; }
+}
 .status-dot { display: inline-block; flex: 0 0 7px; width: 7px; height: 7px; background: var(--text-dim); border-radius: 50%; }
 .status-dot.is-online, .header-health.is-online .status-dot {
   background: var(--accent-emerald);
