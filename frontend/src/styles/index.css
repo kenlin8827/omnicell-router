@@ -21,7 +21,7 @@
   --text-main: #eef2f6;
   --text-muted: #9aa8b7;
   --text-dim: #8293a3;
-  --nav-group-text: #7b8b9a;
+  --nav-section-text: #7b8b9a;
   --nav-item-text: #bcc8d4;
   --nav-badge-text: #d6e0ea;
   --nav-badge-bg: rgba(255, 255, 255, 0.09);
@@ -60,7 +60,7 @@
   --text-main: #172a32;
   --text-muted: #49616a;
   --text-dim: #596f77;
-  --nav-group-text: #5f747d;
+  --nav-section-text: #5f747d;
   --nav-item-text: #2c4550;
   --nav-badge-text: #243d47;
   --nav-badge-bg: color-mix(in srgb, var(--text-main) 9%, transparent);

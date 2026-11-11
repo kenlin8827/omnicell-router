@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap, LayoutGrid } from 'lucide-react';
 import { api } from '../lib/api';
 import { sortModelOptions } from '../lib/model-options';
 import type { WebAuthConfigView } from '../lib/api';
@@ -8,8 +8,10 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { SegGroup } from '../components/SegGroup';
 import { Dialog } from '../components/Dialog';
 import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX } from '../lib/defaults';
+import { readNavPreference, writeNavPreference, type NavPreference, type NavStyleId } from '../lib/navStyle';
 
 // UI mirror of the backend's resolveDirectivePrefix (backend/src/pipeline/
 // directives.ts) — the console must display the SAME fallback the gateway
@@ -42,6 +44,10 @@ export const SettingsPage: React.FC = () => {
   const [translationModelOptions, setTranslationModelOptions] = useState<{ value: string; label: string }[]>([]);
   // Chain-probe in flight (the picker's "test" button).
   const [probing, setProbing] = useState(false);
+  // Navigation style — browser-local like the theme, so this card applies on
+  // change and stays out of the config save.
+  const [navPreference, setNavPreference] = useState<NavPreference>(readNavPreference);
+  const applyNavPreference = (patch: Partial<NavPreference>) => setNavPreference(writeNavPreference(patch));
 
   // Console webAuth (dedicated endpoints, NOT part of the whole-config save —
   // the password is hashed server-side and never round-trips through the UI)
@@ -328,6 +334,7 @@ export const SettingsPage: React.FC = () => {
     { key: 'defaults', label: t('settings.navDefaults'), icon: Cpu, color: 'var(--accent-violet)' },
     { key: 'routeentries', label: t('settings.navRouteEntries'), icon: Waypoints, color: 'var(--accent-violet)' },
     { key: 'webauth', label: t('settings.navWebAuth'), icon: ShieldCheck, color: 'var(--accent)' },
+    { key: 'menu', label: t('settings.navMenu'), icon: LayoutGrid, color: 'var(--accent-violet)' },
   ];
   const jumpTo = (key: string) => {
     const el = document.getElementById(`settings-${key}`);
@@ -926,6 +933,47 @@ export const SettingsPage: React.FC = () => {
             </>
           )}
         </div>
+
+          {/* Menu & navigation. A browser-local preference (theme tier): it
+              applies the moment it changes and is deliberately outside the
+              config save, because nothing here reaches the gateway. */}
+          <div id="settings-menu" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <LayoutGrid size={14} />
+              {t('settings.menuTitle')}
+            </div>
+            <div>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('settings.menuStyleLabel')}
+              </label>
+              <SegGroup
+                size="sm"
+                value={navPreference.style}
+                onChange={(value) => applyNavPreference({ style: value as NavStyleId })}
+                options={[
+                  { value: 'rail', label: t('settings.menuStyleRail') },
+                  { value: 'flat', label: t('settings.menuStyleFlat') },
+                ]}
+              />
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
+                {t('settings.menuStyleHint')}
+              </div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: navPreference.style === 'rail' ? 'pointer' : 'not-allowed', opacity: navPreference.style === 'rail' ? 1 : 0.45 }}>
+              <span>{t('settings.menuRailLabels')}</span>
+              <Switch
+                checked={navPreference.railLabels}
+                disabled={navPreference.style !== 'rail'}
+                onChange={(value) => applyNavPreference({ railLabels: value })}
+              />
+            </label>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+              {t('settings.menuRailLabelsHint')}
+            </div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+              {t('settings.menuStorageHint')}
+            </div>
+          </div>
         </div>
       </div>
     </div>

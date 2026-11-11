@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowDownLeft, ArrowLeftRight, ArrowUpRight,
-  BarChart3, Boxes, BrainCircuit, ChevronDown, ClipboardList, CloudDownload, Cpu,
+  BarChart3, Boxes, BrainCircuit, ClipboardList, CloudDownload, Cpu,
   FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Settings, Settings2, ShieldAlert,
@@ -11,6 +11,7 @@ import {
 import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../lib/api';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { resolveStoredTheme, resolveThemePreference, THEME_STORAGE_KEY, type ThemePreference } from '../lib/theme';
+import { readNavPreference, NAV_STYLE_CHANGED_EVENT, type NavPreference } from '../lib/navStyle';
 import { useI18n } from '../i18n/I18nContext';
 import { LANGUAGES } from '../i18n/languages';
 import type { Lang } from '../i18n/types';
@@ -40,38 +41,41 @@ interface NavItemDef {
 interface NavGroupDef {
   id: string;
   headingKey: string;
+  /** 11px caption under the rail glyph when the operator turns captions on;
+   *  short on purpose (long headings ellipsize at 76px). */
+  shortKey: string;
   icon: LucideIcon;
   items: NavItemDef[];
 }
 
 const NAV_GROUP_DEFS: NavGroupDef[] = [
-  { id: 'grp-overview', headingKey: 'nav.grpOverview', icon: Activity,
+  { id: 'grp-overview', headingKey: 'nav.grpOverview', shortKey: 'nav.shortOverview', icon: Activity,
     items: [{ to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true }] },
-  { id: 'grp-access', headingKey: 'nav.grpAccess', icon: ArrowDownLeft, items: [
+  { id: 'grp-access', headingKey: 'nav.grpAccess', shortKey: 'nav.shortAccess', icon: ArrowDownLeft, items: [
     { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
     { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
     { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
     { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
   ] },
-  { id: 'grp-upstream', headingKey: 'nav.grpUpstream', icon: ArrowUpRight, items: [
+  { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: ArrowUpRight, items: [
     { to: '/providers', labelKey: 'nav.providers', icon: Plug },
     { to: '/models', labelKey: 'nav.models', icon: Cpu },
     { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
     { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
   ] },
-  { id: 'grp-traffic', headingKey: 'nav.grpTraffic', icon: Shuffle, items: [
+  { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
     { to: '/tiers', labelKey: 'nav.rules', icon: Network },
     { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
     { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     { to: '/combos', labelKey: 'nav.combos', icon: Layers },
     { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
   ] },
-  { id: 'grp-safety', headingKey: 'nav.grpSafety', icon: ShieldCheck, items: [
+  { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
     { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
     { to: '/breaker-rules', labelKey: 'nav.breakerRules', icon: Settings2 },
   ] },
-  { id: 'grp-observability', headingKey: 'nav.grpObservability', icon: Waves, items: [
+  { id: 'grp-observability', headingKey: 'nav.grpObservability', shortKey: 'nav.shortObservability', icon: Waves, items: [
     { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
     { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
     { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
@@ -80,12 +84,12 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/captures', labelKey: 'nav.captures', icon: Archive },
     { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
   ] },
-  { id: 'grp-harness', headingKey: 'nav.grpHarness', icon: Boxes, items: [
+  { id: 'grp-harness', headingKey: 'nav.grpHarness', shortKey: 'nav.shortHarness', icon: Boxes, items: [
     { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
     { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
     { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
   ] },
-  { id: 'grp-system', headingKey: 'nav.grpSystem', icon: Settings, items: [
+  { id: 'grp-system', headingKey: 'nav.grpSystem', shortKey: 'nav.shortSystem', icon: Settings, items: [
     { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
     { to: '/settings', labelKey: 'nav.settings', icon: Sliders },
     { to: '/plugins', labelKey: 'nav.pluginsManage', icon: Puzzle },
@@ -127,16 +131,16 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };
 
-const DEFAULT_COLLAPSED: Record<string, boolean> = Object.fromEntries(
-  NAV_GROUP_DEFS.map((group) => [group.id, !['grp-overview', 'grp-access'].includes(group.id)])
-);
-
-function storedGroupState(): Record<string, boolean> {
-  try {
-    return { ...DEFAULT_COLLAPSED, ...JSON.parse(localStorage.getItem('ocr_nav_groups') ?? '{}') };
-  } catch {
-    return DEFAULT_COLLAPSED;
-  }
+/** Which group the panel lists, derived from the pathname. Navigation owns
+ *  the selection: landing on a page selects its group, while a rail click
+ *  only previews another group until the next navigation. Deliberately not
+ *  persisted — a reload shows the group of the page actually open rather
+ *  than a preview left over from the previous session. */
+function groupIdForPath(pathname: string): string {
+  const match = NAV_GROUP_DEFS.find((group) =>
+    group.items.some((item) => item.to === pathname || (item.to !== '/' && pathname.startsWith(`${item.to}/`)))
+  );
+  return match?.id ?? NAV_GROUP_DEFS[0].id;
 }
 
 export const Layout: React.FC = () => {
@@ -147,8 +151,9 @@ export const Layout: React.FC = () => {
   const toast = useToast();
   const [status, setStatus] = useState<GatewayStatusResponse | null>(null);
   const [statusError, setStatusError] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(storedGroupState);
+  const [activeGroupId, setActiveGroupId] = useState<string>(() => groupIdForPath(location.pathname));
   const [compact, setCompact] = useState(() => localStorage.getItem('ocr_nav_compact') === '1');
+  const [navPreference, setNavPreference] = useState<NavPreference>(readNavPreference);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY)));
@@ -165,6 +170,16 @@ export const Layout: React.FC = () => {
       return '';
     }
   });
+  useEffect(() => {
+    const sync = () => setNavPreference(readNavPreference());
+    window.addEventListener(NAV_STYLE_CHANGED_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(NAV_STYLE_CHANGED_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
   useEffect(() => {
     const sync = () => setStarNudgeDone(isStarNudgeDone());
     window.addEventListener(STAR_REMINDER_CHANGED_EVENT, sync);
@@ -185,7 +200,6 @@ export const Layout: React.FC = () => {
     return () => media.removeEventListener('change', applyTheme);
   }, [themePreference]);
   useEffect(() => localStorage.setItem('ocr_nav_compact', compact ? '1' : '0'), [compact]);
-  useEffect(() => localStorage.setItem('ocr_nav_groups', JSON.stringify(collapsedGroups)), [collapsedGroups]);
 
   useEffect(() => {
     api.getAuthSession()
@@ -243,16 +257,14 @@ export const Layout: React.FC = () => {
       .map((route) => ROUTE_META_KEYS[route])[0] ??
     { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' };
 
-  const activeGroup = NAV_GROUP_DEFS.find((group) =>
-    group.items.some((item) => item.to === location.pathname || (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)))
-  );
+  const routeGroupId = groupIdForPath(location.pathname);
 
+  /** Navigation owns the selection: landing on a page selects its group, so a
+   *  deep link never leaves the panel showing an unrelated section. */
   useEffect(() => {
     setMobileOpen(false);
-    if (activeGroup) {
-      setCollapsedGroups((previous) => previous[activeGroup.id] ? { ...previous, [activeGroup.id]: false } : previous);
-    }
-  }, [location.pathname, activeGroup]);
+    setActiveGroupId(routeGroupId);
+  }, [location.pathname, routeGroupId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -318,9 +330,31 @@ export const Layout: React.FC = () => {
 
   const gatewayOnline = Boolean(status) && !statusError;
   const trippedBreakers = status?.circuitBreakers?.tripped || 0;
-  const toggleGroup = (groupId: string) => {
-    if (compact) setCompact(false);
-    setCollapsedGroups((previous) => ({ ...previous, [groupId]: !previous[groupId] }));
+  /** Rail click: selecting a group also re-opens a collapsed panel instead of
+   *  leaving the click inert, which is the only way back out of compact mode. */
+  const selectGroup = (groupId: string) => {
+    setActiveGroupId(groupId);
+    setCompact(false);
+  };
+  const activeGroupDef = NAV_GROUP_DEFS.find((group) => group.id === activeGroupId) ?? NAV_GROUP_DEFS[0];
+  const navStyle = navPreference.style;
+  /** `compact` only ever means "fold the rail's item list away", so it applies
+   *  to the rail style alone; flat IS the list. */
+  const railCollapsed = navStyle === 'rail' && compact;
+  /** Below 900px the sidebar is a drawer; a persisted compact flag must not
+   *  leave that drawer showing a rail with no panel in it. */
+  const showPanel = !railCollapsed || mobileOpen;
+  const railLabels = navStyle === 'rail' && navPreference.railLabels;
+
+  const renderNavItem = (item: NavItemDef) => {
+    const Icon = item.icon;
+    return (
+      <NavLink key={item.to} to={item.to} end={item.end}
+        className={({ isActive }) => `nav-item${isActive ? ' is-active' : ''}`}>
+        <Icon size={17} /><span className="nav-item-label">{t(item.labelKey)}</span>
+        {item.badge && <span className="nav-item-badge">{item.badge}</span>}
+      </NavLink>
+    );
   };
 
   const latestRelease = updateInfo?.updateAvailable ? updateInfo.latestVersion : null;
@@ -338,77 +372,98 @@ export const Layout: React.FC = () => {
   return (
     <div className="app-shell">
       {mobileOpen && <button className="sidebar-scrim" type="button" aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
-      <aside className={`app-sidebar${compact ? ' is-compact' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
-        <div className="brand-row">
+      <aside className={`app-sidebar is-${navStyle}${railCollapsed ? ' is-compact' : ''}${railLabels ? ' has-rail-labels' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
+        {/* First level: one glyph per group. The rail is the stable anchor —
+            its eight buttons never move, so muscle memory survives whatever
+            the panel is showing. Only the rail style has one. */}
+        {navStyle === 'rail' && <div className="app-rail">
           <NavLink to="/" className="brand-mark-link" aria-label="OmniCellRouter">
             <span className="brand-mark"><Zap size={19} strokeWidth={2.4} /></span>
           </NavLink>
-          <div className="brand-copy">
-            <NavLink to="/" className="brand-name"><strong>OmniCellRouter</strong></NavLink>
-            <small>
-              {showUpdate && updateInfo && latestRelease ? (
-                <a className="brand-update" href={updateInfo.releaseUrl} target="_blank" rel="noreferrer"
-                  title={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}
-                  aria-label={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}>
-                  {t('nav.version', { version: status?.version ?? __APP_VERSION__ })} → {latestRelease}
-                </a>
-              ) : (
-                <>{t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}</>
-              )}
-            </small>
-          </div>
-          <button type="button" className="app-icon-button sidebar-collapse" onClick={() => setCompact((value) => !value)}
-            title={t(compact ? 'nav.expand' : 'nav.collapse')} aria-label={t(compact ? 'nav.expand' : 'nav.collapse')}>
-            {compact ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-          </button>
-        </div>
-
-        <button type="button" className="sidebar-search" onClick={() => setPaletteOpen(true)}>
-          <Search size={15} /><span>{t('nav.searchPlaceholder')}</span><kbd>Ctrl K</kbd>
-        </button>
-
-        <nav className="sidebar-nav" aria-label={t('nav.consoleTag')}>
-          {NAV_GROUP_DEFS.map((group) => {
-            const GroupIcon = group.icon;
-            const isCollapsed = !compact && collapsedGroups[group.id];
-            return (
-              <div className="nav-group" key={group.id}>
-                <button type="button" className="nav-group-trigger" onClick={() => toggleGroup(group.id)}
-                  aria-expanded={!isCollapsed} title={compact ? t(group.headingKey) : undefined}>
-                  {/* The group glyph is rail-only: with labels visible the
-                      section name already carries the meaning, and a second
-                      icon column competes with the item icons below it. */}
-                  <GroupIcon size={14} className="nav-group-icon" /><span>{t(group.headingKey)}</span>
-                  <ChevronDown size={13} className={isCollapsed ? 'is-collapsed' : ''} />
+          <nav className="rail-nav" aria-label={t('nav.consoleTag')}>
+            {NAV_GROUP_DEFS.map((group) => {
+              const GroupIcon = group.icon;
+              const isActive = group.id === activeGroupDef.id;
+              return (
+                <button type="button" key={group.id}
+                  className={`rail-btn${isActive ? ' is-active' : ''}${railLabels ? ' has-caption' : ''}`}
+                  onClick={() => selectGroup(group.id)} title={t(group.headingKey)}
+                  aria-label={t(group.headingKey)} aria-controls={showPanel ? 'nav-panel' : undefined}
+                  aria-current={isActive ? 'true' : undefined}>
+                  <GroupIcon size={18} />
+                  {railLabels && <span className="rail-btn-label">{t(group.shortKey)}</span>}
                 </button>
-                {!isCollapsed && <div className="nav-group-items">
-                  {group.items.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <NavLink key={item.to} to={item.to} end={item.end} title={compact ? t(item.labelKey) : undefined}
-                        className={({ isActive }) => `nav-item${isActive ? ' is-active' : ''}`}>
-                        <Icon size={17} /><span className="nav-item-label">{t(item.labelKey)}</span>
-                        {item.badge && <span className="nav-item-badge">{item.badge}</span>}
-                      </NavLink>
-                    );
-                  })}
-                </div>}
-              </div>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="sidebar-status-row">
-            <span className={`status-dot${gatewayOnline ? ' is-online' : ''}`} title={t(gatewayOnline ? 'nav.footerOnline' : 'nav.footerOffline')} />
-            {status ? <button type="button" onClick={copyGatewayUrl} title={t('nav.footerCopyUrl', { url: gatewayBaseUrl(status.port) })}>:{status.port}</button>
-              : <span>{t('nav.footerOffline')}</span>}
+              );
+            })}
+          </nav>
+          <div className="rail-footer">
+            <button type="button" className="app-icon-button sidebar-collapse" onClick={() => setCompact((value) => !value)}
+              title={t(railCollapsed ? 'nav.expand' : 'nav.collapse')} aria-label={t(railCollapsed ? 'nav.expand' : 'nav.collapse')}>
+              {railCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            </button>
           </div>
-          {status && <button type="button" className="sidebar-env" onClick={() => navigate('/environments')} title={status.env?.configPath}>
-            <FolderCog size={12} /><span>{status.env?.name ?? '—'}</span>
-          </button>}
-          <div className="sidebar-quota"><QuotaPeek /></div>
-        </div>
+        </div>}
+
+        {/* Second level: the item list. A rail lists the selected group; flat
+            lists every group under a static label. Nothing is hidden by hover
+            or by a fold in either style. */}
+        {showPanel && <div className="app-navpanel">
+          <div className="panel-brand">
+            <div className="brand-copy">
+              <NavLink to="/" className="brand-name"><strong>OmniCellRouter</strong></NavLink>
+              <small>
+                {showUpdate && updateInfo && latestRelease ? (
+                  <a className="brand-update" href={updateInfo.releaseUrl} target="_blank" rel="noreferrer"
+                    title={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}
+                    aria-label={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}>
+                    {t('nav.version', { version: status?.version ?? __APP_VERSION__ })} → {latestRelease}
+                  </a>
+                ) : (
+                  <>{t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}</>
+                )}
+              </small>
+            </div>
+          </div>
+
+          {/* The `Ctrl K` badge only where the row has room for it: in the rail
+              style the panel is 188-196px wide and the badge would eat ~46px of
+              it, truncating the label. Header search and the palette itself
+              still advertise the shortcut either way. */}
+          <button type="button" className="sidebar-search" onClick={() => setPaletteOpen(true)} title={t('nav.searchPlaceholder')}>
+            <Search size={15} /><span>{t('nav.searchPlaceholder')}</span>
+            {navStyle === 'flat' && <kbd>Ctrl K</kbd>}
+          </button>
+
+          {/* rail: the selected group's items. flat: every group under a static
+              label. */}
+          {navStyle === 'rail' && <>
+            <div className="panel-heading">{t(activeGroupDef.headingKey)}</div>
+            <nav className="sidebar-nav" id="nav-panel" aria-label={t(activeGroupDef.headingKey)}>
+              {activeGroupDef.items.map(renderNavItem)}
+            </nav>
+          </>}
+
+          {navStyle === 'flat' && <nav className="sidebar-nav" id="nav-panel" aria-label={t('nav.consoleTag')}>
+            {NAV_GROUP_DEFS.map((group) => (
+              <React.Fragment key={group.id}>
+                <div className="panel-heading">{t(group.headingKey)}</div>
+                {group.items.map(renderNavItem)}
+              </React.Fragment>
+            ))}
+          </nav>}
+
+          <div className="sidebar-footer">
+            <div className="sidebar-status-row">
+              <span className={`status-dot${gatewayOnline ? ' is-online' : ''}`} title={t(gatewayOnline ? 'nav.footerOnline' : 'nav.footerOffline')} />
+              {status ? <button type="button" onClick={copyGatewayUrl} title={t('nav.footerCopyUrl', { url: gatewayBaseUrl(status.port) })}>:{status.port}</button>
+                : <span>{t('nav.footerOffline')}</span>}
+            </div>
+            {status && <button type="button" className="sidebar-env" onClick={() => navigate('/environments')} title={status.env?.configPath}>
+              <FolderCog size={12} /><span>{status.env?.name ?? '—'}</span>
+            </button>}
+            <div className="sidebar-quota"><QuotaPeek /></div>
+          </div>
+        </div>}
       </aside>
 
       <div className="app-workspace">
