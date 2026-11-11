@@ -9,7 +9,8 @@ import type { HarnessSourceView } from '../../types.js';
  *
  * It publishes TWO surfaces:
  *   · `/api/plugins.json` (API v3) — the small REVIEWED set: each record states the package or
- *     repository it installs from and the evidence behind the claim.
+ *     repository it installs from and the evidence behind the claim — including the repository's
+ *     GitHub star count (`stars`), which the registry states itself.
  *   · `/plugins` — the full topic catalogue (≈6.8k repositories, ≈5.9k with a root bundle
  *     manifest), shipped as four content-hashed `catalog-data-*.js` chunks rather than an API.
  * The reader offers the reviewed records first (npm handles where proven), then every catalogue
@@ -47,6 +48,7 @@ interface DshRecord {
   publishedVersion?: unknown;
   nativeBundle?: unknown;
   evidenceScore?: unknown;
+  stars?: unknown;
 }
 
 interface DshPayload {
@@ -89,6 +91,9 @@ function toItem(record: DshRecord, snapshotDate: string): MarketItem | null {
   const category = readString(record.category);
   const categorySlug = readString(record.categorySlug);
   const version = readString(record.publishedVersion);
+  // The registry states the repository's GitHub star count per record, so this row needs no
+  // on-demand resolver. Absent or malformed stays `null` ("no signal"), never `0`.
+  const stars = typeof record.stars === 'number' && Number.isFinite(record.stars) ? record.stars : null;
   return {
     id: `dsh-plugin-net:${readString(record.slug) ?? install.key}`,
     sourceId: 'dsh-plugin-net',
@@ -99,7 +104,7 @@ function toItem(record: DshRecord, snapshotDate: string): MarketItem | null {
     ...(install.repo ? { repo: install.repo } : {}),
     description: readString(record.description),
     url,
-    stars: null,
+    stars,
     updatedAt: snapshotDate,
     topics: category ? [category] : [],
     ...(categorySlug || version
@@ -189,9 +194,24 @@ export async function browseDshPluginNet(
 ): Promise<BrowseResult> {
   const [reviewed, catalog] = await Promise.all([readSnapshot(fetchImpl), readCatalog(fetchImpl)]);
   if (!reviewed.ok) return reviewed;
-  const reviewedRepos = new Set(reviewed.items.map((item) => item.repo).filter((repo): repo is string => !!repo));
+  // Both surfaces publish the repository's GitHub stars, so a reviewed row that states none borrows
+  // the catalogue's answer for the same repo instead of sending the operator to the on-demand
+  // resolver. A reviewed row that DOES state a count keeps it: the reviewed record is the authority.
+  const catalogStars = new Map<string, number>();
+  if (catalog.ok) {
+    for (const item of catalog.items) {
+      if (item.repo && item.stars !== null) catalogStars.set(item.repo, item.stars);
+    }
+  }
+  const withStars = (item: MarketItem): MarketItem => {
+    if (item.stars !== null || !item.repo) return item;
+    const borrowed = catalogStars.get(item.repo);
+    return borrowed === undefined ? item : { ...item, stars: borrowed };
+  };
+  const reviewedItems = reviewed.items.map(withStars);
+  const reviewedRepos = new Set(reviewedItems.map((item) => item.repo).filter((repo): repo is string => !!repo));
   const merged = [
-    ...reviewed.items,
+    ...reviewedItems,
     ...(catalog.ok ? catalog.items.filter((item) => !item.repo || !reviewedRepos.has(item.repo)) : []),
   ];
   const needle = query.trim().toLowerCase();

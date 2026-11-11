@@ -460,7 +460,10 @@ plugin table.
   chunk URLs, decodes each `JSON.parse(\`…\`)` wrapper as a template literal and parses it as JSON —
   NEVER evaluates it — then keeps only rows whose signals include `bundle-manifest`, mapping them to
   `github:<owner/repo>` in the catalogue's own stars order. Reviewed rows come first and win
-  duplicates by repository. The view is `hosts: ['dsh']`; it is the DSH page's default because the
+  duplicates by repository. Both surfaces state the repository's GitHub star count, so the rows
+  carry it (amendment, 2026-11-12: the reviewed records' own `stars` was dropped and their rows
+  fell back to the on-demand resolver; a reviewed row that states none now borrows the
+  catalogue's count for the same repository). The view is `hosts: ['dsh']`; it is the DSH page's default because the
   runtime has no first-party browsable marketplace.
 - **Sources are code-configured, not user-configured** (see Deferred).
 - **A catalog source may answer ANOTHER source's identity, and must earn it.** A row cannot invent
@@ -486,11 +489,12 @@ plugin table.
   row's type chips are the catalog's vocabulary, not this market's kinds. The card's
   `data-package-downloads` orders the page upstream and is deliberately NOT copied into the market's
   `stars` field.
-- **"No popularity signal" is `null`, never `0`.** No shipped browse source publishes a GitHub star
-  count: ClawHub answers its own download/star tally in `registryStats` (its own unit) and pi.dev's
-  download count is a different measure again, so those rows carry `stars: null` and the console
-  renders an em dash. Printing `0` would assert "nobody starred this", which none of those sources
-  ever said. A row that NAMES a repository can still acquire a real count,
+- **"No popularity signal" is `null`, never `0`.** Only dsh-plugin.net publishes a GitHub star
+  count, and only for the rows that already carry a repository (see D10): every other shipped browse
+  source states none — ClawHub answers its own download/star tally in `registryStats` (its own unit)
+  and pi.dev's download count is a different measure again, so those rows carry `stars: null` and the
+  console renders an em dash. Printing `0` would assert "nobody starred this", which none of those
+  sources ever said. A row that NAMES a repository can still acquire a real count,
   but only ON DEMAND (`harness/common/stars.ts`, `POST /api/admin/harness/market/stars`): browse never spends
   star quota on the operator's behalf. The resolver batches — GitHub's search endpoint accepts several
   `repo:` qualifiers in one query, so a 24-row page costs ~3 requests instead of 24, chunked by the

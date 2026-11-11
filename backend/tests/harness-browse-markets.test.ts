@@ -33,6 +33,7 @@ const DSH_SNAPSHOT = {
       installSpec: 'dsh plugin --profile web add @liustack/modlens@3.21.1',
       publishedVersion: '3.27.3',
       nativeBundle: true,
+      stars: 4887,
     },
     {
       slug: 'aegis',
@@ -68,7 +69,7 @@ const DSH_SNAPSHOT = {
 };
 
 const CATALOG_CHUNK =
-  'var e=JSON.parse(`[["acme/dsh-cat","Catalogue bundle","TypeScript","MIT",500,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin bundle",["bundle-manifest"]],["skip/no-bundle","Script only","JavaScript","MIT",10,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin",["install-command"]],["liustack/modlens","Duplicate of a reviewed row","JavaScript","MIT",900,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin",["bundle-manifest"]]]`);export{e as t};';
+  'var e=JSON.parse(`[["acme/dsh-cat","Catalogue bundle","TypeScript","MIT",500,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin bundle",["bundle-manifest"]],["skip/no-bundle","Script only","JavaScript","MIT",10,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin",["install-command"]],["liustack/modlens","Duplicate of a reviewed row","JavaScript","MIT",900,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin",["bundle-manifest"]],["GanyuanRan/Aegis","Duplicate of a reviewed row that states no count","TypeScript","MIT",1400,"2026-10-01T00:00:00Z","2026-10-01","dsh-plugin",["bundle-manifest"]]]`);export{e as t};';
 
 /** Serves the reviewed snapshot, the catalogue page, and its content-hashed chunk. */
 async function dshFetch(input: RequestInfo | URL): Promise<Response> {
@@ -105,7 +106,11 @@ describe('dsh-plugin.net browse', () => {
       name: 'Modlens',
       repo: 'liustack/modlens',
       updatedAt: '2026-11-09T00:00:00.000Z',
+      // The reviewed record's own count wins over the catalogue's 900 for the same repo.
+      stars: 4887,
     });
+    // Aegis states no count, so it borrows the catalogue's answer instead of asking GitHub.
+    expect(result.items[1]).toMatchObject({ repo: 'GanyuanRan/Aegis', stars: 1400 });
     expect(result.items[2]).toMatchObject({ stars: 500, repo: 'acme/dsh-cat' });
   });
 
