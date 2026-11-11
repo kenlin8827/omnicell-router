@@ -5,6 +5,8 @@ import { ScrollTable } from '../components/ScrollTable';
 import { Combobox } from '../components/Combobox';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
 import { opencodeApi, type PluginViewInfo } from '../lib/api';
+import { isDesktopShell } from '../lib/download';
+import { startDownload } from '../lib/download-manager';
 import { useI18n } from '../i18n/I18nContext';
 import { pickLocaleText } from '../lib/plugin-config';
 import { useToast } from '../components/ToastProvider';
@@ -109,15 +111,17 @@ export function PluginsManagePage(): React.ReactElement {
   };
 
   const download = async (id: string): Promise<void> => {
-    try {
-      const blob = await opencodeApi.downloadPluginPackage(id);
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${id}.zip`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } catch (err) {
-      toast.error(`${t('pluginPage.downloadFail')}: ${err instanceof Error ? err.message : String(err)}`);
+    const result = await startDownload({
+      url: opencodeApi.pluginPackageUrl(id),
+      name: `${id}.zip`,
+      fallbackName: `${id}.zip`,
+    });
+    if (result.ok) {
+      // The desktop panel already shows progress/status/path; only the
+      // browser console (which has its own download UI) needs a toast.
+      if (!isDesktopShell()) toast.success(t('pluginPage.downloadOk'));
+    } else if (!result.canceled) {
+      toast.error(`${t('pluginPage.downloadFail')}: ${result.error ?? ''}`);
     }
   };
 

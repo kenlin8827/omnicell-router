@@ -2667,33 +2667,31 @@ export const api = {
   },
 
   /**
-   * GET .../:name/export — returns the archive blob plus the server-chosen
-   * download filename (Content-Disposition), falling back to a client-built
-   * `<name>-<yyyymmdd>.orc_env.zip` when the header is absent (encrypted and
-   * plaintext archives share ONE suffix — encryption is a property of the
-   * bytes). `includePayload` selects a subset of the payload files
-   * (comma-joined `?include=`); absent = every payload file that exists.
+   * GET .../:name/export — request parts for the archive. The console streams
+   * the response itself (progress + native save picker), so it takes the URL
+   * and headers; the server normally picks the filename via Content-Disposition
+   * and `fallbackName` covers a header-less response (encrypted and plaintext
+   * archives share ONE suffix — encryption is a property of the bytes).
+   * `includePayload` selects a subset of the payload files (comma-joined
+   * `?include=`); absent = every payload file that exists.
    * `encrypt` + `password` request a password-encrypted archive — the
    * password travels ONLY in the x-ocr-archive-password header, never the
    * query (access logs record URLs).
    */
-  async exportEnvironment(
+  environmentExportRequest(
     name: string,
     opts: { includeSecrets: boolean; includePayload?: string[]; encrypt?: boolean; password?: string }
-  ): Promise<{ blob: Blob; filename: string }> {
+  ): { url: string; headers: Record<string, string>; fallbackName: string } {
     const qs = new URLSearchParams({ secrets: opts.includeSecrets ? 'include' : 'redact' });
     if (opts.includePayload && opts.includePayload.length > 0) qs.set('include', opts.includePayload.join(','));
     if (opts.encrypt) qs.set('encrypt', '1');
     const headers: Record<string, string> = {};
     if (opts.encrypt && opts.password) headers['x-ocr-archive-password'] = opts.password;
-    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}/export?${qs.toString()}`, { headers });
-    if (!res.ok) await throwEnvFor(res);
-    const cd = res.headers.get('Content-Disposition') || '';
-    const quoted = cd.match(/filename="?([^";]+)"?/i)?.[1];
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     return {
-      blob: await res.blob(),
-      filename: quoted || `${name}-${stamp}${ENV_ARCHIVE_SUFFIX}`,
+      url: `/api/admin/environments/${encodeURIComponent(name)}/export?${qs.toString()}`,
+      headers,
+      fallbackName: `${name}-${stamp}${ENV_ARCHIVE_SUFFIX}`,
     };
   },
 
@@ -4064,15 +4062,11 @@ export const api = {
     return res.json();
   },
 
-  /** JSONL download of one session archive; `exclude` strips body fields, metadata always kept. */
-  async exportCaptureArchive(date: string, file: string, exclude?: string[]): Promise<Blob> {
+  /** URL of one session archive as JSONL; `exclude` strips body fields, metadata always kept. */
+  captureArchiveUrl(date: string, file: string, exclude?: string[]): string {
     const params = new URLSearchParams({ format: 'raw' });
     if (exclude && exclude.length > 0) params.set('exclude', exclude.join(','));
-    const res = await fetch(
-      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`
-    );
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.blob();
+    return `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`;
   },
 
   async deleteCaptureDate(date: string): Promise<{ status: string; message?: string }> {
@@ -5240,15 +5234,10 @@ export const opencodeApi = {
     return ocJson(await fetch('/api/admin/plugins'));
   },
 
-  /** Download an installed plugin's package: packaged zips are returned
+  /** URL of an installed plugin's package: packaged zips are returned
    *  verbatim, dev-tree plugins are zipped on the fly by the backend. */
-  async downloadPluginPackage(id: string): Promise<Blob> {
-    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/package`);
-    if (!res.ok) {
-      const parsed = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(parsed.error ?? `HTTP ${res.status}`);
-    }
-    return res.blob();
+  pluginPackageUrl(id: string): string {
+    return `/api/admin/plugins/${encodeURIComponent(id)}/package`;
   },
 
   async uninstallPlugin(id: string): Promise<{ status: string; removed: string[]; providersRemoved?: string[]; devOnly?: boolean; plugins: PluginViewInfo[] }> {

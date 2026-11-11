@@ -14,6 +14,7 @@ import { Prose, proseIsLong } from '../components/Prose';
 import { applicableDecoders, decoderLabel, hexDumpToBytes, type DecoderContext, type SideDecoder } from '../lib/sideDecoders';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { copyToClipboard } from '../lib/clipboard';
+import { saveBlobAs, startDownload } from '../lib/download-manager';
 import { sortModelOptions } from '../lib/model-options';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
 
@@ -287,21 +288,6 @@ const useBodyBytes = (token: string | undefined): { bytes: Uint8Array | null; er
   return { bytes, error };
 };
 
-/**
- * Two downloads, two artifacts — never one ambiguous button:
- *   RAW       the captured bytes as they arrived (lossless, streamed by the
- *             gateway, independent of any decoder);
- *   DECODED   whatever the ACTIVE decoder rendered (frame tree / text / image)
- *             — derived, and limited to the preview window.
- */
-const saveBlob = (blob: Blob, filename: string): void => {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-};
-
 /** Base filename for an export: the capture's own name, never a vendor verb. */
 const exportBase = (side: DetailSideModel): string => {
   // The token encodes {kind, ref, decoder} — decode the ref for a stable,
@@ -376,12 +362,28 @@ const DetailSidePane: React.FC<{ side: DetailSideModel }> = ({ side }) => {
                 options={decoders.map((d) => ({ value: d.id, label: decoderLabel(d, t) }))}
               />
             )}
+            {/* Two downloads, two artifacts — never one ambiguous button:
+                RAW     the captured bytes as they arrived (lossless, streamed
+                        by the gateway, independent of any decoder);
+                DECODED whatever the ACTIVE decoder rendered (frame tree /
+                        text / image) — derived, and limited to the preview
+                        window. */}
             <span style={{ display: 'inline-flex', gap: '6px', marginLeft: 'auto' }}>
               {side.bodyToken && (
-                <a className="btn" href={`/api/admin/traffic-body/${encodeURIComponent(side.bodyToken)}`} download style={{ gap: '4px', display: 'inline-flex', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ gap: '4px', display: 'inline-flex', alignItems: 'center' }}
+                  onClick={() => {
+                    void startDownload({
+                      url: `/api/admin/traffic-body/${encodeURIComponent(side.bodyToken!)}`,
+                      fallbackName: `${exportBase(side)}-raw.bin`,
+                    });
+                  }}
+                >
                   <Download size={12} />
                   <span>{t('proxyLog.downloadRaw')}</span>
-                </a>
+                </button>
               )}
               {output && output.kind !== 'none' && (
                 <button
@@ -392,11 +394,11 @@ const DetailSidePane: React.FC<{ side: DetailSideModel }> = ({ side }) => {
                   onClick={() => {
                     const base = exportBase(side);
                     if (output.kind === 'image') {
-                      saveBlob(new Blob([output.bytes.slice().buffer as ArrayBuffer], { type: output.mime }), `${base}-${active!.id}.${IMAGE_EXT[output.mime] ?? 'bin'}`);
+                      void saveBlobAs(`${base}-${active!.id}.${IMAGE_EXT[output.mime] ?? 'bin'}`, new Blob([output.bytes.slice().buffer as ArrayBuffer], { type: output.mime }));
                       return;
                     }
                     const ext = active!.id === 'hex' || active!.id === 'pdf' ? 'txt' : 'json';
-                    saveBlob(new Blob([output.text], { type: 'text/plain;charset=utf-8' }), `${base}-${active!.id}.${ext}`);
+                    void saveBlobAs(`${base}-${active!.id}.${ext}`, new Blob([output.text], { type: 'text/plain;charset=utf-8' }));
                   }}
                 >
                   <FileDown size={12} />

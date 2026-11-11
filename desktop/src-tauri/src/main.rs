@@ -1112,6 +1112,34 @@ fn shell_log(home: &std::path::Path, msg: &str) {
     }
 }
 
+/// Collision-free sibling of `path` (`report.zip` -> `report (1).zip`).
+/// WebView2 does NOT dedupe a ResultFilePath we set explicitly the way it does
+/// its own default destination, and silently overwriting an earlier export is
+/// not acceptable; WKWebView already deduped upstream, so this is a no-op there.
+fn unique_download_path(path: &std::path::Path) -> std::path::PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let Some(parent) = path.parent() else {
+        return path.to_path_buf();
+    };
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return path.to_path_buf();
+    };
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    for n in 1..10_000 {
+        let candidate = parent.join(format!("{stem} ({n}){ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path.to_path_buf()
+}
+
 /// Same data root `ocr desktop` / the daemon tooling already assume
 /// (%LOCALAPPDATA%\omnicell-router).
 #[cfg(windows)]
@@ -1304,11 +1332,37 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     // resizable undecorated windows. The bundled splash carries its own
     // controls too (stub/index.html): it is shown before the console origin
     // exists and again during gateway outages.
+    // The console downloads through `URL.createObjectURL` + `<a download>`,
+    // the browser idiom. A Tauri window is not a browser: wry installs no
+    // download machinery unless a handler is present, and WebView2 then drops
+    // the click silently (tauri-apps/wry#349). Handing wry a destination makes
+    // it finish the download in the background — the shell has no download UI,
+    // so the console's own success toast is the only visible confirmation.
+    let download_home = home.clone();
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("OmniCellRouter")
         .decorations(false)
         .inner_size(default_w, default_h)
         .visible(!autostart_launch)
+        .on_download(move |_webview, event| {
+            match event {
+                tauri::webview::DownloadEvent::Requested { url, destination } => {
+                    let path = unique_download_path(destination);
+                    shell_log(&download_home, &format!("download {url} -> {}", path.display()));
+                    *destination = path;
+                }
+                tauri::webview::DownloadEvent::Finished { url, path, success } => {
+                    shell_log(
+                        &download_home,
+                        &format!("download finished success={success} {url} -> {path:?}"),
+                    );
+                }
+                _ => (),
+            }
+            // Never cancel: this handler exists so the export buttons produce a
+            // file at all.
+            true
+        })
         .build()
         .map_err(|e| format!("failed to open the app window:\n{e}"))?;
     let win = app.get_webview_window("main").expect("main window exists");
@@ -1409,7 +1463,12 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
+        // The console's exports save through a native picker: dialog:allow-save
+        // chooses the path (and extends the fs scope to it), fs writes the
+        // bytes. Without fs a chosen path is a permission dead end; without
+        // dialog every export lands silently in the default Downloads folder.
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         // The console's copy buttons write through this plugin: the webview's
         // own clipboard API raises an engine permission prompt on first use and
         // rejects while the document is not focused (the first click on an

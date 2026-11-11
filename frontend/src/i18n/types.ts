@@ -2683,6 +2683,7 @@ hiddenBadge: string;
     installFail: string;
     download: string;
     downloadFail: string;
+    downloadOk: string;
     uninstall: string;
     uninstallConfirm: string;
     uninstallOk: string;
@@ -2723,6 +2724,18 @@ hiddenBadge: string;
     configAdvancedShow: string;
     configAdvancedHide: string;
     configExpand: string;
+  };
+  downloads: {
+    title: string;
+    preparing: string;
+    downloading: string;
+    saving: string;
+    done: string;
+    failed: string;
+    canceled: string;
+    openFolder: string;
+    copyPath: string;
+    clearDone: string;
   };
   catalogPage: {
     title: string;

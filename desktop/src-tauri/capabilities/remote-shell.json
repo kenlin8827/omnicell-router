@@ -1,13 +1,16 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "remote-shell",
-  "description": "The console is a REMOTE page served by the gateway on loopback, loaded into the main window's webview. It needs shell open so 'open in browser' buttons can reach the system browser — the webview's own target=\"_blank\" handling is swallowed by wry — native clipboard write so copy buttons never hit the engine's clipboard permission prompt or its not-focused rejection, and the window commands backing the shell's own title bar (the window is frameless: minimize / toggle-maximize / close / maximize-state read, plus drag-region start_dragging and double-click internal_toggle_maximize). The origin is pinned to loopback HTTP on ANY port because the gateway is not always on 4000: an environment switch hands over to the target env's own config.yaml port and the shell follows it (see watch_gateway). Only the `main` window is in scope, so no IPC command is exposed to any other document that window may navigate to.",
+  "description": "The console is a REMOTE page served by the gateway on loopback, loaded into the main window's webview. It needs shell open so 'open in browser' buttons can reach the system browser — the webview's own target=\"_blank\" handling is swallowed by wry — native clipboard write so copy buttons never hit the engine's clipboard permission prompt or its not-focused rejection, dialog save plus fs write so exports ask the operator where to put the file instead of landing silently in Downloads (the save dialog extends the fs scope to the picked path), and the window commands backing the shell's own title bar (the window is frameless: minimize / toggle-maximize / close / maximize-state read, plus drag-region start_dragging and double-click internal_toggle_maximize). The origin is pinned to loopback HTTP on ANY port because the gateway is not always on 4000: an environment switch hands over to the target env's own config.yaml port and the shell follows it (see watch_gateway). Only the `main` window is in scope, so no IPC command is exposed to any other document that window may navigate to.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*/*"]
   },
   "permissions": [
     "shell:allow-open",
+    "dialog:allow-save",
+    "fs:allow-write-file",
+    "core:path:allow-resolve-directory",
     "clipboard-manager:allow-write-text",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",

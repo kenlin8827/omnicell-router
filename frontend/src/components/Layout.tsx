@@ -21,6 +21,7 @@ import { QuotaPeek } from './QuotaPeek';
 import { CommandPalette, type CommandItem } from './CommandPalette';
 import { UpdateBanner } from './UpdateBanner';
 import { WindowControls } from './WindowControls';
+import { DownloadCenter } from './DownloadCenter';
 import { copyToClipboard } from '../lib/clipboard';
 import { GITHUB_REPO_URL } from '../lib/links';
 import { STAR_REMINDER_CHANGED_EVENT, isStarNudgeDone } from '../lib/starReminder';
@@ -446,6 +447,7 @@ export const Layout: React.FC = () => {
               aria-label={t(starNudgeDone ? 'starReminder.footerRepo' : 'starReminder.footerStar')}>
               <Github size={16} />
             </a>
+            <DownloadCenter />
             <span className="header-separator" />
             <button className="app-icon-button" onClick={handleRestartGateway} title={t('header.restart')} aria-label={t('header.restart')}>
               <RotateCcw size={16} />

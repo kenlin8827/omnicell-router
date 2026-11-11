@@ -18,6 +18,8 @@
     "@fontsource/noto-sans-sc": "^5.3.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-clipboard-manager": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
     "@tauri-apps/plugin-shell": "^2",
     "@uiw/react-codemirror": "^4.25.12",
     "clsx": "^2.1.1",

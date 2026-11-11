@@ -31,6 +31,8 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Dialog } from '../components/Dialog';
 import { Field } from '../components/Form';
+import { isDesktopShell } from '../lib/download';
+import { startDownload } from '../lib/download-manager';
 import { Combobox } from '../components/Combobox';
 import { Switch } from '../components/Switch';
 import { FONT_MONO } from '../lib/fonts';
@@ -357,7 +359,7 @@ export const EnvironmentsPage: React.FC = () => {
     setExporting(true);
     try {
       const include = ARCHIVE_PAYLOAD_OPTIONS.filter((o) => exportInclude[o.key]).map((o) => o.key);
-      const { blob, filename } = await api.exportEnvironment(exportTarget.name, {
+      const request = api.environmentExportRequest(exportTarget.name, {
         // Encrypted implies plaintext keys inside the encrypted layer (the
         // backend enforces the same rule — UI mirrors it with a locked switch).
         includeSecrets: exportEncrypt || exportSecrets,
@@ -365,16 +367,17 @@ export const EnvironmentsPage: React.FC = () => {
         encrypt: exportEncrypt,
         password: exportEncrypt ? exportPassword : undefined,
       });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast.success(t('env.exportOk', { name: exportTarget.name }));
-      closeExport();
+      const result = await startDownload({
+        url: request.url,
+        init: { headers: request.headers },
+        fallbackName: request.fallbackName,
+      });
+      if (result.ok) {
+        if (!isDesktopShell()) toast.success(t('env.exportOk', { name: exportTarget.name }));
+        closeExport();
+      } else if (!result.canceled) {
+        toast.error(result.error ?? t('common.failed'));
+      }
     } catch (err) {
       toast.error(errorText(err, {}));
     } finally {

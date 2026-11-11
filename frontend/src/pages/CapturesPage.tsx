@@ -27,6 +27,8 @@ import { shortId, decodeRate, formatRate, fmtDur, fmtLatency } from '../lib/form
 import { copyToClipboard } from '../lib/clipboard';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
+import { isDesktopShell } from '../lib/download';
+import { startDownload, startGeneratedDownload } from '../lib/download-manager';
 import { SessionTranscript } from '../components/SessionTranscript';
 import { Prose } from '../components/Prose';
 import { BackToTop } from '../components/BackToTop';
@@ -1853,51 +1855,51 @@ export const CapturesPage: React.FC = () => {
 
   const handleExport = async (s: CaptureSessionRow, exclude: string[] = [], includeImages = false) => {
     if (!selectedDate) return;
-    try {
-      const blob = await api.exportCaptureArchive(selectedDate, s.file, exclude.length ? exclude : undefined);
-      const jsonlName = `capture-${selectedDate}-${s.sessionId}.jsonl`;
-      if (!includeImages) {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = jsonlName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        toast.success(t('captures.exported'));
-        return;
+    const jsonlName = `capture-${selectedDate}-${s.sessionId}.jsonl`;
+    const zipName = jsonlName.replace(/\.jsonl$/, '.zip');
+    const url = api.captureArchiveUrl(selectedDate, s.file, exclude.length ? exclude : undefined);
+
+    if (!includeImages) {
+      const result = await startDownload({ url, name: jsonlName, fallbackName: jsonlName });
+      if (result.ok) {
+        if (!isDesktopShell()) toast.success(t('captures.exported'));
+      } else if (!result.canceled) {
+        toast.error(result.error ?? t('common.failed'));
       }
-      // ZIP mode: the JSONL plus every offloaded payload it references
-      // (deduped by sha). A media fetch failure skips that one file — the
-      // archive text still exports complete with its [MEDIA …] placeholders.
-      const text = await blob.text();
+      return;
+    }
+
+    // ZIP mode: the JSONL plus every offloaded payload it references
+    // (deduped by sha). A media fetch failure skips that one file — the
+    // archive text still exports complete with its [MEDIA …] placeholders.
+    const result = await startGeneratedDownload(zipName, async (report, signal) => {
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
       const entries: Record<string, Uint8Array> = { [jsonlName]: strToU8(text) };
       const wanted = new Set<string>();
       for (const m of findMediaTokens(text)) if (m.file) wanted.add(m.sha256);
+      let loaded = 0;
       for (const sha of wanted) {
         try {
-          const res = await fetch(`/api/admin/capture/${selectedDate}/media/${sha}`);
-          if (!res.ok) continue;
+          const media = await fetch(`/api/admin/capture/${selectedDate}/media/${sha}`, { signal });
+          if (!media.ok) continue;
           const token = findMediaTokens(text).find(x => x.sha256 === sha && x.file);
           const name = token?.file?.replace(/^media\//, '') ?? sha;
-          entries[`media/${name}`] = new Uint8Array(await res.arrayBuffer());
+          const bytes = new Uint8Array(await media.arrayBuffer());
+          entries[`media/${name}`] = bytes;
+          loaded += bytes.byteLength;
+          report(loaded, null);
         } catch {
           // fail-open per file, same doctrine as the recorder.
         }
       }
-      const zipped = zipSync(entries);
-      const url = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = jsonlName.replace(/\.jsonl$/, '.zip');
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast.success(t('captures.exported'));
-    } catch (err: any) {
-      toast.error(err.message || t('common.failed'));
+      return new Blob([zipSync(entries)], { type: 'application/zip' });
+    });
+    if (result.ok) {
+      if (!isDesktopShell()) toast.success(t('captures.exported'));
+    } else if (!result.canceled) {
+      toast.error(result.error ?? t('common.failed'));
     }
   };
 
