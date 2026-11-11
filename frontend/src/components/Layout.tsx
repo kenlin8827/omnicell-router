@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowDownLeft, ArrowLeftRight, ArrowUpRight,
-  BarChart3, Boxes, BrainCircuit, ClipboardList, CloudDownload, Cpu,
+  BarChart3, Boxes, BrainCircuit, ChevronDown, ClipboardList, CloudDownload, Cpu,
   FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Settings, Settings2, ShieldAlert,
@@ -12,6 +12,7 @@ import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../li
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { resolveStoredTheme, resolveThemePreference, THEME_STORAGE_KEY, type ThemePreference } from '../lib/theme';
 import { readNavPreference, NAV_STYLE_CHANGED_EVENT, type NavPreference } from '../lib/navStyle';
+import { nextRecentRoutes, readRecentRoutes, writeRecentRoutes } from '../lib/navRecent';
 import { useI18n } from '../i18n/I18nContext';
 import { LANGUAGES } from '../i18n/languages';
 import type { Lang } from '../i18n/types';
@@ -156,6 +157,11 @@ export const Layout: React.FC = () => {
   const [navPreference, setNavPreference] = useState<NavPreference>(readNavPreference);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** `flat` + collapsible only: which groups the operator folded away. Starts
+   *  empty (everything open) and is never persisted — see lib/navStyle. */
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  // Empty-query ordering for the command palette (see lib/navRecent).
+  const [recentRoutes, setRecentRoutes] = useState<string[]>(readRecentRoutes);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY)));
 
   /** Once the operator used the star CTA, the header repository button drops
@@ -266,6 +272,15 @@ export const Layout: React.FC = () => {
     setActiveGroupId(routeGroupId);
   }, [location.pathname, routeGroupId]);
 
+  /** Recency ranking for the palette. Registry paths only: parameterised detail
+   *  routes have no palette entry to rank. */
+  useEffect(() => {
+    if (!ROUTE_META_KEYS[location.pathname]) return;
+    const next = nextRecentRoutes(readRecentRoutes(), location.pathname);
+    writeRecentRoutes(next);
+    setRecentRoutes(next);
+  }, [location.pathname]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -345,6 +360,9 @@ export const Layout: React.FC = () => {
    *  leave that drawer showing a rail with no panel in it. */
   const showPanel = !railCollapsed || mobileOpen;
   const railLabels = navStyle === 'rail' && navPreference.railLabels;
+  /** Row density belongs to the long list, so only `flat` honours it. */
+  const denseRows = navStyle === 'flat' && navPreference.density === 'compact';
+  const foldableGroups = navStyle === 'flat' && navPreference.collapsible;
 
   const renderNavItem = (item: NavItemDef) => {
     const Icon = item.icon;
@@ -372,7 +390,7 @@ export const Layout: React.FC = () => {
   return (
     <div className="app-shell">
       {mobileOpen && <button className="sidebar-scrim" type="button" aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
-      <aside className={`app-sidebar is-${navStyle}${railCollapsed ? ' is-compact' : ''}${railLabels ? ' has-rail-labels' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
+      <aside className={`app-sidebar is-${navStyle}${railCollapsed ? ' is-compact' : ''}${railLabels ? ' has-rail-labels' : ''}${denseRows ? ' is-dense' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
         {/* First level: one glyph per group. The rail is the stable anchor —
             its eight buttons never move, so muscle memory survives whatever
             the panel is showing. Only the rail style has one. */}
@@ -444,12 +462,30 @@ export const Layout: React.FC = () => {
           </>}
 
           {navStyle === 'flat' && <nav className="sidebar-nav" id="nav-panel" aria-label={t('nav.consoleTag')}>
-            {NAV_GROUP_DEFS.map((group) => (
-              <React.Fragment key={group.id}>
-                <div className="panel-heading">{t(group.headingKey)}</div>
-                {group.items.map(renderNavItem)}
-              </React.Fragment>
-            ))}
+            {NAV_GROUP_DEFS.map((group) => {
+              if (!foldableGroups) {
+                return (
+                  <React.Fragment key={group.id}>
+                    <div className="panel-heading">{t(group.headingKey)}</div>
+                    {group.items.map(renderNavItem)}
+                  </React.Fragment>
+                );
+              }
+              const isCollapsed = Boolean(collapsedGroups[group.id]);
+              return (
+                <div className="nav-group" key={group.id}>
+                  {/* The trigger keeps `.panel-heading` typography and only adds
+                      button behaviour, so the folded and unfolded lists are
+                      typographically identical. */}
+                  <button type="button" className="panel-heading is-trigger" aria-expanded={!isCollapsed}
+                    onClick={() => setCollapsedGroups((previous) => ({ ...previous, [group.id]: !previous[group.id] }))}>
+                    <span>{t(group.headingKey)}</span>
+                    <ChevronDown size={13} className={isCollapsed ? 'is-collapsed' : ''} />
+                  </button>
+                  {!isCollapsed && <div className="nav-group-items">{group.items.map(renderNavItem)}</div>}
+                </div>
+              );
+            })}
           </nav>}
 
           <div className="sidebar-footer">
@@ -528,7 +564,7 @@ export const Layout: React.FC = () => {
         )}
         <main className="app-main"><div className="page-canvas"><Outlet context={{ status, statusError, refreshStatus }} /></div></main>
       </div>
-      <CommandPalette open={paletteOpen} items={commandItems} onClose={() => setPaletteOpen(false)} onSelect={(to) => navigate(to)} />
+      <CommandPalette open={paletteOpen} items={commandItems} recent={recentRoutes} onClose={() => setPaletteOpen(false)} onSelect={(to) => navigate(to)} />
     </div>
   );
 };

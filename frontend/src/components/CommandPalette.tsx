@@ -13,12 +13,14 @@ export interface CommandItem {
 interface CommandPaletteProps {
   open: boolean;
   items: CommandItem[];
+  /** Route paths in MRU order; ranks the list while the query is empty. */
+  recent?: string[];
   onClose: () => void;
   onSelect: (to: string) => void;
 }
 
 /** Keyboard-first navigation across the complete console route catalogue. */
-export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, items, onClose, onSelect }) => {
+export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, items, recent, onClose, onSelect }) => {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -28,11 +30,20 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, items, onC
 
   const filtered = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
-    if (!q) return items;
+    if (!q) {
+      // An empty query opens on the pages actually used last, then the registry
+      // order. This list is the only navigation surface that is not contextual,
+      // so recency ranks here rather than in the sidebar.
+      const ranked = (recent ?? [])
+        .map((to) => items.find((item) => item.to === to))
+        .filter((item): item is CommandItem => Boolean(item));
+      const seen = new Set(ranked.map((item) => item.to));
+      return [...ranked, ...items.filter((item) => !seen.has(item.to))];
+    }
     return items.filter((item) =>
       `${item.label} ${item.group} ${item.to}`.toLocaleLowerCase().includes(q)
     );
-  }, [items, query]);
+  }, [items, query, recent]);
 
   useEffect(() => {
     if (!open) return;

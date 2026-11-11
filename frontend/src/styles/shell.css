@@ -260,8 +260,34 @@ kbd {
   text-transform: uppercase;
 }
 /* Flat style stacks one label per group inside the scroll region; the gap above
-   a second label is what separates two groups. */
+   a second label is what separates two groups. Folded groups are wrapped, so the
+   spacing moves to the wrapper in that mode. */
 .app-sidebar.is-flat .sidebar-nav > .panel-heading:not(:first-child) { padding-top: 12px; }
+.app-sidebar.is-flat .sidebar-nav > .nav-group + .nav-group { margin-top: 12px; }
+/* Foldable headings: same typography as a static label, plus button behaviour. */
+.panel-heading.is-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
+  transition: color 140ms ease, background 140ms ease;
+}
+.panel-heading.is-trigger:hover { color: var(--text-main); background: var(--well-bg); }
+.panel-heading.is-trigger span { flex: 1; }
+.panel-heading.is-trigger svg { flex: 0 0 auto; transition: transform 160ms ease; }
+.panel-heading.is-trigger svg.is-collapsed { transform: rotate(-90deg); }
+.nav-group-items { display: flex; flex-direction: column; gap: 2px; }
+/* Compact rows: 40px → 32px is the difference between scrolling the catalogue
+   and seeing it whole, which is the only reason this option exists. */
+.app-sidebar.is-dense .sidebar-nav .panel-heading { padding-block: 1px 3px; }
+.app-sidebar.is-dense .sidebar-nav > .panel-heading:not(:first-child) { padding-top: 8px; }
+.app-sidebar.is-dense .sidebar-nav > .nav-group + .nav-group { margin-top: 8px; }
+.app-sidebar.is-dense .nav-item { min-height: 32px; padding: 4px 11px; }
 .nav-item {
   position: relative;
   display: flex;

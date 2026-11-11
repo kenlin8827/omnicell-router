@@ -959,17 +959,43 @@ export const SettingsPage: React.FC = () => {
                 {t('settings.menuStyleHint')}
               </div>
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: navPreference.style === 'rail' ? 'pointer' : 'not-allowed', opacity: navPreference.style === 'rail' ? 1 : 0.45 }}>
-              <span>{t('settings.menuRailLabels')}</span>
-              <Switch
-                checked={navPreference.railLabels}
-                disabled={navPreference.style !== 'rail'}
-                onChange={(value) => applyNavPreference({ railLabels: value })}
-              />
-            </label>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-              {t('settings.menuRailLabelsHint')}
-            </div>
+            {/* Only the selected style's sub-options are rendered: a control that
+                does nothing in this style would be a puzzle, not a choice. */}
+            {navPreference.style === 'rail' && <>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span>{t('settings.menuRailLabels')}</span>
+                <Switch
+                  checked={navPreference.railLabels}
+                  onChange={(value) => applyNavPreference({ railLabels: value })}
+                />
+              </label>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                {t('settings.menuRailLabelsHint')}
+              </div>
+            </>}
+
+            {navPreference.style === 'flat' && <>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span>{t('settings.menuDensity')}</span>
+                <Switch
+                  checked={navPreference.density === 'compact'}
+                  onChange={(value) => applyNavPreference({ density: value ? 'compact' : 'comfortable' })}
+                />
+              </label>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                {t('settings.menuDensityHint')}
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span>{t('settings.menuCollapsible')}</span>
+                <Switch
+                  checked={navPreference.collapsible}
+                  onChange={(value) => applyNavPreference({ collapsible: value })}
+                />
+              </label>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                {t('settings.menuCollapsibleHint')}
+              </div>
+            </>}
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
               {t('settings.menuStorageHint')}
             </div>
