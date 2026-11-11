@@ -9,9 +9,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import type { ForwardProxyConfig } from '../src/config/types.js';
-import { parseClientHelloSNI } from '../src/forward-proxy/sni.js';
-import { isLoopbackHost, matchBypass } from '../src/forward-proxy/bypass.js';
-import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
+import { peekClientHello } from '../src/forward-proxy/sni.js';
+import { isLoopbackHost, resolveHost } from '../src/forward-proxy/rules.js';
+import { CertMinter, ensureCa } from '../src/forward-proxy/ca.js';
+import { ensureTestCa } from './helpers/test-ca.js';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
 import { loadConfig } from '../src/config/index.js';
@@ -73,8 +74,8 @@ function httpRequest(tlsSock: tls.TLSSocket, host: string, method: string, p: st
   });
 }
 
-describe('forward-proxy: SNI probing + bypass policy', () => {
-  it('parseClientHelloSNI extracts the servername from a real ClientHello', async () => {
+describe('forward-proxy: SNI probing + rule resolution', () => {
+  it('peekClientHello extracts the servername from a real ClientHello', async () => {
     const captured = await new Promise<Buffer>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timeout')), 5000);
       const srv = net.createServer((sock) => {
@@ -91,35 +92,37 @@ describe('forward-proxy: SNI probing + bypass policy', () => {
         c.on('error', () => {}); // handshake never completes
       });
     });
-    assert.equal(parseClientHelloSNI(captured), 'sni.example.com');
-    assert.equal(parseClientHelloSNI(Buffer.from('not-tls')), null);
+    const peek = peekClientHello(captured);
+    assert.equal(peek.isTls, true);
+    assert.equal(peek.complete, true);
+    assert.equal(peek.sni, 'sni.example.com');
+    const plain = peekClientHello(Buffer.from('not-tls'));
+    assert.equal(plain.isTls, false);
   });
 
-  it('bypass matcher: loopback always bypasses; globs match hosts', () => {
+  it('rule matcher: loopback is always direct + tunneled; globs match hosts', () => {
     assert.equal(isLoopbackHost('127.0.0.1'), true);
     assert.equal(isLoopbackHost('localhost'), true);
     assert.equal(isLoopbackHost('::1'), true);
     assert.equal(isLoopbackHost('api.openai.com'), false);
 
-    assert.equal(matchBypass('api.openai.com', []).bypassed, false);
-    assert.equal(matchBypass('api.openai.com', undefined).bypassed, false);
-    assert.equal(matchBypass('api.openai.com', ['*.internal']).bypassed, false);
-    assert.equal(matchBypass('db.internal', ['*.internal']).bypassed, true);
-    assert.equal(matchBypass('1.2.3.4', []).bypassed, false);
-    assert.equal(matchBypass('127.0.0.1', ['nothing-matches']).bypassed, true);
-
-    // matchBypass: per-host egress flag (object entries); loopback stays direct
-    assert.deepEqual(matchBypass('api.openai.com', []), { bypassed: false, viaProxy: false });
-    assert.deepEqual(matchBypass('api.openai.com', ['*.openai.com']), { bypassed: true, viaProxy: false });
-    assert.deepEqual(matchBypass('api.openai.com', [{ host: 'api.openai.com', viaProxy: true }]), { bypassed: true, viaProxy: true });
-    assert.deepEqual(matchBypass('127.0.0.1', [{ host: '127.*', viaProxy: true }]), { bypassed: true, viaProxy: false });
+    const tunnel = [{ match: '*.internal', ingress: 'passthrough', egress: 'direct' as const }];
+    assert.equal(resolveHost('api.openai.com', tunnel).tunnel, false);
+    assert.equal(resolveHost('db.internal', tunnel).tunnel, true);
+    assert.equal(resolveHost('1.2.3.4', tunnel).tunnel, false);
+    // Loopback is unreachable by any rule — not even a `*` reject touches it.
+    assert.deepEqual(resolveHost('127.0.0.1', [{ match: '*', ingress: 'reject', egress: 'direct' as const }]), {
+      action: 'direct',
+      tunnel: true,
+      reason: 'loopback',
+    });
   });
 });
 
 describe('forward-proxy: CA + certificate minting', () => {
   it('generates a persistent CA and leaf certs that verify + hostname-match', () => {
     const dir = tmpCaDir();
-    const ca = ensureCa(dir);
+    const ca = ensureTestCa(dir);
     assert.ok(fs.existsSync(path.join(dir, 'ca.pem')));
     assert.ok(fs.existsSync(path.join(dir, 'ca-key.pem')));
 
@@ -135,8 +138,31 @@ describe('forward-proxy: CA + certificate minting', () => {
     assert.equal(minter.get('api.example.com').cert, minted.cert);
 
     // Reload from disk — same CA material
-    const ca2 = ensureCa(dir);
+    const ca2 = ensureTestCa(dir);
     assert.equal(ca2.caCertPem, ca.caCertPem);
+
+    // The fix that made this suite pass on a machine whose OS trust store holds
+    // the operator's CA: every CA gets a key-derived OU, so two installs never
+    // share one subject DN (a verifier resolving the wrong same-subject root is
+    // what produced CERT_SIGNATURE_FAILURE here).
+    const ou = 'CA ' + crypto
+      .createHash('sha256')
+      .update(`${ca.caKey.n.toString(16)}:${ca.caKey.e.toString(16)}`)
+      .digest('hex')
+      .slice(0, 8);
+    assert.equal(ca.caCert.subject.getField('OU')?.value, ou);
+    const otherDir = tmpCaDir();
+    const other = ensureTestCa(otherDir);
+    assert.notEqual(
+      ca.caCert.subject.attributes.map((a) => `${a.name}=${a.value}`).join(','),
+      other.caCert.subject.attributes.map((a) => `${a.name}=${a.value}`).join(','),
+      'two CA dirs must not produce the same subject DN'
+    );
+
+    // A request for a DIFFERENT identity over an existing bundle is refused
+    // rather than silently answered with the persisted CA (that would hand a
+    // test back the production-CN CA and reintroduce the shadowing).
+    assert.throws(() => ensureCa(dir, 'Some Other CA'), /refusing to return a CA under the wrong identity/);
   });
 });
 
@@ -704,8 +730,8 @@ describe('forward-proxy: over-the-wire routing (interceptor + MITM combined)', (
   });
 });
 
-describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
-  it('object entries with viaProxy tunnel through the proxy; bare strings stay direct', async () => {
+describe('forward-proxy: egress column (direct vs proxy rows)', () => {
+  it('proxy rows tunnel through the outbound proxy; direct rows stay direct', async () => {
     // Fake echo target (stands in for the real blocked host)
     const echo = net.createServer((s) => {
       s.on('data', (d) => s.write(d));
@@ -740,12 +766,12 @@ describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
     const { initProxyConfig } = await import('../src/utils/proxy.js');
     initProxyConfig({ enabled: true, url: `http://127.0.0.1:${proxyPort}` });
     try {
-      // 1) Object entry viaProxy:true → tunnel egresses through the outbound proxy
+      // 1) egress: 'proxy' → tunnel egresses through the outbound proxy
       const h1 = await createForwardProxyServer({
         port: 0,
         host: '127.0.0.1',
         caDir: tmpCaDir(),
-        bypassHosts: [{ host: 'blocked.example', viaProxy: true }],
+        rules: [{ match: 'blocked.example', ingress: 'passthrough', egress: 'proxy' }],
         intercept: async () => false,
       });
       const s1 = await connectViaProxy(h1.port, 'blocked.example', 443);
@@ -767,8 +793,10 @@ describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
         port: 0,
         host: '127.0.0.1',
         caDir: tmpCaDir(),
-        bypassHosts: ['blocked.example'],
-        viaOutboundProxy: true,
+        rules: [
+          { match: 'blocked.example', ingress: 'passthrough', egress: 'direct' },
+          { match: '*', ingress: 'intercept', egress: 'proxy' },
+        ],
         intercept: async () => false,
       });
       const s2 = await connectViaProxy(h2.port, 'blocked.example', 443);
@@ -781,7 +809,7 @@ describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
       assert.equal(
         proxyConnects.length,
         before,
-        'bare-string bypass entries must NOT egress via the outbound proxy'
+        'direct rows must NOT egress via the outbound proxy'
       );
       await h2.close();
     } finally {
@@ -793,7 +821,7 @@ describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
 });
 
 describe('forward-proxy: hot-apply (live forwardProxy config, no restart)', () => {
-  it('flipping bypassHosts/viaOutboundProxy in the live reader changes egress mid-run', async () => {
+  it('flipping the live rule table changes egress mid-run', async () => {
     const echo = net.createServer((s) => {
       s.on('data', (d) => s.write(d));
     });
@@ -828,21 +856,25 @@ describe('forward-proxy: hot-apply (live forwardProxy config, no restart)', () =
 
     const { initProxyConfig } = await import('../src/utils/proxy.js');
     initProxyConfig({ enabled: true, url: `http://127.0.0.1:${proxyPort}` });
-    let live: ForwardProxyConfig = { bypassHosts: ['hot.example'] };
+    let live: ForwardProxyConfig = {
+      rules: [
+        { match: 'hot.example', ingress: 'passthrough', egress: 'direct' },
+        { match: '*', ingress: 'intercept', egress: 'direct' },
+      ],
+    };
     try {
       const handle = await createForwardProxyServer({
         port: 0,
         host: '127.0.0.1',
         caDir: tmpCaDir(),
-        bypassHosts: [],
-        viaOutboundProxy: false,
+        rules: [],
         liveForwardProxy: () => live,
         intercept: async () => false,
       });
 
       // Absolute-form plain-HTTP GET — not an LLM surface, so intercept passes
-      // it through to the forwarders, where the global viaOutboundProxy flag
-      // (re-read from `live` per request) decides the egress.
+      // it through to the forwarders, where the live rule table (re-read per
+      // request) decides the egress.
       const forwardViaProxy = (): Promise<number> =>
         new Promise((resolve) => {
           const req = http.request(
@@ -856,16 +888,16 @@ describe('forward-proxy: hot-apply (live forwardProxy config, no restart)', () =
           req.end();
         });
 
-      // Phase 1: hot.example is bypassed → blind tunnel with DIRECT egress;
+      // Phase 1: hot.example matches a passthrough row with egress: 'direct' → blind tunnel;
       // the unroutable host kills the tunnel → 502, no CONNECT at fakeProxy.
       assert.equal(await forwardViaProxy(), 502);
-      assert.equal(proxyConnects.length, 0, 'bypassed host must not egress via the outbound proxy');
+      assert.equal(proxyConnects.length, 0, 'direct egress must not CONNECT through the outbound proxy');
 
-      // Phase 2: hot-apply removes the bypass and turns the global flag on —
+      // Phase 2: hot-apply swaps the catch-all row to egress: 'proxy' —
       // NOT awaited to completion: the fake proxy's blind pipe keeps the
       // response socket open; the CONNECT line at the fake proxy IS the
       // observable.
-      live = { bypassHosts: [], viaOutboundProxy: true };
+      live = { rules: [{ match: '*', ingress: 'passthrough', egress: 'proxy' }] };
       const inflight = http.request(
         { host: '127.0.0.1', port: handle.port, method: 'GET', path: `http://hot.example:${echoPort}/` }
       );
@@ -1024,5 +1056,45 @@ describe('forward-proxy: direct-leg capture parity (ADR-0003 §7a)', () => {
     upstream.close();
     sidecar.close();
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+describe('forward-proxy: per-host terminator cache', () => {
+  it('evicts the least-recently-used per-host terminator past the LRU bound', async () => {
+    const evictions: string[] = [];
+    const handle = await createForwardProxyServer({
+      port: 0,
+      host: '127.0.0.1',
+      caDir: tmpCaDir(),
+      intercept: async () => false,
+      maxHostTerminators: 2,
+      log: (m) => {
+        if (m.startsWith('terminator evicted')) evictions.push(m);
+      },
+    });
+
+    // The terminator is minted by `startMitm` BEFORE the handshake, so a
+    // completed TLS handshake proves one exists for that host.
+    const handshake = async (host: string): Promise<void> => {
+      const sock = await connectViaProxy(handle.port, host, 443);
+      const tlsSock = await tlsOver(sock, host, handle.caCertPem);
+      tlsSock.destroy();
+    };
+
+    await handshake('a.test');
+    await handshake('b.test');
+    assert.deepEqual(evictions, [], 'inside the bound nothing is evicted');
+
+    await handshake('c.test');
+    assert.equal(evictions.length, 1, 'the third host pushes past the bound');
+    assert.ok(evictions[0].includes('a.test'), `oldest host evicted first, got: ${evictions[0]}`);
+
+    // A re-visit after eviction re-mints from the same CA and works, and it
+    // becomes the most-recently-used entry (so b.test is the next victim).
+    await handshake('a.test');
+    assert.equal(evictions.length, 2);
+    assert.ok(evictions[1].includes('b.test'), `re-visit refreshes LRU order, got: ${evictions[1]}`);
+
+    await handle.close();
   });
 });

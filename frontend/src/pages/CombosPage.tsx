@@ -216,7 +216,7 @@ const ComboDialog: React.FC<{
           }}
         >
           <Layers size={16} color="var(--accent)" />
-          <span style={{ fontSize: '14px', fontWeight: 600 }}>
+          <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)' }}>
             {isNew ? t('combos.newCombo') : `${t('combos.edit')} · ${draft.id || '…'}`}
           </span>
           <button className="btn btn-sm" style={{ marginLeft: 'auto', padding: '4px 6px' }} onClick={onClose}>
@@ -227,7 +227,7 @@ const ComboDialog: React.FC<{
         {/* Body */}
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
               {t('combos.comboId')}
             </label>
             <input
@@ -241,7 +241,7 @@ const ComboDialog: React.FC<{
           </div>
 
           <div>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
               {t('combos.selection')}
             </label>
             <div style={{ display: 'flex', gap: '8px' }}>
@@ -250,7 +250,7 @@ const ComboDialog: React.FC<{
                   key={s}
                   type="button"
                   className={work.selection === s ? 'btn btn-primary' : 'btn'}
-                  style={{ fontSize: '12px', flex: 1 }}
+                  style={{ fontSize: 'var(--text-sm)', flex: 1 }}
                   onClick={() => patch({ selection: s })}
                 >
                   {t(s === 'priority' ? 'combos.selPriority' : s === 'weighted' ? 'combos.selWeighted' : 'combos.selRoundRobin')}
@@ -261,7 +261,7 @@ const ComboDialog: React.FC<{
 
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t('combos.members')}
               </label>
               <button
@@ -321,7 +321,7 @@ const ComboDialog: React.FC<{
                     >
                       <GripVertical size={13} />
                     </span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-dim)', width: '18px', textAlign: 'right' }}>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', width: '18px', textAlign: 'right' }}>
                       {mIdx + 1}.
                     </span>
                     <Combobox
@@ -330,11 +330,11 @@ const ComboDialog: React.FC<{
                       options={modelOptions}
                       placeholder={t('combos.memberPlaceholder')}
                       panelMinWidth={360}
-                      style={{ fontSize: '12px', padding: '5px 10px', flex: 1, minWidth: '220px' }}
+                      style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', flex: 1, minWidth: '220px' }}
                     />
                     {work.selection !== 'priority' && (
                       <label
-                        style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: 'var(--text-dim)' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
                       >
                         {t('combos.weight')}
                         <input
@@ -375,7 +375,7 @@ const ComboDialog: React.FC<{
                       </button>
                     </div>
                     {!known && member.id && (
-                      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--accent-rose)' }}>
+                      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '5px', fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>
                         <AlertTriangle size={12} />
                         <span>{t('combos.unregisteredWarn')}</span>
                       </div>
@@ -386,7 +386,7 @@ const ComboDialog: React.FC<{
               <div style={{ display: 'flex', gap: '6px' }}>
                 <input
                   className="input"
-                  style={{ flex: 1, fontSize: '12px', fontFamily: FONT_MONO }}
+                  style={{ flex: 1, fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
                   placeholder={t('combos.patternPlaceholder')}
                   value={pattern}
                   onChange={e => setPattern(e.target.value)}
@@ -411,7 +411,7 @@ const ComboDialog: React.FC<{
           </div>
 
           <div>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
               {t('combos.noteLabel')}
             </label>
             <textarea
@@ -420,12 +420,12 @@ const ComboDialog: React.FC<{
               placeholder={t('combos.notePlaceholder')}
               value={work.note}
               onChange={e => patch({ note: e.target.value })}
-              style={{ fontSize: '12px', resize: 'vertical' }}
+              style={{ fontSize: 'var(--text-sm)', resize: 'vertical' }}
             />
           </div>
 
           {warn && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-rose)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>
               <AlertTriangle size={13} />
               <span>{t(warn)}</span>
             </div>
@@ -661,12 +661,12 @@ export const CombosPage: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: '16px', whiteSpace: 'pre-line' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', marginBottom: '16px', whiteSpace: 'pre-line' }}>
         {t('combos.hint')}
       </div>
 
       {combos.length === 0 ? (
-        <div style={{ fontSize: '13px', color: 'var(--text-dim)', padding: '16px 0' }}>{t('combos.empty')}</div>
+        <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', padding: '16px 0' }}>{t('combos.empty')}</div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '14px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start' }}>
           {combos
@@ -734,13 +734,13 @@ export const CombosPage: React.FC = () => {
                   >
                     <GripVertical size={14} />
                   </span>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: '13px', fontWeight: 600, wordBreak: 'break-all' }}>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', wordBreak: 'break-all' }}>
                     {combo.id.trim() || <span style={{ color: 'var(--accent-rose)' }}>—</span>}
                   </span>
                   {inactive && (
                     <span
                       title={t('combos.inactiveWarn')}
-                      style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', color: 'var(--accent-rose)', border: '1px solid var(--accent-rose)', whiteSpace: 'nowrap' }}
+                      style={{ fontSize: 'var(--text-2xs)', padding: '2px 6px', borderRadius: '10px', color: 'var(--accent-rose)', border: '1px solid var(--accent-rose)', whiteSpace: 'nowrap' }}
                     >
                       {t('combos.inactiveBadge')}
                     </span>
@@ -748,7 +748,7 @@ export const CombosPage: React.FC = () => {
                   {isDisabled && (
                     <span
                       title={t('combos.disabledWarn')}
-                      style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', color: 'var(--accent-amber)', border: '1px solid var(--accent-amber)', whiteSpace: 'nowrap' }}
+                      style={{ fontSize: 'var(--text-2xs)', padding: '2px 6px', borderRadius: '10px', color: 'var(--accent-amber)', border: '1px solid var(--accent-amber)', whiteSpace: 'nowrap' }}
                     >
                       {t('combos.disabledBadge')}
                     </span>
@@ -756,7 +756,7 @@ export const CombosPage: React.FC = () => {
                   <span
                     style={{
                       marginLeft: 'auto',
-                      fontSize: '10px',
+                      fontSize: 'var(--text-2xs)',
                       padding: '2px 8px',
                       borderRadius: '10px',
                       border: '1px solid var(--card-border)',
@@ -771,7 +771,7 @@ export const CombosPage: React.FC = () => {
                 {combo.note.trim() && (
                   <div
                     title={combo.note}
-                    style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >
                     {combo.note}
                   </div>
@@ -789,20 +789,20 @@ export const CombosPage: React.FC = () => {
                           display: 'flex',
                           alignItems: 'center',
                           gap: '7px',
-                          fontSize: '12px',
+                          fontSize: 'var(--text-sm)',
                           padding: '5px 8px',
                           borderRadius: '6px',
                           background: 'var(--bg-elev)',
                           border: unregistered ? '1px dashed var(--accent-rose)' : '1px solid transparent',
                         }}
                       >
-                        <span style={{ color: 'var(--text-dim)', fontSize: '10px', width: '14px' }}>{mIdx + 1}</span>
+                        <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)', width: '14px' }}>{mIdx + 1}</span>
                         <HealthDot member={mm} />
                         <span title={m.id} style={{ fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {m.id || <span style={{ color: 'var(--accent-rose)' }}>{t('combos.warnEmptyMember')}</span>}
                         </span>
                         {combo.selection !== 'priority' && (m.weight ?? 1) > 1 && (
-                          <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'var(--text-dim)' }}>×{m.weight}</span>
+                          <span style={{ marginLeft: 'auto', fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>×{m.weight}</span>
                         )}
                       </div>
                     );
@@ -810,7 +810,7 @@ export const CombosPage: React.FC = () => {
                   {combo.models.length > COMBO_PREVIEW_MEMBERS && (
                     <button
                       className="btn btn-sm"
-                      style={{ alignSelf: 'flex-start', fontSize: '11px', padding: '2px 8px' }}
+                      style={{ alignSelf: 'flex-start', fontSize: 'var(--text-xs)', padding: '2px 8px' }}
                       onClick={e => {
                         e.stopPropagation();
                         setExpandedCards(prev => {
@@ -832,11 +832,11 @@ export const CombosPage: React.FC = () => {
                     footers align across cards of different member counts
                     (grid rows stretch cards to equal height). */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 'auto', paddingTop: '2px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                     {combo.models.length} {t('combos.membersUnit')}
                   </span>
                   {warn && (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: 'var(--accent-rose)' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>
                       <AlertTriangle size={11} />
                       <span>{t(warn)}</span>
                     </span>
@@ -846,7 +846,7 @@ export const CombosPage: React.FC = () => {
                       <span
                         style={{
                           fontFamily: FONT_MONO,
-                          fontSize: '10px',
+                          fontSize: 'var(--text-2xs)',
                           whiteSpace: 'nowrap',
                           color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                         }}

@@ -101,7 +101,7 @@ export const LimitsEditor: React.FC<{
       min={0}
       step={dim === 'costUsd' ? '0.01' : '1'}
       className="input"
-      style={{ flex: 1, minWidth: 0, padding: '6px 8px', fontSize: '12px' }}
+      style={{ flex: 1, minWidth: 0, padding: '6px 8px', fontSize: 'var(--text-sm)' }}
       value={row[dim]}
       onChange={(e) => patch(i, { [dim]: e.target.value })}
       placeholder="—"
@@ -111,7 +111,7 @@ export const LimitsEditor: React.FC<{
 
   return (
     <div>
-      <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+      <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
         {t('apiKeys.limitsLabel')} <InfoTip text={t('apiKeys.limitsHint')} />
       </label>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -120,7 +120,7 @@ export const LimitsEditor: React.FC<{
             <input
               type="text"
               className="input"
-              style={{ width: '72px', padding: '6px 8px', fontSize: '12px' }}
+              style={{ width: '72px', padding: '6px 8px', fontSize: 'var(--text-sm)' }}
               value={row.window}
               onChange={(e) => patch(i, { window: e.target.value })}
               placeholder="1m"
@@ -140,7 +140,7 @@ export const LimitsEditor: React.FC<{
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', gap: '6px', fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px', opacity: 0.8 }}>
+      <div style={{ display: 'flex', gap: '6px', fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px', opacity: 0.8 }}>
         <span style={{ width: '72px' }}>{t('apiKeys.limitsTh_window')}</span>
         <span style={{ flex: 1 }}>{t('apiKeys.limitsTh_requests')}</span>
         <span style={{ flex: 1 }}>{t('apiKeys.limitsTh_tokens')}</span>
@@ -150,7 +150,7 @@ export const LimitsEditor: React.FC<{
       <button
         type="button"
         className="btn"
-        style={{ marginTop: '8px', fontSize: '11px', padding: '4px 10px' }}
+        style={{ marginTop: '8px', fontSize: 'var(--text-xs)', padding: '4px 10px' }}
         onClick={() => onChange([...value, { ...EMPTY_LIMIT_DRAFT }])}
       >
         {t('apiKeys.limitsAddBtn')}

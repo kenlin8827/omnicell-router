@@ -69,9 +69,17 @@ type ComboboxBaseProps = {
   variant?: 'default' | 'ghost';
   /**
    * Suppress the meta text in the trigger button. The panel still shows meta
-   * on options, and the trigger's title tooltip surfaces it on hover.
+   * inline on options (unless `hoverMetaOnly`).
    */
   hideMetaInTrigger?: boolean;
+  /**
+   * Never render `meta` inline — not in the trigger, not in the panel rows.
+   * Meta still drives the per-option hover bubble (`data-tip`). For long
+   * sentence descriptions that would truncate into noise (e.g. the
+   * forward-proxy ingress rows); short tags like member counts should stay
+   * inline and NOT set this.
+   */
+  hoverMetaOnly?: boolean;
 };
 
 /**
@@ -104,7 +112,7 @@ export type ComboboxProps = ComboboxBaseProps &
 const FILTER_THRESHOLD = 8;
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {
-  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant, hideMetaInTrigger } = props;
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant, hideMetaInTrigger, hoverMetaOnly } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -266,7 +274,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         aria-expanded={open}
         aria-haspopup="listbox"
         disabled={disabled}
-        title={selected ? (selected.meta ? `${selected.label} (${selected.meta})` : selected.label) : undefined}
+        title={selected?.label}
         onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}
         onKeyDown={onTriggerKeyDown}
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}
@@ -292,7 +300,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
               : (placeholder ?? '')}
         </span>
         {!hideMetaInTrigger && selected?.meta && (
-          <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
         )}
         {clearable && values.length > 0 ? (
           // span (not button): interactive content must not nest inside <button>.
@@ -356,7 +364,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                         setActive(0);
                       }}
                       className={`btn btn-sm ${selectedOnly ? 'btn-primary' : ''}`}
-                      style={{ flexShrink: 0, fontSize: 11, padding: '3px 10px' }}
+                      style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '3px 10px' }}
                     >
                       {t('combobox.showSelectedOnly')}
                     </button>
@@ -394,7 +402,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     setQuery(e.target.value);
                     setActive(0);
                   }}
-                  style={{ fontSize: 12, padding: '6px 10px', paddingLeft: 26 }}
+                  style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', paddingLeft: 26 }}
                 />
               </div>
             )}
@@ -407,7 +415,8 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     key={o.value || `idx-${i}`}
                     role="option"
                     aria-selected={isSelected}
-                    title={`${o.label}${o.meta ? ` — ${o.meta}` : ''}`}
+                    data-tip={o.meta}
+                    data-tip-side={hoverMetaOnly ? 'right' : undefined}
                     onMouseEnter={() => setActive(i)}
                     onClick={() => pick(o)}
                     style={{
@@ -420,17 +429,17 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {o.label}
                     </span>
-                    {o.meta && (
-                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 1, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.meta}</span>
+                    {!hoverMetaOnly && o.meta && (
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 1, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.meta}</span>
                     )}
                     {o.badge && (
                       <span
                         style={{
-                          fontSize: 9.5,
-                          fontWeight: 700,
+                          fontSize: 'var(--text-2xs)',
+                          fontWeight: 'var(--font-bold)',
                           textTransform: 'uppercase',
-                          letterSpacing: '0.04em',
-                          lineHeight: 1.5,
+                          letterSpacing: 'var(--tracking-wide)',
+                          lineHeight: 'var(--leading-snug)',
                           padding: '0 6px',
                           borderRadius: 999,
                           flexShrink: 0,
@@ -446,7 +455,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                 );
               })}
               {filtered.length === 0 && (
-                <div style={{ padding: '10px', fontSize: 12, color: 'var(--text-dim)', textAlign: 'center' }}>
+                <div style={{ padding: '10px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', textAlign: 'center' }}>
                   {t('common.noResults')}
                 </div>
               )}

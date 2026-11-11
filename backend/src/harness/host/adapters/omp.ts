@@ -13,6 +13,9 @@ export class OmpAdapter extends BaseHostAdapter {
   readonly id = 'omp' as const;
   readonly configRootEnv = 'PI_CONFIG_DIR';
   readonly presence = { command: 'omp', dir: path.join(home(), '.omp') };
+  /** The vendor's own marketplace catalog layer (`docs/skills/authoring-marketplaces.md`):
+   *  `.omp-plugin/marketplace.json`, with `.claude-plugin/marketplace.json` as the fallback. */
+  readonly extensionDir = '.omp-plugin';
 
   protected readonly skillsSpec: SkillsSpec = {
     global: path.join(home(), '.omp', 'skills'),

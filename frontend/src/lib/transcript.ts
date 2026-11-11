@@ -870,14 +870,51 @@ export function groupIntoRounds(items: TranscriptTurn[]): TranscriptRound[] {
       (n, m) => n + (m.role === 'tool' ? 1 : m.blocks.filter(b => b.kind === 'tool_result').length),
       0
     );
+  let curAuthoritative = false;
   for (const st of items) {
-    const pi = st.input.findIndex(isPrompt);
-    const promptMsg = pi >= 0 ? st.input[pi] : null;
-    // A round opens on a visible user prompt. Bonus signal: once a step's
-    // output CONVERGED (pure-text answer), the next client request can only
-    // be a fresh prompt — this survives request bodies whose tail (where new
-    // user messages live) was cut by maxBodyBytes truncation.
-    if (!cur || promptMsg || cur.converged) {
+    const firstPromptIdx = st.input.findIndex(isPrompt);
+    // The archive's `promptSummary` is authoritative: it is stamped only on
+    // the request that opened a round (the recorder drops it on tool-loop
+    // continuations). Parsing the delta alone mis-splits a windowed slice
+    // whose first request still carries the FULL history — every old user
+    // message in it would look like a new prompt. Archives without the
+    // positions fields fall back to delta parsing.
+    const opensRound =
+      st.turn.promptSummary !== undefined
+        ? true
+        : st.turn.clientRequest?.promptMessageCount !== undefined
+          ? false
+          : firstPromptIdx >= 0;
+    // An opener's body may carry the whole prior conversation (the current
+    // prompt is its NEWEST user text); a continuation delta only ever holds
+    // tool results. Either way the newest prompt is the one that opened it.
+    let pi = firstPromptIdx;
+    if (opensRound) {
+      for (let i = st.input.length - 1; i >= 0; i--) {
+        if (isPrompt(st.input[i])) {
+          pi = i;
+          break;
+        }
+      }
+    }
+    // The archived summary is the question the ROUND selector shows; the
+    // body's last user text is often a harness context bundle. Prefer the
+    // summary so both surfaces name the round identically.
+    const promptMsg: TranscriptMessage | null =
+      opensRound && st.turn.promptSummary
+        ? {
+            role: 'user',
+            blocks: [{ kind: 'text', text: st.turn.promptSummary }],
+            toolCalls: [],
+          }
+        : pi >= 0
+          ? st.input[pi]
+          : null;
+    // Legacy archives (no positions fields) fall back to the convergence
+    // signal: a pure-text answer means the next request must be a fresh
+    // prompt. Indexed rounds never split on it — an intermediate answer can
+    // converge inside a round that the archive still numbers as one.
+    if (!cur || opensRound || (!curAuthoritative && cur.converged)) {
       // Tool results that arrived BEFORE this prompt answer the PREVIOUS
       // round's tool calls — credit them there, or the loss-hint misfires.
       if (cur && pi > 0) cur.toolResultsSeen += countResults(st.input.slice(0, pi));
@@ -894,6 +931,7 @@ export function groupIntoRounds(items: TranscriptTurn[]): TranscriptRound[] {
         hasError: false,
       };
       rounds.push(cur);
+      curAuthoritative = st.turn.clientRequest?.promptMessageCount !== undefined;
     }
     cur.steps.push(st);
     cur.toolCallsIssued += st.output?.toolCalls.length ?? 0;

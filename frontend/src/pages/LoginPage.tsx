@@ -53,13 +53,7 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        // Transparent on purpose: the body's themed --bg-gradient (noise +
-        // corner glows) shows through, same backdrop as the console itself.
-        // Login-only backdrop: a soft accent glow centered behind the card.
-        // The shared --bg-gradient alone is near-invisible on light themes
-        // (5-6% corner tints), leaving the pre-login page a flat white field.
-        backgroundImage:
-          'radial-gradient(560px 420px at 50% 40%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%)',
+        background: 'var(--bg)',
         padding: '20px',
       }}
     >
@@ -71,13 +65,13 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <ShieldCheck size={22} color="var(--accent)" />
           <div>
-            <div style={{ fontWeight: 700, fontSize: '16px' }}>{t('authLogin.title')}</div>
-            <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('authLogin.subtitle')}</div>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-xl)' }}>{t('authLogin.title')}</div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('authLogin.subtitle')}</div>
           </div>
         </div>
 
         <div>
-          <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+          <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
             {t('authLogin.username')}
           </label>
           <input
@@ -91,7 +85,7 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
         </div>
 
         <div>
-          <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+          <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
             {t('authLogin.password')}
           </label>
           <input
@@ -103,7 +97,7 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
           />
         </div>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-dim)', cursor: 'pointer', userSelect: 'none' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', cursor: 'pointer', userSelect: 'none' }}>
           <input
             type="checkbox"
             checked={remember}
@@ -125,7 +119,7 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
               background: 'rgba(239, 68, 68, 0.12)',
               border: '1px solid rgba(239, 68, 68, 0.3)',
               color: 'var(--accent-red, #ef4444)',
-              fontSize: '12px',
+              fontSize: 'var(--text-sm)',
             }}
           >
             {error}

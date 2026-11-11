@@ -75,7 +75,7 @@ const rowStyle: React.CSSProperties = {
   padding: '6px 8px',
   // Transparent rows + hairline separators (list-group): gray pill-per-row
   // stacked on the white dialog read as heavy blocks ("abrupt").
-  fontSize: 11.5,
+  fontSize: 'var(--text-sm)',
   cursor: 'default',
 };
 
@@ -85,8 +85,8 @@ const badge = (color: string, _bg: string): React.CSSProperties => ({
   color,
   background: 'transparent',
   border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
-  fontSize: 9.5,
-  fontWeight: 600,
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 'var(--font-semibold)',
   padding: '1px 6px',
   borderRadius: 99,
   whiteSpace: 'nowrap',
@@ -96,8 +96,8 @@ const badge = (color: string, _bg: string): React.CSSProperties => ({
 });
 
 const fieldLabelStyle: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-semibold)',
   color: 'var(--text-dim)',
   display: 'block',
   marginBottom: 4,
@@ -586,7 +586,7 @@ export const ProviderModelsDialog: React.FC<{
   ) => (
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
       {MODALITY_OPTIONS.map((m) => (
-        <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: 'var(--text-muted)', cursor: 'pointer', fontFamily: FONT_MONO }}>
+        <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--text-sm)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: FONT_MONO }}>
           <input
             type="checkbox"
             checked={form!.data[key].includes(m)}
@@ -618,9 +618,9 @@ export const ProviderModelsDialog: React.FC<{
       <div className="card" onClick={(e) => e.stopPropagation()} style={dialogStyle}>
         {/* ---- Header ---- */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 700 }}>{t('op.pmTitle')}</span>
-          <span style={{ fontSize: 12, fontFamily: FONT_MONO, color: 'var(--accent)' }}>{providerName || providerId}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+          <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>{t('op.pmTitle')}</span>
+          <span style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO, color: 'var(--accent)' }}>{providerName || providerId}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
             {filterText
               ? `${filteredRows.length} / ${rows.length}`
               : t('op.modelsCount', { n: rows.length })}
@@ -651,7 +651,7 @@ export const ProviderModelsDialog: React.FC<{
               />
               <input
                 className="input"
-                style={{ fontSize: 11.5, padding: '4px 24px 4px 24px', width: '100%' }}
+                style={{ fontSize: 'var(--text-sm)', padding: '4px 24px 4px 24px', width: '100%' }}
                 placeholder={t('op.pmFilterPlaceholder')}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
@@ -695,11 +695,11 @@ export const ProviderModelsDialog: React.FC<{
 
         {/* ---- Model list ---- */}
         {rows.length === 0 ? (
-          <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--text-dim)' }}>
+          <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
             {loading ? t('common.loading') : t('op.pmEmpty')}
           </div>
         ) : filteredRows.length === 0 ? (
-          <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--text-dim)' }}>
+          <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
             {t('op.pmNoMatch')}
           </div>
         ) : (
@@ -722,7 +722,7 @@ export const ProviderModelsDialog: React.FC<{
                   <span
                     style={{
                       fontFamily: FONT_MONO,
-                      fontWeight: 600,
+                      fontWeight: 'var(--font-semibold)',
                       flexShrink: 0,
                       // Never wrap: the wrap-break of a long id mid-token
                       // reads as two models; overflow sideways-ellipsis and
@@ -735,7 +735,7 @@ export const ProviderModelsDialog: React.FC<{
                   >
                     {row.id}
                   </span>
-                  {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 10 }}>→ {d.modelID}</span>}
+                  {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }}>→ {d.modelID}</span>}
                   {/* Name only when explicitly set AND not a repeat of the id —
                       a fallback to the id tail rendered the id twice. */}
                   {d.name && d.name !== row.id && d.name !== row.id.split('/').pop() && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>}
@@ -754,7 +754,7 @@ export const ProviderModelsDialog: React.FC<{
                     <span
                       style={{
                         fontFamily: FONT_MONO,
-                        fontSize: 10,
+                        fontSize: 'var(--text-2xs)',
                         whiteSpace: 'nowrap',
                         color: testResults[row.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                         marginLeft: d.limit?.context ? 0 : 'auto',
@@ -816,10 +816,10 @@ export const ProviderModelsDialog: React.FC<{
              list; clear sits right-aligned so the destructive action never
              sits next to pull by reflex. ---- */}
         <div style={{ border: '1px solid var(--divider)', borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>{t('op.pmPullSection')}</span>
+          <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)' }}>{t('op.pmPullSection')}</span>
           <input
             className="input"
-            style={{ fontSize: 11.5, width: '100%' }}
+            style={{ fontSize: 'var(--text-sm)', width: '100%' }}
             placeholder={t('op.pmPatternShort')}
             title={t('op.pmPattern')}
             value={pattern}
@@ -864,7 +864,7 @@ export const ProviderModelsDialog: React.FC<{
           </div>
 
           {preview && (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
               <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span>
                   {t('op.pmMatched', { matched: preview.matched, pullable: preview.pullable })}
@@ -882,7 +882,7 @@ export const ProviderModelsDialog: React.FC<{
                       onClick={() => toggleSelected(m.id)}
                       style={{
                         fontFamily: FONT_MONO,
-                        fontSize: 10,
+                        fontSize: 'var(--text-2xs)',
                         padding: '1px 6px',
                         borderRadius: 4,
                         cursor: 'pointer',
@@ -917,7 +917,7 @@ export const ProviderModelsDialog: React.FC<{
             background: 'var(--card-bg, #111113)',
             border: '1px solid var(--card-border)',
             boxShadow: '0 16px 40px rgba(0,0,0,0.55)',
-            fontSize: 11,
+            fontSize: 'var(--text-xs)',
             pointerEvents: 'none',
             animation: 'ocr-fade-in 0.12s ease',
           }}
@@ -927,13 +927,13 @@ export const ProviderModelsDialog: React.FC<{
             const d = hover.row.def || {};
             return (
               <>
-                <div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11.5, wordBreak: 'break-all', marginBottom: 2 }}>
+                <div style={{ fontFamily: FONT_MONO, fontWeight: 'var(--font-bold)', fontSize: 'var(--text-sm)', wordBreak: 'break-all', marginBottom: 2 }}>
                   {hover.row.id}
-                  {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> ({t('models.hiddenBadge')})</span>}
+                  {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 'var(--font-regular)' }}> ({t('models.hiddenBadge')})</span>}
                 </div>
                 {d.name && d.name !== hover.row.id && d.name !== hover.row.id.split('/').pop() && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name}</div>}
                 {d.modelID && (
-                  <div style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
+                  <div style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', fontSize: 'var(--text-xs)', marginBottom: 6 }}>
                     modelID → {d.modelID}
                   </div>
                 )}
@@ -983,7 +983,7 @@ export const ProviderModelsDialog: React.FC<{
         <div onClick={() => setForm(null)} style={formOverlayStyle(blur)}>
           <div className="card" onClick={(e) => e.stopPropagation()} style={formDialogStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 14, fontWeight: 700 }}>
+              <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>
                 {form.mode === 'add' ? t('op.pmAddTitle') : t('op.pmEditTitle')}
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -995,7 +995,7 @@ export const ProviderModelsDialog: React.FC<{
                   style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px' }}
                 >
                   {filling ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Wand2 size={12} />}
-                  <span style={{ fontSize: 11 }}>{t('op.pmAutofill')}</span>
+                  <span style={{ fontSize: 'var(--text-xs)' }}>{t('op.pmAutofill')}</span>
                 </button>
                 <button className="btn btn-sm" style={{ padding: '3px 6px' }} onClick={() => setForm(null)}>
                   <X size={12} />
@@ -1009,7 +1009,7 @@ export const ProviderModelsDialog: React.FC<{
                 <label style={fieldLabelStyle}>{t('op.pmAddId')}</label>
                 <input
                   className="input"
-                  style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%', opacity: form.mode === 'edit' ? 0.6 : 1 }}
+                  style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO, width: '100%', opacity: form.mode === 'edit' ? 0.6 : 1 }}
                   value={form.data.id}
                   disabled={form.mode === 'edit'}
                   onChange={(e) => setForm({ ...form, data: { ...form.data, id: e.target.value } })}
@@ -1020,7 +1020,7 @@ export const ProviderModelsDialog: React.FC<{
                 <label style={fieldLabelStyle}>{t('op.pmModelID')}</label>
                 <input
                   className="input"
-                  style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%' }}
+                  style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO, width: '100%' }}
                   placeholder="gpt-5.2"
                   value={form.data.modelID}
                   onChange={(e) => setForm({ ...form, data: { ...form.data, modelID: e.target.value } })}
@@ -1032,7 +1032,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmEditName')}</label>
               <input
                 className="input"
-                style={{ fontSize: 12, width: '100%' }}
+                style={{ fontSize: 'var(--text-sm)', width: '100%' }}
                 value={form.data.name}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, name: e.target.value } })}
                 onKeyDown={(e) => e.key === 'Enter' && handleFormSave()}
@@ -1041,7 +1041,7 @@ export const ProviderModelsDialog: React.FC<{
 
             {/* capabilities */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <Switch size="sm" checked={form.data.tools} onChange={(v) => setForm({ ...form, data: { ...form.data, tools: v } })} />
                 {t('models.badgeToolCall')}
               </label>
@@ -1057,11 +1057,11 @@ export const ProviderModelsDialog: React.FC<{
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmEditContext')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" placeholder="200000" value={form.data.contextLimit} onChange={(e) => setForm({ ...form, data: { ...form.data, contextLimit: e.target.value } })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" placeholder="200000" value={form.data.contextLimit} onChange={(e) => setForm({ ...form, data: { ...form.data, contextLimit: e.target.value } })} />
               </div>
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmEditOutput')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" placeholder="64000" value={form.data.outputLimit} onChange={(e) => setForm({ ...form, data: { ...form.data, outputLimit: e.target.value } })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" placeholder="64000" value={form.data.outputLimit} onChange={(e) => setForm({ ...form, data: { ...form.data, outputLimit: e.target.value } })} />
               </div>
             </div>
 
@@ -1069,19 +1069,19 @@ export const ProviderModelsDialog: React.FC<{
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmCostInput')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="3.00" value={form.data.costInput} onChange={(e) => setForm({ ...form, data: { ...form.data, costInput: e.target.value } })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="3.00" value={form.data.costInput} onChange={(e) => setForm({ ...form, data: { ...form.data, costInput: e.target.value } })} />
               </div>
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmCostOutput')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="15.00" value={form.data.costOutput} onChange={(e) => setForm({ ...form, data: { ...form.data, costOutput: e.target.value } })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="15.00" value={form.data.costOutput} onChange={(e) => setForm({ ...form, data: { ...form.data, costOutput: e.target.value } })} />
               </div>
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmCostCacheRead')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="0.30" value={form.data.costCacheRead} onChange={(e) => setForm({ ...form, data: { ...form.data, costCacheRead: e.target.value } })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="0.30" value={form.data.costCacheRead} onChange={(e) => setForm({ ...form, data: { ...form.data, costCacheRead: e.target.value } })} />
               </div>
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmCostCacheWrite')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="3.75" value={form.data.costCacheWrite} onChange={(e) => setForm({ ...form, data: { ...form.data, costCacheWrite: e.target.value } })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="3.75" value={form.data.costCacheWrite} onChange={(e) => setForm({ ...form, data: { ...form.data, costCacheWrite: e.target.value } })} />
               </div>
             </div>
 
@@ -1089,7 +1089,7 @@ export const ProviderModelsDialog: React.FC<{
             <div>
               <label style={fieldLabelStyle}>{t('op.pmSettingsReasoning')}</label>
               <Combobox
-                style={{ fontSize: 12, width: '100%', cursor: 'pointer' }}
+                style={{ fontSize: 'var(--text-sm)', width: '100%', cursor: 'pointer' }}
                 value={form.data.reasoningEffort}
                 onChange={(v) => setForm({ ...form, data: { ...form.data, reasoningEffort: v } })}
                 options={effortOptionList(t)}
@@ -1104,7 +1104,7 @@ export const ProviderModelsDialog: React.FC<{
                   <div key={i} style={{ display: 'flex', gap: 6 }}>
                     <input
                       className="input"
-                      style={{ fontSize: 11.5, flex: 1, fontFamily: FONT_MONO }}
+                      style={{ fontSize: 'var(--text-sm)', flex: 1, fontFamily: FONT_MONO }}
                       placeholder="variant-id"
                       value={v.id}
                       onChange={(e) => {
@@ -1114,7 +1114,7 @@ export const ProviderModelsDialog: React.FC<{
                       }}
                     />
                     <Combobox
-                      style={{ fontSize: 11.5, width: 110, cursor: 'pointer' }}
+                      style={{ fontSize: 'var(--text-sm)', width: 110, cursor: 'pointer' }}
                       value={v.effort}
                       options={effortOptionList(t)}
                       onChange={(effort) => {
@@ -1144,7 +1144,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmReasoningField')}</label>
               <input
                 className="input"
-                style={{ fontSize: 12, width: '100%', fontFamily: FONT_MONO }}
+                style={{ fontSize: 'var(--text-sm)', width: '100%', fontFamily: FONT_MONO }}
                 placeholder="reasoning_content"
                 list="ocr-thinking-fields"
                 value={form.data.reasoningField}
@@ -1160,7 +1160,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmHeaders')}</label>
               <textarea
                 className="input"
-                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }}
+                style={{ fontSize: 'var(--text-sm)', width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }}
                 placeholder={'X-Team: platform'}
                 value={form.data.headersText}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, headersText: e.target.value } })}
@@ -1170,7 +1170,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmBody')}</label>
               <textarea
                 className="input"
-                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }}
+                style={{ fontSize: 'var(--text-sm)', width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }}
                 placeholder={'{ "store": false }'}
                 value={form.data.bodyText}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, bodyText: e.target.value } })}

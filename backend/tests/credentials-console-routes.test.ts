@@ -10,6 +10,7 @@ import {
   resetCredentialStoreForTests,
   writeCredentialStoreState,
 } from '../src/opencode/credentials/factory.js';
+import { setProviderTakedownStoreForTests } from '../src/providers/provider-takedown.js';
 
 /**
  * Console credential routes through the BOUND store.
@@ -66,6 +67,16 @@ mock.module('../src/opencode/probe.js', () => ({
   },
 }));
 
+// Plugin-preset seam: the connect-catalog handler merges preset rows (logo,
+// localized name, webLogin capability) into /opencode/catalog. Programmable
+// per test; default empty keeps every other test on the no-plugin baseline.
+const actualHost = await import('../src/plugins/host.js');
+let presetEntries: any[] = [];
+mock.module('../src/plugins/host.js', () => ({
+  ...actualHost,
+  pluginPresetCatalogEntries: async () => presetEntries,
+}));
+
 const actualAutoPull = await import('../src/opencode/catalog/auto-pull.js');
 let pullMode: 'live' | 'catalog' | null = null;
 mock.module('../src/opencode/catalog/auto-pull.js', () => ({
@@ -119,11 +130,15 @@ beforeEach(() => {
   // The defs funnel resolves through OCR_HOME — align it with credPaths().ocrHome
   // so route writes and test assertions address the same providers.json.
   process.env.OCR_HOME = path.join(tmpDir, 'ocr-home');
+  // Provider takedown ledger is a process singleton whose file path resolves
+  // lazily — drop it so every test binds to its own OCR_HOME sandbox.
+  setProviderTakedownStoreForTests(undefined);
   const p = credPaths();
   fs.mkdirSync(p.configDir, { recursive: true });
   fs.mkdirSync(p.dataDir, { recursive: true });
   fs.writeFileSync(p.serviceJsonCandidates![0]!, JSON.stringify({ password: 'pw', port: 4100 }));
   catalogRecs = [];
+  presetEntries = [];
   postHandler = () => ({ status: 200, json: { credential: { id: 'c-new' } } });
   probeCalls = [];
   probeImpl = async () => ({ ok: true, kind: 'openai', latencyMs: 5 });
@@ -602,6 +617,47 @@ describe('POST /opencode/providers/:id/test — store-resolved probe key', () =>
     } finally {
       delete process.env.OCR_ROUTE_TEST_KEY;
     }
+  });
+
+  it('provider-level probe SKIPS operator-disabled credentials (never probes a parked key)', async () => {
+    const p = credPaths();
+    const PID = 'disabled-head-provider';
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }], api: 'https://x.test/v1' }];
+    seedOcr(p, {
+      [PID]: [
+        { id: 'c1', key: 'sk-head-parked', active: true },
+        { id: 'c2', key: 'sk-live-backup', active: false },
+      ],
+    });
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+    state.disable(PID, keyHashPrefix('sk-head-parked'), 'operator takedown');
+    bindStore(p);
+    probeCalls = [];
+    const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(probeCalls).toHaveLength(1);
+    expect(probeCalls[0].apiKey).toBe('sk-live-backup');
+  });
+
+  it('provider-level probe with EVERY credential disabled: 400 no_enabled_credential, no probe', async () => {
+    const p = credPaths();
+    const PID = 'all-disabled-provider';
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }], api: 'https://x.test/v1' }];
+    seedOcr(p, {
+      [PID]: [
+        { id: 'c1', key: 'sk-parked-a', active: true },
+        { id: 'c2', key: 'sk-parked-b', active: false },
+      ],
+    });
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+    state.disable(PID, keyHashPrefix('sk-parked-a'), 'operator takedown');
+    state.disable(PID, keyHashPrefix('sk-parked-b'), 'operator takedown');
+    bindStore(p);
+    probeCalls = [];
+    const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reasonCode).toBe('no_enabled_credential');
+    expect(probeCalls).toHaveLength(0);
   });
 
   it('unknown or non-routable credentialId: 400, no probe', async () => {
@@ -1112,6 +1168,90 @@ describe('POST .../credentials/:credentialId/{disable,enable} — operator taked
   });
 });
 
+describe('POST .../providers/:id/{disable,enable} — provider-level operator takedown', () => {
+  const step = (providerId: string, action: 'disable' | 'enable') =>
+    `/api/admin/opencode/providers/${providerId}/${action}`;
+
+  const providerRow = async (providerId: string) =>
+    (await app.inject({ method: 'GET', url: '/api/admin/opencode/providers' }))
+      .json()
+      .providers.find((p: { id: string }) => p.id === providerId);
+
+  it('200: flips the provider off/on through the GLOBAL ledger, leaving defs and credentials intact', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-live', key: 'sk-tk-live' }] });
+    bindStore(p);
+    catalogRecs = [
+      { id: 'anthropic', name: 'Anthropic', custom: false, connected: true, models: [{ id: 'claude-x', name: 'Claude X', source: 'opencode' }] },
+    ];
+    const modelRows = async () =>
+      (await app.inject({ method: 'GET', url: '/api/admin/opencode/models?provider=anthropic' }))
+        .json()
+        .models as { id: string; providerDisabled: boolean }[];
+    expect((await modelRows()).every((m) => m.providerDisabled === false)).toBe(true);
+
+    const off = await app.inject({ method: 'POST', url: step('anthropic', 'disable'), payload: { reason: 'plan expired' } });
+    expect(off.statusCode).toBe(200);
+    expect(off.json()).toMatchObject({ success: true, disabled: true, provider: 'anthropic' });
+
+    // Durable state is the OCR-GLOBAL takedown file — the defs node the
+    // credential factory materialized is untouched and gains no `disabled` key.
+    const ledger = JSON.parse(fs.readFileSync(path.join(p.ocrHome, 'disabled-providers.json'), 'utf8'));
+    expect(ledger.version).toBe(1);
+    expect(ledger.providers.anthropic.reason).toBe('plan expired');
+    expect(readJsoncProviders(p).anthropic).toBeDefined();
+    expect(readJsoncProviders(p).anthropic.disabled).toBeUndefined();
+    expect(readOcrFile(p).providers.anthropic).toHaveLength(1);
+    expect((await modelRows()).every((m) => m.providerDisabled === true)).toBe(true);
+
+    // The connected grid keeps the card (restorable) and reports the state.
+    let row = await providerRow('anthropic');
+    expect(row.disabled).toBe(true);
+    expect(row.disabledReason).toBe('plan expired');
+
+    const on = await app.inject({ method: 'POST', url: step('anthropic', 'enable') });
+    expect(on.statusCode).toBe(200);
+    expect(on.json()).toMatchObject({ success: true, disabled: false });
+
+    row = await providerRow('anthropic');
+    expect(row.disabled).toBe(false);
+    expect(row.disabledReason).toBeUndefined();
+    // Enable lifts the takedown only: the credential row was never touched.
+    expect(readOcrFile(p).providers.anthropic).toHaveLength(1);
+    // The maintenance page keeps the row but marks it non-routable, and the
+    // marker clears with enable — aggregate visibility ≠ routing availability.
+    expect((await modelRows()).every((m) => m.providerDisabled === false)).toBe(true);
+  });
+
+  it('404 unknown provider / 400 invalid id (and no ledger row is written)', async () => {
+    const p = credPaths();
+    bindStore(p);
+
+    const missing = await app.inject({ method: 'POST', url: step('ghost', 'disable'), payload: {} });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().reasonCode).toBe('provider_not_found');
+
+    const invalid = await app.inject({ method: 'POST', url: step('Bad_ID', 'disable'), payload: {} });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().reasonCode).toBe('invalid_provider_id');
+    expect(fs.existsSync(path.join(p.ocrHome, 'disabled-providers.json'))).toBe(false);
+  });
+
+  it('deleting the last trace clears the ledger row (a later reconnect starts enabled)', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-live', key: 'sk-tk-live' }] });
+    bindStore(p);
+    await app.inject({ method: 'POST', url: step('anthropic', 'disable'), payload: { reason: 'parked' } });
+
+    const del = await app.inject({ method: 'DELETE', url: '/api/admin/opencode/providers/anthropic?purgeAuth=1' });
+    expect(del.statusCode).toBe(200);
+    expect(readOcrFile(p)?.providers?.anthropic ?? []).toHaveLength(0);
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(p.ocrHome, 'disabled-providers.json'), 'utf8'));
+    expect(ledger.providers.anthropic).toBeUndefined();
+  });
+});
+
 describe('POST .../providers/:id/credentials/reorder', () => {
   it('200: reorders the chain, flips the head to ids[0], refreshes the inline list', async () => {
     const p = credPaths();
@@ -1459,6 +1599,58 @@ describe('DELETE .../providers/:id/credentials/:credentialId — disconnect (Dec
     } finally {
       state.clear('anthropic', prefix);
     }
+  });
+});
+
+/**
+ * Connect-catalog plugin merge: the preset's webLogin capability must reach
+ * the wire row on EVERY merge path, or the console connect card never shows
+ * the device-login button (frontend gates it on `row.webLogin`).
+ */
+describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () => {
+  const catalogRow = (id: string, sources: string[]) => ({
+    id, name: id, custom: true, connected: false, sources, models: [],
+  });
+  const preset = (id: string, webLogin: boolean, authTypes?: ('webLogin' | 'key')[]) => ({
+    id, name: id, defaultName: id, npm: '@ai-sdk/workbuddy', baseURL: 'https://wb.example',
+    custom: true, connected: false, webLogin, authTypes, sources: ['service'],
+  });
+  const catalogRows = async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/opencode/catalog' });
+    expect(res.statusCode).toBe(200);
+    return (res.json() as { providers: any[] }).providers;
+  };
+
+  it('forwards webLogin onto an existing catalog-covered row', async () => {
+    catalogRecs = [catalogRow('workbuddy', ['opencode'])];
+    presetEntries = [preset('workbuddy', true)];
+    const row = (await catalogRows()).find((p) => p.id === 'workbuddy');
+    expect(row?.webLogin).toBe(true);
+  });
+
+  it('forwards webLogin on a preset-only row (not covered by any catalog source)', async () => {
+    catalogRecs = [];
+    presetEntries = [preset('workbuddy-cn', true)];
+    const row = (await catalogRows()).find((p) => p.id === 'workbuddy-cn');
+    expect(row?.webLogin).toBe(true);
+  });
+
+  it('keeps webLogin false/absent for presets without the capability', async () => {
+    catalogRecs = [catalogRow('plain', ['opencode'])];
+    presetEntries = [preset('plain', false)];
+    const row = (await catalogRows()).find((p) => p.id === 'plain');
+    expect(row?.webLogin ?? false).toBe(false);
+  });
+
+  it('forwards authTypes onto the wire row on every merge path (console default = first entry)', async () => {
+    catalogRecs = [catalogRow('workbuddy', ['opencode'])];
+    presetEntries = [preset('workbuddy', true, ['webLogin', 'key'])];
+    const covered = (await catalogRows()).find((p) => p.id === 'workbuddy');
+    expect(covered?.authTypes).toEqual(['webLogin', 'key']);
+    catalogRecs = [];
+    presetEntries = [preset('workbuddy-cn', true, ['webLogin', 'key'])];
+    const presetOnly = (await catalogRows()).find((p) => p.id === 'workbuddy-cn');
+    expect(presetOnly?.authTypes).toEqual(['webLogin', 'key']);
   });
 });
 

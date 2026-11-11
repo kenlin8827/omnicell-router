@@ -48,3 +48,45 @@ export function writeConfigJson(file: string, config: Record<string, unknown>): 
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 }
+
+/**
+ * Resolve a dot-path container inside a parsed config (`dsh.profile.bundles`, `mcp.servers`).
+ * Returns the leaf value when every intermediate segment is a plain object; a scalar, an array or
+ * an absent segment answers undefined. Flat keys contain no dot, so their resolution is unchanged.
+ */
+export function valueAtPath(config: Record<string, unknown>, path: string): unknown {
+  let node: unknown = config;
+  for (const part of path.split('.')) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return node;
+}
+
+/** The ARRAY at a dot-path container, or undefined when the leaf is absent/not an array. */
+export function arrayAtPath(config: Record<string, unknown>, path: string): unknown[] | undefined {
+  const leaf = valueAtPath(config, path);
+  return Array.isArray(leaf) ? leaf : undefined;
+}
+
+/**
+ * Replace the array at a dot-path container. Every intermediate segment must already be a plain
+ * object — this never creates a path (a removal edits what the runtime wrote).
+ */
+export function setArrayAtPath(
+  config: Record<string, unknown>,
+  path: string,
+  next: unknown[]
+): boolean {
+  const parts = path.split('.');
+  let node: Record<string, unknown> = config;
+  for (const part of parts.slice(0, -1)) {
+    const child = node[part];
+    if (!child || typeof child !== 'object' || Array.isArray(child)) return false;
+    node = child as Record<string, unknown>;
+  }
+  const leaf = parts[parts.length - 1]!;
+  if (!Array.isArray(node[leaf])) return false;
+  node[leaf] = next;
+  return true;
+}

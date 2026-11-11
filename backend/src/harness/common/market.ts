@@ -124,7 +124,13 @@ export type HarnessNoteCode =
   | 'clawhub-catalog'
   /** clawhub — a full-catalog search: `{n}` is the limit one request carries (the endpoint has no
    *  paging parameter), so the answer is a window. */
-  | 'clawhub-search';
+  | 'clawhub-search'
+  /** skills.sh — the site's own leaderboard, read `{n}` rows at a time from its paging endpoint. */
+  | 'skills-sh-board'
+  /** skills.sh — a whole-catalog search: `{n}` is the endpoint's row cap, not a page size. */
+  | 'skills-sh-search'
+  /** dsh-plugin.net — a reviewed community snapshot, installed through the DSH CLI. */
+  | 'dsh-plugin-net';
 
 /** Views registered by their own module. `browseSource` prefers the view the caller passed, but a
  *  caller holding a hand-built view (tests, a future adapter) still gets its source's adapter. */
@@ -146,6 +152,11 @@ export function getBrowseView(id: string): HarnessSourceView | undefined {
  *  correctness contract. Keys are prefixed `<sourceId>|` so one source's family can be dropped
  *  without touching another's. */
 export const CACHE_TTL_MS = 60_000;
+
+/** The slow window for an upstream read that only moves over days (a leaderboard, a reviewed
+ *  snapshot, a repository README): one declaration, because three readers share the same
+ *  "10 minutes is fresh enough" policy and three local copies would drift apart. */
+export const SLOW_CACHE_TTL_MS = 10 * 60_000;
 
 export const cache = new Map<
   string,
@@ -1161,6 +1172,13 @@ export interface PluginManifestReader {
   base: 'layer' | 'repo';
   /** Repo-relative skill directories the manifest declares; `null` = no narrowing. */
   scope?: (manifest: Record<string, unknown>) => string[] | null;
+  /**
+   * A manifest EVERY repository ships (`package.json`) is not evidence by itself: presence would
+   * claim the host for every JavaScript repository. When this predicate is declared, the probe
+   * reads the file and keeps the host only for a document it accepts. A manifest only one harness
+   * writes (`gemini-extension.json`) needs no predicate — its presence already is the form.
+   */
+  detect?: (manifest: Record<string, unknown>) => boolean;
   read: (manifest: Record<string, unknown>) => { name: string; description: string | null } | null;
 }
 
@@ -1250,12 +1268,32 @@ export async function probeMarketplace(
         ];
 
   // SUPPORT IS DETECTED, not declared: a harness supports the repository when its own form
-  // directory exists, or — for a root-manifest host — when that manifest is at the repo root.
-  const detected = probes.filter((probe) => {
-    if (probe.dir) return present(probe.dir);
-    const atRoot = probe.options.manifest?.atRoot;
-    return !!atRoot && tree.some((e) => e.path === probe.options.manifest!.file && e.type === 'blob');
-  });
+  // directory exists OR its own root manifest sits at the repo root (for a manifest every
+  // repository ships, only when its CONTENT really is that harness's form). The two are a UNION:
+  // kimi publishes the canonical `kimi.plugin.json` with `.kimi-plugin/` as the fallback, and
+  // openclaw publishes `openclaw.plugin.json` beside `.openclaw/` — consulting only the directory
+  // would refuse the layout the vendor documents first.
+  const detected: HostProbe[] = [];
+  for (const probe of probes) {
+    if (probe.dir && present(probe.dir)) {
+      detected.push(probe);
+      continue;
+    }
+    const reader = probe.options.manifest;
+    if (!reader?.atRoot) continue;
+    if (!tree.some((e) => e.path === reader.file && e.type === 'blob')) continue;
+    if (reader.detect) {
+      const text = await ghText(raw(reader.file), fetchImpl);
+      let declared: Record<string, unknown> | null = null;
+      try {
+        declared = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+      } catch {
+        declared = null; // a broken manifest is not a manifest
+      }
+      if (!declared || !reader.detect(declared)) continue;
+    }
+    detected.push(probe);
+  }
 
   /** Read ONE host's form. The layer is the operator pin, else that host's own published dir. */
   const readForm = async (probe: HostProbe): Promise<FormRead | null> => {
@@ -1342,12 +1380,13 @@ export async function probeMarketplace(
   }
 
   // An EXPLICIT layer pin keeps the historical per-harness scope (the operator asked for one
-  // harness's form); an unpinned source is detected across every served harness.
+  // harness's form); an unpinned source is detected across every served harness. NOTHING detected
+  // is not support: the honest answer is an empty list ("publishes no form", which the console
+  // renders as `none`). Blaming a host here would claim a form the repository never published —
+  // and the first served harness would answer for every SKILL.md-only tree.
   const hosts: HarnessHostId[] = explicitDir
     ? [primaryHarness]
-    : detected.length > 0
-      ? [...new Set(detected.map((probe) => probe.harness))]
-      : [primaryHarness];
+    : [...new Set(detected.map((probe) => probe.harness))];
   const extensionDir = form?.layer ?? explicitDir ?? (defaultDir && present(defaultDir) ? defaultDir : null);
 
   // A repo-rooted plugin form (codex, cursor, …) does not turn the layer into the scan scope: its

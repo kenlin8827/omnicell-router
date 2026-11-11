@@ -182,7 +182,7 @@ export const DsnBuilder: React.FC<DsnBuilderProps> = ({ name, value, onClose, on
       {probe.phase === 'done' ? (
         <span
           style={{
-            fontSize: 12,
+            fontSize: 'var(--text-sm)',
             color:
               probe.code === 'ok' || probe.code === 'reachable'
                 ? 'var(--accent-emerald)'
@@ -194,7 +194,7 @@ export const DsnBuilder: React.FC<DsnBuilderProps> = ({ name, value, onClose, on
           {describeProbe()}
         </span>
       ) : probeTarget ? (
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
           {/* The promise differs by engine: a real login for PostgreSQL/MySQL, a credential-free
               dial for everything else — the hint must say which one THIS driver gets. */}
           {dsnEngineFor(probeFields?.driver ?? '') !== null
@@ -202,7 +202,7 @@ export const DsnBuilder: React.FC<DsnBuilderProps> = ({ name, value, onClose, on
             : t('harness.mcpDsnTestHintTcp', { target: `${probeTarget.host}:${probeTarget.port}` })}
         </span>
       ) : (
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('harness.mcpDsnTestNoTarget')}</span>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.mcpDsnTestNoTarget')}</span>
       )}
     </div>
   );
@@ -274,14 +274,14 @@ export const DsnBuilder: React.FC<DsnBuilderProps> = ({ name, value, onClose, on
             rows={6}
             autoFocus
             spellCheck={false}
-            style={{ ...MONO, resize: 'vertical', lineHeight: 1.5, minHeight: 120 }}
+            style={{ ...MONO, resize: 'vertical', lineHeight: 'var(--leading-snug)', minHeight: 120 }}
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
           />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 8 }}>
             {/* The switch is only possible when the text parses back into fields; an ODBC-style
                 `DSN=…` stays text-only, and the button must SAY so instead of failing silently. */}
-            <div style={{ fontSize: 11, color: rawParsed ? 'var(--text-dim)' : 'var(--accent-amber)' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: rawParsed ? 'var(--text-dim)' : 'var(--accent-amber)' }}>
               {rawParsed ? t('harness.mcpDsnRawHint') : t('harness.mcpDsnSwitchDisabled')}
             </div>
             <button
@@ -418,7 +418,7 @@ export const DsnBuilder: React.FC<DsnBuilderProps> = ({ name, value, onClose, on
             <div
               style={{
                 ...MONO,
-                fontSize: 12,
+                fontSize: 'var(--text-sm)',
                 color: 'var(--text-dim)',
                 overflowWrap: 'anywhere',
                 marginTop: 4,

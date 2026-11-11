@@ -11,6 +11,26 @@
 // their native target="_blank" behavior.
 import { open } from '@tauri-apps/plugin-shell';
 
+/**
+ * Open an absolute http(s) URL outside the app.
+ *
+ * Prefer this over a bare `<a target="_blank">` when the click also needs to
+ * run app code: the interceptor below hijacks clicks in the CAPTURE phase and
+ * stops propagation, so a React onClick on such an anchor is never reached in
+ * the desktop shell. A plain button + this helper is deterministic in both
+ * hosts (system browser via the shell plugin; a new tab in a real browser).
+ */
+export function openExternal(url: string): void {
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    void open(url).catch(() => {
+      // Nothing to fall back to inside the webview: NewWindowRequested is
+      // swallowed by wry, and window.open would hit the same wall.
+    });
+    return;
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 export function installExternalOpenInterceptor(): void {
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
   document.addEventListener(

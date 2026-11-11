@@ -9,11 +9,21 @@ export type CliAction =
   | 'setup'
   | 'teardown'
   | 'install-shims'
+  | 'uninstall-shims'
+  /** Machine-readable shim state for the desktop tray toggle (JSON + exit code). */
+  | 'shims-status'
+  /** Passthrough launch verbs — the argument after `ocr` names the TARGET
+   *  tool, not a hook id. Never fold these into `SupportedClient`: the hooks
+   *  are `cursor-proxy` / `qoder-proxy`. */
+  | 'cursor'
+  | 'cursor-agent'
+  | 'qoder'
+  | 'qoder-cli'
   | 'env'
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw';
+export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'cursor-proxy' | 'qoder-proxy';
 
 export interface CliOptions {
   action: CliAction;
@@ -36,9 +46,18 @@ export interface DaemonInfo {
   version: string;
 }
 
+/** How an adapter applies its hook. `config` rewrites the client's own config
+ *  file; `launcher` publishes proxy launch scripts; `service-env` sets a
+ *  managed service's environment. The last two are forward-proxy hooks: they
+ *  write no API key and route traffic through the inbound proxy. */
+export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+
 export interface ClientHookStatus {
   name: SupportedClient;
   displayName: string;
+  /** Where the hook lands, stamped by the registry from `ClientAdapter.hookKind`
+   *  (`getStatus` does not produce it). */
+  hookKind: ClientHookKind;
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -64,6 +83,18 @@ export interface ClientHookStatus {
    * config's agent node is the live truth).
    */
   profile?: ModelProfileBinding;
+
+  /** Additional files this adapter owns beyond `configPath` — Cursor publishes
+   *  a second launcher for the `cursor-agent` CLI. `exists` is probed at status
+   *  time so the console can list every artifact without a second round-trip.
+   *  Absent for single-artifact adapters. */
+  artifacts?: ClientArtifact[];
+}
+
+/** A file an adapter owns besides its primary `configPath` (status echo only). */
+export interface ClientArtifact {
+  path: string;
+  exists: boolean;
 }
 
 /** Sidecar echo of the last-applied model profile: which profile filled which agent with which modelRef. */

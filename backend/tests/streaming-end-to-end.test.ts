@@ -160,8 +160,12 @@ describe('true streaming through the candidate pool', () => {
       assert.equal(result.response.usage?.completion_tokens, 3);
       assert.equal(result.modelUsed, 'stub/one');
       assert.equal(hits, 1);
-      // Credentialing saw usage, so the turn is billed exactly like a buffered one.
       assert.equal(relay.committed, true);
+      // The same TTFT/TPS split rides ExecutionResult (→ X-OCR-TTFT-MS /
+      // X-OCR-Gen-MS) so a client can derive decode-TPS without reading the
+      // trace store.
+      assert.ok(typeof result.ttftMs === 'number' && result.ttftMs >= 0);
+      assert.ok(result.genMs! >= 55, `result.genMs should cover the 60ms stall, got ${result.genMs}`);
       // Industry TTFT/TPS split on the trace row: ttftMs = process start →
       // first forwarded chunk (user-perceived), genMs = first chunk → drained
       // stream — here the upstream's 60 ms stall must appear in the decode

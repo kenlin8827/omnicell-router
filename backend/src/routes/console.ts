@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
@@ -7,6 +7,11 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
+import { getProviderTakedownStore } from '../providers/provider-takedown.js';
+import { NPM_VOCABULARY } from '../providers/vocabulary.js';
+import { getModelServicePlugin, pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
+import { PluginAuthType, type TrafficExchange, type DissectedExchange } from '../plugins/types.js';
+import { listGateways, getGatewayById } from '../plugins/gateways.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef, getConfigPath } from '../config/index.js';
@@ -21,15 +26,23 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
+import { getUpdateChecker } from '../update/check.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
-import { ensureCa } from '../forward-proxy/ca.js';
+import { caCertPath, describeCa, ensureCa, resolveCaDir } from '../forward-proxy/ca.js';
+import { probeCaTrustedCached } from '../forward-proxy/ca-trust.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
-import { listProxyAccessEvents, clearProxyAccessLog, proxyAccessLogSettings, readProxyAccessBodyFile } from '../forward-proxy/access-log.js';
+import {
+  lintRules,
+  normalizeRules,
+  osBypassHosts,
+  resolveHost,
+} from '../forward-proxy/rules.js';
+import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deleteProxyAccessEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
@@ -38,7 +51,7 @@ import { keyHashPrefix } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
-import { maskSecret } from '../opencode/user-config.js';
+import { maskSecret, isValidProviderId, PROVIDER_ID_RULE, getProviderNodeById } from '../opencode/user-config.js';
 import { isSelfBaseURL } from '../utils/self-url.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
@@ -780,7 +793,7 @@ async function mapCredentialWriteFailure(
  * Raw keys never enter the view (CredentialMeta is masked by interface
  * contract; Decision 1 risk limb).
  */
-async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProviderView[]> {
+async function storeProviderViews(store: CredentialStore, lang?: string): Promise<OpenCodeProviderView[]> {
   const { listConfigProviders } = await import('../opencode/user-config.js');
   const views = listConfigProviders();
   // Per-provider auto-pull whitelist rides the view (edit dialog prefills from it).
@@ -819,6 +832,20 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
         models: [],
         auth: { connected: true, ...badge, ...(shown?.maskedKey ? { keyMasked: shown.maskedKey } : {}) },
       });
+    }
+  }
+  // Plugin-preset overlay: the def's stored name is a single localeless string,
+  // so the localized display name (+logo) comes from the owning plugin manifest.
+  {
+    const { pluginPresetCatalogEntries } = await import('../plugins/host.js');
+    for (const preset of await pluginPresetCatalogEntries(lang)) {
+      const v = byId.get(preset.id);
+      if (v) {
+        // localize only the name the preset itself registered — an operator
+        // rename (providers.json is operator-owned, ADR-0010) stays untouched
+        if (!v.name || v.name === preset.defaultName || v.name === preset.name) v.name = preset.name;
+        if (preset.logo && !v.logo) v.logo = preset.logo;
+      }
     }
   }
   return [...byId.values()].sort((a, b) => {
@@ -888,6 +915,21 @@ async function purgeProviderCredentials(store: CredentialStore, id: string): Pro
   }
   store.invalidate();
   return { attempted: metas.length, removed, failed };
+}
+
+/**
+ * Provider takedown lifecycle terminus: once NOTHING remains for the id (no
+ * defs node, no credential), drop the ledger row — a later connect reuses the
+ * id enabled. A partial state (either side still present) keeps the takedown.
+ */
+function dropTakedownWhenProviderGone(providerId: string, store: CredentialStore): void {
+  try {
+    if (!getProviderNodeById(providerId) && store.listCredentials(providerId).length === 0) {
+      getProviderTakedownStore().enable(providerId);
+    }
+  } catch {
+    // unreadable store: keep the takedown (safer than a silent re-enable)
+  }
 }
 
 /**
@@ -1064,6 +1106,10 @@ export function registerConsoleRoutes(
       // the Proxy Access page polls this to show running / failed / pending.
       forwardProxy: {
         enabled: Boolean(config.forwardProxy?.enabled),
+        // ADR-0019: a disabled upstream verification is a standing risk, so the
+        // console states it next to the runtime status instead of hiding it in
+        // a YAML comment.
+        upstreamInsecure: config.forwardProxy?.upstreamTls?.insecure === true,
         ...getForwardProxyStatus(),
       },
     };
@@ -1071,18 +1117,168 @@ export function registerConsoleRoutes(
 
   app.get('/api/admin/status', handleStatus);
 
+  // 3A1'. Release update check — display-only and cached in-process. The
+  // first console read starts the GitHub call in the background and answers
+  // `checking: true`; the console polls until the snapshot settles. A stale
+  // entry (success or failure TTL) triggers the next background refresh here,
+  // so every console load is an opportunity to learn about a new release
+  // without any request ever waiting on api.github.com.
+  app.get('/api/admin/update-check', async () => ({ status: 'ok', ...getUpdateChecker().status() }));
+
   // 3A2. Forward-proxy access log: every NON-intercepted HTTP exchange plus
   // CONNECT tunnel decisions (forward-proxy/access-log.ts — memory ring backed
   // by persisted daily JSONL under <ocrHome>/forward-proxy/access-log/; binary
   // bodies land as raw files referenced by reqBodyFile/resBodyFile). Newest
   // first; the Proxy Access page renders it.
-  app.get('/api/admin/proxy-log', async () => {
+  type BodyToken = { k: 'p' | 'g'; r: string; d?: string };
+  const mintBodyToken = (t: BodyToken): string => Buffer.from(JSON.stringify(t), 'utf8').toString('base64url');
+  const bodyTokenOf = (ref: unknown, decoder?: string): string | undefined =>
+    typeof ref === 'string' && ref !== ''
+      ? mintBodyToken(decoder ? { k: 'g', r: ref, d: decoder } : { k: 'p', r: ref })
+      : undefined;
+  const resolveBodyPath = (token: string): string | null => {
+    let t: BodyToken;
+    try {
+      t = JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as BodyToken;
+    } catch {
+      return null;
+    }
+    if (t?.k === 'p' && typeof t.r === 'string') return proxyAccessBodyPath(t.r);
+    if (t?.k === 'g' && typeof t.r === 'string' && typeof t.d === 'string' && getGatewayById(t.d)) {
+      return bodyPath(t.d, t.r);
+    }
+    return null;
+  };
+  // 3A2. THE ONE traffic-timeline endpoint — the console never addresses a
+  // subsystem, it declares a SCOPE and the backend federates:
+  //   scope=live    → memory ring (proxy access log) + every plugin gateway's
+  //                   tail feed, interleaved by timestamp, newest first.
+  //   scope=history → the PERSISTED federated scan: proxy day JSONL
+  //                   (`persistDays` retention) + each plugin feed's day
+  //                   JSONL, merged, paged — one exact total across sources.
+  // Both scopes share one row shape (a discriminated union on `source`), so
+  // the console renders one table and one pager whatever the scope. Filters
+  // (kind/method/status/host) bind history server-side; live filters stay in
+  // the console (the ring is already fully resident there).
+  /** Timestamp of a timeline row in ms — proxy rows carry epoch ms, plugin
+   *  rows an ISO string; 0 when unparsable (sorts to the oldest end). */
+  const tsOf = (r: TimelineRow): number =>
+    'ev' in r ? (r.ev as { ts?: number }).ts ?? 0 : Date.parse((r.ex as { ts?: string }).ts ?? '') || 0;
+    type TimelineRow =
+    | { source: 'proxy'; ev: Record<string, unknown> }
+    | { source: string; ex: Record<string, unknown> };
+  app.get('/api/admin/proxy-log', async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+
+    if (q.scope === 'history') {
+      const limit = Math.min(Math.max(Number(q.limit) || 50, 1), 500);
+      const pageNo = Math.max(Number(q.page) || 1, 1);
+      const kindF = q.kind ?? '';
+      const methodF = q.method ?? '';
+      const statusF = q.status ?? '';
+      const hostF = (q.host ?? '').toLowerCase();
+
+      const rows: Array<
+        | { source: 'proxy'; tsMs: number; ev: ProxyAccessEvent }
+        | { source: string; tsMs: number; ex: TrafficExchange }
+      > = [];
+      for (const ev of readProxyAccessHistory({
+        kind: kindF || undefined,
+        method: methodF || undefined,
+        status: statusF || undefined,
+        host: hostF || undefined,
+      })) {
+        rows.push({ source: 'proxy', tsMs: ev.ts, ev });
+      }
+      for (const { id } of trafficDecoders()) {
+        const dir = path.join(trafficRoot(), id);
+        let files: string[] = [];
+        try {
+          files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().reverse();
+        } catch {
+          continue; // fresh plugin / unreadable feed dir — no history from it
+        }
+        for (const f of files) {
+          let lines: string[] = [];
+          try {
+            lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n');
+          } catch {
+            continue;
+          }
+          for (const line of lines) {
+            if (!line) continue;
+            let ex: TrafficExchange;
+            try {
+              ex = JSON.parse(line) as TrafficExchange;
+            } catch {
+              continue; // torn final line (crash mid-append) skips one row
+            }
+            if (methodF && ex.method !== methodF) continue;
+            if (hostF && (ex.authority ?? '').toLowerCase() !== hostF) continue;
+            rows.push({ source: id, tsMs: Date.parse(ex.ts ?? '') || 0, ex });
+          }
+        }
+      }
+      rows.sort((a, b) => b.tsMs - a.tsMs);
+      const total = rows.length;
+      const pages = Math.max(Math.ceil(total / limit), 1);
+      const slice = rows.slice((pageNo - 1) * limit, (pageNo - 1) * limit + limit);
+      // Read-time decode is PAGE-scoped: dissect + hex previews only for the
+      // rows actually returned, never for the whole scan.
+      return {
+        status: 'ok',
+        rows: slice.map((r) =>
+          'ev' in r
+            ? {
+                source: 'proxy' as const,
+                ev: { ...r.ev, reqBodyToken: bodyTokenOf(r.ev.reqBodyFile), resBodyToken: bodyTokenOf(r.ev.resBodyFile) },
+              }
+            : { source: r.source, ex: decoratePluginRow(r.source, r.ex) }
+        ),
+        total,
+        page: pageNo,
+        pages,
+      };
+    }
+
+    // scope=live (default) — the merged tail: ring + every plugin feed tail.
     const s = proxyAccessLogSettings();
+    const rows: TimelineRow[] = [];
+    for (const e of listProxyAccessEvents()) {
+      rows.push({ source: 'proxy', ev: { ...e, reqBodyToken: bodyTokenOf(e.reqBodyFile), resBodyToken: bodyTokenOf(e.resBodyFile) } });
+    }
+    for (const { id } of trafficDecoders()) {
+      const gw = getGatewayById(id);
+      if (!gw || typeof gw.dissect !== 'function') continue;
+      const dir = path.join(trafficRoot(), id);
+      const events: TrafficExchange[] = [];
+      try {
+        if (fs.existsSync(dir)) {
+          const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().reverse();
+          for (const f of files) {
+            if (events.length >= TRAFFIC_TAIL) break;
+            const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean);
+            for (let i = lines.length - 1; i >= 0 && events.length < TRAFFIC_TAIL; i--) {
+              try {
+                events.push(JSON.parse(lines[i]) as TrafficExchange);
+              } catch {
+                continue; // a torn final line (crash mid-append) skips one row
+              }
+            }
+          }
+        }
+      } catch {
+        // Unreadable feed dir = empty feed.
+      }
+      for (const ex of events) rows.push({ source: id, ex: decoratePluginRow(id, ex) } as TimelineRow);
+    }
+    rows.sort((a, b) => (tsOf(a) || 0) - (tsOf(b) || 0));
     return {
       status: 'ok',
       enabled: s.enabled,
       bodyBytes: s.bodyBytes,
-      events: listProxyAccessEvents(),
+      rows: rows.reverse(),
+      total: rows.length,
     };
   });
 
@@ -1091,17 +1287,379 @@ export function registerConsoleRoutes(
     return { status: 'ok' };
   });
 
+  // 3A2c. HISTORY delete by FILTER — the history-mode counterpart of the
+  // clear button. The visible-keys rule (traffic-delete) cannot apply here:
+  // the console only holds ONE page of the persisted federation at a time, so
+  // "what I see" and "what I asked to delete" would diverge. Instead the
+  // console sends the SAME filter vocabulary it queries with and the backend
+  // deletes every matching persisted row across ALL sources: proxy day JSONL
+  // (`deleteProxyAccessEvents` = ring + day files + body sidecars) and each
+  // plugin feed's day JSONL + orphaned body sidecars. The response reports
+  // per-source counts so the confirm toast is never a guess.
+  app.post('/api/admin/proxy-log/history/delete', async (req) => {
+    const b = (req.body ?? {}) as Record<string, string | undefined>;
+    const kindF = b.kind ?? '';
+    const methodF = b.method ?? '';
+    const statusF = b.status ?? '';
+    const hostF = (b.host ?? '').toLowerCase();
+
+    // Proxy side: ids → the row-scoped deleter (ring + day files + sidecars).
+    const ids = readProxyAccessHistory({
+      kind: kindF || undefined,
+      method: methodF || undefined,
+      status: statusF || undefined,
+      host: hostF || undefined,
+    }).map((e) => e.id);
+    const proxyDeleted = ids.length > 0 ? deleteProxyAccessEvents(ids) : 0;
+
+    // Plugin side: rewrite each feed's day files without the matching lines.
+    const deletedPlugins: Record<string, number> = {};
+    for (const { id } of trafficDecoders()) {
+      const dir = path.join(trafficRoot(), id);
+      let files: string[] = [];
+      try {
+        files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
+      } catch {
+        continue;
+      }
+      let removed = 0;
+      const bodyIds = new Set<string>();
+      for (const f of files) {
+        const abs = path.join(dir, f);
+        let kept: string[] = [];
+        try {
+          kept = fs.readFileSync(abs, 'utf8').split('\n').filter(Boolean);
+        } catch {
+          continue;
+        }
+        let touched = false;
+        const keptOut: string[] = [];
+        for (const line of kept) {
+          let ex: TrafficExchange;
+          try {
+            ex = JSON.parse(line) as TrafficExchange;
+          } catch {
+            keptOut.push(line); // a torn line survives deletion round-trips
+            continue;
+          }
+          const hit =
+            (!methodF || ex.method === methodF) &&
+            (!hostF || (ex.authority ?? '').toLowerCase() === hostF) &&
+            (!statusF || String((ex as { status?: number }).status ?? '') === statusF);
+          if (hit && kindF) {
+            // `kind` is proxy-only vocabulary: a filtered history delete never
+            // carries it, but if one ever does, refuse plugin matching rather
+            // than guess (count drift beats wrong deletes).
+            keptOut.push(line);
+            continue;
+          }
+          if (hit) {
+            touched = true;
+            removed++;
+            if (typeof (ex as { id?: unknown }).id === 'string') bodyIds.add((ex as { id: string }).id);
+            continue;
+          }
+          keptOut.push(line);
+        }
+        if (!touched) continue;
+        try {
+          if (keptOut.length === 0) fs.unlinkSync(abs);
+          else fs.writeFileSync(abs, keptOut.join('\n') + '\n');
+        } catch {
+          // Best effort — the row is gone from the feed view either way.
+        }
+      }
+      // Sidecar bytes are named `<day>/<id>-<side>.bin`: drop only the ones
+      // whose row just went away, never a neighbour's.
+      if (bodyIds.size > 0) {
+        const bodiesRoot = path.join(dir, 'bodies');
+        if (fs.existsSync(bodiesRoot)) {
+          for (const day of fs.readdirSync(bodiesRoot)) {
+            const dayDir = path.join(bodiesRoot, day);
+            let names: string[] = [];
+            try {
+              names = fs.readdirSync(dayDir);
+            } catch {
+              continue;
+            }
+            for (const name of names) {
+              const owner = name.replace(/-(?:req|res)\.bin$/, '');
+              if (!bodyIds.has(owner)) continue;
+              try {
+                fs.unlinkSync(path.join(dayDir, name));
+              } catch {
+                // Locked file (Windows) — the row is gone, the blob is orphaned.
+              }
+            }
+          }
+        }
+      }
+      if (removed > 0) deletedPlugins[id] = removed;
+    }
+    return { status: 'ok', deleted: { proxy: proxyDeleted, plugins: deletedPlugins } };
+  });
+
+
+  // 3A1b. Clear the WHOLE traffic view — the console renders one timeline, so
+  // "clear" must empty every source behind it, not just the core ring. Gateway
+  // feeds are plugin-owned artifacts on disk (day JSONL + captured bodies), so
+  // they are removed here rather than through the plugin: the console owns the
+  // feed layout (ADR-0017 §5).
+  app.post('/api/admin/traffic-clear', async () => {
+    clearProxyAccessLog();
+    const cleared: string[] = [];
+    for (const [id, gw] of listGateways()) {
+      if (typeof gw.dissect !== 'function') continue;
+      const dir = path.join(trafficRoot(), id);
+      try {
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+        cleared.push(id);
+      } catch {
+        // A locked feed (Windows handle) must not fail the whole clear.
+      }
+    }
+    return { status: 'ok', cleared };
+  });
+
+  /**
+   * 3A1c. Delete EXACTLY the rows the console is showing — the filter-scoped
+   * counterpart of `/traffic-clear`.
+   *
+   * The console sends row KEYS, never a predicate: the filter lives in one
+   * place (the page) and a backend copy would drift into deleting more than
+   * the operator can see. A key is `id` (proxy events, plugin exchanges that
+   * carry one) or `ts` (feed rows written before ids existed), matched the same
+   * way on both sides.
+   */
+  app.post('/api/admin/traffic-delete', async (req) => {
+    const body = (req.body ?? {}) as { proxy?: unknown; plugins?: unknown };
+    const asKeys = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+    const proxyKeys = asKeys(body.proxy);
+    const deleted: { proxy: number; plugins: Record<string, number> } = {
+      proxy: deleteProxyAccessEvents(proxyKeys),
+      plugins: {},
+    };
+    const pluginEntries = body.plugins && typeof body.plugins === 'object'
+      ? Object.entries(body.plugins as Record<string, unknown>)
+      : [];
+    for (const [decoderId, rawKeys] of pluginEntries) {
+      const keys = new Set(asKeys(rawKeys));
+      if (keys.size === 0) continue;
+      const dir = path.join(trafficRoot(), decoderId);
+      let removed = 0;
+      const bodyIds = new Set<string>();
+      try {
+        if (!fs.existsSync(dir)) continue;
+        const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
+        for (const f of files) {
+          const abs = path.join(dir, f);
+          let text: string;
+          try {
+            text = fs.readFileSync(abs, 'utf8');
+          } catch {
+            continue;
+          }
+          const kept: string[] = [];
+          let touched = false;
+          for (const line of text.split(/\r?\n/)) {
+            if (!line) continue;
+            let row: Record<string, unknown>;
+            try {
+              row = JSON.parse(line) as Record<string, unknown>;
+            } catch {
+              kept.push(line); // torn tail line, not ours to judge
+              continue;
+            }
+            const key = typeof row.id === 'string' ? row.id : typeof row.ts === 'string' ? row.ts : undefined;
+            if (key !== undefined && keys.has(key)) {
+              touched = true;
+              removed++;
+              if (typeof row.id === 'string') bodyIds.add(row.id);
+              continue;
+            }
+            kept.push(line);
+          }
+          if (!touched) continue;
+          try {
+            if (kept.length === 0) fs.unlinkSync(abs);
+            else fs.writeFileSync(abs, kept.join('\n') + '\n');
+          } catch {
+            // Best effort — the row is gone from the feed view either way.
+          }
+        }
+        // Sidecar bytes are named `<day>/<id>-<side>.bin`: drop only the ones
+        // whose row just went away, never a neighbour's.
+        const bodiesRoot = path.join(dir, 'bodies');
+        if (bodyIds.size > 0 && fs.existsSync(bodiesRoot)) {
+          for (const day of fs.readdirSync(bodiesRoot)) {
+            const dayDir = path.join(bodiesRoot, day);
+            let names: string[];
+            try {
+              names = fs.readdirSync(dayDir);
+            } catch {
+              continue;
+            }
+            for (const name of names) {
+              const owner = name.replace(/-(?:req|res)\.bin$/, '');
+              if (!bodyIds.has(owner)) continue;
+              try {
+                fs.unlinkSync(path.join(dayDir, name));
+              } catch {
+                // Locked file (Windows) — the row is gone, the blob is orphaned.
+              }
+            }
+          }
+        }
+      } catch {
+        // Unreadable feed dir = nothing to delete.
+      }
+      deleted.plugins[decoderId] = removed;
+    }
+    return { status: 'ok', deleted };
+  });
+
+  // 3A2b. Generic plugin-traffic feed (Wireshark dissector model, ADR-0017
+  // client gateways): each gateway that declares `dissect` owns a protocol
+  // decoder AND a raw day-JSONL feed under
+  // <ocrHome>/plugins/traffic/<pluginId>/. The console tab lists the decoder
+  // registry and reads a feed, applying the plugin's dissector at READ time.
+  // The plugin stays self-contained — the route only owns the feed layout and
+  // tail discipline (newest first, capped).
+  // Resolved per call, never captured at registration: OCR_HOME is the
+  // environment-book-set switch (ADR-0007) and may change under a live server.
+  const trafficRoot = (): string => path.join(getOcrHomeDir(), 'plugins', 'traffic');
+  const TRAFFIC_TAIL = 500;
+  /** Per-side DISPLAY window handed to the dissector (and the hex preview).
+   *  Capture is full fidelity on disk; only this read is bounded. */
+  const TRAFFIC_DISSECT_WINDOW = 32 * 1024;
+  /** Inline hex preview length (the drawer's hex fallback). */
+  const TRAFFIC_HEX_PREVIEW = 1024;
+  /** Strict sidecar ref: `<YYYYMMDD>/<id>-<side>.bin`, no traversal. */
+  const TRAFFIC_BODY_REF_RE = /^\d{8}\/[A-Za-z0-9._-]+\.bin$/;
+  /** Resolve a feed body ref to an absolute path inside that decoder's dir. */
+  const bodyPath = (decoderId: string, ref: string): string | null => {
+    if (!TRAFFIC_BODY_REF_RE.test(ref)) return null;
+    const root = path.join(trafficRoot(), decoderId, 'bodies');
+    const abs = path.join(root, ref);
+    return abs.startsWith(root + path.sep) ? abs : null;
+  };
+  const trafficDecoders = (): { id: string; label: string }[] => {
+    const out: { id: string; label: string }[] = [];
+    for (const [id, gw] of listGateways()) {
+      if (typeof gw.dissect !== 'function') continue;
+      out.push({ id, label: gw.hosts.join(', ') });
+    }
+    return out;
+  };
+  /** Read-time wire decoration for ONE plugin feed row: body windows for the
+   *  dissector + hex preview, dissect layers, body tokens, bodies stripped.
+   *  Shared by the live tail route and the federated history scan — one
+   *  decoration path, never two. */
+  const decoratePluginRow = (decoderId: string, ex: TrafficExchange): Record<string, unknown> => {
+    const windowOf = (ref: unknown): Buffer | undefined => {
+      if (typeof ref !== 'string') return undefined;
+      const abs = bodyPath(decoderId, ref);
+      if (!abs) return undefined;
+      try {
+        const fd = fs.openSync(abs, 'r');
+        try {
+          const buf = Buffer.alloc(TRAFFIC_DISSECT_WINDOW);
+          const read = fs.readSync(fd, buf, 0, TRAFFIC_DISSECT_WINDOW, 0);
+          return buf.subarray(0, read);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        return undefined;
+      }
+    };
+    const reqWin = windowOf(ex.reqBodyFile);
+    const resWin = windowOf(ex.resBodyFile);
+    // Legacy rows (inline base64 body) still decode: the window is the
+    // inline body itself, so both feed generations share one path.
+    const reqBytes = reqWin ?? (typeof ex.reqBody === 'string' ? Buffer.from(ex.reqBody, 'base64') : undefined);
+    const resBytes = resWin ?? (typeof ex.resBody === 'string' ? Buffer.from(ex.resBody, 'base64') : undefined);
+    let dissected: DissectedExchange | undefined;
+    try {
+      dissected = getGatewayById(decoderId)?.dissect?.({ ...ex, reqBody: reqBytes?.toString('base64'), resBody: resBytes?.toString('base64') });
+    } catch {
+      dissected = undefined; // a decoder bug degrades to the raw view only
+    }
+    // Strip bodies from the wire view: the console gets byte counts,
+    // file refs and a small hex preview, never the payload itself.
+    const { reqBody: _rq, resBody: _rs, ...meta } = ex as Record<string, unknown>;
+    void _rq;
+    void _rs;
+    const hexPreview = (b?: Buffer): string | undefined => {
+      if (!b || b.length === 0) return undefined;
+      return b.subarray(0, TRAFFIC_HEX_PREVIEW).toString('hex');
+    };
+    return {
+      ...meta,
+      reqBodyToken: bodyTokenOf(ex.reqBodyFile, decoderId),
+      resBodyToken: bodyTokenOf(ex.resBodyFile, decoderId),
+      reqHex: hexPreview(reqBytes),
+      resHex: hexPreview(resBytes),
+      decoded: dissected,
+    };
+  };
+  app.get('/api/admin/plugin-traffic', async () => {
+    return { status: 'ok', decoders: trafficDecoders() };
+  });
+  app.get('/api/admin/plugin-traffic/:decoder', async (req, reply) => {
+    const decoderId = String((req.params as Record<string, string>).decoder ?? '');
+    const gw = getGatewayById(decoderId);
+    if (!gw || typeof gw.dissect !== 'function') {
+      reply.code(404);
+      return { status: 'error', message: `no traffic decoder registered for '${decoderId}'` };
+    }
+    const dir = path.join(trafficRoot(), decoderId);
+    const events: Array<Record<string, unknown>> = [];
+    let days = 0;
+    try {
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().reverse();
+        for (const f of files) {
+          if (events.length >= TRAFFIC_TAIL) break;
+          days++;
+          const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean);
+          for (let i = lines.length - 1; i >= 0 && events.length < TRAFFIC_TAIL; i--) {
+            let raw: unknown;
+            try {
+              raw = JSON.parse(lines[i]);
+            } catch {
+              continue; // a torn final line (crash mid-append) skips one row
+            }
+            const ex = raw as TrafficExchange;
+            events.push(decoratePluginRow(decoderId, ex));
+          }
+        }
+      }
+    } catch {
+      // Unreadable feed dir (fresh plugin, permissions) = empty feed.
+    }
+    return { status: 'ok', days, truncated: events.length >= TRAFFIC_TAIL, events };
+  });
+
   // Raw persisted binary body (ref format `<day>/pa-...-<side>.bin`, validated
   // inside readProxyAccessBodyFile — no traversal).
-  app.get('/api/admin/proxy-log/bodies/*', async (req, reply) => {
-    const ref = (req.params as Record<string, string>)['*'];
-    const body = readProxyAccessBodyFile(ref ?? '');
-    if (!body) {
+  // 3A2c. THE body download — one neutral endpoint for every captured body,
+  // whatever stored it. The console never learns which subsystem owns the
+  // bytes (or which plugin captured them): the row carries an opaque token and
+  // only this route resolves it. Validation happens AFTER decoding the token,
+  // so a hand-crafted token is no stronger than the refs the feeds already
+  // expose (strict grammar + containment inside the resolved root).
+  app.get('/api/admin/traffic-body/:token', async (req, reply) => {
+    const token = String((req.params as Record<string, string>).token ?? '');
+    const abs = resolveBodyPath(token);
+    if (!abs || !fs.existsSync(abs)) {
       reply.code(404);
-      return { status: 'error', message: 'body file not found' };
+      return { status: 'error', message: 'body not found' };
     }
     reply.header('content-type', 'application/octet-stream');
-    return body;
+    reply.header('content-disposition', `attachment; filename="${path.basename(abs)}"`);
+    return reply.send(fs.createReadStream(abs));
   });
 
   // 3A3. OS system proxy ownership for the inbound forward proxy: snapshot →
@@ -1109,22 +1667,44 @@ export function registerConsoleRoutes(
   app.get('/api/admin/system-proxy', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await getSystemProxyStatus(port, fp?.bypassHosts || []);
+    const sys = await getSystemProxyStatus(port, osBypassHosts(fp?.rules));
     return { status: 'ok', ...sys, proxyEnabled: Boolean(fp?.enabled) };
   });
 
   app.post('/api/admin/system-proxy/enable', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await enableSystemProxy(port, fp?.bypassHosts || []);
+    const sys = await enableSystemProxy(port, osBypassHosts(fp?.rules));
     return { status: 'ok', ...sys };
   });
 
   app.post('/api/admin/system-proxy/disable', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await disableSystemProxy(port, fp?.bypassHosts || []);
+    const sys = await disableSystemProxy(port, osBypassHosts(fp?.rules));
     return { status: 'ok', ...sys };
+  });
+
+  // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The
+  // console renders the warning CODES through i18n and shows which rule a probe
+  // host hits, so an ordered table is never a black box. `rules` in the body =
+  // the UNSAVED table being edited; omitted = the live one.
+  app.post('/api/admin/forward-proxy/rules/resolve', async (req) => {
+    const body = (req.body ?? {}) as { host?: unknown; rules?: unknown };
+    const live = getRuntimeConfigRef();
+    const rawRules = Array.isArray(body.rules) ? body.rules : live?.forwardProxy?.rules;
+    const proxyEnabled = live?.proxy?.enabled === true;
+    const rules = normalizeRules(rawRules);
+    const host = typeof body.host === 'string' ? body.host.trim() : '';
+    return {
+      status: 'ok',
+      rules,
+      warnings: lintRules(rawRules, proxyEnabled),
+      proxyEnabled,
+      // The resolver is the SAME function the proxy legs call, so the preview
+      // can never disagree with the live decision.
+      decision: host ? resolveHost(host, rules) : null,
+    };
   });
 
   // 3B. Token usage aggregation from the trace ring: windowed totals plus
@@ -1849,7 +2429,7 @@ export function registerConsoleRoutes(
   // same idempotent ensureCa the proxy itself uses).
   const handleForwardProxyCa = async (_req: any, reply: any) => {
     const cfg = loadConfig();
-    const caDir = cfg.forwardProxy?.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+    const caDir = resolveCaDir(cfg.forwardProxy?.caDir);
     try {
       const ca = ensureCa(caDir);
       reply.header('content-type', 'application/x-pem-file');
@@ -1860,6 +2440,37 @@ export function registerConsoleRoutes(
     }
   };
   app.get('/api/admin/proxy/ca', handleForwardProxyCa);
+
+  // 6a-bis. CA identity for the console card: absolute path, SHA-256
+  // fingerprint and validity. Never key material — clients use it to check
+  // that the root they installed is the root this proxy signs with.
+  app.get('/api/admin/proxy/ca/meta', async (_req, reply) => {
+    const cfg = loadConfig();
+    try {
+      return { status: 'ok', ...describeCa(cfg.forwardProxy?.caDir) };
+    } catch (err: any) {
+      return reply.status(500).send({ status: 'error', message: err?.message || 'Failed to load CA' });
+    }
+  });
+  // 6a-ter. Trust state for the console card: does the platform store that
+  // clients verify against hold THIS CA? Tri-state on purpose — `unknown` means
+  // the probe could not run, never "not trusted". Cached 60s (the probe spawns
+  // platform tools); `force=1` bypasses the TTL for an operator re-check after
+  // an install.
+  app.get('/api/admin/proxy/ca/trust', async (req) => {
+    const cfg = loadConfig();
+    const caPath = caCertPath(cfg.forwardProxy?.caDir);
+    const force = String((req.query as Record<string, unknown> | undefined)?.force ?? '') === '1';
+    // Fail SOFT: the console renders a tri-state chip, so a probe that cannot
+    // run is `unknown`, never a 500 that makes the chip silently disappear.
+    // `checkedAt` stays absent while no probe ran (no PEM to identify).
+    if (!fs.existsSync(caPath)) return { status: 'ok', trusted: 'unknown' as const, caPath };
+    try {
+      return { status: 'ok', ...(await probeCaTrustedCached(caPath, { force })), caPath };
+    } catch {
+      return { status: 'ok', trusted: 'unknown' as const, caPath };
+    }
+  });
 
   // 6b. Tier member lists — candidate pool snapshots (console preview).
   // membership is a PURE projection of (model id × tiers.members);
@@ -2450,22 +3061,33 @@ export function registerConsoleRoutes(
     /** The npm SDK vocabulary — ONE backend-owned table (providers/vocabulary.ts)
      * served to every UI surface that renders npm choices or display names. */
     npmVocabulary: async () => {
-      const { NPM_VOCABULARY } = await import('../providers/vocabulary.js');
-      return { status: 'ok', entries: NPM_VOCABULARY };
+      // Plugin-backed wires (qoder gRPC, workbuddy HTTP) are only OFFERED when
+      // the plugin is installed — suggesting the alias without the executor
+      // would invite authoring a def that fails on every call.
+      const entries = NPM_VOCABULARY.filter((e) => {
+        if (e.wire !== 'qoder' && e.wire !== 'workbuddy') return true;
+        return !!getModelServicePlugin(e.wire);
+      });
+      return { status: 'ok', entries };
     },
 
-    list: async () => {
+    list: async (req: FastifyRequest) => {
       const { getProviderNodeById } = await import('../opencode/user-config.js');
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      const takedowns = getProviderTakedownStore();
       const store = await getCredentialStore();
       // B4: credentials come from the BOUND store on every binding — the masked store
       // credentials merge into the config views, so a stale auth.json entry can never
       // masquerade as a connected provider.
-      const views = await storeProviderViews(store);
+      const lang = typeof (req.query as any)?.lang === 'string' ? (req.query as any).lang : undefined;
+      const views = await storeProviderViews(store, lang);
       const unified = await catalogRepository.list();
       const byId = new Map(unified.map((p) => [p.id, p]));
+      // Plugin-origin provenance for the Connected-tab origin filter — same
+      // ledger join as the catalog endpoint (ADR-0010: never written to providers.json).
+      const origins = pluginProviderOrigins();
       return {
         status: 'ok',
         configPath: getProviderDefsPath(),
@@ -2474,6 +3096,7 @@ export function registerConsoleRoutes(
           const u = byId.get(v.id);
           const defNode = getProviderNodeById(v.id);
           const hasDefNode = defNode !== undefined;
+          const takedown = takedowns.get(v.id);
           return {
             ...v,
             // Precise delete-branch signal: an explicit defs-file node is the
@@ -2489,8 +3112,12 @@ export function registerConsoleRoutes(
             // builtin-catalog coverage; an aggregated-unknown id (no catalog row
             // at all) is by definition custom.
             custom: u ? u.custom : true,
-            logo: u?.logo,
+            logo: u?.logo ?? v.logo,
             npm: v.npm ?? u?.npm,
+            // Operator takedown: routing state, never a defs-file field (ADR-0010).
+            // The card stays listed so the operator can restore it with one click.
+            disabled: takedown !== undefined,
+            ...(takedown?.reason ? { disabledReason: takedown.reason } : {}),
             // Def-level custom headers (non-secret metadata — the edit dialog
             // prefills from this; secrets live in the bound store, never here).
             headers: defNode?.headers ?? defNode?.options?.headers,
@@ -2499,6 +3126,9 @@ export function registerConsoleRoutes(
             // wire-base chain (def baseURL > models.dev `api` > live service
             // hint) so the card shows the SAME endpoint inference routes to.
             baseURL: v.baseURL || u?.baseURL || u?.api,
+            // Owning plugin id when the def was registered by a plugin preset —
+            // the Connected tab mirrors the catalog's origin filter on it.
+            pluginOrigin: origins[v.id],
             priceFrom: u ? catalogRepository.minInputPrice(u) : undefined,
             modelsCount: u?.models.length ?? v.models.length,
           };
@@ -2506,8 +3136,12 @@ export function registerConsoleRoutes(
       };
     },
 
-    catalog: async () => {
+    catalog: async (req: FastifyRequest) => {
+      const lang = typeof (req.query as { lang?: unknown })?.lang === 'string' ? (req.query as { lang: string }).lang : undefined;
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      // Plugin-origin provenance for the console tag/filter — ledger join only,
+      // never a field written into providers.json (ADR-0010).
+      const origins = pluginProviderOrigins();
       const unified = await catalogRepository.list();
       // Trim model arrays from the list payload (detail endpoint can serve them later)
       const providers = unified.map((p) => ({
@@ -2521,11 +3155,65 @@ export function registerConsoleRoutes(
         env: p.env,
         custom: p.custom,
         connected: p.connected,
+        // Plugin merges below may forward a preset's web-authorization
+        // capability onto this row.
+        webLogin: undefined as boolean | undefined,
+        webLoginSubmit: undefined as boolean | undefined,
+        authTypes: undefined as PluginAuthType[] | undefined,
+        keyHint: undefined as string | undefined,
+        // Owning plugin id when the def was registered by a plugin preset.
+        pluginOrigin: origins[p.id],
         sources: p.sources,
         modelCount: p.models.length,
         priceFrom: catalogRepository.minInputPrice(p),
       }));
-      return { status: 'ok', source: catalogRepository.lastSyncOrigin, providers };
+      // Plugin presets join the connect catalog (logo + one-click credential),
+      // deduped against repository entries that already carry the same id.
+      // Pure config-source rows are dropped: a defs-file node is already fully
+      // presented on the Connected tab — the connect catalog is a DISCOVERY
+      // surface (remote catalog sources + plugin presets), not a mirror of the
+      // operator's own declared relays.
+      try {
+        const { pluginPresetCatalogEntries } = await import('../plugins/host.js');
+        for (const preset of await pluginPresetCatalogEntries(lang)) {
+          const idx = providers.findIndex((p) => p.id === preset.id);
+          if (idx >= 0) {
+            const existing = providers[idx];
+            if (preset.connected || existing.sources.some((s) => s !== 'config')) {
+              // Connected preset: the config entry IS the live row (its models
+              // ride along) — keep it, just attach the plugin logo if missing.
+              // Catalog-covered preset: the catalog entry is the richer record.
+              if (!existing.logo && preset.logo) existing.logo = preset.logo;
+              existing.name = preset.name; // the stored def name is localeless — show the manifest's localized one
+              // Forward the web-authorization capability, or the connect card
+              // never offers the plugin's device-login button.
+              existing.webLogin = preset.webLogin;
+              existing.pluginOrigin = existing.pluginOrigin ?? origins[preset.id];
+              existing.webLoginSubmit = preset.webLoginSubmit;
+              existing.authTypes = preset.authTypes;
+              existing.keyHint = preset.keyHint;
+              // Tag the plugin origin, or the trailing pure-config-source drop
+              // below removes the row we just decided to keep.
+              if (!existing.sources.includes('service')) existing.sources = [...existing.sources, 'service'];
+              continue;
+            }
+            // Unconnected preset materialized only as a pure config-source row
+            // (syncPluginPresets upserts the def at install): swap in the
+            // preset row — plugin logo, displayName, connectable via the
+            // preset's own baseURL/npm.
+            providers.splice(idx, 1);
+          }
+          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, webLogin: preset.webLogin, webLoginSubmit: preset.webLoginSubmit, authTypes: preset.authTypes, keyHint: preset.keyHint, pluginOrigin: origins[preset.id], sources: preset.sources, modelCount: 0, priceFrom: undefined });
+        }
+      } catch {
+        // catalog must survive a broken plugin host
+      }
+      // Pure config-source rows are dropped: a self-declared defs node is
+      // already fully presented on the Connected tab — the connect catalog is
+      // a DISCOVERY surface (remote catalog sources + plugin presets), not a
+      // mirror of the operator's own declared relays.
+      const connectable = providers.filter((p) => !(p.sources.length === 1 && p.sources[0] === 'config'));
+      return { status: 'ok', source: catalogRepository.lastSyncOrigin, providers: connectable };
     },
 
     /** Flat model view across providers. `?maintained=1` narrows it to the
@@ -2543,6 +3231,7 @@ export function registerConsoleRoutes(
       // Raw file read once — the aggregate is already built from the normalized
       // view, so a retired-shape node here contributes no rows anyway.
       const rawNodes = readProviderDefsFile()?.providers ?? {};
+      const takedowns = getProviderTakedownStore();
       const nodeModels = (pid: string): Record<string, unknown> => {
         const node = rawNodes[pid];
         const models = node && typeof node === 'object' ? (node as any).models : undefined;
@@ -2565,6 +3254,9 @@ export function registerConsoleRoutes(
               logo: p.logo,
               custom: p.custom,
               connected: p.connected,
+              // Provider-level takedown: the row stays on the maintenance page
+              // (aggregate truth), but the badge says it cannot route.
+              providerDisabled: takedowns.isDisabled(p.id),
               maintained: Object.prototype.hasOwnProperty.call(defs, m.id),
             }))
             .filter((m) => !maintainedOnly || m.maintained);
@@ -2847,6 +3539,105 @@ export function registerConsoleRoutes(
       }
     },
 
+    /** Resolve the model-service plugin serving a provider def's wire
+     *  (plugin wires only — the vendor protocol stays in the plugin). */
+    webLoginPluginFor: async (id: string) => {
+      const { getProviderNodeById } = await import('../opencode/user-config.js');
+      const { wireFor } = await import('../providers/wire.js');
+      const def = getProviderNodeById(id);
+      if (!def) return { error: `provider '${id}' not found` };
+      const node = def as { baseURL?: string; options?: { baseURL?: string }; npm?: string; package?: string };
+      const baseURL = (node.options?.baseURL ?? node.baseURL ?? '').replace(/\/+$/, '');
+      const npm = node.npm || node.package || '';
+      const wire = npm ? wireFor(npm) : baseURL ? wireFor(undefined, baseURL) : 'unroutable';
+      const plugin = (await import('../plugins/host.js')).getModelServicePlugin(wire);
+      if (!plugin?.webLogin) {
+        return { error: `provider '${id}' is not on a plugin wire with a web-login capability` };
+      }
+      return { plugin, baseURL };
+    },
+    webLoginStart: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const r = await ocHandlers.webLoginPluginFor(id);
+      if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
+      try {
+        const { authUrl } = await r.plugin.webLogin!.start({ baseURL: r.baseURL });
+        return { status: 'ok', authUrl };
+      } catch (err) {
+        return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+    webLoginPoll: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const r = await ocHandlers.webLoginPluginFor(id);
+      if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
+      try {
+        const result = await r.plugin.webLogin!.poll({ baseURL: r.baseURL });
+        if (!result.done) {
+          return { status: 'ok', done: false, error: result.error };
+        }
+        // Login finished — wire the fresh token into the credential store
+        // (same write path as a manual connect), then connect-time model
+        // auto-fill so the card shows as connected with models.
+        if (!result.token) {
+          return { status: 'ok', done: true, connected: false, error: 'login finished without a token' };
+        }
+        const credentialStore = await (await import('../opencode/credentials/index.js')).getCredentialStore();
+        const { credential: keyMeta } = await connectKeyIdempotent(
+          credentialStore, id, result.token, undefined, registry.getCircuitBreakerManager(), registry
+        );
+        const { ensureConnectedProviderBook } = await import('../opencode/catalog/auto-pull.js');
+        const fill = await ensureConnectedProviderBook(id, { baseURL: r.baseURL }).catch((e: any) => ({
+          nodeCreated: false,
+          pulled: 0,
+          fillError: String(e?.message ?? e),
+        }));
+        if (fill.fillError) {
+          app.log.warn({ providerId: id, fillError: fill.fillError }, 'web-login connect-time model auto-fill failed (swallowed by design)');
+        }
+        return { status: 'ok', done: true, connected: true, credential: keyMeta };
+      } catch (err) {
+        return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+    webLoginSubmit: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const code = String((req.body || {}).code ?? '').trim();
+      if (!code) return reply.code(400).send({ success: false, error: 'missing code' });
+      const r = await ocHandlers.webLoginPluginFor(id);
+      if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
+      if (!r.plugin.webLogin!.submit) {
+        return reply.code(404).send({ success: false, error: `provider '${id}' web-login has no manual token submission` });
+      }
+      try {
+        const result = await r.plugin.webLogin!.submit({ baseURL: r.baseURL, code });
+        if (!result.ok) return { status: 'ok', connected: false, error: result.error };
+        // Same wiring as a finished poll: credential-store write + connect-time
+        // model auto-fill so the card flips to connected. A submit that
+        // consumed the code without returning a token is a plugin bug — refuse
+        // to persist the (likely expired) raw code as the credential, exactly
+        // like the poll path's 'login finished without a token' guard.
+        if (!result.token) {
+          return { status: 'ok', connected: false, error: 'submit finished without a token' };
+        }
+        const credentialStore = await (await import('../opencode/credentials/index.js')).getCredentialStore();
+        const { credential: keyMeta } = await connectKeyIdempotent(
+          credentialStore, id, result.token, undefined, registry.getCircuitBreakerManager(), registry
+        );
+        const { ensureConnectedProviderBook } = await import('../opencode/catalog/auto-pull.js');
+        const fill = await ensureConnectedProviderBook(id, { baseURL: r.baseURL }).catch((e: any) => ({
+          nodeCreated: false,
+          pulled: 0,
+          fillError: String(e?.message ?? e),
+        }));
+        if (fill.fillError) {
+          app.log.warn({ providerId: id, fillError: fill.fillError }, 'web-login submit connect-time model auto-fill failed (swallowed by design)');
+        }
+        return { status: 'ok', connected: true, credential: keyMeta };
+      } catch (err) {
+        return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    },
     /**
      * One-shot upstream connectivity probe behind the console "Test" buttons.
      * Resolves baseURL/key/model from body overrides (test-before-save) or
@@ -2873,7 +3664,18 @@ export function registerConsoleRoutes(
       // upstream probe header (its whole purpose), never in the response.
       // Inline {env:VAR}/options.apiKey keep priority ABOVE the store (Decision 1).
       const store = await getCredentialStore();
-      const resolved = store.resolveKey(id);
+      // Provider-level probes honor the operator takedown overlay: a disabled
+      // credential is parked from routing, so probing with it would report a
+      // provider as healthy while inference refuses that key. The store does
+      // not carry the flag (it lives in the breaker state store's overlay), so
+      // the chain is filtered with the same keyHashPrefix identity routing
+      // uses. An addressed credentialId below deliberately bypasses this.
+      const credentialState = registry.getCircuitBreakerManager().getCredentialStateStore();
+      const storeChain = store.resolveKeyChain(id);
+      const enabledChain = storeChain.filter(
+        (c) => c.key && !credentialState.isDisabled(id, keyHashPrefix(c.key))
+      );
+      const resolvedKey = enabledChain[0]?.key;
       // Per-credential probe: the operator pinned ONE credential row (KeysPage
       // credential list). resolveKeyChain is a sanctioned raw read on this route
       // — same contract as resolveKey above: the key leaves only as the
@@ -2950,8 +3752,19 @@ export function registerConsoleRoutes(
       // OAuth access-token probing retires with the store flip: no
       // CredentialStore exports raw oauth tokens (masked list-and-badge only) —
       // an oauth-only provider lands on the 400 hint.
-      const apiKey = body.apiKey || (addressed ? addressed.key : expandEnvTemplate(def?.options?.apiKey) || resolved?.key);
+      const inlineKey = expandEnvTemplate(def?.options?.apiKey);
+      const apiKey = body.apiKey || (addressed ? addressed.key : inlineKey || resolvedKey);
       if (!apiKey) {
+        // Every stored key parked: say THAT, not the misleading no-key/OAuth
+        // hint (the operator must know a takedown is the cause).
+        if (!addressed && !inlineKey && enabledChain.length === 0 && storeChain.some((c) => c.key)) {
+          return reply.status(400).send({
+            success: false,
+            reasonCode: 'no_enabled_credential',
+            provider: id,
+            error: `Every credential stored for '${id}' is disabled — enable one before testing.`,
+          });
+        }
         return reply.status(400).send({
           success: false,
           oauthHint: true,
@@ -3055,6 +3868,7 @@ export function registerConsoleRoutes(
           // Decision 8 double confirmation is enforced by the console UI
           // (purgeAuth opt-in) — server-side the loop reports honestly.
           const purge = purgeAuth ? await purgeProviderCredentials(store, id) : null;
+          dropTakedownWhenProviderGone(id, store);
           const outcome = purge ? purgeOutcomeMessage(purge, id, true) : null;
           // Clean purge (or no purge requested): legacy response bytes kept.
           // defRemoved is the runtime truth — the console success toast follows
@@ -3067,6 +3881,7 @@ export function registerConsoleRoutes(
         // Credential-only entry: provider-wide disconnect = the UI-level
         // credential loop (Decision 1), never a direct upstream-file edit.
         const purge = await purgeProviderCredentials(store, id);
+        dropTakedownWhenProviderGone(id, store);
         return { status: 'ok', defRemoved: false, ...purgeOutcomeMessage(purge, id, false), purge };
       } catch (err: any) {
         const failure = await mapStoreWriteFailure(err);
@@ -3224,7 +4039,12 @@ export function registerConsoleRoutes(
       const body = req.body as { pattern?: string; ids?: string[]; dryRun?: boolean } | undefined;
       const { autoPullProvider } = await import('../opencode/catalog/auto-pull.js');
       const result = await autoPullProvider(id, body ?? {});
-      return reply.status(result.httpStatus).send(result.body);
+      // withPoolSync keys on reply.sent. A dry run is a read-only preview and
+      // must not rebuild the live registry; a real pull returns the body so
+      // the wrapper can apply the new defs without a restart.
+      if (body?.dryRun) return reply.status(result.httpStatus).send(result.body);
+      reply.status(result.httpStatus);
+      return result.body;
     },
 
     /** Clear models — whole node without a pattern, matching ids only with one. */
@@ -3551,6 +4371,9 @@ export function registerConsoleRoutes(
         store.invalidate();
         await refreshProviderCredentialChain(registry, store, id); // removed key must leave the live chain
         clearSuspectForCredential(registry.getCircuitBreakerManager(), id, prefix);
+        // The last credential of a def-less provider removes the row entirely;
+        // a takedown must not outlive the thing it targeted.
+        dropTakedownWhenProviderGone(id, store);
         // DELETE is a REVOCATION, so it must be as durable as a takedown: anchor
         // the key MATERIAL as disabled. Otherwise the read sync would re-import
         // the key from the client as a clean, routable credential — the delete
@@ -3671,6 +4494,78 @@ export function registerConsoleRoutes(
     },
 
     /**
+     * Operator DISABLE / ENABLE one WHOLE provider — the coarse counterpart of
+     * the credential takedown below. The provider keeps its defs node, models,
+     * credentials and console card; only the routing pool drops it
+     * (`buildDirectPool` → `operator_disabled`), so `/v1/models` omits it and
+     * direct ids 404. State lives in the GLOBAL takedown ledger, never in
+     * providers.json (that file is connection truth + the sync materializer's
+     * source, ADR-0010). Manual-only lifecycle: nothing auto-clears it.
+     */
+    providerSetDisabled: async (
+      req: FastifyRequest<{ Params: { id: string }; Body: { reason?: unknown } }>,
+      reply: FastifyReply,
+      disabled: boolean
+    ) => {
+      const { id } = req.params;
+      const body = req.body ?? {};
+      if (!isValidProviderId(id)) {
+        return reply.status(400).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'invalid_provider_id',
+          error: `Invalid provider id '${id}' - ${PROVIDER_ID_RULE}`,
+        });
+      }
+      const { getCredentialStore } = await import('../opencode/credentials/index.js');
+      const store = await getCredentialStore();
+      let hasCredential = false;
+      try {
+        hasCredential = store.listCredentials(id).length > 0;
+      } catch {
+        // unreadable per-provider detail: a defs node still proves the provider exists
+      }
+      if (!getProviderNodeById(id) && !hasCredential) {
+        return reply.status(404).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'provider_not_found',
+          error: `Provider '${id}' is neither defined in providers.json nor connected with a credential`,
+        });
+      }
+      const takedowns = getProviderTakedownStore();
+      if (disabled) {
+        const raw = typeof body.reason === 'string' ? body.reason.trim() : '';
+        if (raw.length > 200) {
+          return reply
+            .status(400)
+            .send({ status: 'error', success: false, reasonCode: 'invalid_reason', error: 'reason too long (max 200 characters)' });
+        }
+        takedowns.disable(id, raw);
+        return {
+          status: 'ok',
+          success: true,
+          disabled: true,
+          provider: id,
+          message: `Provider '${id}' taken down (no model routes through it)`,
+        };
+      }
+      takedowns.enable(id);
+      return {
+        status: 'ok',
+        success: true,
+        disabled: false,
+        provider: id,
+        message: `Provider '${id}' restored to routing`,
+      };
+    },
+
+    providerDisable: (req: FastifyRequest<{ Params: { id: string }; Body: { reason?: unknown } }>, reply: FastifyReply) =>
+      ocHandlers.providerSetDisabled(req, reply, true),
+    providerEnable: (req: FastifyRequest<{ Params: { id: string }; Body: { reason?: unknown } }>, reply: FastifyReply) =>
+      ocHandlers.providerSetDisabled(req, reply, false),
+
+    /**
      * Operator DISABLE / ENABLE one credential — a durable takedown that never
      * auto-returns (cooldown expiry, reconnect, Push and breaker resets all leave
      * it alone), and the only lever between "temporarily tripped" and "deleted".
@@ -3747,9 +4642,21 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers`, withPoolSync(registry, ocHandlers.create));
     app.patch(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.update));
     app.post(`${prefix}/opencode/providers/:id/connect`, withPoolSync(registry, ocHandlers.connect));
+    // Generic plugin web-authorization seam (device flow): start opens the
+    // vendor login page; poll returns done+token and wires the fresh token
+    // into the credential store. The plugin owns the whole protocol.
+    app.post(`${prefix}/opencode/providers/:id/web-login/start`, ocHandlers.webLoginStart);
+    // Both terminal paths write the fresh credential into the store, so both
+    // must trigger a credential re-sync (same contract as the key route).
+    app.get(`${prefix}/opencode/providers/:id/web-login/poll`, withPoolSync(registry, ocHandlers.webLoginPoll));
+    app.post(`${prefix}/opencode/providers/:id/web-login/submit`, withPoolSync(registry, ocHandlers.webLoginSubmit));
     app.post(`${prefix}/opencode/providers/:id/key`, withPoolSync(registry, ocHandlers.setKey));
     app.post(`${prefix}/opencode/providers/:id/test`, ocHandlers.test);
     app.delete(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.remove));
+    // Provider-level operator takedown: routing state, not a defs write — the
+    // pool resync drops (or restores) every model of the provider (ADR-0010).
+    app.post(`${prefix}/opencode/providers/:id/disable`, withPoolSync(registry, ocHandlers.providerDisable));
+    app.post(`${prefix}/opencode/providers/:id/enable`, withPoolSync(registry, ocHandlers.providerEnable));
 
     // Per-provider model maintenance (config-defined providers only)
     app.get(`${prefix}/opencode/providers/:id/models`, ocHandlers.modelsGet);
@@ -3760,6 +4667,205 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers/:id/models/reorder`, withPoolSync(registry, ocHandlers.modelReorder));
     app.post(`${prefix}/opencode/providers/:id/models/clear`, withPoolSync(registry, ocHandlers.modelsClear));
 
+    // Plugin host: read-only views + hot reload of the plugin dir.
+    app.get(`${prefix}/plugins`, async () => {
+      // views only — a read route must not clear+rebuild the live registry
+      // (in-flight dispatch/probe would see an empty plugin set mid-rebuild)
+      const { listInstalledPlugins } = await import('../plugins/host.js');
+      return { status: 'ok', plugins: listInstalledPlugins() };
+    });
+    app.post(`${prefix}/plugins/reload`, async () => {
+      const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
+      await loadInstalledPlugins();
+      const plugins = listInstalledPlugins();
+      const registered = await syncPluginPresets();
+      await refreshDirectPool(registry);
+      return { status: 'ok', plugins, registered };
+    });
+    // Upload-install: raw zip bytes (application/octet-stream), id in the query.
+    app.get(`${prefix}/plugins/:id/logo`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { pluginLogoFile } = await import('../plugins/host.js');
+      const file = pluginLogoFile(id);
+      if (!file) return reply.code(404).send({ status: 'error', error: 'no logo' });
+      const ext = file.split('.').pop()?.toLowerCase();
+      const mime =
+        ext === 'png' ? 'image/png'
+        : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+        : ext === 'webp' ? 'image/webp'
+        : ext === 'svg' ? 'image/svg+xml'
+        : undefined;
+      if (!mime) return reply.code(415).send({ status: 'error', error: 'unsupported logo format' });
+      // Logos ship inside operator-installed packages: treat them as untrusted
+      // content. SVG can carry scripts on direct navigation — lock it down;
+      // buffered send also avoids the uninstall race between check and stream.
+      reply.header('X-Content-Type-Options', 'nosniff');
+      reply.header('Content-Security-Policy', "default-src 'none'");
+      return reply.type(mime).send(await fs.promises.readFile(file));
+    });
+
+    // Package export: a packaged plugin returns its installed zip verbatim; a
+    // dev-tree plugin is bundled and zipped on the fly with the same
+    // deterministic packer `plugins:build` uses, so a download round-trips
+    // through Install. A bundle failure is the operator's signal that the
+    // plugin cannot be packaged self-contained — surface the reason.
+    app.get(`${prefix}/plugins/:id/package`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      let zip: Uint8Array | undefined;
+      try {
+        zip = await pluginPackageZip(id);
+      } catch (err) {
+        return reply.code(500).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+      if (!zip) return reply.code(404).send({ status: 'error', error: 'unknown plugin or package not found' });
+      if (zip.length > PLUGIN_PACKAGE_MAX_BYTES) {
+        return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
+      }
+      // Operator-installed bytes: lock the response down (same rule as logo).
+      reply.header('X-Content-Type-Options', 'nosniff');
+      reply.header('Content-Disposition', `attachment; filename="${id}.zip"`);
+      return reply.type('application/zip').send(Buffer.from(zip));
+    });
+
+    // Plugin-level configuration (ADR-0017): schema declared in plugin.json,
+    // values stored as a plugin artifact — never in config.yaml.
+    app.get(`${prefix}/plugins/:id/config`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { getPluginConfig } = await import('../plugins/host.js');
+      const cfg = getPluginConfig(id);
+      if (!cfg) return reply.code(404).send({ status: 'error', error: 'unknown or unloaded plugin' });
+      return { status: 'ok', schema: cfg.schema, sections: cfg.sections, values: cfg.values };
+    });
+    app.put(`${prefix}/plugins/:id/config`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as { values?: unknown };
+      if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
+        return reply.code(400).send({ status: 'error', error: 'body.values must be an object' });
+      }
+      try {
+        const { applyPluginConfig } = await import('../plugins/host.js');
+        const result = await applyPluginConfig(id, body.values as Record<string, unknown>);
+        return { status: 'ok', values: result.values, warnings: result.warnings };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Unknown/unloaded plugin = 404 (same as GET); schema/value problems = 400.
+        if (message === 'unknown or unloaded plugin') return reply.code(404).send({ status: 'error', error: message });
+        return reply.code(400).send({ status: 'error', error: message });
+      }
+    });
+
+    app.delete(`${prefix}/plugins/:id/uninstall`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        const { uninstallPlugin, loadInstalledPlugins, listInstalledPlugins } = await import('../plugins/host.js');
+        const result = await uninstallPlugin(id);
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        await refreshDirectPool(registry);
+        return { status: 'ok', removed: result.removed, providersRemoved: result.providersRemoved, plugins };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Toggle a plugin without deleting anything (works for dev-tree plugins
+    // too): disabled.json skips it at discovery; enable + reload restores it.
+    app.post(`${prefix}/plugins/:id/disable`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        const { setPluginDisabled, loadInstalledPlugins, listInstalledPlugins } = await import('../plugins/host.js');
+        const result = await setPluginDisabled(id, true);
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        await refreshDirectPool(registry);
+        return { status: 'ok', providersRemoved: result.providersRemoved, plugins };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    app.post(`${prefix}/plugins/:id/enable`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        const { setPluginDisabled, loadInstalledPlugins, listInstalledPlugins, syncPluginPresets } = await import('../plugins/host.js');
+        await setPluginDisabled(id, false);
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        const registered = await syncPluginPresets();
+        await refreshDirectPool(registry);
+        return { status: 'ok', registered, plugins };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    app.post(
+      `${prefix}/plugins/install`,
+      { bodyLimit: PLUGIN_PACKAGE_MAX_BYTES },
+      async (req, reply) => {
+      const body = req.body as Buffer | string | undefined;
+      const bytes = typeof body === 'string' ? Buffer.from(body, 'binary') : body;
+      if (!bytes || bytes.length === 0) {
+        return reply.code(400).send({ status: 'error', error: 'empty body — send the plugin zip as application/octet-stream' });
+      }
+      if (bytes.length > PLUGIN_PACKAGE_MAX_BYTES) {
+        return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
+      }
+      try {
+        const { installPluginPackage, packageIdOf, pluginPackageZip, listInstalledPlugins: listing } =
+          await import('../plugins/host.js');
+        // Snapshot the version this upload is about to REPLACE (a packaged one
+        // — a dev-tree plugin is not ours to materialize here). A failed upgrade
+        // must not delete a working install.
+        let previous: Uint8Array | undefined;
+        try {
+          const target = packageIdOf(new Uint8Array(bytes));
+          const existing = listing().find((p) => p.id === target);
+          if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
+        } catch {
+          // unreadable upload: installPluginPackage below reports it properly
+        }
+        const { id: installed } = installPluginPackage(new Uint8Array(bytes));
+        const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        const view = plugins.find((p) => p.id === installed && !p.disabled);
+        if (!view?.loaded) {
+          // a package that cannot load would re-fail every boot — discard it;
+          // discard BEFORE preset sync / pool refresh so a broken package
+          // registers nothing
+          const { discardPluginPackage } = await import('../plugins/host.js');
+          discardPluginPackage(installed);
+          // Roll BACK to the version that was working until this upload, so a
+          // bad upgrade is a no-op instead of a lost plugin.
+          if (previous) {
+            installPluginPackage(previous);
+            await loadInstalledPlugins();
+            return reply.code(422).send({
+              status: 'error',
+              error: `package rejected and discarded (${view?.error ?? 'unknown error'}); rolled back to the previously installed version`,
+              plugins: listInstalledPlugins(),
+            });
+          }
+          // Reload AFTER the discard: otherwise the response would hand the
+          // console a row for a package that is no longer on disk (the list is
+          // the disk's truth, not the last failed import's).
+          await loadInstalledPlugins();
+          return reply
+            .code(422)
+            .send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins: listInstalledPlugins() });
+        }
+        // presets register at install time (same contract as boot/reload) —
+        // after a verified successful load, BEFORE the pool refresh so the
+        // fresh defs are routable immediately
+        const registered = await syncPluginPresets();
+        await refreshDirectPool(registry);
+        return { status: 'ok', id: installed, plugins, registered };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+      },
+    );
     // Per-credential credential writes (reorder / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
     app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, withPoolSync(registry, ocHandlers.credentialReorder));
@@ -4060,26 +5166,44 @@ export function registerConsoleRoutes(
   };
   app.get('/api/admin/gateway-models', handleGatewayModels);
 
-  // 10. Remote restart trigger from UI — spawn a detached replacement gateway
-  //     first (it waits for our pid to die, boots, and self-registers the
-  //     pid/info files), THEN exit. Without the spawn we would just stop and
-  //     nothing would bring the gateway back (there is no supervisor).
+  // 10. Remote restart trigger from UI — spawn a detached restart SUPERVISOR
+  //     first, then exit. The supervisor waits for this process to die (and
+  //     force-kills it if stuck), spawns the replacement gateway, verifies
+  //     `/health` (retrying a crashed child), and records the verdict in
+  //     ocr.restart.json. Without the spawn we would just stop and nothing
+  //     would bring the gateway back (there is no resident supervisor).
+  // One handover at a time: this process exits 500 ms after acknowledging, so
+  // a second POST inside that window would spawn a SECOND supervisor and two
+  // replacements would race for the listen port. Idempotent answer instead.
+  let restartInFlight = false;
   const handleRestart = async () => {
-    const { spawnDetachedRestartChild } = await import('../cli/daemon.js');
-    const cfg = loadConfig();
-    const addr = app.server.address();
-    const port = typeof addr === 'object' && addr ? addr.port : cfg.port;
-    const spawned = spawnDetachedRestartChild({ port, host: cfg.host });
-    if (!spawned) {
-      // Fault-tolerance: NEVER stop the gateway without a replacement — keep
-      // serving and surface the failure to the UI instead of exiting.
-      return {
-        status: 'failed',
-        message: 'Could not spawn a replacement process — gateway keeps running. Restart it manually when convenient.',
-      };
+    if (restartInFlight) {
+      return { status: 'restarting', message: 'Gateway restart is already in progress' };
     }
-    setTimeout(() => process.exit(0), 500);
-    return { status: 'restarting', message: 'Gateway restart signal acknowledged — replacement process is booting' };
+    restartInFlight = true;
+    try {
+      const { spawnDetachedRestartChild } = await import('../cli/daemon.js');
+      const cfg = loadConfig();
+      const addr = app.server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : cfg.port;
+      const spawned = spawnDetachedRestartChild({ port, host: cfg.host });
+      if (!spawned) {
+        restartInFlight = false;
+        // Fault-tolerance: NEVER stop the gateway without a replacement — keep
+        // serving and surface the failure to the UI instead of exiting.
+        return {
+          status: 'failed',
+          message: 'Could not spawn a replacement process — gateway keeps running. Restart it manually when convenient.',
+        };
+      }
+      setTimeout(() => process.exit(0), 500);
+      return { status: 'restarting', message: 'Gateway restart signal acknowledged — the detached supervisor is booting the replacement' };
+    } catch (err) {
+      // Un-stick the guard: a thrown spawn/config error must not make every
+      // later restart answer "already in progress" forever.
+      restartInFlight = false;
+      return { status: 'failed', message: `Restart failed: ${(err as Error).message}` };
+    }
   };
   app.post('/api/admin/restart', handleRestart);
 
@@ -4302,22 +5426,47 @@ export function registerConsoleRoutes(
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
-    const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '500', 10) || 500, 1), 5000);
+    // `limit` is TURNS per page (2-4 wire events travel with their turn), so
+    // the pager's summary counts the same unit the header does. 50 turns is
+    // the console default.
+    const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '50', 10) || 50, 1), 500);
     // Metadata-first console reads: bodies=none strips the wire bodies (KB
     // payload, instant paint); full bodies come back per turn via /turn or a
-    // bodies=full re-read.
-    const bodies = (req.query as any)?.bodies === 'none' ? 'none' : 'full';
+    // bodies=full re-read. bodies=chat keeps round-opener request bodies +
+    // response bodies only — the conversation replay's bounded footprint.
+    const bodiesParam = (req.query as any)?.bodies;
+    const bodies = bodiesParam === 'none' ? 'none' : bodiesParam === 'chat' ? 'chat' : 'full';
     // stitched=1: merge the session's fragments from every date dir (a
     // conversation that crossed midnight — or whose session id churned) into
     // one chronological timeline. Response carries the per-fragment breakdown.
     const stitched = (req.query as any)?.stitched === '1';
+    // page=1 is the NEWEST window page; older pages count up from there.
+    // Pages are TURN pages (a page never splits a turn's events), bounded by
+    // the read window — history older than the window is export-only.
+    const page = Math.min(Math.max(parseInt((req.query as any)?.page || '1', 10) || 1, 1), 100000);
     const result = stitched
-      ? await captureRecorder.readEventsStitched(date, file, limit, bodies)
-      : await captureRecorder.readEvents(date, file, limit, bodies);
+      ? await captureRecorder.readEventsStitched(date, file, limit, bodies, page)
+      : await captureRecorder.readEvents(date, file, limit, bodies, page);
     if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
       return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
     }
     return { status: 'ok', date, file, ...result };
+  });
+
+  /**
+   * EXACT whole-archive summary: request count (header denominator / pager
+   * total) and the USER-PROMPT ROUND INDEX (prompt + request range) for the
+   * round selector. The events window only knows the tail; this metadata scan
+   * is streamed and never parses request bodies.
+   * Display-only: pagination still follows a bounded read window.
+   */
+  app.get('/api/admin/capture/:date/:file/summary', async (req: any) => {
+    const { date, file } = req.params as { date: string; file: string };
+    const stitched = (req.query as any)?.stitched === '1';
+    const summary = stitched
+      ? await captureRecorder.captureSummaryStitched(date, file)
+      : await captureRecorder.captureSummary(date, file);
+    return { status: 'ok', date, file, ...summary };
   });
 
   /**

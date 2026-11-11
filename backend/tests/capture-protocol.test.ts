@@ -115,6 +115,64 @@ describe('capture-protocol (session-list protocol badge + decision titles)', () 
     assert.equal(turns[0].promptSummary, '评估当前会话语气', 'promptSummary survives bodies=none via the state path');
   });
 
+  it('extractSessionPreview skips a Cursor context bundle and titles the real turn', () => {
+    const bundle = {
+      model: 'm',
+      messages: [
+        {
+          role: 'user',
+          content:
+            '<user_info>\nOS Version: win32 10.0.26200\nWorkspace Path: D:\\Projects\\B\n</user_info>\n\n' +
+            '<rules>\n<always_applied_workspace_rules />\n</rules>\n\n' +
+            '<hooks_context description="x">\n<EXTREMELY_IMPORTANT>postman</EXTREMELY_IMPORTANT>\n</hooks_context>',
+        },
+        { role: 'user', content: '<user_query>\n是谁\n</user_query>' },
+      ],
+    };
+    assert.equal(
+      CaptureRecorder.extractSessionPreview(bundle),
+      '是谁',
+      'the session list names the human turn, not <user_info>'
+    );
+
+    // An UNKNOWN envelope vocabulary needs no list entry: a tag-only message is
+    // skipped by the same structural rule the console title uses.
+    assert.equal(
+      CaptureRecorder.extractSessionPreview({
+        model: 'm',
+        messages: [
+          { role: 'user', content: '<environment_context><cwd>D:\\x</cwd></environment_context>' },
+          { role: 'user', content: '你好' },
+        ],
+      }),
+      '你好'
+    );
+  });
+
+  it('extractTurnPrompt leaves a metadata-only turn unprompted instead of quoting the bundle', () => {
+    assert.equal(
+      CaptureRecorder.extractTurnPrompt({
+        model: 'm',
+        messages: [
+          { role: 'user', content: '<user_info>OS: win32</user_info>' },
+        ],
+      }),
+      undefined,
+      'a context-refresh turn carries no prompt chip'
+    );
+    assert.equal(
+      CaptureRecorder.extractTurnPrompt({
+        model: 'm',
+        messages: [
+          { role: 'assistant', content: 'hi' },
+          { role: 'user', content: '<user_query>\n继续\n</user_query>' },
+        ],
+      }),
+      '继续',
+      'the wrapped human turn is unwrapped'
+    );
+  });
+
   after(() => {
     recorder.stop();
     fs.rmSync(tmp, { recursive: true, force: true });

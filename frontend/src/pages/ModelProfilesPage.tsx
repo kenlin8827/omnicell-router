@@ -127,7 +127,7 @@ const ProfileDialog: React.FC<{
       }
     >
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 6 }}>{t('modelProfiles.profileName')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>{t('modelProfiles.profileName')}</div>
         <input
           className="input"
           value={work.name}
@@ -139,7 +139,7 @@ const ProfileDialog: React.FC<{
       </div>
 
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 6 }}>{t('modelProfiles.slots')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>{t('modelProfiles.slots')}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {work.slots.map((s, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -150,7 +150,7 @@ const ProfileDialog: React.FC<{
                 onChange={e => patchSlot(i, { key: e.target.value })}
                 style={{ width: 160, flexShrink: 0, fontFamily: FONT_MONO }}
               />
-              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>→</span>
+              <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>→</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Combobox
                   value={s.ref}
@@ -184,12 +184,12 @@ const ProfileDialog: React.FC<{
       </div>
 
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 6 }}>{t('modelProfiles.noteLabel')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>{t('modelProfiles.noteLabel')}</div>
         <input className="input" value={work.note} placeholder={t('modelProfiles.notePlaceholder')} onChange={e => patch({ note: e.target.value })} style={{ width: '100%' }} />
       </div>
 
       {warn && (
-        <div style={{ fontSize: 12, color: 'var(--accent-amber)' }}>{t(warn)}</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-amber)' }}>{t(warn)}</div>
       )}
     </Dialog>
   );
@@ -308,12 +308,12 @@ export const ModelProfilesPage: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 16, whiteSpace: 'pre-line' }}>
+      <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', marginBottom: 16, whiteSpace: 'pre-line' }}>
         {t('modelProfiles.hint')}
       </div>
 
       {profiles.length === 0 ? (
-        <div style={{ padding: '30px 0', textAlign: 'left', color: 'var(--text-dim)', fontSize: 13 }}>{t('modelProfiles.empty')}</div>
+        <div style={{ padding: '30px 0', textAlign: 'left', color: 'var(--text-dim)', fontSize: 'var(--text-md)' }}>{t('modelProfiles.empty')}</div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
           {profiles.map((p, idx) => {
@@ -321,22 +321,22 @@ export const ModelProfilesPage: React.FC = () => {
             return (
               <div key={idx} style={{ background: 'var(--bg-elev)', border: '1px solid var(--card-border)', borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700 }} title={p.name ? p.id : undefined}>{p.name || p.id}</div>
+                  <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }} title={p.name ? p.id : undefined}>{p.name || p.id}</div>
                   <span style={{ flex: 1 }} />
                   <button className="btn btn-sm" title={t('modelProfiles.edit')} onClick={() => setEditing({ draft: p, index: idx })}><Pencil size={12} /></button>
                   <button className="btn btn-sm btn-danger" title={t('modelProfiles.delete')} onClick={() => handleDelete(idx)} disabled={saving}><Trash2 size={12} /></button>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {p.slots.map((s, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontFamily: FONT_MONO }}>
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}>
                       <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>{s.key}</span>
                       <span style={{ color: 'var(--text-dim)' }}>→</span>
                       <span style={{ color: 'var(--text-main)' }}>{s.ref}</span>
                     </div>
                   ))}
                 </div>
-                {p.note && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{p.note}</div>}
-                {warnKey && <div style={{ fontSize: 11, color: 'var(--accent-amber)' }}>{t(warnKey)}</div>}
+                {p.note && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{p.note}</div>}
+                {warnKey && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t(warnKey)}</div>}
               </div>
             );
           })}

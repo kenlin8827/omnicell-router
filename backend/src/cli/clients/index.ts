@@ -9,7 +9,11 @@ import { GrokClientAdapter } from './grok.js';
 import { OmpClientAdapter } from './omp.js';
 import { KimiClientAdapter } from './kimi.js';
 import { OpenClawClientAdapter } from './openclaw.js';
+import { CursorProxyClientAdapter } from './cursor-proxy.js';
+import { QoderProxyClientAdapter } from './qoder-proxy.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
+import { popularityRank } from '../../utils/popularity.js';
+import { compareVersions } from '../../utils/semver.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
   opencode: new OpenCodeClientAdapter(),
@@ -22,7 +26,17 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   grok: new GrokClientAdapter(),
   kimi: new KimiClientAdapter(),
   openclaw: new OpenClawClientAdapter(),
+  'cursor-proxy': new CursorProxyClientAdapter(),
+  'qoder-proxy': new QoderProxyClientAdapter(),
 };
+
+/** One-click roster order — the same popularity rank the harness rail uses (ADR-0015). */
+const ORDERED_ADAPTERS = Object.values(adapters).sort(
+  (a, b) => popularityRank(a.name) - popularityRank(b.name)
+);
+
+/** CLI usage hint: every target, most popular first. */
+export const CLIENT_TARGETS = ORDERED_ADAPTERS.map((adapter) => adapter.name).join(' | ');
 
 export function getClientAdapter(name: string): ClientAdapter | null {
   const normalized = name.toLowerCase().trim() as SupportedClient;
@@ -30,7 +44,7 @@ export function getClientAdapter(name: string): ClientAdapter | null {
 }
 
 export function getAllClientAdapters(): ClientAdapter[] {
-  return Object.values(adapters);
+  return [...ORDERED_ADAPTERS];
 }
 
 export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
@@ -47,20 +61,9 @@ export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
           };
         }
       }
-      return status;
+      return { ...status, hookKind: adapter.hookKind };
     })
   );
-}
-
-/** Semver-ish three-segment compare; missing segments count as 0. */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d !== 0) return d;
-  }
-  return 0;
 }
 
 export async function setupClient(

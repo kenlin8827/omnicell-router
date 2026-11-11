@@ -22,6 +22,10 @@ import type { StreamRoutingFacts } from '../utils/chat-stream.js';
  * result (chat / anthropic / responses wires share this exact set).
  *
  * Conditional additions:
+ * - X-OCR-TTFT-MS / X-OCR-Gen-MS: only when the committed attempt streamed.
+ *   They expose the gateway-measured TTFT (process start → first forwarded
+ *   chunk) and decode window (first chunk → stream end) so a client can
+ *   compute the same decode-TPS the console shows. Buffered turns omit both.
  * - X-OCR-Thinking-{Requested,Actual,Degraded}: only when the client asked
  *   for reasoning effort (`requestedEffort` set and not 'none'). Lets the
  *   caller verify whether they got the level requested or were silently
@@ -51,6 +55,11 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     'X-OCR-Trace-ID': result.traceId || '',
     'X-OCR-Latency-MS': (result.latencyMs ?? 0).toString(),
   };
+  // TTFT/TPS split: emitted ONLY when the committed attempt actually streamed.
+  // A buffered turn has no decode window, so both keys stay absent and a client
+  // (the playground, a capture tool) renders '—' instead of a synthetic rate.
+  if (result.ttftMs !== undefined) headers['X-OCR-TTFT-MS'] = result.ttftMs.toString();
+  if (result.genMs !== undefined) headers['X-OCR-Gen-MS'] = result.genMs.toString();
   if (result.requestedEffort && result.requestedEffort !== 'none') {
     headers['X-OCR-Thinking-Requested'] = result.requestedEffort;
     headers['X-OCR-Thinking-Actual'] = result.actualEffort ?? result.requestedEffort;

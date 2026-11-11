@@ -10,7 +10,7 @@
  * is known.
  */
 
-export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
+export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'unroutable';
 
 /**
  * Npm packages that need SDK-side URL construction or request signing beyond a
@@ -50,6 +50,13 @@ const OPENCODE_V2_SEGMENT_WIRES: Record<string, WireKind> = {
   // NoSuchModelError — so this wire serves the /v1/systemone decision surface
   // natively and is NEVER a chat-pool member (ADR-0008 §7).
   typesafe: 'systemone',
+  // Vendored Qoder wire (model-service plugin) — the def's baseURL is the
+  // service gateway; the transport details live inside the plugin.
+  qoder: 'qoder',
+  // Vendored WorkBuddy wire (model-service plugin) — the def's baseURL is the
+  // platform origin (region = which origin); the transport details (Bearer
+  // auth, forced stream, system-first normalization) live inside the plugin.
+  workbuddy: 'workbuddy',
 };
 
 /** opencode v2 package segment of an npm string, or null when it is not opencode-v2 shaped. */
@@ -81,6 +88,8 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
     }
     if (isUnroutable(n)) return 'unroutable';
     if (n.includes('typesafe')) return 'systemone';
+    if (n.includes('qoder')) return 'qoder';
+    if (n.includes('workbuddy')) return 'workbuddy';
     if (n.includes('anthropic')) return 'anthropic';
     if (n.includes('google')) return 'google';
     // `@ai-sdk/openai` (NOT -compatible) = OpenAI Responses API wire.
@@ -89,6 +98,8 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
   }
   const a = (baseHint || '').toLowerCase();
   if (a.includes('anthropic')) return 'anthropic';
+  if (a.includes('qoder.sh') || a.includes('qoder.com.cn')) return 'qoder';
+  if (a.includes('copilot.tencent.com') || a.includes('workbuddy.ai')) return 'workbuddy';
   if (a.includes('google')) return 'google';
   return 'openai';
 }
@@ -106,17 +117,6 @@ export function unroutableInfo(npm?: string): { code: UnroutableCode; npm: strin
     if (known === undefined) return { code: 'unknownPackage', npm: npm || '' };
   }
   return { code: 'dedicatedTransport', npm: npm || '' };
-}
-
-/** Human-readable exclusion reason for console/logs when a wire is unroutable.
- * @deprecated i18n residue — the boot-direct exclusion surface still renders
- * this Chinese text on /tiers. Migrate to unroutableInfo codes + t() there,
- * then delete. */
-export function unroutableReason(npm?: string): string {
-  const { code, npm: n } = unroutableInfo(npm);
-  return code === 'unknownPackage'
-    ? `无法识别的 opencode v2 SDK 包名（${n || '未知 package'}），网关直连暂不支持（显式不可路由）`
-    : `该 provider 的 SDK 包需要专用端点构造/签名（${n || '未知 npm'}），网关直连暂不支持（显式不可路由）`;
 }
 
 /**

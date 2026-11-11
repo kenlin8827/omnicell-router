@@ -597,7 +597,7 @@ export const RulesPage: React.FC = () => {
     toast.success(t('tierPolicy.removedFromExclude'));
   };
 
-  const labelStyle = { fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' } as const;
+  const labelStyle = { fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' } as const;
 
   const modalTierMeta = poolModalTier ? TIERS.find((x) => x.key === poolModalTier) : undefined;
   const modalPoolSet = poolModalTier ? (poolMode === 'live' ? poolsLive[poolModalTier] : pools[poolModalTier]) : undefined;
@@ -653,7 +653,7 @@ export const RulesPage: React.FC = () => {
               <button
                 key={navTier}
                 className="btn"
-                style={{ padding: '4px 10px', fontSize: '11px', color: navColor }}
+                style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', color: navColor }}
                 onClick={() => document.getElementById(`tier-card-${navTier}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               >
                 <NavIcon size={12} />
@@ -666,10 +666,10 @@ export const RulesPage: React.FC = () => {
             save-all right (deliberately out of the nav-chip row: navigation
             and "commit everything" are different intents). */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginTop: '8px' }}>
-          <p style={{ flex: 1, fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0, whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
+          <p style={{ flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: 0, whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
           <button
             className="btn btn-primary"
-            style={{ padding: '5px 14px', fontSize: '11px', flexShrink: 0, marginTop: '2px' }}
+            style={{ padding: '5px 14px', fontSize: 'var(--text-xs)', flexShrink: 0, marginTop: '2px' }}
             disabled={loading || savingAll}
             onClick={() => void saveAll()}
           >
@@ -677,7 +677,7 @@ export const RulesPage: React.FC = () => {
             <span>{savingAll ? t('common.loading') : t('tierPolicy.saveAllBtn')}</span>
           </button>
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '6px' }}>{t('tierPolicy.defaultsHint')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '6px' }}>{t('tierPolicy.defaultsHint')}</div>
       </div>
 
       {/* One policy card per tier. This grid is the page's INTERNAL scroll
@@ -733,7 +733,7 @@ export const RulesPage: React.FC = () => {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 700, color }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color }}>
                   <Icon size={16} />
                   <span>{t(labelKey)}</span>
                 </div>
@@ -742,7 +742,7 @@ export const RulesPage: React.FC = () => {
                     <span
                       style={{
                         fontFamily: FONT_MONO,
-                        fontSize: '10px',
+                        fontSize: 'var(--text-2xs)',
                         whiteSpace: 'nowrap',
                         color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                       }}
@@ -761,7 +761,7 @@ export const RulesPage: React.FC = () => {
                   )}
                   <button
                     className="btn btn-sm"
-                    style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
+                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
                     title={t('tierPolicy.testBtnHint')}
                     disabled={isTesting}
                     onClick={() => void handleTierTest(tier)}
@@ -771,7 +771,7 @@ export const RulesPage: React.FC = () => {
                   </button>
                   <button
                     className="btn btn-primary"
-                    style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
+                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
                     disabled={savingTier !== null || loading}
                     onClick={() => void saveTier(tier)}
                   >
@@ -788,9 +788,9 @@ export const RulesPage: React.FC = () => {
               <div
                 data-tip={t(descKey)}
                 style={{
-                  fontSize: '11px',
+                  fontSize: 'var(--text-xs)',
                   color: 'var(--text-dim)',
-                  lineHeight: 1.5,
+                  lineHeight: 'var(--leading-snug)',
                   marginTop: '-6px',
                   minHeight: '17px',
                   overflow: 'hidden',
@@ -814,7 +814,7 @@ export const RulesPage: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                   <label style={{ ...labelStyle, marginBottom: 0 }}>{t('tierPolicy.membersTitle')}</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                    <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
                     {f.members.length > 0 && (
                       <button
                         className="btn"
@@ -835,7 +835,7 @@ export const RulesPage: React.FC = () => {
                 <input
                   type="text"
                   className="input"
-                  style={{ marginTop: '6px', fontSize: '11px', padding: '4px 8px' }}
+                  style={{ marginTop: '6px', fontSize: 'var(--text-xs)', padding: '4px 8px' }}
                   placeholder={t('tierPolicy.filterPlaceholder')}
                   value={memberFilters[tier]}
                   onChange={(e) => setMemberFilters((prev) => ({ ...prev, [tier]: e.target.value }))}
@@ -932,7 +932,7 @@ export const RulesPage: React.FC = () => {
                             style={{
                               minWidth: '22px',
                               flexShrink: 0,
-                              fontSize: '10px',
+                              fontSize: 'var(--text-2xs)',
                               fontFamily: FONT_MONO,
                               color: 'var(--text-dim)',
                               textAlign: 'right',
@@ -950,8 +950,8 @@ export const RulesPage: React.FC = () => {
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                             fontFamily: FONT_MONO,
-                            fontSize: '12px',
-                            fontWeight: 600,
+                            fontSize: 'var(--text-sm)',
+                            fontWeight: 'var(--font-semibold)',
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 6,
@@ -960,8 +960,8 @@ export const RulesPage: React.FC = () => {
                           {isComboRef && (
                             <span
                               style={{
-                                fontSize: 9.5,
-                                fontWeight: 700,
+                                fontSize: 'var(--text-2xs)',
+                                fontWeight: 'var(--font-bold)',
                                 flexShrink: 0,
                                 padding: '0 6px',
                                 borderRadius: 999,
@@ -983,14 +983,14 @@ export const RulesPage: React.FC = () => {
                             step={1}
                             className="input"
                             data-tip={t('tierPolicy.memberWeightHint')}
-                            style={{ width: '52px', padding: '3px 6px', fontSize: '11px', textAlign: 'center', flexShrink: 0 }}
+                            style={{ width: '52px', padding: '3px 6px', fontSize: 'var(--text-xs)', textAlign: 'center', flexShrink: 0 }}
                             value={m.weight ?? 1}
                             onChange={(e) => updateWeight(tier, i, e.target.value)}
                           />
                         )}
                         <button
                           className="btn"
-                          style={{ padding: '2px 8px', fontSize: '10px', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                          style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
                           data-tip={t('tierPolicy.effortMapHint')}
                           onClick={() => setMapTarget({ tier, index: i })}
                         >
@@ -1037,7 +1037,7 @@ export const RulesPage: React.FC = () => {
                     });
                   })()}
                   {f.members.length > 0 && visibleMembers(tier).length === 0 && (
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('common.noResults')}</div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('common.noResults')}</div>
                   )}
                 </div>
                 {/* Picker first (high-frequency, error-proof path), manual
@@ -1053,13 +1053,13 @@ export const RulesPage: React.FC = () => {
                   placeholder={t('tierPolicy.pickModelBtn')}
                   panelMinWidth={320}
                   forceFilter
-                  style={{ width: '100%', fontSize: '11px', padding: '4px 8px', marginTop: '6px' }}
+                  style={{ width: '100%', fontSize: 'var(--text-xs)', padding: '4px 8px', marginTop: '6px' }}
                 />
                 <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
                   <input
                     type="text"
                     className="input"
-                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: '11px', padding: '4px 8px' }}
+                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', padding: '4px 8px' }}
                     placeholder={t('tierPolicy.addMemberPlaceholder')}
                     value={memberDrafts[tier]}
                     onChange={(e) => setMemberDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
@@ -1070,12 +1070,12 @@ export const RulesPage: React.FC = () => {
                       }
                     }}
                   />
-                  <button className="btn" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => addMember(tier)}>
+                  <button className="btn" style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }} onClick={() => addMember(tier)}>
                     <Plus size={11} />
                     <span>{t('tierPolicy.addMemberBtn')}</span>
                   </button>
                 </div>
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.5, marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
+                <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)', marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
               </div>
 
               {/* Selection strategy (weight comes from the member rules) */}
@@ -1089,7 +1089,7 @@ export const RulesPage: React.FC = () => {
                       className="btn"
                       aria-pressed={f.selection === s}
                       style={{
-                        fontSize: '11px',
+                        fontSize: 'var(--text-xs)',
                         padding: '5px 8px',
                         flex: 1,
                         // Selected = accent-tinted outline, not a primary fill:
@@ -1103,7 +1103,7 @@ export const RulesPage: React.FC = () => {
                     </button>
                   ))}
                 </div>
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
+                <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
               </div>
 
               {/* Candidate pool summary → opens the detail modal.
@@ -1122,7 +1122,7 @@ export const RulesPage: React.FC = () => {
               >
                 <span
                   style={{
-                    fontSize: '11px',
+                    fontSize: 'var(--text-xs)',
                     color: poolsError ? 'var(--accent-rose)' : 'var(--text-dim)',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -1137,7 +1137,7 @@ export const RulesPage: React.FC = () => {
                       ? `${t('tierPolicy.poolTitle')} ${poolInfo.pool.length} · ${t('tierPolicy.excludedTitle')} ${poolInfo.excluded.length}`
                       : `${t('tierPolicy.poolTitle')} …`}
                 </span>
-                <button className="btn" style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }} onClick={() => openPoolModal(tier)}>
+                <button className="btn" style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }} onClick={() => openPoolModal(tier)}>
                   <Eye size={11} />
                   <span>{t('tierPolicy.viewPool')}</span>
                 </button>
@@ -1179,7 +1179,7 @@ export const RulesPage: React.FC = () => {
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-                <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <h3 style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   {modalTierMeta && <modalTierMeta.icon size={15} color={modalTierMeta.color} />}
                   <span>
                     {modalTierMeta ? t(modalTierMeta.labelKey) : ''} ·{' '}
@@ -1200,12 +1200,12 @@ export const RulesPage: React.FC = () => {
                           else void loadPools();
                         }}
                         className={poolMode === m ? 'btn btn-primary' : 'btn'}
-                        style={{ padding: '2px 10px', fontSize: '11px', borderRadius: 4 }}
+                        style={{ padding: '2px 10px', fontSize: 'var(--text-xs)', borderRadius: 4 }}
                         data-tip={t(m === 'preview' ? 'tierPolicy.poolTabPreviewHint' : 'tierPolicy.poolTabLiveHint')}
                       >
                         {t(m === 'preview' ? 'tierPolicy.poolTabPreview' : 'tierPolicy.poolTabLive')}
                         {poolMode === m && poolsLoadingMode === m && (
-                          <span style={{ marginLeft: 6, fontSize: 9, animation: 'ocr-spin 0.9s linear infinite', display: 'inline-block' }}>↻</span>
+                          <span style={{ marginLeft: 6, fontSize: 'var(--text-3xs)', animation: 'ocr-spin 0.9s linear infinite', display: 'inline-block' }}>↻</span>
                         )}
                       </button>
                     ))}
@@ -1213,7 +1213,7 @@ export const RulesPage: React.FC = () => {
                   {(() => {
                     const at = poolMode === 'live' ? poolsLiveAt : poolsAt;
                     return at ? (
-                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+                      <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                         {t('tierPolicy.refreshedAt')} {new Date(at).toLocaleTimeString()}
                       </span>
                     ) : null;
@@ -1222,7 +1222,7 @@ export const RulesPage: React.FC = () => {
                     <span
                       data-tip={`${t('tierPolicy.poolTitle')} ${modalPool.pool.length} · ${t('tierPolicy.excludedTitle')} ${modalPool.excluded.length}`}
                       style={{
-                        fontSize: '10px',
+                        fontSize: 'var(--text-2xs)',
                         color: 'var(--text-dim)',
                         fontFamily: FONT_MONO,
                         padding: '2px 8px',
@@ -1239,7 +1239,7 @@ export const RulesPage: React.FC = () => {
                   )}
                   <button
                     className="btn"
-                    style={{ padding: '3px 10px', fontSize: '11px', opacity: poolsLoadingMode === poolMode ? 0.7 : 1 }}
+                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', opacity: poolsLoadingMode === poolMode ? 0.7 : 1 }}
                     data-tip={t('tierPolicy.refreshHint')}
                     disabled={poolsLoadingMode !== null}
                     onClick={() => void (poolMode === 'live' ? loadLivePools() : loadPools())}
@@ -1252,7 +1252,7 @@ export const RulesPage: React.FC = () => {
                   </button>
                   <button
                     onClick={() => setPoolModalTier(null)}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer' }}
                   >
                     ✕
                   </button>
@@ -1267,7 +1267,7 @@ export const RulesPage: React.FC = () => {
                 <input
                   type="text"
                   className="input"
-                  style={{ paddingLeft: '30px', fontSize: '12px' }}
+                  style={{ paddingLeft: '30px', fontSize: 'var(--text-sm)' }}
                   placeholder={t('tierPolicy.poolSearch')}
                   value={poolFilter}
                   onChange={(e) => setPoolFilter(e.target.value)}
@@ -1282,7 +1282,7 @@ export const RulesPage: React.FC = () => {
                     background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)',
                     border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)',
                     color: 'var(--accent-rose)',
-                    fontSize: '12px',
+                    fontSize: 'var(--text-sm)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
@@ -1296,7 +1296,7 @@ export const RulesPage: React.FC = () => {
                   </span>
                   <button
                     className="btn"
-                    style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
+                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
                     disabled={poolsLoadingMode !== null}
                     onClick={() => void loadPools()}
                   >
@@ -1305,7 +1305,7 @@ export const RulesPage: React.FC = () => {
                   </button>
                 </div>
               ) : !modalPool ? (
-                <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
               ) : (
                 <>
                   {/* List header — pure flow sibling of the scroll container,
@@ -1317,8 +1317,8 @@ export const RulesPage: React.FC = () => {
                       gap: '10px',
                       padding: '4px 8px',
                       borderBottom: '1px solid var(--divider)',
-                      fontSize: '10px',
-                      fontWeight: 700,
+                      fontSize: 'var(--text-2xs)',
+                      fontWeight: 'var(--font-bold)',
                       color: 'var(--text-dim)',
                       flexShrink: 0,
                     }}
@@ -1339,7 +1339,7 @@ export const RulesPage: React.FC = () => {
                     style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
                   >
                     {modalVisiblePool.length === 0 ? (
-                      <div style={{ padding: '10px 8px', fontSize: '12px', color: 'var(--accent-rose)' }}>
+                      <div style={{ padding: '10px 8px', fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>
                         {modalQ ? t('common.noResults') : t('tierPolicy.poolEmpty')}
                       </div>
                     ) : (
@@ -1364,7 +1364,7 @@ export const RulesPage: React.FC = () => {
                                 gap: '10px',
                                 padding: '6px 8px',
                                 borderBottom: '1px solid var(--divider)',
-                                fontSize: '12px',
+                                fontSize: 'var(--text-sm)',
                                 height: ROW_H,
                                 boxSizing: 'border-box',
                               }}
@@ -1389,7 +1389,7 @@ export const RulesPage: React.FC = () => {
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
                                   fontFamily: FONT_MONO,
-                                  fontWeight: 600,
+                                  fontWeight: 'var(--font-semibold)',
                                 }}
                               >
                                 {m.id}
@@ -1398,7 +1398,7 @@ export const RulesPage: React.FC = () => {
                                 <span
                                   style={{
                                     flexShrink: 0,
-                                    fontSize: 9,
+                                    fontSize: 'var(--text-3xs)',
                                     padding: '1px 5px',
                                     borderRadius: 999,
                                     border: '1px solid var(--accent)',
@@ -1413,11 +1413,11 @@ export const RulesPage: React.FC = () => {
                               </span>
                               <span style={{ width: 172, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
                                 {splitPatterns(globalExclude).includes(m.id) ? (
-                                  <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.alreadyExcluded')}</span>
+                                  <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('tierPolicy.alreadyExcluded')}</span>
                                 ) : (
                                   <button
                                     className="btn"
-                                    style={{ padding: '2px 8px', fontSize: '10px' }}
+                                    style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)' }}
                                     data-tip={t('tierPolicy.excludeBtnHint')}
                                     onClick={() => addToExclude(m.id)}
                                   >
@@ -1442,7 +1442,7 @@ export const RulesPage: React.FC = () => {
                       justifyContent: 'space-between',
                       alignItems: 'center',
                       padding: '4px 10px',
-                      fontSize: '10px',
+                      fontSize: 'var(--text-2xs)',
                       fontFamily: FONT_MONO,
                       color: 'var(--text-dim)',
                       borderTop: '1px solid var(--divider)',
@@ -1475,8 +1475,8 @@ export const RulesPage: React.FC = () => {
                         data-tip={t('tierPolicy.excludedSectionHint')}
                         style={{
                           cursor: 'pointer',
-                          fontSize: '11px',
-                          fontWeight: 700,
+                          fontSize: 'var(--text-xs)',
+                          fontWeight: 'var(--font-bold)',
                           color: 'var(--accent-rose)',
                           userSelect: 'none',
                           padding: '6px 10px',
@@ -1488,7 +1488,7 @@ export const RulesPage: React.FC = () => {
                           listStyle: 'none',
                         }}
                       >
-                        <span aria-hidden style={{ fontSize: '9px', width: 10, display: 'inline-block' }}>▼</span>
+                        <span aria-hidden style={{ fontSize: 'var(--text-3xs)', width: 10, display: 'inline-block' }}>▼</span>
                         {t('tierPolicy.excludedTitle')} ({modalVisibleExcluded.length})
                       </summary>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '6px', padding: '0 8px 8px' }}>
@@ -1499,7 +1499,7 @@ export const RulesPage: React.FC = () => {
                             data-tip={t('tierPolicy.excludedReasonHint', { reason: t(REASON_LABEL_KEY[e.reason] || e.reason) })}
                             onClick={() => removeFromExclude(e.id)}
                             style={{
-                              fontSize: '10px',
+                              fontSize: 'var(--text-2xs)',
                               padding: '2px 4px 2px 7px',
                               borderRadius: 6,
                               background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)',
@@ -1516,8 +1516,8 @@ export const RulesPage: React.FC = () => {
                             <span
                               aria-hidden
                               style={{
-                                fontSize: '11px',
-                                lineHeight: 1,
+                                fontSize: 'var(--text-xs)',
+                                lineHeight: 'var(--leading-none)',
                                 padding: '0 3px',
                                 borderRadius: 4,
                                 background: 'color-mix(in srgb, var(--accent-rose) 25%, transparent)',
@@ -1581,17 +1581,17 @@ export const RulesPage: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                  <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                  <h3 style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', margin: 0 }}>
                     {t('tierPolicy.effortMapEditTitle')}
                   </h3>
                   <button
                     onClick={() => setMapTarget(null)}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer', lineHeight: 1, flexShrink: 0 }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer', lineHeight: 'var(--leading-none)', flexShrink: 0 }}
                   >
                     ✕
                   </button>
                 </div>
-                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t('tierPolicy.effortMapHint')}</div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('tierPolicy.effortMapHint')}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {/* Table header band: left = owning tier, right = model id
                       (moved here from the dialog title so the header carries
@@ -1612,8 +1612,8 @@ export const RulesPage: React.FC = () => {
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '5px',
-                        fontSize: '12px',
-                        fontWeight: 700,
+                        fontSize: 'var(--text-sm)',
+                        fontWeight: 'var(--font-bold)',
                         color: tierMeta.color,
                         overflow: 'hidden',
                         whiteSpace: 'nowrap',
@@ -1627,7 +1627,7 @@ export const RulesPage: React.FC = () => {
                       data-tip={row.pattern}
                       style={{
                         fontFamily: FONT_MONO,
-                        fontSize: '11px',
+                        fontSize: 'var(--text-xs)',
                         color: 'var(--text-muted)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
@@ -1646,12 +1646,12 @@ export const RulesPage: React.FC = () => {
                         data-tip={t(`op.${EFFORT_I18N_KEY[lvl]}`)}
                         style={{ width: '78px', flexShrink: 0, display: 'flex', alignItems: 'baseline', gap: '4px', overflow: 'hidden' }}
                       >
-                        <span style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-sm)', color: 'var(--text-muted)', flexShrink: 0 }}>
                           {lvl}
                         </span>
                         <span
                           style={{
-                            fontSize: '10px',
+                            fontSize: 'var(--text-2xs)',
                             color: 'var(--text-dim)',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
@@ -1666,7 +1666,7 @@ export const RulesPage: React.FC = () => {
                         value={row.effortMap[lvl] ?? ''}
                         onChange={(v) => updateEffortMap(mapTarget.tier, mapTarget.index, lvl, v)}
                         options={targetOptions}
-                        style={{ width: '100%', fontSize: '12px', padding: '5px 10px' }}
+                        style={{ width: '100%', fontSize: 'var(--text-sm)', padding: '5px 10px' }}
                         panelMinWidth={170}
                       />
                     </div>
@@ -1675,13 +1675,13 @@ export const RulesPage: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '4px' }}>
                   <button
                     className="btn"
-                    style={{ padding: '5px 12px', fontSize: '11px' }}
+                    style={{ padding: '5px 12px', fontSize: 'var(--text-xs)' }}
                     onClick={() => clearEffortMap(mapTarget.tier, mapTarget.index)}
                   >
                     <X size={11} />
                     <span>{t('tierPolicy.clearEffortMap')}</span>
                   </button>
-                  <button className="btn btn-primary" style={{ padding: '5px 14px', fontSize: '11px' }} onClick={() => setMapTarget(null)}>
+                  <button className="btn btn-primary" style={{ padding: '5px 14px', fontSize: 'var(--text-xs)' }} onClick={() => setMapTarget(null)}>
                     {t('common.confirm')}
                   </button>
                 </div>
@@ -1723,18 +1723,18 @@ export const RulesPage: React.FC = () => {
               onClick={(e) => e.stopPropagation()}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>{t('tierPolicy.saveCheckTitle')}</h3>
+                <h3 style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', margin: 0 }}>{t('tierPolicy.saveCheckTitle')}</h3>
                 <button
                   onClick={() => setSaveWarnings(null)}
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer', lineHeight: 'var(--leading-none)' }}
                 >
                   ✕
                 </button>
               </div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('tierPolicy.saveCheckIntro')}</div>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{t('tierPolicy.saveCheckIntro')}</div>
               <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {saveWarnings.map((w, i) => (
-                  <li key={i} style={{ fontSize: '12px', color: 'var(--accent-amber, var(--accent))', lineHeight: 1.5 }}>
+                  <li key={i} style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-amber, var(--accent))', lineHeight: 'var(--leading-snug)' }}>
                     {w.kind === 'deadCombo'
                       ? t('tierPolicy.saveCheckDeadCombo', { tier: w.tier ?? '', combo: (w.pattern ?? '').slice('combo:'.length) })
                       : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
@@ -1742,12 +1742,12 @@ export const RulesPage: React.FC = () => {
                 ))}
               </ul>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
-                <button className="btn" style={{ padding: '5px 14px', fontSize: '12px' }} onClick={() => setSaveWarnings(null)}>
+                <button className="btn" style={{ padding: '5px 14px', fontSize: 'var(--text-sm)' }} onClick={() => setSaveWarnings(null)}>
                   {t('tierPolicy.saveCheckBack')}
                 </button>
                 <button
                   className="btn btn-primary"
-                  style={{ padding: '5px 14px', fontSize: '12px' }}
+                  style={{ padding: '5px 14px', fontSize: 'var(--text-sm)' }}
                   onClick={() => {
                     const tier = pendingSaveTier;
                     const all = pendingSaveAll;

@@ -1,59 +1,36 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutGrid,
-  Network,
-  KeyRound,
-  MonitorSmartphone,
-  ShieldAlert,
-  Users,
-  Sliders,
-  FileCode2,
-  Search,
-  ChevronDown,
-  RotateCcw,
-  Globe,
-  Plug,
-  Cpu,
-  CloudDownload,
-  ArrowLeftRight,
-  Zap,
-  Activity,
-  Shuffle,
-  Waypoints,
-  BrainCircuit,
-  Layers,
-  ClipboardList,
-  ArrowDownLeft,
-  ArrowUpRight,
-  LogOut,
-  ShieldCheck,
-  Waves,
-  BarChart3,
-  Settings,
-  ScrollText,
-  Archive,
-  FolderCog,
-  Boxes,
-  Settings2,
-  Gauge,
-  Wallet,
-  AlertOctagon,
-  MessagesSquare,
-  type LucideIcon,
+  Activity, AlertOctagon, Archive, ArrowLeftRight,
+  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, ClipboardList, CloudDownload, Cpu,
+  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
+  MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
+  Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
+  ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
 } from 'lucide-react';
-import { api, type GatewayStatusResponse } from '../lib/api';
+import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../lib/api';
 import { gatewayBaseUrl } from '../lib/gateway-url';
-import { resolveStoredTheme, THEME_STORAGE_KEY, type ThemeId } from '../lib/theme';
+import { resolveStoredTheme, resolveThemePreference, THEME_STORAGE_KEY, type ThemePreference } from '../lib/theme';
+import { readNavPreference, NAV_STYLE_CHANGED_EVENT, type NavPreference } from '../lib/navStyle';
+import { nextRecentRoutes, readRecentRoutes, writeRecentRoutes } from '../lib/navRecent';
 import { useI18n } from '../i18n/I18nContext';
 import { LANGUAGES } from '../i18n/languages';
 import type { Lang } from '../i18n/types';
-import { useConfirm } from '../components/ConfirmProvider';
-import { useToast } from '../components/ToastProvider';
+import { useConfirm } from './ConfirmProvider';
+import { useToast } from './ToastProvider';
 import { Combobox } from './Combobox';
 import { QuotaPeek } from './QuotaPeek';
+import { CommandPalette, type CommandItem } from './CommandPalette';
+import { UpdateBanner } from './UpdateBanner';
+import { WindowControls } from './WindowControls';
+import { DownloadCenter } from './DownloadCenter';
+import { copyToClipboard } from '../lib/clipboard';
+import { GITHUB_REPO_URL } from '../lib/links';
+import { STAR_REMINDER_CHANGED_EVENT, isStarNudgeDone } from '../lib/starReminder';
 
-import { FONT_MONO } from '../lib/fonts';
+/** Latest release the operator dismissed; a NEWER release prompts again. */
+const UPDATE_DISMISSED_KEY = 'ocr_update_dismissed_version';
+
 interface NavItemDef {
   to: string;
   labelKey: string;
@@ -65,97 +42,60 @@ interface NavItemDef {
 interface NavGroupDef {
   id: string;
   headingKey: string;
+  /** 11px caption under the rail glyph when the operator turns captions on;
+   *  short on purpose (long headings ellipsize at 76px). */
+  shortKey: string;
   icon: LucideIcon;
   items: NavItemDef[];
 }
 
 const NAV_GROUP_DEFS: NavGroupDef[] = [
-  {
-    id: 'grp-overview',
-    headingKey: 'nav.grpOverview',
-    icon: Activity,
-    items: [
-      { to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true },
-    ],
-  },
-  {
-    id: 'grp-access',
-    headingKey: 'nav.grpAccess',
-    icon: ArrowDownLeft,
-    items: [
-      { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
-      { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
-      { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
-      { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
-    ],
-  },
-  {
-    id: 'grp-upstream',
-    headingKey: 'nav.grpUpstream',
-    icon: ArrowUpRight,
-    items: [
-      { to: '/providers', labelKey: 'nav.providers', icon: Plug },
-      { to: '/models', labelKey: 'nav.models', icon: Cpu },
-      { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
-      { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
-      { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
-    ],
-  },
-  {
-    id: 'grp-traffic',
-    headingKey: 'nav.grpTraffic',
-    icon: Shuffle,
-    items: [
-      { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-      { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
-      { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
-      { to: '/combos', labelKey: 'nav.combos', icon: Layers },
-      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
-    ],
-  },
-  {
-    id: 'grp-safety',
-    headingKey: 'nav.grpSafety',
-    icon: ShieldCheck,
-    items: [
-      { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
-      { to: '/breaker-rules', labelKey: 'nav.breakerRules', icon: Settings2 },
-    ],
-  },
-  {
-    id: 'grp-observability',
-    headingKey: 'nav.grpObservability',
-    icon: Waves,
-    items: [
-      { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
-      { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
-      { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
-      { to: '/rate-limit', labelKey: 'nav.rateLimit', icon: Gauge },
-      { to: '/failures', labelKey: 'nav.failures', icon: AlertOctagon },
-      { to: '/captures', labelKey: 'nav.captures', icon: Archive },
-      { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
-    ],
-  },
-  {
-    id: 'grp-harness',
-    headingKey: 'nav.grpHarness',
-    icon: Boxes,
-    items: [
-      { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
-      { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
-      { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
-    ],
-  },
-  {
-    id: 'grp-system',
-    headingKey: 'nav.grpSystem',
-    icon: Settings,
-    items: [
-      { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
-      { to: '/settings', labelKey: 'nav.settings', icon: Sliders },
-      { to: '/yaml', labelKey: 'nav.yaml', icon: FileCode2 },
-    ],
-  },
+  { id: 'grp-overview', headingKey: 'nav.grpOverview', shortKey: 'nav.shortOverview', icon: Activity,
+    items: [{ to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true }] },
+  { id: 'grp-access', headingKey: 'nav.grpAccess', shortKey: 'nav.shortAccess', icon: Cable, items: [
+    { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
+    { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
+    { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
+    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
+  ] },
+  { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: Server, items: [
+    { to: '/providers', labelKey: 'nav.providers', icon: Plug },
+    { to: '/models', labelKey: 'nav.models', icon: Cpu },
+    { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
+    { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+    { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
+  ] },
+  { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
+    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
+    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
+    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+    { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+    { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
+  ] },
+  { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
+    { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
+    { to: '/breaker-rules', labelKey: 'nav.breakerRules', icon: Timer },
+  ] },
+  { id: 'grp-observability', headingKey: 'nav.grpObservability', shortKey: 'nav.shortObservability', icon: Waves, items: [
+    { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
+    { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
+    { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
+    { to: '/rate-limit', labelKey: 'nav.rateLimit', icon: Gauge },
+    { to: '/failures', labelKey: 'nav.failures', icon: AlertOctagon },
+    { to: '/captures', labelKey: 'nav.captures', icon: Archive },
+    { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
+  ] },
+  { id: 'grp-harness', headingKey: 'nav.grpHarness', shortKey: 'nav.shortHarness', icon: Boxes, items: [
+    { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
+    { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
+    { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
+  ] },
+  { id: 'grp-system', headingKey: 'nav.grpSystem', shortKey: 'nav.shortSystem', icon: Settings, items: [
+    { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
+    { to: '/settings', labelKey: 'nav.settings', icon: Sliders },
+    { to: '/plugins', labelKey: 'nav.pluginsManage', icon: Puzzle },
+    { to: '/yaml', labelKey: 'nav.yaml', icon: FileCode2 },
+  ] },
 ];
 
 const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = {
@@ -188,8 +128,21 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/environments': { groupKey: 'nav.grpSystem', titleKey: 'nav.environments' },
   '/settings': { groupKey: 'nav.grpSystem', titleKey: 'nav.settings' },
+  '/plugins': { groupKey: 'nav.grpSystem', titleKey: 'nav.pluginsManage' },
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };
+
+/** Which group the panel lists, derived from the pathname. Navigation owns
+ *  the selection: landing on a page selects its group, while a rail click
+ *  only previews another group until the next navigation. Deliberately not
+ *  persisted — a reload shows the group of the page actually open rather
+ *  than a preview left over from the previous session. */
+function groupIdForPath(pathname: string): string {
+  const match = NAV_GROUP_DEFS.find((group) =>
+    group.items.some((item) => item.to === pathname || (item.to !== '/' && pathname.startsWith(`${item.to}/`)))
+  );
+  return match?.id ?? NAV_GROUP_DEFS[0].id;
+}
 
 export const Layout: React.FC = () => {
   const location = useLocation();
@@ -199,47 +152,74 @@ export const Layout: React.FC = () => {
   const toast = useToast();
   const [status, setStatus] = useState<GatewayStatusResponse | null>(null);
   const [statusError, setStatusError] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [activeGroupId, setActiveGroupId] = useState<string>(() => groupIdForPath(location.pathname));
+  const [compact, setCompact] = useState(() => localStorage.getItem('ocr_nav_compact') === '1');
+  const [navPreference, setNavPreference] = useState<NavPreference>(readNavPreference);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  /** `flat` + collapsible only: which groups the operator folded away. Starts
+   *  empty (everything open) and is never persisted — see lib/navStyle. */
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [theme, setTheme] = useState<ThemeId>(() => resolveStoredTheme(localStorage.getItem(THEME_STORAGE_KEY)));
-  // Console webAuth active → show the logout control in the header.
+  // Empty-query ordering for the command palette (see lib/navRecent).
+  const [recentRoutes, setRecentRoutes] = useState<string[]>(readRecentRoutes);
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY)));
+
+  /** Once the operator used the star CTA, the header repository button drops
+   *  its "star us" tooltip — it stays a plain repo link. Re-read on the shared
+   *  change event (same document) and on `storage` (another tab / window). */
+  const [starNudgeDone, setStarNudgeDone] = useState(isStarNudgeDone);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResponse | null>(null);
+  const [dismissedUpdate, setDismissedUpdate] = useState<string>(() => {
+    try {
+      return localStorage.getItem(UPDATE_DISMISSED_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  useEffect(() => {
+    const sync = () => setNavPreference(readNavPreference());
+    window.addEventListener(NAV_STYLE_CHANGED_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(NAV_STYLE_CHANGED_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    const sync = () => setStarNudgeDone(isStarNudgeDone());
+    window.addEventListener(STAR_REMINDER_CHANGED_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(STAR_REMINDER_CHANGED_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
   const [webAuthActive, setWebAuthActive] = useState(false);
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [theme]);
+    const applyTheme = () => document.documentElement.setAttribute('data-theme', resolveStoredTheme(themePreference));
+    applyTheme();
+    localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    media.addEventListener('change', applyTheme);
+    return () => media.removeEventListener('change', applyTheme);
+  }, [themePreference]);
+  useEffect(() => localStorage.setItem('ocr_nav_compact', compact ? '1' : '0'), [compact]);
 
   useEffect(() => {
-    api
-      .getAuthSession()
-      .then(s => setWebAuthActive(Boolean(s.webAuth?.active)))
+    api.getAuthSession()
+      .then((session) => setWebAuthActive(Boolean(session.webAuth?.active)))
       .catch(() => setWebAuthActive(false));
   }, []);
 
-  // Footer port chip — copying the gateway base URL is the console's most
-  // frequent manual step (pasting it into a client config), so the port is a
-  // one-click copy. Same helper as the Clients/ApiKeys snippets: the host is
-  // the address the viewer dialed (loopback or LAN IP), never a raw 0.0.0.0.
-  const copyGatewayUrl = () => {
-    if (!status) return;
-    const url = gatewayBaseUrl(status.port);
-    navigator.clipboard
-      .writeText(url)
-      .then(() => toast.success(t('nav.footerUrlCopied')))
-      .catch(() => toast.error(t('common.failed') + url));
-  };
-
-  // Load gateway status periodically; `refreshStatus` lets pages (breaker
-  // trip/reset, restart) force an immediate re-poll instead of waiting for
-  // the next 3s tick.
   const refreshStatus = useCallback(async () => {
     try {
       const data = await api.getStatus();
       setStatus(data);
       setStatusError(false);
-    } catch (err) {
-      console.warn('Failed to poll gateway status:', err);
+    } catch (error) {
+      console.warn('Failed to poll gateway status:', error);
       setStatusError(true);
     }
   }, []);
@@ -250,27 +230,88 @@ export const Layout: React.FC = () => {
     return () => clearInterval(interval);
   }, [refreshStatus]);
 
-  const toggleGroup = (groupId: string) => {
-    setCollapsedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
-  };
+  /** One background read per console load; while the gateway's GitHub call is
+   *  still in flight the answer is `checking: true` and a few short polls
+   *  collect the settled snapshot. Failures are silent — a gateway with no
+   *  egress must not grow an error strip for a display-only check. */
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const info = await api.getUpdateCheck();
+        if (cancelled) return;
+        setUpdateInfo(info);
+        attempts += 1;
+        if (info.checking && attempts < 5) timer = window.setTimeout(poll, 4000);
+      } catch {
+        // Display-only: older gateways and offline starts simply show nothing.
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
 
-  const handleOpenGuardrails = () => {
-    navigate('/guardrails');
-  };
+  const currentRouteMeta = ROUTE_META_KEYS[location.pathname] ??
+    Object.keys(ROUTE_META_KEYS)
+      .filter((route) => route !== '/' && location.pathname.startsWith(`${route}/`))
+      .sort((a, b) => b.length - a.length)
+      .map((route) => ROUTE_META_KEYS[route])[0] ??
+    { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' };
 
-  // Model-level tripped breakers only — matches the Guardrails page header
-  // ("当前触发熔断状态"); pair breakers surface there as a sub-count, not here.
-  const trippedBreakers = status?.circuitBreakers?.tripped || 0;
+  const routeGroupId = groupIdForPath(location.pathname);
+
+  /** Navigation owns the selection: landing on a page selects its group, so a
+   *  deep link never leaves the panel showing an unrelated section. */
+  useEffect(() => {
+    setMobileOpen(false);
+    setActiveGroupId(routeGroupId);
+  }, [location.pathname, routeGroupId]);
+
+  /** Recency ranking for the palette. Registry paths only: parameterised detail
+   *  routes have no palette entry to rank. */
+  useEffect(() => {
+    if (!ROUTE_META_KEYS[location.pathname]) return;
+    const next = nextRecentRoutes(readRecentRoutes(), location.pathname);
+    writeRecentRoutes(next);
+    setRecentRoutes(next);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setPaletteOpen((value) => !value);
+      }
+      if (event.key === 'Escape') setMobileOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const commandItems = useMemo<CommandItem[]>(() =>
+    NAV_GROUP_DEFS.flatMap((group) => group.items.map((item) => ({
+      to: item.to, label: t(item.labelKey), group: t(group.headingKey), icon: item.icon,
+    }))), [t]);
+
+  const copyGatewayUrl = () => {
+    if (!status) return;
+    const url = gatewayBaseUrl(status.port);
+    void copyToClipboard(url)
+      .then((ok) => (ok ? toast.success(t('nav.footerUrlCopied')) : toast.error(t('common.failed') + url)));
+  };
 
   const handleRestartGateway = async () => {
     const ok = await confirmDialog({ title: t('header.restartConfirm') });
     if (!ok) return;
     try {
-      const res = await api.restartGateway();
-      if (res.status === 'failed') {
-        // Spawn failed — the gateway KEEPS RUNNING (console.ts never exits
-        // without a replacement). No reload: the console is still live.
-        toast.error(res.message || t('header.restartFailed'));
+      const result = await api.restartGateway();
+      if (result.status === 'failed') {
+        toast.error(result.message || t('header.restartFailed'));
         return;
       }
       toast.info(t('header.restarting'));
@@ -279,458 +320,259 @@ export const Layout: React.FC = () => {
       setTimeout(() => window.location.reload(), 1500);
       return;
     }
-    // The old process dies ~0.5s after acknowledging; the replacement needs a
-    // few seconds to boot. Poll /health (served by the gateway itself) until
-    // it is back, then reload — up to ~45s.
-    await new Promise((r) => setTimeout(r, 2000));
-    for (let i = 0; i < 86; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    for (let attempt = 0; attempt < 86; attempt += 1) {
       try {
-        const res = await fetch('/health', { signal: AbortSignal.timeout(1000) });
-        if (res.ok) {
+        const response = await fetch('/health', { signal: AbortSignal.timeout(1000) });
+        if (response.ok) {
           window.location.reload();
           return;
         }
       } catch {
-        // gateway still offline
+        // The replacement process is still starting.
       }
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     toast.error(t('header.restartTimeout'));
     window.location.reload();
   };
 
-  // Exact match first; a parameterized route (`/harness/plugins/pi`) falls back to its static
-  // parent so the header never degrades to the untranslated "Dashboard" default. Longest-prefix
-  // wins, so a future `/harness/plugins/_tool` style segment cannot borrow a sibling's title.
-  const currentRouteMeta =
-    ROUTE_META_KEYS[location.pathname] ??
-    Object.keys(ROUTE_META_KEYS)
-      .filter((route) => route !== '/' && location.pathname.startsWith(`${route}/`))
-      .sort((a, b) => b.length - a.length)
-      .map((route) => ROUTE_META_KEYS[route])[0] ?? {
-      groupKey: 'OmniCellRouter',
-      titleKey: 'Dashboard',
-    };
-
-  // Theme picker: trigger sized to the longest option label + fixed chrome
-  // (24 padding + 10 swatch + 2×8 gaps + 13 chevron = 63px, +6px slack).
-  // JetBrains Mono @12px ≈ 7.2px per latin char; CJK falls back to Noto Sans
-  // SC at 12px per char. Width stays stable across selection and language.
-  const themeOptions: { value: ThemeId; label: string; swatch: string }[] = [
-    { value: 'onyx', label: t('header.themes.onyx'), swatch: '#06b6d4' },
-    { value: 'indigo', label: t('header.themes.indigo'), swatch: '#6366f1' },
-    { value: 'emerald', label: t('header.themes.emerald'), swatch: '#10b981' },
-    { value: 'violet', label: t('header.themes.violet'), swatch: '#8b5cf6' },
-    { value: 'rose', label: t('header.themes.rose'), swatch: '#f43f5e' },
-    { value: 'azure', label: t('header.themes.azure'), swatch: '#0284c7' },
-    { value: 'amber', label: t('header.themes.amber'), swatch: '#d97706' },
+  const themeOptions = [
+    { value: 'light', label: t('header.themes.light'), icon: <Sun size={14} /> },
+    { value: 'dark', label: t('header.themes.dark'), icon: <Moon size={14} /> },
+    { value: 'system', label: t('header.themes.system'), icon: <Monitor size={14} /> },
   ];
-  const themePickerWidth =
-    Math.ceil(Math.max(...themeOptions.map((o) =>
-      [...o.label].reduce((w, c) => w + ((c.codePointAt(0) ?? 0) > 0x2e80 ? 12 : 7.2), 0)
-    ))) + 69;
+
+  const gatewayOnline = Boolean(status) && !statusError;
+  const trippedBreakers = status?.circuitBreakers?.tripped || 0;
+  /** Rail click: selecting a group also re-opens a collapsed panel instead of
+   *  leaving the click inert, which is the only way back out of compact mode. */
+  /** Rail click. Switching to a DIFFERENT group also opens that group's first
+   *  item: otherwise the panel shows a section whose rows are all unselected
+   *  while the header still names the page you came from, i.e. the click looks
+   *  like it did nothing. Re-clicking the group you are already in must NOT yank
+   *  you off a deep page — it only unfolds the panel. */
+  const selectGroup = (groupId: string) => {
+    setCompact(false);
+    if (groupId === activeGroupId) return;
+    setActiveGroupId(groupId);
+    const landing = NAV_GROUP_DEFS.find((group) => group.id === groupId)?.items[0];
+    if (landing) navigate(landing.to);
+  };
+  const activeGroupDef = NAV_GROUP_DEFS.find((group) => group.id === activeGroupId) ?? NAV_GROUP_DEFS[0];
+  const navStyle = navPreference.style;
+  /** `compact` only ever means "fold the rail's item list away", so it applies
+   *  to the rail style alone; flat IS the list. */
+  const railCollapsed = navStyle === 'rail' && compact;
+  /** Below 900px the sidebar is a drawer; a persisted compact flag must not
+   *  leave that drawer showing a rail with no panel in it. */
+  const showPanel = !railCollapsed || mobileOpen;
+  const railLabels = navStyle === 'rail' && navPreference.railLabels;
+  /** Row density belongs to the long list, so only `flat` honours it. */
+  const denseRows = navStyle === 'flat' && navPreference.density === 'compact';
+  const foldableGroups = navStyle === 'flat' && navPreference.collapsible;
+
+  const renderNavItem = (item: NavItemDef) => {
+    const Icon = item.icon;
+    return (
+      <NavLink key={item.to} to={item.to} end={item.end}
+        className={({ isActive }) => `nav-item${isActive ? ' is-active' : ''}`}>
+        <Icon size={18} /><span className="nav-item-label">{t(item.labelKey)}</span>
+        {item.badge && <span className="nav-item-badge">{item.badge}</span>}
+      </NavLink>
+    );
+  };
+
+  const latestRelease = updateInfo?.updateAvailable ? updateInfo.latestVersion : null;
+  const showUpdate = Boolean(latestRelease && latestRelease !== dismissedUpdate);
+  const dismissUpdate = () => {
+    if (!latestRelease) return;
+    setDismissedUpdate(latestRelease);
+    try {
+      localStorage.setItem(UPDATE_DISMISSED_KEY, latestRelease);
+    } catch {
+      // Persistence is best-effort; the banner stays hidden for this mount.
+    }
+  };
 
   return (
-    <div style={{ display: 'flex', width: '100%', height: '100%', minHeight: 0 }}>
-      {/* Sidebar Navigation */}
-      <aside
-        style={{
-          // 216px: sized to the longest label, not guessed. The label column
-          // is 156px wide; the longest Chinese label is 5 glyphs (=70px at
-          // 14px) and the longest English one is 16 chars (≈114px). At the
-          // old 240px/13px pair ~62% of every Chinese row sat empty, so the
-          // menu read as a narrow text block floating in a wide column.
-          // 216px + 14px lifts the glyph share and returns 24px to content.
-          width: '216px',
-          background: 'var(--sidebar-bg)',
-          backdropFilter: 'blur(24px)',
-          borderRight: '1px solid var(--card-border)',
-          display: 'flex',
-          flexDirection: 'column',
-          position: 'sticky',
-          top: 0,
-          height: '100vh',
-          zIndex: 40,
-          overflowY: 'hidden',
-        }}
-      >
-        {/* Brand Header */}
-        <div
-          style={{
-            padding: '18px 20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            borderBottom: '1px solid var(--card-border)',
-          }}
-        >
-          <div
-            style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '10px',
-              background: 'linear-gradient(135deg, var(--accent), var(--accent-emerald))',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#000',
-              fontWeight: 800,
-              boxShadow: '0 0 16px var(--accent-glow)',
-            }}
-          >
-            <Zap size={18} strokeWidth={2.5} fill="currentColor" />
-          </div>
-          {/* minWidth:0 + overflow:hidden keep the tagline from blowing the
-              aside wider than 216px: "Gateway Console · v1.2.3" is ~158px of
-              mono at 11px against a 128px column, so it ellipsizes instead of
-              forcing a horizontal scrollbar on the sidebar (the overflow-y:
-              hidden parent turns a visible x-axis into auto). */}
-          <div style={{ minWidth: 0, overflow: 'hidden' }}>
-            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>OmniCellRouter</div>
-            {/* Tagline + static runtime version. The version used to trail at
-                the far end of the sidebar footer, where long env names pushed
-                it off-screen; it belongs with the product identity instead.
-                Still comes live from /api/admin/status (a stale cached bundle
-                can't misreport); the build-time constant is the fallback
-                until status arrives or while the gateway is unreachable. */}
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}
-            </div>
-          </div>
-        </div>
-
-        {/* Sidebar Search Bar — fixed above the nav scroller; only the tree
-            below scrolls, so nothing ever paints underneath these bars and
-            the translucent sidebar background can't ghost scrolled items */}
-        <div style={{ padding: '12px 14px 4px 14px' }}>
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-            <Search size={13} style={{ position: 'absolute', left: '10px', color: 'var(--text-dim)', pointerEvents: 'none' }} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder={t('nav.searchPlaceholder')}
-              className="input"
-              style={{
-                fontSize: '12px',
-                padding: '7px 10px 7px 30px',
-                borderRadius: '8px',
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Grouped Multi-Menu Tree — the ONLY scrolling region in the sidebar */}
-        <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: '18px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
-          {NAV_GROUP_DEFS.map(group => {
-            const filteredItems = group.items.filter(item => {
-              const label = t(item.labelKey);
-              return label.toLowerCase().includes(searchQuery.toLowerCase());
-            });
-
-            if (searchQuery && filteredItems.length === 0) return null;
-            const isCollapsed = !searchQuery && collapsedGroups[group.id];
-
-            return (
-              <div key={group.id} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                <div
-                  onClick={() => toggleGroup(group.id)}
-                  style={{
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.05em',
-                    // Group headers sit in the quietest tier (dim) so the
-                    // content rows below read as the primary layer; bold 12px
-                    // keeps them AA-legible even on paper themes.
-                    color: 'var(--text-dim)',
-                    padding: '6px 12px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    borderRadius: '6px',
-                  }}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <group.icon size={14} strokeWidth={2} />
-                    {t(group.headingKey)}
-                  </span>
-                  <ChevronDown
-                    size={13}
-                    style={{
-                      transition: 'transform 0.2s ease',
-                      transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-                    }}
-                  />
-                </div>
-
-                {!isCollapsed && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    {filteredItems.map(item => {
-                      const Icon = item.icon;
-                      const label = t(item.labelKey);
-                      return (
-                        <NavLink
-                          key={item.to}
-                          to={item.to}
-                          end={item.end}
-                          style={({ isActive }) => ({
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '8px 12px',
-                            borderRadius: '8px',
-                            fontSize: '14px',
-                            fontWeight: isActive ? 600 : 500,
-                            color: isActive ? 'var(--accent)' : 'var(--text-main)',
-                            background: isActive ? 'var(--surface-hover)' : 'transparent',
-                            border: isActive ? '1px solid var(--card-border)' : '1px solid transparent',
-                            textDecoration: 'none',
-                            transition: 'all 0.15s ease',
-                          })}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <Icon size={16} />
-                            <span>{label}</span>
-                          </div>
-                          {item.badge && (
-                            <span
-                              style={{
-                                fontSize: '10px',
-                                padding: '1px 6px',
-                                borderRadius: '999px',
-                                background: 'var(--surface-hover)',
-                                color: 'var(--text-dim)',
-                                fontWeight: 600,
-                              }}
-                            >
-                              {item.badge}
-                            </span>
-                          )}
-                        </NavLink>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Sidebar Footer — one line, left-aligned with the menu grid: the dot
-            sits flush at the icon column's left edge (padding 22px) and the
-            port trails it 4px, so the lamp reads attached to its endpoint.
-            Three segments distributed evenly across the row
-            (space-between): ● + listening port (the dot binds to the live
-            endpoint, VS Code / Docker convention — the port copies the
-            gateway base URL), the active env (book-set) tag (navigates to
-            the Environments page; its icon carries the menu label color,
-            not the accent), and the quota-peek chip at the right edge.
-            Even distribution replaced the old left-packed row with "·"
-            separators: the packed pair plus a lone right-pinned chip read
-            as lopsided. Spreading the segments also kills the address
-            misread — "default:3000" side by side looked like one host:port.
-            The static runtime version used to trail here at the far right
-            but moved up to the brand header tagline, where long env names
-            can no longer push it off-screen. Replaces the old hardcoded
-            "OmniCellRouter Gateway Console" tagline, which duplicated the
-            brand header and skipped i18n. */}
-        {(() => {
-          const gatewayOnline = Boolean(status) && !statusError;
-          const chipStyle = {
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            font: 'inherit',
-            color: 'inherit',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '4px',
-            whiteSpace: 'nowrap' as const,
-            cursor: 'pointer',
-          };
-          return (
-            <div
-              style={{
-                padding: '14px 12px 14px 22px',
-                borderTop: '1px solid var(--divider)',
-                fontSize: '11px',
-                color: 'var(--text-dim)',
-                fontFamily: FONT_MONO,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '8px',
-                whiteSpace: 'nowrap',
-                minWidth: 0,
-              }}
-            >
-              {/* Dot + port are one tight unit — the lamp belongs to the
-                  endpoint (4px apart). The dot sits flush at the icon column's
-                  left edge (padding 22px = same x as the menu icons); the port
-                  trails at 32px. Lamp-to-edge proximity wins over the old
-                  48px label-column alignment — a floating status light reads
-                  as detached. */}
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-                <span
-                  title={gatewayOnline ? t('nav.footerOnline') : t('nav.footerOffline')}
-                  className={gatewayOnline ? 'dot-pulse' : undefined}
-                  style={{
-                    width: '6px',
-                    height: '6px',
-                    borderRadius: '50%',
-                    flexShrink: 0,
-                    background: gatewayOnline ? 'var(--accent-emerald)' : 'var(--text-dim)',
-                    boxShadow: gatewayOnline ? '0 0 6px var(--accent-emerald)' : 'none',
-                  }}
-                />
-                {status ? (
-                  <button
-                    type="button"
-                    onClick={copyGatewayUrl}
-                    title={t('nav.footerCopyUrl', { url: gatewayBaseUrl(status.port) })}
-                    style={chipStyle}
-                  >
-                    :{status.port}
-                  </button>
-                ) : (
-                  <span>{t('nav.footerOffline')}</span>
-                )}
-              </span>
-              {status && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/environments')}
-                  title={status.env?.configPath}
-                  style={{ ...chipStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
-                >
-                  <FolderCog size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
-                  {status.env?.name ?? '—'}
+    <div className="app-shell">
+      {mobileOpen && <button className="sidebar-scrim" type="button" aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
+      <aside className={`app-sidebar is-${navStyle}${railCollapsed ? ' is-compact' : ''}${railLabels ? ' has-rail-labels' : ''}${denseRows ? ' is-dense' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
+        {/* First level: one glyph per group. The rail is the stable anchor —
+            its eight buttons never move, so muscle memory survives whatever
+            the panel is showing. Only the rail style has one. */}
+        {navStyle === 'rail' && <div className="app-rail">
+          <NavLink to="/" className="brand-mark-link" aria-label="OmniCellRouter">
+            <span className="brand-mark"><Zap size={19} strokeWidth={2.4} /></span>
+          </NavLink>
+          <nav className="rail-nav" aria-label={t('nav.consoleTag')}>
+            {NAV_GROUP_DEFS.map((group) => {
+              const GroupIcon = group.icon;
+              const isActive = group.id === activeGroupDef.id;
+              return (
+                <button type="button" key={group.id}
+                  className={`rail-btn${isActive ? ' is-active' : ''}${railLabels ? ' has-caption' : ''}`}
+                  onClick={() => selectGroup(group.id)} title={t(group.headingKey)}
+                  aria-label={t(group.headingKey)} aria-controls={showPanel ? 'nav-panel' : undefined}
+                  aria-current={isActive ? 'true' : undefined}>
+                  <GroupIcon size={24} />
+                  {railLabels && <span className="rail-btn-label">{t(group.shortKey)}</span>}
                 </button>
-              )}
-              {/* Right segment of the even three-way split: the always-visible
-                  quota peek chip (hover opens the panel, click goes to the
-                  quota page). */}
-              <QuotaPeek />
+              );
+            })}
+          </nav>
+          <div className="rail-footer">
+            <button type="button" className="app-icon-button sidebar-collapse" onClick={() => setCompact((value) => !value)}
+              title={t(railCollapsed ? 'nav.expand' : 'nav.collapse')} aria-label={t(railCollapsed ? 'nav.expand' : 'nav.collapse')}>
+              {railCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            </button>
+          </div>
+        </div>}
+
+        {/* Second level: the item list. A rail lists the selected group; flat
+            lists every group under a static label. Nothing is hidden by hover
+            or by a fold in either style. */}
+        {showPanel && <div className="app-navpanel">
+          <div className="panel-brand">
+            <div className="brand-copy">
+              <NavLink to="/" className="brand-name"><strong>OmniCellRouter</strong></NavLink>
+              <small>
+                {showUpdate && updateInfo && latestRelease ? (
+                  <a className="brand-update" href={updateInfo.releaseUrl} target="_blank" rel="noreferrer"
+                    title={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}
+                    aria-label={t('update.banner', { version: latestRelease, current: updateInfo.currentVersion })}>
+                    {t('nav.version', { version: status?.version ?? __APP_VERSION__ })} → {latestRelease}
+                  </a>
+                ) : (
+                  <>{t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}</>
+                )}
+              </small>
             </div>
-          );
-        })()}
+          </div>
+
+          {/* The `Ctrl K` badge only where the row has room for it: in the rail
+              style the panel is 188-196px wide and the badge would eat ~46px of
+              it, truncating the label. Header search and the palette itself
+              still advertise the shortcut either way. */}
+          <button type="button" className="sidebar-search" onClick={() => setPaletteOpen(true)} title={t('nav.searchPlaceholder')}>
+            <Search size={15} /><span>{t('nav.searchPlaceholder')}</span>
+            {navStyle === 'flat' && <kbd>Ctrl K</kbd>}
+          </button>
+
+          {/* rail: the selected group's items. flat: every group under a static
+              label. */}
+          {navStyle === 'rail' && <>
+            <div className="panel-heading">{t(activeGroupDef.headingKey)}</div>
+            <nav className="sidebar-nav" id="nav-panel" aria-label={t(activeGroupDef.headingKey)}>
+              {activeGroupDef.items.map(renderNavItem)}
+            </nav>
+          </>}
+
+          {navStyle === 'flat' && <nav className="sidebar-nav" id="nav-panel" aria-label={t('nav.consoleTag')}>
+            {NAV_GROUP_DEFS.map((group) => {
+              if (!foldableGroups) {
+                return (
+                  <React.Fragment key={group.id}>
+                    <div className="panel-heading">{t(group.headingKey)}</div>
+                    {group.items.map(renderNavItem)}
+                  </React.Fragment>
+                );
+              }
+              const isCollapsed = Boolean(collapsedGroups[group.id]);
+              return (
+                <div className="nav-group" key={group.id}>
+                  {/* The trigger keeps `.panel-heading` typography and only adds
+                      button behaviour, so the folded and unfolded lists are
+                      typographically identical. */}
+                  <button type="button" className="panel-heading is-trigger" aria-expanded={!isCollapsed}
+                    onClick={() => setCollapsedGroups((previous) => ({ ...previous, [group.id]: !previous[group.id] }))}>
+                    <span>{t(group.headingKey)}</span>
+                    <ChevronDown size={13} className={isCollapsed ? 'is-collapsed' : ''} />
+                  </button>
+                  {!isCollapsed && <div className="nav-group-items">{group.items.map(renderNavItem)}</div>}
+                </div>
+              );
+            })}
+          </nav>}
+
+          <div className="sidebar-footer">
+            <div className="sidebar-status-row">
+              <span className={`status-dot${gatewayOnline ? ' is-online' : ''}`} title={t(gatewayOnline ? 'nav.footerOnline' : 'nav.footerOffline')} />
+              {status ? <button type="button" onClick={copyGatewayUrl} title={t('nav.footerCopyUrl', { url: gatewayBaseUrl(status.port) })}>:{status.port}</button>
+                : <span>{t('nav.footerOffline')}</span>}
+            </div>
+            {status && <button type="button" className="sidebar-env" onClick={() => navigate('/environments')} title={status.env?.configPath}>
+              <FolderCog size={12} /><span>{status.env?.name ?? '—'}</span>
+            </button>}
+            <div className="sidebar-quota"><QuotaPeek /></div>
+          </div>
+        </div>}
       </aside>
 
-      {/* Main Content Area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
-        {/* Top Header */}
-        <header
-          style={{
-            backdropFilter: 'blur(20px)',
-            background: 'var(--header-bg)',
-            borderBottom: '1px solid var(--card-border)',
-            position: 'sticky',
-            top: 0,
-            zIndex: 30,
-            padding: '12px clamp(14px, 2.5vw, 28px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            rowGap: 8,
-          }}
-        >
-          {/* Breadcrumb Trail */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 500, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}>
-            <span className="hdr-crumb-group" style={{ color: 'var(--text-muted)' }}>{t(currentRouteMeta.groupKey)}</span>
-            <span style={{ color: 'var(--text-dim)' }}>/</span>
-            <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{t(currentRouteMeta.titleKey)}</span>
-          </div>
-
-          {/* Right Action Tools — the env (book-set) chip and the Live-port pill
-              used to live here; both moved to the always-visible sidebar footer
-              (status dot + env:port) to avoid triple duplication, and the
-              version sits in the brand header tagline. */}
-          <div className="hdr-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', rowGap: 8, justifyContent: 'flex-end' }}>
-            {/* Language Switcher (i18n) — Combobox per the app-wide dropdown
-                rule. Option labels are endonyms from i18n/languages.ts, so the
-                menu reads natively regardless of the active UI language; the
-                trigger shows the current language. */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title={t('header.switchLang')}>
-              <Globe size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
-              <Combobox
-                variant="ghost"
-                value={lang}
-                onChange={(v) => setLang(v as Lang)}
-                options={LANGUAGES}
-                style={{ padding: '7px 10px', fontSize: 12, fontWeight: 700, width: 'auto' }}
-              />
+      <div className="app-workspace">
+        {/* Frameless desktop shell: the header doubles as the window title
+            bar. `deep` = drag anywhere in this subtree except clickable
+            elements (buttons, inputs, links); double-click toggles maximize. */}
+        <header className="app-header" data-tauri-drag-region="deep">
+          <div className="header-heading">
+            <button type="button" className="app-icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label={t('nav.openMenu')} title={t('nav.openMenu')}>
+              <Menu size={19} />
+            </button>
+            <div className="header-breadcrumb">
+              <span>{t(currentRouteMeta.groupKey)}</span><i>/</i><strong>{t(currentRouteMeta.titleKey)}</strong>
             </div>
-
-            {/* Theme Picker — borderless: the header is a toolbar of actions, and the current theme
-                is a value to read, not a form field. */}
-            <Combobox
-              variant="ghost"
-              style={{ width: themePickerWidth, flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
-              value={theme}
-              onChange={(v) => setTheme(resolveStoredTheme(v))}
-              options={themeOptions}
-            />
-
-            {/* Quick Actions */}
-            <button className="btn" onClick={handleRestartGateway} title={t('header.restart')}>
-              <RotateCcw size={13} />
-              <span className="hdr-label">{t('header.restart')}</span>
-            </button>
-            {/* Breaker management entry — actual reset actions (global / per-model /
-                per-pair) live on the Guardrails page; the header is just a jump link. */}
-            <button className="btn" onClick={handleOpenGuardrails} title={t('nav.guardrails')}>
-              <ShieldAlert size={13} />
-              <span className="hdr-label">{t('nav.guardrails')}</span>
-              {trippedBreakers > 0 && (
-                <span
-                  style={{
-                    fontSize: '10px',
-                    padding: '1px 6px',
-                    borderRadius: '999px',
-                    background: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)',
-                    color: 'var(--accent-rose)',
-                    fontWeight: 600,
-                  }}
-                >
-                  {trippedBreakers}
-                </span>
-              )}
-            </button>
-            {/* Console Logout — only when webAuth login is active; sits at the
-                far right end of the toolbar: an account/session action, not a
-                preference, so it trails the quick actions. */}
-            {webAuthActive && (
-              <button
-                className="btn"
-                onClick={async () => {
-                  const ok = await confirmDialog({
-                    title: t('settings.waLogoutConfirmTitle'),
-                    description: t('settings.waLogoutConfirmDesc'),
-                    confirmLabel: t('settings.waLogout'),
-                  });
-                  if (ok) api.logout().finally(() => window.location.reload());
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                title={t('settings.waLogout')}
-              >
-                <LogOut size={13} color="var(--accent-red, #ef4444)" />
-                <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('settings.waLogout')}</span>
-              </button>
-            )}
+            <span className={`header-health${gatewayOnline ? ' is-online' : ''}`}>
+              <span className="status-dot" />{t(gatewayOnline ? 'nav.footerOnline' : 'nav.footerOffline')}
+            </span>
           </div>
+          <div className="header-actions">
+            <button type="button" className="header-search" onClick={() => setPaletteOpen(true)}>
+              <Search size={15} /><span>{t('nav.searchPlaceholder')}</span><kbd>Ctrl K</kbd>
+            </button>
+            <div className="header-preferences" title={t('header.switchLang')}>
+              <Globe size={14} />
+              <Combobox variant="ghost" value={lang} onChange={(value) => setLang(value as Lang)} options={LANGUAGES}
+                style={{ width: 'auto', padding: '7px 6px', fontSize: 'var(--text-sm)' }} />
+            </div>
+            <Combobox variant="ghost" value={themePreference} onChange={(value) => setThemePreference(resolveThemePreference(value))} options={themeOptions}
+              style={{ width: 136, flexShrink: 0, padding: '7px 8px', fontSize: 'var(--text-sm)' }} />
+            {/* Repository link, same 36px icon-button anatomy as its neighbours:
+                the header's icon row is the one place a lone brand glyph reads
+                as native chrome. A plain anchor — the desktop shell's external
+                link interceptor routes it to the system browser. */}
+            <a className="app-icon-button header-github" href={GITHUB_REPO_URL} target="_blank" rel="noreferrer"
+              title={t(starNudgeDone ? 'starReminder.footerRepo' : 'starReminder.footerStar')}
+              aria-label={t(starNudgeDone ? 'starReminder.footerRepo' : 'starReminder.footerStar')}>
+              <Github size={16} />
+            </a>
+            <DownloadCenter />
+            <span className="header-separator" />
+            <button className="app-icon-button" onClick={handleRestartGateway} title={t('header.restart')} aria-label={t('header.restart')}>
+              <RotateCcw size={16} />
+            </button>
+            <button className="app-icon-button header-breaker" onClick={() => navigate('/guardrails')} title={t('nav.guardrails')} aria-label={t('nav.guardrails')}>
+              <ShieldAlert size={16} />{trippedBreakers > 0 && <span>{trippedBreakers}</span>}
+            </button>
+            {webAuthActive && <button className="app-icon-button" title={t('settings.waLogout')} aria-label={t('settings.waLogout')}
+              onClick={async () => {
+                const ok = await confirmDialog({ title: t('settings.waLogoutConfirmTitle'), description: t('settings.waLogoutConfirmDesc'), confirmLabel: t('settings.waLogout') });
+                if (ok) api.logout().finally(() => window.location.reload());
+              }}><LogOut size={16} /></button>}
+          </div>
+          <WindowControls />
         </header>
-
-        {/* Page Content Container — scrolls for long pages so the sidebar and
-            header stay fixed; fixed-viewport pages (logs/captures) get their
-            own internal scrollbars because this box has a definite height. */}
-        <main style={{ padding: 'clamp(14px, 2.5vw, 28px)', flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto' }}>
-          <Outlet context={{ status, statusError, refreshStatus }} />
-        </main>
+        {showUpdate && updateInfo && latestRelease && (
+          <UpdateBanner
+            currentVersion={updateInfo.currentVersion}
+            latestVersion={latestRelease}
+            releaseUrl={updateInfo.releaseUrl}
+            onDismiss={dismissUpdate}
+          />
+        )}
+        <main className="app-main"><div className="page-canvas"><Outlet context={{ status, statusError, refreshStatus }} /></div></main>
       </div>
+      <CommandPalette open={paletteOpen} items={commandItems} recent={recentRoutes} onClose={() => setPaletteOpen(false)} onSelect={(to) => navigate(to)} />
     </div>
   );
 };

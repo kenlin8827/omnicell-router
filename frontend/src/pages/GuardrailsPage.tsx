@@ -39,6 +39,16 @@ const SCOPE_LABEL_KEY: Record<BreakerTripScope, string> = {
   pair: 'guardrails.scopePair',
 };
 
+/** Header stat pill: `.badge` with the EN-oriented casing/spacing reset — these
+    carry localized sentences ("Models 7 · pairs 19"), not single state words. */
+const STAT_BADGE: React.CSSProperties = {
+  textTransform: 'none',
+  letterSpacing: 'normal',
+  fontSize: 'var(--text-2xs)',
+  borderColor: 'var(--card-border)',
+  whiteSpace: 'nowrap',
+};
+
 export const GuardrailsPage: React.FC = () => {
   const { status, refreshStatus } = useOutletContext<{
     status: GatewayStatusResponse | null;
@@ -446,7 +456,7 @@ export const GuardrailsPage: React.FC = () => {
   // (rgba fill + #8fb8f5 text) failed contrast on light themes.
   const hashBadgeStyle: React.CSSProperties = {
     fontFamily: FONT_MONO,
-    fontSize: '10px',
+    fontSize: 'var(--text-2xs)',
     padding: '1px 6px',
     borderRadius: '8px',
     background: 'transparent',
@@ -498,12 +508,12 @@ export const GuardrailsPage: React.FC = () => {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: FONT_MONO, overflowWrap: 'anywhere' }}>
+            <span style={{ fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-md)', fontFamily: FONT_MONO, overflowWrap: 'anywhere' }}>
               {c.modelId}
             </span>
             {res && (
               <span
-                style={{ fontFamily: FONT_MONO, fontSize: '10px', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
+                style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
                 title={res.ok ? `${res.latencyMs} ms` : res.error}
               >
                 {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
@@ -526,8 +536,8 @@ export const GuardrailsPage: React.FC = () => {
             {c.disabled ? t('op.credentialDisabled') : c.suspect ? t('op.credentialSuspectBadge') : stateLabel(state)}
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-dim)', flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 600, color: 'var(--text)' }} title={c.unmatched ? t('guardrails.unmatchedHint') : undefined}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 'var(--font-semibold)', color: 'var(--text)' }} title={c.unmatched ? t('guardrails.unmatchedHint') : undefined}>
             {c.label}
           </span>
           {singlePoint && c.snap?.state !== 'OPEN' && (
@@ -535,7 +545,7 @@ export const GuardrailsPage: React.FC = () => {
             // model is one failure away from total outage. Hidden only when the
             // card's OWN tuple is OPEN (risk materialized; HALF_OPEN still
             // routes and is exactly the danger window the badge exists for).
-            <span className="badge badge-warning" style={{ fontSize: '10px', whiteSpace: 'nowrap' }} title={t('guardrails.singlePointTip')}>
+            <span className="badge badge-warning" style={{ fontSize: 'var(--text-2xs)', whiteSpace: 'nowrap' }} title={t('guardrails.singlePointTip')}>
               {t('guardrails.singlePoint')}
             </span>
           )}
@@ -567,19 +577,19 @@ export const GuardrailsPage: React.FC = () => {
         {pairTripped && c.snap?.reason && (
           <div
             style={{
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               color: c.snap.state === 'OPEN' ? 'var(--accent-rose)' : 'var(--accent-amber)',
               display: '-webkit-box',
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
-              lineHeight: 1.5,
+              lineHeight: 'var(--leading-snug)',
             }}
           >
             {statSnap?.category && (
               <span
                 className="badge badge-warning"
-                style={{ fontSize: '10px', marginRight: '6px', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--text-2xs)', marginRight: '6px', whiteSpace: 'nowrap' }}
               >
                 {categoryLabel(statSnap.category)}
               </span>
@@ -587,7 +597,7 @@ export const GuardrailsPage: React.FC = () => {
             {c.snap.scope && c.snap.scope !== 'pair' && (
               <span
                 className="badge badge-warning"
-                style={{ fontSize: '10px', marginRight: '6px', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--text-2xs)', marginRight: '6px', whiteSpace: 'nowrap' }}
                 title={t(SCOPE_LABEL_KEY[c.snap.scope])}
               >
                 {t(SCOPE_LABEL_KEY[c.snap.scope])}
@@ -600,19 +610,19 @@ export const GuardrailsPage: React.FC = () => {
           <div
             title={c.modelSnap.reason}
             style={{
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               color: 'var(--text-dim)',
               display: '-webkit-box',
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
-              lineHeight: 1.5,
+              lineHeight: 'var(--leading-snug)',
             }}
           >
             {c.modelSnap?.category && (
               <span
                 className="badge badge-warning"
-                style={{ fontSize: '10px', marginRight: '6px', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--text-2xs)', marginRight: '6px', whiteSpace: 'nowrap' }}
               >
                 {categoryLabel(c.modelSnap.category)}
               </span>
@@ -621,7 +631,7 @@ export const GuardrailsPage: React.FC = () => {
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--text-dim)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
             <span>{t('guardrails.failures', { count: statSnap?.consecutiveFailures ?? 0 })}</span>
           </span>
@@ -636,12 +646,12 @@ export const GuardrailsPage: React.FC = () => {
                   value={tripScope}
                   onChange={(v) => setTripScope(v === 'credential' || v === 'pair' ? v : 'model')}
                   options={scopeOptions}
-                  style={{ fontSize: '11px', padding: '4px 8px', width: '160px' }}
+                  style={{ fontSize: 'var(--text-xs)', padding: '4px 8px', width: '160px' }}
                   panelMinWidth={210}
                 />
               </span>
             ) : (
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t(SCOPE_LABEL_KEY.model)} · {t('guardrails.singleCredHint')}
               </div>
             )}
@@ -649,7 +659,7 @@ export const GuardrailsPage: React.FC = () => {
               type="text"
               className="input"
               aria-label={t('guardrails.tripReasonPlaceholder')}
-              style={{ fontSize: '12px', padding: '6px 10px' }}
+              style={{ fontSize: 'var(--text-sm)', padding: '6px 10px' }}
               placeholder={t('guardrails.tripReasonPlaceholder')}
               value={tripReason}
               onChange={(e) => setTripReason(e.target.value)}
@@ -661,7 +671,7 @@ export const GuardrailsPage: React.FC = () => {
                   className="btn btn-sm"
                   disabled={trippingKey === c.key}
                   onClick={() => handleTrip(c, p.ms)}
-                  style={{ fontSize: '11px', padding: '3px 8px', background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)', borderColor: 'var(--btn-primary-bg)' }}
+                  style={{ fontSize: 'var(--text-xs)', padding: '3px 8px', background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)', borderColor: 'var(--btn-primary-bg)' }}
                 >
                   {p.label}
                 </button>
@@ -672,13 +682,13 @@ export const GuardrailsPage: React.FC = () => {
                   disabled={resettingScope || trippingKey === c.key}
                   onClick={() => handleResetScope(c)}
                   title={t('guardrails.tripScopeTip')}
-                  style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                  style={{ fontSize: 'var(--text-xs)', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
                 >
                   <RotateCcw size={11} />
                   <span>{resettingScope ? t('guardrails.resetting') : t('guardrails.resetScope')}</span>
                 </button>
               )}
-              <button className="btn btn-sm" style={{ fontSize: '11px', padding: '3px 8px' }} onClick={closeTripPanel}>
+              <button className="btn btn-sm" style={{ fontSize: 'var(--text-xs)', padding: '3px 8px' }} onClick={closeTripPanel}>
                 {t('guardrails.tripCancel')}
               </button>
             </div>
@@ -692,7 +702,7 @@ export const GuardrailsPage: React.FC = () => {
               // it left). Fixed slot: the trip category now lives on the
               // reason row, so this corner never swaps content.
               <span
-                style={{ fontFamily: FONT_MONO, fontSize: '10px', color: 'var(--text-dim)', whiteSpace: 'nowrap', marginRight: 'auto' }}
+                style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap', marginRight: 'auto' }}
                 title={t('guardrails.tierBadge')}
               >
                 {c.modelSnap.tier}
@@ -757,52 +767,44 @@ export const GuardrailsPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
-      {/* Top Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
-        <div className="card">
-          <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.totalBreakers')}</div>
-          {/* Same truth as the grid: the roster-driven model × credential
-              tuples. The backend pair count only covers MATERIALIZED tuple
-              breakers (lazy — created on first failure/action), so it would
-              under-report and disagree with the cards below. */}
-          <div style={{ fontSize: '28px', fontWeight: 800 }}>{allItems.length}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {t('guardrails.pairSplit', { m: totalBreakers, p: allItems.length })}
-          </div>
-        </div>
-
-        <div className="card">
-          <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.openBreakers')}</div>
-          {/* SAME filter as the 熔断中 tab below (effectiveState): tuple truth
-              plus operator takedowns. The model layer is a DERIVED fold of the
-              same tuples — adding `openCount` counted one model-scope trip
-              twice (once per model fold, once per tuple). */}
-          <div style={{ fontSize: '28px', fontWeight: 800, color: openCards > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
-            {openCards}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {openCards > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}
-          </div>
-          {pairOpen > 0 && (
-            <div style={{ fontSize: '11px', color: 'var(--accent-rose)', marginTop: '2px' }}>
-              {t('guardrails.pairTrippedSub', { n: pairOpen })}
-            </div>
-          )}
-          {halfOpenCards > 0 && (
-            <div style={{ fontSize: '11px', color: 'var(--accent-amber)', marginTop: '2px' }}>
-              {t('guardrails.stateHalfOpen')}: {halfOpenCards}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Circuit Breaker Matrix — observation only; rule editing lives on /breaker-rules. */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {/* Circuit Breaker Matrix — observation only; rule editing lives on /breaker-rules.
+          The roster counts ride in this card's header: the old two-card KPI strip cost
+          ~120px of viewport plus a 24px gap and only restated these numbers one screen
+          above the tiles it summarized. */}
       <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <div className="card-header">
-          <div className="card-title">
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: 10 }}>
+          <div className="card-title" style={{ flexWrap: 'wrap' }}>
             <ShieldAlert size={18} color="var(--accent-rose)" />
             <span>{t('guardrails.title')}</span>
+            {/* Same truth as the grid: the roster-driven model × credential
+                tuples. The backend pair count only covers MATERIALIZED tuple
+                breakers (lazy — created on first failure/action), so it would
+                under-report and disagree with the tiles below. */}
+            <span className="badge" style={{ ...STAT_BADGE, color: 'var(--text-muted)' }} title={t('guardrails.totalBreakers')}>
+              {t('guardrails.pairSplit', { m: totalBreakers, p: allItems.length })}
+            </span>
+            {/* SAME filter as the 熔断中 tab below (effectiveState): tuple truth
+                plus operator takedowns. The model layer is a DERIVED fold of the
+                same tuples — adding `openCount` counted one model-scope trip
+                twice (once per model fold, once per tuple). */}
+            <span
+              className="badge"
+              style={{ ...STAT_BADGE, color: openCards > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}
+              title={`${t('guardrails.openBreakers')}\n${openCards > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}`}
+            >
+              {t('guardrails.stateTripped')} {openCards}
+            </span>
+            {halfOpenCards > 0 && (
+              <span className="badge" style={{ ...STAT_BADGE, color: 'var(--accent-amber)' }} title={t('guardrails.stateHalfOpen')}>
+                {t('guardrails.stateHalfOpen')} {halfOpenCards}
+              </span>
+            )}
+            {pairOpen > 0 && (
+              <span className="badge" style={{ ...STAT_BADGE, color: 'var(--accent-rose)' }}>
+                {t('guardrails.pairTrippedSub', { n: pairOpen })}
+              </span>
+            )}
           </div>
           <div style={{ display: 'flex', gap: '10px' }}>
             <Link
@@ -830,7 +832,7 @@ export const GuardrailsPage: React.FC = () => {
               placeholder={t('guardrails.providerFilter')}
               clearable
               forceFilter
-              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 160, width: 'auto', flexShrink: 0 }}
+              style={{ fontSize: 'var(--text-sm)', padding: '7px 12px', minWidth: 160, width: 'auto', flexShrink: 0 }}
               panelMinWidth={260}
             />
           )}
@@ -842,7 +844,7 @@ export const GuardrailsPage: React.FC = () => {
               placeholder={t('guardrails.modelFilter')}
               clearable
               forceFilter
-              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}
+              style={{ fontSize: 'var(--text-sm)', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}
               panelMinWidth={320}
             />
           )}
@@ -854,7 +856,7 @@ export const GuardrailsPage: React.FC = () => {
               placeholder={t('guardrails.credentialFilter')}
               clearable
               forceFilter
-              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}
+              style={{ fontSize: 'var(--text-sm)', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}
               panelMinWidth={280}
             />
           )}
@@ -885,7 +887,7 @@ export const GuardrailsPage: React.FC = () => {
           ) : status && modelBreakers.length === 0 ? (
             <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-dim)', gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
               <div>{t('guardrails.emptyMatrix')}</div>
-              <Link className="btn" style={{ fontSize: '12px', textDecoration: 'none' }} to="/providers">
+              <Link className="btn" style={{ fontSize: 'var(--text-sm)', textDecoration: 'none' }} to="/providers">
                 {t('guardrails.emptyMatrixCta')}
               </Link>
             </div>

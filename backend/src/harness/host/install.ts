@@ -11,6 +11,7 @@ import type { ExecImpl } from './writers/plugin.js';
 import type { McpLaunch, ResolveFailureCode, ResolveOptions } from '../spi.js';
 import { applySkill, type InstallSkipped } from './writers/skill.js';
 import type { HarnessHostId, HarnessKind, HarnessScope, Pin, TrustTier } from '../types.js';
+import { oneLine } from '../common/text.js';
 
 /**
  * Install orchestrator (ADR-0015 §8): source adapter → normalized payload → kind writer.
@@ -50,6 +51,8 @@ export interface InstallRequest {
   confirm?: boolean;
   /** Injectable process runner for plugin subprocess installs. */
   execImpl?: ExecImpl;
+  /** Live mirror of subprocess output (the console's install-log view). */
+  onOutput?: (chunk: string, stream: 'stdout' | 'stderr') => void;
   /** Landing hosts. `kind: 'plugin'` requires EXACTLY one — the harness is part of its identity. */
   hosts: HarnessHostId[];
   /**
@@ -64,6 +67,8 @@ export interface InstallRequest {
    * always recorded first; ids are grammar-checked, deduped and capped, never looked up.
    */
   listedOn?: string[];
+  /** Per-profile plugin store (DSH): the profile the console chose. Absent = the adapter's default. */
+  profile?: string;
   fetchImpl?: typeof fetch;
   /** Project root for `project` scope; defaults to this process's cwd (threaded for tests). */
   projectRoot?: string;
@@ -73,6 +78,8 @@ export interface InstallRequest {
    * payload is resolved, no tarball is fetched, no config array is written.
    */
   marketplace?: { repo: string; plugin: string; name: string };
+  /** The market row's one-line description, recorded when the install resolves no registry line. */
+  description?: string;
 }
 
 /** Upper bound on the recorded listing surfaces: a row is browsed on a handful of catalogs, and an
@@ -220,8 +227,12 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
   let extSpec: string | undefined;
   let storeKey: string | undefined;
   let pin: Pin | undefined;
-  /** Resolved one-line description; travels to the manifest so installed rows are not blank. */
-  let description: string | null | undefined;
+  /**
+   * One-line description; travels to the manifest so installed rows are not blank. A market row's
+   * own line rides in on the request (whole for a native-marketplace install, which resolves no
+   * registry document); a resolver's answer wins when both exist.
+   */
+  let description = req.description === undefined ? undefined : oneLine(req.description);
   let trust: TrustTier;
 
   /**
@@ -257,7 +268,7 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     }
     const harness = req.hosts[0]!;
     const hostAdapter = adapterFor(harness);
-    const chain = (hostAdapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
+    const chain = (hostAdapter as Partial<PluginHost>)?.marketplaceSpec?.(req.profile) ?? null;
     // No CLI chain is fine when the runtime answers git-backed installs on its own loopback
     // web API (kimi web): the writer derives the repository URL from the canonical key and
     // posts it there. Only a host with NEITHER landing refuses.
@@ -297,7 +308,7 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     payloadName = resolved.payload.name;
     storeKey = resolved.storeKey;
     pin = resolved.pin;
-    description = resolved.description ?? null;
+    description = resolved.description ?? description;
     if (resolved.payload.kind === 'mcp') {
       // An operator-edited launch (the install form's parameter fields) wins over the generated
       // one; the resolved launch is the prefill, so an untouched form installs the resolver's own
@@ -417,7 +428,9 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         scope: req.scope,
         projectRoot: req.projectRoot,
         execImpl: req.execImpl,
+        ...(req.onOutput ? { onOutput: req.onOutput } : {}),
         ...(req.fetchImpl ? { fetchImpl: req.fetchImpl } : {}),
+        ...(req.profile ? { profile: req.profile } : {}),
         // A git-backed row names the runtime's own marketplace identity; the writer plans the
         // native chain from it (and ignores `spec`, which stays the plugin name for the record).
         ...(nativeMarketplace ? { marketplace: nativeMarketplace } : {}),

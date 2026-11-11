@@ -1,0 +1,911 @@
+/* Application shell and shared visual language. All colors derive from the active theme. */
+:root {
+  --shell-header-height: 64px;
+  /* The sidebar's two top rows (rail mark + panel brand) draw the border that
+     continues the header's bottom border, so they MUST be the header's height —
+     they used to be a private 72px, which left an 8px step at the seam. */
+  --shell-brand-height: var(--shell-header-height);
+  /* Rail style = rail + item list. Glyph rail (no captions, the default) is
+     Material 3's 68px icon rail; turning captions on widens it to 80px so the
+     64×56 caption tiles fit. The sidebar width is derived, so either way the
+     item list keeps its 196px and nothing overlaps. */
+  --shell-rail-width: 80px;
+  --shell-rail-glyph-width: 68px;
+  --shell-rail-panel-width: 196px;
+  --shell-sidebar-width: calc(var(--shell-rail-width) + var(--shell-rail-panel-width));
+  --shell-sidebar-narrow: 236px;
+  --shell-sidebar-compact: 68px;
+  --shell-content-max: 1720px;
+  --shell-radius: 14px;
+  --shell-control-radius: 9px;
+  /* One gutter for everything inside the sidebar panel: search field, section
+     labels, item tiles and footer all start on this line, so the column reads as
+     a single grid. One radius scale (--shell-control-radius) covers the search
+     field, the rail tiles and the item tiles for the same reason. */
+  --shell-nav-inset: 10px;
+  --shell-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body {
+  height: 100dvh;
+  min-height: 100dvh;
+  background-image: none;
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+}
+
+button, a, input, textarea, [role='button'] { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, [role='button']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+::selection { color: var(--text-main); background: var(--accent-border); }
+
+.app-shell { display: flex; width: 100%; height: 100dvh; min-height: 0; overflow: hidden; }
+.app-sidebar {
+  position: relative;
+  z-index: 40;
+  display: flex;
+  flex: 0 0 var(--shell-sidebar-width);
+  flex-direction: row;
+  width: var(--shell-sidebar-width);
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--text-main);
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--divider);
+  transition: width 180ms var(--shell-ease), flex-basis 180ms var(--shell-ease), transform 180ms var(--shell-ease);
+}
+.app-sidebar.is-compact { flex-basis: var(--shell-sidebar-compact); width: var(--shell-sidebar-compact); }
+/* A single-column style owns the whole sidebar, so it keeps the pre-rail width:
+   the item labels, not two columns, are what needs the room. */
+.app-sidebar.is-flat { flex-basis: var(--shell-sidebar-narrow); width: var(--shell-sidebar-narrow); }
+
+/* Two-column navigation: a fixed rail of group glyphs (level 1) and the
+   selected group's item list beside it (level 2). Both levels stay visible —
+   no collapse state and no hover reveal, so the panel always shows one group
+   completely. */
+.app-rail {
+  display: flex;
+  flex: 0 0 var(--shell-rail-width);
+  flex-direction: column;
+  align-items: center;
+  width: var(--shell-rail-width);
+  min-height: 0;
+  border-right: 1px solid var(--divider);
+}
+.app-rail .brand-mark-link {
+  display: flex;
+  flex: 0 0 var(--shell-brand-height);
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  border-bottom: 1px solid var(--divider);
+}
+.rail-nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  /* 4px is Material's rail item spacing: enough for eight tiles to read as eight
+     targets, tight enough that the column still scans as one list. */
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 0 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.rail-btn {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  /* Glyph tile (56×48 in the 68px rail); captions switch it to 64×56. Both clear
+     the 44px pointer-target floor. `--rail-tile` mirrors the width so the selected
+     indicator can compute the gutter it has to cross to reach the rail's edge. */
+  --rail-tile: 56px;
+  width: var(--rail-tile);
+  height: 48px;
+  color: var(--nav-section-text);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--shell-control-radius);
+  transition: color 140ms ease, background 140ms ease;
+}
+.rail-btn svg { stroke-width: 1.8; }
+.rail-btn:hover { color: var(--text-main); background: var(--well-bg); }
+/* Selected rail item: accent glyph plus a 2px bar flush to the rail's left edge.
+   A filled tile was tried twice and rejected — the tile is 56–64px wide but its
+   content is only 39px tall, so any fill reads as a large empty box around a
+   small glyph. The bar costs no visual area and still answers "which group am I
+   in" at a glance (VSCode activity bar uses the same mark). */
+.rail-btn.is-active { color: var(--accent); background: transparent; }
+.rail-btn.is-active::before {
+  content: '';
+  position: absolute;
+  /* (tile − rail) / 2 is exactly the gutter the tile sits in, so this lands on
+     x=0 of the rail at every rail width (68 glyph, 80 captions, 68 compact). */
+  left: calc((var(--rail-tile) - var(--shell-rail-width)) / 2);
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+}
+.rail-btn.is-active svg { stroke-width: 2.2; }
+.rail-btn.is-active .rail-btn-label { font-weight: var(--font-semibold); }
+/* Captions are opt-in (see lib/navStyle); they widen the rail, not the panel. */
+.app-sidebar.is-rail:not(.has-rail-labels) { --shell-rail-width: var(--shell-rail-glyph-width); }
+.app-sidebar.is-compact { --shell-rail-width: var(--shell-sidebar-compact); }
+.rail-btn.has-caption { flex-direction: column; gap: 3px; --rail-tile: 64px; height: 56px; }
+.rail-btn-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  line-height: 1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-sidebar.is-compact .rail-btn-label { display: none; }
+.app-sidebar.is-compact .rail-btn.has-caption { --rail-tile: 56px; height: 48px; }
+.rail-footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  width: 100%;
+  padding: 8px 0 12px;
+}
+
+.app-navpanel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* Query container for the footer's priority rules below: the panel's width is
+     set by the nav style, not by the viewport, so a media query would fire at
+     the wrong widths. */
+  container-type: inline-size;
+}
+.panel-brand {
+  display: flex;
+  flex: 0 0 var(--shell-brand-height);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 var(--shell-nav-inset) 0 12px;
+  border-bottom: 1px solid var(--divider);
+}
+.brand-mark-link { display: inline-flex; flex: 0 0 auto; margin-right: 3px; color: inherit; text-decoration: none; }
+.brand-mark-link:hover .brand-mark { background: color-mix(in srgb, var(--btn-primary-bg) 88%, #fff); }
+.brand-mark {
+  display: inline-flex;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: var(--btn-primary-text);
+  background: var(--btn-primary-bg);
+  border-radius: 11px;
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.brand-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; white-space: nowrap; }
+.brand-name { display: block; min-width: 0; color: inherit; text-decoration: none; }
+.brand-update { color: var(--accent); font-weight: var(--font-semibold); text-decoration: none; }
+.brand-update:hover { text-decoration: underline; }
+.brand-copy strong {
+  display: block;
+  overflow: hidden;
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  letter-spacing: var(--tracking-tight);
+  text-overflow: ellipsis;
+}
+.brand-copy small {
+  overflow: hidden;
+  margin-top: 1px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+}
+
+.app-icon-button {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--shell-control-radius);
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 100ms ease;
+}
+.app-icon-button:hover { color: var(--text-main); background: var(--surface-hover); border-color: var(--divider); }
+.app-icon-button:active { transform: scale(0.94); }
+.sidebar-collapse { width: 32px; height: 32px; }
+
+.sidebar-search {
+  display: flex;
+  flex: 0 0 40px;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  margin: 14px var(--shell-nav-inset) 10px;
+  padding: 0 var(--shell-nav-inset);
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  background: var(--well-bg);
+  border: 1px solid var(--divider);
+  border-radius: var(--shell-control-radius);
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.sidebar-search:hover { color: var(--text-main); background: var(--surface-hover); border-color: var(--card-border-hover); }
+.sidebar-search span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 1px 6px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+  background: var(--chip-bg);
+  border: 1px solid var(--divider);
+  border-radius: 5px;
+  box-shadow: 0 1px 0 var(--divider);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 2px var(--shell-nav-inset) 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+/* Section name for the panel's single group — a plain label, not a control:
+   the rail is what switches groups. */
+.panel-heading {
+  flex: 0 0 auto;
+  padding: 4px var(--shell-nav-inset) 6px;
+  color: var(--nav-section-text);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+/* Flat style stacks one label per group inside the scroll region; the gap above
+   a second label is what separates two groups. Folded groups are wrapped, so the
+   spacing moves to the wrapper in that mode. */
+.app-sidebar.is-flat .sidebar-nav > .panel-heading:not(:first-child) { padding-top: 12px; }
+.app-sidebar.is-flat .sidebar-nav > .nav-group + .nav-group { margin-top: 12px; }
+/* Foldable headings: same typography as a static label, plus button behaviour. */
+.panel-heading.is-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
+  transition: color 140ms ease, background 140ms ease;
+}
+.panel-heading.is-trigger:hover { color: var(--text-main); background: var(--well-bg); }
+.panel-heading.is-trigger span { flex: 1; }
+.panel-heading.is-trigger svg { flex: 0 0 auto; transition: transform 160ms ease; }
+.panel-heading.is-trigger svg.is-collapsed { transform: rotate(-90deg); }
+.nav-group-items { display: flex; flex-direction: column; gap: 2px; }
+/* Compact rows: 40px → 32px is the difference between scrolling the catalogue
+   and seeing it whole, which is the only reason this option exists. */
+.app-sidebar.is-dense .sidebar-nav .panel-heading { padding-block: 1px 3px; }
+.app-sidebar.is-dense .sidebar-nav > .panel-heading:not(:first-child) { padding-top: 8px; }
+.app-sidebar.is-dense .sidebar-nav > .nav-group + .nav-group { margin-top: 8px; }
+.app-sidebar.is-dense .nav-item { min-height: 32px; padding: 4px var(--shell-nav-inset); }
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px var(--shell-nav-inset);
+  color: var(--nav-item-text);
+  /* 14px at medium, not semibold: nav labels are scanned, not read, so weight is
+     what the active row should win on. Semibold on every row (plus bold on the
+     selected one) made the whole column shout and flattened the selection.
+     M3 list item is 14sp, its rail label 12sp — that part was already right. */
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--shell-control-radius);
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.nav-item svg { flex: 0 0 auto; stroke-width: 1.8; }
+.nav-item:hover { color: var(--text-main); background: var(--well-bg); }
+.nav-item.is-active {
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+  background: var(--accent-bg);
+  border-color: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nav-item.is-active svg { stroke-width: 2.2; }
+.nav-item.is-active .nav-item-badge {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.nav-item-label { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nav-item-badge {
+  min-width: 20px;
+  padding: 0 5px;
+  color: var(--nav-badge-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  background: var(--nav-badge-bg);
+  line-height: var(--leading-18);
+  text-align: center;
+  background: var(--chip-bg);
+  border-radius: 999px;
+}
+
+.sidebar-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 10px var(--shell-nav-inset);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  border-top: 1px solid var(--divider);
+}
+.sidebar-status-row { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; min-width: 0; }
+.sidebar-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.sidebar-footer button:hover { color: var(--text-main); }
+.sidebar-env { min-width: 0; overflow: hidden; }
+.sidebar-env span { overflow: hidden; max-width: 64px; white-space: nowrap; text-overflow: ellipsis; }
+/* Footer priority. Port + status dot identify the gateway and say whether it is
+   reachable; the quota chip is live state; the environment name is the only one
+   with a second route to the same fact (it links to /environments and the header
+   breadcrumb names it), so it is the first to go when the panel is tight. The
+   rail style's panel is 196px and the footer needs ~179px for all three, so the
+   flat style (236px) keeps the env chip and the rail style drops it. */
+@container (max-width: 200px) {
+  .sidebar-env { display: none; }
+}
+.status-dot { display: inline-block; flex: 0 0 7px; width: 7px; height: 7px; background: var(--text-dim); border-radius: 50%; }
+.status-dot.is-online, .header-health.is-online .status-dot {
+  background: var(--accent-emerald);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-emerald) 12%, transparent);
+}
+
+.app-workspace {
+  /* Shared by the header and the update banner (a sibling, so the variable
+     must live on their common parent) — one inset keeps their content edges
+     aligned with each other. */
+  --header-pad-x: clamp(18px, 2.3vw, 32px);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.app-header {
+  position: relative;
+  z-index: 30;
+  display: flex;
+  flex: 0 0 var(--shell-header-height);
+  align-items: center;
+  /* flex-start + auto margin on the action cluster: the leftover space must
+     fall between the heading and the actions, never inside the title bar's
+     right edge (space-between used to open a dead gap before the window
+     controls once they became a third header child). */
+  justify-content: flex-start;
+  gap: 20px;
+  min-width: 0;
+  padding: 0 var(--header-pad-x);
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--divider);
+  backdrop-filter: blur(18px);
+}
+/* Desktop shell title bar: the window is frameless, so the header carries the
+   drag region and these edge-to-edge controls (rendered only inside Tauri). */
+.window-controls { display: flex; flex: 0 0 auto; align-self: stretch; margin-right: calc(var(--header-pad-x) * -1); margin-left: 4px; }
+.window-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  transition: color 120ms ease, background 120ms ease;
+}
+.window-control:hover { color: var(--text-main); background: var(--surface-hover); }
+.window-control:active { background: var(--well-bg); }
+.window-control:focus-visible { outline: 1px solid var(--accent-border); outline-offset: -2px; }
+.window-control.is-close:hover,
+.window-control.is-close:active { color: #fff; background: var(--accent-rose); }
+.header-heading, .header-actions { display: flex; align-items: center; min-width: 0; }
+.header-heading { gap: 16px; }
+.header-breadcrumb { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: var(--text-md); white-space: nowrap; }
+.header-breadcrumb span { overflow: hidden; max-width: 180px; color: var(--text-dim); text-overflow: ellipsis; }
+.header-breadcrumb i { color: var(--divider); font-style: normal; }
+.header-breadcrumb strong { overflow: hidden; color: var(--text-main); font-size: var(--text-lg); font-weight: var(--font-semibold); letter-spacing: var(--tracking-tight); text-overflow: ellipsis; }
+.header-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  background: var(--well-bg);
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+}
+.header-actions { flex: 0 0 auto; gap: 6px; margin-left: auto; }
+.header-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 218px;
+  height: 36px;
+  margin-right: 6px;
+  padding: 0 10px;
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  background: var(--well-bg);
+  border: 1px solid var(--divider);
+  border-radius: var(--shell-control-radius);
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.header-search:hover { color: var(--text-main); background: var(--surface-hover); border-color: var(--card-border-hover); }
+.header-search span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.header-preferences { display: flex; align-items: center; gap: 1px; color: var(--text-dim); }
+.header-separator { width: 1px; height: 20px; margin: 0 4px; background: var(--divider); }
+/* Repository link reusing .app-icon-button: an anchor needs the underline and
+   the link cursor neutralised to sit in the icon row as an icon button. */
+.header-github { text-decoration: none; }
+.header-breaker > span {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  color: var(--btn-primary-text);
+  font-size: var(--text-3xs);
+  font-weight: var(--font-bold);
+  line-height: var(--leading-16);
+  text-align: center;
+  background: var(--accent-rose);
+  border-radius: 999px;
+}
+
+/* Download shelf (desktop only): the Tauri window has no browser download
+   surface, so this panel owns progress, status and the chosen save path. */
+.download-center { position: relative; display: flex; }
+.download-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  color: var(--btn-primary-text);
+  font-size: var(--text-3xs);
+  font-weight: var(--font-bold);
+  line-height: var(--leading-16);
+  text-align: center;
+  background: var(--accent);
+  border-radius: 999px;
+}
+.download-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow: hidden;
+  color: var(--text-main);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--shell-control-radius);
+  box-shadow: var(--card-shadow-hover);
+}
+.download-panel-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 8px 14px;
+  border-bottom: 1px solid var(--divider);
+}
+.download-panel-head strong { font-size: var(--text-sm); font-weight: var(--font-semibold); }
+.download-panel-head-actions { display: flex; align-items: center; gap: 2px; }
+.download-close { width: 26px; height: 26px; }
+.download-link {
+  padding: 2px 4px;
+  color: var(--text-dim);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.download-link:hover { color: var(--accent); }
+.download-list { margin: 0; padding: 6px; overflow: auto; list-style: none; }
+.download-row { padding: 9px 8px; border-radius: 8px; }
+.download-row + .download-row { border-top: 1px solid var(--divider); }
+.download-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.download-name { overflow: hidden; font-size: var(--text-sm); font-weight: var(--font-medium); text-overflow: ellipsis; white-space: nowrap; }
+.download-state { flex: 0 0 auto; color: var(--text-dim); font-size: var(--text-xs); }
+.download-state.is-done { color: var(--accent-emerald); }
+.download-state.is-failed { color: var(--accent-rose); }
+.download-bar {
+  height: 4px;
+  margin: 7px 0 5px;
+  overflow: hidden;
+  background: var(--well-bg);
+  border-radius: 999px;
+}
+.download-bar > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width 120ms linear; }
+.download-bar.is-indeterminate > span { animation: download-indeterminate 1.1s ease-in-out infinite alternate; }
+@keyframes download-indeterminate {
+  from { margin-left: 0; }
+  to { margin-left: 65%; }
+}
+.download-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-dim); font-size: var(--text-xs); }
+.download-path {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+.download-path > span { flex: 1; overflow: hidden; direction: rtl; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.download-mini { width: 24px; height: 24px; }
+.download-error { margin-top: 4px; color: var(--accent-rose); font-size: var(--text-xs); overflow-wrap: anywhere; }
+/* Release update strip: one line between the header and the page canvas.
+   Accent-tinted (a new release is information, not an alarm) and dismissible
+   until the next version. */
+.update-banner {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 6px var(--header-pad-x);
+  color: var(--text-main);
+  font-size: var(--text-sm);
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--accent-border);
+}
+.update-banner > svg { flex: 0 0 auto; color: var(--accent); }
+.update-banner-text { flex: 0 1 auto; min-width: 0; }
+.update-banner-link {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.update-banner-link:hover { text-decoration: underline; }
+.update-banner-dismiss {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--shell-control-radius);
+  margin-left: auto;
+}
+.update-banner-dismiss:hover { color: var(--text-main); background: var(--surface-hover); }
+.mobile-menu, .sidebar-scrim { display: none; }
+.app-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(20px, 2.3vw, 32px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.page-canvas { width: 100%; max-width: var(--shell-content-max); height: 100%; margin: 0 auto; }
+
+/* Shared surfaces: quiet framing and no decorative hover lift. */
+.card {
+  padding: 22px;
+  background: var(--card-bg);
+  border-color: var(--card-border);
+  border-radius: var(--shell-radius);
+  box-shadow: var(--card-shadow);
+  backdrop-filter: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.card:hover { border-color: var(--card-border); box-shadow: var(--card-shadow); }
+.card-header { margin-bottom: 18px; }
+.card-title { font-size: var(--text-base); font-weight: var(--font-semibold); letter-spacing: var(--tracking-tight); }
+.sub-card { border-radius: 11px; }
+.btn {
+  min-height: 34px;
+  padding: 7px 13px;
+  font-size: var(--text-sm);
+  border-radius: var(--shell-control-radius);
+  box-shadow: none;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, filter 140ms ease, transform 100ms ease;
+}
+.btn:hover { box-shadow: none; transform: none; }
+.btn:active { transform: scale(0.97); }
+.btn-sm { min-height: 30px; }
+.btn-icon { min-width: 30px; height: 30px; padding: 0 6px; }
+.input { min-height: 36px; border-radius: var(--shell-control-radius); transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease; }
+.input::placeholder, input::placeholder, textarea::placeholder { color: var(--text-dim); opacity: 0.78; }
+.scroll-table-body tr, tbody tr { transition: background 120ms ease; }
+.scroll-table-body tr:hover, tbody tr:hover { background: var(--well-bg); }
+
+/* Shared page-intro and metric primitives. */
+.page-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+.page-intro-copy { min-width: 0; }
+/* Page title is one step above .card-title (14px) and the header breadcrumb
+   (15px), not a hero billboard: a 24-28px h1 over 13px prose read as two
+   unrelated type scales in the same block. */
+.page-intro h1 { color: var(--text-main); font-size: var(--text-2xl); font-weight: var(--font-semibold); line-height: var(--leading-title); letter-spacing: var(--tracking-tight); }
+.page-intro p { max-width: 72ch; margin-top: 6px; color: var(--text-muted); font-size: var(--text-md); line-height: var(--leading-relaxed); }
+/* Provenance ("data source: …") is metadata, not prose: it gets its own
+   smaller mono line so it never wraps the description into three rows. */
+.page-intro p.page-intro-source { max-width: 72ch; margin-top: 4px; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.page-intro-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding-top: 3px; }
+.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.metric-card { position: relative; min-width: 0; padding: 20px; overflow: hidden; }
+.metric-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: var(--text-sm); font-weight: var(--font-medium); }
+.metric-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; color: var(--accent); background: var(--accent-bg); border-radius: 9px; }
+.metric-value { margin-top: 14px; overflow: hidden; color: var(--text-main); font-size: clamp(var(--text-4xl), 2.2vw, var(--text-6xl)); font-weight: var(--font-bold); font-variant-numeric: tabular-nums; line-height: var(--leading-metric); letter-spacing: var(--tracking-tight); text-overflow: ellipsis; }
+.metric-sub { min-height: 19px; margin-top: 9px; overflow: hidden; color: var(--text-dim); font-size: var(--text-sm); line-height: var(--leading-normal); text-overflow: ellipsis; }
+.page-stack { display: flex; flex-direction: column; gap: 0; height: 100%; }
+.page-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.page-title-row .app-icon-button { margin-left: -8px; }
+.page-control-label { color: var(--text-muted); font-size: var(--text-sm); white-space: nowrap; }
+.active-filter { display: inline-flex; align-items: center; gap: 6px; max-width: min(420px, 100%); padding: 4px 8px; color: var(--accent); font-family: var(--font-mono); font-size: var(--text-xs); background: var(--accent-bg); border: 1px solid var(--accent-border); border-radius: 7px; }
+.active-filter button { display: inline-flex; padding: 3px; color: inherit; cursor: pointer; background: transparent; border: 0; border-radius: 4px; }
+.active-filter button:hover { background: var(--accent-bg); }
+.filter-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: -4px -4px 16px; padding: 4px 4px 16px; border-bottom: 1px solid var(--divider); }
+.table-surface { padding-top: 20px; }
+.pipeline-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.pipeline-grid .sub-card { position: relative; border-color: var(--divider); }
+.pipeline-grid .sub-card > div:first-child { color: var(--text-dim) !important; font-family: var(--font-mono); letter-spacing: var(--tracking-wide); }
+.usage-metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.usage-metric { min-width: 0; padding: 16px 18px; }
+.usage-metric-label { overflow: hidden; color: var(--text-muted); font-size: var(--text-sm); white-space: nowrap; text-overflow: ellipsis; }
+.usage-metric-value { margin-top: 7px; overflow: hidden; font-size: var(--text-4xl); font-weight: var(--font-bold); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tight); text-overflow: ellipsis; }
+.usage-metric-sub { margin-top: 4px; color: var(--text-dim); font-size: var(--text-sm); }
+.is-spinning { animation: ocr-spin 0.8s linear infinite; }
+
+/* Keyboard-first command surface. */
+.command-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(14vh, 128px) 20px 20px;
+  background: var(--scrim);
+  backdrop-filter: blur(8px);
+  animation: ocr-fade-in 140ms ease-out;
+}
+.command-panel {
+  width: min(640px, 100%);
+  max-height: min(640px, 76dvh);
+  overflow: hidden;
+  color: var(--text-main);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-hover);
+  border-radius: 16px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+  animation: ocr-pop-in 180ms var(--shell-ease);
+}
+.command-input-row { display: flex; align-items: center; gap: 11px; min-height: 62px; padding: 10px 12px 10px 18px; color: var(--text-dim); border-bottom: 1px solid var(--divider); }
+.command-input-row input { flex: 1; min-width: 0; height: 40px; padding: 0; color: var(--text-main); font-size: var(--text-lg); background: transparent; border: 0; outline: 0; }
+.command-results { max-height: min(540px, calc(76dvh - 62px)); padding: 8px; overflow-y: auto; }
+.command-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 11px;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+.command-option[aria-selected='true'] { color: var(--text-main); background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 14%, transparent); }
+.command-option-icon { display: inline-flex; flex: 0 0 34px; align-items: center; justify-content: center; width: 34px; height: 34px; color: var(--text-dim); background: var(--well-bg); border-radius: 9px; }
+.command-option[aria-selected='true'] .command-option-icon { color: var(--accent); }
+.command-option-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.command-option-copy strong { overflow: hidden; font-size: var(--text-md); font-weight: var(--font-semibold); white-space: nowrap; text-overflow: ellipsis; }
+.command-option-copy small { margin-top: 1px; color: var(--text-dim); font-size: var(--text-xs); }
+.command-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 56px 20px; color: var(--text-dim); font-size: var(--text-md); }
+
+/* Dialogs and transient surfaces share the same elevation and typography. */
+[data-ocr-dialog] > .card { border-radius: 16px; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28); }
+[data-ocr-dialog] h3 { font-size: var(--text-xl); letter-spacing: var(--tracking-tight); }
+
+@media (max-width: 1280px) {
+  .header-health { display: none; }
+  .header-search { width: 176px; }
+}
+@media (max-width: 1080px) {
+  .header-search { width: 38px; padding: 0; justify-content: center; }
+  .header-search span, .header-search kbd, .header-preferences > svg { display: none; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .app-sidebar, .app-sidebar.is-compact {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 90;
+    width: min(292px, calc(100vw - 44px));
+    transform: translateX(-102%);
+    box-shadow: 20px 0 60px rgba(0, 0, 0, 0.18);
+  }
+  .app-sidebar.is-mobile-open { transform: translateX(0); }
+  /* The drawer always shows both columns: a persisted compact flag must not
+     leave it with a rail whose clicks cannot reveal anything. */
+  .sidebar-collapse { display: none; }
+  .sidebar-scrim { position: fixed; inset: 0; z-index: 80; display: block; width: 100%; height: 100%; padding: 0; cursor: pointer; background: var(--scrim); border: 0; }
+  .mobile-menu { display: inline-flex; }
+  .app-header { padding-inline: 16px; }
+  .app-main { padding: 20px 16px; }
+}
+@media (max-width: 640px) {
+  :root { --shell-header-height: auto; }
+  /* The header wraps to auto height on phones, but the rail is a drawer there
+     and its brand row must keep a fixed height for the panel beside it. */
+  :root { --shell-brand-height: 64px; }
+  .app-header { flex-wrap: wrap; gap: 6px; padding-block: 10px; }
+  .header-heading { width: 100%; min-height: 36px; }
+  .header-breadcrumb span, .header-breadcrumb i { display: none; }
+  .header-actions { width: 100%; justify-content: flex-end; }
+  .header-search { flex: 1; width: auto; margin-right: 0; }
+  .header-actions > .input-ghost { width: 116px !important; }
+  .header-separator { display: none; }
+  /* The actions row is already at its width budget on phones (search + two
+     comboboxes + three icon buttons); the repository link yields first. */
+  .header-github { display: none; }
+  .page-intro { flex-direction: column; gap: 16px; }
+  .page-intro-actions { width: 100%; padding-top: 0; }
+  .metric-grid, .usage-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pipeline-grid { grid-template-columns: 1fr; }
+  .filter-toolbar { align-items: stretch; }
+  .filter-toolbar > div:first-child { flex-basis: 100%; }
+  .filter-toolbar > .input { flex: 1 1 140px; width: auto !important; }
+  .settings-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .settings-header .card-title { grid-row: 1; white-space: nowrap; }
+  .settings-save { grid-column: 2; grid-row: 1; }
+  .settings-nav {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-wrap: nowrap !important;
+    min-width: 0;
+    padding-bottom: 4px;
+    overflow-x: auto;
+  }
+  .settings-nav > .btn { flex: 0 0 auto; }
+  .command-backdrop { padding: 8px; }
+  .command-panel { max-height: calc(100dvh - 16px); border-radius: 13px; }
+  .command-input-row kbd { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Overview page "star the repo" nudge (components/StarReminder.tsx): one
+   quiet row that yields to the metric grid below it. */
+.star-reminder {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+}
+.star-reminder-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: var(--accent-star);
+  background: color-mix(in srgb, var(--accent-star) 12%, transparent);
+  border-radius: 10px;
+}
+.star-reminder-copy { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+.star-reminder-copy strong { color: var(--text-main); font-size: var(--text-sm); font-weight: var(--font-semibold); }
+.star-reminder-copy p { margin: 0; color: var(--text-dim); font-size: var(--text-xs); }
+.star-reminder-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.star-reminder-actions .btn { text-decoration: none; }
+.star-reminder-dismiss {
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+}
+.star-reminder-dismiss:hover { color: var(--text-main); background: var(--bg-elev); }
+@media (max-width: 640px) {
+  .star-reminder { flex-wrap: wrap; }
+  .star-reminder-copy { flex-basis: calc(100% - 48px); }
+  .star-reminder-actions { margin-left: 48px; }
+}

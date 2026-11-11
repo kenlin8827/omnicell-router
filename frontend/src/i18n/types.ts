@@ -83,6 +83,9 @@ export interface TranslationDict {
     /** Same figures, for a source that publishes no total: `{total}` is a LOWER BOUND (rows known to
      *  exist), never a fabricated exact count. */
     summaryAtLeast: string;
+    /** Same figures with the caller's own unit word (`{unit}`), for pagers
+     *  whose `total` counts something other than plain rows (capture: turns). */
+    summaryUnit: string;
     perPage: string;
   };
   /** Live client-simulation chat page (/chat): one turn per gateway call,
@@ -139,7 +142,17 @@ export interface TranslationDict {
     factModel: string;
     factTier: string;
     factLayer: string;
+    /** Tooltip: what layer0 / entry / layer2 mean for this turn. */
+    factLayerTip: string;
+    /** Friendly chip values for the wire's layer enum. */
+    layer0: string;
+    layerEntry: string;
+    layer2: string;
     factLatency: string;
+    /** Decode-TPS chip label (the value is the formatted rate only). */
+    factRate: string;
+    /** Tooltip: gateway-measured decode window and why buffered turns show '—'. */
+    factRateTip: string;
     factFailover: string;
     factThinking: string;
     factBreaker: string;
@@ -211,6 +224,7 @@ export interface TranslationDict {
     quota: string;
     captures: string;
     settings: string;
+    pluginsManage: string;
     environments: string;
     yaml: string;
     auto: string;
@@ -230,7 +244,18 @@ export interface TranslationDict {
     mcp: string;
     plugins: string;
     grpSystem: string;
+    shortOverview: string;
+    shortAccess: string;
+    shortUpstream: string;
+    shortTraffic: string;
+    shortSafety: string;
+    shortObservability: string;
+    shortHarness: string;
+    shortSystem: string;
     searchPlaceholder: string;
+    collapse: string;
+    expand: string;
+    openMenu: string;
     consoleTag: string;
     /** Brand header tagline suffix; interpolates the runtime gateway version. */
     version: string;
@@ -255,14 +280,15 @@ export interface TranslationDict {
     restartFailed: string;
     restartTimeout: string;
     switchLang: string;
+    /** Frameless title-bar controls (components/WindowControls.tsx). */
+    minimize: string;
+    maximize: string;
+    restore: string;
+    close: string;
     themes: {
-      onyx: string;
-      indigo: string;
-      emerald: string;
-      violet: string;
-      rose: string;
-      azure: string;
-      amber: string;
+      light: string;
+      dark: string;
+      system: string;
     };
   };
   overview: {
@@ -297,6 +323,27 @@ export interface TranslationDict {
     openBreakers: string;
     breakersDesc: string;
     statusOffline: string;
+  };
+  /** Dismissible "star the repository on GitHub" nudge on the Overview page
+   *  (components/StarReminder.tsx). */
+  starReminder: {
+    title: string;
+    body: string;
+    cta: string;
+    dismiss: string;
+    /** Header repository button tooltip before the CTA was used. */
+    footerStar: string;
+    /** Same tooltip after the operator starred — neutral wording. */
+    footerRepo: string;
+  };
+  /** Release update strip between the header and the page canvas
+   *  (components/Layout.tsx); the async check lives on the gateway
+   *  (backend/src/update/check.ts). */
+  update: {
+    /** Interpolates {version} (newest release) and {current} (this gateway). */
+    banner: string;
+    openRelease: string;
+    dismiss: string;
   };
   tierPolicy: {
     title: string;
@@ -424,13 +471,31 @@ export interface TranslationDict {
     refreshConnected: string;
     refreshDone: string;
     refreshFailed: string;
+    copyFailed: string;
     connectBtn: string;
+    connectMethodKey: string;
+    webLoginBtn: string;
+    webLoginTip: string;
+    webLoginTitle: string;
+    webLoginStarting: string;
+    webLoginWaiting: string;
+    webLoginDone: string;
+    webLoginFailed: string;
+    webLoginAuthUrlLabel: string;
+    webLoginOpenBrowser: string;
+    webLoginCopyUrl: string;
+    webLoginSubmitLabel: string;
+    webLoginSubmitPlaceholder: string;
+    webLoginSubmitBtn: string;
     connectOk: string;
     testBtn: string;
     testing: string;
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOkMsg: string;
     testFailMsg: string;
+    probeDetailTitle: string;
+    probeDetailOpen: string;
+    probeDetailCopied: string;
     testAllBtn: string;
     testAllRunning: string;
     testAllDone: string;
@@ -455,6 +520,7 @@ export interface TranslationDict {
     reasonNoTestableModel: string;
     reasonNoBaseUrl: string;
     reasonCredentialNotTestable: string;
+    reasonNoEnabledCredential: string;
     /** Model-pull failures (pull_* reasonCodes). */
     pullHttp: string;
     pullNonJson: string;
@@ -498,13 +564,31 @@ export interface TranslationDict {
     alreadyConnected: string;
     tabCatalog: string;
     tabCustom: string;
-    hideConnected: string;
+    filterAll: string;
+    filterUnconnected: string;
+    filterOrigin: string;
+    filterOriginAll: string;
+    filterOriginBuiltin: string;
+    filterOriginCustom: string;
+    filterOriginPlugin: string;
+    pluginTag: string;
+    pluginOriginTip: string;
+    addCredentialQuick: string;
+    addCredentialQuickTip: string;
     searchConnected: string;
     apiKeyPlaceholder: string;
     idAndUrlRequired: string;
-    credCount: string;
     emptyConnected: string;
     pmManage: string;
+    /** Provider-level operator takedown (whole provider out of routing). */
+    providerDisable: string;
+    providerEnable: string;
+    providerDisableConfirmTitle: string;
+    /** {n} = number of models leaving the pool; nothing is deleted. */
+    providerDisableConfirmDesc: string;
+    providerDisabledBadge: string;
+    providerDisabledToast: string;
+    providerEnabledToast: string;
     pmNotInCatalog: string;
     pmTitle: string;
     pmEmpty: string;
@@ -569,7 +653,6 @@ export interface TranslationDict {
     pmAutofillNoId: string;
     pmFilterPlaceholder: string;
     pmNoMatch: string;
-    pmEmptyBadge: string;
     pmEmptyBadgeTip: string;
     /** Bound credential store — status badge kind labels. */
     storeKindOpencodeV2: string;
@@ -673,9 +756,10 @@ export interface TranslationDict {
     credentialEnableTip: string;
     credentialDisabledOk: string;
     credentialEnabled: string;
-    credentialsAllDisabled: string;
-    /** Per-provider credential zoom (enlarged table dialog on KeysPage). */
-    credentialZoom: string;
+    /** Per-provider credential maintenance (enlarged table dialog on KeysPage). */
+    credentialManage: string;
+    pmEmptyBadge: string;
+    noBaseUrl: string;
     credentialZoomDesc: string;
     /** Zoom table: dim 'normal' word shown when a row carries no badges. */
     credentialZoomStatusNormal: string;
@@ -1124,6 +1208,10 @@ hiddenBadge: string;
     emptySessions: string;
     copiedSessionId: string;
     copiedPrompt: string;
+    /** Toast after copying the client-minted conversation id (alias half). */
+    copiedClientRef: string;
+    /** Tooltip on the client conversation id under the gateway session id. */
+    clientRefTooltip: string;
     thinkAutoTip: string;
     thinkClientTip: string;
     copyFailed: string;
@@ -1311,11 +1399,16 @@ hiddenBadge: string;
     refreshUnavailable: string;
     searchPlaceholder: string;
     pairsEmpty: string;
+    /** Status segmented control next to the search: healthy (default —
+     *  hides sync-failed pairs), failed only, or everything. */
+    filterOk: string;
+    filterFailed: string;
+    filterAll: string;
     /** Summary strip chips: covered-pair count, nearly-drained window count,
-     *  failed-sync pair count, and the earliest upcoming window reset. */
+     *  and the earliest upcoming window reset. (Failed-sync pairs are counted
+     *  on the status segment's filterFailed, not repeated here.) */
     sumPairs: string;
     sumLow: string;
-    sumStale: string;
     sumNextReset: string;
     stateProbed: string;
     stateDeclared: string;
@@ -1413,6 +1506,7 @@ hiddenBadge: string;
 
   captures: {
     title: string;
+    loadFailed: string;
     refresh: string;
     dir: string;
     retention: string;
@@ -1439,7 +1533,21 @@ hiddenBadge: string;
     /** Detail-pane auto-refresh toggle label + title hint. */
     autoRefresh: string;
     autoRefreshHint: string;
-    turnsUnit: string;
+    /** Detail header: user-prompt round count and client-request count are
+     *  separate axes and must never share a label. */
+    roundsUnit: string;
+    requestsUnit: string;
+    /** Prompt-round navigator: "all rounds" option + labels. */
+    roundAll: string;
+    roundNoPrompt: string;
+    roundSteps: string;
+    /** Header tally tooltip: page requests vs the archive-wide exact count. */
+    requestsCountHint: string;
+    /** Header tally tooltip: user-prompt rounds over the whole archive. */
+    roundsCountHint: string;
+    /** Row tooltips explaining the two independent numbering axes. */
+    roundSeqHint: string;
+    requestSeqHint: string;
     /** Timeline header summary: total gateway latency over the displayed turns. */
     totalTime: string;
     totalTimeHint: string;
@@ -1596,6 +1704,7 @@ hiddenBadge: string;
     removeNoteConfig: string;
     removeNoteDecl: string;
     removeNoteCli: string;
+    removeNotePluginCli: string;
     installedBadge: string;
     targetInstalled: string;
     targetTakenHint: string;
@@ -1633,8 +1742,9 @@ hiddenBadge: string;
     registryCounts: string;
     starsRegistryHint: string;
     detailTranslate: string;
+    detailRetranslate: string;
     detailTranslating: string;
-    detailTruncated: string;
+    detailTranslatingProgress: string;
     detailExpand: string;
     detailCollapse: string;
     marketSearch: string;
@@ -1644,11 +1754,20 @@ hiddenBadge: string;
     marketSortUpdated: string;
     marketSortDownloads: string;
     marketSortRecent: string;
+    marketSortAllTime: string;
+    marketSortTrending: string;
+    marketSortHot: string;
     marketSortCatalog: string;
     marketSortLabel: string;
     marketRefresh: string;
     marketRefreshHint: string;
     installScope: string;
+    installProfile: string;
+    profileWillInitialize: string;
+    profileInstalled: string;
+    profileCustom: string;
+    profileCustomPlaceholder: string;
+    profileCustomInvalid: string;
     scopeGlobal: string;
     scopeProject: string;
     scopeGlobalHint: string;
@@ -1670,6 +1789,8 @@ hiddenBadge: string;
     installDone: string;
     installPartial: string;
     installFailed: string;
+    installLog: string;
+    installLogWaiting: string;
     multiSkillsTitle: string;
     multiSkillsHint: string;
     multiSkillsPick: string;
@@ -1685,6 +1806,7 @@ hiddenBadge: string;
     state: string;
     stateClean: string;
     stateDirty: string;
+    pluginDisabled: string;
     stateMissing: string;
     stateForeign: string;
     stateShadowed: string;
@@ -1941,6 +2063,9 @@ hiddenBadge: string;
       piDev: string;
       clawhubCatalog: string;
       clawhubSearch: string;
+      skillsShBoard: string;
+      skillsShSearch: string;
+      dshPluginNet: string;
     };
   },
 
@@ -1949,6 +2074,9 @@ hiddenBadge: string;
     desc: string;
     refresh: string;
     configPath: string;
+    /** Cursor owns launcher scripts, not a config file: the card lists every
+     *  launcher path (primary + CLI) under this label. */
+    launcherPaths: string;
     fileExists: string;
     backupExists: string;
     yes: string;
@@ -1969,6 +2097,8 @@ hiddenBadge: string;
     apiKey: string;
     apiKeySelect: string;
     apiKeyRequired: string;
+    apiKeyUnusable: string;
+    gatewayKeyRequired: string;
     versionOk: string;
     versionBelow: string;
     proxyErrForwardProxyDisabled: string;
@@ -1978,6 +2108,39 @@ hiddenBadge: string;
     proxyErrServiceStart: string;
     proxyErrNotActive: string;
     proxyTeardownOk: string;
+    proxySetupOk: string;
+    cursorHint: string;
+    cursorErrForwardProxyDisabled: string;
+    cursorErrCaMissing: string;
+    cursorErrNotFound: string;
+    cursorSetupOk: string;
+    cursorTeardownOk: string;
+    clientErrNotActive: string;
+    cursorErrRemoveFailed: string;
+    gatewayModels: string;
+    gatewayModelsInfo: string;
+    gatewayReplace: string;
+    gatewayModelList: string;
+    gatewayDefaultModel: string;
+    gatewayForceModel: string;
+    gatewaySaveDropped: string;
+    gatewayCatalogRestartNotice: string;
+    gatewayAdvancedSettings: string;
+    gatewayAppendSummary: string;
+    gatewayReplaceSummary: string;
+    gatewayConfigureModels: string;
+    gatewayInstallPlugin: string;
+    gatewayPluginMissing: string;
+    gatewayPluginDisabled: string;
+    gatewayPluginNotLoaded: string;
+    gatewayPluginRequired: string;
+    qoderErrNotFound: string;
+    qoderHint: string;
+    qoderSetupOk: string;
+    warnCaNotTrusted: string;
+    warnCaTrustUnknown: string;
+    warnProxyNotRunning: string;
+    qoderTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;
     models: string;
@@ -1988,7 +2151,11 @@ hiddenBadge: string;
     modelModeFollow: string;
     modelModeCustom: string;
     modelModeNoneHint: string;
+    modelModeAllHint: string;
     followNoKey: string;
+    gatewayApiKey: string;
+    gatewayApiKeyHint: string;
+    gatewayFollowSnapshot: string;
     followLoading: string;
     followCount: string;
     followSnapshot: string;
@@ -2070,7 +2237,6 @@ hiddenBadge: string;
     /** Switch-OFF explanatory line. */
     profileRowsOffHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
-    otherTitle: string;
     tabHook: string;
     tabProxy: string;
     tabManual: string;
@@ -2098,6 +2264,19 @@ hiddenBadge: string;
     navCapture: string;
     navResponses: string;
     navWebAuth: string;
+    navMenu: string;
+    menuTitle: string;
+    menuStyleLabel: string;
+    menuStyleRail: string;
+    menuStyleFlat: string;
+    menuStyleHint: string;
+    menuRailLabels: string;
+    menuRailLabelsHint: string;
+    menuDensity: string;
+    menuDensityHint: string;
+    menuCollapsible: string;
+    menuCollapsibleHint: string;
+    menuStorageHint: string;
     netTitle: string;
     port: string;
     host: string;
@@ -2209,8 +2388,8 @@ hiddenBadge: string;
     url: string;
     includes: string;
     excludes: string;
-    pattern: string;
     addPattern: string;
+    pattern: string;
   };
   forwardProxy: {
     secListener: string;
@@ -2220,16 +2399,54 @@ hiddenBadge: string;
     savedNotice: string;
     savedHotNotice: string;
     enable: string;
+    requireCredential: string;
+    requireCredentialHint: string;
     hint: string;
     port: string;
-    bypassHosts: string;
-    bypassViaProxy: string;
-    bypassViaProxyHint: string;
-    viaOutboundProxy: string;
-    viaOutboundProxyHint: string;
+    ruleTable: string;
+    ruleTableHint: string;
+    /** Column labels of the rule table's head row (ADR-0018). */
+    ruleColMatch: string;
+    ruleColIngress: string;
+    ruleColEgress: string;
+    ruleColActions: string;
+    ingressIntercept: string;
+    ingressPassthrough: string;
+    ingressReject: string;
+    exitDirect: string;
+    exitProxy: string;
+    exitReject: string;
+    ruleDescEgressProxy: string;
+    ruleDescIngressIntercept: string;
+    ruleDescIngressPassthrough: string;
+    ruleDescIngressReject: string;
+    ruleAdd: string;
+    ruleMoveUp: string;
+    ruleMoveDown: string;
+    ruleDormant: string;
+    ruleProxyOff: string;
+    ruleUpstreamInsecure: string;
+    ruleNoCatchAll: string;
+    ruleProbe: string;
+    ruleProbeRule: string;
+    ruleProbeLoopback: string;
+    ruleProbeFallback: string;
+    ruleInvalid: string;
+    ruleUnreachable: string;
+    maxConnections: string;
+    maxConnectionsHint: string;
     pattern: string;
-    addPattern: string;
     caBtn: string;
+    caCardDetails: string;
+    caCardFingerprint: string;
+    caCardValidUntil: string;
+    caCardCopied: string;
+    caTrustHint: string;
+    caTrustTrusted: string;
+    caTrustNotTrusted: string;
+    caTrustUnknown: string;
+    caTrustRecheck: string;
+    caTrustOpenWizard: string;
     caHint: string;
     hostNote: string;
     unresolvedTitle: string;
@@ -2246,11 +2463,23 @@ hiddenBadge: string;
     wizardDisabledHint: string;
     helpStep2: string;
     helpStep2Code: string;
-    helpStep2Sys: string;
+    sysInstallTitle: string;
+    sysInstallWinCmd: string;
+    sysInstallWinHint: string;
+    sysInstallMacCmd: string;
+    sysInstallLinuxCmd: string;
+    sysRemoveTitle: string;
+    sysRemoveWinCmd: string;
+    sysRemoveWinHint: string;
+    sysRemoveMacCmd: string;
+    sysRemoveMacHint: string;
+    sysRemoveLinuxCmd: string;
+    sysRemoveNote: string;
     helpStep3: string;
     helpStep3Code: string;
     helpStep4: string;
     helpStep4Code: string;
+    helpStep3Auth: string;
     helpNotes: string;
     step2Title: string;
     step3Title: string;
@@ -2260,7 +2489,55 @@ hiddenBadge: string;
     statusDisabled: string;
     statusError: string;
   };
+  protoLog: {
+    dec: {
+      hex: string;
+      text: string;
+      json: string;
+      image: string;
+      pdf: string;
+      dissector: string;
+    };
+  };
   proxyLog: {
+    clearPersistHint: string;
+    clearPersistNote: string;
+    clearPersistScope: string;
+    histFilterHint: string;
+    modeLive: string;
+    modeHistory: string;
+    histEmpty: string;
+    clearScopeNote: string;
+    rpcMethodHint: string;
+    encProto: string;
+    encJson: string;
+    colDecoder: string;
+    capturedBy: string;
+    downloadRaw: string;
+    exportDecoded: string;
+    exportDecodedHint: string;
+    copyBody: string;
+    bodyCopied: string;
+    exportWindowedHint: string;
+    previewWindowed: string;
+    bodyTruncated: string;
+    colReqBytes: string;
+    colResBytes: string;
+    colReqBytesHint: string;
+    colResBytesHint: string;
+    colProto: string;
+    colHost: string;
+    colMethod: string;
+    colPath: string;
+    fProto: string;
+    fRpc: string;
+    rowCount: string;
+    newRows: string;
+    rpcConnect: string;
+    rpcGrpc: string;
+    protoH1: string;
+    protoH2: string;
+    protoWs: string;
     title: string;
     hint: string;
     tabConfig: string;
@@ -2296,10 +2573,8 @@ hiddenBadge: string;
     empty: string;
     colTime: string;
     colKind: string;
-    colRequest: string;
     colStatus: string;
     colMs: string;
-    colBytes: string;
     kindHttp: string;
     kindConnect: string;
     reqHeaders: string;
@@ -2322,12 +2597,6 @@ hiddenBadge: string;
     noMatch: string;
     sortTimeHint: string;
     captureEmpty: string;
-    hexHint: string;
-    hexAsText: string;
-    hexAsImage: string;
-    hexDownload: string;
-    hexTextEmpty: string;
-    hexLoading: string;
     hexLoadFailed: string;
     persistSwitch: string;
     persistHint: string;
@@ -2421,6 +2690,73 @@ hiddenBadge: string;
     warnEmptySlot: string;
     warnDupSlot: string;
     warnEmptyRef: string;
+  };
+  pluginPage: {
+    title: string;
+    desc: string;
+    reload: string;
+    reloadOk: string;
+    reloadFail: string;
+    colLoadedAt: string;
+    install: string;
+    installing: string;
+    installOk: string;
+    installFail: string;
+    download: string;
+    downloadFail: string;
+    downloadOk: string;
+    uninstall: string;
+    uninstallConfirm: string;
+    uninstallOk: string;
+    uninstallFail: string;
+    empty: string;
+    searchPlaceholder: string;
+    noMatch: string;
+    colName: string;
+    colVersion: string;
+    colType: string;
+    colWires: string;
+    colStatus: string;
+    colActions: string;
+    statusAll: string;
+    statusLoaded: string;
+    statusError: string;
+    sourceDev: string;
+    sourcePackaged: string;
+    statusDisabled: string;
+    disable: string;
+    disableOk: string;
+    disableFail: string;
+    enable: string;
+    enableOk: string;
+    enableFail: string;
+    typeModelService: string;
+    typeClientGateway: string;
+    settings: string;
+    configTitle: string;
+    configSave: string;
+    configSaved: string;
+    gatewayModelsMoved: string;
+    cursorOpenClients: string;
+    configInvalid: string;
+    configWarnings: string;
+    configEmpty: string;
+    configAddModel: string;
+    configAdvancedShow: string;
+    configAdvancedHide: string;
+    configExpand: string;
+  };
+  downloads: {
+    title: string;
+    preparing: string;
+    downloading: string;
+    saving: string;
+    done: string;
+    failed: string;
+    canceled: string;
+    openFolder: string;
+    copyPath: string;
+    clearDone: string;
   };
   catalogPage: {
     title: string;

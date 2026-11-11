@@ -16,11 +16,26 @@ interface PaginationProps {
   /** Show "from–to of total" summary on the left */
   showSummary?: boolean;
   /**
+   * Unit word for the summary ("requests", "条" …). Omitted = the generic
+   * item wording (条 / items). The pager counts whatever `total` counts, so a
+   * caller whose items are not plain records (capture pages count REQUESTS)
+   * must say so here — the summary then speaks the caller's unit instead of
+   * silently relabeling rows as "items".
+   */
+  summaryUnit?: string;
+  /**
    * The caller's `total` is a LOWER BOUND, not an exact count (the source publishes no total — the MCP
    * registry answers only a cursor). The summary then reads "of at least N", so the pager shows a
    * number the list can prove instead of hiding the figure or inventing one.
    */
   totalAtLeast?: boolean;
+  /**
+   * The caller's list is NEWEST-FIRST: page 1 holds the newest items and
+   * higher pages walk backwards into history. Page arithmetic is unchanged;
+   * only the summary must count from the end (`total - page*size + 1`), or it
+   * would claim the newest page is items 1–N.
+   */
+  newestFirst?: boolean;
   /**
    * CURSOR source: it publishes no total, only "another page exists". Numbered pages are then a
    * lie — page 3 may not exist, and jumping to it costs a cursor walk — so the bar renders
@@ -71,6 +86,8 @@ export const Pagination: React.FC<PaginationProps> = ({
   onChange,
   disabled,
   showSummary,
+  summaryUnit,
+  newestFirst,
   totalAtLeast,
   cursor,
   hasNext,
@@ -79,6 +96,12 @@ export const Pagination: React.FC<PaginationProps> = ({
 }) => {
   const { t } = useI18n();
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  // Newest-first lists count from the END: page 1 is the last `pageSize`
+  // items, not items 1–N. Only the summary flips; page arithmetic is shared.
+  const summaryFrom = newestFirst
+    ? Math.max(1, total - page * pageSize + 1)
+    : Math.min((page - 1) * pageSize + 1, total);
+  const summaryTo = newestFirst ? Math.min(total, total - (page - 1) * pageSize) : Math.min(page * pageSize, total);
   const nextDisabled = cursor ? !hasNext : page >= totalPages;
 
   // Self-heal when the data set shrinks below the current page (deletions, filters). A cursor
@@ -100,7 +123,7 @@ export const Pagination: React.FC<PaginationProps> = ({
     minWidth: 32,
     height: 32,
     padding: '0 10px',
-    fontSize: 12,
+    fontSize: 'var(--text-sm)',
     justifyContent: 'center',
     fontFamily: FONT_MONO,
   };
@@ -116,19 +139,26 @@ export const Pagination: React.FC<PaginationProps> = ({
       }}
     >
       {showSummary && (
-        <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-          {t(totalAtLeast ? 'pagination.summaryAtLeast' : 'pagination.summary', {
-            from: Math.min((page - 1) * pageSize + 1, total),
-            to: Math.min(page * pageSize, total),
-            total,
-          })}
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+          {summaryUnit
+            ? t('pagination.summaryUnit', {
+                from: summaryFrom,
+                to: summaryTo,
+                total,
+                unit: summaryUnit,
+              })
+            : t(totalAtLeast ? 'pagination.summaryAtLeast' : 'pagination.summary', {
+                from: summaryFrom,
+                to: summaryTo,
+                total,
+              })}
         </span>
       )}
       {showButtons && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
           {pageSizeOptions && onPageSizeChange && (
             <Combobox
-              style={{ fontSize: 12, width: 118, height: 32, padding: '0 10px', cursor: 'pointer', marginRight: 6 }}
+              style={{ fontSize: 'var(--text-sm)', width: 118, height: 32, padding: '0 10px', cursor: 'pointer', marginRight: 6 }}
               value={String(pageSize)}
               onChange={(v) => onPageSizeChange(Number(v))}
               options={pageSizeOptions.map((n) => ({
@@ -158,7 +188,7 @@ export const Pagination: React.FC<PaginationProps> = ({
           ) : (
             pageItems(page, totalPages).map((item, idx) =>
               item === '…' ? (
-                <span key={`gap-${idx}`} style={{ fontSize: 12, color: 'var(--text-dim)', padding: '0 2px' }}>
+                <span key={`gap-${idx}`} style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', padding: '0 2px' }}>
                   …
                 </span>
               ) : (

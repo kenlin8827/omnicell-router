@@ -8,6 +8,9 @@ import type { SkillsSpec } from './types.js';
  */
 export class UniversalAdapter extends BaseHostAdapter {
   readonly id = 'universal' as const;
+  /** The shared AGENTS convention's plugin layer — `.agents/plugins/marketplace.json` is the
+   *  published catalog, and the DIRECTORY is the form a repository is detected by. */
+  readonly extensionDir = '.agents/plugins';
 
   protected readonly skillsSpec: SkillsSpec = {
     global: UNIVERSAL_SKILLS.global,

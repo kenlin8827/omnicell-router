@@ -101,8 +101,11 @@ const envDeclared = [...enKeys].filter((k) => k.startsWith('env.') || k === 'nav
 const envUnused = envDeclared.filter((k) => !used.has(k));
 
 // 4) Placeholder parity: `{name}` / `{n}` mean the same value in every locale.
+// Compare the SET of names, not their multiplicity: a translation may reuse one
+// value twice (zh `pagination.summaryUnit` prints `{unit}` on both sides of the
+// separator) without that being drift.
 const tokens = (s: unknown) =>
-  typeof s === 'string' ? [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',') : '';
+  typeof s === 'string' ? [...new Set([...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]))].sort().join(',') : '';
 const placeholderDrift = Object.entries(LOCALES).flatMap(([lang, dict]) => {
   const leaves = flatLeaves(dict);
   return Object.keys(leaves)

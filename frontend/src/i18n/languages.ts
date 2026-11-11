@@ -20,6 +20,20 @@ export const LANGUAGES: { value: Lang; label: string }[] = [
 /** Flattened code list — the persisted-language validator in I18nContext. */
 export const LANG_CODES: readonly Lang[] = LANGUAGES.map((l) => l.value);
 
+/** UI Lang short code → BCP-47 locale key used by plugin manifest maps
+ *  (displayName / description). Mirrored by backend/src/plugins/host.ts —
+ *  update both in the same commit. */
+export const LANG_TO_BCP47: Record<Lang, string> = {
+  zh: 'zh-CN',
+  en: 'en-US',
+  es: 'es-ES',
+  fr: 'fr-FR',
+  de: 'de-DE',
+  ja: 'ja-JP',
+  ko: 'ko-KR',
+  pt: 'pt-BR',
+};
+
 /** navigator.language → UI Lang. Prefix match (zh-TW → zh, pt-PT → pt);
  *  anything unrecognized falls back to English. */
 export const detectLang = (): Lang => {

@@ -20,13 +20,13 @@ const DAY = 24 * 60 * 60 * 1000;
 
 /** Every case starts from an empty store: the budget tests are meaningless over a shared directory. */
 beforeEach(() => {
-  for (const kind of ['descriptions', 'readme']) {
+  for (const kind of ['descriptions', 'readme', 'segments']) {
     fs.rmSync(path.join(harnessEnvDir(), 'i18n', kind), { recursive: true, force: true });
   }
   fs.rmSync(path.join(harnessEnvDir(), 'i18n', 'descriptions.json'), { force: true });
 });
 
-function seed(kind: 'descriptions' | 'readme', source: string, lang: string, ageMs: number): string {
+function seed(kind: 'descriptions' | 'readme' | 'segments', source: string, lang: string, ageMs: number): string {
   const hash = crypto.createHash('sha256').update(source).digest('hex');
   const dir = path.join(harnessEnvDir(), 'i18n', kind);
   fs.mkdirSync(dir, { recursive: true });
@@ -88,6 +88,21 @@ describe('pruneTranslationStore', () => {
     expect(stats.bytes).toBe(0);
   });
 
+  it('applies the same budgets to the segment memory a resumed README run reads', () => {
+    // Segments are the third store kind: a long README is translated chunk by chunk and each
+    // verified chunk is kept so a retry resumes instead of paying again. Housekeeping must not
+    // know only about descriptions and whole documents (it once listed exactly those two).
+    const stale = seed('segments', 'a long paragraph the translator already paid for', 'zh', 200 * DAY);
+    const fresh = seed('segments', 'a paragraph from the run still in flight', 'zh', 0);
+
+    const stats = pruneTranslationStore({ maxAgeMs: 90 * DAY });
+
+    expect(stats.removed).toBe(1);
+    expect(stats.kept).toBe(1);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
+
   it('drops the pre-split blob only once IT is stale, never a blob that was just migrated from', () => {
     const blob = path.join(harnessEnvDir(), 'i18n', 'descriptions.json');
     fs.mkdirSync(path.dirname(blob), { recursive: true });
@@ -105,19 +120,20 @@ describe('pruneTranslationStore', () => {
 });
 
 describe('translation cache routes', () => {
-  it('reads the README store for format=markdown and reports the truncation flag', async () => {
+  it('hides a legacy partial README rendering: its key cannot claim a full translation', async () => {
     const doc = '# Page\n\nbody';
     const hash = crypto.createHash('sha256').update(doc).digest('hex');
     const dir = path.join(harnessEnvDir(), 'i18n', 'readme');
     fs.mkdirSync(dir, { recursive: true });
+    // What the budgeted translator used to leave behind: the opening third, tail in the source.
     fs.writeFileSync(
       path.join(dir, `${hash}.zh.json`),
       JSON.stringify({ text: '译文', model: 'seeded/model', at: new Date().toISOString(), truncated: true }),
       'utf8'
     );
 
-    expect(readCachedTranslations([doc], 'zh', 'readme')[doc]?.truncated).toBe(true);
-    // The description store must NOT answer for the same source text.
+    expect(readCachedTranslations([doc], 'zh', 'readme')[doc]).toBeUndefined();
+    // The description store must NOT answer for the same source text either.
     expect(readCachedTranslations([doc], 'zh')[doc]).toBeUndefined();
 
     const app = fastify();
@@ -129,9 +145,28 @@ describe('translation cache routes', () => {
       payload: { lang: 'zh', texts: [doc], format: 'markdown' },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { translations: Record<string, { text: string; truncated?: boolean }> };
-    expect(body.translations[doc]?.text).toBe('译文');
-    expect(body.translations[doc]?.truncated).toBe(true);
+    const body = res.json() as { translations: Record<string, { text: string }> };
+    expect(body.translations[doc]).toBeUndefined();
+    await app.close();
+  });
+
+  it('serves a complete README rendering from format=markdown', async () => {
+    const doc = '# Page\n\nbody';
+    seed('readme', doc, 'zh', 0);
+
+    expect(readCachedTranslations([doc], 'zh', 'readme')[doc]?.text).toBe(`译文 ${doc}`);
+
+    const app = fastify();
+    registerHarnessRoutes(app);
+    await app.ready();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/translations',
+      payload: { lang: 'zh', texts: [doc], format: 'markdown' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { translations: Record<string, { text: string }> };
+    expect(body.translations[doc]?.text).toBe(`译文 ${doc}`);
     await app.close();
   });
 

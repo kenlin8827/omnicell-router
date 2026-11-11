@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CaptureRecorder } from '../src/capture/recorder.js';
+import { CaptureRecorder, type HttpExchangeEvent } from '../src/capture/recorder.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-capture-test-'));
@@ -738,6 +738,235 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     }
   });
 
+  it('readEvents pages backwards in requests without overlap or gaps', async () => {
+    const sessionId = 'sess_read_paging';
+    await emitOneTurn('corr_page_1', sessionId, 'lite');
+    await emitOneTurn('corr_page_2', sessionId, 'lite');
+    await emitOneTurn('corr_page_3', sessionId, 'lite');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+
+    // 3 requests at 1 per page = 3 pages, counted BACK from the newest end.
+    const p1 = await recorder.readEvents(dateDir, file, 1, 'none', 1);
+    assert.equal(p1.turns.length, 1);
+    assert.equal(p1.turns[0].traceId, 'corr_page_3');
+    assert.equal(p1.totalTurns, 3, 'the header tally still covers the whole window');
+    assert.equal(p1.page, 1);
+    assert.equal(p1.turns[0].requestNumber, 3, 'request numbering is chronological over the window');
+    assert.equal(p1.totalPages, 3);
+    assert.equal(p1.hasOlder, true);
+    assert.equal(p1.hasNewer, false);
+    // A page carries ALL FOUR legs of its turn — never a sliced turn.
+    assert.equal(p1.events.length, 4);
+
+    const p2 = await recorder.readEvents(dateDir, file, 1, 'none', 2);
+    assert.equal(p2.turns.length, 1);
+    assert.equal(p2.turns[0].traceId, 'corr_page_2');
+    assert.equal(p2.hasOlder, true);
+    assert.equal(p2.hasNewer, true);
+
+    // Last page reaches the window floor: nothing older.
+    const p3 = await recorder.readEvents(dateDir, file, 1, 'none', 3);
+    assert.equal(p3.turns.length, 1);
+    assert.equal(p3.turns[0].traceId, 'corr_page_1');
+    assert.equal(p3.hasOlder, false);
+    assert.equal(p3.hasNewer, true);
+
+    // No overlap between pages (each turn appears exactly once).
+    const traces = [...p1.turns, ...p2.turns, ...p3.turns].map(t => t.traceId);
+    assert.deepEqual(new Set(traces).size, 3);
+
+    // Out-of-range pages clamp to the window instead of answering empty.
+    const high = await recorder.readEvents(dateDir, file, 1, 'none', 99);
+    assert.equal(high.page, 3);
+    assert.equal(high.turns[0].traceId, 'corr_page_1');
+    const low = await recorder.readEvents(dateDir, file, 1, 'none', 0);
+    assert.equal(low.page, 1);
+  });
+
+  it('captureSummary tallies every request and indexes prompt rounds across the whole file', async () => {
+    const sessionId = 'sess_count_requests';
+    for (const id of ['c1', 'c2', 'c3', 'c4']) await emitOneTurn(id, sessionId, 'lite');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    // 4 requests × 4 events; the one-event-per-request count ignores responses.
+    const summary = await recorder.captureSummary(dateDir, file);
+    assert.equal(summary.requests, 4);
+    // No prompt metadata in these fixtures: one prompt-less round, 4 requests.
+    assert.equal(summary.rounds.length, 1);
+    assert.deepEqual(
+      summary.rounds.map(r => [r.firstRequest, r.lastRequest, r.requests]),
+      [[1, 4, 4]]
+    );
+    // Window reads may see fewer — the exact tally is independent of the page.
+    const page1 = await recorder.readEvents(dateDir, file, 1, 'none', 1);
+    assert.equal(page1.turns.length, 1);
+    assert.equal(page1.totalTurns, 4);
+    // Unknown archive answers empty, never throws.
+    const missing = await recorder.captureSummary(dateDir, 'nope.jsonl');
+    assert.equal(missing.requests, 0);
+    assert.deepEqual(missing.rounds, []);
+  });
+
+  it('captureSummary recounts after the archive grows (cache is stat-keyed)', async () => {
+    const sessionId = 'sess_count_grows';
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    await emitOneTurn('g1', sessionId, 'lite');
+    const first = await recorder.captureSummary(dateDir, file);
+    assert.equal(first.requests, 1);
+    // Appending changes the file stat, so the second scan must not serve the
+    // cached tally — a stale cache would freeze the console header forever.
+    await emitOneTurn('g2', sessionId, 'lite');
+    const second = await recorder.captureSummary(dateDir, file);
+    assert.equal(second.requests, 2);
+    assert.deepEqual(
+      second.rounds.map(r => [r.firstRequest, r.lastRequest]),
+      [[1, 2]],
+      'the grown archive is re-indexed, not merged with the cached round'
+    );
+  });
+
+  it('blanks a resent prompt on continuation turns (per-turn prompt staleness)', async () => {
+    const sessionId = 'sess_prompt_resent';
+    const prompt = 'review下未提交的代码';
+    // Agent-loop shape: every request resends the full history; the appended
+    // tail is tool traffic, so the LAST user message stays the opening prompt.
+    const turn1 = [
+      { role: 'system', content: 'sys' },
+      { role: 'assistant', content: 'ack' },
+      { role: 'user', content: prompt },
+    ];
+    const turn2 = [
+      ...turn1,
+      { role: 'assistant', content: 'tool call' },
+      { role: 'tool', content: 'tool result' },
+    ];
+    // A genuinely NEW user message lands at/after the previous message count.
+    const turn3 = [
+      ...turn2,
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: '新的问题' },
+    ];
+    for (const [i, messages] of [turn1, turn2, turn3].entries()) {
+      await recorder.recordEvent({
+        eventType: 'http-exchange', direction: 'client', phase: 'request',
+        spanId: `prompt_w${i}`, traceId: `prompt_t${i}`, sessionId, model: 'auto', status: 'ok',
+        wire: {
+          requestLine: 'POST /v1/chat/completions HTTP/1.1',
+          requestHeaders: {},
+          requestBody: JSON.stringify({ messages }),
+          responseLine: '', status: 0, responseHeaders: {}, responseBody: '',
+        },
+      });
+    }
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const { turns } = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
+    assert.equal(turns.length, 3);
+    assert.equal(turns[0].promptSummary, prompt, 'opening turn owns the prompt');
+    assert.equal(turns[1].promptSummary, undefined, 'resent history is not this turn\'s prompt');
+    assert.equal(turns[2].promptSummary, '新的问题', 'an appended user message is fresh');
+    assert.deepEqual(turns.map(t => t.requestNumber), [1, 2, 3]);
+    assert.deepEqual(
+      turns.map(t => t.roundNumber),
+      [1, 1, 2],
+      'a tool-result continuation shares its opening prompt\'s round'
+    );
+    const summary = await recorder.captureSummary(dateDir, `${sessionId}.jsonl`);
+    assert.deepEqual(
+      summary.rounds.map(r => [r.ordinal, r.firstRequest, r.lastRequest, r.requests, r.prompt]),
+      [
+        [1, 1, 2, 2, prompt],
+        [2, 3, 3, 1, '新的问题'],
+      ],
+      'the archive summary splits rounds exactly like the timeline'
+    );
+  });
+
+  it('keeps the prompt when the client shrinks its history (compaction)', async () => {
+    // Client-side compaction renumbers every index: the new turn's user
+    // message can sit BELOW the previous request's message count, so the
+    // append-shaped staleness test must not fire (hiding a real prompt is
+    // the worse failure).
+    const sessionId = 'sess_prompt_shrink';
+    const longHistory = [
+      { role: 'user', content: 'opening question' },
+      { role: 'assistant', content: 'reply 1' },
+      { role: 'tool', content: 'tool result' },
+      { role: 'assistant', content: 'reply 2' },
+    ];
+    const compacted = [
+      { role: 'assistant', content: 'summary of the conversation so far' },
+      { role: 'user', content: '压缩之后的新问题' },
+    ];
+    for (const [i, messages] of [longHistory, compacted].entries()) {
+      await recorder.recordEvent({
+        eventType: 'http-exchange', direction: 'client', phase: 'request',
+        spanId: `shrink_w${i}`, traceId: `shrink_t${i}`, sessionId, model: 'auto', status: 'ok',
+        wire: {
+          requestLine: 'POST /v1/chat/completions HTTP/1.1',
+          requestHeaders: {},
+          requestBody: JSON.stringify({ messages }),
+          responseLine: '', status: 0, responseHeaders: {}, responseBody: '',
+        },
+      });
+    }
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const { turns } = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0].promptSummary, 'opening question');
+    assert.equal(turns[1].promptSummary, '压缩之后的新问题', 'a compacted-history prompt is not resent history');
+  });
+
+  it('groupEventsIntoTurns keeps a prompt when an archive carries no staleness positions', () => {
+    // Archives written before the prompt positions existed must render exactly
+    // as they did: no stamp, no comparison, summary kept.
+    const events = [
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'old1', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a1', id: 'a1', ts: 1000, promptSummary: 'legacy prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'old2', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a2', id: 'a2', ts: 2000, promptSummary: 'legacy prompt', wire: emptyWire() },
+    ] satisfies HttpExchangeEvent[];
+    const turns = CaptureRecorder.groupEventsIntoTurns(events);
+    assert.deepEqual(turns.map(t => t.promptSummary), ['legacy prompt', 'legacy prompt']);
+  });
+
+  it('readEvents derives the staleness basis for archives written before it existed', async () => {
+    const sessionId = 'sess_prompt_legacy';
+    const prompt = 'review下未提交的代码';
+    const turn1 = [{ role: 'user', content: prompt }];
+    const turn2 = [...turn1, { role: 'assistant', content: 'tool call' }, { role: 'tool', content: 'ok' }];
+    for (const [i, messages] of [turn1, turn2].entries()) {
+      await recorder.recordEvent({
+        eventType: 'http-exchange', direction: 'client', phase: 'request',
+        spanId: `legacy_w${i}`, traceId: `legacy_t${i}`, sessionId, model: 'auto', status: 'ok',
+        wire: {
+          requestLine: 'POST /v1/chat/completions HTTP/1.1',
+          requestHeaders: {},
+          requestBody: JSON.stringify({ messages }),
+          responseLine: '', status: 0, responseHeaders: {}, responseBody: '',
+        },
+      });
+    }
+    // Strip the positions off the persisted lines: that is exactly what an
+    // archive written by an earlier build looks like.
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = path.join(tmp, dateDir, `${sessionId}.jsonl`);
+    const legacy = fs.readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(l => l.trim())
+      .map(l => {
+        const ev = JSON.parse(l);
+        delete ev.promptMessageCount;
+        delete ev.promptLastUserIdx;
+        return JSON.stringify(ev);
+      })
+      .join('\n') + '\n';
+    fs.writeFileSync(file, legacy, 'utf8');
+    const { turns } = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0].promptSummary, prompt);
+    assert.equal(turns[1].promptSummary, undefined, 'bodies still carry the basis, so legacy rows dedupe too');
+  });
+
   it('readEvents bodies=none strips wire bodies, keeps lines/status/headers', async () => {
     const sessionId = 'sess_read_none';
     await emitOneTurn('corr_none_1', sessionId, 'lite');
@@ -757,6 +986,20 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     // Full read of the same archive still carries the bodies.
     const full = await recorder.readEvents(dateDir, file, 100, 'full');
     assert.equal(full.turns[0].clientRequest!.wire.requestBody, '{"messages":[]}');
+  });
+
+  it('readEvents bodies=chat keeps round-opener requests + response bodies', async () => {
+    const sessionId = 'sess_read_chat';
+    await emitOneTurn('corr_chat_1', sessionId, 'lite');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    const result = await recorder.readEvents(dateDir, file, 100, 'chat');
+    const t = result.turns[0];
+    // The first request seeds history and stays; its upstream twin is dropped.
+    assert.equal(t.clientRequest!.wire.requestBody, '{"messages":[]}');
+    assert.equal(t.upstreamRequest!.wire.requestBody, undefined);
+    // Response bodies feed the replay's assistant output.
+    assert.equal(t.upstreamResponse!.wire.responseBody, '{"choices":[]}');
   });
 
   it('readEvents derives completionTokens from the last usage block', async () => {

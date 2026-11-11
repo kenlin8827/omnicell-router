@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from '../types/router.js';
+import type { ForwardProxyRule } from './types.js';
 
 /**
  * Single source of truth for magic defaults that previously lived as
@@ -10,17 +11,63 @@ import type { ReasoningEffort } from '../types/router.js';
 /** Provider upstream request timeout when `provider.timeoutMs` is unset. */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
 
+/**
+ * Synthetic health-probe wall-clock bound (backend/src/resilience/health-prober.ts).
+ * A 1-token liveness ping should answer in seconds, and one hung upstream must
+ * never stall the whole sweep (the sweep's re-entry guard would otherwise stay
+ * held). Deliberately much shorter than DEFAULT_PROVIDER_TIMEOUT_MS: a probe is
+ * evidence, not serving work. Known consequence — a provider that legitimately
+ * needs longer than this for a 1-token completion (long prefill / cold queue)
+ * fails every probe; and because a probe timeout classifies SERVICE_UNAVAILABLE
+ * at model scope, every such cycle re-OPENs EVERY existing tuple of that model
+ * with a fresh escalated cooldown (not just the probed one).
+ * `circuitBreaker.activeProbing` stays off by default for exactly that reason.
+ */
+export const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
+
 /** Forward-proxy listen port when `forwardProxy.port` is unset. */
 export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 
 /** Forward-proxy listen host when `forwardProxy.host` is unset (loopback only). */
 export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
 
+/**
+ * Fresh-install rule table (ADR-0018): one catch-all — intercept everything and
+ * send it through the outbound proxy policy. Inert until BOTH
+ * `forwardProxy.enabled` and `proxy.enabled` are on (the listener ships
+ * disabled, so this seed routes nothing by itself); it exists so an operator who
+ * turns the proxy on gets the posture they almost certainly wanted (a blocked
+ * network) instead of a silent direct egress. `reject` is never seeded —
+ * shipping a blocklist would break traffic nobody asked to block.
+ */
+export const DEFAULT_FORWARD_PROXY_RULES: ForwardProxyRule[] = [
+  { match: '*', ingress: 'intercept', egress: 'proxy' },
+];
+
 /** Forward-proxy access log: day-file retention for the persisted JSONL (auto-cleanup). */
 export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
+/**
+ * Forward-proxy access log: per-side INLINE capture cap when
+ * `forwardProxy.accessLog.bodyBytes` is unset (1 MiB). Bounds the memory ring
+ * and the JSONL rows — a browsing proxy otherwise buffers whole downloads in
+ * the heap. A body that outgrows the cap spills to a raw body file while
+ * persistence is on, so the default costs no captured bytes.
+ */
+export const DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES = 1_048_576;
 /** Day-file retention clamp bounds (config input is clamped into this range). */
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
+
+/**
+ * Forward-proxy concurrent-socket cap when `forwardProxy.maxConnections` is
+ * unset. Every accepted socket holds an fd and, once MITM'd, a loopback peer —
+ * an unbounded listener is a local fd-exhaustion vector (one client can open
+ * CONNECTs faster than the OS reclaims them).
+ */
+export const DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS = 512;
+/** Connection-cap clamp bounds (config input is clamped into this range). */
+export const FORWARD_PROXY_MAX_CONNECTIONS_MIN = 16;
+export const FORWARD_PROXY_MAX_CONNECTIONS_MAX = 8192;
 
 
 /** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
@@ -37,6 +84,13 @@ export const DEFAULT_MAX_BODY_BYTES = 16_777_216;
 /** Forward-proxy hang protection: upstream socket timeout applied until
  * response headers arrive (blackholed-peer guard). */
 export const FORWARD_PROXY_HANG_TIMEOUT_MS = 60_000;
+
+/** Forward-proxy tunnel keepalive: TCP probe interval armed on both sides of
+ * every relayed connection (blind tunnels and `Upgrade:` relays). There is no
+ * application-level idle timeout — a tunnel may legitimately carry a silent
+ * protocol (IMAP IDLE) — so this is what reaps a peer that vanished without
+ * FIN/RST. */
+export const FORWARD_PROXY_KEEPALIVE_MS = 60_000;
 
 /** Layer-2 decision layer timeout when `classifier.layer2.timeoutMs` is unset. */
 export const DEFAULT_LAYER2_TIMEOUT_MS = 5000;
@@ -69,3 +123,8 @@ export const DEFAULT_REPLAY_TIMEOUT_MS = 300_000;
  *  Weights only shape the NEW-session hash spread — they never touch the
  *  ratchet, failover order, or the sync boundary. */
 export const CREDENTIAL_WEIGHT_MAX = 100;
+
+/** Plugin package (.zip) upload cap — route bodyLimit and the handler's
+ *  413 check both read this so they can never desync. */
+export const PLUGIN_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
+

@@ -36,6 +36,7 @@ import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Pagination } from '../components/Pagination';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 const KEY_PAGE_SIZE = 20;
 const KEY_PAGE_SIZES = [10, 20, 50, 100, 200];
 
@@ -101,7 +102,7 @@ const ModelAccessPicker: React.FC<{
 
   return (
     <div>
-      <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+      <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
         {t('apiKeys.accessLabel')}
       </label>
       <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -122,7 +123,7 @@ const ModelAccessPicker: React.FC<{
           </button>
         ))}
       </div>
-      <p style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '6px 0 0 0' }}>{hint}</p>
+      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '6px 0 0 0' }}>{hint}</p>
 
       {mode !== 'none' && (
         <div style={{ marginTop: '8px' }}>
@@ -151,14 +152,14 @@ const ModelAccessPicker: React.FC<{
                 }
               }}
               placeholder={t('apiKeys.accessPatternPlaceholder')}
-              style={{ flex: 1, fontSize: '12px', fontFamily: FONT_MONO }}
+              style={{ flex: 1, fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
             />
             <button type="button" onClick={addPattern} className="btn btn-sm" disabled={!patternDraft.trim()}>
               {t('apiKeys.accessPatternAdd')}
             </button>
           </div>
           {patternError && (
-            <p style={{ fontSize: '11px', color: 'var(--accent-rose)', margin: '4px 0 0 0' }}>{patternError}</p>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)', margin: '4px 0 0 0' }}>{patternError}</p>
           )}
           {models.length > 0 && (
             <div
@@ -185,11 +186,11 @@ const ModelAccessPicker: React.FC<{
                     border: id.includes('*') ? '1px solid color-mix(in srgb, var(--accent-violet) 30%, transparent)' : '1px solid var(--card-border)',
                     color: id.includes('*') ? 'var(--accent-violet)' : 'var(--text-main)',
                     fontFamily: FONT_MONO,
-                    fontSize: '11px',
+                    fontSize: 'var(--text-xs)',
                     // Override .badge uppercase: model ids / patterns are
                     // case-SENSITIVE — displaying them uppercased misleads.
                     textTransform: 'none',
-                    letterSpacing: 'normal',
+                    letterSpacing: 'var(--tracking-normal)',
                   }}
                   title={id.includes('*') ? t('apiKeys.accessPatternBadgeTitle') : undefined}
                 >
@@ -197,7 +198,7 @@ const ModelAccessPicker: React.FC<{
                   <button
                     type="button"
                     onClick={() => onModelsChange(models.filter((m) => m !== id))}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 0, fontSize: '11px' }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 0, fontSize: 'var(--text-xs)' }}
                     title={t('common.delete')}
                   >
                     ✕
@@ -409,9 +410,11 @@ export const ApiKeysPage: React.FC = () => {
   }, []);
 
   const handleCopy = (text: string, id: string) => {
-    // Non-secure contexts / denied permissions reject the clipboard promise —
-    // surface it instead of swallowing the rejection silently.
-    navigator.clipboard.writeText(text).catch(() => toast.error(t('common.failed')));
+    // A failed write (denied permission, unfocused document, sandboxed shell)
+    // must surface — this is the path that produced silent no-op copies.
+    void copyToClipboard(text).then((ok) => {
+      if (!ok) toast.error(t('common.failed'));
+    });
     // Single timer slot: a second click supersedes the first reset, so the
     // 2s green feedback of the LATEST click is never truncated by an earlier
     // timeout (id sub-line and secret button share this state).
@@ -606,10 +609,10 @@ export const ApiKeysPage: React.FC = () => {
             <KeyRound size={22} />
           </div>
           <div>
-            <h1 style={{ fontSize: '18px', fontWeight: 800, color: 'var(--text-main)' }}>
+            <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)' }}>
               {t('apiKeys.title')}
             </h1>
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: '2px' }}>
               {t('apiKeys.desc')}
             </p>
           </div>
@@ -621,7 +624,7 @@ export const ApiKeysPage: React.FC = () => {
             setShowCreateModal(true);
           }}
           className="btn btn-primary"
-          style={{ padding: '9px 18px', fontSize: '13px' }}
+          style={{ padding: '9px 18px', fontSize: 'var(--text-md)' }}
         >
           <Plus size={16} />
           <span>{t('apiKeys.newKeyBtn')}</span>
@@ -631,39 +634,39 @@ export const ApiKeysPage: React.FC = () => {
       {/* 2. Metrics Statistics Row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
         <div className="card">
-          <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)' }}>
+          <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-wide)', color: 'var(--text-dim)' }}>
             {t('apiKeys.totalKeys')}
           </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, marginTop: '8px', color: 'var(--text-main)' }}>
+          <div style={{ fontSize: 'var(--text-5xl)', fontWeight: 'var(--font-extrabold)', marginTop: '8px', color: 'var(--text-main)' }}>
             {keys.length}
           </div>
         </div>
 
         <div className="card">
-          <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)' }}>
+          <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-wide)', color: 'var(--text-dim)' }}>
             {t('apiKeys.activeKeys')}
           </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, marginTop: '8px', color: 'var(--accent-emerald)' }}>
+          <div style={{ fontSize: 'var(--text-5xl)', fontWeight: 'var(--font-extrabold)', marginTop: '8px', color: 'var(--accent-emerald)' }}>
             {activeCount}
           </div>
         </div>
 
         <div className="card">
-          <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)' }}>
+          <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-wide)', color: 'var(--text-dim)' }}>
             {t('apiKeys.authStatus')}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
             {isAuthProtected ? (
               <>
                 <ShieldCheck size={20} color="var(--accent-emerald)" />
-                <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--accent-emerald)' }}>
+                <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)', color: 'var(--accent-emerald)' }}>
                   {t('apiKeys.authProtected')}
                 </span>
               </>
             ) : (
               <>
                 <ShieldAlert size={20} color="var(--accent-amber)" />
-                <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--accent-amber)' }}>
+                <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)', color: 'var(--accent-amber)' }}>
                   {t('apiKeys.authOpen')}
                 </span>
               </>
@@ -695,10 +698,10 @@ export const ApiKeysPage: React.FC = () => {
             >
               <KeyRound size={24} />
             </div>
-            <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-main)' }}>
+            <h3 style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)' }}>
               {t('apiKeys.emptyTitle')}
             </h3>
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', maxWidth: '420px', margin: '4px auto 16px auto' }}>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', maxWidth: '420px', margin: '4px auto 16px auto' }}>
               {t('apiKeys.emptyDesc')}
             </p>
             <button onClick={() => setShowCreateModal(true)} className="btn btn-primary btn-sm">
@@ -708,17 +711,17 @@ export const ApiKeysPage: React.FC = () => {
           </div>
         ) : (
           <div style={{ overflowX: 'auto', minHeight: 260 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 'var(--text-md)' }}>
               <thead>
                 <tr
                   style={{
                     background: 'var(--bg-elev)',
                     borderBottom: '1px solid var(--divider)',
-                    fontSize: '11px',
-                    fontWeight: 700,
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 'var(--font-bold)',
                     color: 'var(--text-dim)',
                     textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
+                    letterSpacing: 'var(--tracking-wide)',
                   }}
                 >
                   <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thName')}</th>
@@ -748,7 +751,7 @@ export const ApiKeysPage: React.FC = () => {
                       <td style={{ padding: '14px 20px' }}>
                         <div
                           style={{
-                            fontWeight: 700,
+                            fontWeight: 'var(--font-bold)',
                             color: 'var(--text-main)',
                             // Squeezed columns must not wrap CJK names into a
                             // 2-char-per-line vertical strip — truncate instead.
@@ -776,7 +779,7 @@ export const ApiKeysPage: React.FC = () => {
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '4px',
-                            fontSize: '11px',
+                            fontSize: 'var(--text-xs)',
                             fontFamily: FONT_MONO,
                             color:
                               copiedId === `id:${item.id}` ? 'var(--accent-emerald)' : 'var(--text-dim)',
@@ -792,7 +795,7 @@ export const ApiKeysPage: React.FC = () => {
                         {item.description && (
                           <div
                             style={{
-                              fontSize: '11px',
+                              fontSize: 'var(--text-xs)',
                               color: 'var(--text-dim)',
                               marginTop: '2px',
                               whiteSpace: 'nowrap',
@@ -818,7 +821,7 @@ export const ApiKeysPage: React.FC = () => {
                             border: '1px solid var(--card-border)',
                             padding: '4px 10px',
                             borderRadius: '6px',
-                            fontSize: '12px',
+                            fontSize: 'var(--text-sm)',
                             color: 'var(--text-main)',
                           }}
                         >
@@ -927,7 +930,7 @@ export const ApiKeysPage: React.FC = () => {
                       </td>
 
                       {/* Created At */}
-                      <td style={{ padding: '14px 20px', fontSize: '11px', color: 'var(--text-dim)' }}>
+                      <td style={{ padding: '14px 20px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                         {new Date(item.createdAt).toLocaleDateString()}
                       </td>
 
@@ -993,7 +996,7 @@ export const ApiKeysPage: React.FC = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Terminal size={18} color="var(--accent)" />
-            <h2 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-main)' }}>
+            <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)' }}>
               {t('apiKeys.quickConnectTitle')}
             </h2>
           </div>
@@ -1057,20 +1060,20 @@ export const ApiKeysPage: React.FC = () => {
           </div>
         </div>
 
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
           {t('apiKeys.quickConnectDesc')}
         </p>
 
         {keys.length > 0 && (
           <div
             style={{
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               color: 'var(--text-dim)',
               padding: '8px 12px',
               borderRadius: '6px',
               background: 'color-mix(in srgb, var(--accent-amber) 8%, transparent)',
               border: '1px solid color-mix(in srgb, var(--accent-amber) 25%, transparent)',
-              lineHeight: 1.5,
+              lineHeight: 'var(--leading-snug)',
             }}
           >
             {selectedKey && revealKey
@@ -1098,10 +1101,10 @@ export const ApiKeysPage: React.FC = () => {
             borderRadius: '8px',
             padding: '16px',
             fontFamily: FONT_MONO,
-            fontSize: '12px',
+            fontSize: 'var(--text-sm)',
             color: 'var(--text-main)',
             overflowX: 'auto',
-            lineHeight: 1.6,
+            lineHeight: 'var(--leading-normal)',
           }}
         >
           {connectTab === 'cursor' && (
@@ -1257,18 +1260,18 @@ curl ${gwBaseV1}/systemone \\
                     borderRadius: '8px',
                     background: 'var(--well-bg)',
                     border: '1px solid var(--card-border)',
-                    fontSize: '12px',
+                    fontSize: 'var(--text-sm)',
                     color: 'var(--text-muted)',
-                    lineHeight: 1.5,
+                    lineHeight: 'var(--leading-snug)',
                   }}
                 >
-                  <div style={{ fontWeight: 700, color: 'var(--text-main)', marginBottom: '4px' }}>
+                  <div style={{ fontWeight: 'var(--font-bold)', color: 'var(--text-main)', marginBottom: '4px' }}>
                     {pickerPreview.name}
                   </div>
                   <div
                     style={{
                       fontFamily: FONT_MONO,
-                      fontSize: '11px',
+                      fontSize: 'var(--text-xs)',
                       color: 'var(--text-dim)',
                       wordBreak: 'break-all',
                     }}
@@ -1299,14 +1302,14 @@ curl ${gwBaseV1}/systemone \\
           }
         >
             {errorMessage && (
-              <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '12px' }}>
+              <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: 'var(--text-sm)' }}>
                 {errorMessage}
               </div>
             )}
 
             <form id="ocr-create-key-form" onSubmit={handleCreateSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
-                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+                <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                   {t('apiKeys.nameLabel')} <span style={{ color: 'var(--accent-rose)' }}>*</span>
                 </label>
                 <input
@@ -1320,7 +1323,7 @@ curl ${gwBaseV1}/systemone \\
               </div>
 
               <div>
-                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+                <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                   {t('apiKeys.customKeyLabel')}
                 </label>
                 <input
@@ -1343,7 +1346,7 @@ curl ${gwBaseV1}/systemone \\
               <LimitsEditor value={formLimits} onChange={setFormLimits} />
 
               <div>
-                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+                <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                   {t('apiKeys.descLabel')}
                 </label>
                 <textarea
@@ -1443,8 +1446,8 @@ curl ${gwBaseV1}/systemone \\
                   borderRadius: '8px',
                   background: 'var(--bg-inset, rgba(128,128,128,0.08))',
                   border: '1px solid var(--divider)',
-                  fontSize: '11px',
-                  lineHeight: 1.5,
+                  fontSize: 'var(--text-xs)',
+                  lineHeight: 'var(--leading-snug)',
                   fontFamily: FONT_MONO,
                   overflow: 'auto',
                   maxHeight: viewExpanded ? '72vh' : '60vh',
@@ -1455,7 +1458,7 @@ curl ${gwBaseV1}/systemone \\
                 {viewRaw.loading ? t('common.loading') : viewRaw.json === null ? t('common.noResults') : rawFormatted ? JSON.stringify(viewRaw.json, null, 2) : renderRawFlat(viewRaw.json)}
               </pre>
             ) : viewLoading || !viewModels ? (
-              <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+              <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-md)' }}>
                 {t('common.loading')}
               </div>
             ) : (
@@ -1507,8 +1510,8 @@ curl ${gwBaseV1}/systemone \\
                       <span
                         title={t('apiKeys.modelsKindTitle', { kind: kindLabel })}
                         style={{
-                          fontSize: '10px',
-                          lineHeight: '14px',
+                          fontSize: 'var(--text-2xs)',
+                          lineHeight: 'var(--leading-14)',
                           padding: '0 6px',
                           borderRadius: '4px',
                           color: KIND_TAG_COLOR[m.kind] ?? 'var(--text-dim)',
@@ -1525,7 +1528,7 @@ curl ${gwBaseV1}/systemone \\
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
                           fontFamily: FONT_MONO,
-                          fontSize: '12px',
+                          fontSize: 'var(--text-sm)',
                           color: 'var(--text-main)',
                         }}
                       >
@@ -1534,7 +1537,7 @@ curl ${gwBaseV1}/systemone \\
                       <span
                         title={tierLabel ? t('apiKeys.modelsTierTitle', { tier: tierLabel }) : undefined}
                         style={{
-                          fontSize: '10px',
+                          fontSize: 'var(--text-2xs)',
                           color: 'var(--text-dim)',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
@@ -1546,7 +1549,7 @@ curl ${gwBaseV1}/systemone \\
                       <span
                         title={testResult[m.id]}
                         style={{
-                          fontSize: '11px',
+                          fontSize: 'var(--text-xs)',
                           maxWidth: '150px',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
@@ -1565,7 +1568,7 @@ curl ${gwBaseV1}/systemone \\
                         onClick={() => runModelTest(m.id)}
                         disabled={st === 'loading'}
                         className="btn btn-sm"
-                        style={{ padding: '2px 8px', fontSize: '11px', justifySelf: 'end' }}
+                        style={{ padding: '2px 8px', fontSize: 'var(--text-xs)', justifySelf: 'end' }}
                       >
                         {t('apiKeys.modelsTestBtn')}
                       </button>
@@ -1580,10 +1583,10 @@ curl ${gwBaseV1}/systemone \\
                       value={viewFilter}
                       onChange={(e) => setViewFilter(e.target.value)}
                       placeholder={t('apiKeys.viewModelsSearchPlaceholder')}
-                      style={{ fontSize: '12px', flexShrink: 0 }}
+                      style={{ fontSize: 'var(--text-sm)', flexShrink: 0 }}
                     />
                     {visible.length === 0 && (
-                      <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+                      <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
                         {t('common.noResults')}
                       </div>
                     )}
@@ -1617,7 +1620,7 @@ curl ${gwBaseV1}/systemone \\
           }
         >
             <div>
-              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+              <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                 {t('apiKeys.nameLabel')} <span style={{ color: 'var(--accent-rose)' }}>*</span>
               </label>
               <input
@@ -1641,7 +1644,7 @@ curl ${gwBaseV1}/systemone \\
             <LimitsEditor value={editLimits} onChange={setEditLimits} />
 
             <div>
-              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+              <label style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                 {t('apiKeys.descLabel')}
               </label>
               <textarea
@@ -1690,7 +1693,7 @@ curl ${gwBaseV1}/systemone \\
             </button>
           }
         >
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
               {t('apiKeys.createdNoticeDesc')}
             </p>
 
@@ -1705,7 +1708,7 @@ curl ${gwBaseV1}/systemone \\
                 padding: '10px 14px',
                 borderRadius: '8px',
                 fontFamily: FONT_MONO,
-                fontSize: '12px',
+                fontSize: 'var(--text-sm)',
                 color: 'var(--accent-emerald)',
                 wordBreak: 'break-all',
               }}
@@ -1713,9 +1716,14 @@ curl ${gwBaseV1}/systemone \\
               <span>{createdKey.key}</span>
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText(createdKey.key);
-                  setNewKeyCopied(true);
-                  setTimeout(() => setNewKeyCopied(false), 2000);
+                  void copyToClipboard(createdKey.key).then((ok) => {
+                    if (!ok) {
+                      toast.error(t('common.failed'));
+                      return;
+                    }
+                    setNewKeyCopied(true);
+                    setTimeout(() => setNewKeyCopied(false), 2000);
+                  });
                 }}
                 className="btn btn-sm"
                 title={t('apiKeys.copyKeyTooltip')}

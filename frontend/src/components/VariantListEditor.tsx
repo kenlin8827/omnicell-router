@@ -52,13 +52,13 @@ export const VariantListEditor: React.FC<VariantListEditorProps> = ({
         <div key={i} className="variant-row">
           <input
             className="input"
-            style={{ fontSize: 11.5, flex: 1, minWidth: 0, fontFamily: FONT_MONO }}
+            style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 0, fontFamily: FONT_MONO }}
             placeholder="variant-id"
             value={v.id}
             onChange={(e) => onChange(value.map((x, j) => (j === i ? { ...x, id: e.target.value } : x)))}
           />
           <Combobox
-            style={{ fontSize: 11.5, width: effortWidth, flexShrink: 0, cursor: 'pointer' }}
+            style={{ fontSize: 'var(--text-sm)', width: effortWidth, flexShrink: 0, cursor: 'pointer' }}
             value={v.effort}
             onChange={(effort) => onChange(value.map((x, j) => (j === i ? { ...x, effort } : x)))}
             options={effortOptions}

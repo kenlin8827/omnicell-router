@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "The bundled boot splash is a LOCAL asset in the main window, shown before the gateway console origin exists and again during outages. It carries its own drag strip and minimize/close buttons because the window is frameless; the remote-shell capability does not apply to it. Double-click maximize matches the console title bar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
+  ]
+}

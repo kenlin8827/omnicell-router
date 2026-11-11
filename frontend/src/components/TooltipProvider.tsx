@@ -26,7 +26,7 @@ const SHOW_DELAY_MS = 300; // cold open: wait out accidental pass-overs
 const WARM_DELAY_MS = 100; // browsing one tip right after another stays snappy
 const WARM_WINDOW_MS = 500; // leaving a tooltip within this window counts as browsing
 
-type TipPos = { left: number; top: number; below: boolean; width: number };
+type TipPos = { left: number; top: number; below: boolean; width: number; side?: 'right' };
 
 /** Shared bubble visual — used here and by InfoTip so the two never diverge. */
 export const TipBubble: React.FC<{
@@ -35,8 +35,10 @@ export const TipBubble: React.FC<{
   below: boolean;
   width: number;
   text: string;
-}> = ({ left, top, below, width, text }) => (
+  bubbleRef?: React.Ref<HTMLDivElement>;
+}> = ({ left, top, below, width, text, bubbleRef }) => (
   <div
+    ref={bubbleRef}
     role="tooltip"
     style={{
       position: 'fixed',
@@ -52,8 +54,8 @@ export const TipBubble: React.FC<{
       border: '1px solid var(--card-border)',
       boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
       color: 'var(--text-main)',
-      fontSize: 12,
-      lineHeight: 1.6,
+      fontSize: 'var(--text-sm)',
+      lineHeight: 'var(--leading-normal)',
       textAlign: 'left',
       pointerEvents: 'none',
     }}
@@ -63,8 +65,21 @@ export const TipBubble: React.FC<{
 );
 
 const place = (el: HTMLElement): TipPos => {
+  // `data-tip-side="right"` (long descriptions next to dense rows, e.g.
+  // Combobox option rows) places the bubble beside the anchor instead of
+  // above/below — above would cover neighbouring rows in a listbox.
   const r = el.getBoundingClientRect();
   const width = Math.min(BUBBLE_MAX_WIDTH, window.innerWidth - 16);
+  if (el.getAttribute('data-tip-side') === 'right') {
+    // Industry convention for list-item tooltips (VS Code / Ant Design / MUI):
+    // a submenu-style bubble to the RIGHT of the row, vertically centered on
+    // it; flipped to the left near the right viewport edge.
+    const fromLeft = r.right + GAP;
+    const left = fromLeft + width <= window.innerWidth - 8 ? fromLeft : Math.max(8, r.left - width - GAP);
+    const est = 64; // ~2 wrapped lines at width 320; the clamp just keeps it on screen
+    const top = Math.max(8, Math.min(r.top + r.height / 2 - est / 2, window.innerHeight - est - 8));
+    return { left, top, below: true, width, side: 'right' };
+  }
   const left = Math.max(8, Math.min(r.left + r.width / 2 - width / 2, window.innerWidth - width - 8));
   const below = r.top < FLIP_HEADROOM;
   return { left, top: below ? r.bottom + GAP : r.top - GAP, below, width };
@@ -81,6 +96,7 @@ export const TooltipProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const anchorRef = useRef<HTMLElement | null>(null);
   const timerRef = useRef<number | undefined>(undefined);
   const lastCloseRef = useRef<number>(0);
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const clearTimer = () => {
@@ -173,12 +189,27 @@ export const TooltipProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, []);
 
+  // Side-placed bubbles open with an estimated height, then re-center once
+  // the real bubble is measured (one correction pass; skipped when the
+  // estimate already landed within a pixel or two).
+  useEffect(() => {
+    const el = bubbleRef.current;
+    if (!tip || !el || tip.pos.side !== 'right') return;
+    const h = el.offsetHeight;
+    const anchor = tip.anchor;
+    const r = anchor.getBoundingClientRect();
+    const centered = Math.max(8, Math.min(r.top + r.height / 2 - h / 2, window.innerHeight - h - 8));
+    if (Math.abs(centered - tip.pos.top) > 2) {
+      setTip((t) => (t && t.pos.side === 'right' ? { ...t, pos: { ...t.pos, top: centered } } : t));
+    }
+  }, [tip]);
+
   return (
     <>
       {children}
       {tip &&
         createPortal(
-          <TipBubble left={tip.pos.left} top={tip.pos.top} below={tip.pos.below} width={tip.pos.width} text={tip.text} />,
+          <TipBubble left={tip.pos.left} top={tip.pos.top} below={tip.pos.below} width={tip.pos.width} text={tip.text} bubbleRef={bubbleRef} />,
           document.body,
         )}
     </>

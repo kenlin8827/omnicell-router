@@ -32,21 +32,32 @@ export function validateApiKey(token: string, config: RouterConfig): AuthValidat
     return { valid: false, error: 'Invalid API key' };
   }
 
-  if (found.enabled === false) {
-    return { valid: false, error: 'API key is disabled' };
-  }
-
-  if (found.expiresAt) {
-    const expiryTime = new Date(found.expiresAt).getTime();
-    if (!Number.isNaN(expiryTime) && expiryTime <= Date.now()) {
-      return { valid: false, error: 'API key has expired' };
-    }
+  // The same predicate the proxy CONNECT check and the gateway dispatch use:
+  // the enabled/expiry rule lives in `isApiKeyUsable` and nowhere else.
+  if (!isApiKeyUsable(found)) {
+    return { valid: false, error: found.enabled === false ? 'API key is disabled' : 'API key has expired' };
   }
 
   return {
     valid: true,
     keyConfig: found,
   };
+}
+
+/**
+ * Whether a configured key can authenticate traffic: enabled and not past its
+ * expiry. An unparseable `expiresAt` never expires (a typo must not silently
+ * lock every client out). Shared by the Fastify guards, the proxy CONNECT
+ * credential check and the gateway dispatch — one rule, no drift twins.
+ */
+export function isApiKeyUsable(
+  key: { enabled?: boolean; expiresAt?: string } | undefined,
+  now = Date.now()
+): boolean {
+  if (!key || key.enabled === false) return false;
+  if (!key.expiresAt) return true;
+  const expiry = Date.parse(key.expiresAt);
+  return Number.isNaN(expiry) || expiry > now;
 }
 
 /**

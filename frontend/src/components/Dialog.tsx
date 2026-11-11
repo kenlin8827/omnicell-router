@@ -20,6 +20,8 @@ export type DialogProps = {
   onClose: () => void;
   /** i18n label used as the × button's title and aria-label. */
   closeLabel: string;
+  /** Disable every dismissal path (×, Escape, backdrop) without unmounting the dialog. */
+  closeDisabled?: boolean;
   /** Allow dismissing via backdrop press+release and Escape (default true).
    * False for dialogs whose accidental dismissal loses data (e.g. a one-time
    * secret reveal) — they close only through their explicit buttons. */
@@ -56,6 +58,7 @@ export const Dialog: React.FC<DialogProps> = ({
   onClose,
   closeLabel,
   backdropClose = true,
+  closeDisabled = false,
   width = 660,
   maxSize,
   blur = false,
@@ -64,13 +67,13 @@ export const Dialog: React.FC<DialogProps> = ({
   useBodyScrollLock(true);
 
   useEffect(() => {
-    if (!backdropClose) return;
+    if (!backdropClose || closeDisabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, backdropClose]);
+  }, [onClose, backdropClose, closeDisabled]);
 
   // Backdrop click closes only when press AND release both happen on the
   // overlay itself — a drag that starts inside the form (text selection)
@@ -80,6 +83,9 @@ export const Dialog: React.FC<DialogProps> = ({
   // Marker for layered-Escape handling: an overlay beneath this dialog (e.g.
   // the capture focus view's own window-level Escape listener) sees the node
   // and yields the key to the topmost dialog.
+  // `closeDisabled` gates the backdrop too: it is documented as "every dismissal path", and a
+  // caller that blocks the × while a request runs must not leave Escape as a side door.
+  const backdropDismissible = backdropClose && !closeDisabled;
   return createPortal(
     <div
       data-ocr-dialog=""
@@ -94,8 +100,8 @@ export const Dialog: React.FC<DialogProps> = ({
         justifyContent: 'center',
         padding: full ? 0 : '16px',
       }}
-      onMouseDown={backdropClose ? (e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; } : undefined}
-      onMouseUp={backdropClose ? (e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); } : undefined}
+      onMouseDown={backdropDismissible ? (e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; } : undefined}
+      onMouseUp={backdropDismissible ? (e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); } : undefined}
     >
       <div
         className="card"
@@ -111,11 +117,19 @@ export const Dialog: React.FC<DialogProps> = ({
           flexDirection: 'column',
           gap: '12px',
           overflow: 'hidden',
+          // `ocr-pop-in` animates transform on an element that also clips
+          // (`overflow: hidden`). Without a stable compositing layer, Chromium
+          // WebViews can keep the pre-animation paint of the clipped children
+          // — e.g. an input's bottom border stays invisible until any click
+          // forces a repaint. A permanent `will-change` keeps the card on its
+          // own layer for the whole mount, so the layer is correctly
+          // re-rasterized when the animation ends.
+          willChange: 'transform, opacity',
           animation: 'ocr-pop-in 0.18s ease',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-main)' }}>{title}</h3>
+          <h3 style={{ margin: 0, fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)' }}>{title}</h3>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
             {headerActions}
             <button
@@ -123,6 +137,7 @@ export const Dialog: React.FC<DialogProps> = ({
               className="btn btn-sm"
               style={{ display: 'flex', alignItems: 'center', height: 24, padding: '0 6px' }}
               onClick={onClose}
+              disabled={closeDisabled}
               title={closeLabel}
               aria-label={closeLabel}
             >
@@ -131,7 +146,7 @@ export const Dialog: React.FC<DialogProps> = ({
           </div>
         </div>
         {subtitle ? (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', display: 'flex', flexDirection: 'column', gap: 4 }}>
             {subtitle}
           </div>
         ) : null}
@@ -146,7 +161,14 @@ export const Dialog: React.FC<DialogProps> = ({
             reserved, so the loop cannot start (and text never shifts by 6 px when a dialog grows). */}
         <div
           style={{
-            flex: 1,
+            // `1 1 auto`, NOT shorthand `flex: 1` (basis 0%): with an auto-height
+            // card the zero basis lets the scroll body's hypothetical main size
+            // detach from its content, and the body ends up a few px SHORTER than
+            // the content — the last child's bottom border gets clipped by the
+            // overflow edge and the footer's borderTop draws across it. Basis
+            // auto keeps the body ≥ content when the card is content-sized; grow
+            // still hands the remaining height to `full` / maxSize-height dialogs.
+            flex: '1 1 auto',
             overflowY: 'auto',
             minHeight: 0,
             display: 'flex',

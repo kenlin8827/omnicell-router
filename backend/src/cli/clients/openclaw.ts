@@ -65,6 +65,7 @@ function vendorConfigPath(): Promise<string | null> {
  */
 export class OpenClawClientAdapter implements ClientAdapter {
   name = 'openclaw' as const;
+  hookKind = 'config' as const;
   displayName = 'OpenClaw';
 
   versionCmd = ['openclaw', '--version'];
@@ -81,7 +82,7 @@ export class OpenClawClientAdapter implements ClientAdapter {
     return (await vendorConfigPath()) ?? this.getConfigPath();
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = await this.resolveConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

@@ -136,6 +136,9 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
   protected readonly mcpSpec?: HostMcpSpec;
   protected readonly extSpec?: PluginSpec;
 
+  installProfiles?(): { name: string; exists: boolean }[];
+  pluginProfileError?(profile: string): string | undefined;
+
   get harness(): HarnessHostId {
     return this.id;
   }
@@ -361,7 +364,7 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
     return { ok: true, op: 'config', path: writeLanding(candidates), container: this.containers()[0]! };
   }
 
-  marketplaceSpec(): PluginMarketplaceInstall | null {
+  marketplaceSpec(_profile?: string): PluginMarketplaceInstall | null {
     if (!this.extSpec?.marketplace) return null;
     return {
       commands: this.extSpec.marketplace.commands,
@@ -458,9 +461,28 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
         message: `Host '${this.id}' natively only supports github plugin installs, but received npm source`,
       };
     }
+    if (req.profile !== undefined) {
+      if (!this.installProfiles) {
+        return {
+          ok: false,
+          code: 'bad_request',
+          message: `Host '${this.id}' has no per-profile plugin store`,
+        };
+      }
+      const profileError = this.pluginProfileError?.(req.profile);
+      if (profileError) return { ok: false, code: 'bad_request', message: profileError };
+      const offered = this.installProfiles().some((profile) => profile.name === req.profile);
+      if (!offered) {
+        return {
+          ok: false,
+          code: 'bad_request',
+          message: `unknown profile '${req.profile}' for host '${this.id}'`,
+        };
+      }
+    }
 
     let marketplace = req.marketplace;
-    if (!marketplace && channel === 'github' && this.marketplaceSpec()) {
+    if (!marketplace && channel === 'github' && this.marketplaceSpec(req.profile)) {
       const raw = (req.spec ?? req.key ?? '').replace(/^github:/, '');
       const slash = raw.indexOf('/');
       // A pinned key (`owner/repo#dir`, `owner/repo@v1`) still names the repository, not a path:
@@ -546,6 +568,8 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
       // from; dropping it here would record every routed install with only its writer source.
       ...(req.listedOn ? { listedOn: req.listedOn } : {}),
       ...(req.marketplace ? { marketplace: req.marketplace } : {}),
+      ...(req.description ? { description: req.description } : {}),
+      ...(req.profile ? { profile: req.profile } : {}),
     };
 
     if (req.channel === 'local') {

@@ -1,9 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
-import { loadConfig } from '../../config/index.js';
+import { ClientHookKind, ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
+import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
+import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
+import { caCertPath } from '../../forward-proxy/ca.js';
+import type { RouterConfig } from '../../config/types.js';
+import { runCommand } from '../../utils/run-command.js';
+import { getForwardProxyStatus } from '../../forward-proxy/status.js';
+import { probeCaTrustedCached } from '../../forward-proxy/ca-trust.js';
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
 export const OCR_DEFAULT_V1_URL = `${OCR_DEFAULT_URL}/v1`;
@@ -92,11 +97,27 @@ export interface ClientActionResult {
   reasonCode?: string;
   /** Template params for the reasonCode's i18n string. */
   params?: Record<string, string>;
+  /** Advise-only findings from a SUCCESSFUL setup (CA trust, listener state). */
+  warnings?: ClientActionWarning[];
+}
+
+/**
+ * Non-blocking post-setup advisories: the setup itself succeeded and wrote the
+ * artifact, but the hooked client will still fail at USE time until the
+ * advisory is fixed. Rendered as a warning (never an error) so a launcher is
+ * never withheld because the operator still has to import the CA.
+ */
+export interface ClientActionWarning {
+  code: 'ca_not_trusted' | 'ca_trust_unknown' | 'proxy_not_running';
+  /** Template params for the console's i18n string. */
+  params?: Record<string, string>;
 }
 
 export interface ClientAdapter {
   name: SupportedClient;
   displayName: string;
+  /** Where the hook lands; the registry stamps it into every status row. */
+  hookKind: ClientHookKind;
   /**
    * Oldest CLI release whose config contract this adapter's writes still
    * honor — the compatibility floor, NOT the newest verified version. Set
@@ -107,19 +128,18 @@ export interface ClientAdapter {
   versionCmd?: string[];
   getConfigPath(): string;
   /** Async by contract: adapters may probe external processes (e.g. `opencode service get env`); never block the event loop. */
-  getStatus(): Promise<ClientHookStatus>;
+  getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>>;
   /**
    * Model slots: slotKey → model id | 'auto' (intelligent routing default).
    * Only slots present in the record are written; absent slots stay untouched
    * (the plain `ocr setup` CLI command passes no models). apiKey (optional):
    * gateway-issued key to write into the client's auth field.
    */
-  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: MAX_CONTEXT_TOKENS + AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (models list for adapters that honor it: opencode/dsh/pi) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings (opencode): agent name → resolved modelRef ('auto' = inherit the default model). */ agentModels?: Record<string, string>; /** Profile-link echo written to the OCR sidecar meta when defined: agent → profile-slot key; id '' un-links. */ profile?: ModelProfileBinding }): Promise<ClientActionResult>;
+  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: CLAUDE_CODE_MAX_CONTEXT_TOKENS + CLAUDE_CODE_AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings: agent/role name → resolved modelRef ('auto' = inherit the default model), written by the adapters that carry agent bindings. */ agentModels?: Record<string, string>; /** Profile-link echo written to the OCR sidecar meta when defined: agent → profile-slot key; id '' un-links. */ profile?: ModelProfileBinding }): Promise<ClientActionResult>;
   /**
-   * Profile-change write-through (opencode, pi): re-resolve the linked
-   * agents' slot keys against the just-saved profile slots and rewrite the
-   * client config without a full setup. Absent on adapters without profile
-   * links.
+   * Profile-change write-through: re-resolve the linked agents' slot keys
+   * against the just-saved profile slots and rewrite the client config
+   * without a full setup. Absent on adapters without profile links.
    */
   refreshProfileBindings?(profileId: string, tags: Record<string, string>, slots: Record<string, string>): Promise<ClientActionResult>;
   teardown(): Promise<ClientActionResult>;
@@ -135,34 +155,72 @@ const VERSION_PROBE_TTL_MS = 10 * 60 * 1000;
  * Returns the first `major[.minor[.patch…]]` token in the output (CLI banners
  * are prose — "kimi version 2.4.1"), or null when the command fails/times out
  * (absent client, non-zero exit). Failures are cached like successes so a
- * missing client costs one spawn per TTL window, not one per status poll.
  */
 export async function probeClientVersion(cmd: string[]): Promise<string | null> {
   const key = cmd.join(' ');
   const hit = versionProbeCache.get(key);
   if (hit && Date.now() - hit.at < VERSION_PROBE_TTL_MS) return hit.version;
-  let version: string | null = null;
-  try {
-    let data = '';
-    const out = await new Promise<string>((resolve, reject) => {
-      // Windows: `kimi`/`opencode`/… are npm-style .cmd shims libuv cannot exec directly —
-      // the same shell rule as the plugin writer's defaultExec. argv is adapter-owned constants
-      // (never request input), so no pre-quoting is needed.
-      const proc = spawn(cmd[0], cmd.slice(1), {
-        timeout: 5000,
-        windowsHide: true,
-        shell: process.platform === 'win32',
-      });
-      proc.stdout?.on('data', chunk => (data += String(chunk)));
-      // Drain stderr even though it is unused: an undrained pipe fills and blocks a chatty CLI.
-      proc.stderr?.on('data', () => {});
-      proc.on('error', reject);
-      proc.on('close', code => (code === 0 ? resolve(data) : reject(new Error(`exit ${code}`))));
-    });
-    version = out.match(/\d+(?:\.\d+)+/)?.[0] ?? null;
-  } catch {
-    version = null;
-  }
+  const { ok, stdout } = await runCommand(cmd[0], cmd.slice(1), 5000);
+  const version = ok ? stdout.match(/\d+(?:\.\d+)+/)?.[0] ?? null : null;
   versionProbeCache.set(key, { version, at: Date.now() });
   return version;
 }
+
+/** Client-facing forward-proxy endpoint derived from the runtime config snapshot. */
+export interface ForwardProxyEndpoint {
+  url: string;
+  port: number;
+  caPath: string;
+  /** `forwardProxy.requireCredential`: launchers must carry the key in the URL. */
+  requireCredential: boolean;
+}
+
+/**
+ * Effective forward-proxy endpoint from the runtime config snapshot; null
+ * when the forward proxy is disabled or the config is unreadable.
+ */
+export function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
+  let cfg: RouterConfig | undefined;
+  try {
+    cfg = getRuntimeConfigRef() || loadConfig();
+  } catch {
+    return null;
+  }
+  const fp = cfg?.forwardProxy;
+  if (!fp || fp.enabled !== true) return null;
+  const port = Number.isFinite(fp.port) && (fp.port as number) > 0 ? (fp.port as number) : DEFAULT_FORWARD_PROXY_PORT;
+  // `host` is a LISTEN address — the client-facing URL must stay reachable
+  // from the client on the same machine, so wildcard binds normalize to loopback.
+  const host = !fp.host || fp.host === '0.0.0.0' || fp.host === '::' ? '127.0.0.1' : fp.host;
+  return {
+    url: `http://${host}:${port}`,
+    port,
+    caPath: caCertPath(fp.caDir),
+    requireCredential: fp.requireCredential === true,
+  };
+}
+
+/**
+ * Post-setup advisories for a launcher hook: the launcher is written, but the
+ * hooked client still fails at USE time until the listener runs and the platform
+ * store trusts the MITM root. Shared by the launcher adapters so the code set and
+ * the force semantics cannot drift adapter by adapter. (A `service-env` hook
+ * writes NODE_EXTRA_CA_CERTS and needs none of this.)
+ *
+ * The CA verdict is FORCED: a cached pre-install "trusted" must never silence
+ * the warning (the TTL cache still absorbs repeated status polls).
+ */
+export async function collectHookWarnings(fp: ForwardProxyEndpoint, port: number): Promise<ClientActionWarning[]> {
+  const warnings: ClientActionWarning[] = [];
+  if (!getForwardProxyStatus().running) {
+    warnings.push({ code: 'proxy_not_running', params: { port: String(port) } });
+  }
+  const { trusted } = await probeCaTrustedCached(fp.caPath, { force: true });
+  if (trusted === false) {
+    warnings.push({ code: 'ca_not_trusted', params: { path: fp.caPath } });
+  } else if (trusted === 'unknown') {
+    warnings.push({ code: 'ca_trust_unknown' });
+  }
+  return warnings;
+}
+

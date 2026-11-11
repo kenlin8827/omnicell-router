@@ -82,7 +82,7 @@ export function adapterFor(id: HarnessHostId | string): HostAdapter | undefined 
 /**
  * Every physical skills directory the adapters resolve, deduplicated.
  *
- * One directory is ONE copy: fourteen hosts share `.agents/skills`, so the FIRST adapter in registry
+ * One directory is ONE copy: fifteen hosts share `.agents/skills`, so the FIRST adapter in registry
  * order is the owner and every other host is an alias — installation, the inventory scan and the
  * console all use this rule, otherwise the same directory gets labeled two different ways.
  */
@@ -169,13 +169,19 @@ export function hostDetected(adapter: HostAdapter, ctx: AdapterContext = { proje
   return false;
 }
 
-/** PATH probe for an extensionless executable name; Windows suffixes are tried when the name has none. */
+/**
+ * Probe for an extensionless executable name; Windows suffixes are tried when the name has none.
+ * An absolute path (a resolved bundled launcher) is checked directly, never joined onto PATH.
+ */
 function executableOnPath(command: string): boolean {
   const exts = process.platform === 'win32' && !path.extname(command) ? ['.exe', '.cmd', '.bat', ''] : [''];
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
+  const bases = path.isAbsolute(command)
+    ? [command]
+    : (process.env.PATH ?? '').split(path.delimiter).map((dir) => (dir ? path.join(dir, command) : ''));
+  for (const base of bases) {
+    if (!base) continue;
     for (const ext of exts) {
-      const full = path.join(dir, command + ext);
+      const full = base + ext;
       try {
         // X_OK degrades to mere existence on Windows, and on POSIX a
         // directory with the execute bit also passes; require a real file.

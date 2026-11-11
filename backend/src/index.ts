@@ -10,7 +10,7 @@ import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
-import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
+import { isRestartSupervisorProcess, runRestartSupervisor, takeRestartSelfRegisterFlag, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
 import { openRateLimitWindowStore } from './ratelimit/window-store.js';
@@ -21,7 +21,7 @@ import { openFailureEventStore, getFailureEventLog } from './observability/failu
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
 import { getQuotaStore } from './quota/store.js';
 import { keyHashPrefix, type CredentialStore } from './opencode/credentials/types.js';
-import { getProviderNodeById } from './opencode/user-config.js';
+import { expandEnvTemplate, getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
@@ -29,6 +29,24 @@ import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
+import { wireFor } from './providers/wire.js';
+import { getModelServicePluginEntry } from './plugins/host.js';
+import type { QuotaCodeAdapter } from './quota/types.js';
+
+// Dual entry — the desktop bundle compiles THIS file into `ocr-backend`; the
+// `--cli` flag turns the same binary into the `ocr` command surface (a packaged
+// install has no bun/node to trampoline into, and no repo checkout to point at).
+// The import must stay conditional: `cli/index.ts` runs `main()` at module
+// scope, so a static import would parse argv and exit on every gateway boot.
+// Placed ahead of the gateway body so a CLI invocation never boots the server.
+// `cliMode` also gates the bottom-of-file `main()` call: setting `process.exitCode`
+// and letting the process drain is what keeps a piped `ocr status | head` from
+// losing its output (`process.exit` does not wait for stdout to flush).
+const cliMode = process.argv.includes('--cli');
+if (cliMode) {
+  const { cliReady } = await import('./cli/index.js');
+  await cliReady;
+}
 
 /**
  * Provider-defs inference baseURL (the single def truth) for ids the registry
@@ -41,10 +59,50 @@ function providerDefBaseUrl(providerId: string): string | undefined {
   return typeof base === 'string' && base.length > 0 ? base : undefined;
 }
 
+/**
+ * Provider-defs inference key, same fallback rationale as the baseURL above:
+ * a taken-down (or model-less) provider has no registry config, but its defs
+ * node may still carry the inline key that quota probing activates on.
+ */
+function providerDefApiKey(providerId: string): string | undefined {
+  const def = getProviderNodeById(providerId);
+  const key = expandEnvTemplate(def?.options?.apiKey ?? def?.settings?.apiKey);
+  return typeof key === 'string' && key.length > 0 ? key : undefined;
+}
+
+/**
+ * L-e plugin quota layer (ADR-0009 §5): resolve one provider id to the
+ * model-service plugin that owns its wire, and expose that plugin's
+ * quotaCheck capability as a QuotaCodeAdapter the quota engine already
+ * speaks. Undefined = no capable plugin on this provider's wire.
+ */
+function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined {
+  const def = getProviderNodeById(providerId);
+  const npm = typeof def?.npm === 'string' ? def.npm : typeof def?.package === 'string' ? def.package : undefined;
+  const entry = getModelServicePluginEntry(wireFor(npm, providerDefBaseUrl(providerId)));
+  const plugin = entry?.plugin;
+  const check = plugin?.quotaCheck;
+  if (!plugin || !check || !entry) return undefined;
+  return {
+    id: `plugin:${entry.view.id}`,
+    providerIds: [providerId],
+    probe: (ctx) => check(ctx),
+  };
+}
+
 async function main() {
-  // If this process was spawned by the UI "Restart Gateway" button, wait for
-  // the old gateway to die (and take over) before booting further.
-  const isRestartChild = await adoptRestartParent();
+  // Detached restart-supervisor mode (console "Restart Gateway" / environment
+  // switch): the caller has already exited, so THIS process owns the handover
+  // — wait for the old gateway, spawn the replacement, verify /health with
+  // retries, record the verdict, exit. No gateway services are initialized.
+  if (isRestartSupervisorProcess()) {
+    process.exit(await runRestartSupervisor());
+  }
+
+  // Gateway child spawned by that supervisor: self-register the pid/info
+  // files once listening (the old process already exited; nobody else owns
+  // those files at that point).
+  const isRestartChild = takeRestartSelfRegisterFlag();
 
   // Active environment (book-set) — resolve FIRST: an unknown OCR_ENV /
   // dangling pointer crashes the boot here with a clear message (fail-fast,
@@ -204,6 +262,18 @@ async function main() {
 
   let registry: ProviderRegistry;
   try {
+    const { loadInstalledPlugins, syncPluginPresets } = await import('./plugins/host.js');
+    // Plugin host loads BEFORE the pool: plugin wires must have
+    // executors registered by the time DispatchingProvider is constructed.
+    const plugins = await loadInstalledPlugins();
+    const registered = await syncPluginPresets();
+    if (registered.length > 0) console.log(`[OCR] Plugins: registered provider presets: ${registered.join(', ')}`);
+    const loaded = plugins.filter((p) => p.loaded);
+    if (plugins.length > 0) {
+      console.log(
+        `[OCR] Plugins: ${loaded.length}/${plugins.length} loaded (${plugins.map((p) => `${p.id}${p.loaded ? '' : ': ' + p.error}`).join(', ')})`
+      );
+    }
     const boot = await buildDirectPool();
     config.models = boot.models;
 
@@ -266,6 +336,19 @@ async function main() {
 
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
 
+  // Health prober (ADR-0004: recovery is verified, never accidental): with
+  // circuitBreaker.activeProbing.enabled the orchestrator constructed an
+  // ActiveHealthProber — start its sweep here, next to the quota prober, so
+  // OPEN breakers are validated by synthetic max_tokens:1 trials instead of
+  // real user traffic. Opt-in: default off (probes are paid upstream calls).
+  if (config.circuitBreaker?.activeProbing?.enabled) {
+    orchestrator.startProber();
+    // Print the prober's CLAMPED interval — the constructor clamps the raw
+    // config value to [10 s, 1 h], and the log must not advertise a sweep
+    // period the prober will not honor.
+    console.log(`[OCR] Health prober: active sweep every ${orchestrator.getProberIntervalMs()}ms`);
+  }
+
   // Quota prober: coverage ships with the release, activation
   // follows credentials — the bound credential store is the activation source
   // (ADR-0009 §1: a covered provider whose model list is still empty holds
@@ -277,7 +360,7 @@ async function main() {
     const quotaProber = new QuotaProber({
       registry: {
         getCredentialChain: (name) => registry.getCredentialChain(name),
-        getProviderApiKey: (name) => registry.getProviderConfig(name)?.apiKey,
+        getProviderApiKey: (name) => registry.getProviderConfig(name)?.apiKey ?? providerDefApiKey(name),
         // L-d origin containment anchor: a model-less provider has no registry
         // config, so fall back to its provider-defs node (the single def truth).
         getProviderBaseUrl: (name) => registry.getProviderConfig(name)?.baseUrl ?? providerDefBaseUrl(name),
@@ -295,6 +378,10 @@ async function main() {
           }
         },
       },
+      pluginLayer: {
+        candidateIds: () => listConfigProviders().map((p) => p.id),
+        adapterFor: pluginQuotaAdapterFor,
+      },
       config: () => getRuntimeConfigRef() ?? config,
     });
     setQuotaProber(quotaProber);
@@ -309,8 +396,9 @@ async function main() {
 
   try {
     await app.listen({ port: config.port, host: config.host });
-    // A UI-restart child must self-register: the pid/info files still point at
-    // the old (now-exiting) gateway, and nobody else rewrites them.
+    // A supervisor-spawned gateway must self-register: the pid/info files
+    // still point at the old (now-exiting) gateway, and nobody else rewrites
+    // them.
     if (isRestartChild) writeDaemonFiles(process.pid, config.port, config.host);
     console.log('\n============================================================');
     console.log(`🚀 OCR Gateway (OmniCellRouter) is ready! (OpenAI API Compatible)`);
@@ -360,6 +448,8 @@ async function main() {
     // (the store debounces; a graceful exit should not lose the last cycles).
     getQuotaProber()?.stop();
     getQuotaStore().flush();
+    // Health prober: same contract — stop the sweep before exit.
+    orchestrator.stopProber();
     // Rate-limit windows: flush the last checkpoint so a controlled restart
     // (console restart route included) rehydrates with zero under-count, then
     // stop the periodic timer and close the SQLite handle — explicit teardown
@@ -390,4 +480,4 @@ async function main() {
   });
 }
 
-main();
+if (!cliMode) main();

@@ -53,29 +53,13 @@ const PI_SUBAGENT_TIERS: Record<string, string> = {
   oracle: 'ultra',
 };
 
-/**
- * Legacy provider keys written by pre-rename OCR releases (OneCastRouter era
- * and earlier experiments). Their `key/<id>` subagent pins and defaultProvider
- * values are router residue, not user choices — treated as router-owned
- * everywhere the current prefix is (stripped on teardown/reset, echoed as the
- * bare id, refreshed by the tier preset) so an old install heals on the next
- * setup instead of posing as a foreign manual pin forever.
- */
-const LEGACY_PROVIDER_KEYS = ['onecast-router', 'opencode-router'];
-
-/** All provider keys whose `<key>/<id>` model refs count as router-owned. */
-const ROUTER_PROVIDER_KEYS = [PI_PROVIDER_KEY, ...LEGACY_PROVIDER_KEYS];
-
-/** True when a model ref is qualified with any router provider key. */
+/** True when a model ref is qualified with the router provider key. */
 const isRouterModelRef = (v: unknown): v is string =>
-  typeof v === 'string' && ROUTER_PROVIDER_KEYS.some(k => v.startsWith(`${k}/`));
+  typeof v === 'string' && v.startsWith(`${PI_PROVIDER_KEY}/`);
 
 /** Bare id of a router-qualified ref, or undefined when foreign. */
-const routerModelBareId = (v: unknown): string | undefined => {
-  if (typeof v !== 'string') return undefined;
-  const k = ROUTER_PROVIDER_KEYS.find(k => v.startsWith(`${k}/`));
-  return k ? v.slice(k.length + 1) : undefined;
-};
+const routerModelBareId = (v: unknown): string | undefined =>
+  isRouterModelRef(v) ? v.slice(PI_PROVIDER_KEY.length + 1) : undefined;
 
 /**
  * Startup thinking level written into pi's settings.json alongside
@@ -207,7 +191,8 @@ async function buildModelEntries(ids: string[], contextWindow?: number): Promise
 
 export class PiClientAdapter implements ClientAdapter {
   name = 'pi' as const;
-  displayName = 'Pi Coding Agent';
+  hookKind = 'config' as const;
+  displayName = 'Pi';
 
   getConfigPath(): string {
     return path.join(os.homedir(), '.pi', 'agent', 'models.json');
@@ -221,7 +206,7 @@ export class PiClientAdapter implements ClientAdapter {
     return path.join(path.dirname(this.getConfigPath()), 'settings.json');
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);
@@ -425,7 +410,7 @@ export class PiClientAdapter implements ClientAdapter {
         if (typeof current === 'string' && current.length > 0) {
           const bare = routerModelBareId(current);
           if (bare === undefined) continue; // foreign pin — never stolen
-          // Router-owned (incl. legacy-key residue): refresh only
+          // Router-owned: refresh only
           // preset-vocabulary auto* aliases (tier table updates normalize on
           // re-setup); a router-owned concrete pick is an explicit choice and
           // survives.
@@ -437,7 +422,7 @@ export class PiClientAdapter implements ClientAdapter {
       // when unset or already router-owned — a hand-picked foreign provider
       // (user's own default in settings.json) is never stolen; the model list
       // in models.json still exposes the OCR entries via /model.
-      if (!settings.defaultProvider || ROUTER_PROVIDER_KEYS.includes(String(settings.defaultProvider))) {
+      if (!settings.defaultProvider || String(settings.defaultProvider) === PI_PROVIDER_KEY) {
         settings.defaultProvider = PI_PROVIDER_KEY;
         settings.defaultModel = main;
         if (!settings.defaultThinkingLevel) settings.defaultThinkingLevel = PI_DEFAULT_THINKING_LEVEL;

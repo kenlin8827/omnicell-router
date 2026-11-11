@@ -54,7 +54,7 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **模型写入只有一个落点**（provider 自己的节点）：modelsGet/modelAdd/modelUpdate/modelRemove/modelsClear/modelReorder 删除 credential-only 回退分支；pullCatalogModels 无条件写节点；周期清扫对无节点 provider 直接跳过（未连接 → 无处可写，绝不伪造连接）。`modelsManageable` 能力字段随它曾经把守的门一并**从线上移除**：落点唯一之后，可编辑性**就是**存在性（行存在即拥有节点），一个恒为 true 的字段是死接口。模型**顺序**同样以 defs 文件为真值：控制台的上下移动手势重写节点 `models` 的键序（modelReorder）——物化按节点原样渲染、漂移判定对顺序敏感，所以顺序变化是一次真实的 def 写入并推送到客户端，绝不是控制台视角偏好。
 - **绑定清扫检查原始 defs 文件而非归一化视图**。归一化视图会丢弃 retired-shape 节点（Decision 9），只有原始检查能避免把此类节点"复活"为全新可路由节点。retired 节点保持启动时的响亮排除，直到操作员显式迁移（重连即有意重建——密钥刚入 store，无损失）。
 - **`ocr.json` 版本 4**：3 被本修订案烧毁（聚合失去了 `custom` 源）；单调递增、永不复用。`custom` CatalogSourceId 随之消失：source 标签永远是配置中该 source 自己的 `src.def.id`，从不硬编码类别，因此退役成员已无生产者。（`catalog.sources[].type: 'custom'` 是另一个概念——用户可配置的模型清单 SOURCE 类型——继续存在。）
-- 环境书集（ADR-0007）：`catalog/custom.json` 移出导出集；信封白名单继续**接受**该键（其 checksum 仍校验，被篡改的书集照样拒绝）随后**丢弃**——修订前的书集可导入而不被拒，退役文件绝不写回新环境。
+- 环境书集（ADR-0007）：`catalog/custom.json` 彻底移出 payload 集——不导出，导入也**不接受**。仍带着它的修订前书集会被白名单错误直接拒绝（`Unsupported payload key`，错误信息会回显允许的键），而不是「导入成功但文件被悄悄丢掉」：不存在迁移面，因为它所属的 store 已经不存在了。
 - **控制台按平面分离**。`/models` = 仅已维护的物理模型（defs 支撑的行，可编辑/测试/锁定）；聚合目录移到模型来源页的只读 tab（发现/参考，无维护动作）。虚拟引用（auto/梯队别名、combo、变体）绝不出现在 `/models`——它们有自己的页面，这让"已维护"没有歧义。
 
 ## 修订案 —— defs 写入路径加固（2026-12）
@@ -90,3 +90,12 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **仍然禁止。** 不把过期的客户端副本写回：读方向的 defs 是只增的，写方向对正规槽是 REPLACE。在 OCR 删掉、但客户端正规槽里仍然存在的 provider，会被下一次拉取重新导入——与 key 删除是同一项已记录的取舍（删除后紧跟的那次推送会把它传播出去；在那之前客户端副本是唯一证据）。退役槽里的遗留副本两个方向都不碰，它不是拉取能重新接管的路径——见上方记录在案的后果。已导入的 def 在 OCR 里编辑；客户端对 OCR 自有 def 的改动会被忽略（报告为 `skipped`）。
 
 失败按节点逐条记录且绝不静默：非法 id（小写 slug 规则）、非对象节点、被拒绝的转换都会带原因报告，账本记录 `imported` / `converted` / `skipped` / `failed`。
+
+## 修订案 —— provider 级运维下架（`disabled-providers.json`）
+
+模型隐藏旗标与凭据下架的粗粒度对应物：整家退役，但不删除任何东西。记录在此，因为关卡位于 `buildDirectPool` 的 provider 准入步骤。
+
+- **状态是路由状态，不是连接真相。** `<OCR_HOME>/disabled-providers.json`（`version: 1`，原子 temp+rename，0600）是 GLOBAL 的——与 `suspect-credentials.json` 同根、同生命周期先例（ADR-0006 §7）：provider 在任何 book-set 里被路由时都已下架。它刻意不写进 `providers.json`：那是连接真相以及同步物化器的来源，把路由控制旗标写进去会被带到客户端配置。反过来，下架也不触碰凭据同步与 def 物化：provider 在客户端侧仍然连接，只有 OCR 的路由池将其排除。
+- **硬性池排除，如实上报。** `buildDirectPool` 在读取凭据/defs 之前检查账本并推入 `operator_disabled` 排除项；该 provider 不注册任何模型/实例。下游自动成立：`/v1/models` 不再列出该 provider，直连 id 无法命中（404），引用其模型的组合成为死引用（保存/启动告警），梯队池失去这些成员，会话 pin 走既有的 `configEvicted` → 重选路径。控制台各面仍读聚合：provider 卡片带禁用徽章，维护页的 `/models` 行保留并带同一徽章（`providerDisabled`），一键即可恢复——模型隐藏先例的上一级。
+- **手动生命周期，一键恢复。** 只由操作员设置（`POST /opencode/providers/:id/disable`），只由操作员解除（`/enable`）；冷却、重连、Push 或熔断重置都不会清除。路由挂在池同步接缝上，同一请求内完成下架/恢复，无需重启。重新启用是精确恢复：不需要重建任何隐藏模型簿记。删除 provider（或断开它最后一条凭据）时，只有在**什么都不剩**（既无 defs 节点也无凭据）的情况下才清除账本行：该 id 就此释放，重新连接从启用状态开始；部分清凭据则保留下架状态。
+- **额度探测不受影响。** 覆盖激活跟随凭据（ADR-0009 §1）；被禁用 provider 的探测照常运行（廉价、纯展示），控制台因此能看到它何时重新可用。额度平面从不门控路由。

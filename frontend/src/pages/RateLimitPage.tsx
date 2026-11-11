@@ -37,15 +37,15 @@ const KIND_COLORS: Record<RateLimitEventKind, string> = {
   shaped: 'var(--text-dim)',
 };
 
-const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' };
 
 const TH: React.CSSProperties = {
   padding: '6px 10px',
   textAlign: 'left',
-  fontSize: '11px',
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
-  letterSpacing: '0.4px',
+  letterSpacing: 'var(--tracking-label)',
   borderBottom: '1px solid var(--divider)',
   whiteSpace: 'nowrap',
 };
@@ -266,7 +266,7 @@ export const RateLimitPage: React.FC = () => {
           <div className="card-title">
             <Gauge size={18} color="var(--accent)" />
             <span>{t('rateLimitPage.eventsTitle')}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginLeft: '8px' }}>
               {t('rateLimitPage.shownOf', { shown: filteredEvents.length, total: events.length })}
             </span>
           </div>
@@ -312,13 +312,13 @@ export const RateLimitPage: React.FC = () => {
               { value: 'forced', label: kindLabel('forced') },
               { value: 'shaped', label: kindLabel('shaped') },
             ]}
-            style={{ fontSize: '12px', padding: '5px 10px', width: '150px' }}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', width: '150px' }}
           />
           <div style={{ position: 'relative', flex: 1, minWidth: '180px', maxWidth: '320px' }}>
             <Search size={13} style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
             <input
               className="input"
-              style={{ paddingLeft: '26px', width: '100%', fontSize: '12px', padding: '5px 10px 5px 26px' }}
+              style={{ paddingLeft: '26px', width: '100%', fontSize: 'var(--text-sm)', padding: '5px 10px 5px 26px' }}
               placeholder={t('rateLimitPage.searchPlaceholder')}
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -337,22 +337,22 @@ export const RateLimitPage: React.FC = () => {
               { value: '24h', label: t('rateLimitPage.time24h') },
               { value: '7d', label: t('rateLimitPage.time7d') },
             ]}
-            style={{ fontSize: '12px', padding: '5px 10px', width: '130px', marginLeft: 'auto' }}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', width: '130px', marginLeft: 'auto' }}
           />
         </div>
 
         {error && (
-          <div style={{ padding: '0 14px 10px', color: '#ef4444', fontSize: '12px' }}>{error}</div>
+          <div style={{ padding: '0 14px 10px', color: '#ef4444', fontSize: 'var(--text-sm)' }}>{error}</div>
         )}
 
         <div style={{ flex: 1, overflow: 'auto' }}>
           {filteredEvents.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '8px', color: 'var(--text-dim)', fontSize: '13px', padding: '24px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '8px', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
               <Inbox size={28} />
               <span>{events.length === 0 ? t('rateLimitPage.eventsEmpty') : t('rateLimitPage.filterEmpty')}</span>
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-md)' }}>
               <thead>
                 <tr>
                   <th style={TH}>{t('rateLimitPage.colTime')}</th>
@@ -416,7 +416,7 @@ export const RateLimitPage: React.FC = () => {
           <div className="card-title">
             <Activity size={18} color="var(--accent)" />
             <span>{t('rateLimitPage.windowsTitle')}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginLeft: '8px' }}>
               {t('rateLimitPage.shownOf', { shown: filteredWindows.length, total: windows.length })}
             </span>
             {atCapCount > 0 && (
@@ -428,11 +428,11 @@ export const RateLimitPage: React.FC = () => {
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>
           {filteredWindows.length === 0 ? (
-            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
+            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)' }}>
               {t('rateLimitPage.windowsEmpty')}
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-md)' }}>
               <thead>
                 <tr>
                   <th style={TH}>{t('rateLimitPage.colDirection')}</th>
@@ -459,9 +459,9 @@ export const RateLimitPage: React.FC = () => {
                           <span
                             title={t('rateLimitPage.upstream429Cooldown', { time: fmtMs(w.cooldownMs) })}
                             style={{
-                              marginLeft: 6, fontSize: 10, padding: '1px 6px', borderRadius: 999,
+                              marginLeft: 6, fontSize: 'var(--text-2xs)', padding: '1px 6px', borderRadius: 999,
                               background: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)',
-                              color: 'var(--accent-amber)', fontWeight: 600, whiteSpace: 'nowrap',
+                              color: 'var(--accent-amber)', fontWeight: 'var(--font-semibold)', whiteSpace: 'nowrap',
                             }}
                           >
                             429 · {fmtMs(w.cooldownMs)}

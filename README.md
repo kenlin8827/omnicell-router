@@ -76,6 +76,40 @@ Download native standalone installers from [GitHub Releases](https://github.com/
 * **macOS (Apple Silicon)**: `OmniCellRouter_0.0.1_aarch64.dmg`
 * **macOS (Intel)**: `OmniCellRouter_0.0.1_x64.dmg`
 
+The desktop shell lives in the system tray. Right-click the tray icon for
+**Close to tray** (X keeps the gateway running) and **Start with system** — a
+login launch boots the gateway silently in the tray, so the console window
+never pops up on its own; open it from **Open Console** whenever you need it.
+
+**Startup options in the installer (Windows)**: the NSIS wizard has a page with
+two boxes, both **checked** — *Start OmniCellRouter when I sign in* and *Install
+the `ocr` command on my PATH*. Unchecking either is respected: the answers are
+handed over as `%LOCALAPPDATA%\omnicell-router\installer-choice.ini`, the app
+applies them on its first launch (through its own autostart plugin and the
+bundled gateway) and deletes the file. The installer itself never writes a Run
+key or a LaunchAgent. Paths without a wizard — macOS dmg, Linux AppImage/deb,
+silent `/S`, passive `/P`, and upgrades — fall back to the same two questions as
+native dialogs on the first visible launch; either answer is remembered, so
+nothing nags.
+
+That wizard page lives in `desktop/src-tauri/nsis/installer.nsi`, a vendored
+copy of tauri's NSIS template (tauri's installer hooks run inside Sections and
+cannot declare a page). Its header documents the re-sync procedure for every
+`@tauri-apps/cli` bump.
+
+On first launch (visible launches only) the desktop app ASKS whether to register
+the `ocr` / `omnicell-router` commands — unless the Windows installer already
+answered that (see *Startup options* above). The bundled gateway answers `--cli`, so
+a GUI-only machine gets the full CLI without bun, node, or a repo checkout.
+Declining is remembered. The tray entry is a toggle whose verb is read from the
+shims actually on disk: **Install OCR command** registers them (idempotent, so
+it also repairs a broken one), **Remove OCR command** asks for confirmation and
+then deletes them. Either way the click answers with a dialog and the label is
+re-read after the action, so the menu never offers a verb that does not apply.
+`ocr shims-status` prints the same state as JSON. The installed shims pin the app's
+own data root (`OCR_HOME`), so `ocr status` / `ocr stop` address the gateway the
+desktop shell is running instead of a separate CLI default.
+
 ---
 
 ## Command Line Interface (CLI)
@@ -91,12 +125,23 @@ ocr stop                # Stop running gateway daemon
 ocr restart             # Restart gateway daemon
 
 # Client integrations (one-command setup)
-ocr setup opencode      # Hook OpenCode to route via OCR
-ocr setup claude        # Hook Claude Code / Desktop to route via OCR
+ocr setup claude        # Hook Claude Code to route via OCR
 ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
+ocr setup cursor-proxy  # Hook Cursor via the OCR forward proxy + Cursor Gateway plugin
+ocr setup dsh           # Hook DeepSeek Harness to route via OCR
+ocr setup opencode      # Hook OpenCode to route via OCR
 ocr setup pi            # Hook Pi coding agent to route via OCR
-ocr setup kimi          # Hook Kimi CLI to route via OCR
 ocr setup openclaw      # Hook OpenClaw to route via OCR
+ocr setup omp           # Hook OMP (oh-my-pi) to route via OCR
+ocr setup kimi          # Hook Kimi Code CLI to route via OCR
+ocr setup grok          # Hook Grok CLI to route via OCR
+ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + qoder-gateway plugin
+
+# Launch through the OCR-managed launchers (after setup)
+ocr cursor              # Start the Cursor IDE with the proxy env applied
+ocr cursor-agent        # Run the cursor-agent CLI with the proxy env applied
+ocr qoder               # Start the Qoder desktop app with the proxy env applied
+ocr qoder-cli           # Run the Qoder CLI with the proxy env applied
 
 # Teardown hooks
 ocr teardown opencode   # Restore OpenCode to direct connection
@@ -278,6 +323,8 @@ Every proxied response carries diagnostic metadata:
 * `X-OCR-Cost-USD`: Calculated cost for the execution turn.
 * `X-OCR-Saved-USD`: Net savings compared to the baseline tier.
 * `X-OCR-Latency-MS`: Gateway execution latency in milliseconds.
+* `X-OCR-TTFT-MS`: Time to first forwarded chunk of the committed attempt (streamed turns only).
+* `X-OCR-Gen-MS`: Decode window from that first chunk to stream end (streamed turns only); completion tokens ÷ this window is the decode rate.
 
 ### 2. Core Administration Endpoints
 

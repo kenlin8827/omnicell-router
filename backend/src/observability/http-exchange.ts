@@ -355,6 +355,8 @@ export function captureKeyIdentity(
 export function emitClientRequest(args: {
   recorder: CaptureRecorder;
   req?: FastifyRequest | CaptureClientRequest | undefined;
+  /** In-process identity (gateway-bound key); wins over the request's authInfo. */
+  apiKey?: CaptureKeyIdentity;
   body: unknown;
   sessionId: string;
   traceId: string;
@@ -362,7 +364,7 @@ export function emitClientRequest(args: {
   conversationKey?: string;
 }): ClientExchangeContext {
   const spanId = cryptoRandom();
-  const apiKey = captureKeyIdentity(args.req);
+  const apiKey = args.apiKey ?? captureKeyIdentity(args.req);
   // MITM client legs render ABSOLUTE-FORM so the archive shows the authority
   // the client dialed: a plain-HTTP proxy request already arrives with an
   // absolute-form url (kept verbatim); a TLS-decrypted leg carries an

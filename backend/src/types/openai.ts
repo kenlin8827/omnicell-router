@@ -88,6 +88,14 @@ export interface ChatCompletionRequest {
     /** Explicit-mode opt-in: allow failover to tier-pool siblings when the named model fails. Default: the named model serves or errors. */
     failover?: boolean;
     session_id?: string;
+    /**
+     * Client-minted conversation id (Cursor's agent-wire `conversation_id`,
+     * set by the in-process plugin host — there is no HTTP header on that
+     * path). Bound to the gateway session as an ALIAS, never as the session
+     * id: see ADR-0002 §1 "client conversation refs". Stripped before the
+     * upstream request (like every router_options field).
+     */
+    client_ref?: { kind?: string; id?: string };
   };
 }
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Zap, Save, Check, Copy, Loader2 } from 'lucide-react';
 import { api, HeadroomSidecarStatus } from '../lib/api';
-import { copyToClipboard } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
@@ -34,7 +34,7 @@ const CmdLine: React.FC<{ cmd: string }> = ({ cmd }) => {
       <code
         style={{
           flex: 1,
-          fontSize: '12px',
+          fontSize: 'var(--text-sm)',
           padding: '5px 10px',
           borderRadius: '6px',
           background: 'var(--btn-bg)',
@@ -80,16 +80,19 @@ const Section: React.FC<{
 }> = ({ title, desc, enabled, onToggle, enableLabel, children }) => (
   <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '16px' }}>
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-      <span style={{ fontSize: '14px', fontWeight: 600 }}>{title}</span>
-      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+      <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)' }}>{title}</span>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', cursor: 'pointer' }}>
         <span style={{ color: 'var(--text-dim)' }}>{enableLabel}</span>
         <Switch checked={enabled} onChange={onToggle} />
       </label>
     </div>
-    <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: children ? '12px' : 0 }}>
+    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: children ? '12px' : 0 }}>
       {desc}
     </div>
-    {enabled && children}
+    {/* Always rendered: a section's setup material (install commands, sidecar
+        control) must be readable while the feature is off. Gate the settings
+        that only matter when enabled inside the section itself. */}
+    {children}
   </div>
 );
 
@@ -164,7 +167,7 @@ export const TokenSaverPage: React.FC = () => {
     display: 'inline-flex',
     alignItems: 'center',
     gap: '6px',
-    fontSize: '11px',
+    fontSize: 'var(--text-xs)',
     padding: '3px 10px',
     borderRadius: '6px',
     background: 'var(--btn-bg)',
@@ -211,10 +214,10 @@ export const TokenSaverPage: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ fontSize: '13px', color: 'var(--text)', marginBottom: '6px' }}>
+      <div style={{ fontSize: 'var(--text-md)', color: 'var(--text)', marginBottom: '6px' }}>
         {t('tokenSaver.subtitle')}
       </div>
-      <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '16px' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '16px' }}>
         {t('tokenSaver.hint')}
       </div>
 
@@ -238,14 +241,14 @@ export const TokenSaverPage: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <CmdLine cmd={t('tokenSaver.headroomStepInstall')} />
               <CmdLine cmd={t('tokenSaver.headroomStepRun')} />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-relaxed)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                   <span>{t('tokenSaver.headroomStepNote')}</span>
                   <a
                     href="https://docs.headroomlabs.ai/docs/quickstart"
                     target="_blank"
                     rel="noreferrer"
-                    style={{ fontSize: '11px', color: 'var(--accent)', width: 'fit-content' }}
+                    style={{ fontSize: 'var(--text-xs)', color: 'var(--accent)', width: 'fit-content' }}
                   >
                     {t('tokenSaver.headroomDocs')} ↗
                   </a>
@@ -254,8 +257,8 @@ export const TokenSaverPage: React.FC = () => {
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('tokenSaver.headroomSidecarLabel')}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('tokenSaver.headroomSidecarLabel')}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-sm)' }}>
                 <span
                   style={{
                     width: '8px',
@@ -299,7 +302,7 @@ export const TokenSaverPage: React.FC = () => {
                   display: 'flex',
                   alignItems: 'center',
                   gap: '8px',
-                  fontSize: '12px',
+                  fontSize: 'var(--text-sm)',
                   cursor: 'pointer',
                   marginLeft: 'auto',
                   paddingRight: '8px',
@@ -313,8 +316,9 @@ export const TokenSaverPage: React.FC = () => {
                 <span>{t('tokenSaver.headroomAutoStartShort')}</span>
               </label>
             </div>
+            {(headroom.enabled ?? false) && (<>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('tokenSaver.headroomUrl')}
               </label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -331,7 +335,7 @@ export const TokenSaverPage: React.FC = () => {
                   target="_blank"
                   rel="noreferrer"
                   title={headroomBase}
-                  style={{ fontSize: '12px', color: 'var(--accent)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                  style={{ fontSize: 'var(--text-sm)', color: 'var(--accent)', whiteSpace: 'nowrap', flexShrink: 0 }}
                 >
                   {t('tokenSaver.headroomDashboard')} ↗
                 </a>
@@ -339,7 +343,7 @@ export const TokenSaverPage: React.FC = () => {
             </div>
             <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div style={{ width: '180px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                   {t('tokenSaver.headroomTimeout')}
                 </label>
                 <input
@@ -351,7 +355,7 @@ export const TokenSaverPage: React.FC = () => {
                   className="input"
                 />
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer', paddingBottom: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', cursor: 'pointer', paddingBottom: '8px' }}>
                 <Switch
                   size="sm"
                   checked={headroom.compressUserMessages ?? false}
@@ -360,6 +364,7 @@ export const TokenSaverPage: React.FC = () => {
                 <span>{t('tokenSaver.headroomCompressUser')}</span>
               </label>
             </div>
+            </>)}
           </div>
         </Section>
 
@@ -370,16 +375,18 @@ export const TokenSaverPage: React.FC = () => {
           onToggle={v => setCompression({ ...compression, caveman: { ...caveman, enabled: v } })}
           enableLabel={t('tokenSaver.cavemanEnable')}
         >
-          <div style={{ width: '240px' }}>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-              {t('tokenSaver.cavemanLevel')}
-            </label>
-            <Combobox
-              value={caveman.level || 'full'}
-              onChange={v => setCompression({ ...compression, caveman: { ...caveman, level: v } })}
-              options={CAVEMAN_LEVELS.map(lv => ({ value: lv, label: lv }))}
-            />
-          </div>
+          {(caveman.enabled ?? false) && (
+            <div style={{ width: '240px' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('tokenSaver.cavemanLevel')}
+              </label>
+              <Combobox
+                value={caveman.level || 'full'}
+                onChange={v => setCompression({ ...compression, caveman: { ...caveman, level: v } })}
+                options={CAVEMAN_LEVELS.map(lv => ({ value: lv, label: lv }))}
+              />
+            </div>
+          )}
         </Section>
       </div>
     </div>

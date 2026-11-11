@@ -15,7 +15,7 @@
  * internal field invisible by default instead of leaking on the next edit.
  */
 import type { CallCredential } from '../opencode/credentials/types.js';
-import type { ConversationSession } from './session-manager.js';
+import type { ClientConversationRef, ConversationSession } from './session-manager.js';
 import type { ExecutionTrace, TraceTracker } from '../trace/tracker.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 
@@ -173,6 +173,14 @@ export interface SessionRow extends SessionEntityView, SessionAggregates {
   apiKeys?: CaptureKeyIdentity[];
   /** Distinct client User-Agents, write order (console display only). */
   clients?: string[];
+  /**
+   * Client-minted conversation ids seen on this session's turns (write order,
+   * first = display anchor), derived from the traces' `request.clientRef`. The
+   * session id above stays the gateway id: this is the OTHER side of the
+   * mapping, shown beside it so an operator can correlate the two namespaces
+   * (and search by either). Absent when the client never sent one.
+   */
+  clientRefs?: ClientConversationRef[];
 }
 
 /**

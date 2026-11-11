@@ -45,7 +45,10 @@ export const Drawer: React.FC<DrawerProps> = ({
   useEffect(() => {
     if (!backdropClose) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // A modal opened ON TOP of this drawer owns Escape (it is the topmost
+      // dismissal target): without the guard one press closes the dialog and the
+      // drawer underneath it. `data-ocr-dialog` is the shared Dialog marker.
+      if (e.key === 'Escape' && !document.querySelector('[data-ocr-dialog]')) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -115,8 +118,8 @@ export const Drawer: React.FC<DrawerProps> = ({
             <h3
               style={{
                 margin: 0,
-                fontSize: '16px',
-                fontWeight: 600,
+                fontSize: 'var(--text-xl)',
+                fontWeight: 'var(--font-semibold)',
                 color: 'var(--text)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -128,7 +131,7 @@ export const Drawer: React.FC<DrawerProps> = ({
             {subtitle && (
               <div
                 style={{
-                  fontSize: '12px',
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--text-muted)',
                   marginTop: '4px',
                   overflow: 'hidden',
@@ -151,7 +154,7 @@ export const Drawer: React.FC<DrawerProps> = ({
               aria-label={closeLabel}
               style={{
                 padding: '6px',
-                lineHeight: 1,
+                lineHeight: 'var(--leading-none)',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',

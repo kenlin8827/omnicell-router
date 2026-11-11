@@ -138,7 +138,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', paddingBottom: '6px' }}>
         {/* Header Action: Add Project toggle */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-main)' }}>
+          <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>
             {t('projects.title')} ({projects.length})
           </span>
           {!isAdding && (
@@ -170,7 +170,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
               gap: '12px',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '12.5px', fontWeight: 600 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)' }}>
               <FolderPlus size={14} color="var(--accent)" />
               <span>{t('projects.add')}</span>
             </div>
@@ -185,7 +185,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                   borderRadius: '6px',
                   background: 'var(--rose-soft, rgba(239, 68, 68, 0.1))',
                   color: 'var(--accent-rose, #ef4444)',
-                  fontSize: '11.5px',
+                  fontSize: 'var(--text-sm)',
                 }}
               >
                 <AlertCircle size={13} style={{ flexShrink: 0 }} />
@@ -194,7 +194,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
             )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t('projects.name')} *
               </label>
               <input
@@ -205,12 +205,12 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                 placeholder={t('projects.namePlaceholder')}
                 disabled={formBusy}
                 autoFocus
-                style={{ fontSize: '12px', padding: '6px 10px' }}
+                style={{ fontSize: 'var(--text-sm)', padding: '6px 10px' }}
               />
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t('projects.path')} *
               </label>
               <input
@@ -220,9 +220,9 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                 onChange={(e) => setPathStr(e.target.value)}
                 placeholder={t('projects.pathPlaceholder')}
                 disabled={formBusy}
-                style={{ fontSize: '12px', padding: '6px 10px', fontFamily: 'var(--font-mono)' }}
+                style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', fontFamily: 'var(--font-mono)' }}
               />
-              <span style={{ fontSize: '10.5px', color: 'var(--text-dim)' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t('projects.pathHelp')}
               </span>
             </div>
@@ -252,7 +252,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
 
         {/* Project List */}
         {loading && projects.length === 0 ? (
-          <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+          <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
             {t('common.loading')}
           </div>
         ) : projects.length === 0 ? (
@@ -261,7 +261,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
               padding: '24px',
               textAlign: 'center',
               color: 'var(--text-dim)',
-              fontSize: '12px',
+              fontSize: 'var(--text-sm)',
               border: '1px dashed var(--card-border)',
               borderRadius: '8px',
             }}
@@ -295,14 +295,14 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                     />
                     <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-main)' }}>
+                        <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>
                           {p.name}
                         </span>
                         {isActive && (
                           <span
                             className="chip"
                             style={{
-                              fontSize: '10px',
+                              fontSize: 'var(--text-2xs)',
                               padding: '1px 6px',
                               color: 'var(--accent)',
                               borderColor: 'var(--accent)',
@@ -318,7 +318,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                       </div>
                       <span
                         style={{
-                          fontSize: '11px',
+                          fontSize: 'var(--text-xs)',
                           color: 'var(--text-dim)',
                           fontFamily: 'var(--font-mono)',
                           overflow: 'hidden',
@@ -337,7 +337,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                       <button
                         className="btn btn-sm"
                         onClick={() => void handleSetActive(p.id)}
-                        style={{ fontSize: '11px', padding: '3px 8px' }}
+                        style={{ fontSize: 'var(--text-xs)', padding: '3px 8px' }}
                         title={t('projects.setActive')}
                       >
                         {t('projects.setActive')}

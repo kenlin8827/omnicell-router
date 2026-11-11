@@ -46,7 +46,7 @@
  */
 
 import zlib from 'node:zlib';
-import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from '../net.js';
+import { describeFetchFailure, fetchFailureReason, fetchWithRetry, readTextCapped, type FailureReason } from '../net.js';
 import { cache, CACHE_TTL_MS, registerBrowseCache, registerBrowseView } from '../common/market.js';
 import { catalogRegistry } from '../common/catalog-registry.js';
 import type { BrowseResult, MarketItem } from '../common/market.js';
@@ -179,7 +179,16 @@ async function readJson(
     };
   }
   try {
-    return { ok: true, body: JSON.parse(await res.text()) };
+    const body = await readTextCapped(res);
+    if (!body.ok) {
+      return {
+        ok: false,
+        code: 'upstream',
+        reason: 'badPayload',
+        message: `${label} answered more than ${body.cap} bytes — refused`,
+      };
+    }
+    return { ok: true, body: JSON.parse(body.text) };
   } catch (e) {
     return { ok: false, code: 'upstream', reason: 'badPayload', message: describeFetchFailure(label, e) };
   }

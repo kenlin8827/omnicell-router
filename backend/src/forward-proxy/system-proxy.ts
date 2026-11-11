@@ -3,6 +3,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getOcrHomeDir } from '../cli/paths.js';
+import { getRuntimeConfigRef } from '../config/index.js';
+import { caCertPath } from './ca.js';
 
 /**
  * Cross-platform OS system-proxy ownership for the inbound forward proxy.
@@ -11,7 +13,7 @@ import { getOcrHomeDir } from '../cli/paths.js';
  *  - `enable` reads the CURRENT OS proxy settings (whatever they point at —
  *    including a user's clash/v2ray), snapshots them to
  *    `<ocrHome>/forward-proxy/system-proxy.json`, then points the OS proxy at
- *    127.0.0.1:<port> with a bypass list (loopback + forwardProxy.bypassHosts).
+ *    127.0.0.1:<port> with a bypass list (loopback + the literal `direct` rules).
  *  - `disable` restores the snapshot verbatim and deletes it. Without a
  *    snapshot OCR owns nothing, so disable is a NO-OP — it never blind-offs
  *    a proxy it did not set (a user's clash/v2ray keeps working).
@@ -91,11 +93,10 @@ function clearSnapshot(): void {
   } catch {}
 }
 
-/** Loopback + config bypassHosts, rendered in the platform's override syntax. */
-export function buildOverride(bypassHosts: (string | { host: string })[], platform: NodeJS.Platform): string {
+/** Loopback + the rule table's literal `direct` hosts, in the platform's override syntax. */
+export function buildOverride(bypassList: string[], platform: NodeJS.Platform): string {
   const hosts = ['localhost', '127.0.0.1', '<local>'];
-  for (const b of bypassHosts) {
-    const h = typeof b === 'string' ? b : b.host;
+  for (const h of bypassList) {
     if (h) hosts.push(h);
   }
   return platform === 'win32' ? hosts.join(';') : JSON.stringify(hosts);
@@ -104,6 +105,24 @@ export function buildOverride(bypassHosts: (string | { host: string })[], platfo
 /* ── win32 ─────────────────────────────────────────────────────────────── */
 
 const WIN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+/**
+ * Normalize the Windows Internet Settings into the single server the OS is
+ * ACTUALLY using:
+ *   - `ProxyEnable=0` means the `ProxyServer` value is stale → nothing;
+ *   - `AutoConfigURL` (PAC) wins over the manual server when present;
+ *   - WinINET's per-scheme form (`http=host:port;https=host:port`) reduces to
+ *     one `host:port` (https preferred) so ownership comparison and the port
+ *     label see a real endpoint.
+ */
+export function normalizeProxyServer(raw: string, enabled: number, pac: string): string | undefined {
+  if (pac.trim()) return pac.trim();
+  if (!enabled) return undefined;
+  const value = raw.trim();
+  if (!value) return undefined;
+  const https = /(?:^|;)https=([^;]+)/i.exec(value)?.[1];
+  const http = /(?:^|;)http=([^;]+)/i.exec(value)?.[1];
+  return (https || http || value.split(';')[0]).trim() || undefined;
+}
 
 async function winRead(): Promise<WinSnapshot & { _server?: string }> {
   const { stdout } = await exec('reg', ['query', WIN_KEY]);
@@ -117,7 +136,7 @@ async function winRead(): Promise<WinSnapshot & { _server?: string }> {
     ProxyServer: get('ProxyServer'),
     ProxyOverride: get('ProxyOverride'),
     AutoConfigURL: get('AutoConfigURL'),
-    _server: get('ProxyServer'),
+    _server: normalizeProxyServer(get('ProxyServer'), hex(get('ProxyEnable')), get('AutoConfigURL')),
   };
 }
 
@@ -244,14 +263,17 @@ async function readCurrentServer(platform: NodeJS.Platform): Promise<string | un
   try {
     if (platform === 'win32') return (await winRead())._server || undefined;
     if (platform === 'darwin') {
+      // First enabled service is enough for a preflight: a proxy that owns the
+      // machine is normally set on the active service too.
       const svc = (await macServices())[0];
       if (!svc) return undefined;
       const s = await macRead(svc);
-      return s.secure.enabled || s.web.enabled ? `${s.secure.enabled ? s.secure.host : s.web.host}` : undefined;
+      const pick = s.secure.enabled && s.secure.host ? s.secure : s.web.enabled && s.web.host ? s.web : undefined;
+      return pick ? `${pick.host}:${pick.port}` : undefined;
     }
     if (platform === 'linux') {
       const g = await gnomeRead();
-      return g.mode === 'manual' ? g.http.host : undefined;
+      return g.mode === 'manual' && g.http.host ? `${g.http.host}:${g.http.port}` : undefined;
     }
   } catch {
     return undefined;
@@ -259,7 +281,7 @@ async function readCurrentServer(platform: NodeJS.Platform): Promise<string | un
   return undefined;
 }
 
-export async function getSystemProxyStatus(targetPort: number, bypassHosts: (string | { host: string })[]): Promise<SystemProxyStatus> {
+export async function getSystemProxyStatus(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const platform = process.platform;
   const supported = platformSupported(platform);
   const targetServer = `127.0.0.1:${targetPort}`;
@@ -268,8 +290,8 @@ export async function getSystemProxyStatus(targetPort: number, bypassHosts: (str
     supported,
     state: supported ? 'off' : 'unsupported',
     targetServer,
-    override: buildOverride(bypassHosts, platform),
-    caPath: path.join(getOcrHomeDir(), 'forward-proxy', 'ca.pem'),
+    override: buildOverride(bypassList, platform),
+    caPath: caCertPath(getRuntimeConfigRef()?.forwardProxy?.caDir),
   };
   if (!supported) return base;
   const snapshot = readSnapshot();
@@ -282,19 +304,19 @@ export async function getSystemProxyStatus(targetPort: number, bypassHosts: (str
 }
 
 /** Point the OS proxy at the inbound forward proxy, snapshotting first. */
-export async function enableSystemProxy(targetPort: number, bypassHosts: (string | { host: string })[]): Promise<SystemProxyStatus> {
+export async function enableSystemProxy(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const platform = process.platform;
   if (!platformSupported(platform)) throw new Error(`system proxy not supported on ${platform}`);
   // Idempotent ownership: a second enable MUST NOT re-read the OS settings
   // through the snapshot slot — at that point they point at OUR server, so
   // re-snapshotting would overwrite (and permanently lose) the user's
   // original proxy configuration. Treat re-enable as a status refresh.
-  if (readSnapshot()) return getSystemProxyStatus(targetPort, bypassHosts);
+  if (readSnapshot()) return getSystemProxyStatus(targetPort, bypassList);
   const targetServer = `127.0.0.1:${targetPort}`;
-  const overrideHosts = ['localhost', '127.0.0.1', '<local>', ...bypassHosts.map(b => (typeof b === 'string' ? b : b.host)).filter(Boolean)];
+  const overrideHosts = ['localhost', '127.0.0.1', '<local>', ...bypassList.filter(Boolean)];
   if (platform === 'win32') {
     const snap = await winRead();
-    await winSet(targetServer, buildOverride(bypassHosts, platform));
+    await winSet(targetServer, buildOverride(bypassList, platform));
     writeSnapshot({ platform, setAt: Date.now(), targetServer, win: snap });
   } else if (platform === 'darwin') {
     const services = await macServices();
@@ -306,17 +328,17 @@ export async function enableSystemProxy(targetPort: number, bypassHosts: (string
     await gnomeSet(targetServer, overrideHosts);
     writeSnapshot({ platform, setAt: Date.now(), targetServer, gnome: snap });
   }
-  return getSystemProxyStatus(targetPort, bypassHosts);
+  return getSystemProxyStatus(targetPort, bypassList);
 }
 
 /** Restore whatever the OS proxy was before OCR took ownership. */
-export async function disableSystemProxy(targetPort: number, bypassHosts: (string | { host: string })[]): Promise<SystemProxyStatus> {
+export async function disableSystemProxy(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const snapshot = readSnapshot();
   if (!snapshot) {
     // Nothing owned — deliberately a no-op: without a snapshot we cannot
     // know what to restore, so touching the OS proxy here could blind-off
     // a proxy OCR never set (a user's clash/v2ray). File-header contract.
-    return getSystemProxyStatus(targetPort, bypassHosts);
+    return getSystemProxyStatus(targetPort, bypassList);
   }
   try {
     if (snapshot.win) await winRestore(snapshot.win);
@@ -325,5 +347,5 @@ export async function disableSystemProxy(targetPort: number, bypassHosts: (strin
   } finally {
     clearSnapshot();
   }
-  return getSystemProxyStatus(targetPort, bypassHosts);
+  return getSystemProxyStatus(targetPort, bypassList);
 }

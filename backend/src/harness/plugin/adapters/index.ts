@@ -12,6 +12,8 @@ import { FactoryPluginMarketAdapter, FACTORY_PROBE_OPTIONS } from './factory.js'
 import { GrokPluginMarketAdapter, GROK_PROBE_OPTIONS } from './grok.js';
 import { KimiPluginMarketAdapter, KIMI_PROBE_OPTIONS } from './kimi.js';
 import { OpenClawPluginMarketAdapter, OPENCLAW_PROBE_OPTIONS } from './openclaw.js';
+import { DshPluginMarketAdapter, DSH_PROBE_OPTIONS } from './dsh.js';
+import { OmpPluginMarketAdapter, OMP_PROBE_OPTIONS } from './omp.js';
 import type { PluginAdapter } from '../types.js';
 import { HOSTS } from '../../host/hosts.js';
 import type { HarnessHostId } from '../../types.js';
@@ -43,6 +45,8 @@ export { AntigravityPluginMarketAdapter, ANTIGRAVITY_PROBE_OPTIONS } from './ant
 export { FactoryPluginMarketAdapter, FACTORY_PROBE_OPTIONS } from './factory.js';
 export { KimiPluginMarketAdapter, KIMI_PROBE_OPTIONS } from './kimi.js';
 export { OpenClawPluginMarketAdapter, OPENCLAW_PROBE_OPTIONS } from './openclaw.js';
+export { DshPluginMarketAdapter, DSH_PROBE_OPTIONS, dshBundleOf } from './dsh.js';
+export { OmpPluginMarketAdapter, OMP_PROBE_OPTIONS } from './omp.js';
 
 /** Every served harness's published form. ONE probe consumes the whole list, so support is
  *  DETECTED from the repository's own directories instead of inferred from the acting tab. */
@@ -60,6 +64,11 @@ export function allHostProbes(): HostProbe[] {
   const claudeDir = adapterFor('claude')?.extensionDir;
   const grok = probes.find((probe) => probe.harness === 'grok');
   if (claudeDir && grok) probes.push({ harness: 'grok', dir: claudeDir, options: grok.options });
+  // OMP documents the SAME fallback (`docs/skills/authoring-marketplaces.md`: the catalog lives at
+  // `.omp-plugin/marketplace.json` "or `.claude-plugin/marketplace.json` (Claude Code-compatible;
+  // used as the fallback)"), so a claude-form repository is detected for omp as well.
+  const omp = probes.find((probe) => probe.harness === 'omp');
+  if (claudeDir && omp) probes.push({ harness: 'omp', dir: claudeDir, options: omp.options });
   return probes;
 }
 
@@ -84,6 +93,8 @@ export function createPluginAdapter(
   if (harness === 'kimi') return new KimiPluginMarketAdapter('kimi', fetchImpl, probes);
   if (harness === 'grok') return new GrokPluginMarketAdapter('grok', fetchImpl, probes);
   if (harness === 'openclaw') return new OpenClawPluginMarketAdapter('openclaw', fetchImpl, probes);
+  if (harness === 'dsh') return new DshPluginMarketAdapter('dsh', fetchImpl, probes);
+  if (harness === 'omp') return new OmpPluginMarketAdapter('omp', fetchImpl, probes);
   return new BasePluginMarketAdapter(harness, fetchImpl, probes);
 }
 
@@ -93,7 +104,9 @@ export function createPluginAdapter(
  * grok → `.grok-plugin`, universal → `.agents/plugins`.
  * Non-catalog forms are read by their own manifest readers: pi → layer `package.json`,
  * gemini-cli → root `gemini-extension.json`, kimi → root `kimi.plugin.json` (with the
- * `.kimi-plugin/` directory as fallback), openclaw → root `openclaw.plugin.json`;
+ * `.kimi-plugin/` directory as fallback), openclaw → root `openclaw.plugin.json`,
+ * dsh → root `package.json` that declares `dsh.bundle` (the one manifest a probe must verify by
+ * CONTENT — every JavaScript repository ships a `package.json`);
  * codex/cursor/antigravity/factory are directory-keyed.
  * Every probe also carries the name reader, because a directory-keyed harness still needs the
  * marketplace/plugin NAMES its install command spells.
@@ -119,6 +132,8 @@ function probeHooks(harness: HarnessHostId | null | undefined): ProbeOptions {
   if (harness === 'kimi') return KIMI_PROBE_OPTIONS;
   if (harness === 'grok') return GROK_PROBE_OPTIONS;
   if (harness === 'openclaw') return OPENCLAW_PROBE_OPTIONS;
+  if (harness === 'dsh') return DSH_PROBE_OPTIONS;
+  if (harness === 'omp') return OMP_PROBE_OPTIONS;
   if (harness === 'claude' || harness == null) return CLAUDE_PROBE_OPTIONS;
   return {};
 }

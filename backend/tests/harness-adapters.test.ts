@@ -13,6 +13,8 @@ import {
 } from '../src/harness/host/adapters/index.js';
 import { opencodeAdapter } from '../src/harness/host/adapters/opencode.js';
 import { HOSTS } from '../src/harness/host/hosts.js';
+import { getAllClientAdapters } from '../src/cli/clients/index.js';
+import { POPULARITY_UNRANKED, popularityRank } from '../src/utils/popularity.js';
 
 /**
  * Host adapter capabilities (ADR-0015 §D2/§D3 R3).
@@ -31,13 +33,14 @@ describe('capability matrix — who can do what', () => {
     expect(HOST_ADAPTERS.map((a) => a.id)).toEqual(HOSTS.map((h) => h.id));
   });
 
-  it('fifteen hosts land skills; every host with a declared MCP write path lands MCP; every host with a declared plugin write path lands plugins', () => {
+  it('sixteen hosts land skills; every host with a declared MCP write path lands MCP; every host with a declared plugin write path lands plugins', () => {
     expect(ids((a) => isSkillsHost(a as never))).toEqual([
       'universal',
       'opencode',
       'claude',
       'codex',
       'pi',
+      'dsh',
       'omp',
       'cursor',
       'gemini-cli',
@@ -57,6 +60,7 @@ describe('capability matrix — who can do what', () => {
       'claude',
       'codex',
       'pi',
+      'dsh',
       'omp',
       'cursor',
       'antigravity',
@@ -67,10 +71,10 @@ describe('capability matrix — who can do what', () => {
     ]);
   });
 
-  it('DSH is identity only — no skills location, so no SkillsHost', () => {
-    expect(isSkillsHost(adapterFor('dsh'))).toBe(false);
+  it('DSH lands skills and plugins per profile, with no MCP surface', () => {
+    expect(isSkillsHost(adapterFor('dsh'))).toBe(true);
     expect(isMcpHost(adapterFor('dsh'))).toBe(false);
-    expect(isPluginHost(adapterFor('dsh'))).toBe(false);
+    expect(isPluginHost(adapterFor('dsh'))).toBe(true);
   });
 
   it('supportedScopes — project landings follow the declared write grammar (ADR-0015 §D2)', () => {
@@ -93,7 +97,7 @@ describe('capability matrix — who can do what', () => {
     // Plugins: project only where the adapter DECLARES a project landing (configProject+container,
     // declared.project, looseDir.project, a marketplace `{scope}` token, or scope-aware argv).
     const projectPlugin = ['opencode', 'claude', 'pi', 'omp', 'factory'];
-    const globalOnlyPlugin = ['codex', 'cursor', 'antigravity', 'kimi', 'grok', 'openclaw'];
+    const globalOnlyPlugin = ['codex', 'cursor', 'antigravity', 'kimi', 'grok', 'openclaw', 'dsh'];
     for (const id of projectPlugin) {
       expect(adapterFor(id)!.supportedScopes('plugin'), `${id} must land project plugins`).toEqual(['global', 'project']);
     }
@@ -136,7 +140,7 @@ describe('shared skills directories — one owner, many readers', () => {
     const roots = skillLocationRoots(process.cwd());
     const paths = roots.map((r) => r.root);
     expect(new Set(paths).size).toBe(paths.length);
-    // Fifteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
+    // Sixteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
     expect(roots.filter((r) => r.root === path.join(os.homedir(), '.agents', 'skills'))).toHaveLength(1);
   });
 });
@@ -174,5 +178,22 @@ describe('install presence — the rail hides hosts that are not on this machine
 
   it('a made-up runtime with no markers and no skills is not detected', () => {
     expect(hostDetected({ id: 'dsh', presence: { command: 'definitely-not-a-real-binary-xyz' } })).toBe(false);
+  });
+});
+
+describe('popularity order — one rank for both surfaces', () => {
+  it('ranks every catalog host (except universal) and every client target', () => {
+    for (const host of HOSTS) {
+      if (host.id === 'universal') continue;
+      expect(popularityRank(host.id), host.id).toBeLessThan(POPULARITY_UNRANKED);
+    }
+    for (const adapter of getAllClientAdapters()) {
+      expect(popularityRank(adapter.name), adapter.name).toBeLessThan(POPULARITY_UNRANKED);
+    }
+  });
+
+  it('returns the one-click roster in rank order', () => {
+    const ranks = getAllClientAdapters().map((adapter) => popularityRank(adapter.name));
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "omnicell-router",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "High-performance OmniCellRouter (OCR) & Cascading Gateway",
   "publishConfig": {
     "access": "public"
@@ -30,7 +30,10 @@
     "dev": "PORT=3000 bun --no-env-file scripts/dev.ts",
     "dev:backend": "bun --filter @omnicell-router/backend dev",
     "dev:frontend": "bun --filter @omnicell-router/frontend dev",
-    "build": "tsc -p backend && vite build frontend",
+    "build": "tsc -p backend && vite build frontend && bun --no-env-file scripts/build-plugins.ts",
+    "plugins:build": "bun --no-env-file scripts/build-plugins.ts",
+    "plugins:check": "bun --no-env-file scripts/build-plugins.ts --check && bun --no-env-file scripts/typecheck-plugins.ts",
+    "plugins:typecheck": "bun --no-env-file scripts/typecheck-plugins.ts",
     "build:backend": "tsc -p backend",
     "build:frontend": "vite build frontend",
     "build:sidecar": "cd desktop && bun run sidecar",
@@ -41,7 +44,8 @@
     "check:matrix": "bun --no-env-file scripts/check-guardrails-matrix.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
     "test:system": "bun --no-env-file scripts/full-system-test.ts",
-    "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",
+    "check:typography": "node frontend/scripts/check-typography.mjs",
+    "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit && bun --no-env-file scripts/typecheck-plugins.ts",
     "prepublishOnly": "bun run build"
   },
   "keywords": [
@@ -71,6 +75,7 @@
     "fflate": "^0.8.3",
     "jsonc-parser": "^3.3.1",
     "node-forge": "^1.4.0",
+    "protobufjs": "^8.8.1",
     "yaml": "^2.7.0",
     "zod": "^3.24.2",
     "zod-to-json-schema": "^3.24.3"

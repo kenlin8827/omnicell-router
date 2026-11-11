@@ -3,6 +3,7 @@ import path from 'node:path';
 import { parse, stringify } from 'yaml';
 import { DirectivesConfig, Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
+import { lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { EFFORT_LADDER } from '../types/router.js';
 import { resolveDirectivePrefix } from '../pipeline/directives.js';
@@ -11,6 +12,10 @@ import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
   DEFAULT_FORWARD_PROXY_PORT,
   DEFAULT_FORWARD_PROXY_HOST,
+  DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
+  DEFAULT_FORWARD_PROXY_RULES,
+  FORWARD_PROXY_MAX_CONNECTIONS_MIN,
+  FORWARD_PROXY_MAX_CONNECTIONS_MAX,
   DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS,
   PROXY_ACCESS_LOG_PERSIST_DAYS_MIN,
   PROXY_ACCESS_LOG_PERSIST_DAYS_MAX,
@@ -22,9 +27,13 @@ import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_ROUTE_ENTRIES_MAX,
 } from './defaults.js';
+import { DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 import { migrateConfig, toDiskConfig, toRuntimeConfig, SCHEMA_VERSION, type DiskConfig } from './schema.js';
+import { getRuntimeConfigRef, registerRuntimeConfigRef } from './runtime.js';
+
+export { getRuntimeConfigRef, registerRuntimeConfigRef };
 // Bootstrap levers (OCR_ENV / OCR_HOME) come from the REAL process environment
 // only — there is no .env loader. A file-based override would be a second,
 // cwd-dependent source of truth next to the envs/current pointer.
@@ -110,9 +119,16 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: false, // opt-in: full-capture MITM proxy must be enabled consciously
     port: DEFAULT_FORWARD_PROXY_PORT,
     host: DEFAULT_FORWARD_PROXY_HOST,
-    bypassHosts: [],
-    viaOutboundProxy: false, // opt-in: transit egress via the outbound proxy policy
+    maxConnections: DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
+    requireCredential: false, // opt-in: loopback clients must also present an API key
+    // Rule table (ADR-0018): the fresh-install seed routes everything through
+    // the outbound proxy policy, decrypted. Inert until BOTH this listener and
+    // `proxy.enabled` are on, so it costs a fresh install nothing.
+    rules: DEFAULT_FORWARD_PROXY_RULES,
     accessLog: { enabled: true, persist: true, persistDays: DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS },
+    // Upstream TLS trust for the origin legs (ADR-0019): system trust store
+    // unless the operator names a private CA or disables verification.
+    upstreamTls: { insecure: false },
   },
   compression: {
     rtk: { enabled: false },
@@ -149,7 +165,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     halfOpenMaxProbes: 1,
     activeProbing: {
       enabled: false,
-      intervalMs: 60000,
+      intervalMs: DEFAULT_PROBE_INTERVAL_MS,
     },
     credentialAffinity: {
       // a session keeps its credential while its pair breaker is up;
@@ -337,9 +353,73 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
 }
 
 /**
+ * Resolve the whole `forwardProxy` section (ADR-0018).
+ */
+function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
+  const rawFp = (raw ?? {}) as Record<string, any>;
+  const fp = { ...DEFAULT_CONFIG.forwardProxy, ...rawFp } as Record<string, any>;
+  // The section carries exactly the keys `ForwardProxyConfig` declares. Any
+  // other key a hand-edited file still holds — a retired key (`bypassHosts`,
+  // `viaOutboundProxy`, `mitmHosts`, the interim `egress` / `egressRules` /
+  // `decryptRules` shapes, `authToken`) or a typo — is dropped here: never
+  // folded, never translated, never re-persisted on the next console save.
+  // `authToken` (the retired shared proxy secret — proxy auth is API-key only,
+  // ADR-0008) is the one that stings: an install that authenticated a loopback
+  // proxy with it lands on an UNauthenticated listener until a key exists and
+  // `forwardProxy.requireCredential` is on. Retired keys are never translated
+  // (ADR-0018 §6), so the ADR is where the operator learns this.
+  const declared = {
+    enabled: fp.enabled,
+    port: fp.port,
+    host: fp.host,
+    caDir: fp.caDir,
+    maxConnections: fp.maxConnections,
+    requireCredential: fp.requireCredential === true,
+    accessLog: fp.accessLog,
+    rules: fp.rules,
+    upstreamTls: fp.upstreamTls,
+    unresolvedModel: fp.unresolvedModel,
+  };
+  // An EXPLICIT `rules` array in the user's file wins (even empty — an empty
+  // table is a decision); otherwise the shipped default table applies.
+  const rules = Array.isArray(rawFp.rules) ? normalizeRuleTable({ rules: rawFp.rules }) : normalizeRuleTable(declared);
+  return {
+    ...declared,
+    rules,
+    maxConnections: normalizeMaxConnections(fp.maxConnections),
+    unresolvedModel: normalizeUnresolvedModelConfig(fp.unresolvedModel as never),
+    accessLog: normalizeAccessLogConfig(fp.accessLog),
+    upstreamTls: normalizeUpstreamTlsConfig(fp.upstreamTls),
+  } as RouterConfig['forwardProxy'];
+}
+
+/**
+ * Resolve `forwardProxy.upstreamTls` (ADR-0019) — same trust boundary as the
+ * rest of the section: junk falls back to the system trust store, never to a
+ * silently disabled verification. `insecure` is only ever true when the operator
+ * literally wrote `true`.
+ */
+function normalizeUpstreamTlsConfig(raw: unknown): { caFile?: string; insecure: boolean } {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const caFile = typeof r.caFile === 'string' && r.caFile.trim() ? r.caFile.trim() : undefined;
+  return { ...(caFile ? { caFile } : {}), insecure: r.insecure === true };
+}
+
+/**
+ * Resolve `forwardProxy.maxConnections` — junk falls back to the default (no
+ * coercion), a real number is floored and clamped to the declared bounds so a
+ * typo cannot turn the cap into "unlimited" or "reject everything".
+ */
+function normalizeMaxConnections(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS;
+  return Math.min(FORWARD_PROXY_MAX_CONNECTIONS_MAX, Math.max(FORWARD_PROXY_MAX_CONNECTIONS_MIN, Math.floor(raw)));
+}
+
+/**
  * Resolve `forwardProxy.accessLog` — same trust boundary as resolveRateLimit:
- * junk values fall back to defaults, not coercion. bodyBytes: absent = FULL
- * body capture (no cap); 0 = headers only; a positive number = per-side cap.
+ * junk values fall back to defaults, not coercion. bodyBytes: absent = the
+ * consumer applies DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES (1 MiB, spill-to-file);
+ * 0 = headers only; a positive number = per-side inline cap.
  * persistDays clamps to 1..365.
  */
 function normalizeAccessLogConfig(raw: unknown): {
@@ -534,6 +614,29 @@ export function resolveRateLimit(parsed: any): RateLimitConfig {
 let _schemaVersionWarned = false;
 /** One-shot guard for the schemaVersion-position warning. */
 let _schemaOrderWarned = false;
+/** One-shot guard for the forward-proxy rule-table lint (ADR-0018). */
+let _rulesLintWarned = false;
+
+/**
+ * Boot-time egress lint (ADR-0018). The console renders the same codes per row
+ * with translations, but a hand-edited config.yaml never opens the console —
+ * one warn per process so a table that cannot do what it says is never silent.
+ *
+ * Gated on `forwardProxy.enabled`: with the listener off the table routes
+ * nothing, so warning about it would be noise on every fresh install.
+ */
+function warnForwardProxyRulesOnce(raw: unknown, proxyEnabled: boolean): void {
+  if (_rulesLintWarned) return;
+  const fp = (raw ?? {}) as Record<string, any>;
+  if (fp.enabled !== true) return;
+  _rulesLintWarned = true;
+  // Lint the RAW rows (position-preserving): `lintRules` runs the same parse as
+  // the resolver, so a warning's index addresses the row the operator typed.
+  for (const w of lintRules(fp.rules, proxyEnabled)) {
+    const at = w.ruleIndex === undefined ? '' : ` rule #${w.ruleIndex + 1}`;
+    console.warn(`[Config] forwardProxy.rules${at}: ${w.code}${w.detail ? ` (${w.detail})` : ''}`);
+  }
+}
 
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
@@ -579,6 +682,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         return DEFAULT_CONFIG;
       }
       const flat = toRuntimeConfig(parsed as unknown as DiskConfig) as Record<string, any>;
+      warnForwardProxyRulesOnce(flat.forwardProxy, flat.proxy?.enabled === true);
       return {
         ...DEFAULT_CONFIG,
         ...flat,
@@ -614,12 +718,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         routeEntries: sanitizeRouteEntriesInput(flat.routeEntries),
         directives: sanitizeDirectivesInput(flat.directives),
         proxy: { ...DEFAULT_CONFIG.proxy, ...flat.proxy },
-        forwardProxy: {
-          ...DEFAULT_CONFIG.forwardProxy,
-          ...flat.forwardProxy,
-          unresolvedModel: normalizeUnresolvedModelConfig(flat.forwardProxy?.unresolvedModel),
-          accessLog: normalizeAccessLogConfig(flat.forwardProxy?.accessLog),
-        },
+        forwardProxy: resolveForwardProxyConfig(flat.forwardProxy),
         compression: {
           rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...flat.compression?.rtk },
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...flat.compression?.headroom },
@@ -788,37 +887,13 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
       for (const w of warnings) console.warn(`  - ${w}`);
     }
     // credentials overlay AND the limiter rule table through the SAME routine as
-    // saveConfig (the pre-fix here left runtimeConfigRef stale — the YAML
+    // saveConfig (the pre-fix here left the live snapshot stale — the YAML
     // editor violated the module's own hot-apply promise).
     syncRuntimeAuthView(loadConfig());
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
-}
-
-/**
- * Live reference to the RUNNING server's config object (registered by
- * createServer). The auth preHandler prefers `config.apiKeys` over a fresh
- * disk read (boot snapshot) — without syncing, a key edited via the UI or the
- * YAML editor would persist to config.yaml yet keep failing on the wire until
- * the next restart. Every config save refreshes the snapshot's keys in-place.
- */
-let runtimeConfigRef: RouterConfig | undefined;
-
-/** Called once by createServer so config saves can refresh the boot snapshot. */
-export function registerRuntimeConfigRef(cfg: RouterConfig): void {
-  runtimeConfigRef = cfg;
-}
-
-/**
- * Live config snapshot (createServer's object, hot-synced by saveConfig for
- * the fields the running gateway reads per request: apiKeys, webAuth).
- * Console-auth endpoints prefer it over a disk re-read so the gate and the
- * credential checks can never disagree.
- */
-export function getRuntimeConfigRef(): RouterConfig | undefined {
-  return runtimeConfigRef;
 }
 
 /**
@@ -831,36 +906,37 @@ export function getRuntimeConfigRef(): RouterConfig | undefined {
  * path, not just the visual one.
  */
 function syncRuntimeAuthView(fresh: RouterConfig): void {
-  if (runtimeConfigRef) {
-    runtimeConfigRef.apiKeys = fresh.apiKeys;
-    runtimeConfigRef.webAuth = fresh.webAuth;
-    runtimeConfigRef.credentials = fresh.credentials;
+  const live = getRuntimeConfigRef();
+  if (live) {
+    live.apiKeys = fresh.apiKeys;
+    live.webAuth = fresh.webAuth;
+    live.credentials = fresh.credentials;
     // quotaProbes/quota ride the SAME routine (iron rule: a raw-YAML
     // save must never leave the runtime view stale): the prober reads its
     // entry set off the live ref on every reloadConfig(), and the console
     // quota panel reads rejected/coverage state from it.
-    runtimeConfigRef.quotaProbes = fresh.quotaProbes;
-    runtimeConfigRef.quota = fresh.quota;
+    live.quotaProbes = fresh.quotaProbes;
+    live.quota = fresh.quota;
     // rateLimit (inbound grace) too: resolveActiveAuthConfig reads the boot
     // snapshot FIRST (`config.rateLimit?.inboundGraceMs ?? disk…` — the disk
     // arm never fires because loadConfig always resolves the section), so
     // without this line the grace knob would silently ignore every save.
-    runtimeConfigRef.rateLimit = fresh.rateLimit;
+    live.rateLimit = fresh.rateLimit;
     // classifier / routing / systemone hot-apply too (per-request reads only —
     // the decision layer resolves model/timeout/effortDecision per evaluate, the mode
     // lever per processInternal, the System One defaultModel per decision):
     // the /auto page's "restart to apply" era is over for everything it edits.
     // Sections with boot-time consumers (streaming executors, models,
     // tiers bootstrap) deliberately stay restart-only.
-    runtimeConfigRef.classifier = fresh.classifier;
-    runtimeConfigRef.routing = fresh.routing;
-    runtimeConfigRef.systemone = fresh.systemone;
+    live.classifier = fresh.classifier;
+    live.routing = fresh.routing;
+    live.systemone = fresh.systemone;
     // forwardProxy too — the MITM interceptor and the orchestrator's
     // unresolved-model policy read the live boot snapshot per request
-    // (bypassHosts, viaOutboundProxy, unresolvedModel.onMiss/hosts), so a
-    // save must land here or the console's "takes effect immediately"
-    // promise is false.
-    runtimeConfigRef.forwardProxy = fresh.forwardProxy;
+    // (rules, unresolvedModel.onMiss/hosts), so a save must land here or the
+    // console's "takes effect immediately" promise is false. Strict credential
+    // mode is read from the same object by the gateway plugin host.
+    live.forwardProxy = fresh.forwardProxy;
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober

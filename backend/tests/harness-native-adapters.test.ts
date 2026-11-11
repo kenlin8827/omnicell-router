@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   HOST_ADAPTERS,
   BaseHostAdapter,
@@ -9,7 +12,8 @@ import { codexAdapter, CodexAdapter } from '../src/harness/host/adapters/codex.j
 import { factoryAdapter, FactoryAdapter } from '../src/harness/host/adapters/factory.js';
 import { opencodeAdapter, OpencodeAdapter } from '../src/harness/host/adapters/opencode.js';
 import { piAdapter, PiAdapter } from '../src/harness/host/adapters/pi.js';
-import { dshAdapter, DshAdapter } from '../src/harness/host/adapters/dsh.js';
+import { dshAdapter, DshAdapter, dshConsoleProfile, dshProfiles } from '../src/harness/host/adapters/dsh.js';
+import { dshDesktopCliPath } from '../src/cli/paths.js';
 import { openclawAdapter, OpenClawAdapter } from '../src/harness/host/adapters/openclaw.js';
 import { getBuiltinViewsForHarness } from '../src/harness/plugin/builtin.js';
 import { syncMarketplaceToAllHosts, removeMarketplaceFromAllHosts } from '../src/harness/host/marketplace-sync.js';
@@ -265,14 +269,49 @@ describe('Native Plugin Installation & Source Verification (github | npm)', () =
     expect(executedGithub[0].args).toEqual(['plugins', 'install', 'postman', '--marketplace', 'postmanlabs/postman-plugin', '--force']);
   });
 
-  it('DSH refuses plugin and skills installs since it lacks those landings', async () => {
-    expect(dshAdapter.supportedPluginSources()).toEqual([]);
+  it('DSH installs plugins into a profile with the vendor CLI; skills and MCP stay unsupported', async () => {
+    expect(dshAdapter.supportedPluginSources()).toEqual(['npm', 'github']);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-dsh-'));
+    const previous = process.env.DSH_HOME;
+    process.env.DSH_HOME = home;
+    const previousCli = process.env.DSH_CLI;
+    process.env.DSH_CLI = 'dsh';
+    try {
+      expect(dshAdapter.marketplaceSpec()?.commands).toEqual([
+        ['dsh', 'plugin', '--profile', 'web', 'add', 'github:{repo}'],
+      ]);
+      const npmPlan = await dshAdapter.installPlugin({
+        source: 'npm',
+        spec: 'dsh-hello-plugin',
+      });
+      expect(npmPlan.ok).toBe(false);
+      if (!npmPlan.ok) {
+        expect(npmPlan.code).toBe('confirm_required');
+        expect(npmPlan.plan?.[0]?.echo).toMatch(/^dsh plugin --profile web add dsh-hello-plugin@[\w.-]+$/);
+      }
 
-    const pluginResult = await dshAdapter.installPlugin({
-      source: 'github',
-      spec: 'postmanlabs/postman-plugin',
-    });
-    expect(pluginResult.ok).toBe(false);
+      const executed: { command: string; args: string[] }[] = [];
+      const result = await dshAdapter.installPlugin({
+        source: 'npm',
+        spec: 'dsh-hello-plugin',
+        confirm: true,
+        execImpl: async (command, args) => {
+          executed.push({ command, args });
+          return { code: 0, stdout: 'installed', stderr: '' };
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(executed).toHaveLength(1);
+      expect(executed[0]!.command).toBe('dsh');
+      expect(executed[0]!.args.slice(0, 4)).toEqual(['plugin', '--profile', 'web', 'add']);
+      expect(executed[0]!.args[4]).toMatch(/^dsh-hello-plugin@[\w.-]+$/);
+    } finally {
+      if (previousCli === undefined) delete process.env.DSH_CLI;
+      else process.env.DSH_CLI = previousCli;
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
 
     const skillResult = await dshAdapter.installSkill({
       source: 'github',
@@ -286,6 +325,96 @@ describe('Native Plugin Installation & Source Verification (github | npm)', () =
     });
     expect(mcpResult.ok).toBe(false);
   });
+
+  it('DSH enumerates initialized non-reserved profiles and writes the selected target', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-dsh-profiles-'));
+    const previous = process.env.DSH_HOME;
+    process.env.DSH_HOME = home;
+    const previousCli = process.env.DSH_CLI;
+    process.env.DSH_CLI = 'dsh';
+    try {
+      for (const name of ['web', 'headless', 'desktop']) {
+        fs.mkdirSync(path.join(home, 'profiles', name), { recursive: true });
+        fs.writeFileSync(path.join(home, 'profiles', name, 'package.json'), '{}', 'utf8');
+      }
+      expect(dshProfiles().map((profile) => profile.name)).toEqual(['desktop', 'headless', 'web']);
+      expect(dshConsoleProfile()).toBe('web');
+      expect(dshAdapter.installProfiles()).toEqual([
+        { name: 'web', exists: true },
+        ...(dshDesktopCliPath() ? [{ name: 'desktop', exists: true }] : []),
+        { name: 'headless', exists: true },
+      ]);
+      const landing = dshAdapter.writeTarget({ projectRoot: home }, 'global', 'headless');
+      expect(landing.ok && landing.args?.('some-plugin', 'global', 'headless')).toEqual([
+        'plugin',
+        '--profile',
+        'headless',
+        'add',
+        'some-plugin',
+      ]);
+      expect(dshAdapter.marketplaceSpec('headless')?.commands).toEqual([
+        ['dsh', 'plugin', '--profile', 'headless', 'add', 'github:{repo}'],
+      ]);
+      // The probe shells out (`tasklist` on Windows, `pgrep` elsewhere) and answers false when that
+      // call times out — under parallel test load it can flip between two calls milliseconds apart.
+      // So the contract asserted here is the SHAPE, not the ambient state: either no gate, or the
+      // documented "quit the app first" sentence. A real app running still fails loudly if the gate
+      // ever returns a different message.
+      const profileError = dshAdapter.pluginProfileError?.('desktop');
+      expect(profileError === undefined || profileError.includes('quit DeepSeek Harness')).toBe(true);
+      const bundled = dshDesktopCliPath();
+      const desktopRemove = dshAdapter.pluginRemoveArgs?.('some-plugin', 'global', 'desktop');
+      const webRemove = dshAdapter.pluginRemoveArgs?.('some-plugin', 'global', 'web');
+      expect(webRemove).toMatchObject({
+        ok: true,
+        args: ['plugin', '--profile', 'web', 'remove', 'some-plugin'],
+      });
+      if (desktopRemove && !desktopRemove.ok) {
+        // Removal rewrites the same reserved profile manifest an install does, so the ADR's
+        // "quit first" gate binds both directions — and it must say so in the same words.
+        // Two documented refusals: the app is running, or its bundled CLI is absent.
+        expect(desktopRemove.reason).toMatch(/quit DeepSeek Harness|requires the DeepSeek Harness desktop app/);
+      } else {
+        expect(desktopRemove).toMatchObject({
+          ok: true,
+          command: bundled,
+          args: ['plugin', '--profile', 'desktop', 'remove', 'some-plugin'],
+        });
+      }
+      const desktopLanding = dshAdapter.writeTarget({ projectRoot: home }, 'global', 'desktop');
+      if (bundled) expect(desktopLanding).toMatchObject({ ok: true, op: 'subprocess', command: bundled });
+      else expect(desktopLanding.ok).toBe(false);
+      const sources = dshAdapter.readSources({ projectRoot: home }, 'global');
+      expect(sources.map((source) => source.path)).toEqual([
+        path.join(home, 'profiles', 'web', 'package.json'),
+        path.join(home, 'profiles', 'desktop', 'package.json'),
+        path.join(home, 'profiles', 'headless', 'package.json'),
+      ]);
+      expect(sources[0]).toMatchObject({
+        host: 'dsh',
+        kind: 'declared',
+        key: 'dsh.profile.bundles',
+        filterBy: 'dependencies',
+        nodeModules: [
+          path.join(home, 'profiles', 'web', 'node_modules'),
+          path.join(home, 'profiles', 'node_modules'),
+        ],
+      });
+      expect(dshAdapter.supportedScopes('plugin')).toEqual(['global']);
+      fs.rmSync(path.join(home, 'profiles', 'web'), { recursive: true });
+      expect(dshConsoleProfile()).toBe('headless');
+      fs.mkdirSync(path.join(home, 'profiles', 'sdk'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'profiles', 'sdk', 'package.json'), '{}', 'utf8');
+      expect(dshConsoleProfile()).toBe('web');
+    } finally {
+      if (previousCli === undefined) delete process.env.DSH_CLI;
+      else process.env.DSH_CLI = previousCli;
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
 });
 
 describe('Default Marketplace Architecture (No Hardcoded Presets - Real Native or Empty)', () => {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap, LayoutGrid } from 'lucide-react';
 import { api } from '../lib/api';
 import { sortModelOptions } from '../lib/model-options';
 import type { WebAuthConfigView } from '../lib/api';
@@ -8,8 +8,10 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { SegGroup } from '../components/SegGroup';
 import { Dialog } from '../components/Dialog';
 import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX } from '../lib/defaults';
+import { readNavPreference, writeNavPreference, type NavPreference, type NavStyleId } from '../lib/navStyle';
 
 // UI mirror of the backend's resolveDirectivePrefix (backend/src/pipeline/
 // directives.ts) — the console must display the SAME fallback the gateway
@@ -42,6 +44,10 @@ export const SettingsPage: React.FC = () => {
   const [translationModelOptions, setTranslationModelOptions] = useState<{ value: string; label: string }[]>([]);
   // Chain-probe in flight (the picker's "test" button).
   const [probing, setProbing] = useState(false);
+  // Navigation style — browser-local like the theme, so this card applies on
+  // change and stays out of the config save.
+  const [navPreference, setNavPreference] = useState<NavPreference>(readNavPreference);
+  const applyNavPreference = (patch: Partial<NavPreference>) => setNavPreference(writeNavPreference(patch));
 
   // Console webAuth (dedicated endpoints, NOT part of the whole-config save —
   // the password is hashed server-side and never round-trips through the UI)
@@ -328,6 +334,7 @@ export const SettingsPage: React.FC = () => {
     { key: 'defaults', label: t('settings.navDefaults'), icon: Cpu, color: 'var(--accent-violet)' },
     { key: 'routeentries', label: t('settings.navRouteEntries'), icon: Waypoints, color: 'var(--accent-violet)' },
     { key: 'webauth', label: t('settings.navWebAuth'), icon: ShieldCheck, color: 'var(--accent)' },
+    { key: 'menu', label: t('settings.navMenu'), icon: LayoutGrid, color: 'var(--accent-violet)' },
   ];
   const jumpTo = (key: string) => {
     const el = document.getElementById(`settings-${key}`);
@@ -343,17 +350,17 @@ export const SettingsPage: React.FC = () => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
       <div className="card" style={{ flexShrink: 0 }}>
-        <div className="card-header">
+        <div className="card-header settings-header">
           <div className="card-title">
             <Sliders size={18} color="var(--accent)" />
             <span>{t('settings.title')}</span>
           </div>
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="settings-nav" style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
             {NAV.map(({ key, label, icon: NavIcon, color }) => (
               <button
                 key={key}
                 className="btn"
-                style={{ padding: '4px 10px', fontSize: '11px', color }}
+                style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', color }}
                 onClick={() => jumpTo(key)}
               >
                 <NavIcon size={12} />
@@ -361,14 +368,14 @@ export const SettingsPage: React.FC = () => {
               </button>
             ))}
           </div>
-          <button className="btn btn-primary" onClick={handleSave}>
+          <button className="btn btn-primary settings-save" onClick={handleSave}>
             <Save size={14} />
             <span>{t('settings.saveBtn')}</span>
           </button>
         </div>
 
         {savedNotice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <Check size={16} />
             <span>{t('settings.savedNotice')}</span>
           </div>
@@ -380,12 +387,12 @@ export const SettingsPage: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Section 1: Server & Network */}
           <div id="settings-net" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Globe size={14} />
               {t('settings.netTitle')}
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.port')}</label>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.port')}</label>
               <input
                 type="number"
                 value={config.port || 3000}
@@ -394,19 +401,19 @@ export const SettingsPage: React.FC = () => {
               />
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.host')}</label>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.host')}</label>
               <input
                 type="text"
                 value={config.host || '0.0.0.0'}
                 onChange={e => setConfig({ ...config, host: e.target.value })}
                 className="input"
               />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.hostAuthHint')}{' '}
                 <button
                   type="button"
                   onClick={() => jumpTo('webauth')}
-                  style={{ background: 'none', border: 'none', padding: 0, fontSize: '11px', color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                  style={{ background: 'none', border: 'none', padding: 0, fontSize: 'var(--text-xs)', color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
                 >
                   {t('settings.hostAuthJump')}
                 </button>
@@ -416,19 +423,20 @@ export const SettingsPage: React.FC = () => {
 
           {/* Section 2: Semantic Cache */}
           <div id="settings-cache" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <HardDrive size={14} />
               {t('settings.cacheTitle')}
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
               <span>{t('settings.cacheEnable')}</span>
               <Switch
                 checked={config.cache?.enabled ?? true}
                 onChange={v => setConfig({ ...config, cache: { ...config.cache, enabled: v } })}
               />
             </label>
+            {(config.cache?.enabled ?? true) && (<>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheSim')}</label>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheSim')}</label>
               <input
                 type="number"
                 step="0.05"
@@ -438,7 +446,7 @@ export const SettingsPage: React.FC = () => {
               />
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheTtl')}</label>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheTtl')}</label>
               <input
                 type="number"
                 value={config.cache?.ttlSeconds || 3600}
@@ -446,22 +454,23 @@ export const SettingsPage: React.FC = () => {
                 className="input"
               />
             </div>
+            </>)}
           </div>
 
           {/* Section 3: Request Capture (hot-applied — no restart needed) */}
           <div id="settings-capture" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Archive size={14} />
               {t('settings.capTitle')}
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
               <span>{t('settings.capEnable')}</span>
               <Switch
                 checked={config.requestCapture?.enabled ?? false}
                 onChange={v => patchRequestCapture({ enabled: v })}
               />
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
               <span>{t('settings.capRedactSecrets')}</span>
               <Switch
                 checked={config.requestCapture?.redactSecrets ?? true}
@@ -480,14 +489,14 @@ export const SettingsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setPolicyOpen(v => !v)}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '12px', fontWeight: 700, color: 'var(--text-main)', fontFamily: 'inherit', textAlign: 'left' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)', fontFamily: 'inherit', textAlign: 'left' }}
               >
                 {policyOpen ? <ChevronDown size={14} style={{ flexShrink: 0 }} /> : <ChevronRight size={14} style={{ flexShrink: 0 }} />}
                 <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{t('settings.capPolicyGroup')}</span>
                 {!policyOpen && (
                   // Summary truncates with ellipsis when the card is narrow;
                   // the group title above never wraps (no orphan second line).
-                  <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+                  <span style={{ marginLeft: 'auto', fontWeight: 'var(--font-regular)', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
                     {t('settings.capPolicySummary', {
                       days: config.requestCapture?.retentionDays ?? 7,
                       mb: config.requestCapture?.maxTotalMB ?? 2048,
@@ -500,7 +509,7 @@ export const SettingsPage: React.FC = () => {
               {policyOpen && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
                   <div>
-                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capRetention')}</label>
+                    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capRetention')}</label>
                     <input
                       type="number"
                       min="1"
@@ -510,7 +519,7 @@ export const SettingsPage: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxTotal')}</label>
+                    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxTotal')}</label>
                     <input
                       type="number"
                       min="1"
@@ -520,7 +529,7 @@ export const SettingsPage: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capSession')}</label>
+                    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capSession')}</label>
                     <input
                       type="number"
                       min="1"
@@ -530,7 +539,7 @@ export const SettingsPage: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxBody')}</label>
+                    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxBody')}</label>
                     <input
                       type="number"
                       min="1024"
@@ -540,7 +549,7 @@ export const SettingsPage: React.FC = () => {
                       className="input"
                     />
                   </div>
-                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '12px', cursor: 'pointer' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: 'var(--text-sm)', cursor: 'pointer' }}>
                     <span>{t('settings.capStoreMedia')}</span>
                     <Switch
                       checked={config.requestCapture?.storeMedia ?? true}
@@ -552,7 +561,7 @@ export const SettingsPage: React.FC = () => {
               )}
             </div>
             </>)}
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
               {t('settings.capPrivacyHint')}
               <br />
               {t('settings.capHotHint')}
@@ -561,18 +570,18 @@ export const SettingsPage: React.FC = () => {
 
           {/* Section 5: Responses wire stateful chain */}
           <div id="settings-responses" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Database size={14} />
               {t('settings.respTitle')}
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
               <span>{t('settings.respPersistEnable')}</span>
               <Switch
                 checked={config.responses?.persist ?? false}
                 onChange={v => patchResponses({ persist: v })}
               />
             </label>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
               {t('settings.respPersistHint')}
               <br />
               {t('settings.respRestartHint')}
@@ -589,12 +598,12 @@ export const SettingsPage: React.FC = () => {
               (`defaultModels.translation` — the `lite` alias is the tail and
               `auto` never enters the chain unsolicited, ADR-0015). */}
           <div id="settings-defaults" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Cpu size={14} />
               {t('settings.defaultsTitle')}
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('settings.sysoneModelLabel')}
               </label>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -611,18 +620,18 @@ export const SettingsPage: React.FC = () => {
                   className="btn"
                   onClick={handleSysoneProbe}
                   disabled={probing}
-                  style={{ padding: '6px 12px', fontSize: '11px', flexShrink: 0 }}
+                  style={{ padding: '6px 12px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
                 >
                   <Zap size={12} />
                   <span>{t('settings.probeBtn')}</span>
                 </button>
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.sysoneModelHint')}
               </div>
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('settings.translationModelLabel')}
               </label>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -639,49 +648,49 @@ export const SettingsPage: React.FC = () => {
                   className="btn"
                   onClick={handleProbe}
                   disabled={probing}
-                  style={{ padding: '6px 12px', fontSize: '11px', flexShrink: 0 }}
+                  style={{ padding: '6px 12px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
                 >
                   <Zap size={12} />
                   <span>{t('settings.probeBtn')}</span>
                 </button>
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.translationModelHint')}
               </div>
             </div>
           </div>
           {/* Route experience table (routeEntries.*) — hot-applied on save. */}
           <div id="settings-routeentries" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Waypoints size={14} />
               {t('settings.reTitle')}
             </div>
             <div>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <span>{t('settings.reEnable')}</span>
                 <Switch
                   checked={config.routeEntries?.enabled ?? true}
                   onChange={v => patchRouteEntries({ enabled: v })}
                 />
               </label>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.reEnableHint')}
               </div>
             </div>
             <div>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <span>{t('settings.reSnippet')}</span>
                 <Switch
                   checked={config.routeEntries?.snippetEnabled ?? true}
                   onChange={v => patchRouteEntries({ snippetEnabled: v })}
                 />
               </label>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.reSnippetHint')}
               </div>
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.reMaxEntries')}</label>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.reMaxEntries')}</label>
               <input
                 type="number"
                 min="1"
@@ -689,7 +698,7 @@ export const SettingsPage: React.FC = () => {
                 onChange={e => patchRouteEntries({ maxEntries: parseInt(e.target.value, 10) || 5000 })}
                 className="input"
               />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.reMaxEntriesHint')}
               </div>
             </div>
@@ -700,7 +709,7 @@ export const SettingsPage: React.FC = () => {
             the experience table (directives work with it off). */}
         <div id="settings-directives" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <AtSign size={14} />
               {t('settings.dirTitle')}
             </div>
@@ -709,7 +718,7 @@ export const SettingsPage: React.FC = () => {
               <span>{t('settings.dirCheatBtn')}</span>
             </button>
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
             <span>{t('settings.dirEnable')}</span>
             <Switch
               checked={config.directives?.enabled ?? true}
@@ -717,7 +726,7 @@ export const SettingsPage: React.FC = () => {
             />
           </label>
           <div>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.dirPrefix')}</label>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.dirPrefix')}</label>
             <input
               value={config.directives?.prefix ?? DEFAULT_DIRECTIVE_PREFIX}
               onChange={e => patchDirectives({ prefix: e.target.value })}
@@ -726,12 +735,12 @@ export const SettingsPage: React.FC = () => {
               spellCheck={false}
             />
             {prefixInvalid && (
-              <div style={{ fontSize: '11px', color: 'var(--accent-amber, #f59e0b)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber, #f59e0b)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.dirPrefixInvalid', { prefix: directivePrefix })}
               </div>
             )}
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
             {t('settings.dirPrefixHint')}
             <br />
             {t('settings.dirEnableHint')}
@@ -753,17 +762,17 @@ export const SettingsPage: React.FC = () => {
             closeLabel={t('settings.dirCheatClose')}
             width={560}
           >
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12.5, tableLayout: 'fixed' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 'var(--text-md)', tableLayout: 'fixed' }}>
               <thead>
                 <tr
                   style={{
                     background: 'var(--bg-elev)',
                     borderBottom: '1px solid var(--divider)',
-                    fontSize: 11,
-                    fontWeight: 700,
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 'var(--font-bold)',
                     color: 'var(--text-dim)',
                     textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
+                    letterSpacing: 'var(--tracking-wide)',
                   }}
                 >
                   <th style={{ padding: '8px 12px', width: '46%', whiteSpace: 'nowrap' }}>{t('settings.dirCheatThToken')}</th>
@@ -777,9 +786,9 @@ export const SettingsPage: React.FC = () => {
                       colSpan={2}
                       style={{
                         padding: '10px 12px 4px',
-                        fontSize: 10.5,
-                        fontWeight: 700,
-                        letterSpacing: '0.05em',
+                        fontSize: 'var(--text-xs)',
+                        fontWeight: 'var(--font-bold)',
+                        letterSpacing: 'var(--tracking-wide)',
                         color: 'var(--accent-violet)',
                         textTransform: 'uppercase',
                       }}
@@ -792,8 +801,8 @@ export const SettingsPage: React.FC = () => {
                       <td style={{ padding: '7px 12px', verticalAlign: 'middle' }}>
                         <code
                           style={{
-                            fontFamily: 'var(--font-mono, monospace)',
-                            fontSize: 11,
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 'var(--text-xs)',
                             padding: '2px 8px',
                             borderRadius: 6,
                             background: 'color-mix(in srgb, var(--accent-violet) 10%, transparent)',
@@ -817,14 +826,14 @@ export const SettingsPage: React.FC = () => {
             here is invisible to the header save. */}
         <div id="settings-webauth" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <ShieldCheck size={14} />
               <span>{t('settings.waTitle')}</span>
               {waDirty && (
                 <span
                   style={{
-                    fontSize: '10px',
-                    fontWeight: 600,
+                    fontSize: 'var(--text-2xs)',
+                    fontWeight: 'var(--font-semibold)',
                     padding: '1px 7px',
                     borderRadius: '999px',
                     whiteSpace: 'nowrap',
@@ -851,10 +860,10 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           {!waConfig ? (
-            <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>…</div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-md)' }}>…</div>
           ) : (
             <>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <span>{t('settings.waEnable')}</span>
                 <Switch
                   checked={waEnabled}
@@ -864,14 +873,14 @@ export const SettingsPage: React.FC = () => {
               </label>
 
               {waConfig.forced && (
-                <div style={{ fontSize: '11px', color: 'var(--accent-amber, #f59e0b)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber, #f59e0b)', lineHeight: 'var(--leading-normal)' }}>
                   {t('settings.waForcedHint')}
                 </div>
               )}
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
                 <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                     {t('settings.waUsername')}
                   </label>
                   <input
@@ -883,7 +892,7 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                     {t('settings.waNewPassword')}
                   </label>
                   <input
@@ -896,7 +905,7 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                     {t('settings.waConfirm')}
                   </label>
                   <input
@@ -911,7 +920,7 @@ export const SettingsPage: React.FC = () => {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
                   {t('settings.waHint')}
                 </div>
                 {waConfig.active && (
@@ -924,6 +933,73 @@ export const SettingsPage: React.FC = () => {
             </>
           )}
         </div>
+
+          {/* Menu & navigation. A browser-local preference (theme tier): it
+              applies the moment it changes and is deliberately outside the
+              config save, because nothing here reaches the gateway. */}
+          <div id="settings-menu" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <LayoutGrid size={14} />
+              {t('settings.menuTitle')}
+            </div>
+            <div>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('settings.menuStyleLabel')}
+              </label>
+              <SegGroup
+                size="sm"
+                value={navPreference.style}
+                onChange={(value) => applyNavPreference({ style: value as NavStyleId })}
+                options={[
+                  { value: 'rail', label: t('settings.menuStyleRail') },
+                  { value: 'flat', label: t('settings.menuStyleFlat') },
+                ]}
+              />
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
+                {t('settings.menuStyleHint')}
+              </div>
+            </div>
+            {/* Only the selected style's sub-options are rendered: a control that
+                does nothing in this style would be a puzzle, not a choice. */}
+            {navPreference.style === 'rail' && <>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span>{t('settings.menuRailLabels')}</span>
+                <Switch
+                  checked={navPreference.railLabels}
+                  onChange={(value) => applyNavPreference({ railLabels: value })}
+                />
+              </label>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                {t('settings.menuRailLabelsHint')}
+              </div>
+            </>}
+
+            {navPreference.style === 'flat' && <>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span>{t('settings.menuDensity')}</span>
+                <Switch
+                  checked={navPreference.density === 'compact'}
+                  onChange={(value) => applyNavPreference({ density: value ? 'compact' : 'comfortable' })}
+                />
+              </label>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                {t('settings.menuDensityHint')}
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
+                <span>{t('settings.menuCollapsible')}</span>
+                <Switch
+                  checked={navPreference.collapsible}
+                  onChange={(value) => applyNavPreference({ collapsible: value })}
+                />
+              </label>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                {t('settings.menuCollapsibleHint')}
+              </div>
+            </>}
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+              {t('settings.menuStorageHint')}
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { installArtifact } from '../src/harness/host/install.js';
-import { applyPlugin, planPlugin, type ExecImpl } from '../src/harness/host/writers/plugin.js';
+import { applyPlugin, defaultExec, planPlugin, type ExecImpl } from '../src/harness/host/writers/plugin.js';
 import { manifestPath, readManifest, writeManifest } from '../src/harness/host/manifest.js';
 import { probeArtifact } from '../src/harness/host/probe.js';
 import { scanInventory } from '../src/harness/host/inventory.js';
@@ -528,5 +528,30 @@ describe('npm source input', () => {
   it('keeps the bare forms unchanged', () => {
     expect(parseNpmSource('@scope/*')).toEqual({ ok: true, kind: 'scope', scope: '@scope' });
     expect(parseNpmSource('npm:@scope/pkg')).toEqual({ ok: true, kind: 'package', name: '@scope/pkg' });
+  });
+});
+
+describe('subprocess timeout', () => {
+  // Real timers and a real child on purpose: the contract under test is the OS-level kill plus
+  // the wall-clock bound. Fake timers cannot exercise spawn/taskkill.
+  it('kills the child and returns a timeout error, not the kill exit code', async () => {
+    const root = tmpProject();
+    const script = path.join(root, 'sleep.js');
+    fs.writeFileSync(script, 'setTimeout(() => {}, 10_000);\n');
+    const started = Date.now();
+    const result = await defaultExec(process.execPath, [script], 300);
+    expect(Date.now() - started).toBeLessThan(6000);
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain('timed out after 300ms');
+  });
+
+  it('mirrors stdout to the onOutput callback', async () => {
+    const root = tmpProject();
+    const script = path.join(root, 'print.js');
+    fs.writeFileSync(script, 'console.log("hello");\n');
+    const chunks: string[] = [];
+    const result = await defaultExec(process.execPath, [script], 5000, undefined, (chunk) => chunks.push(chunk));
+    expect(result.code).toBe(0);
+    expect(chunks.join('')).toContain('hello');
   });
 });

@@ -139,6 +139,17 @@ export function suspectCredentialsFile(paths: CredentialPaths = resolveDefaultPa
 }
 
 /**
+ * Provider-level operator takedowns — GLOBAL, same root as the suspect flags:
+ * a provider is out of routing wherever a book-set routes. Display-safe
+ * metadata only (provider id, operator note, timestamp). Deliberately NOT in
+ * `providers.json`: defs are the connection truth and the sync materializer's
+ * source (ADR-0010), while a takedown is router state.
+ */
+export function disabledProvidersFile(paths: CredentialPaths = resolveDefaultPaths()): string {
+  return path.join(paths.ocrHome, 'disabled-providers.json');
+}
+
+/**
  * Breaker memory: the full state machine of
  * every model and pair breaker, so cooldowns and manual trips survive a
  * gateway restart. Display-safe metadata only (model ids, provider, keyHash

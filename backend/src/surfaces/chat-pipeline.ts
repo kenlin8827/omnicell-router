@@ -3,7 +3,7 @@ import { buildOcrSummaryFrame } from '../utils/chat-sse.js';
 import { relayDirectForward } from './direct-forward.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { buildChatOcrCompletionFacts, buildChatOcrHeaders, buildChatOcrRoutingHeaders } from './ocr-headers.js';
-import type { ChatSurface, TransportContext } from './types.js';
+import type { ChatSurface, SurfacePathContext, TransportContext } from './types.js';
 
 /**
  * The frozen execution order for every chat-shaped wire (contract §1.3).
@@ -33,7 +33,9 @@ export async function runChatSurface(
   body: unknown
 ): Promise<void> {
   // 1. Parse — protocol-level shape check only; model resolution stays with the orchestrator.
-  const parsed = surface.parse(body);
+  // The path context rides along so a URL-addressed wire can reach the model its
+  // body never carries; body-addressed wires ignore the argument entirely.
+  const parsed = surface.parse(body, pathContextOf(t.url));
 
   // 2. Invalid body → 400 through the surface envelope (no headers staged).
   if (parsed.error) {
@@ -164,4 +166,15 @@ export async function runChatSurface(
     const mapped = surface.executionError(err);
     t.sendJson(mapped.status, mapped.body);
   }
+}
+
+/**
+ * Split the transport's request target into the path context `parse` receives.
+ * Deliberately dumb (no decoding, no normalization): the wire's own converter
+ * knows which of its paths are meaningful, and a percent-decode here would
+ * invent a canonical form neither transport promises.
+ */
+function pathContextOf(url: string): SurfacePathContext {
+  const q = url.indexOf('?');
+  return q === -1 ? { path: url, query: '' } : { path: url.slice(0, q), query: url.slice(q + 1) };
 }

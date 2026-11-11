@@ -141,6 +141,58 @@ describe('quota effective plan', () => {
     assert.equal(t?.kind, 'dsl');
     assert.equal(t?.kind === 'dsl' ? t.entry.url : '', 'http://192.168.18.10:20180/api/usage');
   });
+  it('L-e plugin layer fills ONLY providers no higher layer covers', () => {
+    const adapter = { id: 'plugin:qoder', providerIds: ['qoder-cn'], probe: async () => ({ ok: true, windows: [] }) };
+    const layer = {
+      candidateIds: () => ['qoder-cn', 'deepseek', 'minimax'],
+      adapterFor: (pid: string) => (pid === 'qoder-cn' ? adapter : undefined),
+    };
+    const plan = buildEffectivePlan(undefined, () => undefined, layer);
+    assert.equal(plan.byProvider.get('qoder-cn')?.kind, 'adapter', 'uncovered provider adopted from the plugin');
+    assert.equal((plan.byProvider.get('qoder-cn') as any).adapter.id, 'plugin:qoder');
+    assert.equal(plan.byProvider.get('deepseek')?.kind, 'dsl', 'built-in DSL beats the plugin layer');
+    assert.equal(plan.byProvider.get('minimax')?.kind, 'adapter', 'built-in adapter beats the plugin layer');
+    assert.equal((plan.byProvider.get('minimax') as any).adapter.id, 'minimax', 'the BUILT-IN adapter stays');
+  });
+
+  it('L-e operator config beats the plugin layer; a plugin-less provider stays uncovered', () => {
+    const adapter = { id: 'plugin:qoder', providerIds: ['qoder-cn'], probe: async () => ({ ok: true, windows: [] }) };
+    const plan = buildEffectivePlan(
+      { 'qoder-cn': [{ url: '/usage', windows: { form: 'static', windows: [{ name: 'W', used: { path: 'u' } }] } }] } as Record<string, QuotaProbeConfigEntry[]>,
+      () => 'https://openapi.qoder.sh/v1',
+      { candidateIds: () => ['qoder-cn', 'lonely'], adapterFor: (pid) => (pid === 'qoder-cn' ? adapter : undefined) }
+    );
+    assert.equal(plan.byProvider.get('qoder-cn')?.kind, 'dsl', 'operator entry (L-d) wins');
+    assert.equal(plan.byProvider.has('lonely'), false, 'no capable plugin = no coverage');
+  });
+
+  it('probePair runs a plugin adapter unchanged (same adapter contract)', async () => {
+    const tmp = sandboxPaths('quota-plugin-adapter');
+    const store = new QuotaSnapshotStore({ paths: tmp, now: () => 1000 });
+    setQuotaStoreForTests(store);
+    try {
+      let seenKey = '';
+      const adapter = {
+        id: 'plugin:qoder',
+        providerIds: ['qoder-cn'],
+        probe: async (ctx: { key: string }) => {
+          seenKey = ctx.key;
+          return { ok: true as const, windows: [{ name: 'Credits', used: 1, total: 10, remainingPct: 90 }] };
+        },
+      };
+      const res = await probePair({ kind: 'adapter', adapter }, {
+        providerId: 'qoder-cn',
+        key: 'sk-test',
+        prefix: 'KQ',
+      });
+      assert.equal(seenKey, 'sk-test', 'raw key reaches the plugin in-process only');
+      assert.ok(res.outcome.ok);
+      assert.equal(store.get('qoder-cn', 'KQ')?.entryId, 'adapter:plugin:qoder');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── Probe execution ────────────────────────────────────────────────────────

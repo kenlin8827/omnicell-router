@@ -8,6 +8,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * Route-entry experience table (ADR-0011) — every prompt the gateway has
  * learned to route. Human edits land as immutable `human` rows (confidence
@@ -23,7 +24,7 @@ type SortKey = 'updatedAt' | 'hitCount' | 'sessionCount';
 // Per-page options for the experience table (the server hard-caps limit at 500).
 const PAGE_SIZES = [10, 20, 50, 100, 200];
 
-const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' };
 
 const SOURCE_COLORS: Record<string, string> = {
   human: 'var(--accent-emerald)',
@@ -109,12 +110,9 @@ export const RouteEntriesPage: React.FC = () => {
   // when the row has no snippet (snippet capture off at write time).
   const handleCopyPrompt = async (row: RouteEntryRow) => {
     if (!row.snippet) return;
-    try {
-      await navigator.clipboard.writeText(row.snippet);
-      toast.success(t('routeEntries.copyPromptOk'));
-    } catch (err: any) {
-      toast.error(t('routeEntries.copyPromptFailed') + ' ' + (err?.message || err));
-    }
+    const ok = await copyToClipboard(row.snippet);
+    if (ok) toast.success(t('routeEntries.copyPromptOk'));
+    else toast.error(t('routeEntries.copyPromptFailed'));
   };
 
   // Editor option labels: the wire identifier stays the anchor (it is the
@@ -174,10 +172,10 @@ export const RouteEntriesPage: React.FC = () => {
   const effortOptions = EFFORTS.map((v) => ({ value: v, label: effortOptionLabel(v) }));
 
   const thStyle: React.CSSProperties = {
-    textAlign: 'left', fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.5px',
+    textAlign: 'left', fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-label)',
     color: 'var(--text-dim)', padding: '8px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap',
   };
-  const tdStyle: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid var(--border)', verticalAlign: 'middle', fontSize: '12px' };
+  const tdStyle: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid var(--border)', verticalAlign: 'middle', fontSize: 'var(--text-sm)' };
 
   const sortTh = (labelKey: string, key: SortKey) => (
     <th
@@ -228,17 +226,17 @@ export const RouteEntriesPage: React.FC = () => {
           </button>
         </div>
       </div>
-      <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: '0 0 12px 0' }}>
+      <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: '0 0 12px 0' }}>
         {t('routeEntries.pageSubtitle')}
       </p>
 
       {gate && gate.enabled === false && (
-        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
           {t('routeEntries.gateDisabled')}
         </div>
       )}
       {gate && gate.enabled !== false && (
-        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
           {t('routeEntries.directiveNote')}
         </div>
       )}
@@ -253,7 +251,7 @@ export const RouteEntriesPage: React.FC = () => {
           <div style={{ height: '100%', minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center', color: 'var(--text-dim)', maxWidth: 560 }}>
               <RouteIcon size={28} style={{ opacity: 0.55 }} />
-              <div style={{ fontSize: 12.5, lineHeight: 1.7 }}>
+              <div style={{ fontSize: 'var(--text-md)', lineHeight: 'var(--leading-relaxed)' }}>
                 {loading ? t('routeEntries.loading') : t('routeEntries.empty')}
               </div>
             </div>
@@ -297,7 +295,7 @@ export const RouteEntriesPage: React.FC = () => {
                     value={row.tier}
                     onChange={(v) => handleTier(row, v)}
                     options={tierOptions}
-                    style={{ width: 124, padding: '4px 8px', fontSize: 11.5 }}
+                    style={{ width: 124, padding: '4px 8px', fontSize: 'var(--text-sm)' }}
                   />
                 </td>
                 <td style={tdStyle}>
@@ -307,13 +305,13 @@ export const RouteEntriesPage: React.FC = () => {
                     options={effortOptions}
                     clearable
                     placeholder={t('routeEntries.effortDefault')}
-                    style={{ width: 124, padding: '4px 8px', fontSize: 11.5 }}
+                    style={{ width: 124, padding: '4px 8px', fontSize: 'var(--text-sm)' }}
                   />
                 </td>
                 <td style={tdStyle}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
                     <span style={{
-                      fontSize: 10.5, padding: '2px 8px', borderRadius: 999,
+                      fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 999,
                       color: SOURCE_COLORS[row.source] ?? 'var(--text-dim)',
                       border: `1px solid ${SOURCE_COLORS[row.source] ?? 'var(--border)'}`,
                       whiteSpace: 'nowrap',
@@ -325,7 +323,7 @@ export const RouteEntriesPage: React.FC = () => {
                 </td>
                 <td style={{ ...tdStyle, ...MONO }}>{row.hitCount}</td>
                 <td style={{ ...tdStyle, ...MONO }}>{row.sessionCount}</td>
-                <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: 'var(--text-dim)', fontSize: 11 }}>
+                <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: 'var(--text-dim)', fontSize: 'var(--text-xs)' }}>
                   {new Date(row.updatedAt).toLocaleString()}
                 </td>
                 <td style={tdStyle}>

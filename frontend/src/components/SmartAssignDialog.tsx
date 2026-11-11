@@ -183,7 +183,7 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
     padding: '3px 10px',
     borderRadius: '999px',
     border: '1px solid var(--card-border)',
-    fontSize: '11px',
+    fontSize: 'var(--text-xs)',
     fontFamily: FONT_MONO,
   };
 
@@ -228,22 +228,22 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
             }}
           >
             <Loader2 size={24} style={{ animation: 'ocr-spin 0.8s linear infinite', color: 'var(--accent)' }} />
-            <div style={{ fontSize: '13px', color: 'var(--text-main)', fontWeight: 600 }}>{t('clients.smartBusy')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{t('clients.smartBusyHint')}</div>
+            <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-main)', fontWeight: 'var(--font-semibold)' }}>{t('clients.smartBusy')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{t('clients.smartBusyHint')}</div>
           </div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6 }}>{t('clients.smartDecider')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>{t('clients.smartDecider')}</div>
             <Combobox value={decider} onChange={setDecider} options={deciderOptions} placeholder={t('clients.smartDeciderPick')} panelMinWidth={360} disabled={busy} />
             {resolved && (
-              <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4, fontFamily: FONT_MONO }}>→ {resolved}</div>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 4, fontFamily: FONT_MONO }}>→ {resolved}</div>
             )}
           </div>
 
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {t('clients.smartCandidates', { n: candidates.length })}
             </div>
             {!profileMode && (
@@ -253,7 +253,7 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
                     key={f}
                     type="button"
                     className="btn btn-sm"
-                    style={{ fontSize: '11px', padding: '2px 8px', ...(filter === f ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}) }}
+                    style={{ fontSize: 'var(--text-xs)', padding: '2px 8px', ...(filter === f ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}) }}
                     onClick={() => setFilter(f)}
                     disabled={busy}
                   >
@@ -264,7 +264,7 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
             )}
           </div>
           {scopeHint && (
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6 }}>{scopeHint}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>{scopeHint}</div>
           )}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 140, overflowY: 'auto' }}>
             {candidates.map(c => (
@@ -276,14 +276,14 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
         </div>
 
           <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>
               {t('clients.smartTargets', { n: targets.length })}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
               {targets.map(tg => (
-                <div key={tg.key} style={{ fontSize: '12px', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                <div key={tg.key} style={{ fontSize: 'var(--text-sm)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
                   <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{tg.label || tg.key}</span>
-                  {tg.current && <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>→ {tg.current}</span>}
+                  {tg.current && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>→ {tg.current}</span>}
                 </div>
               ))}
             </div>

@@ -5,7 +5,8 @@ import { copyDrift } from './drift.js';
 import { readSkillMeta } from '../skill/skill-md.js';
 import { adapterFor, skillLocationRoots, skillReaders } from './adapters/index.js';
 import { claimOwner, readManifest } from './manifest.js';
-import { discoverPlugins, discoverMcp, pluginSources, mcpSources, mcpTrackedKey, trackedKey } from './discover.js';
+import { discoverPlugins, discoverMcp, pluginSources, mcpSources, mcpTrackedKey, trackedKey, storeDescription } from './discover.js';
+import type { ExtSource } from './adapters/types.js';
 import { isEnabledScope } from './scopes.js';
 import type {
   ArtifactRecord,
@@ -70,12 +71,42 @@ function rollupOf(copies: CopyView[]): ArtifactView['rollup'] {
   return 'clean';
 }
 
-function toView(record: ArtifactRecord, envName: string, projectRoot: string): ArtifactView {
+/**
+ * Package names an artifact key can name in a runtime store. The record's `name` may be an install
+ * SPEC (`dsh-plugin-codegraph@0.6.5`) rather than a package name, so its version tag is stripped;
+ * a scoped name keeps its leading `@`.
+ */
+function packageNames(record: ArtifactRecord): string[] {
+  const names = new Set<string>();
+  const add = (raw: string | null | undefined): void => {
+    const value = raw?.trim();
+    if (value) names.add(value);
+  };
+  const key = record.canonicalKey;
+  const sep = key.indexOf(':');
+  const ref = sep === -1 ? key : key.slice(sep + 1);
+  if (key.startsWith('npm:')) {
+    const at = ref.indexOf('@', 1);
+    add(at === -1 ? ref : ref.slice(0, at));
+  } else if (key.startsWith('github:') || key.startsWith('git:')) {
+    const repoPath = ref.split('#')[0]!.replace(/^github\.com\//, '').replace(/\.git$/, '');
+    add(repoPath.split('/').pop());
+  } else if (key.startsWith('claude:')) {
+    add(ref.split('@')[0]);
+  }
+  add(record.name);
+  const at = record.name.indexOf('@', 1);
+  add(at === -1 ? record.name : record.name.slice(0, at));
+  return [...names];
+}
+
+function toView(record: ArtifactRecord, envName: string, projectRoot: string, sources: readonly ExtSource[]): ArtifactView {
   const copies: CopyView[] = record.copies.map((copy) => ({
     scope: copy.scope,
     host: copy.host,
     rootId: copy.rootId,
     path: copy.path,
+    ...(copy.profile ? { profile: copy.profile } : {}),
     ...(copy.external ? { external: true } : {}),
     ...(copy.projectRoot ? { projectRoot: copy.projectRoot } : {}),
     state: copyState(copy, envName),
@@ -98,9 +129,19 @@ function toView(record: ArtifactRecord, envName: string, projectRoot: string): A
     // Installed text wins when the copy carries it (a skill's `SKILL.md` is the authoritative prose);
     // the manifest's recorded description is the fallback for kinds whose copy has no file of ours to
     // read — an npm package living in the runtime's own store, an MCP entry inside a host config.
+    // A native-marketplace / git install records no registry line and owns an external copy, so the
+    // installed package's own manifest is the last honest source (`storeDescription`).
     description:
       record.copies.map((c) => (fs.existsSync(c.path) ? readSkillMeta(c.path).description ?? null : null)).find((d) => d) ??
       record.description ??
+      (record.kind === 'plugin' &&
+        record.harness &&
+        record.copies.some((copy) => copy.external === true)
+        ? storeDescription(sources, record.harness, packageNames(record), {
+            profile: record.copies.find((c) => c.external === true)?.profile,
+            nativeKey: record.nativeKey,
+          })
+        : null) ??
       null,
     sourceId: record.sourceId ?? null,
     // A record written before the facet existed has no `listedOn`: the writer source is then the
@@ -142,16 +183,21 @@ export function trackedPluginKeys(artifacts: ArtifactRecord[]): Set<string> {
 }
 
 /**
- * `host|name` for git-marketplace plugin artifacts. A native marketplace chain installs under the
- * runtime's `<name>@<marketplace>` key, which an older record cannot name; the plugin name is the
- * shared fact that keeps the runtime row from answering as a second artifact (see `discoverPlugins`
+ * `host|name` for plugin artifacts whose recorded identity is NOT a registry key.
+ *
+ * `trackedPluginKeys` already excludes an `npm:`-keyed artifact because discovery re-derives the
+ * same `npm:<name>` key from a declared store. Every OTHER install records an identity the store
+ * never repeats: a native marketplace chain writes `mp-*` / `<name>@<marketplace>`, and a Git
+ * install records `github:<owner>/<repo>` while DSH's `dsh.profile.bundles` only carries the bare
+ * package name. Without the name fallback that one install answers twice — a tracked row plus a
+ * discovered "managed by the runtime" row for the very same package (see `discoverPlugins`
  * `trackedNames`).
  */
 export function trackedPluginNames(artifacts: ArtifactRecord[]): Set<string> {
   const names = new Set<string>();
   for (const record of artifacts) {
     if (record.kind !== 'plugin' || !record.harness) continue;
-    if (!record.canonicalKey.startsWith('mp-')) continue;
+    if (record.canonicalKey.startsWith('npm:')) continue;
     names.add(`${record.harness}|${record.name}`);
   }
   return names;
@@ -160,7 +206,10 @@ export function trackedPluginNames(artifacts: ArtifactRecord[]): Set<string> {
 export function scanInventory(projectRoot: string = process.cwd()): InventoryResponse {
   const envName = resolveEnvName();
   const manifest = readManifest();
-  const artifacts = manifest.artifacts.map((record) => toView(record, envName, projectRoot));
+  // One adapter enumeration for the whole scan: tracked rows read their installed manifest from the
+  // same sources discovery scans.
+  const sources = pluginSources(projectRoot);
+  const artifacts = manifest.artifacts.map((record) => toView(record, envName, projectRoot, sources));
 
   const tracked = new Set<string>();
   for (const record of manifest.artifacts) {
@@ -222,7 +271,7 @@ export function scanInventory(projectRoot: string = process.cwd()): InventoryRes
   // observation, and an artifact this environment already tracks is excluded so one install is
   // never reported twice under two different owners.
   const trackedPlugins = trackedPluginKeys(manifest.artifacts);
-  const plugins = discoverPlugins(pluginSources(projectRoot).filter((s) => isEnabledScope(s.scope)), {
+  const plugins = discoverPlugins(sources.filter((s) => isEnabledScope(s.scope)), {
     tracked: trackedPlugins,
     trackedNames: trackedPluginNames(manifest.artifacts),
   });

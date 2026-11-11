@@ -1,3 +1,8 @@
+import type { Lang } from '../i18n/types';
+
+/** Credential methods a plugin's connect card may offer (backend PluginAuthType). */
+export type PluginAuthType = 'webLogin' | 'key';
+
 export interface ProjectItem {
   id: string;
   name: string;
@@ -37,16 +42,17 @@ export interface GatewayMetrics {
   };
 }
 
+/** Where a client hook lands — mirrors backend `ClientHookKind`. */
+export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+
 export interface ClientStatus {
   name: string;
   displayName: string;
-  /** The harness host this client's artifacts land in (backend `ClientAdapter.harness`); `null` =
-   *  traffic-only client with no landing. Absent on older gateways — callers fall back to `name`. */
-  harness?: string | null;
+  /** Where the hook lands (backend `ClientAdapter.hookKind`). */
+  hookKind: ClientHookKind;
   configPath: string;
   exists: boolean;
   hooked: boolean;
-  targetProvider: string;
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
@@ -57,6 +63,23 @@ export interface ClientStatus {
   /** Last-linked model profile (opencode): profile id + agent→slot-key tags
    *  (the linked rows — their effective models resolve from the profile). */
   profile?: ModelProfileBinding;
+  /** A file an adapter owns besides its primary `configPath` (Cursor's CLI
+   *  launcher); `exists` probed at status time. Mirrors backend ClientArtifact. */
+  artifacts?: ClientArtifact[];
+}
+
+/** Mirrors backend ClientArtifact (a file an adapter owns besides `configPath`). */
+export interface ClientArtifact {
+  path: string;
+  exists: boolean;
+}
+
+/** Advise-only finding from a SUCCESSFUL client setup (backend
+ *  `ClientActionWarning`): the artifact was written, but the client will still
+ *  fail at use time until this is fixed. */
+export interface ClientActionWarning {
+  code: 'ca_not_trusted' | 'ca_trust_unknown' | 'proxy_not_running';
+  params?: Record<string, string>;
 }
 
 /** Mirrors backend ModelProfileBinding (profile-link echo from the OCR sidecar meta). */
@@ -390,6 +413,8 @@ export interface GatewayStatusResponse {
   /** Inbound forward-proxy runtime status (backend forward-proxy/status.ts). */
   forwardProxy?: {
     enabled: boolean;
+    /** ADR-0019: upstream certificate verification is OFF — a standing risk. */
+    upstreamInsecure?: boolean;
     running: boolean;
     port?: number;
     host?: string;
@@ -421,19 +446,86 @@ export interface ProxyAccessEvent {
   /** bodies-dir ref (`<day>/<name>.bin`) when THAT binary body was persisted as a raw file. */
   reqBodyFile?: string;
   resBodyFile?: string;
+  /** Opaque download token for the persisted body — the console's ONLY way to
+   *  address it (one neutral URL, no storage/subsystem detail). */
+  reqBodyToken?: string;
+  resBodyToken?: string;
   /** Sniffed MIME for the persisted binary body file. */
   reqBodyMime?: string;
   resBodyMime?: string;
   truncated?: boolean;
+  /** Wire protocol of the serving leg ('h1' | 'h2' | 'ws') — console protocol column. */
+  wire?: string;
   note?: string;
 }
 
-export interface ProxyAccessLogResponse {
+/** One row of the federated traffic timeline — a discriminated union on
+ *  `source`: the proxy access log, or a plugin gateway's traffic feed. */
+export type TimelineRow =
+  | { source: 'proxy'; ev: ProxyAccessEvent }
+  | { source: string; ex: PluginTrafficEvent };
+
+export interface ProxyTimelineResponse {
   status: string;
-  enabled: boolean;
-  /** Per-side capture cap; absent = unlimited (backend `accessLog.bodyBytes`). */
+  /** Live scope only: whether the proxy access log is recording. */
+  enabled?: boolean;
+  /** Live scope only: per-side inline capture cap; absent = the backend
+   *  default cap (`DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES`, 1 MiB), 0 = headers. */
   bodyBytes?: number;
-  events: ProxyAccessEvent[];
+  /** Federated rows, newest first (both scopes — the backend merges). */
+  rows: TimelineRow[];
+  /** Exact count across ALL sources. Live: the merged tail's length (the
+   *  console pages it locally). History: the paged query's exact total. */
+  total: number;
+  /** History scope: the served page / page count. */
+  page?: number;
+  pages?: number;
+}
+
+/** One RAW captured exchange in a client-gateway plugin's generic traffic
+ *  feed (base64 bodies stripped by the route; decoded layers attached). */
+export interface PluginTrafficEvent {
+  /** Persisted row identity (feeds written after ids existed) — the delete key. */
+  id?: string;
+  ts?: string;
+  authority?: string;
+  method?: string;
+  path?: string;
+  reqContentType?: string;
+  resContentType?: string;
+  status?: number;
+  durationMs?: number;
+  leg?: string;
+  reqTruncated?: boolean;
+  resTruncated?: boolean;
+  /** Captured header maps (names lowercased, values capped by the plugin). */
+  reqHeaders?: Record<string, string>;
+  resHeaders?: Record<string, string>;
+  /** Small hex preview of each captured side (≤1KiB) — the no-decoder fallback. */
+  reqHex?: string;
+  resHex?: string;
+  /** Sidecar refs of the FULL captured bodies (`<day>/<id>-<side>.bin`). */
+  reqBodyFile?: string;
+  resBodyFile?: string;
+  /** Opaque download token for the persisted body (neutral URL, see above). */
+  reqBodyToken?: string;
+  resBodyToken?: string;
+  /** Full captured byte counts (independent of the display window). */
+  reqBodyBytes?: number;
+  resBodyBytes?: number;
+  decoded?: { decoder: string; layers: { name: string; side?: 'req' | 'res'; frames?: unknown[] }[] };
+}
+
+export interface PluginTrafficDecodersResponse {
+  status: string;
+  decoders: { id: string; label: string }[];
+}
+
+export interface PluginTrafficResponse {
+  status: string;
+  days: number;
+  truncated?: boolean;
+  events: PluginTrafficEvent[];
 }
 
 /** OS system-proxy ownership state (backend forward-proxy/system-proxy.ts). */
@@ -446,6 +538,93 @@ export interface SystemProxyStatus {
   override?: string;
   caPath: string;
   proxyEnabled?: boolean;
+}
+
+/**
+ * Persisted MITM CA identity — mirrors the backend contract `CaMeta`
+ * (forward-proxy/ca.ts `describeCa`). Never key material.
+ */
+export interface CaMeta {
+  /** Absolute path of the PEM clients must trust. */
+  path: string;
+  fingerprintSha256: string;
+  subject: string;
+  notBefore: string;
+  notAfter: string;
+}
+
+/**
+ * Platform trust state of the MITM CA — mirrors the backend
+ * `GET /api/admin/proxy/ca/trust` answer. `unknown` means the probe could not
+ * run (missing platform tool / permissions), NOT "not trusted".
+ */
+export interface CaTrustResponse {
+  trusted: boolean | 'unknown';
+  /** Absolute PEM path the probe inspected. */
+  caPath: string;
+  /** Epoch ms of the probe that produced this answer; ABSENT when no probe ran
+   *  (there is no CA file to identify yet). */
+  checkedAt?: number;
+}
+
+/**
+ * Forward-proxy rule table (backend forward-proxy/rules.ts, ADR-0018 second
+ * revision).
+ *
+ * ONE ordered table, first match wins. Each row carries TWO fields splitting
+ * the decision into its axes: `ingress` — what happens at ingress (`intercept`
+ * = MITM, the default posture; `passthrough` = blind tunnel; `reject` = 403 on
+ * admission) — and `egress` — where the bytes exit (`direct` / `proxy`). A
+ * `reject` row uses `egress: 'direct'`. Loopback is always passthrough +
+ * direct; an unmatched host falls back to direct + intercepted.
+ */
+export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/** Where the bytes exit. */
+export type RuleEgress = 'direct' | 'proxy';
+
+/** The exit half of a decision — where the bytes go. */
+export type RuleExit = 'direct' | 'proxy' | 'reject';
+
+/** One row of the rule table. `match` is a glob over the bare hostname. */
+export interface ForwardProxyRule {
+  match: string;
+  ingress: RuleIngress;
+  egress: RuleEgress;
+}
+
+/** Lint codes — the console owns the wording (i18n); the backend owns the rule. */
+export type RuleWarningCode =
+  | 'invalid-rule'
+  | 'unreachable-rule'
+  | 'no-catch-all'
+  | 'proxy-rule-without-proxy';
+
+export interface RuleWarning {
+  code: RuleWarningCode;
+  /** Index into the RAW rules array (the row the operator typed). */
+  ruleIndex?: number;
+  /** English detail for logs — never rendered untranslated. */
+  detail?: string;
+}
+
+/** The full decision for a probe host — the console preview + the ledger note. */
+export interface HostDecision {
+  action: RuleExit;
+  tunnel: boolean;
+  reason: 'loopback' | 'rule' | 'fallback';
+  ruleIndex?: number;
+  match?: string;
+}
+
+export interface RulesResolveResponse {
+  status: string;
+  rules: ForwardProxyRule[];
+  warnings: RuleWarning[];
+  /** `config.proxy.enabled` — a `proxy` row is inert while this is false. */
+  proxyEnabled: boolean;
+  /** Null when the request carried no probe host. */
+  decision: HostDecision | null;
 }
 
 /**
@@ -756,18 +935,39 @@ export interface HttpExchangeEvent {
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
   /**
-   * Flattened LAST user message of the request (the current turn's prompt),
-   * capped — stamped on client-request events at write time so metadata-only
-   * reads (bodies=none) still render the turn prompt in the timeline.
-   * Absent on other phases/directions and for bodies without user text.
+   * Flattened LAST user message of the request, capped — stamped on
+   * client-request events at write time so metadata-only reads (bodies=none)
+   * still render the turn prompt in the timeline. Absent on other
+   * phases/directions and for bodies without user text. The body's last user
+   * message is only THIS turn's prompt when the client appended it: the
+   * server blanks it for resent history (tool-result continuations), so an
+   * absent summary means "no new user message", not "unknown". A history
+   * that SHRANK (client-side compaction) is exempt — its last user message
+   * is this turn's prompt even though the index looks old.
    */
   promptSummary?: string;
+  /** Message-array length of the client request (staleness basis for the NEXT turn). */
+  promptMessageCount?: number;
+  /** Index of the last user message inside that array (see promptSummary). */
+  promptLastUserIdx?: number;
 }
 
 export interface CaptureTurn {
   traceId: string;
   sessionId: string;
   model: string;
+  /**
+   * 1-based request sequence number inside the read window — one per client
+   * request, never per tool-result continuation. Absent when the request line
+   * fell outside the window (a continuation tail).
+   */
+  requestNumber?: number;
+  /**
+   * 1-based prompt-round number inside the read window — one per user
+   * prompt plus every request it drove. A leading prompt-less block opens
+   * round 1 (its prompt sits outside the window).
+   */
+  roundNumber?: number;
   /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
   promptSummary?: string;
   clientRequest?: HttpExchangeEvent;
@@ -792,6 +992,23 @@ export interface CaptureTurn {
   /** TTFT / decode window for the decision layer leg (same derivation as upstream). */
   decisionTtftMs?: number;
   decisionGenMs?: number;
+}
+
+/** Whole-archive USER-PROMPT round (backend CaptureRoundIndexEntry). */
+export interface CaptureRoundIndexEntry {
+  ordinal: number;
+  prompt?: string;
+  startTs?: number;
+  requests: number;
+  firstRequest: number;
+  lastRequest: number;
+}
+
+/** Exact whole-archive totals + prompt-round index (backend CaptureArchiveSummary). */
+export interface CaptureArchiveSummary {
+  requests: number;
+  fragments: number;
+  rounds: CaptureRoundIndexEntry[];
 }
 
 // Mirrors backend SessionRow (backend/src/session/session-row.ts) — the console
@@ -882,6 +1099,13 @@ export interface SessionRecord {
   /** Distinct client User-Agent strings seen on this session's traces,
    *  write order (display-only fingerprint; forgeable, never identity). */
   clients?: string[];
+  /**
+   * Client-minted conversation ids seen on this session's turns, write order
+   * (first = display anchor). The `id` field above remains the GATEWAY session
+   * id; this is the other side of the mapping (ADR-0002 §1), rendered beside it
+   * so both namespaces can be correlated. Absent when the client sent none.
+   */
+  clientRefs?: { kind: string; id: string }[];
 }
 
 // Mirrors backend UsageStatsSummary (backend/src/trace/tracker.ts getUsageStats)
@@ -1236,6 +1460,8 @@ export interface HarnessCopyView {
    */
   external?: boolean;
   path: string;
+  /** Per-profile runtime store (DSH): the profile this copy belongs to. */
+  profile?: string;
   /** Set on project-scope copies — the only project attribution for an external token copy. */
   projectRoot?: string;
   state: 'clean' | 'dirty' | 'missing' | 'foreign' | 'untracked';
@@ -1244,7 +1470,7 @@ export interface HarnessCopyView {
   /**
    * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
    * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
-   * tree is read by up to fourteen runtimes), which is what the skills page's harness rail selects by.
+   * tree is read by up to fifteen runtimes), which is what the skills page's harness rail selects by.
    */
   readers?: string[];
 }
@@ -1285,6 +1511,8 @@ export interface HarnessDiscoveredArtifact {
   /** Version the runtime's store records for it, when a lock file answers. */
   version?: string;
   canonicalKey?: string;
+  /** DSH only: `false` = installed dependency not selected in `dsh.profile.bundles`. */
+  enabled?: boolean;
   /**
    * The inverse of the runtime's own install record — computed by the backend from the shape the
    * scan read (`trash-path` for a real file, `drop-entry` for one string in `plugin[]`/`packages[]`,
@@ -1295,7 +1523,8 @@ export interface HarnessDiscoveredArtifact {
   | { op: 'trash-path'; path: string }
   | { op: 'drop-entry'; file: string; container: string; entry: string }
   | { op: 'drop-server'; file: string; container: string; entry: string }
-  | { op: 'cli-remove'; host: string; entry: string };
+  | { op: 'cli-remove'; host: string; entry: string }
+  | { op: 'plugin-remove'; host: string; entry: string; profile?: string };
 }
 
 export interface HarnessInventoryResponse {
@@ -1509,6 +1738,12 @@ export interface HarnessMarketDetail {
   /** ISO publish date (npm latest) / last push (GitHub). */
   publishedAt?: string;
   updatedAt?: string;
+  /** Language the README is actually written in, when the backend could tell: a selected localized
+   *  edition, or script detection (zh/ja/ko). Equal to the UI language means NO translation is needed. */
+  readmeLang?: Lang;
+  /** Repository-relative path of the served README (a localized edition is a real file): relative
+   *  links and images resolve against its directory. Absent means the repository root. */
+  readmePath?: string;
   language?: string;
   stars?: number;
   topics?: string[];
@@ -1529,6 +1764,9 @@ export interface HarnessMarketDetail {
 export interface HarnessHostView {
   id: string;
   label: string;
+  /** Popularity order shared with the Clients page (1 = most popular). The rail sorts by it;
+   *  `universal` is unranked here and pinned first by id. */
+  rank: number;
   /** Present on this machine (executable on PATH, config dir, or an existing skills root). The
    *  console rail hides undetected hosts — but never one whose rows are already landed. */
   detected: boolean;
@@ -1544,6 +1782,8 @@ export interface HarnessHostView {
   kindScopes: Record<'skill' | 'mcp' | 'plugin', ('global' | 'project')[]>;
   /** Resolved roots per accepted scope; a scope absent from `kindScopes` has no key here. */
   roots: { global: HarnessRootView[] };
+  /** Per-profile plugin stores (DSH): selectable install targets. Absent = one implicit landing. */
+  profiles?: { name: string; exists: boolean }[];
   /** Host that owns this host's directory per scope — differs from `id` when hosts share a path. */
   owner: { global: string | null };
 }
@@ -1753,6 +1993,45 @@ export class SourceOutcomeError extends Error {
   }
 }
 
+/**
+ * Read an NDJSON response body, handing each non-empty line to `onLine`.
+ *
+ * Two console surfaces stream this shape (capture replay and README translation progress): the
+ * framing lives here so the decoder, the buffer and the partial-line rule cannot drift apart.
+ */
+async function readNdjsonLines(res: Response, onLine: (line: string) => void): Promise<void> {
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) onLine(line);
+    }
+  }
+}
+
+/** Mirrors backend `UpdateCheckSnapshot` (backend/src/update/check.ts) plus the
+ *  route envelope. Display-only: `checking` means the gateway's background
+ *  GitHub call is still in flight. */
+export interface UpdateCheckResponse {
+  status: 'ok';
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  releaseName?: string;
+  publishedAt?: string;
+  checkedAt?: string;
+  checking: boolean;
+  error?: string;
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
@@ -1760,24 +2039,132 @@ export const api = {
     return res.json();
   },
 
-  async getProxyAccessLog(): Promise<ProxyAccessLogResponse> {
-    const res = await fetch('/api/admin/proxy-log');
+  /** Release update check — cached in the gateway; the first read starts the
+   *  background GitHub call and answers `checking: true`. */
+  async getUpdateCheck(): Promise<UpdateCheckResponse> {
+    const res = await fetch('/api/admin/update-check');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
-  async getProxyAccessBody(ref: string): Promise<ArrayBuffer> {
-    const res = await fetch(`/api/admin/proxy-log/bodies/${encodeURIComponent(ref)}`);
+  /** THE ONE traffic-timeline read. `scope=live` returns the merged tail
+   *  (ring + plugin feeds); `scope=history` runs the backend's federated
+   *  paged scan over every persisted source and returns an exact total. */
+  async getProxyTimeline(params: {
+    scope: 'live' | 'history';
+    page?: number;
+    limit?: number;
+    kind?: string;
+    method?: string;
+    status?: string;
+    host?: string;
+  }): Promise<ProxyTimelineResponse> {
+    const q = new URLSearchParams({ scope: params.scope });
+    if (params.page) q.set('page', String(params.page));
+    if (params.limit) q.set('limit', String(params.limit));
+    for (const k of ['kind', 'method', 'status', 'host'] as const) {
+      if (params[k]) q.set(k, params[k]!);
+    }
+    const res = await fetch(`/api/admin/proxy-log?${q}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** HISTORY delete by FILTER — deletes every persisted row matching the
+   *  same filter vocabulary the history query uses, across ALL sources
+   *  (proxy day JSONL + plugin feeds). Returns per-source counts. */
+  async deleteProxyHistory(params: {
+    kind?: string;
+    method?: string;
+    status?: string;
+    host?: string;
+  }): Promise<{ status: string; deleted: { proxy: number; plugins: Record<string, number> } }> {
+    const res = await fetch('/api/admin/proxy-log/history/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Captured body by its opaque token — the one body endpoint. */
+  async getTrafficBody(token: string): Promise<ArrayBuffer> {
+    const res = await fetch(`/api/admin/traffic-body/${encodeURIComponent(token)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.arrayBuffer();
   },
 
-  async clearProxyAccessLog(): Promise<void> {
-    const res = await fetch('/api/admin/proxy-log/clear', { method: 'POST' });
+  /** Empty EVERY source behind the one traffic timeline (core ring + gateway feeds). */
+  /** Delete exactly these rows (the filter-scoped clear). Keys, not a predicate: */
+  /** the console already knows what it is showing, so the filter logic stays */
+  /** in one place instead of being re-implemented here. */
+  async deleteTrafficRows(body: {
+    proxy: string[];
+    plugins: Record<string, string[]>;
+  }): Promise<{ deleted: { proxy: number; plugins: Record<string, number> } }> {
+    const res = await fetch('/api/admin/traffic-delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as { deleted: { proxy: number; plugins: Record<string, number> } };
+  },
+  async clearTrafficLog(): Promise<{ cleared: string[] }> {
+    const res = await fetch('/api/admin/traffic-clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as { cleared: string[] };
+  },
+
+
+  async getPluginTrafficDecoders(): Promise<PluginTrafficDecodersResponse> {
+    const res = await fetch('/api/admin/plugin-traffic');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getPluginTraffic(decoder: string): Promise<PluginTrafficResponse> {
+    const res = await fetch(`/api/admin/plugin-traffic/${encodeURIComponent(decoder)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   },
   async getSystemProxy(): Promise<SystemProxyStatus> {
     const res = await fetch('/api/admin/system-proxy');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+  async getProxyCaMeta(): Promise<CaMeta> {
+    const res = await fetch('/api/admin/proxy/ca/meta');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // The route answers `{ status: 'ok', ...CaMeta }`; `status` is transport
+    // bookkeeping (a non-ok answer throws above), not part of the contract.
+    const { status: _status, ...meta } = (await res.json()) as CaMeta & { status?: string };
+    return meta;
+  },
+  /**
+   * Is the CA trusted by the platform store? Tri-state and cached 60s in the
+   * backend; `force` bypasses the cache for an operator re-check right after
+   * installing the certificate.
+   */
+  async getProxyCaTrust(force = false): Promise<CaTrustResponse> {
+    const res = await fetch(`/api/admin/proxy/ca/trust${force ? '?force=1' : ''}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { status: _status, ...trust } = (await res.json()) as CaTrustResponse & { status?: string };
+    return trust;
+  },
+
+  /**
+   * Lint + dry-run the forward-proxy rule table (ADR-0018). The backend runs the
+   * SAME resolver the proxy legs use, so the preview can never disagree with the
+   * live decision. Pass `rules` to test UNSAVED edits.
+   */
+  async resolveForwardProxyRules(args: { host?: string; rules?: ForwardProxyRule[] }): Promise<RulesResolveResponse> {
+    const res = await fetch('/api/admin/forward-proxy/rules/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(args),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -2052,7 +2439,7 @@ export const api = {
       /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
       profile?: { id: string; bindings: Record<string, string> };
     }
-  ): Promise<{ status: string; message: string }> {
+  ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2280,33 +2667,31 @@ export const api = {
   },
 
   /**
-   * GET .../:name/export — returns the archive blob plus the server-chosen
-   * download filename (Content-Disposition), falling back to a client-built
-   * `<name>-<yyyymmdd>.orc_env.zip` when the header is absent (encrypted and
-   * plaintext archives share ONE suffix — encryption is a property of the
-   * bytes). `includePayload` selects a subset of the payload files
-   * (comma-joined `?include=`); absent = every payload file that exists.
+   * GET .../:name/export — request parts for the archive. The console streams
+   * the response itself (progress + native save picker), so it takes the URL
+   * and headers; the server normally picks the filename via Content-Disposition
+   * and `fallbackName` covers a header-less response (encrypted and plaintext
+   * archives share ONE suffix — encryption is a property of the bytes).
+   * `includePayload` selects a subset of the payload files (comma-joined
+   * `?include=`); absent = every payload file that exists.
    * `encrypt` + `password` request a password-encrypted archive — the
    * password travels ONLY in the x-ocr-archive-password header, never the
    * query (access logs record URLs).
    */
-  async exportEnvironment(
+  environmentExportRequest(
     name: string,
     opts: { includeSecrets: boolean; includePayload?: string[]; encrypt?: boolean; password?: string }
-  ): Promise<{ blob: Blob; filename: string }> {
+  ): { url: string; headers: Record<string, string>; fallbackName: string } {
     const qs = new URLSearchParams({ secrets: opts.includeSecrets ? 'include' : 'redact' });
     if (opts.includePayload && opts.includePayload.length > 0) qs.set('include', opts.includePayload.join(','));
     if (opts.encrypt) qs.set('encrypt', '1');
     const headers: Record<string, string> = {};
     if (opts.encrypt && opts.password) headers['x-ocr-archive-password'] = opts.password;
-    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}/export?${qs.toString()}`, { headers });
-    if (!res.ok) await throwEnvFor(res);
-    const cd = res.headers.get('Content-Disposition') || '';
-    const quoted = cd.match(/filename="?([^";]+)"?/i)?.[1];
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     return {
-      blob: await res.blob(),
-      filename: quoted || `${name}-${stamp}${ENV_ARCHIVE_SUFFIX}`,
+      url: `/api/admin/environments/${encodeURIComponent(name)}/export?${qs.toString()}`,
+      headers,
+      fallbackName: `${name}-${stamp}${ENV_ARCHIVE_SUFFIX}`,
     };
   },
 
@@ -2829,7 +3214,15 @@ export const api = {
    * cannot be used as a generic proxy. A row with nothing readable still answers (`readFrom: 'none'`)
    * because the dialog is built on the fields the browse answer already carried.
    */
-  async harnessDetail(params: { source?: string; channel?: string; key?: string; repo?: string }): Promise<{
+  async harnessDetail(params: {
+    source?: string;
+    channel?: string;
+    key?: string;
+    repo?: string;
+    /** Console language: the backend prefers the README's own localized edition and reports
+     *  `readmeLang`, so an already-localized page is shown instead of translated. */
+    lang?: Lang;
+  }): Promise<{
     status: string;
     source: string;
     detail: HarnessMarketDetail;
@@ -2839,6 +3232,7 @@ export const api = {
     else if (params.source) search.set('source', params.source);
     if (params.key) search.set('key', params.key);
     if (params.repo) search.set('repo', params.repo);
+    if (params.lang) search.set('lang', params.lang);
     const res = await fetch(`/api/admin/harness/detail?${search.toString()}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
@@ -2866,6 +3260,12 @@ export const api = {
     listedOn?: string[];
     /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
     marketplace?: { repo: string; plugin: string; name: string };
+    /** The market row's one-line description; the manifest keeps it when no resolver provides one. */
+    description?: string;
+    /** Per-profile plugin store (DSH): the profile this install lands in. */
+    profile?: string;
+    /** Console-generated id for the live install log (plugin subprocess output). */
+    installLogId?: string;
     hosts: string[];
     scope?: 'global' | 'project';
     projectRoot?: string;
@@ -2901,6 +3301,14 @@ export const api = {
       err.skipped = data?.skipped;
       throw err;
     }
+    return data;
+  },
+
+  /** Poll one live install's mirrored output (see POST /harness/install's `installLogId`). */
+  async harnessInstallLog(id: string): Promise<{ status: string; lines: string[]; done: boolean; error?: string }> {
+    const res = await fetch(`/api/admin/harness/install-log/${encodeURIComponent(id)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
     return data;
   },
 
@@ -2995,16 +3403,21 @@ export const api = {
   /**
    * Translate one description into the console language (derived cache; may call the gateway).
    *
-   * `format: 'markdown'` selects the long-form contract (a README): prose is translated in chunked
-   * runs, fenced code is preserved verbatim, and `truncated` says the document outran the budget so
-   * its tail came back in the source language.
+   * `format: 'markdown'` selects the long-form contract (a README): every prose segment is
+   * translated in chunks (fenced code preserved verbatim) and rejoined in document order. `refresh`
+   * (long-form only) re-translates a document that already has a cached rendering, replacing it on
+   * success.
    */
-  async harnessTranslate(body: { text: string; lang: string; format?: 'markdown' }): Promise<{
+  async harnessTranslate(body: {
+    text: string;
+    lang: string;
+    format?: 'markdown';
+    refresh?: boolean;
+  }): Promise<{
     status: string;
     text: string;
     cached: boolean;
     model: string;
-    truncated?: boolean;
   }> {
     const res = await fetch('/api/admin/harness/translate', {
       method: 'POST',
@@ -3018,6 +3431,48 @@ export const api = {
       throw error;
     }
     return data;
+  },
+
+  /**
+   * Long-form translation with live progress. The server answers NDJSON: `progress` events carry
+   * (completed chunks, total) while the README is translated, then exactly one `result` or `error`.
+   * Resolves with the final rendering; a streamed error rejects like the plain route does.
+   */
+  async harnessTranslateStream(
+    body: { text: string; lang: string; refresh?: boolean },
+    onProgress: (done: number, total: number) => void
+  ): Promise<{ text: string; cached: boolean; model: string }> {
+    const res = await fetch('/api/admin/harness/translate-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, format: 'markdown' }),
+    });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => undefined);
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      error.code = data?.code;
+      throw error;
+    }
+    const out: { value?: { text: string; cached: boolean; model: string } } = {};
+    let failure: string | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return; // A malformed line must not kill the stream — skip it.
+      }
+      if (evt.type === 'progress' && typeof evt.done === 'number' && typeof evt.total === 'number') {
+        onProgress(evt.done, evt.total);
+      } else if (evt.type === 'result' && typeof evt.text === 'string') {
+        out.value = { text: evt.text, cached: evt.cached === true, model: typeof evt.model === 'string' ? evt.model : '' };
+      } else if (evt.type === 'error') {
+        failure = typeof evt.message === 'string' && evt.message ? evt.message : 'translation failed';
+      }
+    });
+    if (failure) throw new Error(failure);
+    if (!out.value) throw new Error('translation stream ended without a result');
+    return out.value;
   },
 
   /** Batch translation, one chunk per call (the page walks the list in chunks). */
@@ -3045,7 +3500,7 @@ export const api = {
    *  store instead of the description one, so a page translated yesterday opens translated. */
   async harnessTranslations(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
     status: string;
-    translations: Record<string, { text: string; model: string; truncated?: boolean }>;
+    translations: Record<string, { text: string; model: string }>;
   }> {
     const res = await fetch('/api/admin/harness/translations', {
       method: 'POST',
@@ -3500,28 +3955,86 @@ export const api = {
   async getCaptureEvents(
     date: string,
     file: string,
-    limit = 500,
-    bodies: 'full' | 'none' = 'full',
-    stitched = true
+    limit = 50,
+    bodies: 'full' | 'none' | 'chat' = 'full',
+    stitched = true,
+    /** 1-based page counted from the NEWEST end (page 1 = newest turn page). */
+    page = 1
   ): Promise<{
     events: HttpExchangeEvent[];
     turns: CaptureTurn[];
     totalLines: number;
+    /** Logical turns (requests + orphan response tails) in the read window. */
     totalTurns: number;
+    /** Client REQUESTS in the read window — the pager's unit. */
+    windowRequests: number;
+    /** USER-PROMPT ROUNDS in the read window; never the request count. */
+    totalRounds: number;
+    /** The read window is the whole archive (false = only its tail). */
+    windowComplete: boolean;
     fileTruncated: boolean;
     /** Present on stitched reads: per-date-dir fragments of the conversation. */
     fragments?: CaptureFragmentRow[];
+    /** The page actually served (clamped into [1, totalPages]). */
+    page: number;
+    /** Turn pages available inside the read window. */
+    totalPages: number;
+    /** Older turns remain in the read window (page < totalPages). */
+    hasOlder: boolean;
+    /** Newer turns exist (page > 1). */
+    hasNewer: boolean;
   }> {
     const params = new URLSearchParams({
       limit: String(limit),
       bodies,
+      page: String(page),
       ...(stitched ? { stitched: '1' } : {}),
     });
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?${params.toString()}`
     );
-    if (!res.ok) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
+    if (!res.ok) {
+      return {
+        events: [],
+        turns: [],
+        totalLines: 0,
+        totalTurns: 0,
+        windowRequests: 0,
+        totalRounds: 0,
+        windowComplete: true,
+        fileTruncated: false,
+        page: 1,
+        totalPages: 1,
+        hasOlder: false,
+        hasNewer: false,
+      };
+    }
     return res.json();
+  },
+
+  /** EXACT whole-archive summary: request count (header denominator + pager
+   *  total) and the USER-PROMPT round index for the selector. Display-only —
+   *  pagination stays window-bounded. Never call round entries "requests".
+   *  Resolves `null` when the scan is unavailable: callers must keep their
+   *  previous/unknown state so the header falls back to the window tally
+   *  instead of rendering a bogus "0 requests" over live rows. */
+  async getCaptureSummary(
+    date: string,
+    file: string,
+    stitched = true
+  ): Promise<CaptureArchiveSummary | null> {
+    const res = await fetch(
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/summary${
+        stitched ? '?stitched=1' : ''
+      }`
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    return {
+      requests: Number(json.requests) || 0,
+      fragments: Number(json.fragments) || 0,
+      rounds: Array.isArray(json.rounds) ? json.rounds : [],
+    };
   },
 
   /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads).
@@ -3549,15 +4062,11 @@ export const api = {
     return res.json();
   },
 
-  /** JSONL download of one session archive; `exclude` strips body fields, metadata always kept. */
-  async exportCaptureArchive(date: string, file: string, exclude?: string[]): Promise<Blob> {
+  /** URL of one session archive as JSONL; `exclude` strips body fields, metadata always kept. */
+  captureArchiveUrl(date: string, file: string, exclude?: string[]): string {
     const params = new URLSearchParams({ format: 'raw' });
     if (exclude && exclude.length > 0) params.set('exclude', exclude.join(','));
-    const res = await fetch(
-      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`
-    );
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.blob();
+    return `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`;
   },
 
   async deleteCaptureDate(date: string): Promise<{ status: string; message?: string }> {
@@ -3587,35 +4096,23 @@ export const api = {
       onEvent({ type: 'error', message: json?.message || `HTTP ${res.status}` });
       return;
     }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    for (; ;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        try {
-          const raw = JSON.parse(line) as Record<string, unknown>;
-          if (typeof raw.type === 'string') {
-            onEvent(raw as unknown as CaptureReplayStreamEvent);
-          } else if (raw.status === 'ok' && typeof raw.body === 'string') {
-            // Legacy (pre-NDJSON) gateway: one whole-payload JSON answer.
-            // Convert so the dialog still renders instead of erroring.
-            onEvent({ type: 'chunk', text: raw.body });
-            onEvent({ type: 'end', truncated: Boolean(raw.truncated) });
-          } else if (raw.status === 'error') {
-            onEvent({ type: 'error', message: String(raw.message || 'replay failed') });
-          }
-        } catch {
-          // A malformed line must not kill the stream — skip it.
+    await readNdjsonLines(res, (line) => {
+      try {
+        const raw = JSON.parse(line) as Record<string, unknown>;
+        if (typeof raw.type === 'string') {
+          onEvent(raw as unknown as CaptureReplayStreamEvent);
+        } else if (raw.status === 'ok' && typeof raw.body === 'string') {
+          // Legacy (pre-NDJSON) gateway: one whole-payload JSON answer.
+          // Convert so the dialog still renders instead of erroring.
+          onEvent({ type: 'chunk', text: raw.body });
+          onEvent({ type: 'end', truncated: Boolean(raw.truncated) });
+        } else if (raw.status === 'error') {
+          onEvent({ type: 'error', message: String(raw.message || 'replay failed') });
         }
+      } catch {
+        // A malformed line must not kill the stream — skip it.
       }
-    }
+    });
   },
 };
 
@@ -3673,6 +4170,74 @@ export interface WebAuthConfigView extends WebAuthStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin management (model-service plugins installed by the operator)
+// ---------------------------------------------------------------------------
+
+export interface PluginProviderPresetInfo {
+  presetId: string;
+  providerId: string;
+  displayName: string;
+  npm: string;
+  baseUrl: string;
+  description?: string;
+}
+
+export interface PluginViewInfo {
+  id: string;
+  name: string;
+  version: string;
+  type: string;
+  wires: string[];
+  description?: string | Record<string, string>;
+  presets?: PluginProviderPresetInfo[];
+  source: 'dev' | 'packaged';
+  path: string;
+  loaded: boolean;
+  /** Wall-clock ms when the backend imported this plugin's code (mirrors backend PluginView). */
+  loadedAt?: number;
+  error?: string;
+  disabled?: boolean;
+}
+
+/** One operator-facing plugin setting, mirroring backend/src/plugins/types.ts. */
+export interface PluginConfigFieldInfo {
+  key: string;
+  type: 'string' | 'number' | 'boolean' | 'string[]' | 'enum';
+  /** Per-type fallback when the stored value is unset or fails validation. */
+  default?: string | number | boolean | string[];
+  /** number: inclusive bounds. */
+  min?: number;
+  max?: number;
+  /** enum: the allowed values. */
+  values?: string[];
+  /** enum: value → display label (same string-or-locale-map convention as
+   *  `title`). An unlabeled value renders as the raw value. */
+  enumLabels?: Record<string, string | Record<string, string>>;
+  /** Widget from the closed console vocabulary (mirrors backend
+   *  `PluginConfigControl`). Omitted = the type's default control. */
+  control?: 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
+  /** Id of the plugin's `configSections` entry this field belongs to; omitted =
+   *  the leading ungrouped block. */
+  section?: string;
+  /** Display-only predicate: render this field only while the referenced field
+   *  holds one of the listed values (exactly one of `equals` / `in`). Hidden
+   *  fields keep their draft value, so a mode toggle never discards input. */
+  visibleWhen?: { key: string; equals?: string | boolean; in?: (string | boolean)[] };
+  /** Locale map keyed by BCP-47 ('zh-CN'), like the manifest description. */
+  title?: string | Record<string, string>;
+  desc?: string | Record<string, string>;
+}
+
+/** One declared group of plugin settings (mirrors backend
+ *  `PluginConfigSection`). Fields reference it by id; the heading lives here so
+ *  it is declared exactly once. `advanced` starts the group collapsed. */
+export interface PluginConfigSectionInfo {
+  id: string;
+  title?: string | Record<string, string>;
+  advanced?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
 
@@ -3706,6 +4271,14 @@ export interface OpenCodeProviderView {
   logo?: string;
   priceFrom?: number;
   modelsCount?: number;
+  /** Owning plugin id when the def was registered by a plugin preset —
+   *  provenance for the Connected-tab origin filter (backend ledger join). */
+  pluginOrigin?: string;
+  /** Operator takedown (GLOBAL disabled-providers ledger): the card stays
+   *  listed, but the provider contributes nothing to the routing pool. */
+  disabled?: boolean;
+  /** Operator note attached at takedown time — display only. */
+  disabledReason?: string;
   auth: {
     connected: boolean;
     type?: 'api' | 'oauth' | 'wellknown';
@@ -3725,6 +4298,23 @@ export interface OpenCodeCatalogProvider {
   env?: string[];
   custom: boolean;
   connected: boolean;
+  /** Plugin wire declares a console web-authorization (device login) — the
+   *  connect card offers it through the auth-method picker. */
+  webLogin?: boolean;
+  /** The plugin's web-login also accepts a manually pasted token (off-box
+   *  authorization) — the dialog shows the paste box. */
+  webLoginSubmit?: boolean;
+  /** Plugin-declared credential methods in display order; the FIRST entry is
+   *  the dialog's default selection. Absent = legacy behavior (key first,
+   *  web tab after it when webLogin is set). Mirrors backend PluginAuthType. */
+  authTypes?: PluginAuthType[];
+  /** Plugin-provided how-to hint (already localized server-side) rendered
+   *  above the key form in the add-credential dialog — "where to get this
+   *  key" guidance or fallback-tab explanation. Mirrors the preset keyHint. */
+  keyHint?: string;
+  /** Owning plugin id when the def was registered by a plugin preset —
+   *  provenance for the catalog tag/filter (backend ledger join). */
+  pluginOrigin?: string;
   sources: string[];
   modelCount: number;
   priceFrom?: number;
@@ -3859,9 +4449,6 @@ export interface TestProviderResult {
   unroutableCode?: 'unknownPackage' | 'dedicatedTransport';
   unroutableNpm?: string;
   upstreamBody?: string;
-  /** @deprecated pre-i18n backend limb (composed human string). Read ONLY by
-   * the composeProbeError legacy passthrough during frontend/backend skew. */
-  error?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
   credential?: CredentialMeta;
@@ -3887,6 +4474,8 @@ export interface OpenCodeModelView {
   maintained: boolean;
   /** hidden from client-facing catalogs — kept on console pages, out of the pool */
   disabled?: boolean;
+  /** provider-level operator takedown: listed (aggregate) but not routable */
+  providerDisabled?: boolean;
   source: string;
 }
 
@@ -4445,13 +5034,44 @@ function credentialPath(providerId: string, credentialId: string): string {
   return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/${encodeURIComponent(credentialId)}`;
 }
 
+/** Provider-level operator takedown response (disable/enable routes). */
+export interface ProviderTakedownResponse {
+  status: string;
+  success: boolean;
+  disabled: boolean;
+  provider: string;
+  message?: string;
+}
+
 export const opencodeApi = {
   async listProviders(): Promise<{
     status: string;
     configPath: string;
     providers: OpenCodeProviderView[];
   }> {
-    return ocJson(await fetch('/api/admin/opencode/providers'));
+    return ocJson(await fetch(`/api/admin/opencode/providers?lang=${encodeURIComponent(api.commentLang())}`));
+  },
+
+  /**
+   * Take a whole provider out of routing / put it back. State lives in the
+   * GLOBAL takedown ledger (not providers.json); the backend resyncs the pool
+   * in the same request, so `/v1/models` follows immediately.
+   */
+  async disableProvider(providerId: string, reason?: string): Promise<ProviderTakedownResponse> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/disable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reason ? { reason } : {}),
+      })
+    );
+  },
+
+  /** Lift the takedown (the only path that does). */
+  async enableProvider(providerId: string): Promise<ProviderTakedownResponse> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/enable`, { method: 'POST' })
+    );
   },
 
   /** One entry of the backend-owned npm SDK vocabulary (providers/vocabulary.ts). */
@@ -4610,8 +5230,88 @@ export const opencodeApi = {
     );
   },
 
+  async listPlugins(): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+    return ocJson(await fetch('/api/admin/plugins'));
+  },
+
+  /** URL of an installed plugin's package: packaged zips are returned
+   *  verbatim, dev-tree plugins are zipped on the fly by the backend. */
+  pluginPackageUrl(id: string): string {
+    return `/api/admin/plugins/${encodeURIComponent(id)}/package`;
+  },
+
+  async uninstallPlugin(id: string): Promise<{ status: string; removed: string[]; providersRemoved?: string[]; devOnly?: boolean; plugins: PluginViewInfo[] }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/uninstall`, { method: 'DELETE' });
+    const parsed = (await res.json()) as { status: string; error?: string; removed: string[]; plugins: PluginViewInfo[] };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return parsed;
+  },
+
+  async setPluginDisabled(id: string, disabled: boolean): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/${disabled ? 'disable' : 'enable'}`, { method: 'POST' });
+    const parsed = (await res.json()) as { status: string; error?: string; plugins: PluginViewInfo[] };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return parsed;
+  },
+
+  async installPlugin(bytes: ArrayBuffer): Promise<{ status: string; id: string; plugins: PluginViewInfo[] }> {
+    const res = await fetch(`/api/admin/plugins/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes,
+    });
+    const text = await res.text();
+    // An empty body (proxy cut, server abort) must not surface as a cryptic
+    // "Unexpected end of JSON input" — report the HTTP status instead.
+    const parsed = (text ? JSON.parse(text) : {}) as { status: string; id?: string; error?: string; plugins: PluginViewInfo[] };
+    if (!res.ok || parsed.status !== 'ok') throw new Error(parsed.error ?? `HTTP ${res.status}${text ? '' : ' (empty response)'}`);
+    return { ...parsed, id: parsed.id ?? '' };
+  },
+
+  async reloadPlugins(): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+    return ocJson(
+      await fetch('/api/admin/plugins/reload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+    );
+  },
+
+  /** Schema + current values (defaults already merged) for a plugin's settings drawer. */
+  async getPluginConfig(id: string): Promise<{ status: string; schema: PluginConfigFieldInfo[]; sections?: PluginConfigSectionInfo[]; values: Record<string, unknown> }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`);
+    const parsed = (await res.json()) as {
+      status: string;
+      error?: string;
+      schema: PluginConfigFieldInfo[];
+      sections?: PluginConfigSectionInfo[];
+      values: Record<string, unknown>;
+    };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return parsed;
+  },
+
+  /** Persist the FULL values object; the backend validates and reports warnings. */
+  async putPluginConfig(
+    id: string,
+    values: Record<string, unknown>
+  ): Promise<{ status: string; values: Record<string, unknown>; warnings: string[] }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+    const parsed = (await res.json()) as { status: string; error?: string; values?: Record<string, unknown>; warnings?: string[] };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return { status: parsed.status, values: parsed.values ?? values, warnings: parsed.warnings ?? [] };
+  },
+
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {
-    return ocJson(await fetch(`/api/admin/opencode/catalog${refresh ? '?refresh=1' : ''}`));
+    // Plugin preset name lookup uses the UI Lang short code — the backend maps
+    // it to the manifest's BCP-47 locale keys (host.ts LANG_TO_BCP47 mirror).
+    const lang = (typeof localStorage !== 'undefined' && localStorage.getItem('ocr_lang')) || 'zh';
+    return ocJson(await fetch(`/api/admin/opencode/catalog?lang=${encodeURIComponent(lang)}${refresh ? '&refresh=1' : ''}`));
   },
 
   async catalogSources(): Promise<{ status: string; syncIntervalMs: number; sources: CatalogSourceView[] }> {
@@ -4777,7 +5477,42 @@ export const opencodeApi = {
     );
   },
 
-  /** One-shot upstream connectivity probe — optional overrides enable test-before-save; `credentialId` pins the probe to ONE credential row (per-credential test). */
+  /** Begin a plugin web-login session; returns the vendor authorize URL for
+   *  the browser (device flow — plugin-owned protocol). */
+  async webLoginStart(providerId: string): Promise<{ authUrl: string }> {
+    const res = await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/web-login/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const json = (await res.json().catch(() => ({}))) as { authUrl?: string; error?: string };
+    if (!res.ok || !json.authUrl) throw new Error(json.error ?? `web-login start failed (${res.status})`);
+    return { authUrl: json.authUrl };
+  },
+
+  /** Poll the in-flight web-login once. done = finished; the backend has
+   *  already wired the token into the credential store. */
+  async webLoginPoll(providerId: string): Promise<{ done: boolean; connected?: boolean; error?: string }> {
+    const res = await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/web-login/poll`, {
+      headers: { Accept: 'application/json' },
+    });
+    const json = (await res.json().catch(() => ({}))) as { done?: boolean; connected?: boolean; error?: string };
+    if (!res.ok) throw new Error(json.error ?? `web-login poll failed (${res.status})`);
+    return { done: Boolean(json.done), connected: json.connected, error: json.error };
+  },
+
+  /** Manually complete a web login: the operator pastes a token/code obtained
+   *  off-box. connected=false carries the plugin's rejection reason. */
+  async webLoginSubmit(providerId: string, code: string): Promise<{ connected: boolean; error?: string }> {
+    const res = await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/web-login/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const json = (await res.json().catch(() => ({}))) as { connected?: boolean; error?: string };
+    if (!res.ok) throw new Error(json.error ?? `web-login submit failed (${res.status})`);
+    return { connected: Boolean(json.connected), error: json.error };
+  },
   async testProvider(
     id: string,
     payload?: { modelId?: string; apiKey?: string; baseURL?: string; credentialId?: string }

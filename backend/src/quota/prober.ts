@@ -2,6 +2,7 @@ import type { RouterConfig } from '../config/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { buildEffectivePlan, probePair, clampTtl, type EffectiveQuotaPlan, type QuotaTarget } from './engine.js';
 import { getQuotaStore } from './store.js';
+import { clampProbeIntervalMs, DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 
 /**
  * Due-based quota scheduler, shaped after
@@ -74,7 +75,6 @@ interface PairState {
   consecutiveFailures: number;
 }
 
-const DEFAULT_TICK_MS = 60_000;
 /** Fraction of the TTL randomized per due date (spread, never a stampede). */
 const JITTER_FRACTION = 0.15;
 /** Engine-level 429 backoff: base, factor, ceiling. */
@@ -98,6 +98,9 @@ export interface QuotaProberDeps {
   /** Test seam — plan() resolves pairs through this, run() fetches through it. */
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** L-e plugin layer (ADR-0009 §5): candidate ids + the quotaCheck
+   *  capability lookup. Omitted = no plugin quota coverage. */
+  pluginLayer?: Parameters<typeof buildEffectivePlan>[2];
 }
 
 export class QuotaProber {
@@ -106,6 +109,7 @@ export class QuotaProber {
   private readonly intervalMs: number;
   private readonly fetchImpl?: typeof fetch;
   private readonly nowFn: () => number;
+  private readonly pluginLayer: QuotaProberDeps['pluginLayer'];
 
   private timer: NodeJS.Timeout | null = null;
   /** The one in-flight cycle — the timer tick and a manual refresh share it. */
@@ -120,9 +124,11 @@ export class QuotaProber {
   constructor(deps: QuotaProberDeps) {
     this.registry = deps.registry;
     this.configFn = deps.config;
-    this.intervalMs = deps.intervalMs ?? QuotaProber.clampInterval(deps.config().quota?.intervalMs ?? DEFAULT_TICK_MS);
+    this.intervalMs =
+      deps.intervalMs ?? clampProbeIntervalMs(deps.config().quota?.intervalMs ?? DEFAULT_PROBE_INTERVAL_MS);
     this.fetchImpl = deps.fetchImpl;
     this.nowFn = deps.now ?? Date.now;
+    this.pluginLayer = deps.pluginLayer;
     this.plan = this.buildPlan();
   }
 
@@ -133,16 +139,16 @@ export class QuotaProber {
 
   private buildPlan(): EffectiveQuotaPlan {
     const cfg = this.configFn();
-    return buildEffectivePlan(cfg.quotaProbes, (pid) => this.registry.getProviderBaseUrl(pid));
+    return buildEffectivePlan(
+      cfg.quotaProbes,
+      (pid) => this.registry.getProviderBaseUrl(pid),
+      this.pluginLayer
+    );
   }
 
-  /** intervalMs clamp (constructor + docs): [10 s, 1 h]. */
-  static clampInterval(ms: number): number {
-    if (!Number.isFinite(ms) || ms <= 0) return DEFAULT_TICK_MS;
-    return Math.max(10_000, Math.min(3_600_000, ms));
-  }
-
-  /** Entries rejected at load (validation failures) — console surfaces them. */
+  /**
+   * Entries rejected at load (validation failures) — console surfaces them.
+   */
   public getRejectedEntries(): { id: string; error: string }[] {
     return this.plan.rejected;
   }

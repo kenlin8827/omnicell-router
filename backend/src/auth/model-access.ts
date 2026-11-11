@@ -189,6 +189,41 @@ export function isAutoEntryUsable(
   return tierAllowed(vt);
 }
 
+/** Registry surface the access check resolves indirection through. */
+export interface ModelAccessRegistry {
+  getModel: (id: string) => { tier?: string } | undefined;
+  resolveCombo: (comboId: string) => { id: string; tier?: string }[];
+  resolveVariantRef: (modelId: string) => { base: { id: string; tier?: string } } | null;
+}
+
+/**
+ * Evaluate one requested model against a key's policy. Transport-neutral: the
+ * Fastify guard and gateway-driven completions share this verdict (and its
+ * message), each writing the 403 on its own terminal.
+ */
+export function checkModelAccess(
+  registry: ModelAccessRegistry,
+  keyConfig: ApiKeyConfig | undefined,
+  requestedModel: string
+): { ok: true } | { ok: false; message: string } {
+  const policy = getModelAccessPolicy(keyConfig);
+  const verdict = checkRequestedModel(
+    requestedModel,
+    policy,
+    (comboId) => registry.resolveCombo(comboId),
+    (id) => {
+      const ref = registry.resolveVariantRef(id);
+      return ref ? { id: ref.base.id, tier: ref.base.tier } : undefined;
+    },
+    (id) => registry.getModel(id)?.tier
+  );
+  if (verdict.ok) return { ok: true };
+  return {
+    ok: false,
+    message: `API key '${keyConfig?.name || ''}' is not allowed to use model '${requestedModel}' (model policy: ${policy!.mode} [${policy!.models.join(', ')}])`,
+  };
+}
+
 /**
  * Fastify guard factory shared by all inference surfaces
  * (/v1/chat/completions, /v1/messages, /v1/responses, /v1/systemone).
@@ -197,34 +232,26 @@ export function isAutoEntryUsable(
  * resolves variants/combos to physical member ids and 403s with an
  * OpenAI-style error when the key's policy denies the requested model.
  */
-export function makeModelAccessGuard(registry: {
-  getModel: (id: string) => { tier?: string } | undefined;
-  resolveCombo: (comboId: string) => { id: string; tier?: string }[];
-  resolveVariantRef: (modelId: string) => { base: { id: string; tier?: string } } | null;
-}) {
-  return (req: any, reply: any, requestedModel: string): boolean => {
-    const authInfo = req.authInfo;
-    const policy = getModelAccessPolicy(authInfo?.keyConfig);
-    const verdict = checkRequestedModel(
-      requestedModel,
-      policy,
-      (comboId) => registry.resolveCombo(comboId),
-      (id) => {
-        const ref = registry.resolveVariantRef(id);
-        return ref ? { id: ref.base.id, tier: ref.base.tier } : undefined;
+export function makeModelAccessGuard(registry: ModelAccessRegistry) {
+  return (
+    req: unknown,
+    reply: { status(code: number): { send(payload: unknown): unknown } },
+    requestedModel: string
+  ): boolean => {
+    // authInfo is attached by the auth preHandler (same boundary as
+    // transport-fastify / captureKeyIdentity); Fastify's request type does
+    // not declare it.
+    const authed = req as { authInfo?: { keyConfig?: ApiKeyConfig } };
+    const keyConfig = authed.authInfo?.keyConfig;
+    const verdict = checkModelAccess(registry, keyConfig, requestedModel);
+    if (verdict.ok) return true;
+    reply.status(403).send({
+      error: {
+        message: verdict.message,
+        type: 'invalid_request_error',
+        code: 'model_not_allowed',
       },
-      (id) => registry.getModel(id)?.tier
-    );
-    if (!verdict.ok) {
-      reply.status(403).send({
-        error: {
-          message: `API key '${authInfo?.keyConfig?.name || ''}' is not allowed to use model '${requestedModel}' (model policy: ${policy!.mode} [${policy!.models.join(', ')}])`,
-          type: 'invalid_request_error',
-          code: 'model_not_allowed',
-        },
-      });
-      return false;
-    }
-    return true;
+    });
+    return false;
   };
 }

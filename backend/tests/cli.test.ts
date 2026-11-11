@@ -4,7 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createServer } from '../src/server.js';
-import { buildGatewayChildEnv, buildWindowsEnvSets, RESTART_PARENT_ENV } from '../src/cli/daemon.js';
+import {
+  buildGatewayChildEnv,
+  buildWindowsEnvSets,
+  envSwitchSupervisorEnv,
+  restartSupervisorEnv,
+  RESTART_PARENT_ENV,
+  RESTART_SUPERVISOR_ENV,
+  readRestartStatus,
+} from '../src/cli/daemon.js';
+import { getOcrHomeDir, getRestartStatusFilePath } from '../src/cli/paths.js';
 import { OpenCodeClientAdapter } from '../src/cli/clients/opencode.js';
 import { listOpenCodeAgents, listOpenCodeAgentsLive } from '../src/opencode/agents.js';
 import { ClaudeClientAdapter } from '../src/cli/clients/claude.js';
@@ -1335,7 +1344,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(10);
+    expect(json.clients.length).toBe(12);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {
@@ -1381,32 +1390,85 @@ describe('daemon spawn-args builders (env-switch must not inherit PORT/HOST)', (
     else process.env.HOST = prevHost;
   });
 
-  it('plain restart: PORT/HOST inherited AND pinned (byte-identical semantics)', () => {
-    const env = buildGatewayChildEnv({ extraEnv: { PORT: '4000', HOST: '127.0.0.1' } });
+  it('plain restart: supervisor spawned with the pinned PORT/HOST + handshake flags', () => {
+    const opts = { extraEnv: restartSupervisorEnv({ port: 4000, host: '127.0.0.1' }) };
+    const env = buildGatewayChildEnv(opts);
     expect(env.PORT).toBe('4000');
     expect(env.HOST).toBe('127.0.0.1');
     expect(env.NODE_ENV).toBe('production');
     expect(env[RESTART_PARENT_ENV]).toBe(String(process.pid));
-    const sets = buildWindowsEnvSets({ extraEnv: { PORT: '4000', HOST: '127.0.0.1' } });
-    // no clear-prefix; RESTART → PORT → HOST → NODE_ENV order preserved
+    expect(env[RESTART_SUPERVISOR_ENV]).toBe('1');
+    const sets = buildWindowsEnvSets(opts);
+    // Inherited roles are cleared FIRST, then the variant's own flags follow.
     expect(sets).toBe(
-      `set "${RESTART_PARENT_ENV}=${process.pid}" && set "PORT=4000" && set "HOST=127.0.0.1" && set "NODE_ENV=production" && `
+      `set "${RESTART_PARENT_ENV}=" && set "${RESTART_SUPERVISOR_ENV}=" && set "OCR_RESTART_SELF_REGISTER=" && ` +
+        `set "${RESTART_PARENT_ENV}=${process.pid}" && set "${RESTART_SUPERVISOR_ENV}=1" && ` +
+        `set "PORT=4000" && set "HOST=127.0.0.1" && set "NODE_ENV=production" && `
     );
   });
 
+  it('no ROLE inheritance: an inherited supervisor/old-pid flag is stripped from the child env', () => {
+    process.env[RESTART_SUPERVISOR_ENV] = '1';
+    process.env[RESTART_PARENT_ENV] = '424242';
+    try {
+      const env = buildGatewayChildEnv({ extraEnv: { OCR_RESTART_SELF_REGISTER: '1' } });
+      expect(env[RESTART_SUPERVISOR_ENV]).toBeUndefined();
+      expect(env[RESTART_PARENT_ENV]).toBeUndefined();
+      expect(env.OCR_RESTART_SELF_REGISTER).toBe('1');
+    } finally {
+      delete process.env[RESTART_SUPERVISOR_ENV];
+      delete process.env[RESTART_PARENT_ENV];
+    }
+  });
+
   it('env switch: inherited PORT/HOST DROPPED, only OCR_ENV injected', () => {
-    const env = buildGatewayChildEnv({ extraEnv: { OCR_ENV: 'dev' }, omitPortHost: true });
+    const opts = { extraEnv: envSwitchSupervisorEnv({ envName: 'dev' }), omitPortHost: true };
+    const env = buildGatewayChildEnv(opts);
     expect(env.PORT).toBeUndefined(); // the L3 P1-2 hole: previously inherited 9999
     expect(env.HOST).toBeUndefined();
     expect(env.OCR_ENV).toBe('dev');
     expect(env.NODE_ENV).toBe('production');
     expect(env[RESTART_PARENT_ENV]).toBe(String(process.pid));
+    expect(env[RESTART_SUPERVISOR_ENV]).toBe('1');
   });
 
-  it('env switch Windows: `set "PORT=" && set "HOST=" &&` clears precede the settings', () => {
-    const sets = buildWindowsEnvSets({ extraEnv: { OCR_ENV: 'dev' }, omitPortHost: true });
-    expect(sets.startsWith('set "PORT=" && set "HOST=" && ')).toBe(true);
+  it('restart verdict file carries the exact keys the desktop shell reads', () => {
+    // Cross-language contract: `desktop/src-tauri/src/main.rs read_restart_verdict`
+    // parses this file by name (`status` / `error` / `logFile`) and
+    // `read_gateway_port` by `port`, with a fixture of its own. A field rename
+    // here would only surface as a silently blank native dialog.
+    const home = getOcrHomeDir();
+    const file = getRestartStatusFilePath();
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        status: 'failed',
+        attempts: 2,
+        startedAt: '2026-11-09T00:00:00.000Z',
+        finishedAt: '2026-11-09T00:01:00.000Z',
+        port: 4555,
+        host: '127.0.0.1',
+        error: 'gateway exited',
+        logFile: path.join(home, 'ocr.log'),
+      })
+    );
+    const verdict = readRestartStatus();
+    expect(verdict).not.toBeNull();
+    expect(verdict?.status).toBe('failed');
+    expect(verdict?.error).toBe('gateway exited');
+    expect(verdict?.logFile).toBe(path.join(home, 'ocr.log'));
+    // Unknown/garbage statuses are rejected rather than echoed as a verdict.
+    fs.writeFileSync(file, JSON.stringify({ status: 'bogus' }));
+    expect(readRestartStatus()).toBeNull();
+    fs.rmSync(file, { force: true });
+  });
+
+  it('env switch Windows: PORT/HOST clears precede the settings (after the role clears)', () => {
+    const sets = buildWindowsEnvSets({ extraEnv: envSwitchSupervisorEnv({ envName: 'dev' }), omitPortHost: true });
+    expect(sets.startsWith(`set "${RESTART_PARENT_ENV}=" && set "${RESTART_SUPERVISOR_ENV}=" && set "OCR_RESTART_SELF_REGISTER=" && `)).toBe(true);
+    expect(sets).toContain('set "PORT=" && set "HOST=" && ');
     expect(sets).toContain(`set "${RESTART_PARENT_ENV}=${process.pid}" && `);
+    expect(sets).toContain(`set "${RESTART_SUPERVISOR_ENV}=1" && `);
     expect(sets).toContain('set "OCR_ENV=dev" && ');
     expect(sets).toContain('set "NODE_ENV=production" && ');
     expect(sets).not.toMatch(/set "PORT=9999"/);

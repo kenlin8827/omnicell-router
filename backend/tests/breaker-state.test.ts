@@ -383,3 +383,52 @@ describe('BreakerStateStore — restart continuity', () => {
     expect(snap?.consecutiveFailures).toBe(0); // coerced garbage scalar -> zero value
   });
 });
+
+describe('OPEN absorbs evidence (ADR-0004 §2 accounting contract)', () => {
+  it('failures arriving while OPEN feed neither the ladder nor the window', () => {
+    const paths = sandboxPaths('open-absorbs');
+    const clock = makeClock();
+    const { manager } = bootManager(clock, paths, [model(X)]);
+    // Trip at threshold 3: the outage is priced.
+    for (let i = 0; i < 3; i++) manager.recordFailureScoped(X, { ...outageDiag, tripScope: 'pair' }, 'anthropic', 'k1');
+    const tripped = manager.getPairBreaker(X, 'k1')!.getSnapshot();
+    expect(tripped.state).toBe('OPEN');
+    expect(tripped.consecutiveFailures).toBe(3);
+    // Traffic keeps hammering the dead upstream during the cooldown. Before
+    // the OPEN guard every one of these fed the ladder — a 5 h outage
+    // re-armed at threshold 3 on the first post-recovery blip. Now the OPEN
+    // guard absorbs them entirely: classified and event-logged upstream, but
+    // the breaker's counters stay frozen at the trip that priced the outage.
+    for (let i = 0; i < 5; i++) manager.recordFailureScoped(X, { ...outageDiag, tripScope: 'pair' }, 'anthropic', 'k1');
+    const absorbed = manager.getPairBreaker(X, 'k1')!.getSnapshot();
+    expect(absorbed.state).toBe('OPEN');
+    expect(absorbed.consecutiveFailures).toBe(3); // ladder frozen, not 8
+    expect(absorbed.totalFailures).toBe(3); // OPEN-period evidence never reaches the counters
+    expect(absorbed.state).toBe('OPEN');
+  });
+
+  it('a long-Retry-After failure during OPEN does not shorten the ladder cooldown', () => {
+    const paths = sandboxPaths('open-hardtrip');
+    const clock = makeClock();
+    const longRa: ErrorDiagnosis = {
+      category: 'RATE_LIMITED',
+      isRetriable: false,
+      isInPlaceRetriable: false,
+      shouldTripBreaker: true,
+      hardTrip: true,
+      retryAfterMs: 60_000, // hard 429 — 60 s cooldown of its own
+      reason: '429 long retry-after',
+      reasonCode: 'breaker.ratelimit',
+      tripScope: 'pair',
+    };
+    const { manager } = bootManager(clock, paths, [model(X)]);
+    for (let i = 0; i < 3; i++) manager.recordFailureScoped(X, { ...outageDiag, tripScope: 'pair' }, 'anthropic', 'k1');
+    const before = manager.getPairBreaker(X, 'k1')!.getSnapshot();
+    expect(before.state).toBe('OPEN');
+    // A 60 s hard trip arriving mid-cooldown must not REPLACE the ladder's
+    // escalated cooldown with its own shorter Retry-After window.
+    manager.recordFailureScoped(X, longRa, 'anthropic', 'k1');
+    const after = manager.getPairBreaker(X, 'k1')!.getSnapshot();
+    expect(after.currentCooldownMs).toBe(before.currentCooldownMs);
+  });
+});

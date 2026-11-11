@@ -36,7 +36,9 @@ export const SegGroup: React.FC<{
   /** Fixed control height (px or CSS length). Use it when the group shares a row with `.btn` and
    *  `.input`, whose padding-derived heights never match the segment metrics. */
   height?: number | string;
-}> = ({ value, onChange, options, size = 'md', embedded, height }) => {
+  /** Minimum width per option button — wider hit targets for short labels like 请求 / Hex. */
+  optionMinWidth?: number;
+}> = ({ value, onChange, options, size = 'md', embedded, height, optionMinWidth }) => {
   const m = SIZES[size];
   return (
   <div
@@ -74,6 +76,8 @@ export const SegGroup: React.FC<{
           style={{
             padding: height ? `0 ${m.pad.split(' ')[1]}` : m.pad,
             fontSize: m.font,
+            justifyContent: 'center',
+            minWidth: optionMinWidth,
             display: 'inline-flex',
             alignItems: 'center',
             height: height ?? undefined,

@@ -18,8 +18,17 @@
 import { proxiedFetch } from '../utils/proxy.js';
 import { wireFor, unroutableInfo, anthropicMessagesUrl } from '../providers/wire.js';
 import { redactBodySecrets } from './credentials/opencode-v2-store.js';
+import { getModelServicePlugin } from '../plugins/host.js';
 
-export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
+export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'unroutable';
+/** Wires the core probes natively with the HTTP logic below; any other kind is plugin-delegated. */
+const BUILTIN_PROBE_KINDS: Partial<Record<Exclude<ProbeKind, 'unroutable'>, true>> = {
+  openai: true,
+  anthropic: true,
+  google: true,
+  responses: true,
+  systemone: true,
+};
 
 /** Machine codes of the status/body-derived CLASSIFICATION — short category
  * labels only (i18n contract). Product rule 2026-10-14: classify, never
@@ -96,6 +105,7 @@ export function probeKindFor(api?: string, npm?: string): ProbeKind {
   return wireFor(npm, api);
 }
 
+
 /**
  * Detect a provider-shaped JSON error body — `{"error":{...}}` (OpenAI / Ark),
  * `{"type":"error",...}` (Anthropic), or top-level `code`+`message`. A structured
@@ -141,6 +151,18 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
     // never fire a guessed wire at a package we cannot speak.
     const info = unroutableInfo();
     return { ok: false, kind, model: opts.model, unroutableCode: info.code, unroutableNpm: info.npm };
+  }
+  // Vendor plugin wires (e.g. the qoder gRPC transport): the provider base
+  // answers HTTP, never the chat wire, so the generic HTTP probe below cannot
+  // speak for them — connectivity = credential handshake + one minimal call,
+  // implemented by the model-service plugin. Built-in wires have no plugin
+  // and fall through to the wire-specific HTTP logic.
+  const plugin = getModelServicePlugin(kind);
+  if (plugin?.probe) return { ...(await plugin.probe(opts)), kind };
+  if (!BUILTIN_PROBE_KINDS[kind]) {
+    // a vendor plugin wire with no plugin present: falling through would fire
+    // a guessed HTTP wire at a gateway that never speaks it — fail honestly.
+    return { ok: false, kind, model: opts.model, upstreamBody: `the ${kind} plugin is not installed (console /plugins)` };
   }
   const base = opts.baseURL.replace(/\/+$/, '');
   let url: string;
@@ -204,8 +226,8 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
       // truncation — the error string flows into the console response and
       // logs; truncating first could re-expose key chars at the boundary.
       // 600 chars: enough for a full provider business-error (Ark's
-      // ModelNotOpen sentence + request id) — the console card shows the
-      // error inline and copyable, so the cap is the user-visible truth.
+      // ModelNotOpen sentence + request id) — the console surfaces this on
+      // demand (failure InfoTip), so the cap is the user-visible truth.
       const text = redactBodySecrets(raw.replace(/\s+/g, ' '), { key: opts.apiKey }).slice(0, 600);
       const { authHint, hintCode } = hintForStatus(res.status, raw);
       const modelScoped =

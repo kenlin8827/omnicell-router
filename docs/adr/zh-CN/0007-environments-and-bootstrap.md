@@ -8,7 +8,13 @@
 
 ### 1. 单一布局，无模式分支
 
-每个环境一个目录：`<home>/envs/<name>/`，内含 `config.yaml · data/ · models/ · catalog/ · traces/ · capture/ · webauth-secret · env.json`（`config/env.ts:241-255`）。`<home>` = `~/.omnicell-router`，被 `OCR_HOME` 整体覆写——唯一的沙箱杠杆（隔离测试器给每个测试文件自己的 `OCR_HOME` + `OCR_ENV=itest`；名字刻意避开引导层：沙箱一旦泄漏，启动即 fail-fast，而非静默写入操作者的真实 `default` 账本）。进程级文件（`ocr.pid`、`ocr.log`、`ocr.info.json`）驻 `<home>` 根、不属于任何环境；`info.json` 记录活动环境名。`default` 是引导层：永远可解析、首启由脚手架创建、不可手工创建/改名/入废纸篓。`env.json` = schema-v1 元数据 `{name, type, createdAt, schemaVersion, description?, importedFrom?}`；名称语法 `^[a-z0-9][a-z0-9_-]{0,31}$` + 大小写不敏感去重。
+每个环境一个目录：`<home>/envs/<name>/`，内含 `config.yaml · data/ · models/ · catalog/ · traces/ · capture/ · webauth-secret · env.json`（`config/env.ts:241-255`）。`<home>` = `~/.omnicell-router`，被 `OCR_HOME` 整体覆写——唯一的沙箱杠杆（隔离测试器给每个测试文件自己的 `OCR_HOME` + `OCR_ENV=itest`；名字刻意避开引导层：沙箱一旦泄漏，启动即 fail-fast，而非静默写入操作者的真实 `default` 账本）。桌面应用用同一个引擎、但跑在它自己的 home 下（Windows 为 `%LOCALAPPDATA%\omnicell-router`）；它注册 `ocr` 命令时
+会把该 home **写死进**生成的 shim——shim 若不带 `OCR_HOME`，读到的就是 `~/.omnicell-router`，会把应用正在服务的网关
+报成"未运行"。一个安装只有一个 home，无论从哪个入口进入。
+
+进程级文件（`ocr.pid`、`ocr.log`、`ocr.info.json`）驻 `<home>` 根、不属于任何环境；`info.json` 记录活动环境名。`default` 是引导层：永远可解析、首启由脚手架创建、不可手工创建/改名/入废纸篓。`env.json` = schema-v1 元数据 `{name, type, createdAt, schemaVersion, description?, importedFrom?}`；名称语法 `^[a-z0-9][a-z0-9_-]{0,31}$` + 大小写不敏感去重。
+
+该注册对应的托盘项是一个**开关**：它的状态 = 磁盘上带标记的 shim 文件，绝不是某个持久化偏好——`ocr shims-status`（JSON `{binDir, shims, installed}`，退出码 0 = 已安装）是唯一答案，shell 向打包后的二进制询问，而不是自己再推一遍 bin 目录（第二份路径字面量会在目录变动后静默汇报错地方）。PATH 成员资格刻意**不**计入状态：`uninstall-shims` 把操作者拥有的 PATH 条目留在原处，若把开关键在 PATH 上，shim 一被移除它就会翻回"已安装"。两个方向都通过原生对话框给出结果，且每次动作后重新读取标签——安装成功后菜单仍写"安装"、操作者手删 shim 后仍写"卸载"，正是此契约禁止的失效形态。
 
 legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`、无模式分支——前环境位置（repo-root `config.yaml`/`data`/`models`、`<home>/{catalog,traces,capture,webauth-secret}`）没有任何代码路径读取；升级的机器从脚手架默认起步，旧文件要就手抄。不发布迁移工具。`ensureEnvScaffold` 只建目录——带注释的 `config.yaml` 模板归配置层；`createEnv` 模板 = `blank | copy-current | copy-default`（只复制配置；数据永不复制）。
 
@@ -18,7 +24,7 @@ legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`
 
 ### 3. 切换 = 受控重启交接；热换被拒
 
-进程内热切环境被以明文理由拒绝：WAL 化的 SQLite 句柄（traces.db 共享 + finops + ratelimit 各自按环境于启动打开）、模块级路径单例、Windows 对运行中目录的文件锁。控制台 `POST /api/admin/environments/:name/switch` 是唯一带重启副作用的路线（CLI `ocr env use` 只写指针，下次启动生效）。切换序列：404 守卫 → 目标已在跑？只钉指针不重启 → 单飞行守卫 → 写指针（"切回 default"写**字面值** `"default"`，不删指针）→ spawn 携带 `OCR_RESTART_OF=<父 pid>` 的脱离子进程 → 父进程 500ms 后退出；子进程等父死（15s 强杀）、300ms 放端口、消费自身重启标记（不收养递归）。PORT/HOST 纪律区分两种子进程：普通重启**钉住**当前 PORT/HOST；环境切换子进程**既不钉也不继承**——由目标环境自己的 `config.yaml` 决定（继承来的 `HOST=0.0.0.0` 会强制 webAuth 到一个父已退出的子进程上 = 全网关中断）。spawn 失败指针回滚、父继续服务。目标配置端口不同则响应携带 `newPort`（钳 1-65535），前端跟随重定向。运行中环境的改名/替换/删除/reset 一律拒绝（Windows 文件锁，理由诚实）。
+进程内热切环境被以明文理由拒绝：WAL 化的 SQLite 句柄（traces.db 共享 + finops + ratelimit 各自按环境于启动打开）、模块级路径单例、Windows 对运行中目录的文件锁。控制台 `POST /api/admin/environments/:name/switch` 是唯一带重启副作用的路线（CLI `ocr env use` 只写指针，下次启动生效）。切换序列：404 守卫 → 目标已在跑？只钉指针不重启 → 单飞行守卫 → 写指针（"切回 default"写**字面值** `"default"`，不删指针）→ spawn 一个**脱离开关监督进程**（`OCR_RESTART_SUPERVISOR=1`、`OCR_RESTART_OF=<父 pid>`）→ 父进程 500ms 后退出。监督进程自身永不服务：等父死（15s 强杀）、放监听端口、以 `OCR_RESTART_SELF_REGISTER=1` **脱离** spawn 替代网关（网关监听成功后自行写 pid/info 文件），并轮询 `/health` 最长 40s。退出（崩溃）的替代进程会被重试（3 次、间隔 1s）；存活但无响应的进程占着端口，被留作 `unverified`（它可能仍在启动——再 spawn 一份只会抢端口）。每次 spawn 都先**剥离**继承来的重启角色 flag（POSIX 走 env 对象，Windows 走内联 `set "NAME="`——仅删对象到不了 Windows 子进程的原生环境块），否则网关子进程会重新进入监督模式、监督进程会等错 pid。监督进程的诊断写 `<home>/ocr.restart.log`，**绝不**共用网关的 `ocr.log`：Windows 上监督进程自己的 `cmd >>` 句柄占着文件，替代进程的 `>> ocr.log` 打不开、其 cmd 会静默退出——正是这处同文件冲突让监督模式之前的 Windows 控制台重启永远起不来。判定结果落到 `<home>/ocr.restart.json`，由 `ocr status` 展示：失败的交接已无 HTTP 面可汇报；脱离保证调用方/终端/桌面窗口关闭不会杀死交接。`ocr start` 在同一 40 s 健康预算内才作答，并写同一份判定（`ok`/`unverified`，而不是盯着 spawn 就报成功）。被 `ocr stop` 取消的交接写 `failed` 判定；它已 spawn 的替换进程一旦存在就登记进 `<home>/ocr.restart.child` —— 杀手指向被跟踪的 pid，Windows 上 `taskkill /F` 不投递取消信号，正是这条记录避免孤儿进程在 `ocr.pid` 已删后仍占住端口。控制台重启按钮使用同一监督进程（PORT/HOST 钉住）；PORT/HOST 纪律区分两种 spawn：普通重启**钉住**当前 PORT/HOST；环境切换**既不钉也不继承**——由目标环境自己的 `config.yaml` 决定（继承来的 `HOST=0.0.0.0` 会强制 webAuth 到一个父已退出的子进程上 = 全网关中断）。spawn 失败指针回滚、父继续服务；监督进程耗尽重试后，指针保留在目标环境、失败判定留在 `ocr.restart.json`（已无进程可回滚——操作者用 `ocr start` 重试）。目标配置端口不同则响应携带 `newPort`（钳 1-65535），前端跟随重定向。**宿主上下文不同，引擎相同**：浏览器控制台的 origin 就是网关，因此由页面轮询 `/health`、等重定向、超时 toast；桌面 shell 的 webview 是跑在 sidecar HTTP origin 上的**远程页**（该 origin 没有 Tauri IPC），所以恢复由 **shell** 负责——它轮询 `/health`，掉线 2s 后把 webview 换回启动 splash，健康回归时按 `ocr.info.json` 跟到（可能已变的）端口，失败则用原生弹窗展示 `failed` 判定 + 日志路径，而不是一个已死 origin 根本发不出的 toast。运行中环境的改名/替换/删除/reset 一律拒绝（Windows 文件锁，理由诚实）。
 
 ### 4. 每环境 web-auth secret
 
@@ -26,8 +32,7 @@ legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`
 
 ### 5. 导出——显式 'ocr-env' 信封、默认脱敏
 
-容器：格式 id `'ocr-env'` version 1，传输名 `.orc_env.zip`（`<name>-YYYYMMDD.orc_env.zip`）——**自有**信封（manifest + config.yaml + payload 条目），不是 opencode 兼容文件，也明确不是被弃用的自定义 `OCRENC1` 容器。Payload 集合是**封闭**的：**导出集**为两个键——`data/layer2-decisions.jsonl`、`catalog/overrides.json`——`catalog/ocr.json` 刻意排除（签名键控缓存，重建可得）。**导入**白名单额外接受已退役的 `catalog/custom.json`（ADR-0010 书册统一修订案）：其 checksum 仍校验，随后条目被丢弃、绝不写回，因此修订前的书集可正常恢复而不被拒。秘密策略：`webAuth.passwordHash` **永远**删除；会话 secret / CA 材料 / traces / capture / 日志**永不**入档；配置内的凭证值默认脱敏（`__REDACTED__` 哨兵 + `redactedPaths` 列表；类型无关——`adminApiKey`、`apiKeys[*].key`、带 userinfo 的 `proxy.url`、`opencode.password` 处非空标量即遮）；明文密钥仅显式 `?secrets=include`。`?include=` 选 payload 子集（未知键忽略——封闭集合即契约）。`?encrypt=1` ⇒ 标准 zip + WinZip AE-2 AES-256 条目（zip.js，PBKDF2-HMAC-SHA1 钉死 WinZip 的 1000 轮，CRC-32 存 0，manifest sha256 仍是完整性层；密码经 `x-ocr-archive-password` 头——**永不**走 query；`encrypt=1` 蕴含 `secrets=include`——加密层即保护所在；第三方解压软件凭密码可开；离线解密脚本随仓）。
-   ADR-0016 修订：`adminApiKey` 配置键已更名为 `adminKey`（磁盘：client.adminKey），但遮蔽名单继续守卫旧键名——信封里的 v0 旧版 config 字节仍可能携带它，秘密形态比曾经拥有它的配置键活得久。
+容器：格式 id `'ocr-env'` version 1，传输名 `.orc_env.zip`（`<name>-YYYYMMDD.orc_env.zip`）——**自有**信封（manifest + config.yaml + payload 条目），不是 opencode 兼容文件，也明确不是被弃用的自定义 `OCRENC1` 容器。Payload 集合是**封闭**的：**导出集**为两个键——`data/layer2-decisions.jsonl`、`catalog/overrides.json`——`catalog/ocr.json` 刻意排除（签名键控缓存，重建可得）。**导入**白名单**等于**导出集：信封携带任何其他键——包括已退役的 `catalog/custom.json`（ADR-0010 书册统一修订案）——一律**直接拒绝**（`Unsupported payload key`）；旧的放行路径（仍校验 checksum、随后丢弃条目、绝不写回）已移除，修订前的书集不再被静默修复——运维应从活实例重新导出。秘密策略：`webAuth.passwordHash` **永远**删除；会话 secret / CA 材料 / traces / capture / 日志**永不**入档；配置内的凭证值默认脱敏（`__REDACTED__` 哨兵 + `redactedPaths` 列表；类型无关——`adminApiKey`、`apiKeys[*].key`、带 userinfo 的 `proxy.url`、`opencode.password` 处非空标量即遮）；明文密钥仅显式 `?secrets=include`。`?include=` 选 payload 子集（未知键忽略——封闭集合即契约）。`?encrypt=1` ⇒ 标准 zip + WinZip AE-2 AES-256 条目（zip.js，PBKDF2-HMAC-SHA1 钉死 WinZip 的 1000 轮，CRC-32 存 0，manifest sha256 仍是完整性层；密码经 `x-ocr-archive-password` 头——**永不**走 query；`encrypt=1` 蕴含 `secrets=include`——加密层即保护所在；第三方解压软件凭密码可开；离线解密脚本随仓）。
 
 ### 6. 导入——默认新建、替换经废纸篓、守卫成栈
 
@@ -40,5 +45,6 @@ legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`
 ## 后果
 
 - "一个环境"就是一个可折叠的目录：拷贝目录，或走脱敏信封——状态边界从布局本身可见。
-- 切换语义匹配运行时的真实约束（启动作用域单例），失败模式（指针回滚、不继承端口的子进程、newPort 重定向）皆有成文而非临场发挥。
+- 切换语义匹配运行时的真实约束（启动作用域单例），失败模式（指针回滚、不继承端口的子进程、newPort 重定向、失败/未验证的交接判定）皆有成文而非临场发挥。
+- 死掉的重启留下持久判定：脱离开关监督进程写 `<home>/ocr.restart.json`，`ocr status` 读取它——因为从未起来的网关没有 HTTP 面可汇报。脱离让交接在调用方退出后继续；监督让"已重启"成为被观察到的事实，而非 spawn 的返回值。
 - 测试：`env-resolution`、`env-archive`（含加密/导入守卫）、`environments-api`、`env-file-immunity`。

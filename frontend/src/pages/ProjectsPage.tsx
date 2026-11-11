@@ -15,7 +15,7 @@ import { api, type ProjectItem } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
-import { copyToClipboard } from '../lib/format';
+import { copyToClipboard } from '../lib/clipboard';
 import { FONT_MONO } from '../lib/fonts';
 
 export const ProjectsPage: React.FC = () => {
@@ -120,10 +120,10 @@ export const ProjectsPage: React.FC = () => {
       {/* Page Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0, color: 'var(--text-main)' }}>
+          <h1 style={{ fontSize: 'var(--text-3xl)', fontWeight: 'var(--font-bold)', margin: 0, color: 'var(--text-main)' }}>
             {t('projects.title')}
           </h1>
-          <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-dim)' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--text-md)', color: 'var(--text-dim)' }}>
             {t('projects.subtitle')}
           </p>
         </div>
@@ -145,7 +145,7 @@ export const ProjectsPage: React.FC = () => {
       {/* Add Project Form Card */}
       {isAdding && (
         <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '14px', fontWeight: 600 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)' }}>
             <FolderPlus size={16} color="var(--accent)" />
             <span>{t('projects.add')}</span>
           </div>
@@ -160,7 +160,7 @@ export const ProjectsPage: React.FC = () => {
                 borderRadius: '6px',
                 background: 'var(--rose-soft, rgba(239, 68, 68, 0.1))',
                 color: 'var(--accent-rose, #ef4444)',
-                fontSize: '12px',
+                fontSize: 'var(--text-sm)',
               }}
             >
               <AlertCircle size={14} style={{ flexShrink: 0 }} />
@@ -170,7 +170,7 @@ export const ProjectsPage: React.FC = () => {
 
           <form onSubmit={(e) => void handleAddSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>
+              <label style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-medium)', color: 'var(--text-dim)' }}>
                 {t('projects.name')} *
               </label>
               <input
@@ -181,12 +181,12 @@ export const ProjectsPage: React.FC = () => {
                 placeholder={t('projects.namePlaceholder')}
                 disabled={formBusy}
                 autoFocus
-                style={{ fontSize: '13px' }}
+                style={{ fontSize: 'var(--text-md)' }}
               />
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>
+              <label style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-medium)', color: 'var(--text-dim)' }}>
                 {t('projects.path')} *
               </label>
               <input
@@ -196,9 +196,9 @@ export const ProjectsPage: React.FC = () => {
                 onChange={(e) => setPathStr(e.target.value)}
                 placeholder={t('projects.pathPlaceholder')}
                 disabled={formBusy}
-                style={{ fontSize: '13px', fontFamily: FONT_MONO }}
+                style={{ fontSize: 'var(--text-md)', fontFamily: FONT_MONO }}
               />
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t('projects.pathHelp')}
               </span>
             </div>
@@ -230,13 +230,13 @@ export const ProjectsPage: React.FC = () => {
       {/* Projects List Card */}
       <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-main)' }}>
+          <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>
             {t('projects.title')} ({projects.length})
           </span>
         </div>
 
         {loading && projects.length === 0 ? (
-          <div style={{ padding: '36px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
+          <div style={{ padding: '36px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)' }}>
             {t('common.loading')}
           </div>
         ) : projects.length === 0 ? (
@@ -245,7 +245,7 @@ export const ProjectsPage: React.FC = () => {
               padding: '36px',
               textAlign: 'center',
               color: 'var(--text-dim)',
-              fontSize: '13px',
+              fontSize: 'var(--text-md)',
               border: '1px dashed var(--card-border)',
               borderRadius: '8px',
             }}
@@ -279,14 +279,14 @@ export const ProjectsPage: React.FC = () => {
                     />
                     <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 4 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-main)' }}>
+                        <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>
                           {p.name}
                         </span>
                         {isActive && (
                           <span
                             className="chip"
                             style={{
-                              fontSize: '11px',
+                              fontSize: 'var(--text-xs)',
                               padding: '2px 8px',
                               color: 'var(--accent)',
                               borderColor: 'var(--accent)',
@@ -303,7 +303,7 @@ export const ProjectsPage: React.FC = () => {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                         <span
                           style={{
-                            fontSize: '11.5px',
+                            fontSize: 'var(--text-sm)',
                             color: 'var(--text-dim)',
                             fontFamily: FONT_MONO,
                             overflow: 'hidden',
@@ -332,7 +332,7 @@ export const ProjectsPage: React.FC = () => {
                     <button
                       className="btn btn-sm"
                       onClick={() => navigate(`/harness/skills?tab=project&project=${encodeURIComponent(p.id)}`)}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '11.5px' }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)' }}
                       title={t('harness.viewProject', { kind: t('harness.scopeKindSkill') })}
                     >
                       <ExternalLink size={12} />
@@ -343,7 +343,7 @@ export const ProjectsPage: React.FC = () => {
                       <button
                         className="btn btn-sm"
                         onClick={() => void handleSetActive(p.id)}
-                        style={{ fontSize: '11.5px' }}
+                        style={{ fontSize: 'var(--text-sm)' }}
                       >
                         {t('projects.setActive')}
                       </button>

@@ -104,9 +104,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 backdropFilter: 'blur(16px)',
                 border: '1px solid var(--card-border)',
                 boxShadow: '0 10px 28px rgba(0,0,0,0.35)',
-                fontSize: 13,
+                fontSize: 'var(--text-md)',
                 color: 'var(--text-main)',
-                lineHeight: 1.5,
+                lineHeight: 'var(--leading-snug)',
                 wordBreak: 'break-word',
                 animation: t.leaving ? 'ocr-toast-out 0.18s ease forwards' : 'ocr-toast-in 0.2s ease',
               }}

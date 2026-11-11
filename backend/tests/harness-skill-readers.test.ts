@@ -11,7 +11,7 @@ import { scanInventory } from '../src/harness/host/inventory.js';
  *
  * OWNERSHIP (`skillOwner`) is one host per directory: it decides the install target, the claim and
  * the removal. READERSHIP (`skillReaders`) is every runtime whose skills roots resolve to that
- * directory — the cross-agent `.agents/skills` tree is loaded by fourteen of them. The skills page's
+ * directory — the cross-agent `.agents/skills` tree is loaded by fifteen of them. The skills page's
  * harness rail selects by readership, so these cases pin the two answers apart: a shared tree must
  * list every reader (owner first) and a vendor-private directory must list only its own host.
  */
@@ -29,7 +29,7 @@ describe('skillReaders', () => {
 
     expect(readers[0]).toBe(skillOwner(shared, 'project', root));
     expect(readers[0]).toBe('universal');
-    // Fourteen hosts read the cross-agent project root: universal plus the thirteen vendors that spell it.
+    // Fifteen hosts read the cross-agent project root: universal plus the fourteen vendors that spell it.
     expect(readers.length).toBeGreaterThan(1);
     expect(readers).toContain('opencode');
     expect(readers).toContain('pi');
@@ -39,6 +39,7 @@ describe('skillReaders', () => {
     expect(readers).toContain('kimi');
     expect(readers).toContain('windsurf');
     expect(readers).toContain('grok');
+    expect(readers).toContain('dsh');
     // A vendor-private directory is not a reader of the shared tree.
     expect(readers).not.toContain('claude');
   });

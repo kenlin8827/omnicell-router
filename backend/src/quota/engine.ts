@@ -147,7 +147,14 @@ export interface EffectiveQuotaPlan {
  */
 export function buildEffectivePlan(
   quotaProbes: Record<string, QuotaProbeConfigEntry[]> | undefined,
-  providerBaseUrl: (providerId: string) => string | undefined
+  providerBaseUrl: (providerId: string) => string | undefined,
+  /** L-e seam (ADR-0009): candidate provider ids for the plugin layer plus
+   *  the per-id capability lookup (a loaded model-service plugin's
+   *  quotaCheck, wrapped as an adapter). Fills ONLY uncovered providers. */
+  pluginLayer?: {
+    candidateIds: () => Iterable<string>;
+    adapterFor: (providerId: string) => QuotaCodeAdapter | undefined;
+  }
 ): EffectiveQuotaPlan {
   const byProvider = new Map<string, QuotaTarget>();
   const rejected: EffectiveQuotaPlan['rejected'] = [];
@@ -199,6 +206,19 @@ export function buildEffectivePlan(
         byProvider.set(providerId, { kind: 'dsl', entry: entry! });
         slot++;
       }
+    }
+  }
+
+  // L-e plugin adapters (lowest precedence): a vendor plugin that declares
+  // the quotaCheck capability covers its wire's providers — but only where
+  // no release knowledge (L-b/L-c) and no operator entry (L-d) already
+  // speaks for the provider. The plugin owns the endpoint knowledge; core
+  // owns the scheduling, the store and the display vocabulary.
+  if (pluginLayer) {
+    for (const providerId of pluginLayer.candidateIds()) {
+      if (byProvider.has(providerId)) continue;
+      const adapter = pluginLayer.adapterFor(providerId);
+      if (adapter) byProvider.set(providerId, { kind: 'adapter', adapter });
     }
   }
 

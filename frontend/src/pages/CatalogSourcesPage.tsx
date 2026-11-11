@@ -25,8 +25,10 @@ import { SegGroup } from '../components/SegGroup';
 import { Field, FieldRow, FormSection } from '../components/Form';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/effort';
+import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
 /**
  * /catalog — remote catalog source management: view sync state (origin +
  * last-sync time), manually add sources, toggle, delete and force-refresh.
@@ -81,7 +83,7 @@ const StatusBadge: React.FC<{ source: CatalogSourceView }> = ({ source }) => {
   const { t } = useI18n();
   if (!source.enabled) {
     return (
-      <span style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
         <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--text-dim)', flexShrink: 0 }} />
         {t('catalogPage.statusDisabled')}
       </span>
@@ -95,7 +97,7 @@ const StatusBadge: React.FC<{ source: CatalogSourceView }> = ({ source }) => {
   };
   const { color, label } = map[source.origin];
   return (
-    <span style={{ fontSize: '11px', color, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+    <span style={{ fontSize: 'var(--text-xs)', color, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
       <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: color, flexShrink: 0 }} />
       {label}
     </span>
@@ -123,7 +125,7 @@ const TypeBadge: React.FC<{ source: CatalogSourceView }> = ({ source }) => {
   return (
     <span
       style={{
-        fontSize: '10px',
+        fontSize: 'var(--text-2xs)',
         padding: '2px 8px',
         borderRadius: '999px',
         border: '1px solid var(--card-border)',
@@ -155,8 +157,8 @@ const fmtSize = (n: number): string => (n >= 1_048_576 ? (n / 1_048_576).toFixed
 /** Shared raw-JSON view style for the catalog viewer modals. */
 const JSON_PRE: React.CSSProperties = {
   fontFamily: FONT_MONO,
-  fontSize: '10px',
-  lineHeight: 1.55,
+  fontSize: 'var(--text-2xs)',
+  lineHeight: 'var(--leading-normal)',
   color: 'var(--text-main)',
   background: 'var(--well-bg)',
   border: '1px solid var(--card-border)',
@@ -195,8 +197,8 @@ const ModelTable: React.FC<{
   const isLocked = (m: CatalogSourceDataModelRecord): boolean => Boolean(lockedIds?.has(lockKey(m)));
   const { t } = useI18n();
   const head: React.CSSProperties = {
-    fontSize: '10px',
-    fontWeight: 700,
+    fontSize: 'var(--text-2xs)',
+    fontWeight: 'var(--font-bold)',
     color: 'var(--text-dim)',
     padding: '2px 6px 4px 0',
     textAlign: 'left',
@@ -205,7 +207,7 @@ const ModelTable: React.FC<{
   // Grid cells tile the row: the divider goes on EVERY cell to form one
   // continuous line. lineHeight pinned to an integer (22+6 padding = 28px,
   // multiple of 4) so hairlines snap to device pixels at 125%/150% scaling.
-  const cell: React.CSSProperties = { fontSize: '11px', color: 'var(--text-main)', padding: '3px 6px 3px 0', lineHeight: '22px', borderBottom: '1px solid var(--divider)' };
+  const cell: React.CSSProperties = { fontSize: 'var(--text-xs)', color: 'var(--text-main)', padding: '3px 6px 3px 0', lineHeight: 'var(--leading-22)', borderBottom: '1px solid var(--divider)' };
   const iconBtn = (color: string, title: string, onClick: () => void, node: React.ReactNode, marginLeft: number): React.ReactElement => (
     <button
       onClick={onClick}
@@ -231,14 +233,14 @@ const ModelTable: React.FC<{
         return (
         <React.Fragment key={`${ownerOf(m) ?? ''}||${m.id}`}>
           {providerOf && (
-            <div style={{ ...rcell, fontSize: '10px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ ...rcell, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {providerOf(m) || '—'}
             </div>
           )}
-          <div style={{ ...rcell, fontFamily: FONT_MONO, fontSize: '10px' }}>
+          <div style={{ ...rcell, fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }}>
             {m.id}
             {hidden && (
-              <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
+              <span style={{ marginLeft: 6, fontSize: 'var(--text-3xs)', color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
                 {t('models.hiddenBadge')}
               </span>
             )}
@@ -274,7 +276,7 @@ const ModelTable: React.FC<{
           <div style={{ ...rcell, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {m.name || '—'}
             {showSource && m.source && (
-              <span style={{ marginLeft: 5, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
+              <span style={{ marginLeft: 5, fontSize: 'var(--text-3xs)', color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
                 {m.source}
               </span>
             )}
@@ -361,12 +363,12 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
 
   const copyJson = async () => {
     if (!jsonText) return;
-    try {
-      await navigator.clipboard.writeText(jsonText.full);
-      toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
-    } catch (err: any) {
-      toast.error('Copy failed: ' + err.message);
+    const ok = await copyToClipboard(jsonText.full);
+    if (!ok) {
+      toast.error(t('common.failed'));
+      return;
     }
+    toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
   };
 
   const isProviderSource = (data?.providers?.length ?? 0) > 0;
@@ -381,8 +383,8 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
     });
 
   const fieldLabel: React.CSSProperties = {
-    fontSize: '11px',
-    fontWeight: 700,
+    fontSize: 'var(--text-xs)',
+    fontWeight: 'var(--font-bold)',
     color: 'var(--text-dim)',
   };
 
@@ -413,7 +415,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <h3 style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             {t('catalogPage.dataTitle')}:
             <span style={{ color: 'var(--accent)' }}>{source.id}</span>
           </h3>
@@ -421,21 +423,21 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
             <button
               className="btn"
               onClick={() => setShowJson((v) => !v)}
-              style={{ fontSize: '11px', padding: '3px 10px', ...(showJson ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+              style={{ fontSize: 'var(--text-xs)', padding: '3px 10px', ...(showJson ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
             >
               <Braces size={12} />
               <span>{showJson ? t('catalogPage.viewStructured') : t('catalogPage.viewJson')}</span>
             </button>
             <button
               onClick={onClose}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer' }}
             >
               ✕
             </button>
           </div>
         </div>
 
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
           <span>{source.url}</span>
           <span>
             {t('catalogPage.dataFetchedAt', {
@@ -443,7 +445,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
             })}
           </span>
           {data && (
-            <span style={{ fontWeight: 700, color: 'var(--accent)' }}>
+            <span style={{ fontWeight: 'var(--font-bold)', color: 'var(--accent)' }}>
               {isProviderSource
                 ? t('catalogPage.dataProviders', { n: (data.providers ?? []).length })
                 : t('catalogPage.dataModelsN', { n: (data.models ?? []).length })}
@@ -452,7 +454,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
         </div>
 
         {error && (
-          <div style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--accent-rose)', color: 'var(--accent-rose)', fontSize: '12px' }}>
+          <div style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--accent-rose)', color: 'var(--accent-rose)', fontSize: 'var(--text-sm)' }}>
             {error}
           </div>
         )}
@@ -484,13 +486,13 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
                         >
                           {open ? <ChevronDown size={13} color="var(--text-dim)" /> : <ChevronRight size={13} color="var(--text-dim)" />}
                           <ProviderLogo providerId={p.id} logoMap={logoMap} size={24} />
-                          <span style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>{p.id}</span>
+                          <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-sm)', color: 'var(--text-main)' }}>{p.id}</span>
                           {p.name && p.name !== p.id && (
-                            <span style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {p.name}
                             </span>
                           )}
-                          <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>
+                          <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0 }}>
                             {ms.length} {t('catalogPage.dataModelsUnit')}
                           </span>
                         </div>
@@ -509,7 +511,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
                 <ModelTable models={flatModels.slice(0, MAX_RENDER)} />
               )}
               {truncated && (
-                <div style={{ fontSize: '11px', color: 'var(--accent-amber)', padding: '10px 4px' }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', padding: '10px 4px' }}>
                   {t('catalogPage.dataTruncated', { n: MAX_RENDER })}
                 </div>
               )}
@@ -520,10 +522,10 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
           <>
             {jsonText && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--accent-amber)' }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>
                   {jsonText.fullLength > 0 ? t('catalogPage.jsonTruncated', { size: fmtSize(jsonText.fullLength) }) : ''}
                 </div>
-                <button className="btn" style={{ fontSize: '11px', padding: '3px 10px', flexShrink: 0 }} onClick={() => void copyJson()}>
+                <button className="btn" style={{ fontSize: 'var(--text-xs)', padding: '3px 10px', flexShrink: 0 }} onClick={() => void copyJson()}>
                   <Copy size={12} />
                   <span>{t('catalogPage.copyJson')}</span>
                 </button>
@@ -687,12 +689,12 @@ const OcrCatalogPanel: React.FC = () => {
 
   const copyJson = async () => {
     if (!jsonText) return;
-    try {
-      await navigator.clipboard.writeText(jsonText.full);
-      toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
-    } catch (err: any) {
-      toast.error('Copy failed: ' + err.message);
+    const ok = await copyToClipboard(jsonText.full);
+    if (!ok) {
+      toast.error(t('common.failed'));
+      return;
     }
+    toast.success(t('catalogPage.jsonCopied', { size: fmtSize(jsonText.full.length) }));
   };
   const truncated = providers.length > MAX_RENDER;
   const flatTruncated = flatRows.length > MAX_RENDER;
@@ -713,7 +715,7 @@ const OcrCatalogPanel: React.FC = () => {
       return next;
     });
 
-  const dim: React.CSSProperties = { fontSize: '11px', color: 'var(--text-dim)' };
+  const dim: React.CSSProperties = { fontSize: 'var(--text-xs)', color: 'var(--text-dim)' };
 
   const providerSortOptions = [
     { value: 'default', label: t('catalogPage.sortDefault') },
@@ -731,7 +733,7 @@ const OcrCatalogPanel: React.FC = () => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, flex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <h3 style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Database size={16} color="var(--accent)" />
             {t('catalogPage.ocrTitle')}
           </h3>
@@ -739,7 +741,7 @@ const OcrCatalogPanel: React.FC = () => {
             <button
               className="btn"
               onClick={() => setShowJson((v) => !v)}
-              style={{ fontSize: '11px', padding: '3px 10px', ...(showJson ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+              style={{ fontSize: 'var(--text-xs)', padding: '3px 10px', ...(showJson ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
             >
               <Braces size={12} />
               <span>{showJson ? t('catalogPage.viewStructured') : t('catalogPage.viewJson')}</span>
@@ -747,10 +749,10 @@ const OcrCatalogPanel: React.FC = () => {
           </div>
         </div>
 
-        <div style={{ ...dim, lineHeight: 1.6 }}>{t('catalogPage.ocrHint')}</div>
+        <div style={{ ...dim, lineHeight: 'var(--leading-normal)' }}>{t('catalogPage.ocrHint')}</div>
 
         {error && (
-          <div style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--accent-rose)', color: 'var(--accent-rose)', fontSize: '12px' }}>
+          <div style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--accent-rose)', color: 'var(--accent-rose)', fontSize: 'var(--text-sm)' }}>
             {error}
           </div>
         )}
@@ -759,9 +761,9 @@ const OcrCatalogPanel: React.FC = () => {
 
         {data && (
           <>
-            <div style={{ display: 'flex', gap: '14px', fontSize: '11px', alignItems: 'center' }}>
-              <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{t('catalogPage.dataProviders', { n: data.providers.length })}</span>
-              <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{t('catalogPage.dataModelsN', { n: totalModels })}</span>
+            <div style={{ display: 'flex', gap: '14px', fontSize: 'var(--text-xs)', alignItems: 'center' }}>
+              <span style={{ color: 'var(--accent)', fontWeight: 'var(--font-bold)' }}>{t('catalogPage.dataProviders', { n: data.providers.length })}</span>
+              <span style={{ color: 'var(--accent)', fontWeight: 'var(--font-bold)' }}>{t('catalogPage.dataModelsN', { n: totalModels })}</span>
               <Chip
                 label={
                   <>
@@ -812,14 +814,14 @@ const OcrCatalogPanel: React.FC = () => {
                   value={modelSort}
                   onChange={(v) => setModelSort(v as ModelSortKey)}
                   options={modelSortOptions}
-                  style={{ fontSize: 12, width: 170 }}
+                  style={{ fontSize: 'var(--text-sm)', width: 170 }}
                 />
               ) : (
                 <Combobox
                   value={providerSort}
                   onChange={(v) => setProviderSort(v as ProviderSortKey)}
                   options={providerSortOptions}
-                  style={{ fontSize: 12, width: 170 }}
+                  style={{ fontSize: 'var(--text-sm)', width: 170 }}
                 />
               )}
             </div>
@@ -847,19 +849,19 @@ const OcrCatalogPanel: React.FC = () => {
                       >
                         {open ? <ChevronDown size={13} color="var(--text-dim)" /> : <ChevronRight size={13} color="var(--text-dim)" />}
                         <ProviderLogo providerId={p.id} logoMap={logoMap} size={24} />
-                        <span style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>{p.id}</span>
+                        <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-sm)', color: 'var(--text-main)' }}>{p.id}</span>
                         {p.name && p.name !== p.id && (
                           <span style={{ ...dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
                         )}
                         <span style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}>
                           {p.sources.map((s) => (
-                            <span key={s} style={{ fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
+                            <span key={s} style={{ fontSize: 'var(--text-3xs)', color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
                               {s}
                             </span>
                           ))}
                         </span>
                         {p.custom && (
-                          <span style={{ fontSize: 9, color: 'var(--accent-amber)', border: '1px solid var(--accent-amber)', borderRadius: 999, padding: '0 5px', flexShrink: 0 }}>
+                          <span style={{ fontSize: 'var(--text-3xs)', color: 'var(--accent-amber)', border: '1px solid var(--accent-amber)', borderRadius: 999, padding: '0 5px', flexShrink: 0 }}>
                             {t('catalogPage.ocrLocal')}
                           </span>
                         )}
@@ -885,7 +887,7 @@ const OcrCatalogPanel: React.FC = () => {
                 })
               )}
               {anyTruncated && (
-                <div style={{ fontSize: '11px', color: 'var(--accent-amber)', padding: '10px 4px' }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', padding: '10px 4px' }}>
                   {t('catalogPage.dataTruncated', { n: MAX_RENDER })}
                 </div>
               )}
@@ -896,10 +898,10 @@ const OcrCatalogPanel: React.FC = () => {
           <>
             {jsonText && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--accent-amber)' }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>
                   {jsonText.fullLength > 0 ? t('catalogPage.jsonTruncated', { size: fmtSize(jsonText.fullLength) }) : ''}
                 </div>
-                <button className="btn" style={{ fontSize: '11px', padding: '3px 10px', flexShrink: 0 }} onClick={() => void copyJson()}>
+                <button className="btn" style={{ fontSize: 'var(--text-xs)', padding: '3px 10px', flexShrink: 0 }} onClick={() => void copyJson()}>
                   <Copy size={12} />
                   <span>{t('catalogPage.copyJson')}</span>
                 </button>
@@ -1100,7 +1102,7 @@ const OcrEditModal: React.FC<{
       subtitle={
         <>
           <span>{t('catalogPage.ocrEditHint')}</span>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: 'var(--accent)' }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-sm)', color: 'var(--accent)' }}>
             {target.providerId}/{target.modelId}
           </span>
         </>
@@ -1242,15 +1244,9 @@ const OcrEditModal: React.FC<{
               onChange={(v) => setNpm(v)}
               options={[
                 { value: '', label: t('catalogPage.ocrEditNpmFollow') },
-                ...(npmVocab.length > 0
-                  ? npmVocab.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))
-                  : [
-                      { value: '@ai-sdk/openai-compatible', label: '@ai-sdk/openai-compatible', meta: 'OpenAI Chat' },
-                      { value: '@ai-sdk/openai', label: '@ai-sdk/openai', meta: 'OpenAI Responses' },
-                      { value: '@ai-sdk/anthropic', label: '@ai-sdk/anthropic', meta: 'Anthropic' },
-                      { value: '@ai-sdk/google', label: '@ai-sdk/google', meta: 'Gemini' },
-                      { value: '@ai-sdk/typesafe-ai', label: '@ai-sdk/typesafe-ai', meta: 'TypeSafe Decision' },
-                    ]),
+                  ...(npmVocab.length > 0
+                    ? npmVocab.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))
+                    : FALLBACK_NPM_VOCABULARY.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))),
               ]}
             />
           </Field>
@@ -1324,8 +1320,8 @@ const AddSourceModal: React.FC<{
   };
 
   const fieldLabel: React.CSSProperties = {
-    fontSize: '11px',
-    fontWeight: 700,
+    fontSize: 'var(--text-xs)',
+    fontWeight: 'var(--font-bold)',
     color: 'var(--text-dim)',
     display: 'block',
     marginBottom: '6px',
@@ -1357,10 +1353,10 @@ const AddSourceModal: React.FC<{
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>{t('catalogPage.addTitle')}</h3>
+          <h3 style={{ fontSize: 'var(--text-xl)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)' }}>{t('catalogPage.addTitle')}</h3>
           <button
             onClick={onClose}
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer' }}
           >
             ✕
           </button>
@@ -1373,7 +1369,7 @@ const AddSourceModal: React.FC<{
               borderRadius: '6px',
               border: '1px solid var(--accent-rose)',
               color: 'var(--accent-rose)',
-              fontSize: '12px',
+              fontSize: 'var(--text-sm)',
             }}
           >
             {error}
@@ -1427,12 +1423,12 @@ const AddSourceModal: React.FC<{
                 placeholder={t('catalogPage.mapPlaceholder')}
                 className="input"
                 rows={6}
-                style={{ fontFamily: FONT_MONO, fontSize: '11px', resize: 'vertical' }}
+                style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', resize: 'vertical' }}
               />
-              <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('catalogPage.mapHint')}</div>
+              <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px' }}>{t('catalogPage.mapHint')}</div>
             </div>
           )}
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
             <span>{t('catalogPage.fieldEnabled')}</span>
             <Switch checked={enabled} onChange={setEnabled} />
           </label>
@@ -1583,10 +1579,10 @@ export const CatalogSourcesPage: React.FC = () => {
   }
 
   const headCell: React.CSSProperties = {
-    fontSize: '10px',
-    fontWeight: 700,
+    fontSize: 'var(--text-2xs)',
+    fontWeight: 'var(--font-bold)',
     textTransform: 'uppercase',
-    letterSpacing: '0.05em',
+    letterSpacing: 'var(--tracking-wide)',
     color: 'var(--text-dim)',
     padding: '0 8px 10px 0',
   };
@@ -1597,8 +1593,8 @@ export const CatalogSourcesPage: React.FC = () => {
     borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
     color: active ? 'var(--accent)' : 'var(--text-dim)',
     padding: '6px 10px',
-    fontSize: 12,
-    fontWeight: 700,
+    fontSize: 'var(--text-sm)',
+    fontWeight: 'var(--font-bold)',
     cursor: 'pointer',
   });
 
@@ -1639,14 +1635,14 @@ export const CatalogSourcesPage: React.FC = () => {
         <OcrCatalogPanel />
       ) : (
         <>
-      <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '4px' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '4px' }}>
         {t('catalogPage.subtitle')}
       </div>
-      <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '12px' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '12px' }}>
         {t('catalogPage.subtitleMerge')}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', fontSize: '12px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', fontSize: 'var(--text-sm)', flexWrap: 'wrap' }}>
         <span style={{ color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {t('catalogPage.syncIntervalLabel')}
           <InfoTip text={t('catalogPage.syncIntervalHint')} />
@@ -1678,7 +1674,7 @@ export const CatalogSourcesPage: React.FC = () => {
       </div>
 
       {sources.length === 0 ? (
-        <div style={{ color: 'var(--text-dim)', fontSize: '13px', padding: '24px 0', textAlign: 'center' }}>
+        <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px 0', textAlign: 'center' }}>
           {t('catalogPage.empty')}
         </div>
       ) : (
@@ -1696,7 +1692,7 @@ export const CatalogSourcesPage: React.FC = () => {
               <React.Fragment key={s.id}>
                 {/* source id + badges */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 8px 10px 0', minWidth: 0 }}>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-main)' }}>{s.id}</span>
+                  <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)' }}>{s.id}</span>
                   {s.builtin && (
                     <span
                       title={t('catalogPage.builtinHint')}
@@ -1704,7 +1700,7 @@ export const CatalogSourcesPage: React.FC = () => {
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '3px',
-                        fontSize: '10px',
+                        fontSize: 'var(--text-2xs)',
                         padding: '1px 7px',
                         borderRadius: '999px',
                         color: 'var(--accent)',
@@ -1719,7 +1715,7 @@ export const CatalogSourcesPage: React.FC = () => {
                 {/* url */}
                 <div
                   title={s.url}
-                  style={{ fontSize: '12px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '10px 8px 10px 0', display: 'flex', alignItems: 'center', gap: '5px' }}
+                  style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '10px 8px 10px 0', display: 'flex', alignItems: 'center', gap: '5px' }}
                 >
                   <Globe size={12} style={{ flexShrink: 0 }} />
                   {s.url}
@@ -1729,20 +1725,20 @@ export const CatalogSourcesPage: React.FC = () => {
                   <TypeBadge source={s} />
                 </div>
                 {/* priority */}
-                <div style={{ fontSize: '12px', color: 'var(--text-main)', padding: '10px 8px 10px 0' }}>{s.priority}</div>
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-main)', padding: '10px 8px 10px 0' }}>{s.priority}</div>
                 {/* records */}
-                <div style={{ fontSize: '12px', color: 'var(--text-main)', padding: '10px 8px 10px 0' }}>{s.records.toLocaleString()}</div>
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-main)', padding: '10px 8px 10px 0' }}>{s.records.toLocaleString()}</div>
                 {/* sync state + last update */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '10px 8px 10px 0', minWidth: 0 }}>
                   <StatusBadge source={s} />
                   <span
                     title={s.fetchedAt ? new Date(s.fetchedAt).toLocaleString() : undefined}
-                    style={{ fontSize: '11px', color: 'var(--text-dim)' }}
+                    style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
                   >
                     {s.fetchedAt ? fmtTime(s.fetchedAt) : t('catalogPage.neverSynced')}
                   </span>
                   {s.lastError && (
-                    <span title={s.lastError} style={{ fontSize: '10px', color: 'var(--accent-rose)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span title={s.lastError} style={{ fontSize: 'var(--text-2xs)', color: 'var(--accent-rose)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {s.lastError}
                     </span>
                   )}

@@ -308,7 +308,7 @@ All architectural decisions are codified under `docs/adr/`:
   ```bash
   bun run test
   ```
-  *Note*: Do not execute `bun test backend/tests` directly. Shared process memory contaminates global config state. The isolated runner (`scripts/test-isolated.ts`) launches each test in a sandboxed process.
+  *Note*: Do not execute `bun test backend/tests` directly. Shared process memory contaminates global config state. The isolated runner (`scripts/test-isolated.ts`) launches each test in a sandboxed process, running files concurrently (8 workers by default; set `OCR_TEST_JOBS=1` for serial). Filter with `bun run test <substring>` to run only matching files.
 - **Frontend Build Validation**:
   ```bash
   bun run build:frontend

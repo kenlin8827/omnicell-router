@@ -3,6 +3,7 @@ import path from 'node:path';
 import { getProject } from '../projects/store.js';
 import type { FastifyInstance } from 'fastify';
 import { HOSTS } from '../harness/host/hosts.js';
+import { popularityRank } from '../utils/popularity.js';
 import {
   adapterFor,
   hostDetected,
@@ -27,9 +28,10 @@ import {
 import { probeSystemoneDefault } from '../surfaces/systemone-probe.js';
 import { browseSource } from '../harness/common/market.js';
 import { allHostProbes, createPluginAdapter, probeOptionsFor } from '../harness/plugin/adapters/index.js';
+import { appendInstallLog, finishInstallLog, readInstallLog, startInstallLog } from '../harness/host/install-log.js';
 import { fetchRepoStars, peekStarCache } from '../harness/common/stars.js';
 import { readMarketDetail } from '../harness/detail.js';
-import { installArtifact } from '../harness/host/install.js';
+import { installArtifact, type InstallResult } from '../harness/host/install.js';
 import { editMcpServer, readMcpEntry } from '../harness/host/mcp-edit.js';
 import { searchMcpRegistry } from '../harness/host/mcp-registry.js';
 import { probeMcpCli } from '../harness/host/mcp-cli.js';
@@ -664,6 +666,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     // answer, and the writers refuse a scope absent from it.
     scopes: [...ENABLED_SCOPES],
     hosts: HOSTS.map((host) => {
+      const adapter = adapterFor(host.id)!;
       const roots = {
         global: skillRootsFor(host.id, 'global'),
       };
@@ -672,21 +675,26 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       return {
         id: host.id,
         label: host.label,
+        /** Popularity order shared with the Clients page (1 = most popular; unranked = last).
+         *  `universal` is unranked by design — the rail pins it first by id. */
+        rank: popularityRank(host.id),
         /** Present on this machine (executable, config dir, or an existing skills root). The
          *  console rail hides undetected hosts — but never one whose rows are already landed. */
-        detected: hostDetected(adapterFor(host.id)!),
-        hasSkills: isSkillsHost(adapterFor(host.id)),
+        detected: hostDetected(adapter),
+        hasSkills: isSkillsHost(adapter),
         /** MCP-capable host: its adapter implements the MCP landing capability. */
-        hasMcp: isMcpHost(adapterFor(host.id)),
+        hasMcp: isMcpHost(adapter),
         /** Plugin-capable host: its adapter implements the plugin landing capability. */
-        hasExt: isPluginHost(adapterFor(host.id)),
+        hasExt: isPluginHost(adapter),
+        /** Per-profile plugin store (DSH): the targets the console may pick. */
+        ...(isPluginHost(adapter) && adapter.installProfiles ? { profiles: adapter.installProfiles() } : {}),
         /** Per-kind scope capability (ADR-0015 §D2): the scopes an install may target for each
          *  kind. The console greys out a scope absent from the kind's list instead of letting
          *  the operator aim an install at a landing the runtime has no write grammar for. */
         kindScopes: {
-          skill: [...(adapterFor(host.id)?.supportedScopes('skill') ?? [])],
-          mcp: [...(adapterFor(host.id)?.supportedScopes('mcp') ?? [])],
-          plugin: [...(adapterFor(host.id)?.supportedScopes('plugin') ?? [])],
+          skill: [...adapter.supportedScopes('skill')],
+          mcp: [...adapter.supportedScopes('mcp')],
+          plugin: [...adapter.supportedScopes('plugin')],
         },
         roots,
         owner: {
@@ -956,7 +964,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   // `owner/repo`, or a `clawhub:<owner>/<slug>` pair — and NEVER follows a caller-supplied URL: that
   // would turn an admin GET into an arbitrary-URL proxy.
   app.get('/api/admin/harness/detail', async (req, reply) => {
-    const query = (req.query || {}) as { source?: string; key?: string; repo?: string };
+    const query = (req.query || {}) as { source?: string; key?: string; repo?: string; lang?: string };
     let sourceId = 'direct';
     if (query.source) {
       const source =
@@ -968,9 +976,13 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       }
       sourceId = source.id;
     }
+    // The console's language lets the reader prefer the README's own localized edition (and report
+    // `readmeLang`), so an already-Chinese/Japanese/Korean page is shown instead of translated.
+    const lang = query.lang && isSupportedLang(query.lang) ? query.lang : undefined;
     const detail = await readMarketDetail({
       ...(query.key ? { key: query.key } : {}),
       ...(query.repo ? { repo: query.repo } : {}),
+      ...(lang ? { lang } : {}),
     });
     return { status: 'ok', source: sourceId, detail };
   });
@@ -1217,6 +1229,10 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       confirm?: boolean;
       listedOn?: unknown;
       marketplace?: { repo?: string; plugin?: string; name?: string };
+      /** The market row's one-line description; recorded when the install resolves no registry line. */
+      description?: unknown;
+      profile?: string;
+      installLogId?: string;
       hosts?: unknown;
       scope?: string;
       projectRoot?: string;
@@ -1278,31 +1294,55 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
             typeof id === 'string' && (SOURCES.some((s) => s.id === id) || /^mp-[a-z0-9][a-z0-9-]{0,38}$/.test(id)),
         )
       : undefined;
-    const result = await installArtifact({
-      sourceId: body.sourceId,
-      key: body.key,
-      repo: body.repo,
-      kind,
-      skillDir: body.skillDir,
-      launch:
-        kind === 'mcp' && body.launch && typeof body.launch === 'object'
-          ? (body.launch as never)
-          : undefined,
-      manualPayload,
-      manualSpec: typeof body.manualSpec === 'string' ? body.manualSpec : undefined,
-      confirm: body.confirm === true,
-      listedOn,
-      hosts: hostIds,
-      scope: body.scope,
-      ...(projectRoot ? { projectRoot } : {}),
-      ...(kind === 'plugin' &&
-      body.marketplace &&
-      typeof body.marketplace.repo === 'string' &&
-      typeof body.marketplace.plugin === 'string' &&
-      typeof body.marketplace.name === 'string'
-        ? { marketplace: { repo: body.marketplace.repo, plugin: body.marketplace.plugin, name: body.marketplace.name } }
-        : {}),
-    });
+    const logId =
+      body.confirm === true && kind === 'plugin' && typeof body.installLogId === 'string'
+        ? body.installLogId
+        : undefined;
+    if (logId && !startInstallLog(logId)) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'invalid installLogId' };
+    }
+    let failure: string | undefined;
+    let result: InstallResult | undefined;
+    try {
+      result = await installArtifact({
+        sourceId: body.sourceId,
+        key: body.key,
+        repo: body.repo,
+        kind,
+        skillDir: body.skillDir,
+        launch:
+          kind === 'mcp' && body.launch && typeof body.launch === 'object'
+            ? (body.launch as never)
+            : undefined,
+        manualPayload,
+        manualSpec: typeof body.manualSpec === 'string' ? body.manualSpec : undefined,
+        confirm: body.confirm === true,
+        listedOn,
+        ...(typeof body.description === 'string' ? { description: body.description } : {}),
+        hosts: hostIds,
+        scope: body.scope,
+        ...(projectRoot ? { projectRoot } : {}),
+        ...(kind === 'plugin' &&
+        body.marketplace &&
+        typeof body.marketplace.repo === 'string' &&
+        typeof body.marketplace.plugin === 'string' &&
+        typeof body.marketplace.name === 'string'
+          ? { marketplace: { repo: body.marketplace.repo, plugin: body.marketplace.plugin, name: body.marketplace.name } }
+          : {}),
+        ...(typeof body.profile === 'string' && body.profile.trim() ? { profile: body.profile.trim() } : {}),
+        ...(logId ? { onOutput: (chunk: string, stream: 'stdout' | 'stderr') => appendInstallLog(logId, stream, chunk) } : {}),
+      });
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e);
+      throw e;
+    } finally {
+      if (logId) finishInstallLog(logId, failure ?? (result && !result.ok ? result.message : undefined));
+    }
+    if (!result) {
+      reply.code(500);
+      return { status: 'error', code: 'internal', message: 'install returned no result' };
+    }
     if (!result.ok) {
       const status =
         result.code === 'exists' || result.code === 'foreign' || result.code === 'confirm_required'
@@ -1316,12 +1356,25 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     return { status: 'ok', ...result };
   });
 
+  /** Poll target for the install sheet: the child's mirrored stdout/stderr while POST /install runs. */
+  app.get('/api/admin/harness/install-log/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const log = readInstallLog(id);
+    if (!log) {
+      reply.code(404);
+      return { status: 'error', code: 'not_found', message: 'install log not found or expired' };
+    }
+    return { status: 'ok', ...log };
+  });
+
   // Description translation (derived cache; the model call goes through this gateway's own /v1).
-  // `format: 'markdown'` switches to the long-form contract: a README is a document, so it is
-  // translated in chunked prose runs (fenced code preserved verbatim) under its own cache namespace
-  // and a length budget — the description prompt would answer a 3 000-word page with two sentences.
+  // `format: 'markdown'` switches to the long-form contract: a README is a document, so every prose
+  // run is translated in chunks (fenced code preserved verbatim) under its own cache namespace — the
+  // description prompt would answer a 3 000-word page with two sentences.
+  // `refresh` (long-form only) is the console's re-translate: skip the cached rendering and replace
+  // it on success, so a bad answer is not permanent.
   app.post('/api/admin/harness/translate', async (req, reply) => {
-    const body = (req.body || {}) as { text?: string; lang?: string; format?: string };
+    const body = (req.body || {}) as { text?: string; lang?: string; format?: string; refresh?: boolean };
     const text = (body.text || '').trim();
     if (!text) {
       reply.code(400);
@@ -1333,13 +1386,57 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     }
     const result =
       body.format === 'markdown'
-        ? await translateMarkdown(text, body.lang)
+        ? await translateMarkdown(text, body.lang, { refresh: body.refresh === true })
         : await translateDescription(text, body.lang);
     if ('code' in result) {
       reply.code(result.code === 'no_api_key' ? 409 : 502);
       return { status: 'error', ...result };
     }
     return { status: 'ok', ...result };
+  });
+
+  // Long-form translation with PROGRESS. A README is tens of seconds of model output, so a button
+  // that only says "translating…" looks stuck. Same NDJSON shape the capture replay uses: one JSON
+  // event per line — `progress` (completed chunks / total), then exactly one `result` or `error`.
+  // Server-side work is identical to `/translate` (same cache, same `refresh`), and only the console
+  // reads this stream.
+  app.post('/api/admin/harness/translate-stream', async (req, reply) => {
+    const body = (req.body || {}) as { text?: string; lang?: string; format?: string; refresh?: boolean };
+    const text = (body.text || '').trim();
+    if (!text || !body.lang) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'text and lang are required' };
+    }
+    if (body.format !== 'markdown') {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: "format must be 'markdown' — a description is one call and needs no progress" };
+    }
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
+    let closed = false;
+    raw.on('close', () => {
+      closed = true;
+    });
+    const send = (evt: Record<string, unknown>) => {
+      if (closed) return;
+      try {
+        raw.write(`${JSON.stringify(evt)}\n`);
+      } catch {
+        closed = true;
+      }
+    };
+    try {
+      const result = await translateMarkdown(text, body.lang, {
+        refresh: body.refresh === true,
+        onProgress: (done, total) => send({ type: 'progress', done, total }),
+      });
+      if ('code' in result) send({ type: 'error', code: result.code, message: result.message });
+      else send({ type: 'result', text: result.text, cached: result.cached, model: result.model });
+    } catch (e) {
+      send({ type: 'error', code: 'upstream', message: e instanceof Error ? e.message : String(e) });
+    }
+    raw.end();
   });
 
   // Batch translation. One chunk per call, small in-process pool: the console walks the list in

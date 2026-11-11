@@ -28,16 +28,6 @@ export const formatSessionId = (raw: string): string => {
 export const shortId = (id: string, n = 16): string =>
   id.length <= n ? id : `${id.slice(0, n)}…`;
 
-/** Clipboard write with boolean outcome (pages surface success/error toasts). */
-export const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 /**
  * Decode throughput (industry TPS): completion tokens per second of the
  * generation window — first forwarded chunk → stream fully drained. TTFT,
@@ -90,4 +80,28 @@ export const fmtDur = (ms: number): string => {
   const h = m / 60;
   if (h < 48) return `${Math.round(h)}h`;
   return `${Math.round(h / 24)}d`;
+};
+
+/**
+ * Readable label for a machine key, used where the wire carries only an
+ * identifier (plugin `configSchema[].key`, whose manifest may ship no `title`
+ * or only a locale map for another language). camelCase, snake_case and
+ * kebab-case all collapse to spaced words with a capitalized head
+ * ('previewBytes' → 'Preview bytes', 'max_result_chars' → 'Max result chars').
+ *
+ * This is a FALLBACK, not a translation: it invents no vocabulary, and callers
+ * keep rendering the exact key alongside it — the key is what backend warnings
+ * quote and what `<ocrHome>/plugins/config/<id>.json` stores.
+ */
+export const humanizeKey = (key: string): string => {
+  const words = key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+  if (words.length === 0) return key;
+  const spaced = words.join(' ').toLowerCase();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 };

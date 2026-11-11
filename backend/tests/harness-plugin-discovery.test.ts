@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   discoverPlugins,
   pluginSources,
   parsePluginSpec,
+  storeDescription,
   trackedKey,
   type DiscoveryDeps,
   type ExtSource,
 } from '../src/harness/host/discover.js';
-import { scanInventory } from '../src/harness/host/inventory.js';
+import { scanInventory, trackedPluginNames } from '../src/harness/host/inventory.js';
+import { readManifest, writeManifest } from '../src/harness/host/manifest.js';
 import { HOST_ADAPTERS } from '../src/harness/host/adapters/index.js';
 import { opencodeAdapter } from '../src/harness/host/adapters/opencode.js';
 import { HOSTS } from '../src/harness/host/hosts.js';
+import type { ArtifactRecord } from '../src/harness/types.js';
 
 /**
  * Plugin discovery (ADR-0015 §D8.10) — the read-only observation layer.
@@ -180,6 +184,121 @@ describe('discoverPlugins — declared store (pi)', () => {
       deps: deps({ files: { [PI_SETTINGS]: { packages: { 'npm:x': true } } } }),
     });
     expect(rows).toEqual([]);
+  });
+});
+
+describe('discoverPlugins — per-profile bundle store (dsh)', () => {
+  const PROFILE = path.join(os.homedir(), '.dsh', 'profiles', 'web', 'package.json');
+  // pnpm may hoist the store to the profiles root (the shipped install does); the scan asks the
+  // profile-local store first, then the hoisted one.
+  const NODE_MODULES = path.join(os.homedir(), '.dsh', 'profiles', 'node_modules');
+  const source: ExtSource = {
+    host: 'dsh',
+    scope: 'global',
+    origin: 'runtime-store',
+    kind: 'declared',
+    path: PROFILE,
+    key: 'dsh.profile.bundles',
+    filterBy: 'dependencies',
+    unselectedBundles: 'dsh.bundle',
+    profile: 'web',
+    nodeModules: [path.join(os.homedir(), '.dsh', 'profiles', 'web', 'node_modules'), NODE_MODULES],
+  };
+  const manifest = {
+    dependencies: {
+      'dsh-hello-plugin': '^0.1.0',
+      '@acme/dsh-tools': 'github:acme/dsh-tools',
+      'dsh-sleeping-plugin': '^1.0.0',
+    },
+    dsh: {
+      profile: {
+        // In-box bundles are not dependencies — they belong to the installation, not the profile.
+        bundles: ['@deepseek-ai/dsh-base', 'dsh-hello-plugin', '@acme/dsh-tools', 'ghost-bundle'],
+      },
+    },
+  };
+  const helloPkg = path.join(NODE_MODULES, 'dsh-hello-plugin', 'package.json');
+  const toolsPkg = path.join(NODE_MODULES, '@acme', 'dsh-tools', 'package.json');
+  const sleepingPkg = path.join(NODE_MODULES, 'dsh-sleeping-plugin', 'package.json');
+
+  it('reads the nested bundle list, keeps only installed packages, and answers exact installed versions', () => {
+    const rows = discoverPlugins([source], {
+      deps: deps({
+        files: {
+          [PROFILE]: manifest,
+          [helloPkg]: { version: '0.1.0', description: 'Hello plugin' },
+          [toolsPkg]: { version: '2.3.4', description: 'Acme tools' },
+          [sleepingPkg]: { version: '1.0.0', description: 'Sleeping plugin', dsh: { bundle: { patch: 'x.yml' } } },
+        },
+        dirs: {
+          [path.join(NODE_MODULES, 'dsh-hello-plugin')]: [],
+          [path.join(NODE_MODULES, '@acme', 'dsh-tools')]: [],
+          [path.join(NODE_MODULES, 'dsh-sleeping-plugin')]: [],
+        },
+      }),
+    });
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((row) => row.name))).toEqual(
+      new Set(['@acme/dsh-tools', 'dsh-hello-plugin', 'dsh-sleeping-plugin'])
+    );
+    const hello = rows.find((row) => row.name === 'dsh-hello-plugin')!;
+    expect(hello.version).toBe('0.1.0');
+    expect(hello.description).toBe('Hello plugin');
+    expect(hello.copies[0]?.path).toBe('npm:dsh-hello-plugin#dsh');
+    // The inverse names the nested container the scan actually read.
+    expect(hello.removal).toEqual({
+      op: 'drop-entry',
+      file: PROFILE,
+      container: 'dsh.profile.bundles',
+      entry: 'dsh-hello-plugin',
+    });
+    const sleeping = rows.find((row) => row.name === 'dsh-sleeping-plugin')!;
+    expect(sleeping.enabled).toBe(false);
+    expect(sleeping.removal).toEqual({
+      op: 'plugin-remove',
+      host: 'dsh',
+      entry: 'dsh-sleeping-plugin',
+      profile: 'web',
+    });
+  });
+
+  it('one Git-installed bundle answers ONE row: the manifest identity is not the name the profile repeats', () => {
+    // The console recorded this install by its market identity (`github:acme/dsh-tools`), while the
+    // profile's bundle list can only repeat the bare package name. Without the name fallback the
+    // same install answers twice: the tracked row plus a discovered "managed by the runtime" row.
+    const rows = discoverPlugins([source], {
+      tracked: new Set([trackedKey('dsh', 'github:acme/dsh-tools')]),
+      trackedNames: new Set(['dsh|@acme/dsh-tools']),
+      deps: deps({
+        files: {
+          [PROFILE]: manifest,
+          [helloPkg]: { version: '0.1.0', description: 'Hello plugin' },
+          [toolsPkg]: { version: '2.3.4', description: 'Acme tools' },
+          [sleepingPkg]: { version: '1.0.0', description: 'Sleeping plugin', dsh: { bundle: { patch: 'x.yml' } } },
+        },
+        dirs: {
+          [path.join(NODE_MODULES, 'dsh-hello-plugin')]: [],
+          [path.join(NODE_MODULES, '@acme', 'dsh-tools')]: [],
+          [path.join(NODE_MODULES, 'dsh-sleeping-plugin')]: [],
+        },
+      }),
+    });
+    expect(rows.map((row) => row.name).sort()).toEqual(['dsh-hello-plugin', 'dsh-sleeping-plugin']);
+  });
+});
+
+describe('trackedPluginNames — the name fallback only covers identities a store cannot repeat', () => {
+  const artifact = (canonicalKey: string, name: string) =>
+    ({ kind: 'plugin', harness: 'dsh', canonicalKey, name }) as unknown as ArtifactRecord;
+
+  it('keeps Git and marketplace keys, and drops a registry key that dedupes by canonicalKey', () => {
+    expect(
+      trackedPluginNames([
+        artifact('github:acme/dsh-tools', '@acme/dsh-tools'),
+        artifact('mp-foo:acme/foo#', 'foo'),
+        artifact('npm:dsh-hello-plugin', 'dsh-hello-plugin'),
+      ])
+    ).toEqual(new Set(['dsh|@acme/dsh-tools', 'dsh|foo']));
   });
 });
 
@@ -395,7 +514,7 @@ describe('pluginSources — the host adapters are the only landing table', () =>
   });
 
   it('never emits a source for a host with no verified plugin landing', () => {
-    const landed = new Set(['pi', 'opencode', 'claude', 'omp', 'openclaw']);
+    const landed = new Set(['pi', 'opencode', 'claude', 'omp', 'openclaw', 'dsh']);
     for (const source of sources) expect(landed.has(source.host)).toBe(true);
   });
 });
@@ -460,5 +579,123 @@ describe('scanInventory — one discovery channel, tagged by kind', () => {
       expect(['skill', 'mcp', 'plugin']).toContain(row.kind);
       if (row.kind === 'plugin') expect(typeof row.harness).toBe('string');
     }
+  });
+});
+
+describe('scanInventory — a tracked plugin with no recorded description', () => {
+  it('reads the installed package manifest from the runtime store', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-dsh-store-'));
+    const profile = path.join(home, 'profiles', 'desktop');
+    const pkg = path.join(profile, 'node_modules', 'dsh-tgrep');
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(profile, 'package.json'), JSON.stringify({ name: 'desktop' }), 'utf8');
+    fs.writeFileSync(
+      path.join(pkg, 'package.json'),
+      JSON.stringify({ name: 'dsh-tgrep', version: '0.1.13', description: 'Shadow built-in grep with tgrep' }),
+      'utf8'
+    );
+    // A git-backed install records no registry line and its copy is an identity token, so the
+    // installed manifest is the only place the console can learn what the plugin does.
+    const record: ArtifactRecord = {
+      id: 'plugin:dsh:github:owner/dsh-tgrep',
+      canonicalKey: 'github:owner/dsh-tgrep',
+      kind: 'plugin',
+      harness: 'dsh',
+      name: 'dsh-tgrep',
+      sourceId: 'github',
+      pin: { adopted: true },
+      contentHash: 'subprocess:dsh@0',
+      listedOn: ['github'],
+      trust: 'community',
+      copies: [
+        {
+          scope: 'global',
+          host: 'dsh',
+          rootId: 'default',
+          path: 'github:owner/dsh-tgrep#dsh@desktop',
+          external: true,
+          profile: 'desktop',
+          contentHash: 'subprocess:dsh@0',
+          placement: 'verified',
+          installedAt: '2026-11-10T16:20:56.840Z',
+        },
+      ],
+    };
+    const previousHome = process.env.DSH_HOME;
+    const previousManifest = readManifest();
+    process.env.DSH_HOME = home;
+    try {
+      writeManifest({ version: 2, artifacts: [record] });
+      const view = scanInventory().artifacts.find((artifact) => artifact.id === record.id);
+      expect(view?.description).toBe('Shadow built-in grep with tgrep');
+    } finally {
+      writeManifest(previousManifest);
+      if (previousHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previousHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('storeDescription — every store shape discovery can read', () => {
+  it('reads a lock-file sibling store (pi)', () => {
+    const lock = path.join(os.homedir(), '.pi', 'agent', 'npm', 'package-lock.json');
+    const manifest = path.join(os.homedir(), '.pi', 'agent', 'npm', 'node_modules', '@scope', 'tool', 'package.json');
+    const source: ExtSource = {
+      host: 'pi',
+      scope: 'global',
+      origin: 'runtime-store',
+      kind: 'declared',
+      path: path.join(os.homedir(), '.pi', 'agent', 'settings.json'),
+      key: 'packages',
+      lockPath: lock,
+    };
+    const io = deps({
+      files: { [manifest]: { description: 'Pi tool' } },
+      dirs: { [path.dirname(manifest)]: [] },
+    });
+    expect(storeDescription([source], 'pi', ['@scope/tool'], {}, io)).toBe('Pi tool');
+  });
+
+  it('never joins a path-shaped name into the store', () => {
+    const lock = path.join(os.homedir(), '.pi', 'agent', 'npm', 'package-lock.json');
+    const store = path.dirname(lock);
+    const escaped = path.resolve(store, '..', 'pkg', 'package.json');
+    const source: ExtSource = {
+      host: 'pi',
+      scope: 'global',
+      origin: 'runtime-store',
+      kind: 'declared',
+      path: path.join(os.homedir(), '.pi', 'agent', 'settings.json'),
+      key: 'packages',
+      lockPath: lock,
+    };
+    const io = deps({
+      files: { [escaped]: { description: 'outside the store' } },
+      dirs: { [path.dirname(escaped)]: [] },
+    });
+    expect(storeDescription([source], 'pi', ['../pkg'], {}, io)).toBeNull();
+  });
+
+  it('reads a v2 map store array entry (claude)', () => {
+    const store = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+    const install = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'postman');
+    const source: ExtSource = {
+      host: 'claude',
+      scope: 'global',
+      origin: 'runtime-store',
+      kind: 'declared',
+      path: store,
+      key: 'plugins',
+      containerShape: 'map',
+      specPrefix: 'claude:',
+    };
+    const io = deps({
+      files: {
+        [store]: { version: 2, plugins: { 'postman@postman': [{ scope: 'user', installPath: install }] } },
+        [path.join(install, 'package.json')]: { description: 'Postman plugin' },
+      },
+    });
+    expect(storeDescription([source], 'claude', ['postman'], { nativeKey: 'postman@postman' }, io)).toBe('Postman plugin');
   });
 });

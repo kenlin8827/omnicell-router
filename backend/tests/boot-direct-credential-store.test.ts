@@ -17,7 +17,7 @@ import path from 'node:path';
  *  (a) multi-credential rows in the OCR file — the ACTIVE row is the baked
  *      chain head; P3 step 1 attaches the ordered resolveKeyChain to the
  *      instance payload (head === baked key); rows that fail validation
- *      never route (无凭证 exclusion, def present).
+ *      never route (no-credential exclusion, def present).
  *  (b) the auth.json one-shot import path — api keys route, oauth/wellknown
  *      never import, no-cred + no-def stays silent.
  *  (c) inline options.apiKey stays ABOVE the store (Decision 1) and owns the
@@ -170,7 +170,7 @@ describe('(a) OCR-file boot: multi-credential rows', () => {
     // all: the provider-level no-credential entry (def present), never routed
     const brokenEntries = res.excluded.filter((e) => e.provider === 'p-broken' && !e.model);
     expect(brokenEntries).toHaveLength(1);
-    expect(brokenEntries[0]!.reason).toContain('无凭证');
+    expect(brokenEntries[0]!.reason).toContain('no credential');
     expect(byName.has('p-broken')).toBe(false);
   });
 
@@ -239,8 +239,8 @@ describe('(b)+(c) auth.json one-shot import boot: lands on the OCR store', () =>
     // An OCR store holds raw api keys only, so an auth.json oauth/wellknown entry
     // cannot be imported: both surface as NO CREDENTIAL (never silent).
     // Neither routes.
-    expect(res.excluded).toContainEqual({ provider: 'v1-oauth', reasonCode: 'no_credential', reason: '无凭证（内联或凭证库均缺失）' });
-    expect(res.excluded).toContainEqual({ provider: 'v1-wk', reasonCode: 'no_credential', reason: '无凭证（内联或凭证库均缺失）' });
+    expect(res.excluded).toContainEqual({ provider: 'v1-oauth', reasonCode: 'no_credential', reason: 'no credential (neither inline nor in the credential store)' });
+    expect(res.excluded).toContainEqual({ provider: 'v1-wk', reasonCode: 'no_credential', reason: 'no credential (neither inline nor in the credential store)' });
     expect(byName.has('v1-oauth')).toBe(false);
     expect(byName.has('v1-wk')).toBe(false);
 

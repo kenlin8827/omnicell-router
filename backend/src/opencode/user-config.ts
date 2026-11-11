@@ -186,6 +186,8 @@ export interface OpenCodeProviderView {
   models: string[];
   /** Per-provider auto-pull whitelist (catalog.autoPullPatterns) — shown/prefilled by the console. */
   autoPullPattern?: string;
+  /** Console logo (catalog store or plugin preset) — rendered by the roster cards. */
+  logo?: string;
   /** credential summary — defs-file inline options ∪ bound-store credentials (masked) */
   auth: {
     connected: boolean;
@@ -338,6 +340,8 @@ const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
   // substituted in the client copy only by CLIENT_PACKAGE_FALLBACK
   // (credentials/def-materialize.ts) — the book always keeps this value.
   '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
+  '@ai-sdk/qoder': '@opencode/ai/providers/qoder',
+  '@ai-sdk/workbuddy': '@opencode/ai/providers/workbuddy',
 };
 
 /** npm string → the opencode v2 `package` value (mapped table, already-v2 passthrough, unknown passthrough). */

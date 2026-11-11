@@ -125,11 +125,11 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 {danger || warn ? <AlertTriangle size={18} /> : <HelpCircle size={18} />}
               </div>
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text-main)', lineHeight: 1.45, wordBreak: 'break-word' }}>
+                <div style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)', lineHeight: 'var(--leading-tight)', wordBreak: 'break-word' }}>
                   {o.title}
                 </div>
                 {o.description && (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-snug)', wordBreak: 'break-word' }}>
                     {o.description}
                   </div>
                 )}

@@ -57,7 +57,7 @@ const ImageChip: React.FC<{ media: TranscriptMedia; date?: string }> = ({ media,
           margin: '3px 0',
           background: 'var(--chip-bg)',
           color: 'var(--text-muted)',
-          fontSize: '11px',
+          fontSize: 'var(--text-xs)',
         }}
         title={media.file ? t('captures.mediaDateMissing') : t('captures.mediaStoreOff')}
       >
@@ -91,7 +91,7 @@ const ImageChip: React.FC<{ media: TranscriptMedia; date?: string }> = ({ media,
           background: 'var(--well-bg)',
         }}
       />
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: 2, fontFamily: MONO }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 2, fontFamily: MONO }}>
         {media.info} · {shortId(media.sha256, 10)}
       </div>
     </div>
@@ -151,7 +151,7 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
     >
       <div
         onClick={() => setOpen(o => !o)}
-        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '11px', cursor: call.args ? 'pointer' : 'default' }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-xs)', cursor: call.args ? 'pointer' : 'default' }}
       >
         {call.args ? (
           open ? <ChevronDown size={12} /> : <ChevronRight size={12} />
@@ -162,9 +162,9 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
           <Wrench size={9} style={{ flexShrink: 0 }} />
           {t('captures.toolCallLabel')}
         </span>
-        <span style={{ fontWeight: 600, fontFamily: MONO }}>{call.name || '?'}</span>
+        <span style={{ fontWeight: 'var(--font-semibold)', fontFamily: MONO }}>{call.name || '?'}</span>
         {call.id && (
-          <span style={{ color: 'var(--text-dim)', fontFamily: MONO, fontSize: '10px' }}>{shortId(call.id, 10)}</span>
+          <span style={{ color: 'var(--text-dim)', fontFamily: MONO, fontSize: 'var(--text-2xs)' }}>{shortId(call.id, 10)}</span>
         )}
       </div>
       {open && call.args && (
@@ -177,7 +177,7 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
 };
 
 const RoleLabel: React.FC<{ label: string; color: string; icon?: React.ReactNode }> = ({ label, color, icon }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '11px', fontWeight: 700, color, marginBottom: 3, letterSpacing: 0.3 }}>
+  <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color, marginBottom: 3, letterSpacing: 'var(--tracking-label)' }}>
     {icon}
     {label}
   </div>
@@ -191,7 +191,7 @@ const CHIP_BTN: React.CSSProperties = {
   borderRadius: 6,
   color: 'var(--text-muted)',
   cursor: 'pointer',
-  fontSize: '11px',
+  fontSize: 'var(--text-xs)',
   padding: '4px 8px',
 };
 
@@ -267,7 +267,7 @@ const ExpandMenu: React.FC<{
           {SECTION_KINDS.map(k => (
             <label
               key={k}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '12px', padding: '5px 2px', cursor: 'pointer' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', padding: '5px 2px', cursor: 'pointer' }}
             >
               <input type="checkbox" checked={open[k]} onChange={() => onToggle(k)} />
               {labels[k]}
@@ -395,19 +395,19 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          fontSize: '11px',
+          fontSize: 'var(--text-xs)',
           color: 'var(--text-dim)',
           marginBottom: 3,
           cursor: long ? 'pointer' : 'default',
         }}
       >
         {long ? open ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : <span style={{ width: 12, flexShrink: 0 }} />}
-        <span className="badge" style={{ fontSize: '10px', marginRight: 6 }}>
+        <span className="badge" style={{ fontSize: 'var(--text-2xs)', marginRight: 6 }}>
           {t('captures.msgTool')}
         </span>
-        {name && <span style={{ fontFamily: MONO, fontWeight: 600 }}>{name}</span>}
+        {name && <span style={{ fontFamily: MONO, fontWeight: 'var(--font-semibold)' }}>{name}</span>}
         {long && (
-          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '11px' }}>
+          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 'var(--text-xs)' }}>
             {open ? t('captures.collapse') : t('captures.expand')}
           </span>
         )}
@@ -415,7 +415,7 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
       {blockText ? (
         <ProseWithMedia text={blockText} clamp={6} date={date} open={open} hideToggle />
       ) : (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>—</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>—</div>
       )}
     </div>
   );
@@ -464,7 +464,7 @@ const Note: React.FC<{ tone: 'warn' | 'dim'; text: string; title?: string }> = (
       display: 'flex',
       alignItems: 'flex-start',
       gap: 6,
-      fontSize: '11px',
+      fontSize: 'var(--text-xs)',
       color: tone === 'warn' ? 'var(--accent-amber)' : 'var(--text-dim)',
       margin: '2px 0',
     }}
@@ -511,21 +511,21 @@ const TranscriptBlock: React.FC<{
     >
       {/* Turn header — same chip language as the timeline row; click opens the wire drawer. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: silent && !err ? 0 : 6 }}>
-        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)' }}>#{label}</span>
+        <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)' }}>#{label}</span>
         {st.ts !== undefined && (
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(st.ts)}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(st.ts)}</span>
         )}
         <span className={`badge ${err ? 'badge-danger' : 'badge-success'}`}>
           {err ? t('captures.statusError') : t('captures.statusOk')}
         </span>
-        <span style={{ fontSize: '12px', fontWeight: 600 }}>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)' }}>
           {turn.model}
           {upstreamModel && upstreamModel !== turn.model && (
-            <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}> → {upstreamModel}</span>
+            <span style={{ fontWeight: 'var(--font-regular)', color: 'var(--text-dim)' }}> → {upstreamModel}</span>
           )}
         </span>
         {turn.gatewayLatencyMs !== undefined && (
-          <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(turn.gatewayLatencyMs)}</span>
+          <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(turn.gatewayLatencyMs)}</span>
         )}
         {turn.decisionRequest && (
           <span
@@ -535,7 +535,7 @@ const TranscriptBlock: React.FC<{
               background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
               color: 'var(--accent)',
               fontFamily: MONO,
-              fontSize: '10px',
+              fontSize: 'var(--text-2xs)',
               flexShrink: 0,
             }}
           >
@@ -583,7 +583,7 @@ const TranscriptBlock: React.FC<{
       ) : null}
 
       {silent && (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: err ? 4 : 0 }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: err ? 4 : 0 }}>
           {err && turn.error ? String(turn.error).slice(0, 200) : t('captures.nothingNote')}
         </div>
       )}
@@ -643,7 +643,7 @@ const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
           </div>
         </>
       ) : (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
           {round.hasError || round.toolCallsIssued > 0
             ? t('captures.roundUnconvergedNote')
             : t('captures.nothingNote')}
@@ -740,7 +740,7 @@ const RoundCard: React.FC<{
           gap: 10,
           padding: '8px 12px',
           cursor: 'pointer',
-          fontSize: '12px',
+          fontSize: 'var(--text-sm)',
         }}
         onClick={() => setOpen(o => !o)}
       >
@@ -772,9 +772,9 @@ const RoundCard: React.FC<{
                 background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
               }}
             />
-            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', flexShrink: 0 }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
+            <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', flexShrink: 0 }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
             {round.startTs !== undefined && (
-              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(round.startTs)}</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(round.startTs)}</span>
             )}
             {excerpt && !promptOpen && (
               <span
@@ -787,7 +787,7 @@ const RoundCard: React.FC<{
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  fontWeight: 500,
+                  fontWeight: 'var(--font-medium)',
                 }}
               >
                 {t('captures.msgUser')}: {excerpt}
@@ -804,7 +804,7 @@ const RoundCard: React.FC<{
                   border: 'none',
                   color: 'var(--accent)',
                   cursor: 'pointer',
-                  fontSize: '11px',
+                  fontSize: 'var(--text-xs)',
                   padding: '2px 4px',
                   flexShrink: 0,
                   // The toggle stays on the RIGHT in both states: collapsed,
@@ -817,7 +817,7 @@ const RoundCard: React.FC<{
                 {promptOpen ? t('captures.collapse') : t('captures.expand')}
               </button>
             )}
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: excerpt ? 0 : 'auto', flexShrink: 0 }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: excerpt ? 0 : 'auto', flexShrink: 0 }}>
               {t('captures.roundStepsUnit', { n: round.steps.length })}
               {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
             </span>
@@ -849,16 +849,16 @@ const RoundCard: React.FC<{
             <div
               style={{
                 marginTop: 5,
-                fontWeight: 500,
+                fontWeight: 'var(--font-medium)',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
-                lineHeight: 1.5,
+                lineHeight: 'var(--leading-snug)',
               }}
             >
               {t('captures.msgUser')}: {excerpt}
             </div>
           ) : !excerpt ? (
-            <div style={{ marginTop: 5, color: 'var(--text-dim)', fontSize: '11px' }}>
+            <div style={{ marginTop: 5, color: 'var(--text-dim)', fontSize: 'var(--text-xs)' }}>
               {t('captures.roundMidOpenNote')}
             </div>
           ) : null}
@@ -941,7 +941,7 @@ const FocusRoundView: React.FC<{
       .trim();
   }, [round.prompt]);
   return (
-    <div style={{ fontSize: '12px' }}>
+    <div style={{ fontSize: 'var(--text-sm)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span
           style={{
@@ -952,14 +952,14 @@ const FocusRoundView: React.FC<{
             background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
           }}
         />
-        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)' }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
         {round.startTs !== undefined && (
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(round.startTs)}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(round.startTs)}</span>
         )}
         {round.endTs !== undefined && round.endTs !== round.startTs && (
-          <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>→ {fmtTime(round.endTs)}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO }}>→ {fmtTime(round.endTs)}</span>
         )}
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: 'auto' }}>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: 'auto' }}>
           {t('captures.roundStepsUnit', { n: round.steps.length })}
           {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
         </span>
@@ -970,7 +970,7 @@ const FocusRoundView: React.FC<{
           <ProseWithMedia text={promptText} date={date} mono={false} />
         </div>
       ) : (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 10 }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 10 }}>
           {t('captures.roundMidOpenNote')}
         </div>
       )}
@@ -1026,8 +1026,14 @@ export const SessionTranscript: React.FC<{
   date?: string;
   /** Fullscreen reading seeds every round open (pane default: collapsed). */
   expandAll?: boolean;
+  /**
+   * Absolute archive ordinal of the first rendered round minus one. A caller
+   * that narrows `turns` to one prompt round passes its archive ordinal so
+   * local enumeration does not restart at 1 and contradict the selector.
+   */
+  roundOffset?: number;
   onOpenTurn: (idx: number) => void;
-}> = ({ turns, fileTruncated, date, expandAll, onOpenTurn }) => {
+}> = ({ turns, fileTruncated, date, expandAll, roundOffset = 0, onOpenTurn }) => {
   const { t } = useI18n();
   // Transcript parsing (one JSON.parse per wire body) is the heaviest CPU
   // step of the lens — run it against the deferred turns so a session switch
@@ -1108,14 +1114,14 @@ export const SessionTranscript: React.FC<{
   // the affected rounds' waterfalls, where the gap is actually visible.
 
   return (
-    <div style={{ fontSize: '12px' }}>
+    <div style={{ fontSize: 'var(--text-sm)' }}>
       {fileTruncated && (
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            fontSize: '11px',
+            fontSize: 'var(--text-xs)',
             color: 'var(--accent-amber)',
             padding: '0 0 10px',
           }}
@@ -1125,7 +1131,7 @@ export const SessionTranscript: React.FC<{
         </div>
       )}
       {rounds.length === 0 || !anyContent ? (
-        <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+        <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
           {t('captures.chatEmpty')}
         </div>
       ) : (
@@ -1133,7 +1139,7 @@ export const SessionTranscript: React.FC<{
           <RoundCard
             key={`${r.steps[0]?.turn.traceId ?? 'r'}-${i}`}
             round={r}
-            ordinal={i + 1}
+            ordinal={i + 1 + roundOffset}
             date={date}
             first={i === 0}
             defaultOpen={expandAll}
@@ -1149,7 +1155,7 @@ export const SessionTranscript: React.FC<{
             padding: '14px 0 20px',
             textAlign: 'center',
             color: 'var(--text-dim)',
-            fontSize: '11px',
+            fontSize: 'var(--text-xs)',
           }}
         >
           {t('captures.loadingMoreRounds')}
@@ -1179,8 +1185,8 @@ export const SessionTranscript: React.FC<{
                 flexShrink: 0,
               }}
             >
-              <span style={{ fontSize: '13px', fontWeight: 700 }}>
-                {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 })}
+              <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)' }}>
+                {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 + roundOffset })}
               </span>
               <ExpandMenu open={secOpen} onToggle={toggleSec} onAll={allSec} />
               <button
@@ -1231,7 +1237,7 @@ export const SessionTranscript: React.FC<{
                 >
                   <FocusRoundView
                     round={rounds[focusIdx]}
-                    ordinal={focusIdx + 1}
+                    ordinal={focusIdx + 1 + roundOffset}
                     date={date}
                     onOpenTurn={onOpenTurn}
                   />

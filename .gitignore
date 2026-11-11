@@ -9,12 +9,34 @@ dist/
 # a note that matters belongs in docs/ or an ADR, not here.
 .scratch/
 .tmp-docs/
+# Agent/IDE scratch droppings (screenshots, ad-hoc .ps1 probes) that land in the
+# repo root: never shipped, never worth a review round-trip.
+.tmp-*
 tmp-*.html
 .kimi-code/
 .omp/
 .ocp/
+# tgrep trigram index built by the agent search tool: local, multi-MB, rebuildable.
+.tgrep/
 
 # Runtime state never lives in the repository: every environment owns
 # ~/.omnicell-router/envs/<name>/ (config.yaml, data/, models/, catalog/,
 # traces/, capture/, webauth-secret). If a rule for a repo-root state dir ever
 # reappears here, the layout has regressed — see docs/adr/0018.
+
+# Third-party protocol plugins: vendor-specific protocol knowledge (native
+# transports, signing chains, vendor binaries) is USER-INSTALLED, never
+# distributed by OCR. Each plugin lives in its own (typically private)
+# repository cloned under plugins/<id>/; `bun run plugins:build` bundles it
+# into the repo-local `.plugin-dist/<id>.zip` artifact (install it through the
+# console's upload — see ADR-0017 §6).
+/plugins/
+
+# Plugin packager output: a build artifact, never the runtime plugins root.
+/.plugin-dist/
+diff.patch
+plugins2/
+frontend/.vite/
+
+# Local code-graph index (CodeGraph MCP cache), never part of the tree.
+/.codegraph/

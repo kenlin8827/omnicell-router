@@ -95,7 +95,7 @@ export const LogsPage: React.FC = () => {
           <ScrollText size={18} color="var(--accent)" />
           <span>{t('logs.title')}</span>
           {exists && (
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, marginLeft: '8px' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, marginLeft: '8px' }}>
               {file} · {sizeLabel}
             </span>
           )}
@@ -123,13 +123,13 @@ export const LogsPage: React.FC = () => {
             { value: 'warn', label: 'WARN+' },
             { value: 'error', label: 'ERROR+' },
           ]}
-          style={{ fontSize: '12px', padding: '5px 10px', width: '140px' }}
+          style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', width: '140px' }}
         />
         <Combobox
           value={String(tail)}
           onChange={v => setTail(parseInt(v, 10))}
           options={TAIL_OPTIONS.map(n => ({ value: String(n), label: t('logs.tailLines').replace('{n}', String(n)) }))}
-          style={{ fontSize: '12px', padding: '5px 10px', width: '150px' }}
+          style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', width: '150px' }}
         />
         <input
           type="text"
@@ -137,7 +137,7 @@ export const LogsPage: React.FC = () => {
           value={q}
           onChange={e => setQ(e.target.value)}
           placeholder={t('logs.searchPlaceholder')}
-          style={{ fontSize: '12px', padding: '5px 10px', flex: 1, minWidth: '180px' }}
+          style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', flex: 1, minWidth: '180px' }}
         />
         <button
           className={`btn btn-sm ${autoScroll ? 'btn-primary' : ''}`}
@@ -151,9 +151,9 @@ export const LogsPage: React.FC = () => {
 
       {/* Body */}
       {!exists ? (
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)' }}>
           <div style={{ marginBottom: '6px' }}>{t('logs.noFile')}</div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: '11px' }}>{file}</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)' }}>{file}</div>
         </div>
       ) : (
         <div
@@ -168,7 +168,7 @@ export const LogsPage: React.FC = () => {
           }}
         >
           {lines.length === 0 ? (
-            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
               {t('logs.empty')}
             </div>
           ) : (
@@ -180,8 +180,8 @@ export const LogsPage: React.FC = () => {
                   gap: '10px',
                   padding: '2px 14px',
                   fontFamily: FONT_MONO,
-                  fontSize: '12px',
-                  lineHeight: 1.6,
+                  fontSize: 'var(--text-sm)',
+                  lineHeight: 'var(--leading-normal)',
                   borderBottom: '1px solid var(--divider)',
                 }}
               >
@@ -195,7 +195,7 @@ export const LogsPage: React.FC = () => {
                   <span
                     style={{
                       color: LEVEL_COLORS[line.level] || 'var(--text-dim)',
-                      fontWeight: 700,
+                      fontWeight: 'var(--font-bold)',
                       minWidth: '44px',
                       flexShrink: 0,
                     }}

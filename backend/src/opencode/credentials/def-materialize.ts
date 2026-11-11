@@ -73,6 +73,13 @@ export function defsRenderChanged(
  */
 const CLIENT_PACKAGE_FALLBACK: Partial<Record<WireKind, string>> = {
   systemone: OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
+  // The vendored Qoder wire has no client SDK segment. Substituting
+  // openai-compatible lets the client LOAD the node; the OCR gateway relay is
+  // the usable client path.
+  qoder: OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
+  // Same for the vendored WorkBuddy wire: no client SDK segment; the OCR
+  // gateway relay is the usable client path.
+  workbuddy: OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
 };
 
 /**

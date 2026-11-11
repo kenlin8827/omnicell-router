@@ -1,0 +1,46 @@
+/* Single source of truth for typography. Components consume these tokens rather
+   than declaring local font stacks or hardcoded type-scale values. */
+:root {
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'HarmonyOS Sans SC', 'MiSans', 'Noto Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, 'Segoe UI Variable Text', 'Microsoft YaHei UI', 'Noto Sans SC', monospace;
+
+  --text-3xs: 9px;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 15px;
+  --text-xl: 16px;
+  --text-2xl: 18px;
+  --text-3xl: 20px;
+  --text-4xl: 24px;
+  --text-5xl: 28px;
+  --text-6xl: 32px;
+
+  --font-regular: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+  --font-extrabold: 800;
+
+  --leading-none: 1;
+  --leading-metric: 1.1;
+  --leading-title: 1.25;
+  --leading-tight: 1.4;
+  --leading-snug: 1.5;
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.7;
+  --leading-loose: 1.8;
+  --leading-12: 12px;
+  --leading-14: 14px;
+  --leading-15: 15px;
+  --leading-16: 16px;
+  --leading-18: 18px;
+  --leading-22: 22px;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-label: 0.4px;
+}

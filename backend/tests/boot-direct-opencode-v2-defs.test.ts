@@ -26,7 +26,7 @@ import path from 'node:path';
 // 1. wireFor — opencode v2 package forms (pure-function units)
 // ---------------------------------------------------------------------------
 
-import { wireFor, unroutableReason } from '../src/providers/wire.js';
+import { wireFor, unroutableInfo } from '../src/providers/wire.js';
 import { probeKindFor } from '../src/opencode/probe.js';
 
 describe('wireFor — opencode v2 @opencode/ai/providers/* forms', () => {
@@ -45,12 +45,18 @@ describe('wireFor — opencode v2 @opencode/ai/providers/* forms', () => {
     expect(wireFor('@opencode/ai/providers/amazon-bedrock')).toBe('unroutable');
   });
 
-  it('unknown opencode v2 segment → unroutable with a package-shaped reason (never a guess)', () => {
+  it('unknown opencode v2 segment → unroutable with a package-shaped code (never a guess)', () => {
     expect(wireFor('@opencode/ai/providers/mystery')).toBe('unroutable');
-    expect(unroutableReason('@opencode/ai/providers/mystery')).toContain('mystery');
-    expect(unroutableReason('@opencode/ai/providers/mystery')).toContain('opencode v2 SDK 包名');
-    // signing segments keep the classic endpoint-construction/signing wording
-    expect(unroutableReason('@opencode/ai/providers/azure')).toContain('签名');
+    // The console composes the wording; the backend owns the machine limb.
+    expect(unroutableInfo('@opencode/ai/providers/mystery')).toEqual({
+      code: 'unknownPackage',
+      npm: '@opencode/ai/providers/mystery',
+    });
+    // signing segments are a DIFFERENT code (dedicated endpoint construction)
+    expect(unroutableInfo('@opencode/ai/providers/azure')).toEqual({
+      code: 'dedicatedTransport',
+      npm: '@opencode/ai/providers/azure',
+    });
   });
 
   it('prototype-member segments never masquerade as known wires (security P3-1)', () => {
@@ -211,7 +217,7 @@ describe('boot-direct — mixed valid / retired-shape nodes in the defs file (re
     expect(byName.has('v1prov')).toBe(false);
     const shapeEx = res.excluded.find((e) => e.provider === 'v1prov');
     expect(shapeEx?.reason).toContain('npm, options');
-    expect(shapeEx?.reason).toContain('已废弃形状');
+    expect(shapeEx?.reason).toContain('retired shape');
 
     // unknown opencode v2 package: model-level unroutable exclusion + provider drop, no crash
     expect(byName.has('v2unknown')).toBe(false);
@@ -220,7 +226,7 @@ describe('boot-direct — mixed valid / retired-shape nodes in the defs file (re
     expect(modelEx!.reason).toContain('mystery');
     expect(res.excluded).toContainEqual({
       provider: 'v2unknown',
-      reason: '该 provider 全部模型不可直连路由',
+      reason: 'every model of this provider is not directly routable',
     });
 
     // normalized models entered the routing pool

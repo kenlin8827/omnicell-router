@@ -2,6 +2,7 @@ import { ReasoningEffort, EffortSource, ReasonParams, TierLevel } from '../types
 import { getEnvPaths } from '../config/env.js';
 import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
+import type { ClientConversationRef } from '../session/session-manager.js';
 import { openTraceStore, type TraceStore } from './persist.js';
 
 export interface ExecutionTrace {
@@ -51,6 +52,16 @@ export interface ExecutionTrace {
       acceptLanguage?: string;
       requestId?: string;
     };
+    /**
+     * Client-minted conversation id this turn carried (Cursor's agent-wire
+     * `conversation_id`, a vendor `x-<app>-conversation-id`, …), resolved by
+     * `SessionManager.clientRefOf`. The console shows it BESIDE the gateway
+     * session id so an operator can correlate the two namespaces; it is also
+     * what lets a trace-reconstructed row show both ids after a restart.
+     * Forgiving forward-compat: absent on rows written before the field (or on
+     * wires that carry no client id at all).
+     */
+    clientRef?: ClientConversationRef;
   };
   routing: {
     layerUsed: 'layer0' | 'entry' | 'layer2';

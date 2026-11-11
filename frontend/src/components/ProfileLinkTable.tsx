@@ -146,7 +146,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
   if (on === false) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
             <Switch size="sm" checked={false} onChange={v => onToggle?.(v)} />
             <span>
@@ -163,7 +163,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
         {on !== undefined ? (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>
             <Switch size="sm" checked onChange={v => onToggle?.(v)} />
@@ -179,14 +179,14 @@ export const ProfileLinkTable: React.FC<Props> = ({
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder={t('clients.profileFilter')}
-            style={{ flex: 1, maxWidth: '260px', fontSize: '12px', padding: '5px 10px' }}
+            style={{ flex: 1, maxWidth: '260px', fontSize: 'var(--text-sm)', padding: '5px 10px' }}
           />
         )}
         <div style={{ width: '280px', flexShrink: 0 }}>
           <Combobox
             value={profileId}
             onChange={onProfileChange}
-            style={{ fontSize: '12px', padding: '5px 10px' }}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 10px' }}
             options={[
               { value: '', label: t('clients.profileNone') },
               ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
@@ -198,7 +198,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
           <button
             type="button"
             className="btn btn-sm"
-            style={{ flexShrink: 0, fontSize: '11px', marginRight: 4 }}
+            style={{ flexShrink: 0, fontSize: 'var(--text-xs)', marginRight: 4 }}
             title={t('clients.profileClearBindingsHint')}
             onClick={onClear}
           >
@@ -209,7 +209,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
         <span style={{ flex: 1 }} />
         {showSort && rows.length > 8 && (
           <div style={{ display: 'flex', alignItems: 'stretch', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '2px', alignSelf: 'center' }}>{t('clients.profileSortLabel')}</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginRight: '2px', alignSelf: 'center' }}>{t('clients.profileSortLabel')}</span>
             {([
               ['name', t('clients.profileSortName')],
               ['suffix', t('clients.profileSortSuffix')],
@@ -219,7 +219,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                 key={k}
                 type="button"
                 className="btn btn-sm"
-                style={{ fontSize: '11px', padding: '3px 8px', display: 'inline-flex', alignItems: 'center', ...(sort === k ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
+                style={{ fontSize: 'var(--text-xs)', padding: '3px 8px', display: 'inline-flex', alignItems: 'center', ...(sort === k ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
                 onClick={() => setSort(k)}
               >
                 {label}
@@ -230,31 +230,31 @@ export const ProfileLinkTable: React.FC<Props> = ({
         <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>{t('clients.profileManage')}</Link>
       </div>
       {profiles.length === 0 && (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
           {t('clients.profileEmpty')}{' '}
           <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
         </div>
       )}
       {profileId && profile && (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
           {t('clients.profileLinkedHint', { name: profile.name || profileId })}
         </div>
       )}
       {loading ? (
         error ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--accent-amber)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: 'var(--text-sm)', color: 'var(--accent-amber)' }}>
             <span>{t('clients.profileAgentsError')}</span>
-            <button type="button" className="btn btn-sm" style={{ fontSize: '11px' }} onClick={onRetry}>
+            <button type="button" className="btn btn-sm" style={{ fontSize: 'var(--text-xs)' }} onClick={onRetry}>
               {t('clients.profileAgentsRetry')}
             </button>
           </div>
         ) : (
-          <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsLoading')}</div>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('clients.profileAgentsLoading')}</div>
         )
       ) : rows.length === 0 ? (
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{emptyText}</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{emptyText}</div>
       ) : visible.length === 0 ? (
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsNoMatch')}</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('clients.profileAgentsNoMatch')}</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {groups.map(([mode, label]) => {
@@ -272,7 +272,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
             return (
               <div key={mode || 'all'}>
                 {label && (
-                  <div style={{ fontSize: '10px', color: 'var(--text-dim)', letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: '4px' }}>
+                  <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', letterSpacing: 'var(--tracking-label)', textTransform: 'uppercase', marginBottom: '4px' }}>
                     {label} · {boundN}/{sorted.length}
                   </div>
                 )}
@@ -283,7 +283,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                     const missing = linked && !(profile?.slots || {})[bound.slice(5)];
                     return (
                       <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span style={{ width: '140px', flexShrink: 0, fontFamily: FONT_MONO, fontSize: '12px' }}>{r.name}</span>
+                        <span style={{ width: '140px', flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' }}>{r.name}</span>
                         {r.current && (
                           <InfoTip text={`${t('clients.profileCurrentModel')}: ${r.current}`} />
                         )}
@@ -299,7 +299,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                           />
                         </div>
                         {missing && (
-                          <span style={{ flexShrink: 0, fontSize: '10px', color: 'var(--accent-amber)' }}>
+                          <span style={{ flexShrink: 0, fontSize: 'var(--text-2xs)', color: 'var(--accent-amber)' }}>
                             {t('clients.profileSlotMissing', { slot: bound.slice(5) })}
                           </span>
                         )}
@@ -311,11 +311,11 @@ export const ProfileLinkTable: React.FC<Props> = ({
             );
           })}
           {(keptCount > 0 || missingCount > 0) && (
-            <div style={{ fontSize: '11px', color: missingCount > 0 ? 'var(--accent-amber)' : 'var(--text-dim)' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: missingCount > 0 ? 'var(--accent-amber)' : 'var(--text-dim)' }}>
               {t('clients.profileSlotCarry', { kept: keptCount, missing: missingCount })}
             </div>
           )}
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{hint}</div>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{hint}</div>
         </div>
       )}
     </div>

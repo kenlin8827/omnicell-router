@@ -13,6 +13,7 @@ import {
 } from './types.js';
 import { ReasonParams, TierLevel } from '../types/router.js';
 import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential-selection.js';
+import { DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 
 export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig, 'rules' | 'shadow' | 'persistence'>> = {
   enabled: true,
@@ -26,7 +27,7 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig,
   halfOpenMaxProbes: 1, // Only allow 1 canary request through
   activeProbing: {
     enabled: false,
-    intervalMs: 60 * 1000,
+    intervalMs: DEFAULT_PROBE_INTERVAL_MS,
   },
   // Carried like activeProbing (the breaker itself never probes): the
   // affinity window is read by the selection layer from RouterConfig.
@@ -428,6 +429,17 @@ export class CircuitBreaker {
       return;
     }
 
+    // Already-OPEN breakers absorb no new evidence: traffic arriving during a
+    // cooldown must not feed the consecutive/window ladders — it would both
+    // re-trip instantly after a recovery close and grow the escalator during
+    // a quiet outage. The OPEN state itself is the evidence.
+    // Refresh the state machine first: a cooldown that already ELAPSED is not
+    // "already OPEN" (no gate call may have happened since, e.g. right after a
+    // persisted-state restore), and absorbing there would swallow the evidence
+    // that should extend it.
+    this.checkCooldownTransition();
+    if (this.state === 'OPEN') return;
+
     this.countFailure();
 
     // 1. Hard Trip (direct-construction path; the production manager gate
@@ -505,6 +517,12 @@ export class CircuitBreaker {
       this.releaseProbeSlot();
       return;
     }
+    // Same OPEN absorption as recordFailure: a hard trip arriving mid-cooldown
+    // must not shorten an escalated cooldown with a shorter rule duration
+    // (e.g. a 60s Retry-After landing during a 10-minute escalated OPEN).
+    // Same refresh too — an elapsed cooldown is not "already OPEN".
+    this.checkCooldownTransition();
+    if (this.state === 'OPEN') return;
     this.countFailure();
     this.trip(diagnosis.reason, diagnosis.category, cooldownMs, diagnosis.reasonCode, diagnosis.reasonParams);
   }

@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { parse, stringify } from 'yaml';
 import {
   ClientAdapter,
@@ -9,6 +8,7 @@ import {
   defaultGatewayPort,
 } from './base.js';
 import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
+import { dshProfilesDir } from '../paths.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
 
 /**
@@ -67,6 +67,7 @@ const hookRoute = (entries: any[]): any | undefined =>
 
 export class DshClientAdapter implements ClientAdapter {
   name = 'dsh' as const;
+  hookKind = 'config' as const;
   displayName = 'DeepSeek Harness';
 
   /**
@@ -74,13 +75,7 @@ export class DshClientAdapter implements ClientAdapter {
    * target. Public for test stubbing.
    */
   getConfigPath(): string {
-    const env = process.env.DSH_HOME?.trim();
-    // dsh expands a leading ~ in DSH_HOME itself; mirror that here.
-    const home = !env ? path.join(os.homedir(), '.dsh')
-      : env === '~' ? os.homedir()
-      : env.startsWith('~/') || env.startsWith('~\\') ? path.join(os.homedir(), env.slice(2))
-      : env;
-    return path.join(home, 'profiles');
+    return dshProfilesDir();
   }
 
   /** Every existing per-profile patch file, in stable profile-name order. */
@@ -95,7 +90,7 @@ export class DshClientAdapter implements ClientAdapter {
       .sort();
   }
 
-  async getStatus(): Promise<ClientHookStatus> {
+  async getStatus(): Promise<Omit<ClientHookStatus, 'hookKind'>> {
     const files = this.existingPatchFiles();
     const exists = files.length > 0;
 

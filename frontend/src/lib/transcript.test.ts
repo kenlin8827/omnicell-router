@@ -5,7 +5,9 @@
  * choices-less usage frames) instead of throwing on them.
  */
 import { describe, expect, it } from 'vitest';
-import { mergeSseToNonStream } from './transcript';
+import type { CaptureTurn } from './api';
+import { groupIntoRounds, messageText, mergeSseToNonStream } from './transcript';
+import type { TranscriptMessage, TranscriptTurn } from './transcript';
 
 const frame = (payload: Record<string, unknown>): string => `data: ${JSON.stringify(payload)}\n\n`;
 
@@ -41,5 +43,66 @@ describe('mergeSseToNonStream — openai-chat dialect', () => {
       frame({ id: 'chatcmpl-1', usage: { prompt_tokens: 3, completion_tokens: 1 } });
     const merged = mergeSseToNonStream(raw) as Record<string, any>;
     expect(merged.usage).toEqual({ prompt_tokens: 3, completion_tokens: 1 });
+  });
+});
+
+const msg = (text: string, role: 'user' | 'assistant' | 'tool' = 'user'): TranscriptMessage => ({
+  role,
+  blocks: [{ kind: 'text', text }],
+  toolCalls: [],
+});
+
+const step = (over: Partial<TranscriptTurn>): TranscriptTurn => ({
+  idx: 0,
+  turn: {} as CaptureTurn,
+  input: [],
+  output: null,
+  hasResponseBody: false,
+  reqTruncated: false,
+  reqUnparsed: false,
+  diverged: false,
+  ...over,
+});
+
+describe('groupIntoRounds — archive prompt metadata', () => {
+  it('keeps a full-history opener as one round and shows its archived prompt', () => {
+    const rounds = groupIntoRounds([
+      step({
+        // The body carries Q1, a harness bundle, then the actual new prompt.
+        input: [msg('Q1'), msg('<user_info> harness'), msg('Q2')],
+        turn: {
+          promptSummary: 'Q2',
+          clientRequest: { promptMessageCount: 3 },
+        } as CaptureTurn,
+      }),
+    ]);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].prompt && messageText(rounds[0].prompt)).toBe('Q2');
+  });
+
+  it('does not split an indexed round when an intermediate answer converges', () => {
+    const rounds = groupIntoRounds([
+      step({
+        input: [msg('Q1')],
+        turn: {
+          promptSummary: 'Q1',
+          clientRequest: { promptMessageCount: 2 },
+        } as CaptureTurn,
+        output: { text: 'intermediate', reasoning: '', toolCalls: [] },
+      }),
+      step({
+        input: [msg('tool result', 'tool')],
+        turn: { clientRequest: { promptMessageCount: 3 } } as CaptureTurn,
+      }),
+      step({
+        input: [msg('Q2')],
+        turn: {
+          promptSummary: 'Q2',
+          clientRequest: { promptMessageCount: 2 },
+        } as CaptureTurn,
+      }),
+    ]);
+    expect(rounds).toHaveLength(2);
+    expect(rounds[0].steps).toHaveLength(2);
   });
 });

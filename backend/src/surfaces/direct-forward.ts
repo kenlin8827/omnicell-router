@@ -3,7 +3,14 @@ import https from 'node:https';
 import net from 'node:net';
 import type { Readable } from 'node:stream';
 import { FORWARD_PROXY_HANG_TIMEOUT_MS } from '../config/defaults.js';
-import { filterHeaders, openViaProxy, parseProxy, transitProxyFor } from '../forward-proxy/egress.js';
+import {
+  filterHeaders,
+  openViaProxy,
+  parseProxy,
+  transitEgressFor,
+  transitProxyFor,
+  upstreamServernameOption,
+} from '../forward-proxy/egress.js';
 import {
   emitUpstreamFailureOnce,
   emitUpstreamRequestOnce,
@@ -22,8 +29,10 @@ import type { TransportContext } from './types.js';
  * body, then hands the origin response to the transport's raw relay
  * (`t.relayUpstream`) — JSON or SSE alike, byte-verbatim.
  *
- * Egress follows the same `config.proxy` outbound policy as the forward
- * proxy's own forwarders (transitProxyFor; CONNECT tunnel for https targets).
+ * Egress follows the SAME rule table as the forward proxy's own legs
+ * (ADR-0018 — this is client traffic, so `forwardProxy.rules` owns it;
+ * CONNECT tunnel for https targets). `reject` is an admission gate for the
+ * proxy listener, not a relay veto, so it degrades to direct here.
  * Upstream-leg capture fires here (request once the target is known, response
  * on completion) with the provenance orchestrator attached to the plan.
  */
@@ -118,7 +127,8 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
       });
     };
 
-    const proxyUrl = transitProxyFor(u.hostname, port);
+    const egress = transitEgressFor(u.hostname);
+    const proxyUrl = transitProxyFor(egress.proxy);
     if (!proxyUrl) {
       const transport = secure ? https : http;
       const upstream = transport.request(
@@ -128,7 +138,7 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
           method: 'POST',
           path: `${u.pathname}${u.search}`,
           headers,
-          ...(secure ? { servername: u.hostname.replace(/^\[|\]$/g, '') } : {}),
+          ...(secure ? upstreamServernameOption(u.hostname) : {}),
         } as https.RequestOptions,
         (up) => onHeaders(upstream)(up)
       );
@@ -191,7 +201,7 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
             method: 'POST',
             path: `${u.pathname}${u.search}`,
             headers,
-            servername: u.hostname.replace(/^\[|\]$/g, ''),
+            ...upstreamServernameOption(u.hostname),
           });
           hangGuard(upstream);
           upstream.on('error', (err: Error) => {

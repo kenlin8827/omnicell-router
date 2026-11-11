@@ -26,7 +26,7 @@ export const MD_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ node: _node, src, ...props }) =>
     typeof src === 'string' && /^(?:https?:)?\/\//i.test(src) ? (
-      <span style={{ color: 'var(--text-dim)', fontSize: '11px' }}>[image]</span>
+      <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)' }}>[image]</span>
     ) : (
       <img {...props} src={src} loading="lazy" />
     ),
@@ -44,6 +44,11 @@ export const proseIsLong = (text: string, clamp: number): boolean =>
  *  reads as broken typesetting. Tool output stays mono.
  *  open/hideToggle support a parent-owned toggle (ToolResultRow's header row)
  *  so the control can sit above the preview instead of under it.
+ *  scrollClamp swaps the collapsed preview from a line-clamp cut to a
+ *  bounded-height INTERNALLY SCROLLABLE window (the operator can read
+ *  anything without expanding); expanding then shows the FULL content
+ *  uncapped. For tight shells (capture drawers) where the outer scroll
+ *  layer must stay short.
  *  viewTitle shows a "view" button next to the toggle: it opens the shared
  *  dialog with the full text — scrollable, fullscreen-capable — while the
  *  toggle keeps expanding in place. Answer blocks use both; every other
@@ -60,6 +65,9 @@ const Prose: React.FC<{
   /** Notifies the parent-owned open state on toggle (bulk section control). */
   onOpenChange?: (v: boolean) => void;
   hideToggle?: boolean;
+  /** Collapsed preview scrolls internally instead of being line-clamped cut;
+   *  expanded renders the full content. */
+  scrollClamp?: boolean;
   /** Present → the "view" button appears; its value is the dialog title. */
   viewTitle?: string;
 }> = ({
@@ -73,6 +81,7 @@ const Prose: React.FC<{
   open: openProp,
   onOpenChange,
   hideToggle,
+  scrollClamp = false,
   viewTitle,
 }) => {
   const { t } = useI18n();
@@ -81,16 +90,21 @@ const Prose: React.FC<{
   const [viewFull, setViewFull] = useState(false);
   const open = openProp ?? openState;
   const long = useMemo(() => proseIsLong(text, clamp), [text, clamp]);
-  // Collapsed = line-clamp; expanded = full flow — the round's waterfall
-  // panel owns vertical scrolling (two scroll layers, not three).
+  // Collapsed = line-clamp (or a scrollable window when scrollClamp);
+  // expanded = full flow — the round's waterfall panel owns vertical
+  // scrolling (two scroll layers, not three).
   const clampStyle: React.CSSProperties =
     long && !open
-      ? {
-          display: '-webkit-box',
-          WebkitLineClamp: clamp,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-        }
+      ? scrollClamp
+        ? // ~clamp lines tall (1.5em per line at the well's own font size);
+          // scrollable, so nothing is hidden behind the expand toggle.
+          { maxHeight: `${clamp * 1.5}em`, overflowY: 'auto' }
+        : {
+            display: '-webkit-box',
+            WebkitLineClamp: clamp,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }
       : {};
   const baseShell: React.CSSProperties = {
     margin: 0,
@@ -100,8 +114,8 @@ const Prose: React.FC<{
     // contrast against the panel bg — borderless wells read as edgeless void.
     border: `1px solid ${border ?? 'var(--card-border)'}`,
     borderRadius: 6,
-    fontSize: '12px',
-    lineHeight: 1.6,
+    fontSize: 'var(--text-sm)',
+    lineHeight: 'var(--leading-normal)',
     color: color ?? 'var(--text)',
     wordBreak: 'break-word',
   };
@@ -126,7 +140,7 @@ const Prose: React.FC<{
               border: 'none',
               color: 'var(--accent)',
               cursor: 'pointer',
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               padding: '2px 4px',
               marginLeft: 2,
             }}
@@ -141,7 +155,7 @@ const Prose: React.FC<{
                 border: 'none',
                 color: 'var(--accent)',
                 cursor: 'pointer',
-                fontSize: '11px',
+                fontSize: 'var(--text-xs)',
                 padding: '2px 4px',
                 marginLeft: 6,
               }}

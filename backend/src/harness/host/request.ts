@@ -38,6 +38,10 @@ export interface HostInstallRequest {
   listedOn?: string[];
   /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
   marketplace?: { repo: string; plugin: string; name: string };
+  /** The market row's one-line description; kept when the install resolves no registry line. */
+  description?: string;
+  /** Per-profile plugin store (DSH): the profile the console chose. Absent = the adapter's default. */
+  profile?: string;
   fetchImpl?: typeof fetch;
   execImpl?: ExecImpl;
 }

@@ -19,6 +19,7 @@ import { InfoTip } from '../components/InfoTip';
 import { Switch } from '../components/Switch';
 
 import { FONT_MONO } from '../lib/fonts';
+import { DEFAULT_PROBE_INTERVAL_MS } from '../lib/defaults';
 /* ═══════════════════════════════════════════════════════════════════════════
  * Breaker-rules page — Configuration UX contract (spec
  * docs/design/circuit-breaker-rules-config.md): three collapsible blocks A/B/C
@@ -44,6 +45,7 @@ const CB_KNOB_DEFAULTS = {
   cooldownMultiplier: 2.0,
   quotaCooldownMs: 12 * 3600 * 1000,
   halfOpenMaxProbes: 1,
+  activeProbingIntervalMs: DEFAULT_PROBE_INTERVAL_MS,
 };
 
 const fmtPlain = (n: number): string => (Number.isInteger(n) ? String(n) : String(parseFloat(n.toFixed(4))));
@@ -249,7 +251,7 @@ const AutoField: React.FC<AutoFieldProps> = ({ label, suffix, value, live, unit,
     const seed = custom ? value : live;
     const done = () => setEditing(false);
     return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
         {label ? <span>{label}</span> : null}
         {unit === 'ms' || unit === 'msNever' ? (
           /* Shared duration control — canonical ms; the unit dropdown is a typing aid. */
@@ -281,7 +283,7 @@ const AutoField: React.FC<AutoFieldProps> = ({ label, suffix, value, live, unit,
                 if (e.key === 'Enter') e.currentTarget.blur();
                 else if (e.key === 'Escape') done();
               }}
-              style={{ width: 96, padding: '6px 10px', fontSize: 13 }}
+              style={{ width: 96, padding: '6px 10px', fontSize: 'var(--text-md)' }}
             />
             {unit === 'percent' && <span style={{ color: 'var(--text-dim)' }}>%</span>}
           </>
@@ -292,7 +294,7 @@ const AutoField: React.FC<AutoFieldProps> = ({ label, suffix, value, live, unit,
   }
 
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
       {label ? <span>{label}</span> : null}
       <button
         type="button"
@@ -303,7 +305,7 @@ const AutoField: React.FC<AutoFieldProps> = ({ label, suffix, value, live, unit,
             : `${autoKnob} = ${fmt(live)}\n${t('breakerRules.editHint')}`
         }
         style={{
-          fontSize: 12,
+          fontSize: 'var(--text-sm)',
           padding: '4px 10px',
           borderRadius: 7,
           cursor: 'pointer',
@@ -492,7 +494,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             <span>{t('breakerRules.sectionTitle')}</span>
           </div>
         </div>
-        <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('breakerRules.loadFailed')}</div>
+        <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('breakerRules.loadFailed')}</div>
       </div>
     );
   }
@@ -506,7 +508,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             <span>{t('breakerRules.sectionTitle')}</span>
           </div>
         </div>
-        <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('breakerRules.loading')}</div>
+        <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('breakerRules.loading')}</div>
       </div>
     );
   }
@@ -536,7 +538,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
 
   const blast = (family: 'trip', ruleName: string, value: BreakerScopeOverride | undefined) => (
     <span className="input-group">
-      <span style={{ padding: '6px 8px 6px 10px', fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>
+      <span style={{ padding: '6px 8px 6px 10px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>
         {t('breakerRules.pBlast')}
       </span>
       <Combobox
@@ -545,7 +547,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
         options={blastOptions}
         panelMinWidth={230}
         style={{
-          fontSize: 12,
+          fontSize: 'var(--text-sm)',
           padding: '6px 10px',
           width: 170,
           border: 'none',
@@ -567,14 +569,14 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
       onChange={onPick}
       options={options}
       panelMinWidth={210}
-      style={{ fontSize: 12, padding: '6px 10px', width: '100%' }}
+      style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', width: '100%' }}
     />
   );
 
   const th: React.CSSProperties = {
     textAlign: 'left',
-    fontWeight: 600,
-    fontSize: 11,
+    fontWeight: 'var(--font-semibold)',
+    fontSize: 'var(--text-xs)',
     color: 'var(--text-dim)',
     padding: '6px 8px',
     borderBottom: '1px solid var(--card-border)',
@@ -583,7 +585,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     padding: '7px 8px',
     verticalAlign: 'middle',
     borderBottom: '1px solid var(--card-border)',
-    fontSize: 12,
+    fontSize: 'var(--text-sm)',
   };
 
   // Collapsible block headers (native <details>/<summary>): each block sits in
@@ -594,8 +596,8 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    fontSize: 12,
-    fontWeight: 700,
+    fontSize: 'var(--text-sm)',
+    fontWeight: 'var(--font-bold)',
     color: 'var(--text-muted)',
     margin: 0,
     paddingBottom: 8,
@@ -605,14 +607,14 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     listStyle: 'none',
   };
   const blockChev: React.CSSProperties = {
-    fontSize: 9,
+    fontSize: 'var(--text-3xs)',
     width: 10,
     flexShrink: 0,
     transition: 'transform 0.15s ease',
   };
   const blockBadge: React.CSSProperties = {
-    fontSize: 10.5,
-    fontWeight: 400,
+    fontSize: 'var(--text-xs)',
+    fontWeight: 'var(--font-regular)',
     color: 'var(--text-dim)',
     borderColor: 'var(--card-border)',
     whiteSpace: 'nowrap',
@@ -630,7 +632,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     { label: t('breakerRules.kQuota'), value: fmtMs(cb.quotaCooldownMs ?? CB_KNOB_DEFAULTS.quotaCooldownMs, durLabels), key: 'circuitBreaker.quotaCooldownMs' },
     { label: t('breakerRules.kProbes'), value: fmtPlain(cb.halfOpenMaxProbes ?? CB_KNOB_DEFAULTS.halfOpenMaxProbes), key: 'circuitBreaker.halfOpenMaxProbes' },
     { label: t('breakerRules.kProbing'), value: cb.activeProbing?.enabled ? t('breakerRules.stateOn') : t('breakerRules.stateOff'), key: 'circuitBreaker.activeProbing.enabled' },
-    { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? 60_000, durLabels), key: 'circuitBreaker.activeProbing.intervalMs' },
+    { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? CB_KNOB_DEFAULTS.activeProbingIntervalMs, durLabels), key: 'circuitBreaker.activeProbing.intervalMs' },
     { label: t('breakerRules.kAffinity'), value: fmtMs(cb.credentialAffinity?.cacheTtlMs ?? 300_000, durLabels), key: 'circuitBreaker.credentialAffinity.cacheTtlMs' },
     { label: t('breakerRules.kDebounce'), value: fmtMs(cb.persistence?.debounceMs ?? 1000, durLabels), key: 'circuitBreaker.persistence.debounceMs' },
     { label: t('breakerRules.kHardBoundary'), value: fmtMs(retryBoundary ?? 2000, durLabels), key: 'retry.inplace.maxRateLimitWaitMs', note: t('breakerRules.kHardBoundaryNote') },
@@ -661,7 +663,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           <span>{t('breakerRules.sectionTitle')}</span>
           <span
             className="badge"
-            style={{ color: view.color, borderColor: 'var(--card-border)', whiteSpace: 'nowrap', fontSize: 12, padding: '3px 10px' }}
+            style={{ color: view.color, borderColor: 'var(--card-border)', whiteSpace: 'nowrap', fontSize: 'var(--text-sm)', padding: '3px 10px' }}
             title={t('breakerRules.autoTripping')}
           >
             {t('breakerRules.autoTripping')}: {view.text}
@@ -669,7 +671,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
         </div>
         <span style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           {/* Shadow switch — top-right of the section (UX contract). */}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', cursor: 'pointer' }}>
             <span>{t('breakerRules.shadowLabel')}</span>
             <Switch
               checked={cb.shadow ?? false}
@@ -717,7 +719,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           </thead>
           <tbody>
             <tr>
-              <th scope="row" style={{ ...td, fontWeight: 600, textAlign: 'left' }}>{t('breakerRules.rowQuota')}</th>
+              <th scope="row" style={{ ...td, fontWeight: 'var(--font-semibold)', textAlign: 'left' }}>{t('breakerRules.rowQuota')}</th>
               <td style={td}>
                 {disp(dispOptions.tripIgnore, quotaTrip ? 'dispTripNow' : 'dispIgnore', (v) =>
                   rulePatch('trip', 'quota', { enabled: v === 'dispTripNow' })
@@ -741,7 +743,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
               </td>
             </tr>
             <tr>
-              <th scope="row" style={{ ...td, fontWeight: 600, textAlign: 'left' }}>{t('breakerRules.rowAuth')}</th>
+              <th scope="row" style={{ ...td, fontWeight: 'var(--font-semibold)', textAlign: 'left' }}>{t('breakerRules.rowAuth')}</th>
               <td style={td}>
                 {disp(dispOptions.tripIgnore, authTrip ? 'dispTripNow' : 'dispIgnore', (v) =>
                   rulePatch('trip', 'auth', { enabled: v === 'dispTripNow' })
@@ -761,7 +763,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                     />
                     {/* markSuspect: off STOPS NEW flags only — existing flags keep gating (spec rule #2). */}
                     <label
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer' }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', cursor: 'pointer' }}
                       title={t('breakerRules.markSuspectWarn')}
                     >
                       <input
@@ -779,12 +781,12 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                   </Params>
                 ) : (
                   /* 401 ignore = penalty-free passthrough (no trip / no count / no SUSPECT). */
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('breakerRules.authIgnoreHint')}</span>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('breakerRules.authIgnoreHint')}</span>
                 )}
               </td>
             </tr>
             <tr>
-              <th scope="row" style={{ ...td, fontWeight: 600, textAlign: 'left' }}>{t('breakerRules.rowRate')}</th>
+              <th scope="row" style={{ ...td, fontWeight: 'var(--font-semibold)', textAlign: 'left' }}>{t('breakerRules.rowRate')}</th>
               <td style={td}>
                 {/* No "ignore" — the classifier counts every 429 (UX rule 2). */}
                 {disp(dispOptions.hard, rateHard ? 'dispTripAbove' : 'dispCountOnly', (v) =>
@@ -836,7 +838,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
               </td>
             </tr>
             <tr>
-              <th scope="row" style={{ ...td, fontWeight: 600, textAlign: 'left' }}>{t('breakerRules.rowServer')}</th>
+              <th scope="row" style={{ ...td, fontWeight: 'var(--font-semibold)', textAlign: 'left' }}>{t('breakerRules.rowServer')}</th>
               <td style={td}>
                 {disp(dispOptions.countIgnore, serverCount ? 'dispCountIt' : 'dispIgnore', (v) =>
                   rulePatch('counting', 'serverErrors', { enabled: v === 'dispCountIt' })
@@ -860,7 +862,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
               </td>
             </tr>
             <tr>
-              <th scope="row" style={{ ...td, fontWeight: 600, textAlign: 'left' }}>{t('breakerRules.rowUnknown')}</th>
+              <th scope="row" style={{ ...td, fontWeight: 'var(--font-semibold)', textAlign: 'left' }}>{t('breakerRules.rowUnknown')}</th>
               <td style={td}>
                 {disp(dispOptions.countIgnore, unknownCount ? 'dispCountIt' : 'dispIgnore', (v) =>
                   rulePatch('counting', 'unknownErrors', { enabled: v === 'dispCountIt' })
@@ -884,7 +886,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
               </td>
             </tr>
             <tr>
-              <th scope="row" style={{ ...td, fontWeight: 600, textAlign: 'left' }}>{t('breakerRules.rowClient')}</th>
+              <th scope="row" style={{ ...td, fontWeight: 'var(--font-semibold)', textAlign: 'left' }}>{t('breakerRules.rowClient')}</th>
               <td style={td}>
                 {disp(dispOptions.ignoreCount, clientCount ? 'dispCountIt' : 'dispIgnore', (v) =>
                   rulePatch('counting', 'clientErrors', { enabled: v === 'dispCountIt' })
@@ -894,7 +896,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 {clientCount ? (
                   <Params>
                     {/* Rule #8: no cooldown param of its own — the B ladder applies; ON = not recommended. */}
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('breakerRules.clientParamsNote')}</span>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('breakerRules.clientParamsNote')}</span>
                     <span className="badge badge-danger" style={{ whiteSpace: 'nowrap' }}>
                       {t('breakerRules.notRecommended')}
                     </span>
@@ -918,7 +920,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
         </summary>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', cursor: 'pointer', fontWeight: 'var(--font-semibold)' }}>
             <input
               type="checkbox"
               checked={consOn}
@@ -969,7 +971,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           ) : null}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', cursor: 'pointer', fontWeight: 'var(--font-semibold)' }}>
             <input
               type="checkbox"
               checked={rateDetOn}
@@ -1036,7 +1038,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           </span>
         </summary>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
           <span>{t('breakerRules.cIntro')}</span>
           <AutoField
             suffix={t('breakerRules.cProbes')}
@@ -1057,7 +1059,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             onChange={(v) => rulePatch('recovery', 'halfOpen', { successThreshold: v })}
           />
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
           <span>{t('breakerRules.cFailIntro')}</span>
           <AutoField
             suffix={t('breakerRules.cFailAfterWait')}
@@ -1080,7 +1082,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             }
             options={canaryOptions}
             panelMinWidth={210}
-            style={{ fontSize: 12, padding: '6px 10px', width: 180 }}
+            style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', width: 180 }}
           />
           {rec.onCanaryFailure === 'backoff' ? (
             <AutoField
@@ -1104,7 +1106,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             <InfoTip text={t('breakerRules.canaryManualNote')} />
           ) : null}
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 'var(--text-sm)' }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
             <span>{t('breakerRules.cProbing')}</span>
             <Switch
@@ -1116,9 +1118,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           <AutoField
             label={t('breakerRules.pInterval')}
             value={cb.activeProbing?.intervalMs}
-            live={cb.activeProbing?.intervalMs ?? 60_000}
+            live={cb.activeProbing?.intervalMs ?? CB_KNOB_DEFAULTS.activeProbingIntervalMs}
             unit="ms"
-            autoKnob="circuitBreaker.activeProbing.intervalMs (default 60000)"
+            autoKnob={`circuitBreaker.activeProbing.intervalMs (default ${CB_KNOB_DEFAULTS.activeProbingIntervalMs})`}
             keyName="circuitBreaker.activeProbing.intervalMs"
             onChange={(v) => patch((prev) => ({ ...prev, activeProbing: { ...prev.activeProbing, intervalMs: v } }))}
           />
@@ -1133,7 +1135,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
         <summary
           style={{
             cursor: 'pointer',
-            fontSize: 12,
+            fontSize: 'var(--text-sm)',
             color: 'var(--text-muted)',
             userSelect: 'none',
             display: 'inline-flex',
@@ -1144,7 +1146,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           <span aria-hidden style={{ ...blockChev, transform: openBlocks.d ? undefined : 'rotate(-90deg)' }}>▼</span>
           {t('breakerRules.defaultsToggle')}
         </summary>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', margin: '6px 0' }}>{t('breakerRules.defaultsHint')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '6px 0' }}>{t('breakerRules.defaultsHint')}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '2px 16px' }}>
           {defaultRows.map((d) => (
             <div
@@ -1156,7 +1158,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 gap: 8,
                 borderBottom: '1px dashed var(--card-border)',
                 padding: '4px 0',
-                fontSize: 11,
+                fontSize: 'var(--text-xs)',
               }}
             >
               <span style={{ color: 'var(--text-muted)' }}>{d.label}</span>

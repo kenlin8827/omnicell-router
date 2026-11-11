@@ -73,8 +73,8 @@ export const AutoPage: React.FC = () => {
     flexDirection: 'column',
     gap: '12px',
   };
-  const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' };
-  const labelStyle: React.CSSProperties = { fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' };
+  const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' };
+  const labelStyle: React.CSSProperties = { fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -91,7 +91,7 @@ export const AutoPage: React.FC = () => {
         </div>
 
         {savedNotice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <Check size={16} />
             <span>{t('settings.savedNotice')}</span>
           </div>
@@ -100,7 +100,7 @@ export const AutoPage: React.FC = () => {
         {/* Alias family overview */}
         <div style={{ padding: '14px', borderRadius: '10px', border: '1px dashed var(--card-border)', display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
           {(['famAuto', 'famLite', 'famPlus', 'famPro', 'famUltra'] as const).map(k => (
-            <div key={k} style={{ flex: '1 1 200px', fontSize: '12px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div key={k} style={{ flex: '1 1 200px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Zap size={13} color="var(--accent)" />
               <span>{t('auto.' + k)}</span>
             </div>
@@ -110,7 +110,7 @@ export const AutoPage: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Card A: Routing mode */}
           <div className="sub-card" style={cardStyle}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Network size={14} />
               {t('auto.modeTitle')}
             </div>
@@ -120,19 +120,19 @@ export const AutoPage: React.FC = () => {
                   key={m}
                   type="button"
                   className={(config.routing?.mode ?? 'smart') === m ? 'btn btn-primary' : 'btn'}
-                  style={{ fontSize: '12px', flex: 1 }}
+                  style={{ fontSize: 'var(--text-sm)', flex: 1 }}
                   onClick={() => setConfig({ ...config, routing: { ...(config.routing || {}), mode: m } })}
                 >
                   {t(m === 'smart' ? 'auto.modeSmart' : m === 'cost' ? 'auto.modeCost' : 'auto.modeQuality')}
                 </button>
               ))}
             </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('auto.modeHint')}</div>
+            <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('auto.modeHint')}</div>
           </div>
 
           {/* Card B: Layer 2 Decision + decision cache */}
           <div className="sub-card" style={cardStyle}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Scale size={14} />
               {t('auto.layer2Title')}
             </div>
@@ -158,7 +158,7 @@ export const AutoPage: React.FC = () => {
                 clearable
                 placeholder={t('auto.l2ModelFollow')}
               />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '4px' }}>
                 {t('auto.l2ModelHint')}
               </div>
             </div>
@@ -173,7 +173,7 @@ export const AutoPage: React.FC = () => {
                 className="input"
                 style={{ width: 140 }}
               />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '4px' }}>
                 {t('auto.l2TimeoutHint')}
               </div>
             </div>
@@ -185,24 +185,24 @@ export const AutoPage: React.FC = () => {
                   onChange={v => setLayer2({ effortDecision: v })}
                 />
               </label>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('auto.l2EffortDecisionHint')}
               </div>
             </div>
             {(layer2.enabled ?? false) && effectiveDecisionModel && (
-              <div style={{ fontSize: '11px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Check size={13} />
                 <span>{t('auto.l2ModelEffective', { model: effectiveDecisionModel })}</span>
               </div>
             )}
             {(layer2.enabled ?? false) && !effectiveDecisionModel && (
-              <div style={{ fontSize: '11px', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px', lineHeight: 1.6 }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px', lineHeight: 'var(--leading-normal)' }}>
                 <TriangleAlert size={13} style={{ flexShrink: 0 }} />
                 <span>{t('auto.l2ModelUnset')}</span>
               </div>
             )}
             {(layer2.enabled ?? false) && decisionOutcome && !decisionOutcome.ok && (
-              <div style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)', display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 1.6, padding: '6px 8px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-red, #f87171) 30%, transparent)', background: 'color-mix(in srgb, var(--accent-red, #f87171) 8%, transparent)' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-red, #f87171)', display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 'var(--leading-normal)', padding: '6px 8px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-red, #f87171) 30%, transparent)', background: 'color-mix(in srgb, var(--accent-red, #f87171) 8%, transparent)' }}>
                 <TriangleAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
                 <span>
                   {t('auto.decisionLastFail', {
@@ -226,7 +226,7 @@ export const AutoPage: React.FC = () => {
                   onChange={v => setLayer2({ collectEnabled: v })}
                 />
               </label>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('auto.l2CollectHint')}
               </div>
             </div>
@@ -238,6 +238,7 @@ export const AutoPage: React.FC = () => {
                   onChange={v => setDecisionCache({ enabled: v })}
                 />
               </label>
+              {(decisionCache.enabled ?? true) && (<>
               <div style={{ display: 'flex', gap: '12px' }}>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>{t('auto.cacheTtl')}</label>
@@ -258,12 +259,13 @@ export const AutoPage: React.FC = () => {
                   />
                 </div>
               </div>
+              </>)}
             </div>
           </div>
 
           {/* Card D: quick links along the chain */}
           <div className="sub-card" style={cardStyle}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Database size={14} />
               {t('auto.linksTitle')}
             </div>
@@ -272,7 +274,7 @@ export const AutoPage: React.FC = () => {
               { to: '/cache', label: t('auto.linkCache') },
               { to: '/sessions', label: t('auto.linkSessions') },
             ]).map(l => (
-              <Link key={l.to} to={l.to} className="btn" style={{ fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Link key={l.to} to={l.to} className="btn" style={{ fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span>{l.label}</span>
                 <ArrowRight size={13} />
               </Link>

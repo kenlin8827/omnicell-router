@@ -1,4 +1,5 @@
 import type { HarnessHostId, HarnessSourceView } from '../types.js';
+import { DSH_PLUGIN_NET_VIEW } from './adapters/dsh-plugin-net.js';
 import { getBrowseView } from '../common/market.js';
 
 /**
@@ -7,8 +8,8 @@ import { getBrowseView } from '../common/market.js';
  *
  * Skill sources are GLOBAL and live in `common/source-views.ts` (`SKILL_VIEWS`): a skill registry
  * is not a harness's private market, so it never appears in this table. A plugin default exists
- * only where a harness natively ships a remote registry (Pi's pi.dev); the rest are empty by
- * default and filled by operator-synced sources.
+ * only where a harness ships a remote registry: Pi's pi.dev and DSH's community dsh-plugin.net;
+ * the rest are empty by default and filled by operator-synced sources.
  */
 export function getDefaultViewsForHarness(harness: HarnessHostId): HarnessSourceView[] {
   if (harness === 'pi') {
@@ -23,6 +24,7 @@ export function getDefaultViewsForHarness(harness: HarnessHostId): HarnessSource
       // ignore
     }
   }
+  if (harness === 'dsh') return [DSH_PLUGIN_NET_VIEW];
   // No native plugin registry for this harness.
   return [];
 }

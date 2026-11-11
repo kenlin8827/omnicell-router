@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, ArrowUpToLine } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -22,6 +22,7 @@ import {
   type RateLimitSnapshotEntry,
   type CredentialQuotaView,
   type NpmVocabularyEntry,
+  type PluginAuthType,
 } from '../lib/api';
 import { CREDENTIAL_WEIGHT_MAX } from '../lib/defaults';
 import {
@@ -32,7 +33,9 @@ import {
   type LimitDraft,
 } from '../components/RateLimitEditor';
 import { ProviderModelsDialog } from '../components/ProviderModelsDialog';
+import { SearchInput } from '../components/SearchInput';
 import { Dialog } from '../components/Dialog';
+import { AddCredentialDialog } from '../components/AddCredentialDialog';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -44,9 +47,20 @@ import { useModelTest } from '../lib/useModelTest';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
+import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 import { failureCaption } from '../lib/quotaFailure';
 
 import { FONT_MONO } from '../lib/fonts';
+import { copyToClipboard } from '../lib/clipboard';
+/** Shared provider display sort: localized display name A→Z (case-insensitive),
+ *  falling back to the id when a row carries no display name (def-only
+ *  providers often have no `name`), with id as the stable tiebreak. Both the
+ *  Connected tab and the catalog "All" tab render through this — the raw wire
+ *  orders (providers.json write order, models.dev source order) carry no
+ *  meaning for finding a provider. */
+const byDisplayName = (a: { id: string; name?: string }, b: { id: string; name?: string }): number =>
+  (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' }) ||
+  a.id.localeCompare(b.id);
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
 // class in index.css — single source of truth across all pages and themes.
 const cardFlex: React.CSSProperties = {
@@ -65,23 +79,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const CONNECTED_PAGE_SIZES = [12, 24, 48];
 const CATALOG_PAGE_SIZES = [10, 20, 50, 100, 200];
 
-/**
- * Offline fallback ONLY (the npm-vocabulary endpoint lives in the same gateway
- * process, so this list is practically unreachable — it keeps the form usable
- * if the fetch fails). Source of truth = backend providers/vocabulary.ts,
- * served over /api/admin/opencode/npm-vocabulary.
- */
-const FALLBACK_NPM_PACKAGES = [
-  '@ai-sdk/openai-compatible',
-  '@ai-sdk/anthropic',
-  '@ai-sdk/openai',
-  '@ai-sdk/google',
-  '@ai-sdk/typesafe-ai',
-  '@ai-sdk/azure',
-  '@ai-sdk/amazon-bedrock',
-  '@ai-sdk/xai',
-  '@ai-sdk/mistral',
-];
 const CUSTOM_NPM = '__custom__';
 
 /** One editable header row (2-column editor state). */
@@ -117,7 +114,7 @@ const HeadersEditor: React.FC<{
         <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 3fr) auto', gap: 6, alignItems: 'center' }}>
           <input
             className="input"
-            style={{ fontSize: 12, fontFamily: FONT_MONO }}
+            style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
             placeholder={t('op.headerNamePh')}
             value={r.name}
             disabled={disabled}
@@ -125,7 +122,7 @@ const HeadersEditor: React.FC<{
           />
           <input
             className="input"
-            style={{ fontSize: 12, fontFamily: FONT_MONO }}
+            style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
             placeholder={t('op.headerValuePh')}
             value={r.value}
             disabled={disabled}
@@ -165,7 +162,7 @@ const normalizeProviderIdInput = (raw: string): string =>
  *  identity when its placeholder disappears. */
 const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSSProperties; children: React.ReactNode }> = ({ label, required, style, children }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, ...style }}>
-    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+    <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)' }}>
       {label}
       {required && <span style={{ color: 'var(--accent-rose)', marginLeft: 3 }} aria-hidden>*</span>}
     </span>
@@ -173,16 +170,15 @@ const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSS
   </div>
 );
 
-/** Provider logo on the theme-tinted chip plate (models.dev SVGs are dark glyphs:
- *  --logo-glyph-filter inverts them bright on dark-class themes, light-class
- *  themes draw as-is). Falls back to an initial-letter chip. */
+/** Provider logo on the fixed light `--logo-plate-bg` plate, unfiltered
+ *  (see index.css). Falls back to an initial-letter chip. */
 const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ id, logo, size = 28 }) => {
   const [failed, setFailed] = useState(false);
   const chip: React.CSSProperties = {
     width: size,
     height: size,
     borderRadius: Math.max(6, size * 0.28),
-    background: 'var(--chip-bg)',
+    background: 'var(--logo-plate-bg)',
     border: '1px solid var(--card-border)',
     display: 'flex',
     alignItems: 'center',
@@ -195,11 +191,11 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
       <div style={chip}>
         <span
           style={{
-            fontWeight: 800,
+            fontWeight: 'var(--font-extrabold)',
             fontSize: size * 0.52,
-            color: 'var(--text-main)',
+            color: 'var(--logo-plate-ink)',
             textTransform: 'uppercase',
-            lineHeight: 1,
+            lineHeight: 'var(--leading-none)',
           }}
         >
           {id.slice(0, 1)}
@@ -215,7 +211,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
         width={Math.round(size * 0.72)}
         height={Math.round(size * 0.72)}
         onError={() => setFailed(true)}
-        style={{ objectFit: 'contain', filter: 'var(--logo-glyph-filter)' }}
+        style={{ objectFit: 'contain' }}
         loading="lazy"
       />
     </div>
@@ -229,8 +225,8 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
 const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   background: 'transparent',
   color,
-  fontSize: '10px',
-  fontWeight: 600,
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 'var(--font-semibold)',
   padding: '2px 8px',
   borderRadius: '99px',
   border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
@@ -309,8 +305,8 @@ const syncOutcomeBreakdown = (o: CredentialSyncOutcome | undefined, t: TFn): str
 };
 
 const syncHeadCell: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-semibold)',
   color: 'var(--text-dim)',
   borderBottom: '1px solid var(--divider)',
   paddingBottom: 6,
@@ -319,39 +315,14 @@ const syncTimeCell: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 2,
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-main)',
 };
 const syncOutcomeStyle: React.CSSProperties = {
-  fontSize: 10.5,
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-dim)',
-  lineHeight: 1.5,
+  lineHeight: 'var(--leading-snug)',
 };
-
-/**
- * Clipboard write with a non-secure-context fallback. navigator.clipboard
- * requires a trustworthy origin: the loopback console has one, a LAN http://
- * bind does NOT — and webAuth (hence reveal) is exactly what a non-loopback
- * bind forces on, so the legacy execCommand path must keep "copy" meaning
- * "copy" there too.
- */
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    if (!ok) throw new Error('clipboard-unavailable');
-  }
-}
 
 // the credential-store API serves machine-readable codes ONLY;
 // these tables own all user-visible copy (unknown codes fall back to the raw
@@ -511,17 +482,6 @@ function useCountdownClock(untilMax: number): number {
 }
 
 /**
- * Capped credential list: 3 one-line rows visible, the rest scrolls inside the
- * card. `CREDENTIAL_ROW_HEIGHT_EST` is an ESTIMATE of a single-line CredentialRow
- * (padding + the tallest of its mono chips / icon buttons); if the row style
- * changes, this constant must follow — an off-by-a-few cap only shows slightly
- * fewer rows. Upgrade path if it ever needs to be exact: measure the first
- * rendered row and drive max-height from it.
- */
-const CREDENTIAL_ROWS_VISIBLE = 3;
-const CREDENTIAL_ROW_HEIGHT_EST = 36;
-
-/**
  * Credential display name: the operator's label, or a bare neutral placeholder.
  * OCR never invents a name, and the placeholder carries no fingerprint either —
  * unlabeled rows are already distinguished by their masked key, and get the
@@ -545,7 +505,7 @@ const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) 
   );
 };
 
-type CredentialRowProps = {
+type CredentialZoomRowProps = {
   credential: CredentialHealth;
   caps: CredentialStoreCapabilities;
   /**
@@ -598,13 +558,13 @@ type CredentialRowProps = {
 };
 
 /** Compact icon-button look shared by every per-credential action. */
-const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 11, lineHeight: 1 };
-const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 12, lineHeight: 1 };
+const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)' };
+const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-none)' };
 
 /**
- * Status badges for one credential — shared by the card row and the zoom
- * table so the two surfaces can never disagree on what a row "says".
- * Word badges keep icon + text; icon-only markers lean on `title`.
+ * Status badges for one credential — used by the maintenance (zoom) table so
+ * the table can never disagree with itself on what a row "says". Word badges
+ * keep icon + text; icon-only markers lean on `title`.
  */
 const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining: number }> = ({ credential, remaining }) => {
   const { t } = useI18n();
@@ -658,7 +618,7 @@ const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining
 
 /**
  * Per-credential action buttons — the single source of action availability
- * (Decision 1: capability-first) shared by the card row and the zoom table.
+ * (Decision 1: capability-first) used by the maintenance (zoom) table.
  * Icon-only with full title + aria-label; the zoom table puts the labels in
  * its per-action column headers and renders ONE action per column via
  * `only` (the cell is empty when the row's state hides the action).
@@ -841,173 +801,10 @@ const CredentialActions: React.FC<CredentialActionsProps> = ({
   );
 };
 
-
-/** One credential of a multi-credential provider — the drill-down row. */
-const CredentialRow: React.FC<CredentialRowProps> = ({
-  credential,
-  caps,
-  soleServing,
-  prefixVisible,
-  pending,
-  testing,
-  renaming,
-  onStartRename,
-  onCancelRename,
-  now,
-  onPin,
-  onRename,
-  onTest,
-  onDisconnect,
-  onToggleDisabled,
-  onClearSuspect,
-  canReveal,
-  onCopyKey,
-  onEditLimits,
-  position,
-}) => {
-  const { t } = useI18n();
-  const [labelDraft, setLabelDraft] = useState('');
-  const remaining = credential.cooldownUntilMs !== undefined ? credential.cooldownUntilMs - now : 0;
-  const name = credentialName(credential, t('op.credentialUnnamed'));
-
-  return (
-    <div
-      className="list-row"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '7px 10px',
-        // The scroll container is a flex column: without this the rows SHRINK
-        // to fit the cap instead of overflowing and scrolling.
-        flexShrink: 0,
-        // Chain order rides the #1 slot number — no extra bar/border
-        // (redundant encoding was the box-in-box complaint).
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-      }}
-    >
-      {renaming ? (
-        <>
-          <input
-            className="input"
-            style={{ fontSize: 12, flex: 1, minWidth: 110 }}
-            aria-label={t('op.credentialLabelPlaceholder')}
-            placeholder={t('op.credentialLabelPlaceholder')}
-            maxLength={80}
-            value={labelDraft}
-            onChange={(e) => setLabelDraft(e.target.value)}
-            onKeyDown={(e) => {
-              // Enter with an empty draft is the CLEAR gesture, not a no-op.
-              if (e.key === 'Enter') onRename(credential, labelDraft.trim());
-              if (e.key === 'Escape') onCancelRename();
-            }}
-            autoFocus
-          />
-          <button
-            className="btn btn-sm btn-primary"
-            style={CRED_ICON_BTN}
-            disabled={pending || labelDraft.trim() === (credential.label?.trim() ?? '')}
-            title={labelDraft.trim() ? t('op.credentialRename') : t('op.credentialClearLabel')}
-            onClick={() => onRename(credential, labelDraft.trim())}
-          >
-            <Check size={12} />
-          </button>
-          <button className="btn btn-sm" style={CRED_ICON_BTN} onClick={onCancelRename}>
-            ✕
-          </button>
-        </>
-      ) : (
-        <>
-          {/* Slot number = chain order (head = #1). The order itself changes
-              only via the pin action (a multi-credential provider spreads NEW
-              sessions across every healthy row — Decision 7 — so position is
-              priority, not exclusivity). Uniform color: order metadata only,
-              no row gets a special tint. */}
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              fontSize: 10,
-              fontWeight: 600,
-              minWidth: 12,
-              color: 'var(--text-dim)',
-              fontVariantNumeric: 'tabular-nums',
-            }}
-            title={t('op.credentialChainHeadTip')}
-          >
-            #{position}
-          </span>
-          {/* Weight badge (card rows are read-only here; the zoom table owns
-              the editor). Absent = 1 and stays unlabeled — clutter rule. */}
-          {(credential.weight ?? 1) > 1 && (
-            <span
-              style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}
-            >
-              ×{credential.weight}
-            </span>
-          )}
-          <span
-            style={{ fontWeight: 700, fontSize: 12, flex: '0 1 auto', minWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis' }}
-            title={name}
-          >
-            {name}
-          </span>
-          {/* The fingerprint is a CORRELATION id (breaker state, SUSPECT flags,
-              the Guardrails per-credential trip and the logs all key on it), not
-              something to read. So it lives in the masked key's tooltip, and the
-              chip only appears when two rows of this provider mask to the same
-              text — the one case where a row is otherwise ambiguous. */}
-          {prefixVisible && <PrefixChip credential={credential} />}
-          {credential.maskedKey && (
-            <span
-              style={{
-                fontSize: 11,
-                fontFamily: FONT_MONO,
-                color: 'var(--text-dim)',
-                // Shrinkable so a narrow card clips the KEY, never the buttons
-                // (the action group holds flexShrink:0 and must stay reachable).
-                flex: '0 1 auto',
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-              title={credential.keyHashPrefix ? t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id }) : undefined}
-            >
-              {credential.maskedKey}
-            </span>
-          )}
-          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <CredentialStatusBadges credential={credential} remaining={remaining} />
-            <CredentialActions
-              credential={credential}
-              caps={caps}
-              pending={pending}
-              testing={testing}
-              canReveal={canReveal}
-              onStartRename={() => {
-                setLabelDraft(credential.label ?? '');
-                onStartRename();
-              }}
-              onPin={onPin}
-              onTest={onTest}
-              onCopyKey={onCopyKey}
-              onClearSuspect={onClearSuspect}
-              onEditLimits={onEditLimits}
-              onToggleDisabled={onToggleDisabled}
-              onDisconnect={onDisconnect}
-            />
-          </span>
-        </>
-      )}
-    </div>
-  );
-};
-
 const ZOOM_TH: React.CSSProperties = {
   textAlign: 'left',
-  fontSize: 11.5,
-  fontWeight: 700,
+  fontSize: 'var(--text-sm)',
+  fontWeight: 'var(--font-bold)',
   color: 'var(--text-dim)',
   padding: '5px 10px',
   borderBottom: '1px solid var(--border)',
@@ -1022,11 +819,9 @@ const ZOOM_TD: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-type CredentialZoomRowProps = Omit<CredentialRowProps, 'now'> & { now: number };
-
-/** One credential of the zoom dialog — a table row: the labels live in the
- *  column headers, the actions stay icon-only. Same shared badge/action
- *  components as the card row, so availability logic cannot drift. */
+/** One credential of the maintenance (zoom) dialog — a table row: the labels
+ *  live in the column headers, the actions stay icon-only (hover for the
+ *  full name). */
 const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
   credential,
   caps,
@@ -1084,15 +879,15 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
     <tr>
       {/* Chain order column: plain slot number — head = #1, no star (the pin
           action in the action columns is how the order changes). */}
-      <td style={{ ...ZOOM_TD, textAlign: 'center', color: 'var(--text-dim)', fontWeight: 600, fontSize: 12 }}>
+      <td style={{ ...ZOOM_TD, textAlign: 'center', color: 'var(--text-dim)', fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-sm)' }}>
         #{position}
       </td>
-      <td style={{ ...ZOOM_TD, fontWeight: 700, fontSize: 13.5, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>
+      <td style={{ ...ZOOM_TD, fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>
         {renaming ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <input
               className="input"
-              style={{ fontSize: 13, width: 180 }}
+              style={{ fontSize: 'var(--text-md)', width: 180 }}
               aria-label={t('op.credentialLabelPlaceholder')}
               placeholder={t('op.credentialLabelPlaceholder')}
               maxLength={80}
@@ -1144,7 +939,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           </span>
         )}
       </td>
-      <td style={{ ...ZOOM_TD, fontSize: 12.5, fontFamily: FONT_MONO, color: 'var(--text-dim)', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <td style={{ ...ZOOM_TD, fontSize: 'var(--text-md)', fontFamily: FONT_MONO, color: 'var(--text-dim)', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {credential.maskedKey && (
             <span
@@ -1171,7 +966,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
             defaultValue={credential.weight ?? 1}
             disabled={pending}
             aria-label={t('op.credentialWeight')}
-            style={{ width: 58, fontSize: 12.5, textAlign: 'center' }}
+            style={{ width: 58, fontSize: 'var(--text-md)', textAlign: 'center' }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
             }}
@@ -1184,7 +979,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           />
         ) : (
           (credential.weight ?? 1) > 1 && (
-            <span style={{ fontSize: 12.5, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
               ×{credential.weight}
             </span>
           )
@@ -1198,7 +993,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           {action('clearSuspect')}
           {/* Explicit "normal" word: an empty cell reads as broken data. */}
           {!credential.disabled && !credential.suspect && remaining <= 0 && (credential.limits ?? []).length === 0 && !credential.quota && (
-            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>
           )}
         </span>
       </td>
@@ -1273,7 +1068,7 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
         autoComplete="off"
         spellCheck={false}
         autoFocus
-        style={{ fontSize: 12, width: '100%', marginBottom: 8 }}
+        style={{ fontSize: 'var(--text-sm)', width: '100%', marginBottom: 8 }}
         placeholder={t('op.copyKeyPassword')}
         value={password}
         onChange={(e) => onPassword(e.target.value)}
@@ -1282,7 +1077,7 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
           if (e.key === 'Escape') onCancel();
         }}
       />
-      {error && <div style={{ fontSize: 11, color: 'var(--accent-rose)' }}>{error}</div>}
+      {error && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>{error}</div>}
     </Dialog>
   );
 };
@@ -1327,7 +1122,7 @@ const CredentialLimitsDialog: React.FC<{
 
         {windows.length > 0 && (
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 6 }}>
+            <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', marginBottom: 6 }}>
               {t('op.credentialLimitsWindows')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1338,7 +1133,7 @@ const CredentialLimitsDialog: React.FC<{
                     display: 'flex',
                     justifyContent: 'space-between',
                     gap: 10,
-                    fontSize: 11.5,
+                    fontSize: 'var(--text-sm)',
                     fontFamily: FONT_MONO,
                     color: w.retryAfterMs > 0 ? 'var(--accent-amber)' : 'var(--text-dim)',
                   }}
@@ -1370,10 +1165,17 @@ export const KeysPage: React.FC = () => {
   const [catalog, setCatalog] = useState<OpenCodeCatalogProvider[]>([]);
   const [catalogSource, setCatalogSource] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
-  const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [connectKey, setConnectKey] = useState('');
-  const [keyEditId, setKeyEditId] = useState<string | null>(null);
-  const [keyEditValue, setKeyEditValue] = useState('');
+  // Unified add-credential dialog: every provider card (connected quick-add,
+  // catalog connect) opens the SAME dialog; it hosts the key form and hands
+  // web-login-capable providers over to the device-flow dialog.
+  const [addCredential, setAddCredential] = useState<{
+    id: string;
+    name: string;
+    webLogin?: boolean;
+    webLoginSubmit?: boolean;
+    authTypes?: PluginAuthType[];
+    keyHint?: string;
+  } | null>(null);
   const [modelsPanelId, setModelsPanelId] = useState<string | null>(null);
   const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
   const [notice, setNotice] = useState('');
@@ -1447,14 +1249,14 @@ export const KeysPage: React.FC = () => {
     }
   };
   const [activeTab, setActiveTab] = useState<'connected' | 'catalog' | 'custom' | 'sync'>('connected');
-  // Default OFF (show connected providers): a connected provider is exactly where
-  // a SECOND credential is added, so hiding connected rows made multi-credential
-  // unreachable from this tab. Hiding is opt-in for "only show what's new".
-  // Default ON: the catalog tab is pure-connect — hide rows already connected
-  // (their credential management lives in the Connected tab). The toggle stays
-  // available to reveal them as read-only badges.
-  const [hideConnected, setHideConnected] = useState(true);
+  // Three-state catalog filter (all / connected / unconnected). The old binary
+  // "hide connected" toggle could not answer "which catalog entries have I
+  // already connected?" — the segmented filter covers both directions.
+  const [catalogFilter, setCatalogFilter] = useState<'all' | 'connected' | 'unconnected'>('all');
+  // Origin filter: 'all' | 'builtin' | 'custom' | 'plugin' (any) | a plugin id.
+  const [catalogOrigin, setCatalogOrigin] = useState('all');
   const [connectedQuery, setConnectedQuery] = useState('');
+  const [connectedOrigin, setConnectedOrigin] = useState('all');
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(CATALOG_PAGE_SIZE);
   const [connectedPage, setConnectedPage] = useState(1);
@@ -1479,22 +1281,20 @@ export const KeysPage: React.FC = () => {
   }, [npmVocabulary]);
 
   // npm dropdown options: the vocabulary's ordered aliases ARE the list — the
-  // wire truth is backend data, not a frontend copy. models.dev catalog
-  // packages that the vocabulary does not know ride through after it (they
-  // resolve through wireFor's openai default anyway).
-  const npmOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const c of catalog) {
-      if (!c.npm) continue;
-      counts.set(c.npm, (counts.get(c.npm) || 0) + 1);
-    }
-    const fromCatalog = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([pkg]) => pkg);
-    const known = npmVocabulary.length > 0 ? npmVocabulary.map((e) => e.alias) : FALLBACK_NPM_PACKAGES;
-    const extra = fromCatalog.filter((p) => !known.includes(p));
-    return [...known, ...extra];
-  }, [catalog, npmVocabulary]);
+  // wire truth is backend data, not a frontend copy. Catalog-observed packages
+  // do NOT ride through: the catalog carries unroutable SDKs (azure, bedrock,
+  // vertex — SDK-side signing) and v2-package spellings that duplicate their
+  // alias entries. Anything else can still be typed into the custom field.
+  const npmOptions = useMemo(
+    () => (npmVocabulary.length > 0 ? npmVocabulary.map((e) => e.alias) : FALLBACK_NPM_VOCABULARY.map((e) => e.alias)),
+    [npmVocabulary]
+  );
 
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
+  // "Hide connected" in the catalog tab means HAS A CREDENTIAL — a merely
+  // defined provider (e.g. a plugin-registered preset awaiting its key) must
+  // stay searchable; connectedIds is the pre-write snapshot for the connect flow.
+  const keyedProviderIds = useMemo(() => new Set(ocProviders.filter((p) => p.auth.connected).map((p) => p.id)), [ocProviders]);
 
   // Decision 1: whether a submitted key ADDS an credential or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
@@ -1551,6 +1351,9 @@ export const KeysPage: React.FC = () => {
   // Provider whose credential list is open in the zoom dialog (page-scoped:
   // the dialog shares the card rows' handler wiring).
   const [zoomProviderId, setZoomProviderId] = useState<string | null>(null);
+  // Full probe-failure text for the card's failure-detail dialog: the row
+  // itself only shows the classification (see composeProbeErrorShort).
+  const [probeDetail, setProbeDetail] = useState<{ providerId: string; error: string } | null>(null);
 
   const applyCredentialList = (providerId: string, credentials: CredentialHealth[]) =>
     setStoreStatus((prev) =>
@@ -1788,7 +1591,12 @@ export const KeysPage: React.FC = () => {
     setPendingCredential(`${a.providerId}:${a.id}`);
     try {
       const res = await opencodeApi.revealProviderKey(a.providerId, a.id, revealPassRef.current);
-      await copyToClipboard(res.key);
+      if (!(await copyToClipboard(res.key))) {
+        // A failed clipboard write is NOT an API error: surface the localized
+        // copy toast instead of routing a machine token through reasonError.
+        toast.error(t('op.copyFailed'));
+        return;
+      }
       toast.success(t('op.credentialKeyCopied'));
     } catch (err: any) {
       if (err?.reasonCode === 'invalid_password') {
@@ -1809,7 +1617,10 @@ export const KeysPage: React.FC = () => {
     setRevealBusy(true);
     try {
       const res = await opencodeApi.revealProviderKey(revealTarget.providerId, revealTarget.id, revealPassword);
-      await copyToClipboard(res.key);
+      if (!(await copyToClipboard(res.key))) {
+        setRevealError(t('op.copyFailed'));
+        return;
+      }
       revealPassRef.current = revealPassword;
       setRevealTarget(null);
       setRevealPassword('');
@@ -1821,17 +1632,45 @@ export const KeysPage: React.FC = () => {
     }
   };
 
+  // Origin-filter predicate shared by both tabs: builtin = covered by the
+  // built-in models.dev catalog; custom = self-declared AND plugin-free
+  // (plugin rows answer to the plugin / per-plugin options instead).
+  const matchOrigin = (origin: string, p: { custom: boolean; pluginOrigin?: string }): boolean =>
+    origin === 'builtin'
+      ? !p.custom
+      : origin === 'custom'
+        ? p.custom && !p.pluginOrigin
+        : origin === 'plugin'
+          ? Boolean(p.pluginOrigin)
+          : origin === 'all' || p.pluginOrigin === origin;
+  // One origin-dropdown option list for both tabs (built from each tab's own
+  // plugin id set).
+  const originFilterOptions = (pluginIds: string[]) => [
+    { value: 'all', label: t('op.filterOriginAll') },
+    { value: 'builtin', label: t('op.filterOriginBuiltin') },
+    { value: 'custom', label: t('op.filterOriginCustom') },
+    { value: 'plugin', label: t('op.filterOriginPlugin') },
+    ...pluginIds.map((id) => ({ value: id, label: `${t('op.pluginTag')} · ${id}` })),
+  ];
+  // Plugin ids among connected providers (mirrors the catalog tab's origin
+  // dropdown options).
+  const connectedPluginIds = useMemo(
+    () => [...new Set(ocProviders.map((p) => p.pluginOrigin).filter((p): p is string => Boolean(p)))],
+    [ocProviders]
+  );
   const connectedResults = useMemo(() => {
     const q = connectedQuery.trim().toLowerCase();
-    if (!q) return ocProviders;
-    return ocProviders.filter(
-      (p) =>
-        p.id.toLowerCase().includes(q) ||
-        (p.name || '').toLowerCase().includes(q) ||
-        (p.baseURL || '').toLowerCase().includes(q) ||
-        p.models.some((m) => m.toLowerCase().includes(q))
-    );
-  }, [ocProviders, connectedQuery]);
+    const list = q
+      ? ocProviders.filter(
+          (p) =>
+            p.id.toLowerCase().includes(q) ||
+            (p.name || '').toLowerCase().includes(q) ||
+            (p.baseURL || '').toLowerCase().includes(q) ||
+            p.models.some((m) => m.toLowerCase().includes(q))
+        )
+      : [...ocProviders];
+    return list.filter((p) => matchOrigin(connectedOrigin, p)).sort(byDisplayName);
+  }, [ocProviders, connectedQuery, connectedOrigin]);
   const pagedConnected = useMemo(() => {
     const start = (connectedPage - 1) * connectedPageSize;
     return connectedResults.slice(start, start + connectedPageSize);
@@ -1841,10 +1680,28 @@ export const KeysPage: React.FC = () => {
     const q = catalogQuery.trim().toLowerCase();
     let list = q
       ? catalog.filter((c) => (c.id || '').toLowerCase().includes(q) || (c.name || '').toLowerCase().includes(q))
-      : catalog;
-    if (hideConnected) list = list.filter((c) => !connectedIds.has(c.id));
-    return list;
-  }, [catalog, catalogQuery, hideConnected, connectedIds]);
+      : [...catalog];
+    if (catalogFilter !== 'all') {
+      const wantConnected = catalogFilter === 'connected';
+      list = list.filter((c) => keyedProviderIds.has(c.id) === wantConnected);
+    }
+    list = list.filter((c) => matchOrigin(catalogOrigin, c));
+    // Same display sort as the Connected tab — a copy, never the state array.
+    return list.sort(byDisplayName);
+  }, [catalog, catalogQuery, catalogFilter, catalogOrigin, keyedProviderIds]);
+  // Plugin ids present in the catalog (for the origin filter dropdown).
+  const catalogPluginIds = useMemo(
+    () => [...new Set(catalog.map((c) => c.pluginOrigin).filter((p): p is string => Boolean(p)))],
+    [catalog]
+  );
+
+  // Web-login capability for the unified add-credential dialog: only catalog
+  // rows carry webLogin/webLoginSubmit (plugin-driven), so connected-tab cards
+  // resolve it through the same catalog snapshot — never a duplicated flag.
+  const webLoginByProvider = useMemo(
+    () => new Map(catalog.map((c) => [c.id, { webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: c.keyHint }])),
+    [catalog]
+  );
 
   const pagedCatalog = catalogResults.slice(
     (catalogPage - 1) * catalogPageSize,
@@ -1854,8 +1711,8 @@ export const KeysPage: React.FC = () => {
   const tabBtn = (tab: typeof activeTab, label: string, count?: number): React.CSSProperties => ({
     padding: '7px 14px',
     borderRadius: '8px',
-    fontSize: '12.5px',
-    fontWeight: activeTab === tab ? 700 : 500,
+    fontSize: 'var(--text-md)',
+    fontWeight: activeTab === tab ? 'var(--font-bold)' : 'var(--font-medium)',
     color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
     background: activeTab === tab ? 'var(--surface-hover)' : 'transparent',
     border: activeTab === tab ? '1px solid var(--card-border)' : '1px solid transparent',
@@ -2045,40 +1902,6 @@ export const KeysPage: React.FC = () => {
     showNotice(t(multiCredentialStore ? 'op.keyAdded' : 'op.keyUpdated', { sink: sinkLabel }));
   };
 
-  const handleConnect = async (id: string) => {
-    if (!connectKey.trim()) return;
-    setBusy(true);
-    try {
-      const res = await opencodeApi.connectProvider(id, connectKey.trim());
-      // connectedIds is the pre-write snapshot — a first connect is NOT in it
-      // yet; announceConnect lands the row before refreshAll() has returned.
-      announceConnect(res, id);
-      setConnectingId(null);
-      setConnectKey('');
-      await refreshAll();
-    } catch (err: any) {
-      toast.error(reasonError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleUpdateKey = async (id: string) => {
-    if (!keyEditValue.trim()) return;
-    setBusy(true);
-    try {
-      const res = await opencodeApi.connectProvider(id, keyEditValue.trim());
-      announceConnect(res, id);
-      setKeyEditId(null);
-      setKeyEditValue('');
-      await refreshAll();
-    } catch (err: any) {
-      toast.error(reasonError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   /** Batch test: bounded concurrency over the currently visible connected providers. */
   const handleTestAllProviders = () =>
     testAllTargets(connectedResults.map((p) => ({ key: p.id, providerId: p.id })));
@@ -2133,6 +1956,37 @@ export const KeysPage: React.FC = () => {
     }
   };
 
+  /**
+   * Provider-level operator takedown — the coarse counterpart of the
+   * per-credential switch. The card, defs node, models and credentials all
+   * stay; the backend drops the provider from the routing pool in the same
+   * request, so `/v1/models` follows immediately and a single click restores
+   * exactly the previous pool.
+   */
+  const handleToggleProviderDisabled = async (p: OpenCodeProviderView) => {
+    const disabling = !p.disabled;
+    if (disabling) {
+      const ok = await confirmDialog({
+        title: t('op.providerDisableConfirmTitle', { id: p.id }),
+        description: t('op.providerDisableConfirmDesc', { n: p.modelsCount ?? p.models.length }),
+        danger: true,
+        confirmLabel: t('op.providerDisable'),
+      });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      if (disabling) await opencodeApi.disableProvider(p.id);
+      else await opencodeApi.enableProvider(p.id);
+      toast.success(t(disabling ? 'op.providerDisabledToast' : 'op.providerEnabledToast', { id: p.id }));
+      await loadOpenCodeProviders();
+    } catch (err) {
+      toast.error(reasonError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleCreateCustom = async () => {
     if (!form.id.trim() || !form.baseURL.trim()) {
       toast.error(t('op.idAndUrlRequired'));
@@ -2169,18 +2023,18 @@ export const KeysPage: React.FC = () => {
       <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
         <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <Plug size={18} color="var(--accent)" />
-          <span style={{ fontWeight: 700, fontSize: 15 }}>{t('op.title')}</span>
+          <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-lg)' }}>{t('op.title')}</span>
         </div>
-        <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '0 0 16px' }} title={ocPaths.configPath}>{t('op.desc', { sink: sinkLabel })}</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', margin: '0 0 16px' }} title={ocPaths.configPath}>{t('op.desc', { sink: sinkLabel })}</p>
 
         {notice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: `1px solid ${noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 30%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: `1px solid ${noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 30%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             {noticeTone === 'err' ? <AlertTriangle size={16} /> : <Check size={16} />}
             <span>{notice}</span>
           </div>
         )}
         {ocError && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: 'var(--text-md)', marginBottom: '16px' }}>
             {ocError}
           </div>
         )}
@@ -2205,8 +2059,11 @@ export const KeysPage: React.FC = () => {
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {activeTab === 'connected' && (<>
         {/* ---- Connected providers: bound credential-store status (defs file providers map ∪ bound store) ---- */}
+        {/* Full-height flex column: the store-status note + filter toolbar stay
+            pinned, only the provider card grid scrolls in the nested container. */}
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
         {storeStatus && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '0 0 12px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '0 0 12px', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {storeStatus.degradedCode ? (
                 <span
@@ -2222,7 +2079,7 @@ export const KeysPage: React.FC = () => {
                 </span>
               )}
               <span
-                style={{ fontSize: 10, fontFamily: FONT_MONO, color: 'var(--text-muted)', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={`${t('op.storeCredentialFile')}: ${storeStatus.credentialFile}`}
               >
                 {storeStatus.credentialFile}
@@ -2230,11 +2087,11 @@ export const KeysPage: React.FC = () => {
             </div>
             {storeStatus.excluded.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+                <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)' }}>
                   {t('op.excludedTitle', { n: storeStatus.excluded.length })}
                 </span>
                 {storeStatus.excluded.map((e) => (
-                  <div key={`${e.provider}:${e.reasonCode}`} style={{ fontSize: 11, color: 'var(--text-dim)' }} title={e.detail}>
+                  <div key={`${e.provider}:${e.reasonCode}`} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }} title={e.detail}>
                     <span style={{ fontFamily: FONT_MONO }}>{e.provider}</span>
                     <span> — {t(EXCLUDED_REASON_LABEL[e.reasonCode] ?? e.reasonCode)}</span>
                   </div>
@@ -2243,13 +2100,25 @@ export const KeysPage: React.FC = () => {
             )}
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-          <input
-            className="input"
-            style={{ fontSize: 12, maxWidth: 420, flex: 1, minWidth: 200 }}
+        {/* Divider under the toolbar separates the filter controls from the
+            provider card grid (the catalog tab has the same rule). */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0, borderBottom: '1px solid var(--card-border)', paddingBottom: 12, marginBottom: 14 }}>
+          {/* Origin filter leads the toolbar: it is the coarsest selector, so
+              it sits leftmost and the search/filter controls refine within it
+              (same layout as the catalog tab). */}
+          <Combobox
+            style={{ fontSize: 'var(--text-sm)', flexShrink: 0, width: 'fit-content', minWidth: 180 }}
+            forceFilter
+            value={connectedOrigin}
+            onChange={(v) => { setConnectedOrigin(v || 'all'); setConnectedPage(1); }}
+            placeholder={t('op.filterOrigin')}
+            options={originFilterOptions(connectedPluginIds)}
+          />
+          <SearchInput
+            style={{ maxWidth: 420 }}
             placeholder={t('op.searchConnected')}
             value={connectedQuery}
-            onChange={e => { setConnectedQuery(e.target.value); setConnectedPage(1); }}
+            onChange={(v) => { setConnectedQuery(v); setConnectedPage(1); }}
           />
           <button
             className="btn btn-sm"
@@ -2286,36 +2155,116 @@ export const KeysPage: React.FC = () => {
             (minus gaps), so a wide screen never stretches 4+ cards into slivers.
             The 340px floor is deliberate: below ~1050px of row width three cards
             cramp (URL text truncates, action rows wrap), so mid-size windows
-            drop to 2 columns instead. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(340px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
+            drop to 2 columns instead.
+            auto-fill (not auto-fit): empty tracks keep their width, so a single
+            card sits at one-third of the row instead of stretching full width. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(max(340px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
           {pagedConnected.map(p => {
             const credentialList = credentialsByProvider.get(p.id) ?? [];
             const caps = storeStatus?.capabilities;
-            // Sole routable credential (see CredentialRow.soleServing): exactly one
-            // key that can route AND has not been taken down — a disabled row is
-            // in neither the spread nor the failover pool, so it never counts.
+            // Live = routable AND not taken down; a disabled row is in neither
+            // the spread nor the failover pool, so it never counts when deciding
+            // whether the card may look live.
             const liveIds = credentialList.filter((a) => a.routable && !a.disabled).map((a) => a.id);
-            const soleRoutableId = liveIds.length === 1 ? liveIds[0] : null;
+            // Pill tint / dot colour; text stays dim when everything is live.
+            const healthColor = liveIds.length === 0 ? 'var(--accent-rose)' : liveIds.length < credentialList.length ? 'var(--accent-amber)' : 'var(--accent-emerald)';
             // Key writes need a registered integration (see canWriteCredential).
             const keyWritable = canWriteCredential(p.id);
-            // Two rows printing the same masked key are indistinguishable without
-            // the fingerprint — that (and only that) is when the chip earns space.
-            const masks = credentialList.map((a) => a.maskedKey ?? a.id);
-            const ambiguousMasks = new Set(masks.filter((m, i) => masks.indexOf(m) !== i));
             return (
             <div key={p.id} className="sub-card" style={cardFlex}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {/* Header: identity left, credential status pill right. The
+                  pill is the card's health readout AND its maintenance entry
+                  (dot + live/total), so the corner carries information instead
+                  of a row of identical icon buttons. */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
                 <ProviderLogo id={p.id} logo={p.logo} size={44} />
-                <div style={{ flex: '1 1 96px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
-                  {p.name && <span style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
+                  <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', fontFamily: FONT_MONO, lineHeight: 1.25, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }} title={p.id}>{p.id}</span>
+                  {p.name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>{p.name}</span>}
                 </div>
-                {/* Identity badges ride the title row again — the wide npm badge
-                    moved to the URL row, so the small chips fit; the 96px title
-                    floor keeps the id readable on the narrowest card (badges
-                    wrap inside their own box below that). */}
-                {(p.custom || p.auth.inline || p.auth.type === 'oauth') && (
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 }}>
+                {caps && credentialList.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                    {/* Read-only health readout — NOT a control. */}
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        fontSize: 'var(--text-xs)',
+                        fontVariantNumeric: 'tabular-nums',
+                        color: liveIds.length === 0 ? 'var(--accent-rose)' : liveIds.length < credentialList.length ? 'var(--accent-amber)' : 'var(--text-dim)',
+                      }}
+                      title={
+                        liveIds.length === 0
+                          ? t('op.credentialsAllDisabledTip')
+                          : liveIds.length > 1
+                            ? t('op.credentialsSpreadHint', { n: liveIds.length })
+                            : t('op.credentialChainHeadTip')
+                      }
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          background: healthColor,
+                        }}
+                      />
+                      {liveIds.length} / {credentialList.length}
+                    </span>
+                    {/* Maintenance entry, deliberately separate from the
+                        status so reading health never triggers an action. */}
+                    <button
+                      className="btn btn-sm"
+                      title={t('op.credentialManage')}
+                      aria-label={t('op.credentialManage')}
+                      onClick={() => setZoomProviderId(p.id)}
+                    >
+                      <Key size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Meta: endpoint on its own line (single-line ellipsis keeps
+                  every card's meta block the same height), then identity chips
+                  with the provider utilities right-aligned on the same row.
+                  `models` is the DEF-NODE list and is the routing truth: the
+                  boot pool excludes a provider with no maintained models even
+                  when the catalog knows some (see the "[OCR] excluded" log). */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                {/* The endpoint line is always present; an absent baseURL is
+                    stated instead of leaving a silently empty row. */}
+                {p.baseURL ? (
+                  <span style={{ fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.baseURL}>
+                    {p.baseURL}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
+                    {t('op.noBaseUrl')}
+                  </span>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, rowGap: 4, flexWrap: 'wrap' }}>
+                    {p.disabled && (
+                      <span
+                        style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+                        title={p.disabledReason ? `${t('op.providerDisabledBadge')} — ${p.disabledReason}` : t('op.providerDisabledBadge')}
+                      >
+                        <PowerOff size={9} />
+                        {t('op.providerDisabledBadge')}
+                      </span>
+                    )}
+                    {displayNpm(p.npm) && (
+                      <span
+                        style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
+                        title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
+                      >
+                        {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
+                      </span>
+                    )}
                     {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
                     {p.auth.inline && (
                       <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -2324,188 +2273,116 @@ export const KeysPage: React.FC = () => {
                       </span>
                     )}
                     {p.auth.type === 'oauth' && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}>{t('op.badgeOauth')}</span>}
+                    {/* No maintained def-node models = the boot pool excludes
+                        this provider ("no models maintained in the config"),
+                        so nothing routes. Plain text signal instead of another
+                        bordered pill: ten cards showing it must not read as
+                        ten alerts. */}
+                    {p.models.length === 0 && (
+                      <button
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--accent-amber)', fontSize: 'var(--text-2xs)', fontWeight: 'var(--font-semibold)', lineHeight: 1.4 }}
+                        disabled={busy}
+                        title={t('op.pmEmptyBadgeTip')}
+                        aria-label={t('op.pmEmptyBadgeTip')}
+                        onClick={() => setModelsPanelId(p.id)}
+                      >
+                        <AlertTriangle size={9} />
+                        {t('op.pmEmptyBadge')}
+                      </button>
+                    )}
                     {/* The api-key sink badge ("credentials.json") was removed:
                         the bound store is PAGE-level truth (stated in the tab
                         descriptions), identical on every card — a per-card
                         repetition carried zero information. */}
                   </div>
-                )}
-                {/* Empty defs node = this provider routes nothing (the boot pool
-                    only logs the exclusion). Surface it on the card and make the
-                    fix one click: the same model dialog that pulls / adds. */}
-                {p.models.length === 0 && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ ...badgeStyle('var(--accent-amber)', ''), flexShrink: 0, cursor: 'pointer' }}
-                    disabled={busy}
-                    title={t('op.pmEmptyBadgeTip')}
-                    onClick={() => setModelsPanelId(p.id)}
-                  >
-                    {t('op.pmEmptyBadge')}
-                  </button>
-                )}
-                {caps && credentialList.length > 0 && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ flexShrink: 0 }}
-                    title={t('op.credentialZoom')}
-                    aria-label={t('op.credentialZoom')}
-                    onClick={() => setZoomProviderId(p.id)}
-                  >
-                    <Maximize2 size={12} />
-                  </button>
-                )}
-                {p.defNode && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ flexShrink: 0 }}
-                    disabled={busy}
-                    title={t('op.editDefTitle')}
-                    onClick={() => openDefEdit(p)}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                )}
-                {keyEditId !== p.id && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ color: 'var(--accent-rose)', flexShrink: 0 }}
-                    disabled={busy || testingIds.size > 0 || testAll.running}
-                    title={t('op.deleteBtn')}
-                    onClick={() => handleDelete(p)}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                )}
+                  {/* Provider utilities: quiet ghost icons in a delimited
+                      group, sharing the chips row so no row is half empty. */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, paddingLeft: 8, borderLeft: '1px solid var(--divider)' }}>
+                    {p.defNode && (
+                      <button
+                        className="btn btn-sm"
+                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--text-dim)' }}
+                        disabled={busy}
+                        title={t('op.editDefTitle')}
+                        aria-label={t('op.editDefTitle')}
+                        onClick={() => openDefEdit(p)}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-sm"
+                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: p.disabled ? 'var(--accent-emerald)' : 'var(--text-dim)' }}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                      title={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
+                      aria-label={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
+                      onClick={() => handleToggleProviderDisabled(p)}
+                    >
+                      {p.disabled ? <Power size={12} /> : <PowerOff size={12} />}
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--accent-rose)' }}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                      title={t('op.deleteBtn')}
+                      aria-label={t('op.deleteBtn')}
+                      onClick={() => handleDelete(p)}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              {(p.baseURL || displayNpm(p.npm)) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {p.baseURL && (
-                    <div style={{ flex: 1, minWidth: 0, fontSize: 11, fontFamily: FONT_MONO, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                      {p.baseURL}
-                    </div>
-                  )}
-                  {displayNpm(p.npm) && (
+              {/* Footer: the probe result gets its own line (squeezed beside
+                  three buttons it wrapped one token per line), then the action
+                  row. `margin-top: auto` + the divider keep button rows aligned
+                  across a grid row regardless of how much meta each card
+                  carries. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 'auto', paddingTop: 10, borderTop: '1px solid var(--divider)' }}>
+                {testResults[p.id] && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span
-                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 9.5, flexShrink: 0 }}
-                      title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
-                    >
-                      {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Chain-head key summary. With the per-credential list on screen it
-                  would repeat the first row, so it renders only when that list
-                  does not. The old OAuth-expiry line is gone: the provider view
-                  never carried a live expiry (store credentials are api keys). */}
-              {!(caps && credentialList.length > 0) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: FONT_MONO }}>
-                  <Lock size={11} />
-                  <span>{p.auth.keyMasked || '—'}</span>
-                </div>
-              )}
-
-              {/* Credential list — always visible, one line per key,
-                  capped at 3 rows (more scroll). No expand gesture: per-key state
-                  is the reason this page exists, and hiding it behind a click put
-                  the active credential out of sight. */}
-              {caps && credentialList.length > 0 && liveIds.length > 1 && (
-                <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }} title={t('op.credentialChainHeadTip')}>
-                  {t('op.credentialsSpreadHint', { n: liveIds.length })}
-                </div>
-              )}
-              {/* Everything parked: say so plainly instead of letting the card look live. */}
-              {caps && credentialList.length > 0 && liveIds.length === 0 && (
-                <div style={{ fontSize: 10.5, color: 'var(--accent-rose)' }} title={t('op.credentialsAllDisabledTip')}>
-                  {t('op.credentialsAllDisabled')}
-                </div>
-              )}
-              {caps && credentialList.length > 0 && (
-                <div
-                  className="list-group"
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    maxHeight: CREDENTIAL_ROWS_VISIBLE * CREDENTIAL_ROW_HEIGHT_EST,
-                    overflowY: 'auto',
-                  }}
-                >
-                  {credentialList.map((a, i) => (
-                    <CredentialRow
-                      key={a.id}
-                      credential={a}
-                      position={i + 1}
-                      caps={caps}
-                      soleServing={soleRoutableId === a.id}
-                      prefixVisible={a.maskedKey ? ambiguousMasks.has(a.maskedKey) : true}
-                      pending={pendingCredential === `${p.id}:${a.id}`}
-                      testing={testingIds.has(`${p.id}:${a.id}`)}
-                      onTest={(acc) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, credentialId: acc.id })}
-                      renaming={renameKey === `${p.id}:${a.id}`}
-                      onStartRename={() => setRenameKey(`${p.id}:${a.id}`)}
-                      onCancelRename={() => setRenameKey(null)}
-                      now={now}
-                      onPin={handleCredentialPin}
-                      onRename={handleCredentialRename}
-                      onDisconnect={handleCredentialDisconnect}
-                      onToggleDisabled={handleCredentialToggleDisabled}
-                      onClearSuspect={handleCredentialClearSuspect}
-                      canReveal={webAuthActive}
-                      onCopyKey={handleCredentialCopyKey}
-                      onEditLimits={(acc) => openLimitsDialog(p.id, acc)}
-                    />
-                  ))}
-                </div>
-              )}
-
-
-              {/* Action footer pinned to the card bottom (margin-top auto in
-                  the flex-column card) so button rows align across a grid row
-                  regardless of how many credential rows each card holds. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 'auto' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  {testResults[p.id] ? (
-                    <div
                       style={{
-                        fontSize: 11,
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 'var(--text-xs)',
                         fontFamily: FONT_MONO,
                         color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                        wordBreak: 'break-all',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
                       }}
-                      title={testResults[p.id].ok ? `${testResults[p.id].latencyMs} ms` : testResults[p.id].error}
+                      title={testResults[p.id].ok ? `${testResults[p.id].model} · ${testResults[p.id].latencyMs} ms` : undefined}
                     >
                       {testResults[p.id].ok
                         ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
-                        : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                      {t('op.credCount', { n: credentialList.length })}
+                        : `✗ ${testResults[p.id].errorShort || testResults[p.id].error || t('op.testFailMsg')}`}
                     </span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                {keyEditId === p.id ? (
-                  <>
-                    <input
-                      className="input"
-                      style={{ fontSize: 12, flex: 1, minWidth: 140 }}
-                      placeholder={t(multiCredentialStore ? 'op.addKeyPrompt' : 'op.updateKeyPrompt')}
-                      value={keyEditValue}
-                      onChange={e => setKeyEditValue(e.target.value)}
-                      autoFocus
-                    />
-                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => handleUpdateKey(p.id)}>
-                      <Check size={12} />
-                    </button>
-                    <button className="btn btn-sm" onClick={() => { setKeyEditId(null); setKeyEditValue(''); }}>
-                      ✕
-                    </button>
-                  </>
-                ) : (
+                    {/* Failure detail behind an explicit click: the upstream
+                        body is multi-line JSON, so a hover bubble is the wrong
+                        surface — it overflows the card and cannot select or
+                        copy. */}
+                    {!testResults[p.id].ok && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', color: 'var(--accent-rose)', padding: '2px 4px', height: 18 }}
+                        title={t('op.probeDetailOpen')}
+                        aria-label={t('op.probeDetailOpen')}
+                        onClick={() => {
+                          const r = testResults[p.id];
+                          if (r) setProbeDetail({ providerId: p.id, error: r.error || t('op.testFailMsg') });
+                        }}
+                      >
+                        <AlertTriangle size={12} />
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* All actions left-aligned in chain-of-use order: the write
+                    action first, then the two diagnostics. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-sm"
                     disabled={!keyWritable}
@@ -2514,14 +2391,12 @@ export const KeysPage: React.FC = () => {
                           ? t('op.integrationMissingTip')
                           : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
                     }
-                    onClick={() => setKeyEditId(p.id)}
+                    onClick={() => setAddCredential({ id: p.id, name: p.name ?? p.id, ...(webLoginByProvider.get(p.id) ?? {}) })}
                   >
                     {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
                     <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
                   </button>
-                )}
-                {keyEditId !== p.id && (
-                  <>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button
                       className="btn btn-sm"
                       disabled={testingIds.size > 0 || testAll.running}
@@ -2541,8 +2416,7 @@ export const KeysPage: React.FC = () => {
                       <Cpu size={12} />
                       <span>{t('op.pmManage')}</span>
                     </button>
-                  </>
-                )}
+                  </div>
                 </div>
               </div>
 
@@ -2558,24 +2432,39 @@ export const KeysPage: React.FC = () => {
             );
           })}
           {connectedResults.length === 0 && !ocError && (
-            <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.emptyConnected')}</div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('op.emptyConnected')}</div>
           )}
+        </div>
+        </div>
         </div>
 
         </>)}
 
         {activeTab === 'catalog' && (<>
         {/* ---- Connect catalog provider ---- */}
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }}>
+        {/* Full-height flex column: the source note + filter toolbar stay pinned,
+            only the card grid scrolls inside the nested container below. */}
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', margin: '0 0 12px', flexShrink: 0 }}>
           {t('op.connectDesc')} · {t('op.catalogSource', { source: catalogSource || 'none' })}
         </p>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <input
-            className="input"
-            style={{ fontSize: 12, flex: 1 }}
+        {/* Divider under the toolbar separates the filter controls from the
+            provider card grid below. */}
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0, borderBottom: '1px solid var(--card-border)', paddingBottom: 12, marginBottom: 14 }}>
+          {/* Origin filter leads the toolbar: it is the coarsest selector, so
+              it sits leftmost and the search/filter controls refine within it. */}
+          <Combobox
+            style={{ fontSize: 'var(--text-sm)', flexShrink: 0, width: 'fit-content', minWidth: 180 }}
+            forceFilter
+            value={catalogOrigin}
+            onChange={(v) => { setCatalogOrigin(v || 'all'); setCatalogPage(1); }}
+            placeholder={t('op.filterOrigin')}
+            options={originFilterOptions(catalogPluginIds)}
+          />
+          <SearchInput
             placeholder={t('op.searchCatalog')}
             value={catalogQuery}
-            onChange={e => { setCatalogQuery(e.target.value); setCatalogPage(1); }}
+            onChange={(v) => { setCatalogQuery(v); setCatalogPage(1); }}
           />
           <button
             className="btn btn-sm"
@@ -2592,30 +2481,61 @@ export const KeysPage: React.FC = () => {
             <RefreshCw size={12} style={refreshingCatalog ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('op.refreshCatalog')}</span>
           </button>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            <Switch size="sm" checked={hideConnected} onChange={v => { setHideConnected(v); setCatalogPage(1); }} />
-            {t('op.hideConnected')}
-          </label>
+          {/* Segmented control: one bordered pill, inner cells share edges —
+              three lone buttons read as unrelated actions. */}
+          <div style={{ display: 'inline-flex', border: '1px solid var(--card-border)', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+            {(['all', 'connected', 'unconnected'] as const).map((f) => (
+              <button
+                key={f}
+                style={{
+                  padding: '6px 14px',
+                  fontSize: 'var(--text-sm)',
+                  fontWeight: catalogFilter === f ? 'var(--font-bold)' : 'var(--font-medium)',
+                  color: catalogFilter === f ? 'var(--accent)' : 'var(--text-dim)',
+                  background: catalogFilter === f ? 'var(--surface-hover)' : 'transparent',
+                  border: 'none',
+                  borderRight: f !== 'unconnected' ? '1px solid var(--card-border)' : 'none',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={() => { setCatalogFilter(f); setCatalogPage(1); }}
+              >
+                {f === 'all' ? t('op.filterAll') : f === 'connected' ? t('op.tabConnected') : t('op.filterUnconnected')}
+              </button>
+            ))}
+          </div>
         </div>
         {/* Same responsive cap as the connected grid — one column rhythm across
-            the page's tabs (3 cards per row on a wide screen, floor 280px). */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(280px, calc((100% - 20px) / 3)), 1fr))', gap: '10px' }}>
+            the page's tabs (3 cards per row on a wide screen, floor 280px).
+            auto-fill keeps empty tracks, so few-card results don't stretch. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(max(280px, calc((100% - 20px) / 3)), 1fr))', gap: '10px' }}>
           {pagedCatalog.map(c => {
-            const connected = connectedIds.has(c.id);
+            // badge = HAS A CREDENTIAL — a merely-defined provider (plugin preset
+            // awaiting its key) must not read as already connected
+            const connected = keyedProviderIds.has(c.id);
             return (
-              // Connected rows keep their place in the grid but carry a static
-              // badge: adding or replacing a credential lives in the Connected
-              // tab — this tab only starts new connections.
+              // Connected rows keep their place in the grid: static badge plus a
+              // quick "add credential" affordance that opens the same inline key
+              // editor as a fresh connect (connectProvider adds one credential).
               <div key={c.id} className="sub-card" style={{ ...cardFlex, padding: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <ProviderLogo id={c.id} logo={c.logo} size={38} />
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontWeight: 700, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
+                    <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
                   </div>
                   {c.npm && (
-                    <span style={{ fontSize: 9.5, color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
                       {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
+                    </span>
+                  )}
+                  {c.pluginOrigin && (
+                    <span
+                      style={{ fontSize: 'var(--text-2xs)', color: 'var(--accent)', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderRadius: 4, padding: '1px 4px' }}
+                      title={t('op.pluginOriginTip', { plugin: c.pluginOrigin })}
+                    >
+                      {t('op.pluginTag')}
                     </span>
                   )}
                   {(c.baseURL || c.api) && (
@@ -2625,108 +2545,110 @@ export const KeysPage: React.FC = () => {
                       title={`${c.baseURL || c.api} — ${t('op.copyBaseUrl')}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigator.clipboard.writeText(c.baseURL || c.api!);
-                        showNotice(t('op.baseUrlCopied'), 'ok');
+                        void copyToClipboard(c.baseURL || c.api!).then((ok) => {
+                          showNotice(
+                            ok ? t('op.baseUrlCopied') : t('common.failed'),
+                            ok ? 'ok' : 'err',
+                          );
+                        });
                       }}
                     >
                       <Copy size={11} />
                     </button>
                   )}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)' }}>
+                {/* marginTop auto absorbs the slack so the meta + status rows sit
+                    at the card bottom and align across the grid row. */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: 'auto' }}>
                   <span>{t('op.modelsCount', { n: c.modelCount })}</span>
                   {typeof c.priceFrom === 'number' && (
                     <span style={{ color: 'var(--accent-emerald)' }}>{t('op.priceFrom', { price: c.priceFrom })}</span>
                   )}
                 </div>
                 {connected ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--accent-emerald)', padding: '7px 0' }}>
-                    <Check size={12} />
-                    <span>{t('op.alreadyConnected')}</span>
-                  </div>
-                ) : connectingId === c.id ? (
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input
-                      className="input"
-                      style={{ fontSize: 12, flex: 1 }}
-                      placeholder={t('op.apiKeyPlaceholder')}
-                      value={connectKey}
-                      onChange={e => setConnectKey(e.target.value)}
-                      autoFocus
-                      onKeyDown={e => e.key === 'Enter' && handleConnect(c.id)}
-                    />
-                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => handleConnect(c.id)}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 0' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)', flex: 1 }}>
                       <Check size={12} />
+                      <span>{t('op.alreadyConnected')}</span>
+                    </span>
+                    <button
+                      className="btn btn-sm"
+                      disabled={!canWriteCredential(c.id)}
+                      title={canWriteCredential(c.id) ? t('op.addCredentialQuickTip') : t('op.integrationMissingTip')}
+                      onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: webLoginByProvider.get(c.id)?.keyHint })}
+                    >
+                      <Plug size={12} />
+                      <span>{t('op.addCredentialQuick')}</span>
                     </button>
-                    <button className="btn btn-sm" onClick={() => { setConnectingId(null); setConnectKey(''); }}>✕</button>
                   </div>
                 ) : (
-                  <button
-                    className="btn btn-sm"
-                    disabled={!canWriteCredential(c.id)}
-                    title={
-                      !canWriteCredential(c.id)
-                          ? t('op.integrationMissingTip')
-                          : undefined
-                    }
-                    onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
-                  >
-                    <Plug size={12} />
-                    <span>{t('op.connectBtn')}</span>
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn btn-sm"
+                      disabled={!canWriteCredential(c.id)}
+                      title={!canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
+                      onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: c.keyHint })}
+                      style={{ flex: 1 }}
+                    >
+                      <Plug size={12} />
+                      <span>{t('op.connectBtn')}</span>
+                    </button>
+                  </div>
                 )}
               </div>
             );
           })}
           {catalog.length === 0 && (
-            <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.catalogEmpty')}</div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('op.catalogEmpty')}</div>
           )}
+        </div>
+        </div>
         </div>
 
         </>)}
 
         {activeTab === 'custom' && (<>
         {/* ---- Custom provider form ---- */}
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }}>{t('op.customDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', margin: '0 0 12px' }}>{t('op.customDesc')}</p>
         {/* Capped two-column form (was an uncapped 3-col grid that stretched every
             input to ~900px on wide screens). Base URL spans the row — it is the one
             long value; the inline switch lives INSIDE the key cell so the pair reads
             as one control. auto-fit collapses to a single column below ~580px. */}
         <div style={{ maxWidth: 720, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: '12px 14px' }}>
           <FormField label={t('op.fId')} required>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phId')} value={form.id} onChange={e => setForm({ ...form, id: normalizeProviderIdInput(e.target.value) })} />
-            <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.idRule')}</span>
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phId')} value={form.id} onChange={e => setForm({ ...form, id: normalizeProviderIdInput(e.target.value) })} />
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.idRule')}</span>
           </FormField>
           <FormField label={t('op.fName')}>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phName')} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phName')} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
           </FormField>
           <FormField label={t('op.fBaseUrl')} required style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phBaseUrl')} value={form.baseURL} onChange={e => setForm({ ...form, baseURL: e.target.value })} />
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phBaseUrl')} value={form.baseURL} onChange={e => setForm({ ...form, baseURL: e.target.value })} />
           </FormField>
           {/* Key cell spans the row: the inline-switch sentence needs the full
               720px to stay on one line, and long sk- values want the width too. */}
           <FormField label={t('op.fKey', { sink: sinkLabel })} style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phKey')} value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} />
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phKey')} value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} />
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 2 }}>
               <Switch size="sm" checked={form.inline} onChange={v => setForm({ ...form, inline: v })} />
               <span>{t('op.fKeyInline')}</span>
             </label>
           </FormField>
           <FormField label={t('op.fPullPattern')} style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
-            <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
+            <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
           </FormField>
           {/* AI SDK package is low-frequency (almost always the openai-compatible
               default) — parked last so the common path reads ID → name → URL → key. */}
           <FormField label={t('op.fNpmLabel')}>
             {npmChoice === CUSTOM_NPM ? (
               <div style={{ display: 'flex', gap: 6 }}>
-                <input className="input" style={{ fontSize: 12, flex: 1, minWidth: 0 }} placeholder={t('op.fNpmCustom')} value={form.npm} onChange={e => setForm({ ...form, npm: e.target.value })} autoFocus />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 0 }} placeholder={t('op.fNpmCustom')} value={form.npm} onChange={e => setForm({ ...form, npm: e.target.value })} autoFocus />
                 <button className="btn btn-sm" title={t('op.fNpmLabel')} onClick={() => { setNpmChoice(''); setForm({ ...form, npm: '' }); }}>↩</button>
               </div>
             ) : (
               <Combobox
-                style={{ fontSize: 12, cursor: 'pointer' }}
+                style={{ fontSize: 'var(--text-sm)', cursor: 'pointer' }}
                 value={npmChoice}
                 onChange={(v) => {
                   setNpmChoice(v);
@@ -2757,8 +2679,8 @@ export const KeysPage: React.FC = () => {
 
         {activeTab === 'sync' && (<>
         {/* ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ---- */}
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7, margin: '0 0 7px' }}>{t('op.syncDesc')}</p>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7, margin: '0 0 14px' }}>{t('op.syncDescModes')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-relaxed)', margin: '0 0 7px' }}>{t('op.syncDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-relaxed)', margin: '0 0 14px' }}>{t('op.syncDescModes')}</p>
         <div
           style={{
             display: 'grid',
@@ -2780,7 +2702,7 @@ export const KeysPage: React.FC = () => {
             return (
             <React.Fragment key={c.id}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingTop: 2 }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</span>
+                <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)' }}>{c.label}</span>
                 {!c.present && (
                   // Absent client: compact amber warning glyph + hover bubble
                   // instead of a text badge (the condition is static per client).
@@ -2810,7 +2732,7 @@ export const KeysPage: React.FC = () => {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2 }}>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoReadTip')}
                 >
                   <Switch
@@ -2821,7 +2743,7 @@ export const KeysPage: React.FC = () => {
                   <span>{t('op.syncAutoRead')}</span>
                 </label>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoWriteTip')}
                 >
                   <Switch
@@ -2880,7 +2802,7 @@ export const KeysPage: React.FC = () => {
           })}
         </div>
         {syncClients.length === 0 && (
-          <div style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 10 }}>{t('op.syncEmpty')}</div>
+          <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)', marginTop: 10 }}>{t('op.syncEmpty')}</div>
         )}
         </>)}
         </div>
@@ -2911,6 +2833,42 @@ export const KeysPage: React.FC = () => {
 
         {/* Decision 10 password gate — fixed overlay, mounted outside the tab
             bodies so a tab switch cannot orphan it mid-reveal. */}
+        {/* Unified add-credential dialog — the ONLY surface for "hand this key
+            to the store": connected quick-add, catalog connect and web-login-
+            capable plugins all funnel here. Save announcements reuse the shared
+            announceConnect rule; the device-flow callback refreshes catalog +
+            connected views. */}
+        {addCredential &&
+          (() => {
+            const ac = addCredential;
+            return (
+              <AddCredentialDialog
+                providerId={ac.id}
+                providerName={ac.name}
+                webLogin={ac.webLogin}
+                webLoginSubmit={ac.webLoginSubmit}
+                authTypes={ac.authTypes}
+                keyHint={ac.keyHint}
+                multiCredential={multiCredentialStore}
+                formatError={reasonError}
+                onClose={() => setAddCredential(null)}
+                onSaved={(res) => {
+                  // connectedIds is the pre-write snapshot — a first connect is
+                  // NOT in it yet; announce lands before refreshAll() returns.
+                  announceConnect(res, ac.id);
+                  setAddCredential(null);
+                  refreshAll();
+                }}
+                onConnected={() => {
+                  showNotice(t('op.webLoginDone'));
+                  setAddCredential(null);
+                  loadCatalog();
+                  refreshAll();
+                }}
+              />
+            );
+          })()}
+
         {revealTarget && (
           <RevealKeyDialog
             credential={revealTarget}
@@ -2941,11 +2899,11 @@ export const KeysPage: React.FC = () => {
           />
         )}
 
-        {/* Per-provider credential zoom — a TABLE: the labels live in the
-            column headers, the actions stay icon-only (title + aria-label
+        {/* Per-provider credential maintenance — a TABLE: the labels live in
+            the column headers, the actions stay icon-only (title + aria-label
             carry the full name), so the dialog stays narrow. Rows reuse the
-            same shared badge/action components as the card rows — availability
-            logic cannot drift — and share the page-owned handler wiring. */}
+            shared badge/action components, so availability logic cannot
+            drift, and share the page-owned handler wiring. */}
         {zoomProviderId && ocProviders.some((x) => x.id === zoomProviderId) && (() => {
           const p = ocProviders.find((x) => x.id === zoomProviderId)!;
           const caps = storeStatus?.capabilities;
@@ -2985,6 +2943,27 @@ export const KeysPage: React.FC = () => {
               closeLabel={t('common.close')}
               width={640}
               maxSize={{ width: 'min(860px, 94vw)' }}
+              footerLeft={
+                <button
+                  className="btn btn-sm"
+                  disabled={!canWriteCredential(p.id)}
+                  title={
+                    !canWriteCredential(p.id)
+                      ? t('op.integrationMissingTip')
+                      : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
+                  }
+                  onClick={() => {
+                    // Hand the screen to the add dialog: both are Dialog
+                    // portals at the same layer, and the later-mounted one
+                    // would otherwise sit UNDER this table.
+                    setZoomProviderId(null);
+                    setAddCredential({ id: p.id, name: p.name ?? p.id, ...(webLoginByProvider.get(p.id) ?? {}) });
+                  }}
+                >
+                  {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
+                  <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
+                </button>
+              }
               footerRight={
                 <button className="btn btn-sm" onClick={() => setZoomProviderId(null)}>
                   <span>{t('common.close')}</span>
@@ -3020,6 +2999,51 @@ export const KeysPage: React.FC = () => {
           );
         })()}
 
+        {/* Probe failure detail: the card row keeps only the classification;
+            the full (redacted, 600-char-bounded) upstream body lands here,
+            where it stays inside the viewport and is selectable/copyable. */}
+        {probeDetail && (
+          <Dialog
+            title={t('op.probeDetailTitle')}
+            subtitle={probeDetail.providerId}
+            onClose={() => setProbeDetail(null)}
+            closeLabel={t('common.close')}
+            width={720}
+            footerLeft={
+              <button
+                className="btn btn-sm"
+                onClick={async () => {
+                  if (await copyToClipboard(probeDetail.error)) toast.success(t('op.probeDetailCopied'));
+                  else toast.error(t('op.copyFailed'));
+                }}
+              >
+                <Copy size={12} />
+                <span>{t('common.copy')}</span>
+              </button>
+            }
+            footerRight={
+              <button className="btn btn-sm" onClick={() => setProbeDetail(null)}>
+                <span>{t('common.close')}</span>
+              </button>
+            }
+          >
+            <pre
+              style={{
+                margin: 0,
+                fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)',
+                lineHeight: 'var(--leading-normal)',
+                color: 'var(--text-main)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                userSelect: 'text',
+              }}
+            >
+              {probeDetail.error}
+            </pre>
+          </Dialog>
+        )}
+
         {/* Provider-def edit dialog — same fixed-overlay mount rule as the
             reveal gate (a tab switch must not orphan it). zIndex 200, NOT
             higher: Combobox panels ride at 220 (PANEL_Z), and this dialog
@@ -3035,19 +3059,19 @@ export const KeysPage: React.FC = () => {
               style={{ width: 'min(560px, 100%)', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}
               onClick={e => e.stopPropagation()}
             >
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{t('op.editDefTitle')} — {editDef.id}</div>
+              <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>{t('op.editDefTitle')} — {editDef.id}</div>
               <FormField label={t('op.fName')}>
-                <input className="input" style={{ fontSize: 12 }} value={editDef.name} onChange={e => setEditDef({ ...editDef, name: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)' }} value={editDef.name} onChange={e => setEditDef({ ...editDef, name: e.target.value })} />
               </FormField>
               <FormField label={t('op.fBaseUrl')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
               </FormField>
               <FormField label={t('op.fNpmLabel')}>
                 {/* Combobox, not a free input (repo dropdown convention). The
                     current value always rides first so a non-vocabulary def
                     stays visible; selections may also be cleared. */}
                 <Combobox
-                  style={{ fontSize: 12 }}
+                  style={{ fontSize: 'var(--text-sm)' }}
                   value={editDef.npm}
                   onChange={(v) => setEditDef({ ...editDef, npm: v })}
                   clearable
@@ -3063,12 +3087,12 @@ export const KeysPage: React.FC = () => {
                 />
               </FormField>
               <FormField label={t('op.fPullPattern')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
-                <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
+                <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
               </FormField>
               <FormField label={t('op.fHeaders')}>
                 <HeadersEditor rows={editDef.headerRows} onChange={headerRows => setEditDef({ ...editDef, headerRows })} disabled={savingDef} />
-                <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fHeadersTip')}</span>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fHeadersTip')}</span>
               </FormField>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <button className="btn btn-sm" disabled={savingDef} onClick={() => setEditDef(null)}>{t('op.cancelDefEdit')}</button>
