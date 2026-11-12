@@ -1,12 +1,19 @@
 import {
   ErrorDiagnosis,
   CircuitBreakerConfig,
+  ClassifierTaxonomyEntry,
   NetworkFailureCause,
   RetriableCauseConfig,
   RetryConfig,
   TripScope,
   DEFAULT_RETRIABLE_CAUSES,
 } from './types.js';
+import {
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  DEFAULT_MAX_RATE_LIMIT_WAIT_MS,
+  RATE_LIMIT_MIN_COOLDOWN_MS,
+  RATE_LIMIT_NO_RETRY_AFTER_CAP_MS,
+} from './circuit-breaker.js';
 
 export class UpstreamError extends Error {
   public status?: number;
@@ -75,12 +82,19 @@ export class ErrorClassifier {
    * - Fine-grained Network Jitter (Timeout, Connection Reset, Gateway 502/503, DNS)
    * - In-place retriable check to preserve upstream KV cache
    * - Transient backoff (429 Rate limit burst)
-   * - Non-penalizing pass-through (400 Client error / context length exceeded)
+   * - Non-penalizing pass-through (request-fault 4xx: 400/415/422/... — the
+   *   request is wrong, the upstream is healthy; counting it would cool a
+   *   healthy model on a deterministic error)
    *
    * The attribution layer adds a blast-radius annotation (`tripScope`) to every
    * diagnosis that is attributable to ONE credential of a provider chain. A
    * diagnosis without attribution carries no `tripScope` at all, so chain-less
-   * providers keep the model-level trip semantics they have always had.
+   * providers keep the model-level trip semantics they have always had. The
+   * ONE exception is the host-level connection failure (DNS / TCP refused /
+   * TLS): its radius is the PROVIDER — credential- and model-independent — so
+   * it travels with or without attribution (the provider is known from the
+   * model registration, and the fan-out only ever feeds the statistical
+   * ladder, never a hard trip).
    */
   public static classify(
     error: any,
@@ -89,9 +103,9 @@ export class ErrorClassifier {
     circuitConfig?: CircuitBreakerConfig,
     retryConfig?: RetryConfig
   ): ErrorDiagnosis {
-    const quotaCooldown = circuitConfig?.quotaCooldownMs || 12 * 3600 * 1000; // default: 12 hours
-    const defaultInitialCooldown = circuitConfig?.initialCooldownMs || 30 * 1000; // default: 30s
-    const maxRateLimitWaitMs = retryConfig?.inplace?.maxRateLimitWaitMs ?? 2000; // default: 2s
+    const quotaCooldown = circuitConfig?.quotaCooldownMs || DEFAULT_CIRCUIT_BREAKER_CONFIG.quotaCooldownMs;
+    const defaultInitialCooldown = circuitConfig?.initialCooldownMs || DEFAULT_CIRCUIT_BREAKER_CONFIG.initialCooldownMs;
+    const maxRateLimitWaitMs = retryConfig?.inplace?.maxRateLimitWaitMs ?? DEFAULT_MAX_RATE_LIMIT_WAIT_MS;
 
     // attribution seam. `ProviderRegistry.execute` stamps
     // the credential actually used onto the thrown error. No stamp means the
@@ -107,6 +121,13 @@ export class ErrorClassifier {
         : credentialSuspect
           ? { tripScope, credentialSuspect: true, usedKeyHashPrefix: usedAttribution }
           : { tripScope, usedKeyHashPrefix: usedAttribution };
+    // Host-level radius: travels WITHOUT attribution — the provider is known
+    // from the model registration, and the fan-out covers every credential
+    // (sentinel tuples included), so no chain-less degeneracy applies.
+    const hostScoped = (): Partial<ErrorDiagnosis> =>
+      usedAttribution === undefined
+        ? { tripScope: 'provider' }
+        : { tripScope: 'provider', usedKeyHashPrefix: usedAttribution };
 
     // Helper: checks if this failure cause is whitelisted for in-place retry
     const isCauseInPlaceRetriable = (cause: RetriableCauseConfig): boolean => {
@@ -252,11 +273,11 @@ export class ErrorClassifier {
       // Rule-agnostic defaults: the manager gate RE-DERIVES the hard/counted
       // boundary and the cooldown floor from trip.rateLimit params (invariant 1
       // — the prober calls classify() without config, so gating lives there).
-      // The floors here mirror today's hardcoded values exactly.
-      const maxCooldownMs = circuitConfig?.maxCooldownMs || 5 * 3600 * 1000;
+      // The floors here read the same single-source constants as the resolver.
+      const maxCooldownMs = circuitConfig?.maxCooldownMs || DEFAULT_CIRCUIT_BREAKER_CONFIG.maxCooldownMs;
       const cooldownMs = retryAfterSeconds
-        ? Math.max(1000, Math.min(retryAfterSeconds * 1000, maxCooldownMs))
-        : Math.min(60 * 1000, defaultInitialCooldown);
+        ? Math.max(RATE_LIMIT_MIN_COOLDOWN_MS, Math.min(retryAfterSeconds * 1000, maxCooldownMs))
+        : Math.min(RATE_LIMIT_NO_RETRY_AFTER_CAP_MS, defaultInitialCooldown);
 
       const isShortBurst = Boolean(
         retryAfterSeconds !== undefined &&
@@ -294,38 +315,51 @@ export class ErrorClassifier {
     }
 
     // -------------------------------------------------------------
-    // 4. CLIENT_ERROR (bad client params / context length exceeded — never penalizes model health!)
+    // 4. CLIENT_ERROR (request-fault 4xx — never penalizes upstream health!)
+    // The STATUS is the signal, no wording allowlist: 400 bad params, 415
+    // unsupported media type, 413 payload too large, 422 unprocessable
+    // entity, ... all repeat identically on every retry, so counting them
+    // would cool a HEALTHY upstream on a deterministic request fault (the
+    // 415 false-trip). 401/402/429 already returned above (dedicated
+    // classes); the exceptions below stay counted evidence:
+    //   403      — permission signal about this (model, credential) pair
+    //   404/410  — dead model address: the pair truly cannot serve, and
+    //              failover (isRetriable) routes around it
+    //   408/425  — transient server-side waits, handled with the 5xx class
     // -------------------------------------------------------------
-    const isClientErrorPattern =
-      (statusCode === 400 || statusCode === 422) &&
-      (
-        combinedText.includes('context_length_exceeded') ||
-        combinedText.includes('maximum context length') ||
-        combinedText.includes('content_filter') ||
-        combinedText.includes('invalid_request_error') ||
-        combinedText.includes('does not support') ||
-        combinedText.includes('json_schema')
-      );
+    const isRequestFault4xx =
+      statusCode !== undefined &&
+      statusCode >= 400 &&
+      statusCode < 500 &&
+      statusCode !== 403 &&
+      statusCode !== 404 &&
+      statusCode !== 408 &&
+      statusCode !== 410 &&
+      statusCode !== 425;
 
-    if (isClientErrorPattern) {
+    if (isRequestFault4xx) {
       return {
         category: 'CLIENT_ERROR',
         networkCause: 'HARD_FAILURE',
-        statusCode: statusCode || 400,
-        isRetriable: false, // Client payload is fundamentally invalid
+        statusCode,
+        isRetriable: false, // The request itself is at fault — another model gets the same fault
         isInPlaceRetriable: false,
-        shouldTripBreaker: false, // Never trip circuit breaker for client payload error!
+        shouldTripBreaker: false, // Never trip the breaker for a request fault!
         hardTrip: false,
-        reason: `Client parameter or context length error: ${rawMessage.slice(0, 200)}`,
+        reason: `Client request fault (HTTP ${statusCode}): ${rawMessage.slice(0, 200)}`,
         rawError: error,
       };
     }
 
     // -------------------------------------------------------------
     // 5. SERVICE_UNAVAILABLE (upstream outage / 5xx / network timeout / ETIMEDOUT)
+    // 408/425 are transient server-side waits (not request faults); TLS
+    // handshake failures are host-level connection failures.
     // -------------------------------------------------------------
     const isServerUnavailable =
       (statusCode !== undefined && statusCode >= 500 && statusCode < 600) ||
+      statusCode === 408 ||
+      statusCode === 425 ||
       combinedText.includes('etimedout') ||
       combinedText.includes('esockettimedout') ||
       // Bun surfaces a fetch deadline/abort as a TimeoutError whose message is
@@ -346,6 +380,11 @@ export class ErrorClassifier {
       combinedText.includes('gateway timeout') ||
       combinedText.includes('overloaded') ||
       combinedText.includes('cloudflare') ||
+      combinedText.includes('certificate') ||
+      combinedText.includes('err_tls') ||
+      combinedText.includes('ssl routines') ||
+      combinedText.includes('self-signed') ||
+      combinedText.includes('self signed') ||
       combinedText.includes('eai_again') ||
       combinedText.includes('enotfound');
 
@@ -365,6 +404,7 @@ export class ErrorClassifier {
         causeKey = 'connection_reset';
       } else if (
         statusCode === 504 ||
+        statusCode === 408 ||
         combinedText.includes('etimedout') ||
         combinedText.includes('esockettimedout') ||
         combinedText.includes('timed out') || // Bun TimeoutError wording (see isServerUnavailable)
@@ -393,6 +433,20 @@ export class ErrorClassifier {
 
       const inPlaceAllowed = isCauseInPlaceRetriable(causeKey);
 
+      // Host-level connection failure: the provider's baseUrl itself is
+      // unreachable (DNS / TCP refused / TLS handshake), so EVERY model behind
+      // it is equally down, on every credential. Wider than model, but still
+      // only statistical evidence — one DNS blip must never hard-trip a whole
+      // provider (the ladder's threshold absorbs single blips).
+      const hostLevelFailure =
+        networkCause === 'DNS_ERROR' ||
+        combinedText.includes('econnrefused') ||
+        combinedText.includes('certificate') ||
+        combinedText.includes('err_tls') ||
+        combinedText.includes('ssl routines') ||
+        combinedText.includes('self-signed') ||
+        combinedText.includes('self signed');
+
       return {
         category: 'SERVICE_UNAVAILABLE',
         networkCause,
@@ -405,16 +459,28 @@ export class ErrorClassifier {
         reason: `Upstream network jitter [${networkCause}, status ${statusCode || 'N/A'}]: ${rawMessage.slice(0, 150)}`,
         reasonCode: 'breaker.network',
         reasonParams: { cause: networkCause, status: statusCode || 'N/A', message: rawMessage.slice(0, 150) },
-        // Key-independent: the upstream itself is failing, so the whole model
-        // (this model, every credential) goes.
-        ...scoped('model'),
+        // Key-independent: the upstream itself is failing. Model-endpoint
+        // evidence (5xx / timeout / reset) cools this model on every credential;
+        // host-level evidence cools the whole provider.
+        ...(hostLevelFailure ? hostScoped() : scoped('model')),
         rawError: error,
       };
     }
 
     // -------------------------------------------------------------
-    // 6. UNKNOWN / Generic Error
+    // 6. UNKNOWN / Generic Error — counted, pair-scoped. Deliberately still
+    // here: 403 (permission) and 404/410 (dead model address) are REAL "this
+    // pair cannot serve" signals — cooling the pair lets selection route
+    // around them — but they never widen to credential/model: another model
+    // may serve fine on the same key. Everything else is unclassifiable.
     // -------------------------------------------------------------
+    const addressFault = statusCode === 404 || statusCode === 410;
+    const reason =
+      statusCode === 403
+        ? `Forbidden (403) for model '${modelId}' (Provider: ${provider}): ${rawMessage.slice(0, 150)}`
+        : addressFault
+          ? `Model address not found (${statusCode}) for '${modelId}' (Provider: ${provider}): ${rawMessage.slice(0, 150)}`
+          : `Unknown upstream error: ${rawMessage.slice(0, 150)}`;
     return {
       category: 'UNKNOWN',
       networkCause: 'UNKNOWN',
@@ -424,7 +490,7 @@ export class ErrorClassifier {
       shouldTripBreaker: true,
       hardTrip: false,
       minCooldownMs: defaultInitialCooldown,
-      reason: `Unknown upstream error: ${rawMessage.slice(0, 150)}`,
+      reason,
       reasonCode: 'breaker.unknown',
       reasonParams: { message: rawMessage.slice(0, 150) },
       // Decision 6 last bullet: an UNCLASSIFIED failure cools only its own
@@ -436,5 +502,67 @@ export class ErrorClassifier {
     };
   }
 }
+
+/**
+ * The classifier's fixed disposition table — the read-only reference the console
+ * renders at /admin/breaker-rules (ADR-0004 §1). Co-located with classify() so a
+ * behavior edit and its descriptor move together; classifier-taxonomy.test.ts
+ * pins EVERY entry to the real classify() output (the anti-drift guard — this is
+ * a summary of behavior, never a second implementation of it). Order = evaluation
+ * precedence: 401/402/429 are claimed before the request-fault 4xx bucket, which
+ * is claimed before 5xx/network, which is claimed before the UNKNOWN fallback.
+ *
+ * `defaultScope` is the radius a rule's `auto` resolves to WHEN ATTRIBUTED; a
+ * chain-less diagnosis carries no tripScope and degenerates to the model sentinel
+ * (the host-level provider exception travels with or without attribution).
+ */
+export const CLASSIFIER_TAXONOMY: readonly ClassifierTaxonomyEntry[] = [
+  {
+    category: 'QUOTA_EXHAUSTED',
+    defaultScope: 'credential',
+    disposition: 'hard_trip',
+    countingToggle: false,
+    governedBy: 'trip.quota',
+  },
+  {
+    category: 'AUTHENTICATION_ERROR',
+    defaultScope: 'credential',
+    disposition: 'hard_trip',
+    countingToggle: false,
+    governedBy: 'trip.auth',
+    marksSuspect: true,
+  },
+  {
+    category: 'RATE_LIMITED',
+    defaultScope: 'pair',
+    disposition: 'counted',
+    countingToggle: false,
+    governedBy: 'trip.rateLimit',
+    credentialScope: 'credential',
+    conditionalHardTrip: true,
+  },
+  {
+    category: 'CLIENT_ERROR',
+    defaultScope: 'model',
+    disposition: 'ignored',
+    countingToggle: true,
+    governedBy: 'counting.clientErrors',
+  },
+  {
+    category: 'SERVICE_UNAVAILABLE',
+    defaultScope: 'model',
+    disposition: 'counted',
+    countingToggle: true,
+    governedBy: 'counting.serverErrors',
+    hostScope: 'provider',
+  },
+  {
+    category: 'UNKNOWN',
+    defaultScope: 'pair',
+    disposition: 'counted',
+    countingToggle: true,
+    governedBy: 'counting.unknownErrors',
+  },
+];
 
 

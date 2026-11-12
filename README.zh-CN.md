@@ -125,6 +125,7 @@ ocr setup openclaw      # 将 OpenClaw 接入 OCR
 ocr setup omp           # 将 OMP (oh-my-pi) 接入 OCR
 ocr setup kimi          # 将 Kimi Code CLI 接入 OCR
 ocr setup grok          # 将 Grok CLI 接入 OCR
+ocr setup workbuddy     # 将 WorkBuddy（models.json 自定义模型）接入 OCR
 ocr setup qoder-proxy   # 通过 OCR 前置代理 + qoder-gateway 插件接入 Qoder
 
 # 通过 OCR 托管的启动脚本运行（setup 之后）
@@ -176,12 +177,12 @@ OmniCellRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为�
 2. 开启 `OpenAI API Key`，输入任意占位符字符串（如 `sk-ocr`）。
 3. 展开 `Override OpenAI Base URL`，填入：
    ```
-   http://127.0.0.1:3000/v1
+   http://127.0.0.1:4000/v1
    ```
 4. 在模型选择列表中，添加并选中虚拟模型：`auto`。
 
 ### 2. Claude Code / OpenCode CLI / Chatbox
-1. **API Base URL**: `http://127.0.0.1:3000/v1`
+1. **API Base URL**: `http://127.0.0.1:4000/v1`
 2. **API Key**: 任意占位符字符串（或已配置的 `adminApiKey`）。
 3. **Model**: 输入 `auto`（或显式层级别名如 `auto-plus`）。
 
@@ -190,7 +191,7 @@ OmniCellRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为�
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:3000/v1",
+    base_url="http://127.0.0.1:4000/v1",
     api_key="sk-ocr"
 )
 
@@ -209,7 +210,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://127.0.0.1:3000/v1',
+  baseURL: 'http://127.0.0.1:4000/v1',
   apiKey: 'sk-ocr',
 });
 
@@ -302,16 +303,20 @@ main();
 
 ### 1. HTTP 响应诊断标头
 每次网关调用均返回完整的调用链路诊断标头：
-* `X-OCR-Trace-ID`: 本轮请求的全局唯一跟踪 ID。
+* `X-OCR-Request-ID`: 网关自有的单次请求 ID（`req_…`），全局唯一且不可变——它是控制台行的身份，也是 traces 接口唯一接受的键。调用方自己的关联值不会被回显。
 * `X-OCR-Tier`: 实际调用的目标梯队（`lite`, `plus`, `pro`, `ultra`）。
+* `X-OCR-Layer`: 实际执行的级联层（`layer0`, `layer1`, `layer2`）。
 * `X-OCR-Model`: 最终调用的物理模型标识。
 * `X-OCR-Thinking-Effort`: 生效的思考预算（`low`, `medium`, `high`, `max`）。
 * `X-OCR-Thinking-Source`: 思考预算决策来源（`client`, `l2-decision`, `entry`, `escalation`, `default`）。
 * `X-OCR-Failover`: 是否触发了故障转移（`true` / `false`）。
 * `X-OCR-Failover-Attempts`: 取得成功前尝试的模型次数。
+* `X-OCR-Failover-Path`: 成功前走过的 `provider:model@tier` 尝试链（逗号分隔）。
+* `X-OCR-In-Place-Retries`: 落定尝试在同一候选上的重试次数。
 * `X-OCR-Breaker-State`: 执行实例的熔断器状态（`CLOSED`, `HALF_OPEN`）。
-* `X-OCR-Session-ID`: 计算出的零标头会话 ID。
+* `X-OCR-Session-ID`: 由网关解析出的会话 ID。
 * `X-OCR-Session-Ratchet`: 本轮是否被单调棘轮锁定（`true` / `false`）。
+* `X-OCR-Session-Lookup`: 会话命名的解析层（`explicit_header`, `embedded_user_id`, `request_user`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`）。
 * `X-OCR-Cost-USD`: 本次请求实际花费金额（美元）。
 * `X-OCR-Saved-USD`: 相较于 plus 基准模型所节约的金额。
 * `X-OCR-Latency-MS`: 网关端到端处理耗时（毫秒）。
@@ -331,7 +336,7 @@ main();
 | `/api/admin/route-entries/:hash` | `DELETE` | 删除经验表中的指定条目。 |
 | `/api/admin/failure-events` | `GET` | 查询上游物理模型调用失败事件账本（支持过滤）。 |
 | `/api/admin/failure-events/clear` | `POST` | 清空内存环与 SQLite 持久化故障事件记录。 |
-| `/api/admin/health/circuit-breakers/reset` | `POST` | 手动重置处于熔断状态的模型、凭据或对熔断器。 |
+| `/api/admin/health/circuit-breakers/reset` | `POST` | 手动重置处于熔断状态的模型、凭据、对或服务商熔断器。 |
 | `/v1/sessions` | `GET` | 查看活跃多轮会话状态、锁定梯队与绑定模型。 |
 | `/v1/traces` | `GET` | 分页查询请求执行轨迹。 |
 | `/v1/metrics` | `GET` | 查看实时 FinOps 统计、梯队流量占比与累计成本节约。 |

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Maximize2, Minimize2, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
+import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
@@ -12,20 +12,11 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { Dialog } from '../components/Dialog';
 import { Pagination } from '../components/Pagination';
+import { ScrollTable, stickyBodyCell } from '../components/ScrollTable';
+import { Descriptions } from '../components/Descriptions';
 
 import { FONT_MONO } from '../lib/fonts';
 const PAGE_SIZES = [10, 20, 25, 50, 100, 200];
-
-const TH_STYLE: React.CSSProperties = {
-  padding: '10px 14px',
-  // Header lives in its own static block now (split header/body tables) —
-  // no sticky needed; solid fill keeps the card look consistent.
-  background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
-};
-// The tables default to centered (badges / numbers / icons read better in
-// narrow fixed-width columns); only session id and Tokens stay left — both
-// header and body opt back out with this / an inline textAlign:'left'.
-const TH_LEFT: React.CSSProperties = { ...TH_STYLE, textAlign: 'left' };
 
 /** Tier display: show the tier's own name (Lite / Plus / Pro / Ultra), not opaque numbers. */
 const TIER_LABEL: Record<SessionRecord['maxTier'], string> = {
@@ -52,30 +43,53 @@ const TIER_FULL_LABEL: Record<SessionRecord['maxTier'], string> = {
 /**
  * One labeled stat line inside the merged tokens cell. The fixed-width dim
  * label keeps the number columns vertically aligned across the cell's 2×2
- * grid (In/Out stacked left, Cached/Hit stacked right). `title` carries the
- * exact value when the displayed one is compacted.
+ * grid (In/Out stacked left, Cached/Hit stacked right) and across the Speed
+ * column's two rows. `title` carries the exact value when the displayed one is
+ * compacted or ellipsized.
+ *
+ * The row NEVER wraps: a two-line row would grow the whole table row and, in
+ * the 2×2 grid, break the left/right pairing. A number too wide for its half
+ * ellipsizes instead (the full value stays in the tooltip).
  */
-const TokenStatRow: React.FC<{ label: string; value: string; color?: string; title?: string; span?: boolean }> = ({ label, value, color, title, span }) => (
+const TokenStatRow: React.FC<{ label: string; value: string; color?: string; title?: string }> = ({ label, value, color, title }) => (
   <div
     style={{
       display: 'flex',
       alignItems: 'baseline',
-      gap: 6,
+      gap: 5,
+      minWidth: 0,
       lineHeight: 'var(--leading-relaxed)',
-      // span: bleed across every grid column (no-op in the 1-col narrow
-      // layout) so a lone trailing row doesn't strand an empty half-column.
-      ...(span ? { gridColumn: '1 / -1' } : {}),
+      whiteSpace: 'nowrap',
     }}
   >
-    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', flexShrink: 0, minWidth: 24 }}>
+    {/* The NUMBER never clips; the label yields first. Labels are locale-
+        dependent (ja "キャッシュ", es "En caché" are far wider than "Cached"),
+        and a degraded label is a lesser loss than a truncated figure — the
+        figure is the data. A fixed label track would slice the longer locales
+        mid-word instead. */}
+    <span
+      style={{
+        fontSize: 'var(--text-2xs)',
+        color: 'var(--text-dim)',
+        flexShrink: 1,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+      }}
+    >
       {label}
     </span>
     <span
       title={title}
       style={{
         fontFamily: FONT_MONO,
+        // One step below the table body: the 2×2 halves and the speed pair
+        // live in narrow fixed columns, and text-sm mono pushes the widest
+        // honest value (a compacted 4.3M, or "123 tok/s") past its share.
+        fontSize: 'var(--text-xs)',
         fontWeight: 'var(--font-semibold)',
         color: color ?? 'var(--text-main)',
+        flexShrink: 0,
       }}
     >
       {value}
@@ -84,39 +98,105 @@ const TokenStatRow: React.FC<{ label: string; value: string; color?: string; tit
 );
 
 /**
+ * One `label value` pair inside a summary series. Labels stay dim and small,
+ * figures take the mono weight — the same hierarchy the table rows use, so a
+ * series reads as a row of miniature stats rather than a sentence.
+ */
+const SummaryStat: React.FC<{ label: string; value: string; title?: string; color?: string }> = ({
+  label,
+  value,
+  title,
+  color,
+}) => (
+  <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{label}</span>
+    <span
+      title={title}
+      style={{
+        fontFamily: FONT_MONO,
+        fontSize: 'var(--text-xs)',
+        fontWeight: 'var(--font-semibold)',
+        color: color ?? 'var(--text-main)',
+      }}
+    >
+      {value}
+    </span>
+  </span>
+);
+
+/** A horizontal run of SummaryStats separated by faint dots. */
+const SummarySeries: React.FC<{ items: { key: string; node: React.ReactNode }[] }> = ({ items }) => (
+  <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', rowGap: 4 }}>
+    {items.map((item, i) => (
+      <React.Fragment key={item.key}>
+        {i > 0 && <span style={{ color: 'var(--divider)', fontSize: 'var(--text-2xs)' }}>·</span>}
+        {item.node}
+      </React.Fragment>
+    ))}
+  </div>
+);
+
+/**
  * Compact token display for the fixed-layout table: a 7-digit count (~65px
- * in mono 12px) overflows its column and bleeds into the neighbor cell
- * (table-layout:fixed never clips). ≥100K collapses to 38.9K/4.3M-style so
- * the 2×2 halves stay inside the container-query threshold; the exact value
- * stays in the row tooltip.
+ * in mono 12px) overflows its half and would ellipsize (table-layout:fixed
+ * plus the grid's minmax(0,1fr) halves), so ≥100K collapses to a
+ * 38.9K/4.3M-style number; the exact value stays in the row tooltip.
  */
 const COMPACT_FMT = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
 const tokenDisplay = (v: number): string => (v >= 100_000 ? COMPACT_FMT.format(v) : v.toLocaleString());
 
+/**
+ * Share of the decode window spent in felt pauses that reads as choppy. A
+ * tenth means one dead second in every ten of streaming — the point where
+ * users describe the stream as "stuck". Display threshold only — it colours
+ * the figure, never hides or rewrites it.
+ */
+const STALL_RATIO_WARN = 0.1;
 
 /**
- * Tier column content by entry mode:
+ * Compact percent for the stall-ratio cell: '—' when no gap was measurable,
+ * '0%' for a measured smooth stream, '<1%' so a small but real share is never
+ * rounded down into "0%", and whole percents above that.
+ */
+const fmtStallRatio = (share: number | undefined): string => {
+  if (share === undefined) return '—';
+  if (share <= 0) return '0%';
+  if (share < 0.01) return '<1%';
+  return `${Math.round(share * 100)}%`;
+};
+
+/**
+ * Tier badge by entry mode (NOT a cell — it renders as the model column's
+ * third stacked line since the standalone tier column merged there):
  * - combo   -> a neutral "Combo" badge (the composition is the decision, the
  *              executed member's tier is not a session ceiling).
- * - explicit-> nothing (a dash): the client named the model, the gateway holds
- *              no tier lock to display.
+ * - explicit-> nothing at all — a lone dash line under model/provider is
+ *              empty decoration; the session simply has no tier lock.
  * - auto / mixed -> the tier badge (the ratchet's locked ceiling).
  */
-const TierCell: React.FC<{ s: SessionRecord }> = ({ s }) => {
+const TierBadge: React.FC<{ s: SessionRecord }> = ({ s }) => {
   const { t } = useI18n();
   const effortTip = lastEffortTip(s, t);
   if (s.entryMode === 'combo') {
     return (
-      <span className="badge badge-info" title={t('sessions.entryModeComboHint') + effortTip}>
+      <span
+        className="badge badge-info"
+        title={t('sessions.entryModeComboHint') + effortTip}
+        style={{ display: 'inline-block', marginTop: '3px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
         {t('sessions.entryModeCombo')}
       </span>
     );
   }
   if (s.entryMode === 'explicit') {
-    return <span style={{ color: 'var(--text-dim)' }} title={t('sessions.entryModeExplicitHint') + effortTip}>—</span>;
+    return null;
   }
   return (
-    <span className={`badge ${TIER_BADGE[s.maxTier]}`} title={t(TIER_FULL_LABEL[s.maxTier]) + effortTip}>
+    <span
+      className={`badge ${TIER_BADGE[s.maxTier]}`}
+      title={t(TIER_FULL_LABEL[s.maxTier]) + effortTip}
+      style={{ display: 'inline-block', marginTop: '3px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+    >
       {t(TIER_LABEL[s.maxTier])}
     </span>
   );
@@ -143,10 +223,28 @@ const MODEL_LINE_STYLE: React.CSSProperties = {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
 };
-const ModelRefCell: React.FC<{ model: string | null; provider?: string | null }> = ({
-  model,
-  provider,
-}) => {
+
+/**
+ * One numeric cell of the request-detail table: mono, centered, small — the
+ * density the hand-rolled grid had. Kept as one constant so the thirteen
+ * columns cannot drift into different paddings.
+ */
+const DETAIL_TD_CENTER: React.CSSProperties = {
+  padding: '6px 8px',
+  textAlign: 'center',
+  fontFamily: FONT_MONO,
+  fontSize: 'var(--text-xs)',
+  whiteSpace: 'nowrap',
+};
+const ModelRefCell: React.FC<{
+  model: string | null;
+  provider?: string | null;
+  /** Tier badge rendered as the cell's own third line (model / provider /
+   *  tier) — the model column owns the tier display since the former
+   *  standalone tier column merged into it. `undefined` (explicit entry
+   *  mode) renders nothing: no tier, no dash line. */
+  tier?: React.ReactNode;
+}> = ({ model, provider, tier }) => {
   if (model === null) {
     return (
       <span style={{ ...MODEL_LINE_STYLE, color: 'var(--text-dim)' }}>—</span>
@@ -175,14 +273,45 @@ const ModelRefCell: React.FC<{ model: string | null; provider?: string | null }>
           {ns}
         </span>
       )}
+      {/* Third line, full-width badge: an inline-right badge squeezed the
+          provider name and read as one tangled row; stacked lines keep each
+          element legible and match the session-id cell's stacked rhythm.
+          Skipped entirely when there is no tier (explicit mode) — a lone
+          dash line is empty decoration. */}
+      {tier}
     </>
   );
+};
+
+/**
+ * ONE-string model reference in the canonical `namespace/id` order — the same
+ * spelling the request-detail table prints and the same namespace the wire id
+ * uses (ADR-0003 `modelRef`). Used where a cell has the width for a single
+ * line (the session-detail summary card): the two stacked lines of
+ * `ModelRefCell` exist only because the narrow LIST column cannot fit one.
+ *
+ * Reuses ModelRefCell's rule for the namespace: the serving provider wins, and
+ * the id's own prefix is stripped only when it IS that provider — an id that
+ * merely contains a slash keeps its full spelling rather than losing a segment.
+ */
+const modelFullRef = (model: string | null, provider?: string | null): string => {
+  if (model === null) return '—';
+  const slash = model.indexOf('/');
+  const inlineNs = slash < 0 ? null : model.slice(0, slash);
+  const ns = provider && provider.length > 0 ? provider : inlineNs;
+  if (ns === null) return model;
+  return ns === inlineNs ? model : `${ns}/${model}`;
 };
 
 /**
  * Shared-provider chip (trail + request-detail fold headers): printed once
  * above rows that omit the `provider/` prefix; the tooltip explains the
  * omission and the rows' own tooltips carry the full refs.
+ *
+ * `textTransform`/`letterSpacing` are reset explicitly: this chip renders
+ * inside uppercase fold headers, and both properties INHERIT — without the
+ * reset the prefix is shouted in caps (`DEEPSEEK/`) and letter-spaced like a
+ * section label, which is wrong for a literal identifier.
  */
 const PROVIDER_CHIP_STYLE: React.CSSProperties = {
   fontFamily: FONT_MONO,
@@ -194,6 +323,8 @@ const PROVIDER_CHIP_STYLE: React.CSSProperties = {
   padding: '1px 8px',
   borderRadius: '4px',
   wordBreak: 'break-all',
+  textTransform: 'none',
+  letterSpacing: 'normal',
 };
 const ProviderNsChip: React.FC<{ ns: string }> = ({ ns }) => {
   const { t } = useI18n();
@@ -229,6 +360,64 @@ const EFFORT_SOURCE_KEY: Record<string, string> = {
   default: 'sessions.thinkSrcDefault',
 };
 const effortSourceKey = (src: string): string => EFFORT_SOURCE_KEY[src] ?? 'sessions.thinkSrcDefault';
+
+/**
+ * Micro-badge stating which side MINTED a session id (see SessionIdSource,
+ * backend/src/session/session-row.ts). The id's shape is not evidence: a client
+ * naming it (`x-conversation-id`, embedded metadata.user_id, request.user) is
+ * adopted verbatim, so a 36-char UUID in this column is the CLIENT's choice,
+ * not a verbose gateway — the gateway's own mint is `sess_` + 16 hex. Icon-only
+ * so the id stays the row's subject; the tooltip carries the sentence, and
+ * aria-label keeps the word available to screen readers. Rendered IN FRONT of
+ * the id: as a prefix it labels the value that follows, and it is not the
+ * first thing an ellipsized cell drops.
+ *
+ * Colour: the CHIP stays neutral for both sides (`--chip-bg` / `--divider`, the
+ * same quiet treatment as the internal badge and the client-ref chips) and only
+ * the GLYPH is tinted. Provenance is not a status, so it must not paint blocks
+ * of accent into the first column — on this gateway the client side is the
+ * COMMON case (every WorkBuddy turn names its own id), and an accent block per
+ * row would read as a warning and compete with the accent's selection/focus
+ * meaning elsewhere. The tinted glyph keeps the one surprising fact ("the
+ * client chose this string") noticeable without shouting.
+ */
+function IdSourceBadge({
+  source,
+  t,
+  style,
+}: {
+  source: 'gateway' | 'client';
+  t: Translate;
+  style?: React.CSSProperties;
+}) {
+  const client = source === 'client';
+  const Icon = client ? Laptop : Server;
+  const label = t(client ? 'sessions.idSourceClient' : 'sessions.idSourceGateway');
+  return (
+    <span
+      title={t(client ? 'sessions.idSourceClientTip' : 'sessions.idSourceGatewayTip')}
+      role="img"
+      aria-label={label}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 16,
+        height: 16,
+        flex: 'none',
+        borderRadius: '4px',
+        verticalAlign: 'middle',
+        background: 'var(--chip-bg)',
+        border: '1px solid var(--divider)',
+        color: client ? 'var(--accent)' : 'var(--text-dim)',
+        cursor: 'help',
+        ...style,
+      }}
+    >
+      <Icon size={10} strokeWidth={2.4} />
+    </span>
+  );
+}
 
 /**
  * Tier-cell tooltip suffix: the LATEST turn's thinking-effort sample, lifted
@@ -544,6 +733,7 @@ export const SessionsPage: React.FC = () => {
     traces: TraceRecord[];
     detailOpen: boolean;
     trailOpen: boolean;
+    summaryOpen: boolean;
   } | null>(null);
   // (Backdrop dismiss + Escape + body scroll lock come from the shared
   // Dialog shell; the modal renders only while `timeline` is set.)
@@ -628,13 +818,23 @@ export const SessionsPage: React.FC = () => {
   const openTimeline = useCallback(
     async (s: SessionRecord, forceOpen: boolean) => {
       // Entry intent decides the fold states at open: switch badge → trail
-      // open + detail collapsed; Detail button → the reverse. The refill
-      // below only adds data — a toggle made while traces load survives.
-      // Fresh modal = newest first again (per-session reset).
+      // open + everything else collapsed (the operator asked to read the
+      // trajectory, so the summary must not eat the space it needs);
+      // Detail button → the reverse (detail open, trail and summary
+      // collapsed). The refill below only adds data — a toggle made while
+      // traces load survives. Fresh modal = newest first again (per-session
+      // reset).
       setDetailDesc(true);
       setDetailPage(1);
       setDetailFull(false);
-      setTimeline({ session: s, events: [], traces: [], detailOpen: forceOpen, trailOpen: !forceOpen });
+      setTimeline({
+        session: s,
+        events: [],
+        traces: [],
+        detailOpen: forceOpen,
+        trailOpen: !forceOpen,
+        summaryOpen: forceOpen,
+      });
       try {
         const traces = await api.getSessionTraces(s.id);
         setTimeline(cur =>
@@ -701,51 +901,64 @@ export const SessionsPage: React.FC = () => {
     [confirmDialog, t, toast, loadData]
   );
 
-  // Shared column widths for the split header/body tables. table-layout:fixed
-  // makes the <colgroup> authoritative — both tables render the identical
-  // colgroup so columns line up pixel-perfect. Weights are normalized to
-  // percentages; the capture column joins only when the archive is enabled.
-  // Current model gets 11.5 for its two non-wrapping lines (model id over
-  // provider, e.g. "alibaba-token-plan-cn" underneath); apps gets 9.5 (app-key
-  // + client badges wrap onto two lines here) and session id 17 (long ids
-  // wrap by design, so it can donate).
-  // In/Out/Cached share ONE column as a 2×2 stat grid (left half: In over
-  // Out; right half: Cached over Hit-rate) — 16.5 units keeps its two halves
-  // above the container-query threshold (see .tokens-stat-wrap in index.css)
-  // on ordinary desktop windows; ≥100K counts render compact (4.3M/38.9K)
-  // so a half never exceeds its share. Folding cached in also removed the
-  // narrow centered column whose number used to bleed into neighbors.
-  // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — a badge needs
-  // ~6 units, but the HEADER sets the floor: the CJK label is 4 glyphs (当前
-  // 梯队) and the user asked for it on ONE line, so the column carries 8.5 and
-  // the header drops its side padding to 8 (see the <th> below). Switches gets
-  // 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
-  // Detail holds two side-by-side icons — 7 units keeps them on one line
-  // (flex nowrap below also guarantees rows never grow a second line here).
-  // Session id gets 17: the cell also carries the first-user-prompt title
-  // line, which reads poorly when squeezed; the donation comes out of the
-  // current-model column (names ellipsize with a title tooltip) and Apps
-  // (badges wrap freely), neither of which needs the extra width.
-  // Active is a bare clock time — 6.5.
-  // Alignment: the tables default to textAlign:center (badges / numbers /
-  // icons read better in these narrow fixed columns); only session id (mono
-  // copy target) and Tokens (2×2 stat grid with its own internal layout)
-  // opt back out to left — see TH_LEFT and the two body cells.
-  const colWeights = [17, 9.5, 11.5, 8.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
-  const colSum = colWeights.reduce((a, b) => a + b, 0);
-  const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
+  // Column widths in PX, plus the horizontal floor derived from them. PX (not
+  // percentages) is the point: a percentage layout shrinks every column with
+  // the window until 13 columns are 20px wide and every value renders as an
+  // ellipsis. With a px floor the cells keep their honest widths and the body
+  // scrolls sideways below it (ScrollTable mirrors scrollLeft onto the head).
+  //   session  id + client-ref chips + first-prompt line (the widest cell)
+  //   apps     app-key / client badges, two lines deep when several appear
+  //   model    model id over provider + tier badge on the provider line — the
+  //            former standalone tier column merged here (a Combo badge or an
+  //            explicit-mode dash is unreadable without the model context)
+  //   tokens   the 1×4 volume stack (In / Cached / Out / Hit): one metric
+  //            per line — a 2×2 half-column proved too narrow for label +
+  //            value, so the full width belongs to each row now
+  //   speed    TTFT P50 / TTFT P95 / output tok/s / stall ratio — 1×4 stack,
+  //            same shape as tokens
+  //   cost     sub-dollar `$0.078535` is the widest honest figure (9 glyphs at
+  //            11px mono + 28px cell padding = 93px, hence 96); dollar-and-up
+  //            values render 2 decimals (`$267.47`) and the exact number rides
+  //            the cell tooltip.
+  //   actions  ONE pinned column (sticky right): detail eye + usage chart +
+  //            delete + capture jump — the row's whole click surface. With 12
+  //            data columns the body scrolls sideways on narrow windows, and
+  //            the actions would otherwise be the FIRST thing scrolled out of
+  //            view; pinning keeps them reachable without scrolling. The
+  //            former `detail` / `capture` columns are folded in here.
+  //
+  // Widths are MEASURED against real session data, not guessed. `cost` was 68
+  // and overflowed by 26px on EVERY row — cost text carries no ellipsis, so it
+  // bled into the Active column and made both look cramped — while `tokens`
+  // carried ~30px of dead space per half. The rebalance moves that slack to
+  // cost and leaves the table's total width (i.e. how much it scrolls
+  // sideways) unchanged.
+  const COL_W = {
+    session: 156,
+    apps: 88,
+    // Model + tier in one cell (badge rides the provider line): the former
+    // standalone tier column's 82px moved here.
+    model: 186,
+    switches: 60,
+    turns: 54,
+    requests: 58,
+    tokens: 150,
+    speed: 140,
+    cost: 96,
+    active: 68,
+    actions: 128,
+  } as const;
+  const colMinWidth =
+    COL_W.session + COL_W.apps + COL_W.model + COL_W.switches + COL_W.turns +
+    COL_W.requests + COL_W.tokens + COL_W.speed + COL_W.cost + COL_W.active + COL_W.actions;
   // Switch-timeline modal: when every event shares one provider prefix, print
   // that prefix once as a header chip and show bare model ids in the rows.
   // Only pays off across MULTIPLE events — a single-row trail renders the
-  // full ref inline instead of a dangling "ns/" fragment. Same dedup for the
-  // request-detail grid (gated on >1 turn for the same reason).
+  // full ref inline instead of a dangling "ns/" fragment. (The request-detail
+  // table needs no dedup: it prints each turn's full model ref on one line.)
   const providerNs =
     timeline && timeline.events.length > 1
       ? commonProviderOf(timeline.events.flatMap(ev => [ev.from, ev.to]))
-      : null;
-  const detailNs =
-    timeline && timeline.traces.length > 1
-      ? commonProviderOf(timeline.traces.map(tr => tr.execution.modelUsed))
       : null;
   const shortModel = (ns: string | null, m: string): string =>
     ns && m.startsWith(`${ns}/`) ? m.slice(ns.length + 1) : m;
@@ -824,58 +1037,47 @@ export const SessionsPage: React.FC = () => {
         </label>
       </div>
 
-      {/* Header/body split tables: header block is static (natural flow), the
-          body block is the only scroll region. Shared <colgroup> +
-          table-layout:fixed align the columns; scrollbar-gutter reserves the
-          same gutter on both so the body's scrollbar never desyncs widths. */}
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-        <div style={{ scrollbarGutter: 'stable' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: 'var(--text-sm)', tableLayout: 'fixed' }}>
-            <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--divider)', color: 'var(--text-dim)' }}>
-                <th style={TH_LEFT}>{t('sessions.thSessionId')}</th>
-                <th style={TH_STYLE}>{t('sessions.thApps')}</th>
-                <th style={TH_STYLE}>{t('sessions.thCurrent')}</th>
-                <th style={{ ...TH_STYLE, padding: '10px 8px' }}>
-                  {/* Keep the label on ONE line when it fits. `word-break:
-                      keep-all` removes the CJK soft-break opportunities, so the
-                      4-glyph label (当前梯队) no longer splits every 2 chars; the
-                      column weight above buys the width for it. Space-separated
-                      locales ("Current Tier", "Aktuelles Tier") still wrap at
-                      the space — two short words read fine in this column.
-                      `overflow-wrap: break-word` is the emergency ladder: when
-                      the window is narrow enough that even the full label does
-                      not fit, it breaks instead of bleeding into the neighbour
-                      columns (which would look like a rendering bug). */}
-                  <span
-                    title={t('sessions.thTier')}
-                    style={{ display: 'inline-block', wordBreak: 'keep-all', overflowWrap: 'break-word' }}
-                  >
-                    {t('sessions.thTier')}
-                  </span>
-                </th>
-                <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
-                <th style={TH_STYLE}>
-                  <span title={t('sessions.thTurnsTip')}>{t('sessions.thTurns')}</span>
-                </th>
-                <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
-                <th style={TH_LEFT}>{t('sessions.thTokens')}</th>
-                <th style={TH_STYLE}>{t('sessions.thCost')}</th>
-                <th style={TH_STYLE}>{t('sessions.thActive')}</th>
-                <th style={TH_STYLE}>{t('sessions.thDetail')}</th>
-                <th style={TH_STYLE}>{t('sessions.thActions')}</th>
-                {captureOn && <th style={TH_STYLE}>{t('sessions.thCapture')}</th>}
-              </tr>
-            </thead>
-          </table>
-        </div>
-        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, scrollbarGutter: 'stable' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: 'var(--text-sm)', tableLayout: 'fixed' }}>
-            <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
-            <tbody>
-            {sessions.length > 0 ? (
-              sessions.map(s => (
+      {/* ScrollTable (repo standard for a scrolling table): the head is a
+          normal row outside the body, and the body owns BOTH scroll axes.
+          Columns carry PX widths and a matching horizontal floor — with 13
+          columns, a percentage layout squeezes every cell into an ellipsis on
+          a narrow window and the whole table turns into unreadable dots.
+          Below the floor the body scrolls sideways (head follows) instead. */}
+      <ScrollTable
+        fill
+        columns={[
+          { key: 'session', label: t('sessions.thSessionId'), width: COL_W.session },
+          { key: 'apps', label: t('sessions.thApps'), width: COL_W.apps, align: 'center' },
+          { key: 'model', label: t('sessions.thCurrent'), width: COL_W.model, align: 'center' },
+          { key: 'switches', label: t('sessions.thSwitches'), width: COL_W.switches, align: 'center' },
+          {
+            key: 'turns',
+            label: <span title={t('sessions.thTurnsTip')}>{t('sessions.thTurns')}</span>,
+            width: COL_W.turns,
+            align: 'center',
+          },
+          { key: 'requests', label: t('sessions.thRequests'), width: COL_W.requests, align: 'center' },
+          { key: 'tokens', label: t('sessions.thTokens'), width: COL_W.tokens },
+          {
+            key: 'speed',
+            label: <span title={t('sessions.thSpeedTip')}>{t('sessions.thSpeed')}</span>,
+            width: COL_W.speed,
+          },
+          { key: 'cost', label: t('sessions.thCost'), width: COL_W.cost, align: 'center' },
+          { key: 'active', label: t('sessions.thActive'), width: COL_W.active, align: 'center' },
+          {
+            key: 'actions',
+            label: t('sessions.thActions'),
+            width: COL_W.actions,
+            align: 'center',
+            sticky: 'right',
+          },
+        ]}
+        minWidth={colMinWidth}
+        headCellStyle={{ padding: '10px 12px' }}
+        empty={filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
+      >
+            {sessions.map(s => (
                 <tr key={s.id} style={{ borderBottom: '1px solid var(--divider)' }}>
                   <td
                     style={{
@@ -890,23 +1092,31 @@ export const SessionsPage: React.FC = () => {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    <span
-                      title={s.id}
-                      style={{
-                        cursor: 'copy',
-                        display: 'inline-block',
-                        maxWidth: '100%',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        verticalAlign: 'middle',
-                      }}
-                      onClick={async () => {
-                        const ok = await copyToClipboard(s.id);
-                        if (ok) toast.success(t('sessions.copiedSessionId'));
-                        else toast.error(t('sessions.copyFailed'));
-                      }}
-                    >
-                      {formatSessionId(s.id)}
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      {/* Minting side rides IN FRONT of the id (see
+                          IdSourceBadge): as a prefix it labels the value that
+                          follows, always stays visible when the cell ellipsizes
+                          (a trailing badge is the first thing a truncated row
+                          drops), and keeps the copy target = the id alone. */}
+                      {s.idSource && <IdSourceBadge source={s.idSource} t={t} />}
+                      <span
+                        title={s.id}
+                        style={{
+                          cursor: 'copy',
+                          flex: '1 1 auto',
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                        onClick={async () => {
+                          const ok = await copyToClipboard(s.id);
+                          if (ok) toast.success(t('sessions.copiedSessionId'));
+                          else toast.error(t('sessions.copyFailed'));
+                        }}
+                      >
+                        {formatSessionId(s.id)}
+                      </span>
                     </span>
                     {/* Internal marker: with the filter on, internal rows never
                         reach the client at all (server-side exclusion), so this
@@ -977,7 +1187,7 @@ export const SessionsPage: React.FC = () => {
                             <span
                               style={{
                                 flex: 'none',
-                                fontSize: '9px',
+                                fontSize: 'var(--text-3xs)',
                                 letterSpacing: '0.08em',
                                 textTransform: 'uppercase',
                                 color: 'var(--text-dim)',
@@ -1037,7 +1247,17 @@ export const SessionsPage: React.FC = () => {
                       </div>
                     )}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td
+                    style={{
+                      // Tightest horizontal padding of any cell: the column
+                      // is only 88px and each side's padding comes straight
+                      // out of the badge text (a 14px side leaves ~44px of
+                      // name — one ellipsized word). 8px keeps the column
+                      // from touching its neighbors while the badge text
+                      // gets the width back.
+                      padding: '10px 8px',
+                    }}
+                  >
                     {(s.apiKeys && s.apiKeys.length > 0) || (s.clients && s.clients.length > 0) ? (
                       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px' }}>
                         {s.apiKeys?.map(k => (
@@ -1047,7 +1267,9 @@ export const SessionsPage: React.FC = () => {
                             style={{
                               fontSize: 'var(--text-2xs)',
                               lineHeight: 'var(--leading-14)',
-                              padding: '1px 6px',
+                              // Chip chrome (padding + border) eats into the
+                              // 88px column — 4px sides keep the name legible.
+                              padding: '1px 4px',
                               borderRadius: '4px',
                               background: 'color-mix(in srgb, var(--accent-emerald) 10%, transparent)',
                               border: '1px solid color-mix(in srgb, var(--accent-emerald) 25%, transparent)',
@@ -1068,7 +1290,7 @@ export const SessionsPage: React.FC = () => {
                             style={{
                               fontSize: 'var(--text-2xs)',
                               lineHeight: 'var(--leading-14)',
-                              padding: '1px 6px',
+                              padding: '1px 4px',
                               borderRadius: '4px',
                               background: 'color-mix(in srgb, var(--accent-violet) 10%, transparent)',
                               border: '1px solid color-mix(in srgb, var(--accent-violet) 25%, transparent)',
@@ -1087,8 +1309,12 @@ export const SessionsPage: React.FC = () => {
                       <span style={{ color: 'var(--text-dim)' }}>—</span>
                     )}
                   </td>
-                  <td style={{ padding: '10px 14px', fontWeight: 'var(--font-semibold)' }}>
-                    <ModelRefCell model={s.currentModel} provider={s.currentProvider} />
+                  <td style={{ padding: '10px 14px', fontWeight: 'var(--font-semibold)', textAlign: 'center' }}>
+                    <ModelRefCell
+                      model={s.currentModel}
+                      provider={s.currentProvider}
+                      tier={<TierBadge s={s} />}
+                    />
                     {/* Credential affinity: the operator's label when the
                         registry chain carries one, else the display-safe
                         keyHash prefix (ADR-0002 §3). */}
@@ -1120,10 +1346,7 @@ export const SessionsPage: React.FC = () => {
                       </span>
                     )}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <TierCell s={s} />
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={{ padding: '10px 14px', textAlign: 'center' }}>
                     <span
                       role="button"
                       title={`${t('sessions.switchTitle')} · ${t('sessions.switchHint')}`}
@@ -1146,81 +1369,201 @@ export const SessionsPage: React.FC = () => {
                       ×{s.switchCount}
                     </span>
                   </td>
-                  <td style={{ padding: '10px 14px' }}>{s.turnCount}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: FONT_MONO }}>
+                  <td style={{ padding: '10px 14px', textAlign: 'center' }}>{s.turnCount}</td>
+                  <td style={{ padding: '10px 14px', fontFamily: FONT_MONO, textAlign: 'center' }}>
                     {s.traceCount.toLocaleString()}
                   </td>
-                  <td style={{ padding: '10px 14px', textAlign: 'left' }}>
-                    {/* Grid auto-placement fills row-major, so the child order
-                        below yields: In|Cached on row 1, Out|Hit on row 2, and
-                        the Rate row bleeding across both columns (2×2 grid +
-                        a full-width line when the column is wide; 5 stacked
-                        rows when narrow — see .tokens-stat-wrap in index.css). */}
-                    <div className="tokens-stat-wrap">
-                      <div className="tokens-stat-grid">
-                        <TokenStatRow
-                          label={t('sessions.tokenIn')}
-                          value={tokenDisplay(s.inputTokens)}
-                          title={s.inputTokens.toLocaleString()}
-                        />
-                        <TokenStatRow
-                          label={t('sessions.tokenCached')}
-                          value={tokenDisplay(s.cachedTokens)}
-                          title={s.cachedTokens.toLocaleString()}
-                          color={s.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
-                        />
-                        <TokenStatRow
-                          label={t('sessions.tokenOut')}
-                          value={tokenDisplay(s.outputTokens)}
-                          title={s.outputTokens.toLocaleString()}
-                          color="var(--text-muted)"
-                        />
-                        <TokenStatRow
-                          label={t('sessions.tokenHit')}
-                          value={
-                            s.inputTokens > 0
-                              ? `${((s.cachedTokens / s.inputTokens) * 100).toFixed(1)}%`
-                              : '—'
-                          }
-                          color="var(--text-dim)"
-                        />
-                        {/* Session-level decode rate (industry TPS): output
-                            tokens summed over STREAMED turns only, divided by
-                            their summed decode window (first chunk → stream
-                            end). Same semantics as the per-request rate in
-                            the detail grid; '—' when the session never
-                            streamed. Spans the full grid width — a 5th row
-                            would otherwise strand an empty right half-column. */}
-                        <TokenStatRow
-                          span
-                          label={t('sessions.tokenRate')}
-                          value={
-                            s.genOutputTokens > 0 && s.genMsSum > 0
-                              ? `${formatRate(decodeRate(s.genOutputTokens, s.genMsSum))} ${t('usage.thToks')}`
-                              : '—'
-                          }
-                          title={t('usage.toksTip')}
-                          color="var(--text-muted)"
-                        />
-                      </div>
+                  <td
+                    style={{
+                      padding: '10px 10px',
+                      textAlign: 'left',
+                      // Same rationale as the speed cell: the 2×2 labels
+                      // (In/Cached/Out/Hit) yield width first, so padding is
+                      // what gets reclaimed at the 150px floor.
+                    }}
+                  >
+                    {/* Volume: In / Cached / Out / Hit — 1×4 stack, same
+                        shape as the speed cell (see .tokens-stat-grid in
+                        index.css for why 1×4 beats 2×2 here). */}
+                    <div className="tokens-stat-grid">
+                      <TokenStatRow
+                        label={t('sessions.tokenIn')}
+                        value={tokenDisplay(s.inputTokens)}
+                        title={s.inputTokens.toLocaleString()}
+                      />
+                      <TokenStatRow
+                        label={t('sessions.tokenCached')}
+                        value={tokenDisplay(s.cachedTokens)}
+                        title={s.cachedTokens.toLocaleString()}
+                        color={s.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
+                      />
+                      <TokenStatRow
+                        label={t('sessions.tokenOut')}
+                        value={tokenDisplay(s.outputTokens)}
+                        title={s.outputTokens.toLocaleString()}
+                        color="var(--text-muted)"
+                      />
+                      <TokenStatRow
+                        label={t('sessions.tokenHit')}
+                        value={
+                          s.inputTokens > 0
+                            // Integer percent: a half-column is ~60px of room at
+                            // ordinary window widths, and one decimal pushes
+                            // "100.0%" past it (the row would ellipsize). The
+                            // exact rate is in the tooltip.
+                            ? `${Math.round((s.cachedTokens / s.inputTokens) * 100)}%`
+                            : '—'
+                        }
+                        title={
+                          s.inputTokens > 0
+                            ? t('sessions.cacheHitRate', { pct: ((s.cachedTokens / s.inputTokens) * 100).toFixed(1) })
+                            : undefined
+                        }
+                        color="var(--text-dim)"
+                      />
+                    </div>
+                  </td>
+                  <td
+                    style={{
+                      padding: '10px 10px',
+                      textAlign: 'left',
+                      // Tighter than the default cell: every px of padding
+                      // comes out of the four labels — a squeezed label
+                      // ellipsizes FIRST (the value never yields), so
+                      // reclaiming padding here is what keeps
+                      // "TTFT"/output/stall ratio legible at the column's
+                      // 140px floor. Same rationale applies to the speed
+                      // cell's <td> below (shared shape, shared padding).
+                    }}
+                  >
+                    {/* Industry decomposition of a streamed turn, all three
+                        over STREAMED turns only:
+                          TTFT  P50 — request start → first streamed chunk
+                                (queueing + network + prefill + first decode
+                                step; a proxy cannot separate those, so the
+                                number is honestly named for the whole path)
+                          P95   — the tail. Latency is a distribution: the
+                                mean is the one statistic that hides a cold
+                                start, which is why no published latency table
+                                reports it.
+                          Out   — output tokens ÷ decode window (first chunk
+                                → stream end), i.e. OTel's time_per_output_token
+                                inverted. No "prefill rate" row: prefill is a
+                                server-internal measurement this proxy cannot
+                                observe, and inventing input÷TTFT would just
+                                track cache-hit rate.
+                        Each row is one line (TokenStatRow never wraps); '—'
+                        when the session never streamed. */}
+                    {/* Speed cell — same 1×4 shape as the tokens cell (shared
+                        CSS, index.css): TTFT P50 → P95 → output tok/s →
+                        stall ratio, one metric per line, label carries the
+                        qualifier so the bare value never squeezes it out.
+                        Row order never changes — each metric keeps its color
+                        and tooltip identity. '—' when never streamed.
+                        Layout lives in .tokens-speed-stack, not inline.
+                        Each row is one line (TokenStatRow never wraps); the
+                        session-id cell sets the row height, four rows do not
+                        grow it. */}
+                    <div className="tokens-speed-stack">
+                      <TokenStatRow
+                        // The LABEL carries the unit ("TTFT P50"), the value
+                        // stays a bare compact number — the Tokens-cell trick
+                        // that keeps every label fully visible in a 140px
+                        // column: short values leave the label room; a
+                        // value-side suffix ("1.2s (P95)") is what squeezed
+                        // the labels out. The full figure + unit + sample
+                        // count ride the tooltip.
+                        label={`${t('usage.ttft')} P50`}
+                        value={s.ttftP50Ms !== undefined ? fmtLatency(s.ttftP50Ms) : '—'}
+                        title={
+                          s.ttftP50Ms !== undefined
+                            ? `${t('sessions.ttftP50Tip')} · ${t('sessions.samples', { n: String(s.ttftSamples) })}`
+                            : t('usage.ttftTip')
+                        }
+                        color="var(--text-muted)"
+                      />
+                      <TokenStatRow
+                        // Same metric as the row above, tail percentile: the
+                        // P50/P95 distinction lives in the LABEL (they sit in
+                        // the same 2×2 row, visually paired), the value stays
+                        // bare. Below two samples P95 IS P50 — showing the
+                        // same number twice reads as a bug, hence '—'.
+                        label={`${t('usage.ttft')} P95`}
+                        value={
+                          s.ttftP95Ms !== undefined && s.ttftSamples >= 2
+                            ? fmtLatency(s.ttftP95Ms)
+                            : '—'
+                        }
+                        title={t('sessions.ttftP95Tip')}
+                        color="var(--text-dim)"
+                      />
+                      <TokenStatRow
+                        // Unit (tok/s) rides the LABEL here too — the value
+                        // stays a bare compact figure so the label never
+                        // ellipsizes; the exact rate + unit + OTel-metric
+                        // caveat live in the tooltip.
+                        label={`${t('sessions.speedOutput')} ${t('usage.thToks')}`}
+                        value={
+                          s.genOutputTokens > 0 && s.genMsSum > 0
+                            ? formatSpeed(decodeRate(s.genOutputTokens, s.genMsSum))
+                            : '—'
+                        }
+                        title={
+                          s.genOutputTokens > 0 && s.genMsSum > 0
+                            ? `${formatSpeed(decodeRate(s.genOutputTokens, s.genMsSum))} ${t('usage.thToks')} · ${t('sessions.speedOutputTip')}`
+                            : t('sessions.speedOutputTip')
+                        }
+                        color="var(--text-muted)"
+                      />
+                      {/* Perceived stall ratio: share of the decode window
+                          spent in ≥1 s pauses. A share (not a longest-gap
+                          maximum) so repeated stutters and one long freeze
+                          land on the same scale; amber past the threshold
+                          announces a choppy session without a tooltip. '—'
+                          means no gap was measurable (never streamed, or a
+                          single output chunk). */}
+                      <TokenStatRow
+                        label={t('sessions.speedStallRatio')}
+                        value={fmtStallRatio(s.stallRatio)}
+                        title={t('sessions.speedStallRatioTip')}
+                        color={
+                          s.stallRatio !== undefined && s.stallRatio >= STALL_RATIO_WARN
+                            ? 'var(--accent-amber)'
+                            : 'var(--text-dim)'
+                        }
+                      />
                     </div>
                   </td>
                   <td
                     style={{
                       padding: '10px 14px',
+                      textAlign: 'center',
                       // Amber = money, consistent with the /usage table & cards.
                       color: 'var(--accent-amber)',
                       fontFamily: FONT_MONO,
+                      // Belt and braces after the width fix: a cost figure with
+                      // more digits than the column allows must ellipsize in
+                      // place, never spill into the Active column (fixed table
+                      // layout does not clip overflowing text by itself).
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
                     }}
+                    title={formatCost(s.costUsd)}
                   >
-                    {formatCost(s.costUsd)}
+                    {formatCostCompact(s.costUsd)}
                   </td>
-                  <td style={{ padding: '10px 14px', color: 'var(--text-dim)' }}>
+                  <td style={{ padding: '10px 14px', color: 'var(--text-dim)', textAlign: 'center' }}>
                     {new Date(s.lastActiveAt).toLocaleTimeString()}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    {/* Flex row: the two icons must never wrap — a wrapped pair
-                        doubles every row's height. */}
+                  <td
+                  style={{
+                    ...stickyBodyCell,
+                    padding: '10px 12px',
+                    // Flex row: the icons must never wrap — a wrapped pair
+                    // doubles every row's height.
+                  }}
+                >
                     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
                     <span
                       role="button"
@@ -1254,9 +1597,6 @@ export const SessionsPage: React.FC = () => {
                     >
                       <BarChart3 size={13} />
                     </span>
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
                     <span
                       role="button"
                       aria-label={t('sessions.deleteSession')}
@@ -1273,9 +1613,7 @@ export const SessionsPage: React.FC = () => {
                     >
                       <Trash2 size={13} />
                     </span>
-                  </td>
-                  {captureOn && (
-                    <td style={{ padding: '10px 14px' }}>
+                    {captureOn && (
                       <span
                         role="button"
                         aria-label={t('sessions.jumpToCapture')}
@@ -1292,21 +1630,12 @@ export const SessionsPage: React.FC = () => {
                       >
                         <Archive size={13} />
                       </span>
-                    </td>
-                  )}
+                    )}
+                    </span>
+                  </td>
                 </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={captureOn ? 13 : 12} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)' }}>
-                  {filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
-                </td>
-              </tr>
-            )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+              ))}
+      </ScrollTable>
       <div style={{ padding: '0 14px' }}>
         <Pagination
           page={page}
@@ -1343,7 +1672,45 @@ export const SessionsPage: React.FC = () => {
                 wordBreak: 'break-all',
               }}
             >
-              <span>{timeline.session.id}</span>
+              <span>
+                {/* Same minting-side marker as the table row, IN FRONT of the id
+                    for the same reason (it labels the value that follows). The
+                    dialog keeps the WORD beside the icon: it is where the
+                    operator decides whether the id's length is the client's
+                    choice or the gateway's, and a bare tooltip would hide it. */}
+                {timeline.session.idSource && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      marginRight: 8,
+                      verticalAlign: 'middle',
+                    }}
+                  >
+                    <IdSourceBadge source={timeline.session.idSource} t={t} />
+                    <span
+                      style={{
+                        fontFamily: 'inherit',
+                        fontSize: 'var(--text-2xs)',
+                        letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                        color:
+                          timeline.session.idSource === 'client'
+                            ? 'var(--accent)'
+                            : 'var(--text-dim)',
+                      }}
+                    >
+                      {t(
+                        timeline.session.idSource === 'client'
+                          ? 'sessions.idSourceClient'
+                          : 'sessions.idSourceGateway'
+                      )}
+                    </span>
+                  </span>
+                )}
+                {timeline.session.id}
+              </span>
               {/* The row can only afford a truncated prefix of a client-minted
                   conversation id; this dialog is where the FULL value is
                   readable and copyable (ADR-0002 §1). */}
@@ -1391,39 +1758,374 @@ export const SessionsPage: React.FC = () => {
             </button>
           }
         >
+            {/* Session summary card. The dialog used to open on an id and a
+                switch trail — every quantity the list row showed (model, tier,
+                tokens, cost, and the streamed-only TTFT percentiles + output
+                speed) disappeared exactly when the session was inspected.
+
+                Shape: a FIXED 6-track grid, not a flex-wrap strip. Content-
+                sized cells were what made the old block look ragged (each cell
+                wrapped at its own width, so rows never lined up). Wide figures
+                share a row as dot-separated series, so every track has one
+                value line and the card reads as a 2×6 matrix.
+
+                Collapsible: the whole card is reference data, and an operator
+                who opened the dialog to read the request table does not need it
+                taking a third of the body. */}
             <div
-              role="button"
-              aria-expanded={timeline.trailOpen}
-              onClick={() => setTimeline(cur => (cur ? { ...cur, trailOpen: !cur.trailOpen } : cur))}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                marginBottom: timeline.trailOpen ? '8px' : 0,
-                cursor: 'pointer',
-                userSelect: 'none',
+                border: '1px solid var(--divider)',
+                borderRadius: 8,
+                background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
+                overflow: 'hidden',
+                // The Dialog body is a flex COLUMN, so every card is a flex item
+                // and would be shrunk (flex-shrink defaults to 1) whenever the
+                // body is height-capped — `overflow: hidden` then silently clips
+                // the grid. `0 0 auto` keeps each card at content height; the
+                // request-detail card below is the only one that may flex-fill.
+                flex: '0 0 auto',
               }}
             >
-              {timeline.trailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <span
+              <button
+                type="button"
+                aria-expanded={timeline.summaryOpen}
+                onClick={() => setTimeline(cur => (cur ? { ...cur, summaryOpen: !cur.summaryOpen } : cur))}
                 style={{
-                  fontSize: 'var(--text-xs)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  width: '100%',
+                  padding: '9px 12px',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-dim)',
+                  fontSize: 'var(--text-2xs)',
                   fontWeight: 'var(--font-bold)',
                   textTransform: 'uppercase',
-                  letterSpacing: 'var(--tracking-wide)',
-                  color: 'var(--text-dim)',
+                  letterSpacing: 'var(--tracking-label)',
+                  textAlign: 'left',
                 }}
               >
-                {t('sessions.switchTitle')}
-              </span>
-              {/* Shared provider prefix, printed once: rows below show bare
-                  model ids; hover reveals the full ref. */}
-              {providerNs && <ProviderNsChip ns={providerNs} />}
+                {timeline.summaryOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span>{t('sessions.summaryTitle')}</span>
+                {!timeline.summaryOpen && (
+                  <span
+                    style={{
+                      marginLeft: 'auto',
+                      fontFamily: FONT_MONO,
+                      fontSize: 'var(--text-xs)',
+                      textTransform: 'none',
+                      letterSpacing: 0,
+                      color: 'var(--text-muted)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {modelFullRef(timeline.session.currentModel, timeline.session.currentProvider)}
+                    {timeline.session.ttftP50Ms !== undefined
+                      ? ` · ${t('usage.ttft')} ${fmtLatency(timeline.session.ttftP50Ms)}`
+                      : ''}
+                  </span>
+                )}
+              </button>
+              {timeline.summaryOpen && (
+                <div style={{ padding: '2px 12px 14px' }}>
+                  {/* One bordered Descriptions list: label cell + value cell per
+                      metric, so the block reads as a table (the shape users
+                      already know from every detail drawer) instead of the old
+                      scattered stat tiles whose tracks were sized by content.
+                      Tokens and Speed each merge their four sub-metrics into
+                      ONE value cell — they are one fact each (token split,
+                      latency profile), not eight separate fields. */}
+                  <Descriptions
+                    column={2}
+                    items={[
+                      {
+                        key: 'model',
+                        label: t('sessions.thCurrent'),
+                        span: 2,
+                        children: (
+                          <span
+                            title={modelFullRef(timeline.session.currentModel, timeline.session.currentProvider)}
+                            style={{
+                              fontFamily: FONT_MONO,
+                              fontSize: 'var(--text-sm)',
+                              fontWeight: 'var(--font-semibold)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              minWidth: 0,
+                            }}
+                          >
+                            {modelFullRef(timeline.session.currentModel, timeline.session.currentProvider)}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'tier',
+                        label: t('sessions.thTier'),
+                        children: <TierBadge s={timeline.session} />,
+                      },
+                      {
+                        key: 'cost',
+                        label: t('sessions.thCost'),
+                        children: (
+                          <span
+                            style={{
+                              fontFamily: FONT_MONO,
+                              fontWeight: 'var(--font-semibold)',
+                              color: 'var(--accent-amber)',
+                              fontSize: 'var(--text-sm)',
+                            }}
+                          >
+                            {formatCost(timeline.session.costUsd)}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'requests',
+                        label: t('sessions.thRequests'),
+                        children: (
+                          <span style={{ fontFamily: FONT_MONO, fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-sm)' }}>
+                            {timeline.session.traceCount.toLocaleString()}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'turns',
+                        label: t('sessions.thTurns'),
+                        title: t('sessions.thTurnsTip'),
+                        children: (
+                          <span style={{ fontFamily: FONT_MONO, fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-sm)' }}>
+                            {timeline.session.turnCount.toLocaleString()}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'tokens',
+                        label: t('sessions.thTokens'),
+                        span: 2,
+                        children: (
+                          <SummarySeries
+                            items={[
+                              {
+                                key: 'in',
+                                node: (
+                                  <SummaryStat
+                                    label={t('sessions.tokenIn')}
+                                    value={tokenDisplay(timeline.session.inputTokens)}
+                                    title={timeline.session.inputTokens.toLocaleString()}
+                                  />
+                                ),
+                              },
+                              {
+                                key: 'cached',
+                                node: (
+                                  <SummaryStat
+                                    label={t('sessions.tokenCached')}
+                                    value={tokenDisplay(timeline.session.cachedTokens)}
+                                    title={timeline.session.cachedTokens.toLocaleString()}
+                                    color={timeline.session.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
+                                  />
+                                ),
+                              },
+                              {
+                                key: 'out',
+                                node: (
+                                  <SummaryStat
+                                    label={t('sessions.tokenOut')}
+                                    value={tokenDisplay(timeline.session.outputTokens)}
+                                    title={timeline.session.outputTokens.toLocaleString()}
+                                    color="var(--text-muted)"
+                                  />
+                                ),
+                              },
+                              {
+                                key: 'hit',
+                                node: (
+                                  <SummaryStat
+                                    label={t('sessions.tokenHit')}
+                                    value={
+                                      timeline.session.inputTokens > 0
+                                        ? `${Math.round((timeline.session.cachedTokens / timeline.session.inputTokens) * 100)}%`
+                                        : '—'
+                                    }
+                                    title={
+                                      timeline.session.inputTokens > 0
+                                        ? t('sessions.cacheHitRate', {
+                                            pct: ((timeline.session.cachedTokens / timeline.session.inputTokens) * 100).toFixed(1),
+                                          })
+                                        : undefined
+                                    }
+                                    color="var(--text-dim)"
+                                  />
+                                ),
+                              },
+                            ]}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'speed',
+                        label: t('sessions.thSpeed'),
+                        title: t('sessions.thSpeedTip'),
+                        span: 2,
+                        children: (
+                          <SummarySeries
+                            items={[
+                              {
+                                key: 'ttft',
+                                node: (
+                                  <SummaryStat
+                                    label={t('usage.ttft')}
+                                    value={
+                                      timeline.session.ttftP50Ms !== undefined ? fmtLatency(timeline.session.ttftP50Ms) : '—'
+                                    }
+                                    title={
+                                      timeline.session.ttftP50Ms !== undefined
+                                        ? `${t('sessions.ttftP50Tip')} · ${t('sessions.samples', { n: String(timeline.session.ttftSamples) })}`
+                                        : t('usage.ttftTip')
+                                    }
+                                    color="var(--text-muted)"
+                                  />
+                                ),
+                              },
+                              {
+                                key: 'p95',
+                                node: (
+                                  <SummaryStat
+                                    label={t('usage.ttft')}
+                                    value={
+                                      timeline.session.ttftP95Ms !== undefined && timeline.session.ttftSamples >= 2
+                                        ? `${fmtLatency(timeline.session.ttftP95Ms)} ${t('sessions.speedP95')}`
+                                        : '—'
+                                    }
+                                    title={t('sessions.ttftP95Tip')}
+                                    color="var(--text-dim)"
+                                  />
+                                ),
+                              },
+                              {
+                                key: 'rate',
+                                node: (
+                                  <SummaryStat
+                                    label={t('sessions.speedDecode')}
+                                    value={
+                                      timeline.session.genOutputTokens > 0 && timeline.session.genMsSum > 0
+                                        ? `${formatSpeed(decodeRate(timeline.session.genOutputTokens, timeline.session.genMsSum))} ${t('usage.thToks')}`
+                                        : '—'
+                                    }
+                                    title={t('sessions.speedOutputTip')}
+                                    color="var(--text-muted)"
+                                  />
+                                ),
+                              },
+                              {
+                                key: 'silent',
+                                node: (
+                                  <SummaryStat
+                                    label={t('sessions.speedStallRatio')}
+                                    value={fmtStallRatio(timeline.session.stallRatio)}
+                                    title={t('sessions.speedStallRatioTip')}
+                                    color={
+                                      timeline.session.stallRatio !== undefined &&
+                                      timeline.session.stallRatio >= STALL_RATIO_WARN
+                                        ? 'var(--accent-amber)'
+                                        : 'var(--text-dim)'
+                                    }
+                                  />
+                                ),
+                              },
+                            ]}
+                          />
+                        ),
+                      },
+                    ]}
+                  />
+                </div>
+              )}
             </div>
-            {timeline.trailOpen &&
-              (timeline.events.length === 0 ? (
-                <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
-              ) : (
+            {/* Model-switch trail — the SAME card shell as the summary above
+                (border + rounded + fold header), because it was the only
+                section floating loose inside the dialog body. Its header is a
+                real button so the fold is keyboard-operable, and it carries the
+                switch count on the right the way the list column does. */}
+            <div
+              style={{
+                border: '1px solid var(--divider)',
+                borderRadius: 8,
+                background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
+                overflow: 'hidden',
+                // Content-height like the summary card — see the flex note there.
+                flex: '0 0 auto',
+              }}
+            >
+              <button
+                type="button"
+                aria-expanded={timeline.trailOpen}
+                onClick={() => setTimeline(cur => (cur ? { ...cur, trailOpen: !cur.trailOpen } : cur))}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  width: '100%',
+                  padding: '9px 12px',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-dim)',
+                  fontSize: 'var(--text-2xs)',
+                  fontWeight: 'var(--font-bold)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 'var(--tracking-label)',
+                  textAlign: 'left',
+                }}
+              >
+                {timeline.trailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span>{t('sessions.switchTitle')}</span>
+                <span
+                  style={{
+                    marginLeft: 'auto',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontFamily: FONT_MONO,
+                    fontSize: 'var(--text-xs)',
+                    textTransform: 'none',
+                    letterSpacing: 0,
+                    color: timeline.session.switchCount > 0 ? 'var(--accent)' : 'var(--text-dim)',
+                  }}
+                >
+                  <GitBranch size={11} />×{timeline.session.switchCount}
+                </span>
+              </button>
+              {timeline.trailOpen && (
+                <div style={{ padding: '2px 12px 14px' }}>
+                  {timeline.events.length === 0 ? (
+                    <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
+                  ) : (
+              <>
+              {/* Legend, not a header ornament: the chip explains why the rows
+                  BELOW omit `provider/`, so it belongs with them (and only
+                  exists while they are visible). It also keeps the fold header
+                  to two things — title and count. */}
+              {providerNs && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginBottom: 10,
+                    fontSize: 'var(--text-2xs)',
+                    color: 'var(--text-dim)',
+                  }}
+                >
+                  <ProviderNsChip ns={providerNs} />
+                  <span>{t('sessions.switchPrefixLegend')}</span>
+                </div>
+              )}
               <div
                 style={{
                   display: 'flex',
@@ -1514,45 +2216,60 @@ export const SessionsPage: React.FC = () => {
                   );
                 })}
               </div>
-            ))}
-            {/* Per-request detail: every turn's recorded token counts + actual cost */}
+              </>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* Per-request detail: every turn's recorded token counts + actual
+                cost. Third card in the same shell as the two above — a
+                separated block, so the dialog reads as three stacked panels
+                instead of one panel plus two loose sections. */}
             {timeline.traces.length > 0 && (
               <div style={{
-                marginTop: '16px',
-                paddingTop: '12px',
-                borderTop: '1px solid var(--divider)',
-                // Expanded: this section fills the Dialog body's remaining
-                // height so the GRID scrolls internally (sticky header) —
-                // the Dialog chrome (title, folds, pager) stays put instead
-                // of the whole body scrolling. Collapsed: content-sized.
+                border: '1px solid var(--divider)',
+                borderRadius: 8,
+                background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
+                overflow: 'hidden',
+                // Expanded: this card fills the Dialog body's remaining height
+                // so the request table scrolls internally — ScrollTable keeps
+                // its head OUTSIDE that scroller (no floating/sticky header)
+                // while the Dialog chrome (title, folds, pager) stays put.
+                // Collapsed: content-sized.
                 display: 'flex',
                 flexDirection: 'column',
-                flex: detailFull ? '1 1 0' : undefined,
+                // Expanded: fill the remaining height so the table scrolls
+                // inside. Collapsed (or windowed): content height — a shrinkable
+                // card would let `overflow: hidden` clip the last row.
+                flex: detailFull ? '1 1 0' : '0 0 auto',
                 minHeight: 0,
               }}>
                 <div
                   role="button"
+                  tabIndex={0}
                   aria-expanded={timeline.detailOpen}
                   onClick={() => setTimeline(cur => (cur ? { ...cur, detailOpen: !cur.detailOpen } : cur))}
+                  onKeyDown={e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    setTimeline(cur => (cur ? { ...cur, detailOpen: !cur.detailOpen } : cur));
+                  }}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    fontSize: 'var(--text-xs)',
+                    padding: '9px 12px',
+                    fontSize: 'var(--text-2xs)',
                     fontWeight: 'var(--font-bold)',
                     textTransform: 'uppercase',
-                    letterSpacing: 'var(--tracking-wide)',
+                    letterSpacing: 'var(--tracking-label)',
                     color: 'var(--text-dim)',
-                    marginBottom: timeline.detailOpen ? '8px' : 0,
                     cursor: 'pointer',
                     userSelect: 'none',
                   }}
                 >
                   {timeline.detailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <span>{t('sessions.requestsTitle', { count: timeline.traces.length })}</span>
-                  {/* Same shared-prefix dedup as the trail: rows below show
-                      bare ids; hover reveals the full ref. */}
-                  {detailNs && <ProviderNsChip ns={detailNs} />}
                   {/* Sort toggle: icon-only ghost button (same language as
                       RoundCard's header icons — a boxed btn read too heavy
                       on the 11px fold row). Title = what a click switches
@@ -1579,62 +2296,45 @@ export const SessionsPage: React.FC = () => {
                   </button>
                 </div>
                 {timeline.detailOpen && (
-                <div
-                  style={{
-                    display: 'grid',
-                    // Prompt column is 12ch-floor flex: it shows the turn's
-                    // user-prompt summary (or a fallback description when the
-                    // turn carried no user message), ellipsized with the full
-                    // text in the tooltip. Think stays 96px: worst case = a
-                    // degraded req->act span like "xhigh->high" ~= 92px at
-                    // 11px mono beside the source icon.
-                    gridTemplateColumns: '30px 64px 64px minmax(140px, 1fr) minmax(120px, 1fr) 96px 56px 56px 60px 86px 52px 44px 44px',
-                    columnGap: '8px',
-                    rowGap: '6px',
-                    // The model cell renders two stacked lines (name over
-                    // provider) and sets the row height — center every cell
-                    // vertically so the single-line cells don't hug the top.
-                    alignItems: 'center',
-                    fontSize: 'var(--text-xs)',
-                    fontFamily: FONT_MONO,
-                    // Below the ~1008px column minimum (narrow window), scroll
-                    // the grid instead of clipping the cost/latency columns.
-                    overflowX: 'auto',
-                    // Expanded: the grid is the section's flex-fill scroll
-                    // region — rows scroll here, the header stays on top.
-                    flex: detailFull ? '1 1 0' : undefined,
-                    minHeight: 0,
-                    overflowY: detailFull ? 'auto' : undefined,
-                  }}
+                <ScrollTable
+                  // Expanded: the body is the section's flex-fill scroll
+                  // region (ScrollTable keeps the head OUTSIDE it, so rows
+                  // never slide under a floating header — the hand-rolled grid
+                  // this replaced put the header inside its own scroller and
+                  // lost it as soon as the list scrolled).
+                  fill={detailFull}
+                  columns={[
+                    { key: 'n', label: '#', width: 34 },
+                    { key: 'start', label: t('sessions.colStart'), width: 66 },
+                    { key: 'end', label: t('sessions.colEnd'), width: 66 },
+                    // Model is ONE full ref per row, so it gets a fixed track
+                    // wide enough for `provider/model` at 11px mono; the prompt
+                    // keeps the whole remaining width (the only truly elastic
+                    // column — it is what operators actually read).
+                    { key: 'model', label: t('sessions.colModel'), width: 210 },
+                    { key: 'prompt', label: t('sessions.colPrompt') },
+                    { key: 'think', label: t('sessions.colThink'), width: 92 },
+                    { key: 'in', label: t('sessions.colIn'), width: 62 },
+                    { key: 'out', label: t('sessions.colOut'), width: 58 },
+                    { key: 'cached', label: t('sessions.colCached'), width: 66 },
+                    { key: 'cost', label: t('sessions.colCost'), width: 88 },
+                    { key: 'ttft', label: t('usage.ttft'), width: 52 },
+                    { key: 'toks', label: t('usage.thToks'), width: 60 },
+                    { key: 'stallRatio', label: t('sessions.speedStallRatio'), width: 62 },
+                    { key: 'ms', label: t('sessions.colMs'), width: 52 },
+                  ]}
+                  // Floor = the declared tracks plus a readable minimum for the
+                  // one elastic (prompt) column; below it the body scrolls
+                  // sideways instead of crushing every column into an ellipsis.
+                  // 968 = the 13 declared tracks (34+66+66+210+92+62+58+66+
+                  // 88+52+60+62+52); + 220 for the elastic prompt column.
+                  minWidth={968 + 220}
+                  headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
+                  // The card already draws the frame: the table drops its own
+                  // border/radius and insets to the card padding instead, so
+                  // there is one rectangle per section, not a box in a box.
+                  style={{ border: 'none', borderRadius: 0, margin: '0 12px 12px' }}
                 >
-                  {[
-                    '#',
-                    t('sessions.colStart'),
-                    t('sessions.colEnd'),
-                    t('sessions.colModel'),
-                    t('sessions.colPrompt'),
-                    t('sessions.colThink'),
-                    t('sessions.colIn'),
-                    t('sessions.colOut'),
-                    t('sessions.colCached'),
-                    t('sessions.colCost'),
-                    t('sessions.colMs'),
-                    t('usage.ttft'),
-                    t('usage.thToks'),
-                  ].map((label, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        textAlign: 'center',
-                        color: 'var(--text-dim)',
-                        fontSize: 'var(--text-2xs)',
-                        fontWeight: 'var(--font-bold)',
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      {label}
-                    </span>
-                  ))}
                   {(() => {
                     const sorted = detailDesc ? [...timeline.traces].reverse() : timeline.traces;
                     // Clamp: a sort toggle or page-size change can leave the
@@ -1643,54 +2343,100 @@ export const SessionsPage: React.FC = () => {
                     const safePage = Math.min(detailPage, maxPage);
                     return sorted
                       .slice((safePage - 1) * detailPageSize, safePage * detailPageSize)
-                      .map(tr => (
-                    <React.Fragment key={tr.traceId}>
-                      <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
-                      <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
-                      <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
+                      .map(tr => {
+                    // Same unit as the session row (share of the decode
+                    // window), computed per turn; undefined when unmeasurable.
+                    const stallShare =
+                      tr.execution.stalledMs != null && tr.execution.genMs != null && tr.execution.genMs > 0
+                        ? tr.execution.stalledMs / tr.execution.genMs
+                        : undefined;
+                    return (
+                    <tr key={tr.requestId} style={{ borderBottom: '1px solid var(--divider)' }}>
+                      <td style={DETAIL_TD_CENTER}>#{tr.turnNumber}</td>
+                      <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</td>
+                      <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>
                         {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
-                      </span>
-                      {/* Model id over provider — the same two-line cell as the
-                          current-model column (full refs wrap badly in the
-                          mono grid). When every turn shares one provider
-                          prefix (chip up in the fold header) rows show the
-                          bare id and the row tooltip carries the full ref. */}
-                      {detailNs ? (
+                      </td>
+                      {/* ONE line, the full model ref. The two-line id-over-
+                          provider cell belongs to the dense LIST column, where
+                          width is scarce; this table has room and the row is
+                          the unit being compared, so a single line keeps every
+                          row the same height and never hides the provider
+                          behind a header chip. Ellipsized with the full ref in
+                          the tooltip only when the column is genuinely too
+                          narrow (expanded mode shows it verbatim). */}
+                      {/* Centered like every other column and like its own
+                          header. The span is inline-block with maxWidth:100%
+                          (not the block MODEL_LINE_STYLE) because a centered
+                          BLOCK would overflow on BOTH sides and clip the left
+                          edge with no ellipsis — as an inline box it ellipsizes
+                          cleanly against the cell and stays centered while it
+                          fits. */}
+                      <td style={DETAIL_TD_CENTER}>
                         <span
                           title={tr.execution.modelUsed}
-                          style={{ ...MODEL_LINE_STYLE, color: 'var(--text-main)', textAlign: 'center' }}
+                          style={{ ...MODEL_LINE_STYLE, display: 'inline-block', maxWidth: '100%', verticalAlign: 'middle' }}
                         >
-                          {shortModel(detailNs, tr.execution.modelUsed)}
+                          {tr.execution.modelUsed}
                         </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-main)', textAlign: 'center' }}>
-                          <ModelRefCell model={tr.execution.modelUsed} provider={tr.execution.provider} />
-                        </span>
-                      )}
-                      <PromptCell text={tr.request?.userPromptSummary ?? ''} />
-                      <span style={{ textAlign: 'center' }}><EffortCell tr={tr} /></span>
-                      <span style={{ textAlign: 'center' }}>{tr.finops.inputTokens.toLocaleString()}</span>
-                      <span style={{ textAlign: 'center' }}>{tr.finops.outputTokens.toLocaleString()}</span>
-                      <span style={{ textAlign: 'center', color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
+                      </td>
+                      <td style={{ padding: '6px 8px', minWidth: 0 }}>
+                        <PromptCell text={tr.request?.userPromptSummary ?? ''} />
+                      </td>
+                      <td style={DETAIL_TD_CENTER}><EffortCell tr={tr} /></td>
+                      <td style={DETAIL_TD_CENTER}>{tr.finops.inputTokens.toLocaleString()}</td>
+                      <td style={DETAIL_TD_CENTER}>{tr.finops.outputTokens.toLocaleString()}</td>
+                      <td style={{ ...DETAIL_TD_CENTER, color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
                         {tr.finops.cachedTokens.toLocaleString()}
-                      </span>
-                      <span style={{ textAlign: 'center', color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
-                      <span style={{ textAlign: 'center' }} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
-                      <span style={{ textAlign: 'center' }} title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
+                      </td>
+                      <td
+                        style={{ ...DETAIL_TD_CENTER, color: 'var(--accent-amber)' }}
+                        title={formatCost(tr.finops.costUsd)}
+                      >{formatCostCompact(tr.finops.costUsd)}</td>
+                      <td style={DETAIL_TD_CENTER} title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
                         {tr.execution.ttftMs != null ? fmtLatency(tr.execution.ttftMs) : '—'}
-                      </span>
-                      <span style={{ textAlign: 'center' }} title={t('usage.toksTip')}>{formatRate(decodeRate(tr.finops.outputTokens, tr.execution.genMs))}</span>
-                    </React.Fragment>
-                      ));
+                      </td>
+                      <td style={DETAIL_TD_CENTER} title={t('sessions.speedOutputTip')}>
+                        {tr.execution.genMs != null
+                          ? `${formatSpeed(decodeRate(tr.finops.outputTokens, tr.execution.genMs))} ${t('usage.thToks')}`
+                          : '—'}
+                      </td>
+                      {/* Perceived stall time for THIS turn: total time spent
+                          in ≥1 s pauses. Amber when this turn's share crosses
+                          the same threshold the session row uses, so a bad
+                          turn is findable by scanning colours rather than
+                          reading numbers. */}
+                      <td
+                        style={{
+                          ...DETAIL_TD_CENTER,
+                          color:
+                            stallShare !== undefined && stallShare >= STALL_RATIO_WARN
+                              ? 'var(--accent-amber)'
+                              : 'var(--text-dim)',
+                        }}
+                        title={
+                          tr.execution.stalledMs != null
+                            ? `${tr.execution.stalledMs} ms · ${t('sessions.speedStallRatioTip')}`
+                            : t('sessions.speedStallRatioTip')
+                        }
+                      >
+                        {fmtStallRatio(stallShare)}
+                      </td>
+                      <td style={DETAIL_TD_CENTER} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</td>
+                    </tr>
+                    );
+                      });
                   })()}
-                </div>
+                </ScrollTable>
                 )}
-                {(() => {
+                {timeline.detailOpen && (() => {
                   const sorted = detailDesc ? [...timeline.traces].reverse() : timeline.traces;
                   const maxPage = Math.max(1, Math.ceil(sorted.length / detailPageSize));
                   const safePage = Math.min(detailPage, maxPage);
+                  // Guarded by detailOpen: a collapsed card must not strand a
+                  // pager under a fold that shows nothing to page through.
                   return sorted.length > detailPageSize ? (
-                    <div style={{ marginTop: '10px' }}>
+                    <div style={{ padding: '0 12px 12px' }}>
                       <Pagination
                         page={safePage}
                         pageSize={detailPageSize}

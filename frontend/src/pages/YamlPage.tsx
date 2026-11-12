@@ -450,7 +450,7 @@ export const YamlPage: React.FC = () => {
       setNotice({ type: 'success', text: t('yaml.savedNotice') });
       setTimeout(() => setNotice(null), 4000);
     } catch (err: any) {
-      setNotice({ type: 'error', text: 'Failed: ' + err.message });
+      setNotice({ type: 'error', text: t('common.failed') + err.message });
     }
   };
 
@@ -726,7 +726,7 @@ export const YamlPage: React.FC = () => {
                 color: 'var(--text-dim)',
                 padding: 0,
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface)')}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-bg)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               <PanelRightOpen size={12} />
@@ -768,7 +768,7 @@ export const YamlPage: React.FC = () => {
                     color: 'var(--text-dim)',
                     padding: 0,
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface)')}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-bg)')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
                   <PanelRightClose size={12} />
@@ -831,7 +831,7 @@ export const YamlPage: React.FC = () => {
                               fontFamily: editorFont,
                               fontSize: 'var(--text-xs)',
                               color: 'var(--accent)',
-                              background: 'var(--surface)',
+                              background: 'var(--btn-bg)',
                               border: '1px solid var(--card-border)',
                               padding: '1px 8px',
                               borderRadius: '4px',
@@ -856,7 +856,7 @@ export const YamlPage: React.FC = () => {
                           marginBottom: '6px',
                           whiteSpace: 'pre-wrap',
                           fontWeight: isHeading ? 'var(--font-semibold)' : 'var(--font-regular)',
-                          color: isHeading ? 'var(--text-main)' : 'var(--text-secondary)',
+                          color: isHeading ? 'var(--text-main)' : 'var(--text-muted)',
                         }}
                       >
                         {trimmed}

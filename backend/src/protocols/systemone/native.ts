@@ -64,7 +64,7 @@ export async function nativeSystemoneDecision(
   // Verbatim passthrough with the model id rewritten to the upstream id.
   const payload: Record<string, unknown> = { ...body, model: model.upstreamModel };
 
-  const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+  const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
     url,
     method: 'POST',
     requestHeaders: headers,
@@ -83,7 +83,7 @@ export async function nativeSystemoneDecision(
   try {
     const res = await withUpstreamFailureGuard(
       upstreamEventContext,
-      spanId,
+      exchangeId,
       url,
       'POST',
       () => proxiedFetch(url, {
@@ -101,7 +101,7 @@ export async function nativeSystemoneDecision(
     } catch (err: any) {
       emitUpstreamFailureOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,
@@ -114,7 +114,7 @@ export async function nativeSystemoneDecision(
     if (!res.ok) {
       emitUpstreamFailureOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,
@@ -134,7 +134,7 @@ export async function nativeSystemoneDecision(
 
     emitUpstreamResponseOnce(upstreamEventContext, {
       model: model.upstreamModel,
-      spanId,
+      exchangeId,
       url,
       method: 'POST',
       status: res.status,

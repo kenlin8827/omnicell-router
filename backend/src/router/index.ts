@@ -35,7 +35,7 @@ export class RouterEngine {
    *
    * `decisionCapture` is the outer request's capture identity, threaded to the
    * decision layer so its decision-model HTTP leg can be recorded on the SAME
-   * trace/session (the decision layer gates it; callers just hand over the identity).
+   * requestId/sessionId (the decision layer gates it; callers just hand over the identity).
    */
   public static async routeAsync(
     request: ChatCompletionRequest,

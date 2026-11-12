@@ -394,8 +394,8 @@ describe('systemone full-chain capture opt-in (requestCapture.enabled)', () => {
     eventType: string;
     direction: 'client' | 'upstream';
     phase: 'request' | 'response';
-    spanId: string;
-    traceId: string;
+    exchangeId: string;
+    requestId: string;
     sessionId: string;
     model: string;
     status: string;
@@ -460,9 +460,9 @@ describe('systemone full-chain capture opt-in (requestCapture.enabled)', () => {
     expect(resps.length).toBe(1);
     const req = reqs[0];
     const resp = resps[0];
-    expect(resp.spanId).toBe(req.spanId); // one exchange = one spanId, two events
-    expect(req.traceId).toMatch(/^[0-9a-f]{32}$/); // minted — no client trace headers
-    expect(resp.traceId).toBe(req.traceId);
+    expect(resp.exchangeId).toBe(req.exchangeId); // one exchange = one exchangeId, two events
+    expect(req.requestId).toMatch(/^req_[0-9a-f]{24}$/); // gateway-owned, no caller value
+    expect(resp.requestId).toBe(req.requestId);
     expect(req.sessionId).toBeTruthy();
     expect(resp.sessionId).toBe(req.sessionId);
     // Request-line form per leg: the MITM client leg is ABSOLUTE-FORM (the
@@ -488,9 +488,9 @@ describe('systemone full-chain capture opt-in (requestCapture.enabled)', () => {
     const upResp = upResps[0];
     expect(upReq.wire.requestLine).toMatch(/^POST http:\/\/127\.0\.0\.1:\d+\/chat\/completions HTTP\/1\.1$/);
     expect(upReq.wire.requestHeaders.authorization).toBe('[REDACTED]'); // provider apiKey never persists
-    expect(upResp.spanId).toBe(upReq.spanId);
-    expect(upReq.traceId).toBe(req.traceId);
-    expect(upResp.traceId).toBe(req.traceId);
+    expect(upResp.exchangeId).toBe(upReq.exchangeId);
+    expect(upReq.requestId).toBe(req.requestId);
+    expect(upResp.requestId).toBe(req.requestId);
     expect(upReq.sessionId).toBe(req.sessionId);
     expect(upResp.wire.status).toBe(200);
     expect((upReq as { purpose?: string }).purpose).toBeUndefined();

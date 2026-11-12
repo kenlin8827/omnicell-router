@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
+import { DEFAULT_DEV_PORT } from './src/lib/defaults';
 
 // Single source of truth for the app version: the repository root package.json.
 // Injected at build time as the global __APP_VERSION__ (declared in src/vite-env.d.ts).
@@ -21,16 +22,17 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Dev API target = the live gateway from config.yaml. Backend port comes
-      // from PORT (same env the backend reads, see backend config/index.ts);
-      // default 3000 keeps `bun run dev` behavior unchanged.
-      // The old :4000 daemon is gone since gateway port unification.
+      // Dev API target = the gateway the dev stack started. scripts/dev.ts
+      // resolves ONE port for both children and injects it as PORT here, so
+      // this fallback only matters when the frontend runs alone — it mirrors
+      // backend DEFAULT_DEV_PORT (never the installed 4000 gateway, never the
+      // crowded 3000 dev range).
       '/api': {
-        target: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
+        target: `http://127.0.0.1:${process.env.PORT ?? DEFAULT_DEV_PORT}`,
         changeOrigin: true,
       },
       '/v1': {
-        target: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
+        target: `http://127.0.0.1:${process.env.PORT ?? DEFAULT_DEV_PORT}`,
         changeOrigin: true,
       },
     },

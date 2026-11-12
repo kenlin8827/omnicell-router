@@ -381,7 +381,7 @@ export class CursorProxyClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `Cursor hooked: start it via \`ocr cursor\` (or ${lPath}; Chromium legs use --proxy-server, Electron Node legs use http(s)_proxy + NODE_EXTRA_CA_CERTS). Import the MITM CA (${fp.caPath}) into the OS trust store if Cursor still fails TLS to api2.cursor.sh. Close Cursor before launching it through the proxy.`,
+      message: `Cursor launcher written at ${lPath}. Start it via \`ocr cursor\` (Chromium legs use --proxy-server, Electron Node legs use http(s)_proxy + NODE_EXTRA_CA_CERTS) — the takeover happens at launch time; Cursor itself is untouched. Import the MITM CA (${fp.caPath}) into the OS trust store if Cursor still fails TLS to api2.cursor.sh. Quit Cursor fully before launching it through the proxy.`,
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
@@ -403,12 +403,12 @@ export class CursorProxyClientAdapter implements ClientAdapter {
       }
     }
     if (removed.length === 0) {
-      return { success: false, reasonCode: 'not_active', message: 'Cursor proxy mode is not active — no launcher to remove.' };
+      return { success: false, reasonCode: 'not_active', message: 'No Cursor launcher to delete — run `ocr setup cursor-proxy` first.' };
     }
     // The CA and Cursor's own files are intentionally untouched.
     return {
       success: true,
-      message: `Cursor proxy mode disabled: removed ${removed.join(', ')}. Start Cursor normally (no proxy) — the MITM CA remains in the trust store if you imported it manually.`,
+      message: `Cursor launchers deleted (${removed.join(', ')}). Cursor itself was never modified — start it normally for a direct connection. The MITM CA remains in the trust store if you imported it manually.`,
     };
   }
 }

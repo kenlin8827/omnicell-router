@@ -1,6 +1,5 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
-import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
+import { ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChunk } from '../types/openai.js';
 import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
@@ -59,7 +58,7 @@ import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
-import { resolveTraceId } from '../observability/trace-id.js';
+import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
@@ -120,18 +119,53 @@ const keyIdentityOf = (ctx?: ProcessContext): CaptureKeyIdentity | undefined =>
   ctx?.clientKey ?? captureKeyIdentity(ctx?.fastifyRequest ?? ctx?.clientRequest);
 
 /**
+ * A pause shorter than this reads as normal streaming rhythm; at or above it
+ * the screen is visibly frozen. Defines what the stall ratio counts.
+ */
+const PERCEIVED_STALL_MS = 1000;
+
+/**
+ * True when a streamed chunk puts something on the user's screen: assistant
+ * text, a tool-call fragment, or reasoning/thinking text. Role-only openers,
+ * finish_reason frames and the trailing usage frame leave the screen unchanged,
+ * so they must NOT count as progress — otherwise a silent 8-second pause
+ * between two real chunks would be papered over by the frames arriving inside
+ * it, which is precisely the stall time this metric exists to expose.
+ *
+ * Reasoning counts because the relay forwards it VERBATIM (chat-stream.ts —
+ * "thinking still streams to the client"). Leaving it out charged a reasoning
+ * model's whole thinking phase as one giant pause, so the figure measured the
+ * effort setting instead of a freeze. Both wire spellings are accepted: the
+ * OpenAI-compatible `reasoning_content` convention the catalog declares, and
+ * OpenRouter's plain `reasoning` string delta.
+ */
+function hasVisibleOutput(chunk: ChatCompletionChunk): boolean {
+  for (const choice of chunk.choices ?? []) {
+    const delta = choice?.delta as
+      | { content?: unknown; tool_calls?: unknown; reasoning_content?: unknown; reasoning?: unknown }
+      | undefined;
+    if (!delta) continue;
+    if (typeof delta.content === 'string' && delta.content.length > 0) return true;
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) return true;
+    if (typeof delta.reasoning === 'string' && delta.reasoning.length > 0) return true;
+  }
+  return false;
+}
+
+/**
  * Pull a non-sensitive subset of inbound headers for the trace's
  * `clientHeaders` field. Three categories:
  *   - user-agent / accept-language — client fingerprint.
- *   - request id (x-request-id / x-trace-id / x-correlation-id / request-id /
- *     traceparent) — cross-service correlation, NOT a credential.
- * Authorization / x-api-key / cookies / anything else are intentionally
- * omitted (raw headers carry API keys). Fastify surfaces headers as
+ *   - clientRequestId (x-request-id / x-trace-id / x-correlation-id /
+ *     request-id / traceparent) — the caller's correlation value, NOT a
+ *     credential and never a key. Authorization / x-api-key / cookies /
+ *     anything else are intentionally omitted (raw headers carry API keys).
+ *     Fastify surfaces headers as
  * `string | string[] | undefined`; arrays collapse to their first value to
  * keep the field scalar. Returns undefined when nothing matched so the
  * trace stays compact for the common no-headers path.
  */
-const REQUEST_ID_KEYS = ['x-request-id', 'x-trace-id', 'x-correlation-id', 'request-id', 'traceparent'];
 
 /**
  * Pull the upstream target host from an inbound header map. On the MITM
@@ -155,7 +189,7 @@ function pickHeaderHost(
 
 function extractClientHeaders(
   headers?: Record<string, string | string[] | undefined>
-): { userAgent?: string; acceptLanguage?: string; requestId?: string } | undefined {
+): { userAgent?: string; acceptLanguage?: string; clientRequestId?: string } | undefined {
   if (!headers) return undefined;
   const pick = (key: string): string | undefined => {
     const v = headers[key] ?? headers[key.toLowerCase()];
@@ -165,16 +199,12 @@ function extractClientHeaders(
   };
   const ua = pick('user-agent');
   const al = pick('accept-language');
-  let rid: string | undefined;
-  for (const k of REQUEST_ID_KEYS) {
-    rid = pick(k);
-    if (rid) break;
-  }
+  const rid = resolveClientRequestId({ headers }).clientRequestId;
   if (ua === undefined && al === undefined && rid === undefined) return undefined;
   return {
     ...(ua !== undefined ? { userAgent: ua } : {}),
     ...(al !== undefined ? { acceptLanguage: al } : {}),
-    ...(rid !== undefined ? { requestId: rid } : {}),
+    ...(rid !== undefined ? { clientRequestId: rid } : {}),
   };
 }
 
@@ -283,7 +313,7 @@ export class PipelineOrchestrator {
       this.config.classifier,
       this.registry,
       this.config.systemone?.defaultModel,
-      // Decision-call capture identity: the outer turn's trace/session (only
+      // Decision-call capture identity: the outer turn's requestId/sessionId (only
       // exists while the capture master is on). The LAYER 2 DECISION applies
       // the recorder master gate (requestCapture.enabled) — when off it
       // passes nothing further, so this arg alone changes nothing today.
@@ -341,21 +371,20 @@ export class PipelineOrchestrator {
   ): Promise<ExecutionResult> {
     const captureEnabled = this.captureRecorder.isEnabled();
 
-    // Capture pipeline state — see observability/http-exchange.ts and
-    // observability/upstream-events.ts for the wire emit contract. The
-    // `traceId` shared across all four events is sourced from the inbound
-    // request on BOTH legs (W3C `traceparent`, `x-request-id`, ...) so the
-    // gateway stays transparent in distributed traces: the Fastify leg reads
-    // its own request headers, the MITM leg the original clientRequest
-    // headers, then plain `headers` (legacy/test callers). Only when NO
-    // header source exists at all do we mint a fresh 32-hex id
-    // (OpenTelemetry compliant).
+    // Turn identity (ADR-0021), minted ONCE per request:
+    //   - `requestId` — the record key / console row id (ours);
+    //   - `clientRequestId` — the caller's correlation value (optional, may
+    //     repeat across requests; correlation only, never a key).
+    // Headers come from the transport that owns the leg: the Fastify leg
+    // reads its own request, the MITM leg the original clientRequest headers,
+    // then plain `headers` (in-process/test callers).
     const traceHeaders =
       context?.fastifyRequest?.headers ?? context?.clientRequest?.headers ?? context?.headers;
-    const traceResolution = traceHeaders
-      ? resolveTraceId({ headers: traceHeaders }, 'client-or-mint')
-      : { traceId: crypto.randomUUID().replace(/-/g, '').slice(0, 32), source: 'minted' as const };
-    const captureOutTraceId = traceResolution.traceId;
+    const clientRequest = traceHeaders ? resolveClientRequestId({ headers: traceHeaders }) : {};
+    const turnIdentity = {
+      requestId: mintRequestId(),
+      ...(clientRequest.clientRequestId ? { clientRequestId: clientRequest.clientRequestId } : {}),
+    };
 
     let captureSessionId = '';
     let preResolvedSession: SessionResolveResult | undefined;
@@ -406,7 +435,8 @@ export class PipelineOrchestrator {
         apiKey: keyIdentity,
         body: snapshotRequest,
         sessionId: captureSessionId,
-        traceId: captureOutTraceId,
+        clientRequestId: turnIdentity.clientRequestId,
+        requestId: turnIdentity.requestId,
         model: request.model || 'auto',
         conversationKey,
       });
@@ -418,7 +448,8 @@ export class PipelineOrchestrator {
       upstreamEventContext = {
         recorder: this.captureRecorder,
         sessionId: captureSessionId,
-        traceId: captureOutTraceId,
+        clientRequestId: turnIdentity.clientRequestId,
+        requestId: turnIdentity.requestId,
         model: request.model || 'auto',
         // Key attribution: the Fastify leg carries authInfo (attached by the
         // auth preHandler); MITM / master-key legs resolve to undefined and
@@ -433,7 +464,7 @@ export class PipelineOrchestrator {
       context,
       preResolvedSession,
       upstreamEventContext,
-      captureOutTraceId,
+      turnIdentity,
       relay
     );
   }
@@ -453,9 +484,11 @@ export class PipelineOrchestrator {
     context?: ProcessContext,
     preResolvedSession?: SessionResolveResult,
     upstreamEventContext?: UpstreamEventContext,
-    traceId?: string,
+    turnIdentity?: { requestId: string; clientRequestId?: string },
     relay?: StreamRelay
   ): Promise<ExecutionResult> {
+    const clientRequestId = turnIdentity?.clientRequestId;
+    const requestId = turnIdentity?.requestId ?? mintRequestId();
     const startTime = Date.now();
 
     // 1. Optimize message prefix order & resolve virtual routing models
@@ -777,7 +810,7 @@ export class PipelineOrchestrator {
         modelUsed: request.model || 'unknown',
         fallbackOccurred: false,
         sessionId,
-        traceId,
+        requestId,
         latencyMs: Date.now() - startTime,
       };
     }
@@ -1412,7 +1445,7 @@ export class PipelineOrchestrator {
     // undefined and the console renders '—'. The escalation leg's response IS
     // the final answer (no re-assertion follows), so it streams exactly like
     // the direct path and stamps timing the same way.
-    let poolTiming: { firstChunkAt: number; streamEndAt: number } | undefined = undefined;
+    let poolTiming: { firstChunkAt: number; streamEndAt: number; stalledMs?: number } | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices, combos AND
@@ -1515,7 +1548,7 @@ export class PipelineOrchestrator {
               sessionId,
               sessionRatchetApplied: ratchetApplied,
               sessionLookupType: sessionResolve.lookupType,
-              traceId: traceId ?? 'unknown',
+              requestId,
               requestedEffort,
               variantUsed,
             },
@@ -1659,7 +1692,7 @@ export class PipelineOrchestrator {
             sessionId,
             sessionRatchetApplied: ratchetApplied,
             sessionLookupType: sessionResolve.lookupType,
-            traceId: traceId ?? 'unknown',
+            requestId,
             requestedEffort,
             variantUsed,
           },
@@ -1757,6 +1790,12 @@ export class PipelineOrchestrator {
     // execution, relay off, or a relay whose wire had no streaming executor).
     const ttftMs = poolTiming ? poolTiming.firstChunkAt - startTime : undefined;
     const genMs = poolTiming ? poolTiming.streamEndAt - poolTiming.firstChunkAt : undefined;
+    // Perceived stall ratio numerator: total time the committed stream spent
+    // frozen in gaps of ≥ PERCEIVED_STALL_MS. Carried straight through —
+    // measured, not derived, so there is no second definition to drift from.
+    // The session divides the summed value by its summed decode windows
+    // (stallRatio).
+    const stalledMs = poolTiming?.stalledMs;
 
     // Thinking-level observability. Two cases that warrant a warn:
     //   1. Client asked for thinking but the actually-served model can't do
@@ -1883,12 +1922,10 @@ export class PipelineOrchestrator {
         });
       }
     }
-
-    // 8. Session Trajectory Recording — the traceId is shared with the
-    // capture event stream (the OTel traceId sourced from the client request
-    // — see resolveTraceId). One id now joins capture events and the trace
-    // record, so a console reader can pull both streams by traceId.
-    const sharedTraceId = traceId ?? 'unknown';
+    // 8. Session Trajectory Recording. The record is keyed by its own
+    // `requestId` (ADR-0021); the caller's `clientRequestId` is stored beside
+    // it as correlation only, because a caller may reuse one value for every
+    // request of a conversation.
 
     // The summary names the user message THAT TRIGGERED this turn. A
     // tool-result continuation turn carries the whole history, so its last
@@ -1923,7 +1960,8 @@ export class PipelineOrchestrator {
     }
 
     this.traceTracker.record({
-      traceId: sharedTraceId,
+      requestId,
+      ...(clientRequestId ? { clientRequestId } : {}),
       sessionId,
       turnNumber: sessionTurnCount,
       timestamp: startTime,
@@ -1958,6 +1996,7 @@ export class PipelineOrchestrator {
         latencyMs,
         ttftMs,
         genMs,
+        stalledMs,
         fallbackOccurred,
         fallbackReason,
         failoverOccurred,
@@ -2006,10 +2045,11 @@ export class PipelineOrchestrator {
       sessionId,
       sessionRatchetApplied: ratchetApplied,
       sessionLookupType: sessionResolve.lookupType,
-      traceId: sharedTraceId,
+      requestId,
       latencyMs,
       ttftMs,
       genMs,
+      stalledMs,
       // Reasoning-effort observability — server.ts reads these to set
       // X-OCR-Thinking-{Requested,Actual,Degraded} headers so the client
       // can see whether they got the level they asked for.
@@ -2147,10 +2187,12 @@ export class PipelineOrchestrator {
     /**
      * Wall-clock stamps (epoch ms) of the committed attempt's stream, present
      * only when that attempt streamed through the relay: firstChunkAt = first
-     * forwarded chunk, streamEndAt = stream fully drained. The orchestrator
-     * converts them into the trace's ttftMs/genMs (industry TTFT/TPS split).
+     * forwarded chunk, streamEndAt = stream fully drained, stalledMs = the time
+     * spent in gaps of ≥1 s between visible-output chunks (the perceived
+     * stall-ratio numerator). The orchestrator converts them into the trace's
+     * ttftMs/genMs/stalledMs.
      */
-    timing?: { firstChunkAt: number; streamEndAt: number };
+    timing?: { firstChunkAt: number; streamEndAt: number; stalledMs?: number };
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -2416,11 +2458,35 @@ export class PipelineOrchestrator {
       // bytes-to-client boundary).
       let firstChunkAt: number | undefined;
       let streamEndAt: number | undefined;
+      // Perceived stall bookkeeping: the stream's own cadence, not its
+      // average. Only chunks that carry VISIBLE output advance `lastVisibleAt`
+      // — answer text, tool-call fragments AND reasoning/thinking deltas (all
+      // forwarded to the client). A role-only opener, a finish_reason frame or
+      // the trailing usage frame produces nothing on the user's screen, so
+      // treating them as progress would hide exactly the pause this metric
+      // exists to catch — and counting thinking as silence would invent one.
+      // Every gap ≥ PERCEIVED_STALL_MS is ADDED UP: the session-level figure
+      // is a share of the decode window, which keeps repeated stutters and one
+      // long freeze on the same scale (a single maximum cannot).
+      let lastVisibleAt: number | undefined;
+      let stalledMs: number | undefined;
       const timingRelay: StreamRelay | undefined = opts.relay
         ? {
             stageRouting: (facts) => opts.relay!.stageRouting(facts),
             onChunk: (chunk) => {
-              firstChunkAt ??= Date.now();
+              const now = Date.now();
+              firstChunkAt ??= now;
+              if (hasVisibleOutput(chunk)) {
+                if (lastVisibleAt !== undefined) {
+                  const gap = now - lastVisibleAt;
+                  // The first measured gap proves this turn HAS a stream
+                  // cadence: 0 means "measured and smooth", undefined stays
+                  // reserved for fewer than two output chunks.
+                  stalledMs ??= 0;
+                  if (gap >= PERCEIVED_STALL_MS) stalledMs += gap;
+                }
+                lastVisibleAt = now;
+              }
               opts.relay!.onChunk(chunk);
             },
             get committed() {
@@ -2509,6 +2575,10 @@ export class PipelineOrchestrator {
           recordFailureEvent({
             model: candidate.id,
             provider: candidate.provider,
+            // Pair attribution: the credential this call actually ran on — the
+            // selector's prefix, else the registry stamp on the error (a
+            // selection that degenerated to the chain head still attributes).
+            keyHashPrefix: credentialPrefix ?? diagnosis.usedKeyHashPrefix,
             errorClass: diagnosis.category,
             status: diagnosis.statusCode,
             message: err?.message ?? String(err),
@@ -2590,7 +2660,7 @@ export class PipelineOrchestrator {
           servedCredentialPrefix: credentialPrefix,
           timing:
             firstChunkAt !== undefined && streamEndAt !== undefined
-              ? { firstChunkAt, streamEndAt }
+              ? { firstChunkAt, streamEndAt, stalledMs }
               : undefined,
         };
       }

@@ -1774,7 +1774,7 @@ export const ProxyAccessPage: React.FC = () => {
       if (bootFrozenChanged) toast.warning(t('forwardProxy.savedNotice'));
       else toast.success(t('forwardProxy.savedHotNotice'));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setSaving(false);
     }

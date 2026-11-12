@@ -287,17 +287,17 @@ describe('Console session title (firstUserMessage)', () => {
     assert.equal(row.firstUserMessage, '你知道项目结构吗');
   });
 
-  it('keeps a prompt that is itself pure markup instead of naming the session nothing', async () => {
-    // Cost of rule 3: a tag-only HUMAN prompt is structurally identical to a
-    // client envelope. The title's permissive pass keeps it, so the session is
-    // still identifiable by the snippet the operator actually typed.
+  it('titling a tag-only human prompt: unwrap a lone plain-text block', async () => {
+    // A lone plain-text block is structurally a WRAPPER (an unrecognized
+    // client tag around human text), so the title names the prompt itself
+    // instead of quoting raw tags or naming the session nothing (ADR-0021).
     await chat('sess_title_markup_prompt', {
       messages: [{ role: 'user', content: '<task>修复登录</task>' }],
     });
 
     const row = (await rows()).find(s => s.id === 'sess_title_markup_prompt');
     assert.ok(row, 'markup-prompt session must be listed');
-    assert.equal(row.firstUserMessage, '<task>修复登录</task>');
+    assert.equal(row.firstUserMessage, '修复登录');
   });
 
   it('q searches the title on trace-reconstructed rows', async () => {

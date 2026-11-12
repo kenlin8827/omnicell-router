@@ -51,7 +51,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
     };
 
     // Event-stream emit BEFORE the fetch fires. Independent of the response.
-    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+    const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
       url,
       method: 'POST',
       requestHeaders: outboundHeaders,
@@ -64,7 +64,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
     // console readers never see a dangling request event.
     const res = await withUpstreamFailureGuard(
       upstreamEventContext,
-      spanId,
+      exchangeId,
       url,
       'POST',
       // Loopback URLs skip the proxy (see isLoopbackUrl in proxy.ts), so this
@@ -90,7 +90,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
       } catch (err: any) {
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -101,7 +101,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
       }
       emitUpstreamFailureOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,
@@ -121,7 +121,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
     } catch (err: any) {
       emitUpstreamFailureOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,
@@ -134,7 +134,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
     // OpenAI-compatible).
     emitUpstreamResponseOnce(upstreamEventContext, {
       model: model.upstreamModel,
-      spanId,
+      exchangeId,
       url,
       method: 'POST',
       status: res.status,

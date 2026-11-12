@@ -8,6 +8,25 @@ import type { ForwardProxyRule } from './types.js';
  * never re-declare the literal locally.
  */
 
+/**
+ * Gateway listen port when neither the `PORT` env lever nor a config.yaml
+ * `port:` names one. Matches the packaged/desktop sidecar default
+ * (`OCR_DEFAULT_PORT`, the Rust shell's `PORT`) so a bare CLI boot, the
+ * install, and the console's own snippets all advertise the same number.
+ * Deliberately NOT 3000: that is the default of half the JS dev tooling on a
+ * workstation (Grafana, CRA, Next, Rails…) and squats the port a gateway needs.
+ */
+export const DEFAULT_GATEWAY_PORT = 4000;
+
+/**
+ * Listen port for `bun run dev` (scripts/dev.ts), pinned for the backend AND
+ * the Vite proxy so the two can never disagree. Kept apart from
+ * DEFAULT_GATEWAY_PORT on purpose: the dev stack must be able to run beside an
+ * installed desktop gateway, and 4700 sits outside the crowded 3000/4000/
+ * 5000/8000 dev ranges. Override with `PORT=` (bare `bun run dev` keeps this).
+ */
+export const DEFAULT_DEV_PORT = 4700;
+
 /** Provider upstream request timeout when `provider.timeoutMs` is unset. */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
 

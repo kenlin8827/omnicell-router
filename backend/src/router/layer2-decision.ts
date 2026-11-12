@@ -317,7 +317,7 @@ export class Layer2Decision {
     // L2-DECISION-CALL CAPTURE gate (the single requestCapture.enabled master,
     // checked HERE via the recorder carried by the outer identity; master off
     // means the orchestrator never even passes a ctx).
-    // ON: reuse the OUTER request's trace/session so the decision layer's wire call
+    // ON: reuse the OUTER request's requestId/sessionId so the decision layer's wire call
     // joins the routed turn's archive, labeled purpose 'l2-decision' to tell it
     // from candidate-execution events. OFF: undefined = silence, the exact
     // call shape as today.
@@ -398,6 +398,7 @@ export class Layer2Decision {
           recordFailureEvent({
             model: model.id,
             provider: model.provider,
+            keyHashPrefix: diagnosis.usedKeyHashPrefix,
             errorClass: diagnosis.category,
             status: diagnosis.statusCode,
             message: failureReason,
@@ -428,6 +429,9 @@ export class Layer2Decision {
           recordFailureEvent({
             model: model.id,
             provider: model.provider,
+            // Deadline rows carry no error object, hence no registry stamp: the
+            // credential is unknown, so this row stays model-scope (absent
+            // prefix) rather than guessing one.
             errorClass: 'TIMEOUT',
             message: error,
             role: 'l2-decision',

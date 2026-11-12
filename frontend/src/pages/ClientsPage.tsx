@@ -30,7 +30,7 @@ const clientSlots = (c: ClientStatus | undefined): { key: string; value?: string
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw' || name === 'workbuddy';
 
 /** Backend machine reasonCodes (ClientActionResult) → i18n keys (per-adapter failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
@@ -58,7 +58,7 @@ const clientActionErrorText = (err: unknown, t: TFn): string => {
   const e = err as { reasonCode?: string; params?: Record<string, string>; message?: string };
   const key = e?.reasonCode ? CLIENT_REASON_KEY[e.reasonCode] : undefined;
   if (key) return t(key, e.params ?? {});
-  return 'Failed: ' + (e?.message ?? String(err));
+  return t('common.failed') + (e?.message ?? String(err));
 };
 
 /**
@@ -76,8 +76,8 @@ const MODEL_CHIP_LIMIT = 12;
 const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 
 /** Adapter default virtual block when a custom-mode setup omits `virtualModels`:
- *  opencode/dsh/pi/omp/kimi inject the full block, grok injects none (its own
- *  historical default). Keep in sync with the adapters. */
+ *  opencode/dsh/pi/omp/kimi/workbuddy/openclaw inject the full block, grok
+ *  injects none (its own historical default). Keep in sync with the adapters. */
 const virtualDefaultFor = (clientName: string): string[] =>
   clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
 
@@ -97,6 +97,17 @@ function sameModelSelection(a: string[], b: string[]): boolean {
 const GATEWAY_PLUGIN_BY_CLIENT: Record<string, string> = {
   'cursor-proxy': 'cursor-gateway',
   'qoder-proxy': 'qoder-gateway',
+};
+
+/**
+ * The `ocr` launch verb per launcher client — the actionable start command
+ * once a launcher is ready. Declared once here (not in i18n): the command IS
+ * the product surface and must never drift from the CLI's passthrough verbs
+ * (`ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli`).
+ */
+const LAUNCH_COMMANDS: Record<string, { primary: string; alt: string }> = {
+  'cursor-proxy': { primary: 'ocr cursor', alt: 'ocr cursor-agent' },
+  'qoder-proxy': { primary: 'ocr qoder', alt: 'ocr qoder-cli' },
 };
 
 const CLIENT_BY_GATEWAY_PLUGIN: Record<string, string> = Object.fromEntries(
@@ -127,6 +138,19 @@ export const ClientsPage: React.FC = () => {
    *  picked key into the client config (client config backups cover regrets);
    *  the picker is mandatory. */
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
+  /** Clients whose key picker is flagged by a refused setup: red trigger + a
+   *  scroll-to/focus. Cleared when a key is picked, another action starts, the
+   *  card folds back or the operator leaves the tab — never sticky. */
+  const [keyError, setKeyError] = useState<Record<string, true>>({});
+  const clearKeyError = (clientName: string) =>
+    setKeyError((prev) => {
+      if (!(clientName in prev)) return prev;
+      const { [clientName]: _dropped, ...rest } = prev;
+      return rest;
+    });
+  /** DOM handles of the key pickers, keyed by client name — the validation
+   *  feedback scrolls the refused card's picker into view and focuses it. */
+  const keyPickerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   /** Per-client context window in tokens (claude compaction envs; default 256K) */
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
   /** Gateway-backed clients are plugin-driven, not config-writing adapters:
@@ -393,6 +417,7 @@ export const ClientsPage: React.FC = () => {
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
       draft.catalogReplace !== base.catalogReplace ||
+      draft.catalogPrefix !== base.catalogPrefix ||
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
       draft.modelListMode === 'follow'
@@ -441,6 +466,7 @@ export const ClientsPage: React.FC = () => {
         model,
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
+        catalogPrefix: draft.catalogPrefix,
         // Persist the plugin's own unset spelling — `none` is UI vocabulary.
         modelListMode: gatewayModeValue(draft, draft.modelListMode),
         models,
@@ -479,6 +505,7 @@ export const ClientsPage: React.FC = () => {
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
       draft.catalogReplace !== base.catalogReplace ||
+      draft.catalogPrefix !== base.catalogPrefix ||
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
       draft.boundKeyId !== pickedId
@@ -704,6 +731,26 @@ export const ClientsPage: React.FC = () => {
   }, [agents, clients, mem]);
 
   const handleToggle = async (clientName: string, action: 'setup' | 'teardown') => {
+    // Every refusal below fires while the card may still be collapsed — the fix
+    // (key picker, model mode, context form) lives inside the panel, so reveal
+    // it alongside the toast instead of making the operator find the row again.
+    const revealCard = () => setExpanded(clientName);
+    // Form-validation feedback for the key picker: flag it red, open the card,
+    // then scroll + focus the field once React has committed the expansion.
+    const flagKeyError = () => {
+      setKeyError((prev) => ({ ...prev, [clientName]: true }));
+      setExpanded(clientName);
+      // Smooth-scroll first, then focus with `preventScroll` — a plain focus()
+      // teleports instantly and races the smooth scroll, producing a jump.
+      requestAnimationFrame(() => {
+        const el = keyPickerRefs.current[clientName];
+        el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        el?.focus({ preventScroll: true });
+      });
+    };
+    // A retry starts from a clean slate — the old red box must not survive a
+    // fresh attempt that may pass this time.
+    clearKeyError(clientName);
     setLoading(true);
     try {
       // A gateway client's model list is the plugin config, not the launcher
@@ -720,10 +767,11 @@ export const ClientsPage: React.FC = () => {
         const expiry = picked?.expiresAt ? Date.parse(picked.expiresAt) : NaN;
         if (!picked || picked.enabled === false || (!Number.isNaN(expiry) && expiry <= Date.now())) {
           toast.error(t('clients.gatewayKeyRequired'));
+          flagKeyError();
           return;
         }
         if (gatewayDraftDirty(gatewayCfg[gatewayPluginId], clientName)) {
-          if (!(await saveGatewayCfg(gatewayPluginId))) return;
+          if (!(await saveGatewayCfg(gatewayPluginId))) { revealCard(); return; }
         }
       }
       let extras = extraSel[clientName] || [];
@@ -743,6 +791,7 @@ export const ClientsPage: React.FC = () => {
           const k = followKeyOf(clientName);
           if (!k) {
             toast.error(t('clients.followNoKey'));
+            revealCard();
             return;
           }
           const view = keyModels[k.id] || (await api.getKeyModels(k.id));
@@ -765,6 +814,7 @@ export const ClientsPage: React.FC = () => {
       const keyless = hookKind !== 'config';
       if (action === 'setup' && !keyless && !(apiKeySel[clientName] || '')) {
         toast.error(t('clients.apiKeyRequired'));
+        flagKeyError();
         return;
       }
       const piPayload = piLinkPayload(clientName);
@@ -826,6 +876,7 @@ export const ClientsPage: React.FC = () => {
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
       toast.error(clientActionErrorText(err, t));
+      revealCard();
     } finally {
       setLoading(false);
     }
@@ -1194,7 +1245,7 @@ export const ClientsPage: React.FC = () => {
           <InfoTip text={t('clients.gatewayModelsInfo', { client: c.displayName })} />
         </div>
         {plugin && !plugin.loaded ? (
-          <div style={{ color: 'var(--warning, #eab308)', lineHeight: 'var(--leading-normal)' }}>
+          <div style={{ color: 'var(--accent-amber)', lineHeight: 'var(--leading-normal)' }}>
             {plugin.installed
               ? t(plugin.disabled ? 'clients.gatewayPluginDisabled' : 'clients.gatewayPluginNotLoaded', { client: c.displayName })
               : t('clients.gatewayPluginMissing', { client: c.displayName })}
@@ -1247,6 +1298,7 @@ export const ClientsPage: React.FC = () => {
                   onChange={(v) => {
                     setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
                     setApiKeySel((prev) => ({ ...prev, [c.name]: v }));
+                    clearKeyError(c.name);
                   }}
                   options={apiKeys.map((key) => ({
                     value: key.key,
@@ -1255,9 +1307,11 @@ export const ClientsPage: React.FC = () => {
                   }))}
                   placeholder={t('clients.apiKeySelect')}
                   panelMinWidth={320}
+                  invalid={!!keyError[c.name]}
+                  triggerRef={el => { keyPickerRefs.current[c.name] = el; }}
                 />
                 {!apiKeySel[c.name] ? (
-                  <span style={{ gridColumn: '1 / -1', color: 'var(--warning)', fontSize: 'var(--text-xs)' }}>
+                  <span style={{ gridColumn: '1 / -1', color: 'var(--accent-amber)', fontSize: 'var(--text-xs)' }}>
                     {t('clients.gatewayKeyRequired')}
                   </span>
                 ) : null}
@@ -1356,6 +1410,20 @@ export const ClientsPage: React.FC = () => {
                     />
                     {t('clients.gatewayReplace', { client: c.displayName })}
                   </label>
+                  {/* Replace mode publishes its own unprefixed list, so the
+                      prefix only governs the appended entries (same rule the
+                      manifest's visibleWhen encodes). */}
+                  {!draft.catalogReplace && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                      <input
+                        type="checkbox"
+                        checked={draft.catalogPrefix}
+                        disabled={busy}
+                        onChange={(e) => update({ catalogPrefix: e.target.checked })}
+                      />
+                      {t('clients.gatewayCatalogPrefix')}
+                    </label>
+                  )}
                 </div>
 
                 <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
@@ -1379,23 +1447,37 @@ export const ClientsPage: React.FC = () => {
                   </label>
                 </div>
 
-                <div style={{ gridColumn: 2, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    disabled={busy}
-                    onClick={() => void saveGatewayCfg(pluginId)}
-                  >
-                    {t('pluginPage.configSave')}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    disabled={!plugin?.view}
-                    onClick={() => setAdvancedPlugin(plugin?.view ?? null)}
-                  >
-                    {t('clients.gatewayAdvancedSettings')}
-                  </button>
+                <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {/* The clickable actions own one row; the auto-save note is a
+                      caption beneath it, not a peer control. Before the launcher
+                      exists the card's only primary action is "Generate launcher"
+                      at the bottom — setup already commits a dirty catalog draft
+                      (see handleToggle), so no second Save button is shown. */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {c.hooked && (
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={busy}
+                        onClick={() => void saveGatewayCfg(pluginId)}
+                      >
+                        {t('pluginPage.configSave')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={!plugin?.view}
+                      onClick={() => setAdvancedPlugin(plugin?.view ?? null)}
+                    >
+                      {t('clients.gatewayAdvancedSettings')}
+                    </button>
+                  </div>
+                  {!c.hooked && (
+                    <span style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                      {t('clients.gatewayAutoSaveHint')}
+                    </span>
+                  )}
                 </div>
                 {gatewaySavedNotice[pluginId] && (
                   <div style={{ gridColumn: '1 / -1', padding: '8px 10px', borderRadius: '6px', background: 'color-mix(in srgb, var(--accent) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)', color: 'var(--text-muted)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-normal)' }}>
@@ -1424,6 +1506,61 @@ export const ClientsPage: React.FC = () => {
     </div>
   );
 
+  /**
+   * The launch-command block for a READY launcher client: the `ocr` verb is
+   * the actionable next step, so it gets a copyable command row (not buried
+   * in hint prose). Hidden until hooked — before that the card's single
+   * primary action is generating the launcher, and the command would only
+   * invite a run that silently passes through un-proxied.
+   */
+  const renderLaunchCommands = (c: ClientStatus) => {
+    if (!c.hooked || c.hookKind !== 'launcher') return null;
+    const cmds = LAUNCH_COMMANDS[c.name];
+    if (!cmds) return null;
+    const copy = (text: string) =>
+      copyToClipboard(text).then((ok) =>
+        ok ? toast.success(t('clients.manualCopied')) : toast.error(t('common.failed')),
+      );
+    // One grid for BOTH rows; the pill column is `minmax(0, max-content)` —
+    // sized by the widest command, both pills stretch to the same width, and
+    // each pill carries its copy icon at its right edge. A command is a short
+    // token, not a form field: hugging the content keeps the button beside
+    // the text it copies instead of stranded at the card's far end.
+    const row = (label: string, cmd: string) => (
+      <div key={cmd} style={{ display: 'contents' }}>
+        <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', whiteSpace: 'nowrap' }}>{label}</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', minWidth: 0, background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', padding: '4px 6px 4px 10px' }}>
+          <code style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: FONT_MONO, fontSize: 'var(--text-sm)', color: 'var(--text-main)' }}>
+            {cmd}
+          </code>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ flexShrink: 0 }}
+            title={t('clients.manualCopied')}
+            onClick={() => void copy(cmd)}
+          >
+            <Copy size={11} />
+          </button>
+        </div>
+      </div>
+    );
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontWeight: 'var(--font-semibold)' }}>
+          {t('clients.launchCmdLabel')}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, max-content)', columnGap: '10px', rowGap: '8px', alignItems: 'center' }}>
+          {row(t('clients.launchCmdDesktop'), cmds.primary)}
+          {row(t('clients.launchCmdAlt'), cmds.alt)}
+        </div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+          {t('clients.launchCmdQuit', { client: c.displayName })}
+        </div>
+      </div>
+    );
+  };
+
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
     // A proxy client's launcher only exists to feed its gateway plugin.
@@ -1432,6 +1569,11 @@ export const ClientsPage: React.FC = () => {
     const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
     const gatewayPlugin = pluginId ? gatewayPlugins[pluginId] : undefined;
     const pluginBlocked = !!pluginId && gatewayPlugin !== undefined && !gatewayPlugin.loaded;
+    // A launcher hook only publishes a start script — no client state is taken
+    // over until `ocr <client>` launches it. Its buttons say "generate/delete
+    // launcher" instead of "take over/tear down (restore original)", which
+    // would imply a persistent modification that never happened.
+    const isLauncher = c.hookKind === 'launcher';
     return c.hooked ? (
       <button
         className="btn btn-danger btn-sm"
@@ -1440,7 +1582,7 @@ export const ClientsPage: React.FC = () => {
         disabled={loading}
       >
         <Undo2 size={12} />
-        <span>{t('clients.teardownBtn')}</span>
+        <span>{t(isLauncher ? 'clients.launcherTeardownBtn' : 'clients.teardownBtn')}</span>
       </button>
     ) : (
       <button
@@ -1451,19 +1593,30 @@ export const ClientsPage: React.FC = () => {
         title={pluginBlocked ? t('clients.gatewayPluginRequired', { client: c.displayName }) : undefined}
       >
         <ArrowUpRight size={12} />
-        <span>{t('clients.setupBtn')}</span>
+        <span>{t(isLauncher ? 'clients.launcherSetupBtn' : 'clients.setupBtn')}</span>
       </button>
     );
   };
 
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div className="card">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', minHeight: 0 }}>
+      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div className="card-header">
           <div className="card-title">
             <Terminal size={18} color="var(--accent)" />
             <span>{t('clients.title')}</span>
+            {/* Hooked/total over the roster the active access-mode tab shows
+                (hook + proxy); manual hookup has no roster and shows none. */}
+            {activeTab !== 'manual' && (() => {
+              const roster = clients.filter(c => activeTab === 'proxy' ? c.hookKind !== 'config' : c.hookKind === 'config');
+              const hooked = roster.filter(c => c.hooked).length;
+              return (
+                <span className="badge badge-success" style={{ marginLeft: '10px' }}>
+                  {t('clients.hookedCount', { hooked, total: roster.length })}
+                </span>
+              );
+            })()}
           </div>
           <button className="btn btn-sm" onClick={loadClients} disabled={loading}>
             <RefreshCw size={12} />
@@ -1490,7 +1643,7 @@ export const ClientsPage: React.FC = () => {
           <SegGroup
             size="lg"
             value={activeTab}
-            onChange={v => setActiveTab(v as typeof activeTab)}
+            onChange={v => { setKeyError({}); setActiveTab(v as typeof activeTab); }}
             options={[
               { value: 'hook', label: t('clients.tabHook') },
               { value: 'proxy', label: t('clients.tabProxy') },
@@ -1538,14 +1691,19 @@ export const ClientsPage: React.FC = () => {
         )}
         {/* Accordion: one full-width row per client — collapsed shows identity + status +
             quick action, expanding reveals the progressive setup form. */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'stretch' }}>
           {clients.filter(c => activeTab === 'proxy'
             ? c.hookKind !== 'config'
             : activeTab === 'hook'
               && c.hookKind === 'config'
               && (!filter || [c.displayName, c.name, c.configPath].some(v => (v || '').toLowerCase().includes(filter.toLowerCase())))).map(c => {
             const open = expanded === c.name;
-            const toggle = () => setExpanded(prev => (prev === c.name ? null : c.name));
+            // Folding the card away also dismisses its validation flag: the red
+            // box belongs to the expanded form, not to the collapsed row.
+            const toggle = () => {
+              if (open) clearKeyError(c.name);
+              setExpanded(prev => (prev === c.name ? null : c.name));
+            };
             return (
               <div
                 key={c.name}
@@ -1554,6 +1712,7 @@ export const ClientsPage: React.FC = () => {
                   border: '1px solid var(--card-border)',
                   borderRadius: '10px',
                   overflow: 'hidden',
+                  flexShrink: 0,
                 }}
               >
                 <div
@@ -1584,11 +1743,27 @@ export const ClientsPage: React.FC = () => {
                   >
                     {c.configPath}
                   </span>
+                  {/* Collapsed launcher row: the start command is the one thing
+                      worth seeing without expanding — a plain double-click of
+                      the app would silently stay un-proxied. Clicking the chip
+                      copies; the row's own click (expand) is stopped. */}
+                  {!open && c.hooked && c.hookKind === 'launcher' && LAUNCH_COMMANDS[c.name] && (
+                    <code
+                      role="button"
+                      tabIndex={0}
+                      title={t('clients.manualCopied')}
+                      onClick={e => { e.stopPropagation(); void copyToClipboard(LAUNCH_COMMANDS[c.name].primary).then((ok) => ok && toast.success(t('clients.manualCopied'))); }}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void copyToClipboard(LAUNCH_COMMANDS[c.name].primary).then((ok) => ok && toast.success(t('clients.manualCopied'))); } }}
+                      style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', padding: '3px 8px', cursor: 'copy' }}
+                    >
+                      {LAUNCH_COMMANDS[c.name].primary}
+                    </code>
+                  )}
                   {c.hooked ? (
-                    <span className="badge badge-success">{t('overview.hooked')}</span>
+                    <span className="badge badge-success">{t(c.hookKind === 'launcher' ? 'clients.launcherHookedBadge' : 'overview.hooked')}</span>
                   ) : (
                     <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
-                      {t('overview.notHooked')}
+                      {t(c.hookKind === 'launcher' ? 'clients.launcherNotHookedBadge' : 'overview.notHooked')}
                     </span>
                   )}
                   {c.version && (
@@ -1598,7 +1773,7 @@ export const ClientsPage: React.FC = () => {
                       style={
                         c.version.meetsMin
                           ? { background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
-                          : { background: 'var(--warning-bg, rgba(234,179,8,.15))', color: 'var(--warning, #eab308)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
+                          : { background: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)', color: 'var(--accent-amber)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
                       }
                     >
                       v{c.version.current}
@@ -1638,8 +1813,15 @@ export const ClientsPage: React.FC = () => {
                             <span>{t('clients.backupExists')} {c.backupExists ? t('clients.ready') : t('clients.none')}</span>
                           </div>
                         </div>
+                        {c.name === 'workbuddy' && (
+                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
+                            {t('clients.workbuddyHint')}
+                          </div>
+                        )}
                       </>
                     )}
+
+                    {(c.hookKind !== 'config') && renderLaunchCommands(c)}
 
                     {(c.hookKind !== 'config') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
@@ -1655,10 +1837,20 @@ export const ClientsPage: React.FC = () => {
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
                     <Combobox
                       value={apiKeySel[c.name] || ''}
-                      onChange={v => setApiKeySel(prev => ({ ...prev, [c.name]: v }))}
+                      onChange={v => {
+                        setApiKeySel(prev => ({ ...prev, [c.name]: v }));
+                        clearKeyError(c.name);
+                      }}
                       options={apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined }))}
                       placeholder={t('clients.apiKeySelect')}
+                      invalid={!!keyError[c.name]}
+                      triggerRef={el => { keyPickerRefs.current[c.name] = el; }}
                     />
+                    {!!keyError[c.name] && (
+                      <div style={{ marginTop: '6px', fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>
+                        {t('clients.apiKeyRequired')}
+                      </div>
+                    )}
                   </div>
                 )}
                       {c.name === 'claude' && (
@@ -1896,7 +2088,7 @@ export const ClientsPage: React.FC = () => {
               protocol. Documentation + a live connectivity probe — no backend
               adapter, no status, no setup buttons. */}
           {activeTab === 'manual' && (
-          <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '14px', background: 'var(--bg-elev)', border: '1px solid var(--card-border)', borderRadius: '10px' }}>
+          <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '14px', background: 'var(--bg-elev)', border: '1px solid var(--card-border)', borderRadius: '10px', flexShrink: 0 }}>
             <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-relaxed)' }}>
               {t('clients.otherIntro')}
             </p>

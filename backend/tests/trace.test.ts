@@ -30,7 +30,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     await app.close();
   });
 
-  it('POST /v1/chat/completions should attach X-OCR-Trace-ID and record execution trajectory', async () => {
+  it('POST /v1/chat/completions should attach X-OCR-Request-ID and record execution trajectory', async () => {
     const res = await app.inject({
       headers: { ...authHeaders(), 'x-session-id': 'sess_unit_test_trace_1' },
       method: 'POST',
@@ -42,14 +42,13 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     });
 
     assert.strictEqual(res.statusCode, 200);
-    const traceId = res.headers['x-ocr-trace-id'] as string;
+    const requestId = res.headers['x-ocr-request-id'] as string;
     const sessionId = res.headers['x-ocr-session-id'] as string;
 
-    assert.ok(traceId, 'Response header must contain X-OCR-Trace-ID');
-    // The trace id is the OpenTelemetry traceId shared with the capture
-    // event stream: a 32-hex string when minted locally (no inbound
-    // traceparent / x-request-id headers in this request).
-    assert.match(traceId, /^[0-9a-f]{32}$/, 'Trace ID should be a 32-hex OTel traceId');
+    assert.ok(requestId, 'Response header must contain X-OCR-Request-ID');
+    // Gateway-owned request id (ADR-0021): one per request, unique, and the
+    // only id the trace endpoints resolve.
+    assert.match(requestId, /^req_[0-9a-f]{24}$/, 'request id shape');
     assert.strictEqual(sessionId, 'sess_unit_test_trace_1');
   });
 
@@ -188,7 +187,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // Check trajectory step structure
     const firstTurn = body.data[0];
-    assert.ok(firstTurn.traceId);
+    assert.ok(firstTurn.requestId);
     assert.strictEqual(firstTurn.turnNumber, 1);
     assert.ok(firstTurn.request);
     assert.ok(firstTurn.routing);
@@ -233,7 +232,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
       url: '/api/admin/sessions/sess_unit_test_trace_1/traces',
     });
     const listBody = JSON.parse(listRes.body);
-    const sampleTraceId = listBody.data[0].traceId;
+    const sampleTraceId = listBody.data[0].requestId;
 
     // 1. Success query
     const res = await app.inject({
@@ -244,7 +243,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.strictEqual(body.object, 'trace');
-    assert.strictEqual(body.traceId, sampleTraceId);
+    assert.strictEqual(body.requestId, sampleTraceId);
     assert.strictEqual(body.sessionId, 'sess_unit_test_trace_1');
 
     // 2. 404 query
@@ -391,5 +390,61 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const blankBody = JSON.parse(blankRes.body);
     assert.strictEqual(blankBody.model, undefined, 'blank model must be dropped');
     assert.ok(blankBody.total >= 1, 'blank model must fall back to the unfiltered list');
+  });
+
+  it('two requests sharing ONE caller traceparent stay two records (ADR-0021)', async () => {
+    // The measured field failure: a client reuses a single W3C trace id for a
+    // whole conversation. The gateway must keep one row per REQUEST — the
+    // caller value is correlation, never a key.
+    const sessId = 'sess_unit_test_identity';
+    const send = (parentSpan: string) =>
+      app.inject({
+        headers: {
+          ...authHeaders(),
+          'x-session-id': sessId,
+          traceparent: `00-570cec004726436b8a6abb220f621bff-${parentSpan}-01`,
+        },
+        method: 'POST',
+        url: '/v1/chat/completions',
+        payload: { model: 'auto', messages: [{ role: 'user', content: 'ping' }] },
+      });
+
+    const first = await send('2fcda6f5dbd39244');
+    const second = await send('7b583d5ea4f431de');
+    assert.strictEqual(first.statusCode, 200);
+    assert.strictEqual(second.statusCode, 200);
+
+    const requestIds = [first.headers['x-ocr-request-id'], second.headers['x-ocr-request-id']] as string[];
+    assert.match(requestIds[0], /^req_[0-9a-f]{24}$/);
+    assert.match(requestIds[1], /^req_[0-9a-f]{24}$/);
+    assert.notStrictEqual(requestIds[0], requestIds[1], 'each request gets its own key');
+
+    const res = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/api/admin/sessions/${sessId}/traces`,
+    });
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.total, 2, 'both requests are recorded as distinct rows');
+    const rows = body.data as Array<{ requestId: string; clientRequestId?: string }>;
+    assert.deepStrictEqual(
+      rows.map(r => r.requestId).sort(),
+      [...requestIds].sort(),
+      'the row keys are the gateway request ids'
+    );
+    assert.ok(
+      rows.every(r => r.clientRequestId === '570cec004726436b8a6abb220f621bff'),
+      'the repeated caller value is retained as correlation only'
+    );
+
+    const single = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/api/admin/traces/${requestIds[0]}`,
+    });
+    assert.strictEqual(single.statusCode, 200, 'the trace endpoint resolves the gateway key');
+    assert.strictEqual(JSON.parse(single.body).requestId, requestIds[0]);
+
+    await app.inject({ headers: authHeaders(), method: 'DELETE', url: `/api/admin/sessions/${sessId}` });
   });
 });

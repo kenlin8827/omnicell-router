@@ -118,7 +118,7 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
               borderRadius: '8px',
               background: 'rgba(239, 68, 68, 0.12)',
               border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: 'var(--accent-red, #ef4444)',
+              color: 'var(--accent-rose)',
               fontSize: 'var(--text-sm)',
             }}
           >

@@ -226,7 +226,13 @@ export interface ExecutionResult {
   sessionId?: string;
   sessionRatchetApplied?: boolean;
   sessionLookupType?: SessionLookupType;
-  traceId?: string;
+  /**
+   * Gateway-owned id of THIS request (ADR-0021) — returned as
+   * `X-OCR-Request-ID` so a caller/operator can name the exact console row.
+   * Distinct from `sessionId` (the conversation); the caller's own
+   * correlation value is never echoed back.
+   */
+  requestId?: string;
   latencyMs: number;
   /**
    * Industry TTFT/TPS split of the committed attempt, measured at the relay:
@@ -237,6 +243,18 @@ export interface ExecutionResult {
    */
   ttftMs?: number;
   genMs?: number;
+  /**
+   * The perceived-experience companion to the TTFT/decode pair: total time the
+   * committed attempt's stream spent in gaps of ≥1 s between two consecutive
+   * chunks the client received with visible output (answer text, tool-call
+   * fragments or reasoning/thinking deltas). A turn can report a healthy decode
+   * rate and still feel broken — seconds of frozen screen are what users
+   * actually remember, and an average cannot express them. The session divides
+   * the summed value by its summed decode windows (stallRatio). Undefined when
+   * the turn never streamed, or when the stream delivered fewer than two such
+   * chunks (no gap exists to measure); 0 means measured and smooth.
+   */
+  stalledMs?: number;
   failoverOccurred?: boolean;
   failoverAttempts?: number;
   failoverPath?: string[];

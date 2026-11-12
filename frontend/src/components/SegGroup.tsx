@@ -20,9 +20,9 @@ import React from 'react';
 /** Per-size metrics: 'sm' sits inside a labelled form row, 'md' is the
  *  standalone toolbar default, 'lg' is a page-level primary mode switch. */
 const SIZES = {
-  sm: { pad: '4px 9px', font: 11, radius: 6 },
-  md: { pad: '5px 12px', font: 12, radius: 8 },
-  lg: { pad: '7px 16px', font: 13, radius: 10 },
+  sm: { pad: '4px 9px', font: 'var(--text-xs)', radius: 6 },
+  md: { pad: '5px 12px', font: 'var(--text-sm)', radius: 8 },
+  lg: { pad: '7px 16px', font: 'var(--text-md)', radius: 10 },
 } as const;
 
 export const SegGroup: React.FC<{

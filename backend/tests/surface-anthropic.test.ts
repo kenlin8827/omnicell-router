@@ -56,7 +56,7 @@ function stubResult(modelUsed: string, response: unknown): ExecutionResult {
     fallbackOccurred: false,
     latencyMs: 1,
     sessionId: 'sess-1',
-    traceId: 'trace-1',
+    requestId: 'trace-1',
   };
 }
 

@@ -45,7 +45,7 @@ const lines = fs.readFileSync(file, 'utf8').split('\n').filter(l => l.trim());
 console.log(`\n=== ${lines.length} events in ${path.basename(file)} ===`);
 for (const l of lines) {
   const ev = JSON.parse(l);
-  console.log(`\n--- ${ev.direction}/${ev.phase} span=${ev.spanId} trace=${ev.traceId.slice(0, 12)} model=${ev.model} status=${ev.status}`);
+  console.log(`\n--- ${ev.direction}/${ev.phase} exchange=${ev.exchangeId} request=${ev.requestId} client=${ev.clientRequestId ?? '-'} model=${ev.model} status=${ev.status}`);
   console.log('reqLine :', ev.wire.requestLine || '(empty)');
   console.log('reqHdrs :', JSON.stringify(ev.wire.requestHeaders));
   console.log('reqBody :', String(ev.wire.requestBody).slice(0, 120));

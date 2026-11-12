@@ -961,7 +961,7 @@ describe('trace per-pair aggregation', () => {
   it('GROUP BY (provider, prefix) skips unattributed turns', () => {
     const t = new TraceTracker(100, undefined);
     const mk = (provider: string, prefix: string | undefined, cost: number) => ({
-      traceId: `tr-${provider}-${prefix}-${cost}`,
+      requestId: `tr-${provider}-${prefix}-${cost}`,
       sessionId: 's',
       turnNumber: 1,
       timestamp: Date.now(),

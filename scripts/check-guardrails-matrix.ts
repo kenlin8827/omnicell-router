@@ -151,6 +151,11 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
   const modelFold = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', scope: 'model' });
   const wide = buildPairCards([modelFold], [], accts, [], LABELS);
   check('model-scope fold is model-wide', wide.every((c) => isModelWideTrip(c)));
+
+  // A provider-scope fold (host-level takedown) reads as model-wide too.
+  const providerFold = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', scope: 'provider' });
+  const hostWide = buildPairCards([providerFold], [], accts, [], LABELS);
+  check('provider-scope fold is model-wide', hostWide.every((c) => isModelWideTrip(c)));
 }
 
 if (failures > 0) {

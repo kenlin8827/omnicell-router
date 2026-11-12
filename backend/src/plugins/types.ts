@@ -266,9 +266,9 @@ export interface ModelServicePluginHost {
   /** Capture-plane emitters — same contract as observability/upstream-events.ts. */
   upstream: {
     requestOnce(ctx: unknown, args: { url: string; method: string; requestHeaders: Record<string, string>; requestBody: string; model?: string }): string | undefined;
-    responseOnce(ctx: unknown, args: { spanId: string | undefined; url: string; method: string; status: number; statusText: string; responseHeaders: Headers; responseBody: string; model?: string }): void;
-    failureOnce(ctx: unknown, args: { spanId: string | undefined; url: string; method: string; status: number; statusText: string; error: string; model?: string }): void;
-    failureGuard(ctx: unknown, spanId: string | undefined, url: string, method: string, fn: () => Promise<unknown>, model?: string): Promise<unknown>;
+    responseOnce(ctx: unknown, args: { exchangeId: string | undefined; url: string; method: string; status: number; statusText: string; responseHeaders: Headers; responseBody: string; model?: string }): void;
+    failureOnce(ctx: unknown, args: { exchangeId: string | undefined; url: string; method: string; status: number; statusText: string; error: string; model?: string }): void;
+    failureGuard(ctx: unknown, exchangeId: string | undefined, url: string, method: string, fn: () => Promise<unknown>, model?: string): Promise<unknown>;
   };
   constants: {
     /** Per-attempt upstream wall-clock cap (config default). */

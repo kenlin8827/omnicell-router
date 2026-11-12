@@ -46,7 +46,7 @@ const HDR = {
   retries: 'X-OCR-InPlace-Retries',
   breaker: 'X-OCR-Breaker-State',
   session: 'X-OCR-Session-ID',
-  trace: 'X-OCR-Trace-ID',
+  request: 'X-OCR-Request-ID',
   latency: 'X-OCR-Latency-MS',
   /** Gateway-measured decode window (first streamed chunk → stream end) —
    *  present only when the committed attempt streamed; the tok/s denominator. */
@@ -76,7 +76,7 @@ interface TurnFacts {
   retries?: string;
   breaker?: string;
   sessionId?: string;
-  traceId?: string;
+  requestId?: string;
   latencyMs?: string;
   /** Gateway-reported decode window; absent on buffered (non-streamed) turns. */
   genMs?: string;
@@ -168,7 +168,7 @@ const readFacts = (get: (name: string) => string | undefined, status: number): T
   retries: nonEmpty(get(HDR.retries)),
   breaker: nonEmpty(get(HDR.breaker)),
   sessionId: nonEmpty(get(HDR.session)),
-  traceId: nonEmpty(get(HDR.trace)),
+  requestId: nonEmpty(get(HDR.request)),
   latencyMs: nonEmpty(get(HDR.latency)),
   genMs: nonEmpty(get(HDR.genMs)),
   thinking: nonEmpty(get(HDR.thinkActual)) ?? nonEmpty(get(HDR.thinkRequested)),
@@ -474,7 +474,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
             />
           )}
           {facts.breaker && facts.breaker !== 'CLOSED' && <FactChip label={t('chat.factBreaker')} value={facts.breaker} />}
-          {facts.traceId && <FactChip label={t('chat.factTrace')} value={facts.traceId} />}
+          {facts.requestId && <FactChip label={t('chat.factRequest')} value={facts.requestId} />}
           {facts.sessionId && <FactChip label={t('chat.factSession')} value={facts.sessionId} />}
           {turn.usage && (
             <FactChip
@@ -1565,7 +1565,7 @@ export const PlaygroundPage: React.FC = () => {
                     />
                   )}
                   {decision.facts.latencyMs && <FactChip label={t('chat.factLatency')} value={`${decision.facts.latencyMs} ms`} />}
-                  {decision.facts.traceId && <FactChip label={t('chat.factTrace')} value={decision.facts.traceId} />}
+                  {decision.facts.requestId && <FactChip label={t('chat.factRequest')} value={decision.facts.requestId} />}
                 </div>
                 <div>
                   <JsonBlock label={t('chat.reqLabel')} text={JSON.stringify(decision.requestJson, null, 2)} maxHeight={180} />

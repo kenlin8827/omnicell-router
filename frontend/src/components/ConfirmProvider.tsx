@@ -117,9 +117,9 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
                   background: danger
                     ? 'color-mix(in srgb, var(--accent-rose) 15%, transparent)'
                     : warn
-                      ? 'color-mix(in srgb, var(--accent-amber, #f59e0b) 15%, transparent)'
+                      ? 'color-mix(in srgb, var(--accent-amber) 15%, transparent)'
                       : 'var(--accent-bg)',
-                  color: danger ? 'var(--accent-rose)' : warn ? 'var(--accent-amber, #f59e0b)' : 'var(--accent)',
+                  color: danger ? 'var(--accent-rose)' : warn ? 'var(--accent-amber)' : 'var(--accent)',
                 }}
               >
                 {danger || warn ? <AlertTriangle size={18} /> : <HelpCircle size={18} />}

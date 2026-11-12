@@ -117,6 +117,17 @@ describe('key-by-key merge at every level (invariant 5)', () => {
     expect(r.recovery.onCanaryFailure).toBe('backoff');
   });
 
+  it('the provider scope override survives the sanitizer AND the resolver', () => {
+    const c = cfgFrom(
+      'schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        consecutiveFailures:\n          scope: provider\n        failureRate:\n          scope: provider\n',
+    );
+    expect(c.rules?.trip?.consecutiveFailures?.scope).toBe('provider');
+    expect(c.rules?.trip?.failureRate?.scope).toBe('provider');
+    const r = resolveBreakerRules(c);
+    expect(r.trip.consecutiveFailures.scope).toBe('provider');
+    expect(r.trip.failureRate.scope).toBe('provider');
+  });
+
   it('unknown keys inside the rules tree are dropped (round-trip hygiene)', () => {
     const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        quota:\n          bogus: 1\n          enabled: false\n');
     expect(c.rules?.trip?.quota).not.toHaveProperty('bogus');

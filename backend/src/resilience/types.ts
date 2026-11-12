@@ -9,7 +9,7 @@ export const ERROR_CATEGORIES = [
   'AUTHENTICATION_ERROR', // API Key invalid or unauthorized (HTTP 401)
   'RATE_LIMITED',         // rate limit, TPM/RPM exceeded (HTTP 429)
   'SERVICE_UNAVAILABLE',  // upstream down, gateway timeout, connection refused (HTTP 500/502/503/504, ETIMEDOUT, ECONNREFUSED)
-  'CLIENT_ERROR',         // bad client input, context length exceeded (HTTP 400, context length exceeded)
+  'CLIENT_ERROR',         // request-fault 4xx: bad input, unsupported media type, context length (HTTP 400/415/422/...)
   'MANUAL',               // operator tripped the breaker from the console (deliberate takedown, not an auto-detected failure)
   'UNKNOWN',
 ] as const;
@@ -29,13 +29,18 @@ export type NetworkFailureCause =
 /**
  * Blast radius of a trip once the failure is attributed
  * to one credential of a multi-credential provider.
- *  pair    = (model × credential) only — per-model rate limit, uncertain errors
+ *  pair       = (model × credential) only — per-model rate limit, uncertain errors
  *  credential = this credential everywhere — credential quota / dead key
- *  model   = this model for every credential — outage / 5xx / network
+ *  model      = this model for every credential — model-endpoint outage / 5xx
+ *  provider   = every model × every credential of the provider — host-level
+ *               connection failure (DNS / TCP refused / TLS), credential- and
+ *               model-independent; travels WITHOUT credential attribution
+ *               (the provider is known from the model registration) and only
+ *               ever feeds the statistical ladder, never a hard trip.
  * Absent on a diagnosis means "model", today's pre-P3 semantics. The same
  * vocabulary serves manual (console/REST) trips: 'model' is the legacy scope.
  */
-export type TripScope = 'pair' | 'credential' | 'model';
+export type TripScope = 'pair' | 'credential' | 'model' | 'provider';
 
 /**
  * Machine-readable trip-reason vocabulary (the routing reasonCode convention).
@@ -123,7 +128,7 @@ export interface BreakerCountingConfig {
   unknownErrors?: BreakerCountingClassRule;
   /** Countedness of 429 has NO toggle (the classifier always counts it); this owns only the no-Retry-After floor. */
   rateLimitErrors?: { minCooldownMs?: number };
-  /** 400/422: default OFF = today's non-penalizing CLIENT_ERROR. No cooldown param — the tripping rule's ladder applies. */
+  /** Request-fault 4xx (400/404-family/415/422/...): default OFF = non-penalizing CLIENT_ERROR. No cooldown param — the tripping rule's ladder applies. */
   clientErrors?: { enabled?: boolean };
 }
 
@@ -238,6 +243,40 @@ export interface BreakerRulesStatus {
   rules: ResolvedBreakerRules;
 }
 
+/** Intrinsic disposition the classifier assigns a class, before any rule override. */
+export type ClassifierDisposition = 'hard_trip' | 'counted' | 'ignored';
+
+/**
+ * Read-only reference descriptor of the classifier's FIXED mapping — one entry
+ * per auto-detected ErrorCategory (MANUAL is operator intent, not a class).
+ * Single source of the behavioral facts the console's classifier-reference panel
+ * renders: what a rule's `auto` scope resolves to, whether the class hard-trips /
+ * counts / is ignored, and its conditional variants. The human-readable trigger
+ * prose is sanctioned i18n copy keyed by `category`; THESE behavioral fields are
+ * pinned to the real classify() output by classifier-taxonomy.test.ts (the
+ * anti-drift guard). Static by design: independent of config — the rule tree
+ * OVERRIDES these defaults, it never redefines the classifier's mapping.
+ */
+export interface ClassifierTaxonomyEntry {
+  category: ErrorCategory;
+  /** Default blast radius when attributed — what a rule's `auto` scope resolves to. */
+  defaultScope: TripScope;
+  /** Intrinsic disposition before rule overrides. */
+  disposition: ClassifierDisposition;
+  /** `counting.<class>.enabled` exists (false = always counted / hard-trip, no toggle). */
+  countingToggle: boolean;
+  /** Rule-tree key governing this class (cross-reference to the configurable blocks). */
+  governedBy: string;
+  /** Host-level connection failures widen to this scope (SERVICE_UNAVAILABLE → provider). */
+  hostScope?: TripScope;
+  /** Credential-budget wording widens to this scope (RATE_LIMITED → credential). */
+  credentialScope?: TripScope;
+  /** Hard-trips only above the 429 Retry-After boundary; counted otherwise (RATE_LIMITED). */
+  conditionalHardTrip?: boolean;
+  /** Flags the credential SUSPECT (AUTHENTICATION_ERROR). */
+  marksSuspect?: boolean;
+}
+
 export interface CircuitBreakerPersistenceConfig {
   debounceMs?: number; // breaker-state file flush debounce; default 1000
 }
@@ -284,7 +323,7 @@ export interface CircuitBreakerSnapshot {
    * config-baked key). Absent on the DERIVED model fold.
    */
   keyHashPrefix?: string;
-  /** Blast radius of the last trip delivered to this breaker: 'model' | 'credential' | 'pair'. */
+  /** Blast radius of the last trip delivered to this breaker: 'model' | 'credential' | 'pair' | 'provider'. */
   scope?: TripScope;
   reason?: string;
   /** Trip trigger/cause code/params (BreakerReasonCode); absent = pre-code trip. */
@@ -326,7 +365,7 @@ export interface BreakerRecord {
   consecutiveFailures: number;
   totalRequests: number;
   totalSuccesses: number;
-  /** Blast radius of the last trip ('pair' | 'credential' | 'model') — the
+  /** Blast radius of the last trip ('pair' | 'credential' | 'model' | 'provider') — the
    *  scope label the tuple breaker carries; restored by the manager so
    *  scope-symmetric recovery survives restarts. */
   scope?: TripScope;

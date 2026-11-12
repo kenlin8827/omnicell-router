@@ -37,6 +37,20 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig,
 };
 
 /**
+ * Longest 429 Retry-After wait the in-place retry path may sleep out
+ * (`retry.inplace.maxRateLimitWaitMs` default). The breaker's hard/counted
+ * boundary borrows it (trip.rateLimit.hardTripAboveMs default); the classifier
+ * reads the same constant so the two sides can never drift apart.
+ */
+export const DEFAULT_MAX_RATE_LIMIT_WAIT_MS = 2000;
+
+/** Floor of any Retry-After-derived 429 cooldown (a "retry now" header still costs 1s). */
+export const RATE_LIMIT_MIN_COOLDOWN_MS = 1000;
+
+/** Cap of the no-Retry-After 429 counted floor: min(this, initialCooldownMs). */
+export const RATE_LIMIT_NO_RETRY_AFTER_CAP_MS = 60 * 1000;
+
+/**
  * Startup resolution of the `circuitBreaker.rules` tree into one effective,
  * fully-populated `ResolvedBreakerRules` (spec invariant 5). Unset per-rule
  * params fall back to the global knob; enabled toggles default to today's
@@ -65,7 +79,9 @@ export function resolveBreakerRules(
     typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback;
   const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
   const scope = (v: unknown): BreakerScopeOverride =>
-    v === 'auto' || v === 'pair' || v === 'credential' || v === 'model' ? (v as BreakerScopeOverride) : 'auto';
+    v === 'auto' || v === 'pair' || v === 'credential' || v === 'model' || v === 'provider'
+      ? (v as BreakerScopeOverride)
+      : 'auto';
   const mode = (v: unknown): OnCanaryFailureMode =>
     v === 'initial' || v === 'close' || v === 'backoff' ? (v as OnCanaryFailureMode) : 'backoff';
 
@@ -96,10 +112,13 @@ export function resolveBreakerRules(
         enabled: bool(counting?.unknownErrors?.enabled, true),
         minCooldownMs: ms(counting?.unknownErrors?.minCooldownMs, initial),
       },
-      // No toggle (the classifier counts every 429); floor default = today's
-      // hardcoded min(60s, initial) for the no-Retry-After case.
+      // No toggle (the classifier counts every 429); floor default = the
+      // capped no-Retry-After wait for the case the header is absent.
       rateLimitErrors: {
-        minCooldownMs: ms(counting?.rateLimitErrors?.minCooldownMs, Math.min(60 * 1000, initial)),
+        minCooldownMs: ms(
+          counting?.rateLimitErrors?.minCooldownMs,
+          Math.min(RATE_LIMIT_NO_RETRY_AFTER_CAP_MS, initial)
+        ),
       },
       clientErrors: { enabled: bool(counting?.clientErrors?.enabled, false) },
     },
@@ -117,8 +136,8 @@ export function resolveBreakerRules(
       },
       rateLimit: {
         enabled: bool(trip?.rateLimit?.enabled, true),
-        hardTripAboveMs: ms(trip?.rateLimit?.hardTripAboveMs, retry?.inplace?.maxRateLimitWaitMs ?? 2000),
-        minCooldownMs: ms(trip?.rateLimit?.minCooldownMs, 1000), // today's hardcoded floor
+        hardTripAboveMs: ms(trip?.rateLimit?.hardTripAboveMs, retry?.inplace?.maxRateLimitWaitMs ?? DEFAULT_MAX_RATE_LIMIT_WAIT_MS),
+        minCooldownMs: ms(trip?.rateLimit?.minCooldownMs, RATE_LIMIT_MIN_COOLDOWN_MS),
         scope: scope(trip?.rateLimit?.scope),
       },
       consecutiveFailures: {

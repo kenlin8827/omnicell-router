@@ -141,17 +141,17 @@ interface CaptureRecord {
  *     client cancel, provider unreachable) — the request side is captured
  *     synchronously before the wire call returns, so failure is recorded.
  *   - **Request / response timing** becomes a first-class pair. Two events
- *     with the same `spanId` describe one exchange; their `ts`
+ *     with the same `exchangeId` describe one exchange; their `ts`
  *     delta IS the request→response latency, computed at read time.
  *   - **Symmetry across client and upstream legs**: each direction emits
- *     its own request + response event, all four sharing one
- *     `traceId` so the full picture joins back together.
+ *     its own request + response event, all four sharing one `requestId`
+ *     (the gateway turn id) so the full picture joins back together.
  *
- * A single inference turn produces 2-4 events sharing the same
- * `traceId`: client-request, gateway-response, upstream-request,
- * upstream-response. File layout keeps the per-turn grouping (same
- * `sessionId`) so the existing turn-based session browser keeps working
- * while the events are now individually retrievable.
+ * A single inference turn produces 2-4 events sharing the same `requestId`:
+ * client-request, gateway-response, upstream-request, upstream-response.
+ * File layout keeps the per-turn grouping (same `sessionId`) so the
+ * session browser keeps working while the events stay individually
+ * retrievable.
  *
  * Direction naming follows the gateway's POV:
  *   - `client`     = client ↔ gateway (the request that arrived, the response
@@ -170,20 +170,31 @@ export interface HttpExchangeEvent {
   /** 'request' = the wire side that's being sent; 'response' = the side that's being received. */
   phase: 'request' | 'response';
   /**
-   * Stable per-exchange id (OpenTelemetry spanId) shared by the request
-   * event AND its matching response event (same direction). E.g. one
-   * client exchange = one `spanId` with two events (req + resp).
+   * Gateway-minted id of THIS HTTP exchange, shared by the request event AND
+   * its matching response event (same direction): one client exchange = one
+   * `exchangeId` with two events. Not a W3C span id — the gateway never
+   * adopts a caller-supplied exchange identity.
    */
-  spanId: string;
+  exchangeId: string;
   /**
-   * Stable trace id (OpenTelemetry traceId) shared across all four
-   * events of one inference turn (the client-request, client-response,
-   * upstream-request, upstream-response all share one `traceId`).
-   * Sourced from the inbound request's `traceparent` / `x-request-id`
-   * when present, otherwise minted as 32-hex (see resolveTraceId).
+   * The CALLER's correlation value (W3C `traceparent` trace-id,
+   * `x-request-id`, …), when it sent one. Correlation only: a trace spans
+   * many requests, so this value may repeat across events and turns. Absent
+   * when the caller sent none — the gateway does not invent one.
    */
-  traceId: string;
-  /** Session id from session-manager (or synthetic `ocr-turn-<id>` when no session exists yet). */
+  clientRequestId?: string;
+  /**
+   * Gateway-owned id of the INFERENCE TURN these events belong to (ADR-0021)
+   * — the turn-join key. Every event of one client request carries it;
+   * `clientRequestId` above may be shared by several requests.
+   */
+  requestId: string;
+  /**
+   * The upstream provider's OWN id for the call, when its response exposes
+   * one (`id` / `x-request-id`). Present only on upstream events.
+   */
+  upstreamRequestId?: string;
+  /** Gateway session id (session-manager entry, or a synthetic turn id). */
   sessionId: string;
   /**
    * Deterministic conversation key — `sha256(apiKey identity + FULL first
@@ -269,7 +280,7 @@ export interface HttpExchangeEvent {
    * Why this exchange happened when it is NOT the turn's ordinary client or
    * candidate-execution traffic. `l2-decision` marks the HTTP leg the Layer 2
    * decision layer fires inside a routed turn (upstream direction, attached to the
-   * outer request's trace/session). Absent = ordinary traffic.
+   * outer request's requestId/sessionId). Absent = ordinary traffic.
    */
   purpose?: ExchangePurpose;
   /**
@@ -306,10 +317,13 @@ export interface CaptureKeyIdentity {
 
 /**
  * One logical inference turn: the four http-exchange events joined by
- * `traceId` / `spanId` (see `groupEventsIntoTurns`).
+ * `requestId` (see `groupEventsIntoTurns`).
  */
 export interface CaptureTurnSummary {
-  traceId: string;
+  /** Gateway turn id (ADR-0021) — the join key. */
+  requestId: string;
+  /** Caller correlation value, carried over from the client-request event. */
+  clientRequestId?: string;
   sessionId: string;
   model: string;
   /**
@@ -783,8 +797,8 @@ export class CaptureRecorder {
   /**
    * Append one HTTP-exchange event to the event stream. Each HTTP exchange
    * emits TWO events (one request, one response) sharing the same
-   * `spanId`. One inference turn typically produces 2-4 events
-   * sharing the same `traceId`. Synchronous callers (handler scope,
+   * `exchangeId`. One inference turn typically produces 2-4 events
+   * sharing the same `requestId`. Synchronous callers (handler scope,
    * provider scope) can fire this the moment the wire side is known —
    * there is no longer a "wait for the response" barrier before the
    * request side is recorded.
@@ -879,7 +893,7 @@ export class CaptureRecorder {
           const seal = JSON.stringify({
             eventType: 'archive-overflow',
             sessionId: full.sessionId,
-            traceId: full.traceId,
+            requestId: full.requestId,
             ts,
             bytes,
             maxSessionMB: Math.round(this.maxSessionBytes / (1024 * 1024)),
@@ -1059,7 +1073,8 @@ export class CaptureRecorder {
               // phantom turn (the same bug class as event lines vs turns).
               if (rec.eventType === 'archive-overflow') continue;
               if (rec.eventType === 'http-exchange') {
-                streamEvents.push(rec as HttpExchangeEvent);
+                const ev = CaptureRecorder.normalizeArchivedEvent(rec as Record<string, unknown>);
+                if (ev) streamEvents.push(ev);
                 if (rec.apiKey && rec.apiKey.id && !seenKeys.has(String(rec.apiKey.id))) {
                   seenKeys.set(String(rec.apiKey.id), {
                     id: String(rec.apiKey.id),
@@ -1248,12 +1263,15 @@ export class CaptureRecorder {
       try {
         const obj = JSON.parse(raw) as Record<string, unknown>;
         if (obj.eventType === 'http-exchange') {
-          const ev = obj as unknown as HttpExchangeEvent;
+          const ev = CaptureRecorder.normalizeArchivedEvent(obj);
+          if (!ev) continue;
           deriveCompletionTokens(ev);
           events.push(ev);
         }
-        // cap_xxx entries (turn-centric) are skipped — the console reads
-        // those via /api/admin/capture/:date/:file (readRecords path).
+        // Legacy turn-snapshot lines (`cap_…`, written by the retired
+        // record()) are skipped here: they are not HTTP-exchange events and
+        // carry no request id, so they cannot join a turn. The raw export
+        // endpoint still serves such archives verbatim.
       } catch {
         // Corrupt/partial line — skip, never fail the whole read.
       }
@@ -1261,11 +1279,51 @@ export class CaptureRecorder {
     }
     return { events, fileTruncated, fileBytes, windowBytes };
   }
+  /**
+   * One boundary normalization for archive lines written before ADR-0021:
+   * those files carry the wire vocabulary (`spanId` / `traceId`) and no
+   * `requestId`. Mapping them here keeps the DOMAIN model single-vocabulary —
+   * no reader downstream sees two spellings. A legacy file has no turn id, so
+   * its caller correlation value becomes the join key: exactly the behaviour
+   * (and the ambiguity) those archives had when they were written. Removable
+   * once capture retention has passed the cutover date.
+   *
+   * A line carrying NEITHER a request id nor a caller value is corrupt (the
+   * writer always stamped one of them): return `null` so the caller skips it —
+   * keying every such line on `''` would merge unrelated turns.
+   */
+  private static normalizeArchivedEvent(obj: Record<string, unknown>): HttpExchangeEvent | null {
+    if (typeof obj.requestId === 'string' && obj.requestId && typeof obj.exchangeId === 'string') {
+      return obj as unknown as HttpExchangeEvent;
+    }
+    const clientRequestId = typeof obj.clientRequestId === 'string' && obj.clientRequestId
+      ? obj.clientRequestId
+      : typeof obj.traceId === 'string' && obj.traceId
+        ? obj.traceId
+        : undefined;
+    const requestId = typeof obj.requestId === 'string' && obj.requestId
+      ? obj.requestId
+      : clientRequestId;
+    if (!requestId) return null;
+    const exchangeId = typeof obj.exchangeId === 'string'
+      ? obj.exchangeId
+      : typeof obj.spanId === 'string'
+        ? obj.spanId
+        : '';
+    return {
+      ...obj,
+      exchangeId,
+      requestId,
+      ...(clientRequestId ? { clientRequestId } : {}),
+      sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : '',
+    } as unknown as HttpExchangeEvent;
+  }
+
 
   /**
    * Read HTTP exchange events from one archive file, newest `limit` events
    * in chronological order. Returns events + a `turns` summary that
-   * groups the events by `traceId` (spanId-aware) so the console can
+   * groups the events by `requestId` (exchangeId-aware) so the console can
    * render them as logical turns. The underlying file is also bounded at
    * readWindowBytes() (pathologically large archives are tailed; the tail is
    * what matters). `bodies='none'` strips wire bodies for metadata-first
@@ -1341,7 +1399,7 @@ export class CaptureRecorder {
     void windowBytes;
     const windowComplete = !fileTruncated;
 
-    // Turn boundaries are structural (direction/phase/traceId), so this first
+    // Turn boundaries are structural (direction/phase/requestId), so this first
     // pass only exists to locate the page; the stamps backfilled below do not
     // change it, which is why the indices stay valid for the second pass.
     const groups = CaptureRecorder.groupEventsIntoTurns(events);
@@ -1422,22 +1480,27 @@ export class CaptureRecorder {
   }
 
   /**
-   * Read one turn's FULL wire bodies by the id of any of its events (the
-   * console passes the client-request event id). The metadata-first console
-   * flow fetches the heavy bodies here when a turn is opened. Returns null
-   * when the id is unknown or falls outside the read window.
+   * Read one turn's FULL wire bodies. The key is the turn id (`requestId`,
+   * what the console row carries and every React key uses); an EVENT id
+   * (`evt_…`) is accepted too for deep links, since a turn is a set of
+   * events and either id names it unambiguously. Returns null when the key
+   * is unknown or falls outside the read window.
    */
   public async readTurn(
     date: string,
     file: string,
-    eventId: string
+    turnOrEventId: string
   ): Promise<{ turn: CaptureTurnSummary } | null> {
     const { events } = await this.readWindowEvents(date, file);
-    const anchor = events.find(e => e.id === eventId);
+    // Event id first (exact, cheap); then the turn id, which selects the
+    // request event so the prompt backfill below starts from the same floor.
+    const anchor =
+      events.find(e => e.id === turnOrEventId) ??
+      events.find(e => e.requestId === turnOrEventId);
     if (!anchor) return null;
-    // Group the WHOLE window, not just the anchor's trace: the prompt
+    // Group the WHOLE window, not just the anchor's turn: the prompt
     // staleness decision compares against the session's previous client
-    // request, so a trace-only subset would re-show the resent prompt in the
+    // request, so a request-only subset would re-show the resent prompt in the
     // drawer. Grouping is metadata-only — the bodies ride on the same objects.
     // Legacy archives carry `promptSummary` without its staleness basis —
     // derive it from the still-attached bodies before grouping. The pass
@@ -1447,10 +1510,11 @@ export class CaptureRecorder {
     CaptureRecorder.backfillPromptPositions(events, [anchor]);
     const allTurns = CaptureRecorder.groupEventsIntoTurns(events);
     CaptureRecorder.numberTurns(allTurns);
-    const turn = allTurns.find(t =>
-      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse].some(
-        e => e?.id === eventId
-      )
+    const turn = allTurns.find(
+      t =>
+        t.requestId === anchor.requestId ||
+        [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]
+          .some(e => e?.id === anchor.id)
     );
     return turn ? { turn } : null;
   }
@@ -1689,9 +1753,9 @@ export class CaptureRecorder {
    * resent prompt in the drawer (its predecessor sits in the previous shard).
    * The stitched timeline is exact — it groups all fragments together.
    */
-  public async readTurnStitched(date: string, file: string, eventId: string): Promise<{ turn: CaptureTurnSummary } | null> {
+  public async readTurnStitched(date: string, file: string, turnOrEventId: string): Promise<{ turn: CaptureTurnSummary } | null> {
     for (const f of this.conversationFragments(date, file)) {
-      const result = await this.readTurn(f.date, f.file, eventId);
+      const result = await this.readTurn(f.date, f.file, turnOrEventId);
       if (result) return result;
     }
     return null;
@@ -1873,28 +1937,33 @@ export class CaptureRecorder {
   }
 
   /**
-   * Group a flat list of HTTP exchange events into logical turns via
-   * `traceId`. Each turn joins its four events: client-direction events
-   * pair by `spanId`, upstream events attach to the trace's active turn
-   * (last-write-wins across failover hops). SpanId-aware because a client
-   * that sends a CONSTANT `x-request-id` on every request would otherwise
-   * collapse the whole session into one turn.
+   * Group a flat list of HTTP exchange events into logical turns by the
+   * gateway-owned `requestId` (ADR-0021) — the events of ONE client request.
+   * Each turn joins its four events: client-direction events pair by
+   * `exchangeId`, upstream events attach to the request's active turn
+   * (last-write-wins across failover hops). Legacy archives are normalized to
+   * this shape at the reader boundary, so there is exactly one key here.
    * Pure function — exported for unit tests.
    */
   public static groupEventsIntoTurns(events: HttpExchangeEvent[]): CaptureTurnSummary[] {
-    const byTrace = new Map<string, CaptureTurnSummary[]>();
-    /** traceId → the turn upstream events should attach to (the latest). */
-    const activeByTrace = new Map<string, CaptureTurnSummary>();
+    const byTurn = new Map<string, CaptureTurnSummary[]>();
+    /** requestId → the turn upstream events should attach to (the latest). */
+    const activeByTurn = new Map<string, CaptureTurnSummary>();
     /** sessionId → message count of the session's previous client request; the
      *  floor a turn's `promptLastUserIdx` must reach to be a NEW user message. */
     const lastMessageCount = new Map<string, number>();
 
     const newTurn = (ev: HttpExchangeEvent): CaptureTurnSummary => {
-      const t: CaptureTurnSummary = { traceId: ev.traceId, sessionId: ev.sessionId, model: ev.model };
-      let list = byTrace.get(ev.traceId);
+      const t: CaptureTurnSummary = {
+        requestId: ev.requestId,
+        ...(ev.clientRequestId ? { clientRequestId: ev.clientRequestId } : {}),
+        sessionId: ev.sessionId,
+        model: ev.model,
+      };
+      let list = byTurn.get(ev.requestId);
       if (!list) {
         list = [];
-        byTrace.set(ev.traceId, list);
+        byTurn.set(ev.requestId, list);
       }
       list.push(t);
       return t;
@@ -1903,10 +1972,10 @@ export class CaptureRecorder {
     for (const ev of events) {
       let t: CaptureTurnSummary | undefined;
       if (ev.direction === 'client' && ev.phase === 'request') {
-        // A client request ALWAYS starts a new turn — even when the traceId
-        // was already seen (a client sending a constant x-request-id on
-        // every request gets one turn per request, not one giant merged
-        // turn with last-write-wins fields).
+        // A client request ALWAYS starts a new turn — the turn id is the
+        // gateway's per-request id, so two requests that share a caller
+        // trace id stay two turns; each gets its own row instead of one
+        // giant merged turn with last-write-wins fields.
         t = newTurn(ev);
         t.clientRequest = ev;
         // The stamped prompt is the body's LAST user message — for a
@@ -1930,13 +1999,12 @@ export class CaptureRecorder {
           && ev.promptLastUserIdx < prevCount;
         t.promptSummary = resent ? undefined : ev.promptSummary;
         if (ev.promptMessageCount !== undefined) lastMessageCount.set(ev.sessionId, ev.promptMessageCount);
-        activeByTrace.set(ev.traceId, t);
+        activeByTurn.set(ev.requestId, t);
       } else if (ev.direction === 'client' && ev.phase === 'response') {
-        // Pair by spanId with the matching client request (newest first —
-        // the common case is the latest turn of the trace).
-        const list = byTrace.get(ev.traceId) ?? [];
+        // Pair by exchangeId with the matching client request (newest first —
+        const list = byTurn.get(ev.requestId) ?? [];
         for (let i = list.length - 1; i >= 0; i--) {
-          if (list[i].clientRequest?.spanId === ev.spanId) {
+          if (list[i].clientRequest?.exchangeId === ev.exchangeId) {
             t = list[i];
             break;
           }
@@ -1949,10 +2017,10 @@ export class CaptureRecorder {
         // leg's last-write-wins below never overwrites it. The decision layer fires
         // BEFORE candidate execution, so a plain upstream merge would erase
         // it and the console would only ever show one upstream call.
-        t = activeByTrace.get(ev.traceId);
+        t = activeByTurn.get(ev.requestId);
         if (!t) {
           t = newTurn(ev);
-          activeByTrace.set(ev.traceId, t);
+          activeByTurn.set(ev.requestId, t);
         }
         if (ev.phase === 'request') t.decisionRequest = ev;
         else t.decisionResponse = ev;
@@ -1960,10 +2028,10 @@ export class CaptureRecorder {
         // Upstream events attach to the trace's active turn. Failover hops
         // overwrite each other (last-write-wins) — the final attempt is
         // the one that produced the gateway response.
-        t = activeByTrace.get(ev.traceId);
+        t = activeByTurn.get(ev.requestId);
         if (!t) {
           t = newTurn(ev);
-          activeByTrace.set(ev.traceId, t);
+          activeByTurn.set(ev.requestId, t);
         }
         if (ev.phase === 'request') t.upstreamRequest = ev;
         else t.upstreamResponse = ev;
@@ -1971,7 +2039,7 @@ export class CaptureRecorder {
       if (ev.error && !t.error) t.error = ev.error;
     }
     const all: CaptureTurnSummary[] = [];
-    for (const list of byTrace.values()) all.push(...list);
+    for (const list of byTurn.values()) all.push(...list);
     for (const t of all) {
       if (t.clientRequest && t.gatewayResponse) {
         t.gatewayLatencyMs = t.gatewayResponse.ts - t.clientRequest.ts;

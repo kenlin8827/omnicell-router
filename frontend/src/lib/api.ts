@@ -148,8 +148,8 @@ export interface BreakerInfo {
   provider: string;
   tier?: string;
   state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
-  /** Blast radius of the last trip delivered to this breaker: 'model' | 'credential' | 'pair'. */
-  scope?: 'model' | 'credential' | 'pair';
+  /** Blast radius of the last trip delivered to this breaker: 'model' | 'credential' | 'pair' | 'provider'. */
+  scope?: 'model' | 'credential' | 'pair' | 'provider';
   reason?: string;
   /** Machine-readable trip reason (backend BreakerReasonCode): trigger code on
    *  wrapped/manual trips, cause code on a hard trip. Absent = pre-code trip. */
@@ -185,7 +185,7 @@ export interface BreakerInfo {
  * are materialized by the backend sanitizer on config load. */
 
 /** Blast-radius override for one trip rule ('auto' = keep the diagnosed scope). */
-export type BreakerScopeOverride = 'auto' | 'pair' | 'credential' | 'model';
+export type BreakerScopeOverride = 'auto' | 'pair' | 'credential' | 'model' | 'provider';
 
 /** HALF_OPEN re-trip policy (spec rule #9). */
 export type OnCanaryFailureMode = 'backoff' | 'initial' | 'close';
@@ -201,7 +201,7 @@ export interface BreakerCountingConfig {
   unknownErrors?: BreakerCountingClassRule;
   /** Countedness of 429 has NO toggle (the classifier always counts it); this owns only the no-Retry-After floor. */
   rateLimitErrors?: { minCooldownMs?: number };
-  /** 400/422: default OFF = today's non-penalizing CLIENT_ERROR. No cooldown param — the tripping rule's ladder applies. */
+  /** Request-fault 4xx (by status, not wording): default OFF = non-penalizing CLIENT_ERROR. No cooldown param — the tripping rule's ladder applies. */
   clientErrors?: { enabled?: boolean };
 }
 
@@ -316,6 +316,31 @@ export interface BreakerRulesStatus {
   rules: ResolvedBreakerRules;
 }
 
+/** The classifier's intrinsic, PRE-OVERRIDE disposition for a class (backend
+ *  ClassifierDisposition). Advisory only: the operator's rule switches in block A
+ *  decide the effective disposition, so the console never prints this as truth —
+ *  it only seeds the reference row's "not counted by default" emphasis. */
+export type ClassifierDisposition = 'hard_trip' | 'counted' | 'ignored';
+
+/**
+ * Read-only reference descriptor of the classifier's FIXED mapping (backend
+ * ClassifierTaxonomyEntry). Single-sourced from the gateway's CLASSIFIER_TAXONOMY
+ * and pinned to classify() by a backend test — the console renders it, never
+ * re-declares the behavior. `category` reuses the FailureErrorClass vocabulary
+ * (the auto-detected subset); `defaultScope`/variants reuse BreakerTripScope.
+ */
+export interface ClassifierTaxonomyEntry {
+  category: Exclude<FailureErrorClass, 'MANUAL' | 'TIMEOUT'>;
+  defaultScope: BreakerTripScope;
+  disposition: ClassifierDisposition;
+  countingToggle: boolean;
+  governedBy: string;
+  hostScope?: BreakerTripScope;
+  credentialScope?: BreakerTripScope;
+  conditionalHardTrip?: boolean;
+  marksSuspect?: boolean;
+}
+
 export interface CircuitBreakerPersistenceConfig {
   debounceMs?: number; // breaker-state file flush debounce; default 1000
 }
@@ -349,9 +374,10 @@ export interface CircuitBreakerConfig {
 /**
  * Manual trip/reset granularity — mirrors backend TripScope.
  * 'model' is the legacy whole-model breaker; 'credential' is one credential across the
- * models it can reach; 'pair' is one (model, credential) pair.
+ * models it can reach; 'pair' is one (model, credential) pair; 'provider' is every
+ * tuple of every model of the provider (host-level takedown).
  */
-export type BreakerTripScope = 'model' | 'credential' | 'pair';
+export type BreakerTripScope = 'model' | 'credential' | 'pair' | 'provider';
 
 export interface BreakerScopeResponse {
   status: string;
@@ -401,6 +427,12 @@ export interface GatewayStatusResponse {
      * omit it — the UI then derives live values from the saved config.
      */
     rules?: BreakerRulesStatus;
+    /**
+     * Static read-only reference: the classifier's fixed error-class mapping
+     * (backend CLASSIFIER_TAXONOMY, ADR-0004 §1). Additive: older gateways omit
+     * it and the breaker-rules classifier-reference panel stays hidden.
+     */
+    classifier?: ClassifierTaxonomyEntry[];
   };
   clients: ClientStatus[];
   /**
@@ -636,7 +668,14 @@ export type ReasonParams = Record<string, string | number | boolean>;
 
 // Mirrors backend ExecutionTrace (backend/src/trace/tracker.ts) returned by /api/admin/traces
 export interface TraceRecord {
-  traceId: string;
+  /**
+   * Gateway-owned id of this turn — unique per request, so it is the React
+   * key / row identity. The caller's correlation value lives beside it as
+   * `clientRequestId` and may repeat across rows (ADR-0021).
+   */
+  requestId: string;
+  clientRequestId?: string;
+  /** Gateway conversation entity id (ADR-0002). */
   sessionId: string;
   turnNumber: number;
   timestamp: number;
@@ -668,6 +707,8 @@ export interface TraceRecord {
     ttftMs?: number;
     /** Decode window (first chunk → stream drained) — the decode-TPS denominator; undefined as above. */
     genMs?: number;
+    /** Total time in felt pauses (gaps ≥1 s between chunks carrying output the client received); undefined = no measurable gap. */
+    stalledMs?: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
     failoverOccurred?: boolean;
@@ -866,15 +907,15 @@ export interface CaptureRecord {
 
 /**
  * One HTTP-exchange event (mirrors backend HttpExchangeEvent). The capture
- * pipeline emits 2-4 events per inference turn, all sharing the same
- * `traceId` (OpenTelemetry semantics):
+ * pipeline emits 2-4 events per inference turn:
  *   - direction='client',   phase='request'  — the inbound HTTP request
  *   - direction='client',   phase='response' — gateway → client response
  *   - direction='upstream', phase='request'  — gateway → provider request
  *   - direction='upstream', phase='response' — provider → gateway response
  *
- * Each req/resp pair shares one `spanId`. Console readers join the four
- * events by `traceId`.
+ * Each req/resp pair shares one `exchangeId`. Readers join the four events of
+ * ONE request by `requestId` (the gateway turn id, ADR-0021); `clientRequestId`
+ * is the caller's trace-wide correlation value and may cover several requests.
  */
 export interface WireBody {
   /** Non-UTF-8 payloads fall back to hex (mirrors backend WireBody). */
@@ -897,8 +938,12 @@ export interface HttpExchangeEvent {
   eventType: 'http-exchange';
   direction: 'client' | 'upstream';
   phase: 'request' | 'response';
-  spanId: string;
-  traceId: string;
+  exchangeId: string;
+  clientRequestId?: string;
+  /** Gateway turn id (ADR-0021) — the exact join key. */
+  requestId: string;
+  /** The provider's own response id, when its wire exposes one. */
+  upstreamRequestId?: string;
   sessionId: string;
   /**
    * Deterministic conversation key (content-addressed sha256 of apiKey identity +
@@ -953,7 +998,10 @@ export interface HttpExchangeEvent {
 }
 
 export interface CaptureTurn {
-  traceId: string;
+  /** Gateway turn id (ADR-0021) — the join key. */
+  requestId: string;
+  /** Caller correlation value, carried from the client-request event. */
+  clientRequestId?: string;
   sessionId: string;
   model: string;
   /**
@@ -1031,6 +1079,14 @@ export interface SessionRecord {
    */
   entryMode: 'auto' | 'explicit' | 'combo' | 'mixed';
   /**
+   * Which side minted `id`. 'client' = the id was adopted verbatim from the
+   * client (explicit session header, embedded metadata.user_id, request.user or
+   * a vendor x-<app>-session-id header); 'gateway' = the gateway minted it
+   * (cold start / content anchor / alias). Null when no trace records a lookup
+   * type, so the console prints the id alone instead of guessing.
+   */
+  idSource: 'gateway' | 'client' | null;
+  /**
    * Current model = the registered id of the model that actually served this
    * session's last turn, exactly as registered: `provider/model` for
    * catalog/tier-derived models, a bare id for hand-configured ones. Pure
@@ -1076,11 +1132,28 @@ export interface SessionRecord {
   /** Summed end-to-end latency (ms) across the session's traces. Part of the
    *  admin payload; the console renders per-turn latency instead. */
   totalLatencyMs: number;
-  /** Output tokens summed over STREAMED traces only — decode-TPS numerator. */
+  /** Output tokens summed over STREAMED traces only — the output-speed numerator. */
   genOutputTokens: number;
-  /** Summed decode window (ms) over the same streamed traces — decode-TPS
+  /** Summed decode window (ms) over the same streamed traces — output-speed
    *  denominator, paired with genOutputTokens. */
   genMsSum: number;
+  /** Streamed turns that reported a ttftMs — the percentile sample size. */
+  ttftSamples: number;
+  /**
+   * Time to first token over streamed turns, as PERCENTILES (never a mean:
+   * one cold start would dominate a short session). P50 = the typical wait,
+   * P95 = the tail. Undefined when the session never streamed.
+   */
+  ttftP50Ms?: number;
+  ttftP95Ms?: number;
+  /**
+   * Share (0..1) of the summed decode windows the client spent in felt pauses
+   * — gaps ≥1 s between chunks carrying output (text, tool-call or reasoning
+   * deltas), summed per streamed turn. A share, not a maximum: repeated
+   * stutters and one long freeze land on the same scale, and answer length
+   * does not skew it. Undefined when no turn produced a measurable gap.
+   */
+  stallRatio?: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
   /**
@@ -2548,26 +2621,26 @@ export const api = {
   },
 
   /**
-   * Scope-aware trip for 'credential' / 'pair'. Deliberately NOT
+   * Scope-aware trip for 'credential' / 'pair' / 'provider'. Deliberately NOT
    * routed through tripBreaker(): the legacy 'model' scope keeps its exact
    * body and its legacy non-throwing reply handling. Unlike the model scope,
-   * an credential/pair trip with nothing to take down answers 400 — thrown here
+   * a scoped trip with nothing to take down answers 400 — thrown here
    * so the console reports it as a failure instead of a fake success.
    */
   async tripBreakersScoped(
     scope: Exclude<BreakerTripScope, 'model'>,
-    target: { model?: string; credential?: string; reason?: string; cooldownMs?: number }
+    target: { model?: string; credential?: string; provider?: string; reason?: string; cooldownMs?: number }
   ): Promise<BreakerScopeResponse> {
     return postBreakerScope('/api/admin/health/circuit-breakers/trip', { scope, ...target });
   },
 
   /**
-   * Credential/pair reset. Resetting a credential never lifts its
+   * Credential/pair/provider reset. Resetting a credential never lifts its
    * SUSPECT flag (administrative state — see clearSuspectCredential below).
    */
   async resetBreakersScoped(
     scope: Exclude<BreakerTripScope, 'model'>,
-    target: { model?: string; credential?: string }
+    target: { model?: string; credential?: string; provider?: string }
   ): Promise<BreakerScopeResponse> {
     return postBreakerScope('/api/admin/health/circuit-breakers/reset', { scope, ...target });
   },
@@ -2905,6 +2978,7 @@ export const api = {
   async getFailureEvents(params?: {
     model?: string;
     provider?: string;
+    keyHashPrefix?: string;
     errorClass?: string;
     role?: string;
     limit?: number;
@@ -2912,6 +2986,7 @@ export const api = {
     const qs = new URLSearchParams();
     if (params?.model) qs.set('model', params.model);
     if (params?.provider) qs.set('provider', params.provider);
+    if (params?.keyHashPrefix) qs.set('keyHashPrefix', params.keyHashPrefix);
     if (params?.errorClass) qs.set('errorClass', params.errorClass);
     if (params?.role) qs.set('role', params.role);
     if (params?.limit !== undefined) qs.set('limit', String(params.limit));
@@ -4038,12 +4113,13 @@ export const api = {
   },
 
   /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads).
-   *  stitched=1 lets a cross-midnight turn resolve from its other date-dir shard. */
-  async getCaptureTurn(date: string, file: string, eventId: string, stitched = true): Promise<CaptureTurn | null> {
+   *  The key is the turn id (`requestId`) or any of its event ids; stitched=1
+   *  lets a cross-midnight turn resolve from its other date-dir shard. */
+  async getCaptureTurn(date: string, file: string, turnId: string, stitched = true): Promise<CaptureTurn | null> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
         file
-      )}/turn?id=${encodeURIComponent(eventId)}${stitched ? '&stitched=1' : ''}`
+      )}/turn?id=${encodeURIComponent(turnId)}${stitched ? '&stitched=1' : ''}`
     );
     if (!res.ok) return null;
     const json = await res.json();
@@ -4760,8 +4836,10 @@ export interface RateLimitEvent {
 /**
  * One failed upstream MODEL CALL — mirrors backend `FailureEvent`
  * (GET /api/admin/failure-events). `role` splits serving-pool attempts from
- * decision wire calls; repeats of the same model+provider+errorClass+role fold
- * into one entry (`count`, `lastTs`) within the 10s coalescing window.
+ * decision wire calls; `keyHashPrefix` names the credential that served the
+ * failed call (the pair axis — absent = no attributable credential). Repeats
+ * of the same model+provider+credential+errorClass+role fold into one entry
+ * (`count`, `lastTs`) within the 10s coalescing window.
  */
 export type FailureEventRole = 'serving' | 'l2-decision' | 'probe';
 
@@ -4785,6 +4863,8 @@ export interface FailureEvent {
   count: number;
   model: string;
   provider: string;
+  /** Display-safe credential prefix, ADR-0006 key-hash identity. */
+  keyHashPrefix?: string;
   errorClass: FailureErrorClass;
   status?: number;
   message: string;

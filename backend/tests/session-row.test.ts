@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { boundCredentialLabelOf, currentModelOf, projectSessionEntity, deriveSessionEntryMode, promptTurnsOf, sessionTitleOf } from '../src/session/session-row.js';
+import { boundCredentialLabelOf, currentModelOf, projectSessionEntity, deriveSessionEntryMode, promptTurnsOf, sessionIdSourceOf, sessionTitleOf } from '../src/session/session-row.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 import type { ExecutionTrace } from '../src/trace/tracker.js';
 
@@ -125,6 +125,44 @@ describe('sessionTitleOf (console title, entity-independent)', () => {
 describe('deriveSessionEntryMode (re-exported from the row contract)', () => {
   it('classifies an empty trace list as mixed (safe fallback)', () => {
     assert.equal(deriveSessionEntryMode([]), 'mixed');
+  });
+});
+
+// The console cannot infer this from the id: a client-named id is adopted
+// verbatim, so a 36-char UUID and a gateway `sess_` + 16 hex both land in the
+// same column. These guards keep the marker truthful across both row shapes.
+describe('sessionIdSourceOf (who minted the id)', () => {
+  const lookupTrace = (sessionLookupType: string | undefined): ExecutionTrace =>
+    ({ routing: { sessionLookupType } }) as unknown as ExecutionTrace;
+
+  it('client-named layers → client', () => {
+    for (const layer of ['explicit_header', 'embedded_user_id', 'request_user', 'header_fallback']) {
+      assert.equal(sessionIdSourceOf([lookupTrace(layer)]), 'client', layer);
+    }
+  });
+
+  it('gateway-minted / gateway-resolved layers → gateway', () => {
+    // The content anchors, conversation key and client_ref alias all resolve an
+    // id the GATEWAY minted — an alias binds a gateway session, never renames it.
+    for (const layer of ['cold_start', 'prefix_chain', 'tail_anchor', 'conversation_key', 'client_ref']) {
+      assert.equal(sessionIdSourceOf([lookupTrace(layer)]), 'gateway', layer);
+    }
+  });
+
+  it('reads the BIRTH lookup, not a later anchor re-resolution', () => {
+    // Turn 2 re-resolved the same client-named id through the content chain;
+    // reading the latest turn would flip the marker to 'gateway'.
+    const traces = [lookupTrace('explicit_header'), lookupTrace('prefix_chain')];
+    assert.equal(sessionIdSourceOf(traces), 'client');
+  });
+
+  it('the entity birth lookup outranks the traces (the ring can evict the birth turn)', () => {
+    assert.equal(sessionIdSourceOf([lookupTrace('prefix_chain')], 'embedded_user_id'), 'client');
+  });
+
+  it('no recorded lookup → undefined (console prints the id alone)', () => {
+    assert.equal(sessionIdSourceOf([]), undefined);
+    assert.equal(sessionIdSourceOf([lookupTrace(undefined)]), undefined);
   });
 });
 

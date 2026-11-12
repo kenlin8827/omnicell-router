@@ -34,17 +34,37 @@ export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 
-/** Packaged gateway port — mirrors backend `OCR_DEFAULT_PORT`
+/** Packaged gateway port — mirrors backend `DEFAULT_GATEWAY_PORT`
+ *  (backend/src/config/defaults.ts), which in turn matches `OCR_DEFAULT_PORT`
  *  (backend/src/cli/clients/base.ts). Last-resort fallback for console
  *  snippets when neither the status poll nor the page origin can report the
- *  real listening port (config.yaml `port` is the source of truth; its
- *  in-code default 3000 applies to bare `bun run dev` only). */
+ *  real listening port (config.yaml `port` is the source of truth). */
 export const DEFAULT_GATEWAY_PORT = 4000;
+
+/** `bun run dev` listen port — mirrors backend `DEFAULT_DEV_PORT`. The Vite
+ *  proxy falls back to this when `PORT` is absent (running the frontend alone),
+ *  so the console never proxies to a port the dev backend does not own.
+ *  Update both copies in the same commit. */
+export const DEFAULT_DEV_PORT = 4700;
 
 /** `circuitBreaker.activeProbing.intervalMs` backend default — mirrors backend
  *  `DEFAULT_PROBE_INTERVAL_MS` (backend/src/utils/probe-interval.ts, shared by
  *  the health prober and the quota prober). */
 export const DEFAULT_PROBE_INTERVAL_MS = 60_000;
+
+/** Longest 429 Retry-After wait the in-place retry path may sleep out — mirrors
+ *  backend `DEFAULT_MAX_RATE_LIMIT_WAIT_MS` (backend/src/resilience/circuit-breaker.ts).
+ *  The breaker's hard/counted boundary borrows it (trip.rateLimit.hardTripAboveMs). */
+export const DEFAULT_MAX_RATE_LIMIT_WAIT_MS = 2000;
+
+/** Floor of any Retry-After-derived 429 cooldown — mirrors backend
+ *  `RATE_LIMIT_MIN_COOLDOWN_MS` (backend/src/resilience/circuit-breaker.ts). */
+export const RATE_LIMIT_MIN_COOLDOWN_MS = 1000;
+
+/** Cap of the no-Retry-After 429 counted floor — mirrors backend
+ *  `RATE_LIMIT_NO_RETRY_AFTER_CAP_MS` (backend/src/resilience/circuit-breaker.ts).
+ *  The effective floor is `min(this, initialCooldownMs)`. */
+export const RATE_LIMIT_NO_RETRY_AFTER_CAP_MS = 60_000;
 
 /** Upper bound for a per-credential spread weight — mirrors backend
  *  `CREDENTIAL_WEIGHT_MAX` (backend/src/config/defaults.ts). Integers >= 1;

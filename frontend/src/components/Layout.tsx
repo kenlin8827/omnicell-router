@@ -55,7 +55,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   { id: 'grp-access', headingKey: 'nav.grpAccess', shortKey: 'nav.shortAccess', icon: Cable, items: [
     { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
     { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
-    { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
+    { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone },
     { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
   ] },
   { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: Server, items: [
@@ -66,10 +66,10 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
   ] },
   { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
-    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
-    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
+    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
     { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [

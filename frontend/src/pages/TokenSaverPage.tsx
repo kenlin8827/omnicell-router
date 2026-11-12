@@ -118,7 +118,7 @@ export const TokenSaverPage: React.FC = () => {
       await api.saveConfig({ compression });
       toast.success(t('tokenSaver.savedNotice'));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setSaving(false);
     }
@@ -172,7 +172,7 @@ export const TokenSaverPage: React.FC = () => {
     borderRadius: '6px',
     background: 'var(--btn-bg)',
     border: '1px solid var(--divider)',
-    color: 'var(--text)',
+    color: 'var(--text-main)',
     cursor: sidecarBusy ? 'wait' : 'pointer',
   };
 
@@ -214,7 +214,7 @@ export const TokenSaverPage: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ fontSize: 'var(--text-md)', color: 'var(--text)', marginBottom: '6px' }}>
+      <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-main)', marginBottom: '6px' }}>
         {t('tokenSaver.subtitle')}
       </div>
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '16px' }}>

@@ -75,6 +75,7 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.magenta}ocr setup codex${C.reset}         Hook Codex / OpenAI-compatible CLI to local OCR gateway
   ${C.magenta}ocr setup pi${C.reset}            Hook Pi coding agent (models.json provider) to local OCR gateway
   ${C.magenta}ocr setup dsh${C.reset}           Hook DeepSeek Harness (web profile patch) to local OCR gateway
+  ${C.magenta}ocr setup workbuddy${C.reset}     Hook WorkBuddy (models.json custom models) to local OCR gateway
   ${C.magenta}ocr setup cursor-proxy${C.reset}  Hook Cursor through the OCR forward proxy (writes the launchers)
   ${C.magenta}ocr setup qoder-proxy${C.reset}   Hook Qoder (desktop + qodercli) through the OCR forward proxy
 
@@ -89,6 +90,7 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown codex${C.reset}      Unhook Codex and restore standard settings
   ${C.yellow}ocr teardown pi${C.reset}         Unhook Pi and remove the OCR provider entry
   ${C.yellow}ocr teardown dsh${C.reset}        Unhook DeepSeek Harness and remove the OCR provider route
+  ${C.yellow}ocr teardown workbuddy${C.reset}  Unhook WorkBuddy and remove the OCR custom-model rows
   ${C.yellow}ocr teardown cursor-proxy${C.reset} Unhook Cursor and remove the OCR launchers
   ${C.yellow}ocr teardown qoder-proxy${C.reset}  Unhook Qoder and remove both OCR launchers
 

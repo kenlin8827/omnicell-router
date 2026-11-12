@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
 import type {
   CaptureKeyIdentity,
@@ -7,6 +6,7 @@ import type {
   RawWireCapture,
   WireBody,
 } from '../capture/recorder.js';
+import { mintExchangeId } from './request-identity.js';
 import type { ApiKeyConfig } from '../config/types.js';
 import { redactProxyUrl } from '../utils/proxy.js';
 
@@ -244,10 +244,12 @@ export function setClientExchangeContext(req: FastifyRequest, ctx: ClientExchang
  *  onClientExchange callback). */
 export interface ClientExchangeContext {
   recorder: CaptureRecorder;
-  /** Stable id shared by the request event AND its matching response event. */
-  spanId: string;
-  /** Stable id shared by all four events of one inference turn. */
-  traceId: string;
+  /** Gateway-minted id shared by the request event AND its response event. */
+  exchangeId: string;
+  /** Caller's correlation value, when it sent one (correlation only). */
+  clientRequestId?: string;
+  /** Gateway-owned turn id shared by all four events of one request. */
+  requestId: string;
   /** Filled by `emitClientRequest` and finalized by `emitGatewayResponse`. */
   pending: {
     sessionId: string;
@@ -359,11 +361,14 @@ export function emitClientRequest(args: {
   apiKey?: CaptureKeyIdentity;
   body: unknown;
   sessionId: string;
-  traceId: string;
+  /** Caller correlation value (see HttpExchangeEvent.clientRequestId). */
+  clientRequestId?: string;
+  /** Gateway turn id (see HttpExchangeEvent.requestId). */
+  requestId: string;
   model: string;
   conversationKey?: string;
 }): ClientExchangeContext {
-  const spanId = cryptoRandom();
+  const exchangeId = mintExchangeId();
   const apiKey = args.apiKey ?? captureKeyIdentity(args.req);
   // MITM client legs render ABSOLUTE-FORM so the archive shows the authority
   // the client dialed: a plain-HTTP proxy request already arrives with an
@@ -396,8 +401,9 @@ export function emitClientRequest(args: {
     eventType: 'http-exchange',
     direction: 'client',
     phase: 'request',
-    spanId,
-    traceId: args.traceId,
+    exchangeId,
+    ...(args.clientRequestId ? { clientRequestId: args.clientRequestId } : {}),
+    requestId: args.requestId,
     sessionId: args.sessionId,
     model: args.model,
     status: 'ok',
@@ -407,8 +413,9 @@ export function emitClientRequest(args: {
   });
   return {
     recorder: args.recorder,
-    spanId,
-    traceId: args.traceId,
+    exchangeId,
+    ...(args.clientRequestId ? { clientRequestId: args.clientRequestId } : {}),
+    requestId: args.requestId,
     pending: {
       sessionId: args.sessionId,
       model: args.model,
@@ -473,8 +480,9 @@ export function emitGatewayResponse(
     eventType: 'http-exchange',
     direction: 'client',
     phase: 'response',
-    spanId: ctx.spanId,
-    traceId: ctx.traceId,
+    exchangeId: ctx.exchangeId,
+    ...(ctx.clientRequestId ? { clientRequestId: ctx.clientRequestId } : {}),
+    requestId: ctx.requestId,
     sessionId: ctx.pending.sessionId,
     model: ctx.pending.model,
     status: reply.statusCode >= 200 && reply.statusCode < 400 ? 'ok' : 'error',
@@ -483,15 +491,6 @@ export function emitGatewayResponse(
     ...(ctx.pending.conversationKey ? { conversationKey: ctx.pending.conversationKey } : {}),
     ...(ctx.pending.apiKey ? { apiKey: ctx.pending.apiKey } : {}),
   });
-}
-
-function cryptoRandom(): string {
-  // node:crypto is available on every supported runtime (Bun + Node).
-  // 8 bytes (16 hex chars) — 64 bits of entropy is sufficient for
-  // per-exchange span uniqueness within a single inference turn; collision
-  // risk across turns is negligible at the gateway's request volume.
-  // Fallback to Math.random is intentionally NOT used.
-  return crypto.randomBytes(8).toString('hex');
 }
 
 /**
@@ -508,11 +507,13 @@ export function emitUpstreamRequest(args: {
   requestHeaders: Record<string, string>;
   requestBody: string;
   sessionId: string;
-  traceId: string;
+  /** Caller correlation value (see HttpExchangeEvent.clientRequestId). */
+  clientRequestId?: string;
+  /** Gateway turn id (see HttpExchangeEvent.requestId). */
+  requestId: string;
   model: string;
-  /** Optional pre-mint spanId to share with the response event. */
-  spanId?: string;
-  /** Raw proxy URL when routed via proxy; redacted to origin before persisting. */
+  /** Optional pre-minted exchangeId to share with the response event. */
+  exchangeId?: string;
   proxy?: string;
   /** Non-default call label (e.g. 'l2-decision') so UI/log can tell the leg apart. */
   purpose?: HttpExchangeEvent['purpose'];
@@ -521,13 +522,14 @@ export function emitUpstreamRequest(args: {
   /** Deterministic conversation key of the owning turn (see HttpExchangeEvent.conversationKey). */
   conversationKey?: string;
 }): string {
-  const spanId = args.spanId ?? cryptoRandom();
+  const exchangeId = args.exchangeId ?? mintExchangeId();
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
     direction: 'upstream',
     phase: 'request',
-    spanId,
-    traceId: args.traceId,
+    exchangeId,
+    ...(args.clientRequestId ? { clientRequestId: args.clientRequestId } : {}),
+    requestId: args.requestId,
     sessionId: args.sessionId,
     model: args.model,
     status: 'ok',
@@ -549,14 +551,14 @@ export function emitUpstreamRequest(args: {
     ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });
-  return spanId;
+  return exchangeId;
 }
 
 /**
  * Emit the upstream response event (provider → gateway, response side).
  * Called by the provider adapter immediately after `await res.text()`
  * succeeds (or fails) — independent of any other event. Pairs with the
- * matching `emitUpstreamRequest` call (same `spanId`).
+ * matching `emitUpstreamRequest` call (same `exchangeId`).
  */
 export function emitUpstreamResponse(args: {
   recorder: CaptureRecorder;
@@ -569,9 +571,12 @@ export function emitUpstreamResponse(args: {
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
   sessionId: string;
-  traceId: string;
+  /** Caller correlation value (see HttpExchangeEvent.clientRequestId). */
+  clientRequestId?: string;
+  /** Gateway turn id (see HttpExchangeEvent.requestId). */
+  requestId: string;
   model: string;
-  spanId: string;
+  exchangeId: string;
   routing?: HttpExchangeEvent['routing'];
   error?: string;
   /** Non-default call label (e.g. 'l2-decision') so UI/log can tell the leg apart. */
@@ -581,12 +586,20 @@ export function emitUpstreamResponse(args: {
   /** Deterministic conversation key of the owning turn (see HttpExchangeEvent.conversationKey). */
   conversationKey?: string;
 }): void {
+  // The provider's own id for this call, taken from the wire when it exposes
+  // one (`x-request-id` is the de-facto provider convention); absent means the
+  // provider does not name its calls — never invented, so a row can be joined
+  // to upstream logs only when the upstream itself supplies it.
+  const upstreamRequestId =
+    args.responseHeaders.get('x-request-id') ?? args.responseHeaders.get('request-id') ?? undefined;
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
     direction: 'upstream',
     phase: 'response',
-    spanId: args.spanId,
-    traceId: args.traceId,
+    exchangeId: args.exchangeId,
+    ...(args.clientRequestId ? { clientRequestId: args.clientRequestId } : {}),
+    requestId: args.requestId,
+    ...(upstreamRequestId ? { upstreamRequestId } : {}),
     sessionId: args.sessionId,
     model: args.model,
     status: args.status >= 200 && args.status < 400 ? 'ok' : 'error',

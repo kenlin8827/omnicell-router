@@ -107,7 +107,7 @@ function stubResult(modelUsed: string): ExecutionResult {
     fallbackOccurred: false,
     latencyMs: 1,
     sessionId: 'sess-contract',
-    traceId: 'trace-contract',
+    requestId: 'trace-contract',
   };
 }
 

@@ -1444,7 +1444,7 @@ curl ${gwBaseV1}/systemone \\
                   margin: 0,
                   padding: '12px',
                   borderRadius: '8px',
-                  background: 'var(--bg-inset, rgba(128,128,128,0.08))',
+                  background: 'var(--well-bg)',
                   border: '1px solid var(--divider)',
                   fontSize: 'var(--text-xs)',
                   lineHeight: 'var(--leading-snug)',

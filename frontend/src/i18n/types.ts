@@ -73,6 +73,7 @@ export interface TranslationDict {
     clear: string;
     close: string;
     copy: string;
+    dismissToast: string;
     requiredFields: string;
   };
   pagination: {
@@ -156,7 +157,7 @@ export interface TranslationDict {
     factFailover: string;
     factThinking: string;
     factBreaker: string;
-    factTrace: string;
+    factRequest: string;
     factSession: string;
     factTokens: string;
   };
@@ -611,6 +612,7 @@ export interface TranslationDict {
     pmEffortXhigh: string;
     pmEffortMax: string;
     pmBodyInvalid: string;
+    pmModelNotFound: string;
     pmAdd: string;
     pmRemoveVariant: string;
     pmModalities: string;
@@ -766,7 +768,14 @@ export interface TranslationDict {
     credentialZoomColName: string;
     credentialZoomColKey: string;
     credentialZoomColStatus: string;
+    /** Short action-column headers for the fixed-width zoom table. The full
+     *  action name stays on the button's title / aria-label and on the header
+     *  tooltip, so these only need to fit one narrow column. */
     credentialZoomColToggle: string;
+    credentialZoomColPin: string;
+    credentialZoomColTest: string;
+    credentialZoomColLimits: string;
+    credentialZoomColDisconnect: string;
     credentialsAllDisabledTip: string;
     /** Full explanation behind the ⊘ icon (the two-word badge answered nothing). */
     credentialNotRoutableTip: string;
@@ -946,6 +955,7 @@ hiddenBadge: string;
     scopeModel: string;
     scopeCredential: string;
     scopePair: string;
+    scopeProvider: string;
     tripScopeTip: string;
     tripScopeSuccess: string;
     resetScope: string;
@@ -953,6 +963,8 @@ hiddenBadge: string;
     resetScopeNone: string;
     resetCredentialConfirmTitle: string;
     resetCredentialConfirmDesc: string;
+    resetProviderConfirmTitle: string;
+    resetProviderConfirmDesc: string;
     /** The (model × credential) matrix grid. */
     singlePoint: string;
     singlePointTip: string;
@@ -969,6 +981,7 @@ hiddenBadge: string;
     modelLevel: string;
     resetModelLevel: string;
     resetCredentialScope: string;
+    resetProviderScope: string;
     resetModelScopeSuccess: string;
     emptyMatrix: string;
     emptyMatrixCta: string;
@@ -1022,6 +1035,7 @@ hiddenBadge: string;
     rScopePair: string;
     rScopeCredential: string;
     rScopeModel: string;
+    rScopeProvider: string;
     markSuspect: string;
     markSuspectWarn: string;
     /** Shown in the auth row's params cell when disposition is "ignore": the
@@ -1093,6 +1107,28 @@ hiddenBadge: string;
     kDebounce: string;
     kHardBoundary: string;
     kHardBoundaryNote: string;
+    /** Read-only classifier reference dialog (ADR-0004 §1) — class → trigger →
+     *  default blast radius. Deliberately no disposition copy: block A owns it. */
+    clsTitle: string;
+    clsBadge: string;
+    clsHint: string;
+    clsThTrigger: string;
+    clsThRadius: string;
+    /** Wire term for the "inherit the class default" scope. Identical in every
+     *  locale — config says `auto` (like kindAuto / modelAuto), so it is a key
+     *  rather than a literal baked into the sentence above. */
+    clsAutoScope: string;
+    clsTriggerQuota: string;
+    clsTriggerAuth: string;
+    clsTriggerRate: string;
+    clsTriggerClient: string;
+    clsTriggerServer: string;
+    clsTriggerUnknown: string;
+    /** Variant notes; clsHostNote/clsCredNote interpolate a {scope} label. */
+    clsHostNote: string;
+    clsCredNote: string;
+    clsClientNote: string;
+    clsToggle: string;
   };
   usage: {
     sessionTitle: string;
@@ -1121,14 +1157,41 @@ hiddenBadge: string;
     refresh: string;
     thTokensIn: string;
     thTokensOut: string;
-    /** Sessions table: merged In/Out column header (one column, two stacked rows). */
+    /** Sessions table: volume column header (In/Out/Cached/Hit 2×2). */
     thTokens: string;
+    /**
+     * Sessions table: speed column header — industry TTFT/TPS pair
+     * (avg first-token wait over decode rate), streamed turns only.
+     */
+    thSpeed: string;
+    /** Tooltip for thSpeed: what the two stacked figures mean. */
+    thSpeedTip: string;
+    /** Session-detail summary card: its fold header. */
+    summaryTitle: string;
     /** Sessions table: labels inside the merged tokens cell (2×2 stat grid). */
     tokenIn: string;
     tokenOut: string;
     tokenCached: string;
     tokenHit: string;
-    tokenRate: string;
+    /** Percentile qualifier appended to the TTFT value (e.g. "(P95)"); the
+     *  metric name itself is the row label, never the percentile. */
+    speedP95: string;
+    /** Label for the output-speed row (tokens ÷ decode window). */
+    speedOutput: string;
+    /** Short phase label for the decode-rate figure in the summary card. */
+    speedDecode: string;
+    /** Label for the stall-ratio figure (share of decode time spent in felt pauses). */
+    speedStallRatio: string;
+    /** Tooltip for speedStallRatio: what counts as output and as a pause, why a share, and what "—" means. */
+    speedStallRatioTip: string;
+    /** Tooltip for the TTFT P50 row: percentile definition + sample size. */
+    ttftP50Tip: string;
+    /** Tooltip for the P95 row: why the tail is the number that matters. */
+    ttftP95Tip: string;
+    /** Tooltip for the output-speed row: window boundary + OpenRouter caveat. */
+    speedOutputTip: string;
+    /** Sample-size suffix, e.g. "n = {n} streamed turns". */
+    samples: string;
     thTokensCached: string;
     cacheHitRate: string;
     thTokensTotal: string;
@@ -1177,15 +1240,12 @@ hiddenBadge: string;
     tierNameUltra: string;
     entryModeCombo: string;
     entryModeComboHint: string;
-    entryModeExplicitHint: string;
     thSwitches: string;
     thTurns: string;
     /** Tooltip: turns = distinct user prompts; tool-loop requests excluded */
     thTurnsTip: string;
     thRequests: string;
     thActive: string;
-    thDetail: string;
-    thCapture: string;
     jumpToCapture: string;
     switchTitle: string;
     switchHint: string;
@@ -1196,6 +1256,8 @@ hiddenBadge: string;
     switchEmpty: string;
     switchLoadFailed: string;
     switchProviderTip: string;
+    /** Legend beside the shared provider chip: rows below omit that prefix. */
+    switchPrefixLegend: string;
     filterPlaceholder: string;
     apiKeyAll: string;
     hideInternal: string;
@@ -1204,6 +1266,15 @@ hiddenBadge: string;
     internalBadge: string;
     /** Badge tooltip — the reserved `ocr-internal:` prefix explains the classification. */
     internalBadgeTip: string;
+    /** Minting-side markers for the session id itself (SessionIdSource in
+     *  backend/src/session/session-row.ts): 'gateway' when the gateway minted
+     *  it, 'client' when an earlier identity layer adopted a client value. */
+    idSourceGateway: string;
+    idSourceClient: string;
+    /** Tooltips: gateway = cold start / content anchor; client = explicit
+     *  session header, embedded user id or request.user adopted verbatim. */
+    idSourceGatewayTip: string;
+    idSourceClientTip: string;
     filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;
@@ -1326,11 +1397,11 @@ hiddenBadge: string;
     resetFailed: string;
     upstream429Cooldown: string;
   };
-  /** Model-call failure observability page: per-model aggregation strip +
-   *  the failure_events ledger (serving + decision emitters). */
+  /** Model-call failure observability page: per-(model × credential) pair
+   *  aggregation strip + the failure_events ledger (serving + decision emitters). */
   failuresPage: {
     eventsTitle: string;
-    byModelTitle: string;
+    byPairTitle: string;
     shownOf: string;
     auto: string;
     autoHint: string;
@@ -1365,10 +1436,24 @@ hiddenBadge: string;
     colTime: string;
     colRole: string;
     colModel: string;
+    colCredential: string;
+    detailClose: string;
+    detailOpen: string;
+    detailTitle: string;
+    detailCopyJson: string;
+    detailCopied: string;
+    detailCopyFailed: string;
+    detailDelete: string;
+    detailOccurrences: string;
+    detailProvider: string;
+    detailFirstSeen: string;
+    detailLastSeen: string;
+    colActions: string;
     colClass: string;
     colStatus: string;
     colMessage: string;
     colSession: string;
+    credentialUnattributed: string;
     cardTotal: string;
     cardLastSeen: string;
     copyMessage: string;
@@ -1436,6 +1521,9 @@ hiddenBadge: string;
       monthly: string;
       rolling: string;
       credits: string;
+      /** Org/team credit package (Qoder Teams: `orgResourcePackage`) — the
+       *  second pool behind the account's own quota. */
+      orgPool: string;
       balance: string;
       sessionHours: string;
       session5h: string;
@@ -1571,6 +1659,8 @@ hiddenBadge: string;
     outboundModel: string;
     tabClientRequest: string;
     tabGatewayResponse: string;
+    /** Tooltip of the caller correlation id chip in the capture drawer (ADR-0021). */
+    clientRequestId: string;
     tabUpstreamRequest: string;
     tabUpstreamResponse: string;
     tabDecisionRequest: string;
@@ -2085,6 +2175,20 @@ hiddenBadge: string;
     none: string;
     teardownBtn: string;
     setupBtn: string;
+    /** Launcher hooks (cursor/qoder) only publish a start script — no client
+     *  state is taken over until `ocr <client>` actually launches it. Their
+     *  buttons and status badge use these launcher-scoped labels instead of
+     *  the config/service-env takeover vocabulary. */
+    launcherTeardownBtn: string;
+    launcherSetupBtn: string;
+    launcherHookedBadge: string;
+    launcherNotHookedBadge: string;
+    /** Launch-command block shown once a launcher is ready: the primary
+     *  command is the actionable next step (not the launcher script path). */
+    launchCmdLabel: string;
+    launchCmdQuit: string;
+    launchCmdAlt: string;
+    launchCmdDesktop: string;
     slotMain: string;
     slotOpus: string;
     slotSonnet: string;
@@ -2099,6 +2203,9 @@ hiddenBadge: string;
     apiKeyRequired: string;
     apiKeyUnusable: string;
     gatewayKeyRequired: string;
+    /** WorkBuddy's config dir differs between editions; the card names the
+     *  resolved file and the merge/reopen semantics. */
+    workbuddyHint: string;
     versionOk: string;
     versionBelow: string;
     proxyErrForwardProxyDisabled: string;
@@ -2123,7 +2230,9 @@ hiddenBadge: string;
     gatewayModelList: string;
     gatewayDefaultModel: string;
     gatewayForceModel: string;
+    gatewayCatalogPrefix: string;
     gatewaySaveDropped: string;
+    gatewayAutoSaveHint: string;
     gatewayCatalogRestartNotice: string;
     gatewayAdvancedSettings: string;
     gatewayAppendSummary: string;
@@ -2240,6 +2349,10 @@ hiddenBadge: string;
     tabHook: string;
     tabProxy: string;
     tabManual: string;
+    /** Header count badge: hooked clients out of the roster visible on the
+     *  active access-mode tab (launcher-proxy clients count as a group for the
+     *  proxy tab; manual hookup has no roster and shows nothing). */
+    hookedCount: string;
     manualKeyPh: string;
     manualTest: string;
     manualTestOk: string;

@@ -453,3 +453,112 @@ describe('(c) invariant 3: the gate never mutates the diagnosis handed onward', 
     expect(diag.shouldTripBreaker).toBe(false); // the gate adjusted a COPY, never the original
   });
 });
+
+// ─── (d) rule-driven scope overrides change the blast radius (effectiveScope) ──
+//
+// The sanitizer test pins that a `scope: provider` value SURVIVES loading; these
+// pin that the resolved override actually STEERS the fan-out at runtime — and
+// that a rule override outranks the diagnosis scope (ADR-0004 §1: "after
+// attribution, never before"). `auto` defers to the diagnosis; an explicit
+// value widens or narrows it.
+
+describe('(d) rule-driven scope overrides steer the blast radius', () => {
+  const chain = ['K1', 'K2'];
+  const tupleScope = (manager: CircuitBreakerManager, m: string, k: string) =>
+    manager.snapshotsWithPairs().find((s) => s.modelId === m && s.keyHashPrefix === k)?.scope;
+
+  it('consecutiveFailures.scope=provider WIDENS a counted 5xx (auto would be model) to every model of the provider', () => {
+    const { manager } = makeManager({ trip: { consecutiveFailures: { scope: 'provider' } } }, { failureThreshold: 2 });
+    manager.registerModel(model('p/y', 'p'));
+    manager.registerModel(model('q/z', 'q')); // other provider must stay untouched
+
+    // NET_503 carries NO tripScope — under `auto` it would cool only p/x.
+    manager.recordFailureScoped('p/x', NET_503, 'p', 'K1', chain);
+    manager.recordFailureScoped('p/x', NET_503, 'p', 'K1', chain);
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/y', 'K2')?.getState()).toBe('OPEN'); // widened to the sibling model
+    expect(tupleScope(manager, 'p/y', 'K2')).toBe('provider');
+    expect(manager.getPairBreaker('q/z', 'K1')).toBeUndefined(); // provider boundary holds
+  });
+
+  it('consecutiveFailures.scope=model NARROWS a host-level provider diagnosis to the failing model (rule outranks diagnosis)', () => {
+    const { manager } = makeManager({ trip: { consecutiveFailures: { scope: 'model' } } }, { failureThreshold: 2 });
+    manager.registerModel(model('p/y', 'p'));
+    const hostDown: ErrorDiagnosis = { ...NET_503, tripScope: 'provider' };
+
+    manager.recordFailureScoped('p/x', hostDown, 'p', 'K1', chain);
+    manager.recordFailureScoped('p/x', hostDown, 'p', 'K1', chain);
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(tupleScope(manager, 'p/x', 'K1')).toBe('model');
+    expect(manager.getPairBreaker('p/y', 'K1')).toBeUndefined(); // narrowed: sibling NOT cooled
+    expect(manager.getPairBreaker('p/y', '')).toBeUndefined();
+  });
+
+  it('consecutiveFailures.scope=pair NARROWS a model-scope 5xx to the attributed tuple only', () => {
+    const { manager } = makeManager({ trip: { consecutiveFailures: { scope: 'pair' } } }, { failureThreshold: 2 });
+    const modelScope: ErrorDiagnosis = { ...NET_503, tripScope: 'model' };
+
+    manager.recordFailureScoped('p/x', modelScope, 'p', 'K1');
+    manager.recordFailureScoped('p/x', modelScope, 'p', 'K1');
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(tupleScope(manager, 'p/x', 'K1')).toBe('pair');
+    expect(manager.getPairBreaker('p/x', 'K2')).toBeUndefined(); // no model-wide fan-out
+    expect(manager.getPairBreaker('p/x', '')).toBeUndefined(); // sentinel untouched
+  });
+
+  it('quota.scope=provider widens a 402 HARD trip across the provider (no threshold needed)', () => {
+    const { manager } = makeManager({ trip: { quota: { scope: 'provider' } } });
+    manager.registerModel(model('p/y', 'p'));
+    manager.registerModel(model('q/z', 'q'));
+
+    manager.recordFailureScoped('p/x', QUOTA_402, 'p', 'K1', ['K1']);
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN'); // hard trip, immediate
+    expect(manager.getPairBreaker('p/y', 'K1')?.getState()).toBe('OPEN');
+    expect(tupleScope(manager, 'p/y', 'K1')).toBe('provider');
+    expect(manager.getPairBreaker('q/z', 'K1')).toBeUndefined();
+  });
+
+  it('a pair/credential override WITHOUT attribution degenerates to model (never an undefined-key tuple)', () => {
+    const { manager } = makeManager({ trip: { consecutiveFailures: { scope: 'pair' } } }, { failureThreshold: 2 });
+    // No selection prefix and no diagnosis stamp: there is no pair to scope into.
+    manager.recordFailureScoped('p/x', NET_503, 'p');
+    manager.recordFailureScoped('p/x', NET_503, 'p');
+
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN'); // safe model-sentinel degeneration
+    expect(tupleScope(manager, 'p/x', '')).toBe('model');
+    expect(manager.snapshotsWithPairs().every((s) => s.keyHashPrefix !== 'undefined')).toBe(true);
+  });
+
+  it('failureRate.scope=provider steers the rate-window detector too (the second statistical slot)', () => {
+    const { manager } = makeManager({
+      trip: {
+        consecutiveFailures: { enabled: false }, // isolate the rate-window detector
+        failureRate: { enabled: true, scope: 'provider', windowSize: 3 },
+      },
+    });
+    manager.registerModel(model('p/y', 'p'));
+
+    for (let i = 0; i < 3; i++) manager.recordFailureScoped('p/x', NET_503, 'p', 'K1', chain);
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', 'K1')?.getSnapshot().reasonCode).toBe('breaker.rate_window');
+    expect(manager.getPairBreaker('p/y', 'K2')?.getState()).toBe('OPEN');
+    expect(tupleScope(manager, 'p/y', 'K2')).toBe('provider');
+  });
+
+  it('auto defers to the diagnosis: a host-level provider scope still fans out provider-wide', () => {
+    const { manager } = makeManager({ trip: { consecutiveFailures: { scope: 'auto' } } }, { failureThreshold: 2 });
+    manager.registerModel(model('p/y', 'p'));
+    const hostDown: ErrorDiagnosis = { ...NET_503, tripScope: 'provider' };
+
+    manager.recordFailureScoped('p/x', hostDown, 'p', 'K1', chain);
+    manager.recordFailureScoped('p/x', hostDown, 'p', 'K1', chain);
+
+    expect(manager.getPairBreaker('p/y', 'K2')?.getState()).toBe('OPEN');
+    expect(tupleScope(manager, 'p/y', 'K2')).toBe('provider');
+  });
+});

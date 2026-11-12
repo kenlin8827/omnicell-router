@@ -69,7 +69,7 @@ function stubResult(modelUsed: string, response: unknown): ExecutionResult {
     fallbackOccurred: false,
     latencyMs: 1,
     sessionId: 'sess-1',
-    traceId: 'trace-1',
+    requestId: 'trace-1',
   };
 }
 
@@ -190,7 +190,7 @@ describe('chat surface — frozen §1.3 order', () => {
     for (const key of [
       'X-OCR-Tier', 'X-OCR-Layer', 'X-OCR-Model', 'X-OCR-Failover', 'X-OCR-Failover-Attempts',
       'X-OCR-Failover-Path', 'X-OCR-InPlace-Retries', 'X-OCR-Breaker-State', 'X-OCR-Session-ID',
-      'X-OCR-Session-Ratchet', 'X-OCR-Session-Lookup', 'X-OCR-Trace-ID',
+      'X-OCR-Session-Ratchet', 'X-OCR-Session-Lookup', 'X-OCR-Request-ID',
       'X-OCR-Latency-MS',
     ]) {
       assert.ok(key in headers, `base header ${key} must be staged`);

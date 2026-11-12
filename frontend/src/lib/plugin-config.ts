@@ -131,6 +131,8 @@ export interface GatewayCfgDraft extends GatewayVocabulary {
   model: string;
   forceModel: boolean;
   catalogReplace: boolean;
+  /** Namespace the appended OCR entries under `ocr/` (append mode only). */
+  catalogPrefix: boolean;
   /** UI-level mode; `gatewayModeValue` maps `none` to the plugin's spelling. */
   modelListMode: 'none' | 'custom' | 'follow';
   models: string[];
@@ -154,6 +156,7 @@ export function parseGatewayCfg(
     model: String(values.model ?? 'auto').replace(/^ocr\//, ''),
     forceModel: values.forceModel === true,
     catalogReplace: values.catalogReplace === true,
+    catalogPrefix: values.catalogPrefix === true,
     modelListMode,
     models: Array.isArray(values.models)
       ? values.models.map((id) => String(id).replace(/^ocr\//, ''))

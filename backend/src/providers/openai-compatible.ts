@@ -98,8 +98,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // is a config error and surfaces as a clear 400 from the upstream.
 
     // Event-stream emit BEFORE the fetch fires — independent of the response.
-    // Pairs with the upstream-response event below via `spanId`.
-    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+    // Pairs with the upstream-response event below via `exchangeId`.
+    const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
       url,
       method: 'POST',
       requestHeaders: headers,
@@ -123,7 +123,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       // never see a dangling request event without a matching response.
       const res = await withUpstreamFailureGuard(
         upstreamEventContext,
-        spanId,
+        exchangeId,
         url,
         'POST',
         () => proxiedFetch(url, {
@@ -144,7 +144,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         } catch (err: any) {
           emitUpstreamFailureOnce(upstreamEventContext, {
             model: model.upstreamModel,
-            spanId,
+            exchangeId,
             url,
             method: 'POST',
             status: res.status,
@@ -157,7 +157,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -186,7 +186,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       } catch (err: any) {
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -197,7 +197,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       }
       emitUpstreamResponseOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,
@@ -243,7 +243,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // Event-stream emit BEFORE the fetch fires — same discipline as
     // createCompletion above, so a streamed turn is captured as a full
     // request/response pair instead of a dangling request line.
-    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+    const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
       url,
       method: 'POST',
       requestHeaders: headers,
@@ -263,7 +263,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     try {
       res = await withUpstreamFailureGuard(
         upstreamEventContext,
-        spanId,
+        exchangeId,
         url,
         'POST',
         () =>
@@ -287,7 +287,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         } catch (err: any) {
           emitUpstreamFailureOnce(upstreamEventContext, {
             model: model.upstreamModel,
-            spanId,
+            exchangeId,
             url,
             method: 'POST',
             status: res.status,
@@ -300,7 +300,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -360,10 +360,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
         };
         /** Exactly one response event per streamed exchange (cp-failfast: paired, never dangling). */
         const capture = (error?: string): void => {
-          if (captured || !spanId) return;
+          if (captured || !exchangeId) return;
           captured = true;
           const base = {
-            spanId,
+            exchangeId,
             url,
             method: 'POST',
             status: res.status,

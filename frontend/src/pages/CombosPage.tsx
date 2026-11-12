@@ -530,7 +530,7 @@ export const CombosPage: React.FC = () => {
         setExpandedCards(new Set()); // deletes can shift indices — drop per-card expansion
         return true;
       } catch (err: any) {
-        toast.error('Failed: ' + err.message);
+        toast.error(t('common.failed') + err.message);
         return false;
       } finally {
         setSaving(false);

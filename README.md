@@ -135,6 +135,7 @@ ocr setup openclaw      # Hook OpenClaw to route via OCR
 ocr setup omp           # Hook OMP (oh-my-pi) to route via OCR
 ocr setup kimi          # Hook Kimi Code CLI to route via OCR
 ocr setup grok          # Hook Grok CLI to route via OCR
+ocr setup workbuddy     # Hook WorkBuddy (models.json custom models) to route via OCR
 ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + qoder-gateway plugin
 
 # Launch through the OCR-managed launchers (after setup)
@@ -184,12 +185,12 @@ OmniCellRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints
 2. Enable `OpenAI API Key` and input any placeholder string (e.g., `sk-ocr`).
 3. Set `Override OpenAI Base URL` to:
    ```
-   http://127.0.0.1:3000/v1
+   http://127.0.0.1:4000/v1
    ```
 4. In the model selector, add and select the virtual model: `auto`.
 
 ### 2. Claude Code / OpenCode CLI / Chatbox
-1. **API Base URL**: `http://127.0.0.1:3000/v1`
+1. **API Base URL**: `http://127.0.0.1:4000/v1`
 2. **API Key**: any `sk-ocr-*` key created on the console /keys page (or any placeholder if the gateway runs keyless).
 3. **Model**: `auto` (or explicit tier aliases like `plus`).
 
@@ -198,7 +199,7 @@ OmniCellRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:3000/v1",
+    base_url="http://127.0.0.1:4000/v1",
     api_key="sk-ocr"
 )
 
@@ -217,7 +218,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://127.0.0.1:3000/v1',
+  baseURL: 'http://127.0.0.1:4000/v1',
   apiKey: 'sk-ocr',
 });
 
@@ -310,16 +311,20 @@ The arbitration pipeline executes in four disciplined steps:
 
 ### 1. HTTP Response Headers
 Every proxied response carries diagnostic metadata:
-* `X-OCR-Trace-ID`: Unique per-turn execution trace identifier.
+* `X-OCR-Request-ID`: Gateway-owned id of THIS request (`req_…`). Unique and immutable — the console row identity and the only id the trace endpoints resolve. The caller's own correlation value is never echoed back.
 * `X-OCR-Tier`: Executed model tier (`lite`, `plus`, `pro`, `ultra`).
+* `X-OCR-Layer`: Executed cascade layer (`layer0`, `layer1`, `layer2`).
 * `X-OCR-Model`: Exact physical model invoked upstream.
 * `X-OCR-Thinking-Effort`: Applied reasoning budget (`low`, `medium`, `high`, `max`).
 * `X-OCR-Thinking-Source`: Origin of the reasoning effort decision (`client`, `l2-decision`, `entry`, `escalation`, `default`).
 * `X-OCR-Failover`: Whether upstream failover occurred (`true` / `false`).
 * `X-OCR-Failover-Attempts`: Number of candidate attempts before success.
+* `X-OCR-Failover-Path`: Comma-separated `provider:model@tier` chain walked before success.
+* `X-OCR-In-Place-Retries`: Same-candidate retry count for the committed attempt.
 * `X-OCR-Breaker-State`: Health state of the invoked candidate (`CLOSED`, `HALF_OPEN`).
-* `X-OCR-Session-ID`: Resolved zero-header session identifier.
+* `X-OCR-Session-ID`: Resolved gateway session id for this conversation.
 * `X-OCR-Session-Ratchet`: Whether the monotonic ratchet locked the tier (`true` / `false`).
+* `X-OCR-Session-Lookup`: Which resolution layer named the session (`explicit_header`, `embedded_user_id`, `request_user`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`).
 * `X-OCR-Cost-USD`: Calculated cost for the execution turn.
 * `X-OCR-Saved-USD`: Net savings compared to the baseline tier.
 * `X-OCR-Latency-MS`: Gateway execution latency in milliseconds.
@@ -339,7 +344,7 @@ Every proxied response carries diagnostic metadata:
 | `/api/admin/route-entries/:hash` | `DELETE` | Removes an entry from the experience table. |
 | `/api/admin/failure-events` | `GET` | Queries upstream model call failure events with optional filters. |
 | `/api/admin/failure-events/clear` | `POST` | Clears in-memory ring and durable SQLite failure events ledger. |
-| `/api/admin/health/circuit-breakers/reset` | `POST` | Manually resets tripped circuit breakers across `model`, `credential`, or `pair` scopes. |
+| `/api/admin/health/circuit-breakers/reset` | `POST` | Manually resets tripped circuit breakers across `model`, `credential`, `pair`, or `provider` scopes. |
 | `/v1/sessions` | `GET` | Lists active multi-turn sessions, pinned models, and turn counts. |
 | `/v1/traces` | `GET` | Paginated query of recent request execution traces. |
 | `/v1/metrics` | `GET` | Real-time FinOps metrics, tier distribution, and cumulative cost savings. |

@@ -53,7 +53,7 @@ const BASE13 = [
   'x-ocr-session-id',
   'x-ocr-session-ratchet',
   'x-ocr-session-lookup',
-  'x-ocr-trace-id',
+  'x-ocr-request-id',
   'x-ocr-latency-ms',
 ];
 const THINKING3 = ['x-ocr-thinking-requested', 'x-ocr-thinking-actual', 'x-ocr-thinking-degraded'];
@@ -154,7 +154,7 @@ function stubResult(effortRow: boolean): unknown {
     fallbackOccurred: false,
     latencyMs: 1,
     sessionId: 'sess-1',
-    traceId: 'trace-1',
+    requestId: 'trace-1',
     // Non-empty everywhere else, mirroring what the mockMode orchestrator
     // produces on the Fastify leg: the builder's '' defaults for missing
     // failoverPath/sessionLookupType get header-dropped by Bun's http on

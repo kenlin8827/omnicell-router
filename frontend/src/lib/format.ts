@@ -29,12 +29,16 @@ export const shortId = (id: string, n = 16): string =>
   id.length <= n ? id : `${id.slice(0, n)}…`;
 
 /**
- * Decode throughput (industry TPS): completion tokens per second of the
- * generation window — first forwarded chunk → stream fully drained. TTFT,
- * prefill and any failed attempts before the commit are excluded, matching
- * OpenRouter's throughput definition ("output tokens per second after
- * generation starts"). Null when the turn never streamed (genMs undefined) —
- * callers render '—', never a synthesized number.
+ * Output speed (industry "tokens per second", the inverse of TPOT): completion
+ * tokens per second of the decode window — first forwarded chunk → stream
+ * fully drained. TTFT, prefill and any failed attempts before the commit are
+ * excluded, which is the boundary OTel's `time_per_output_token` and
+ * Artificial Analysis' per-query speed use. Note OpenRouter's `Throughput` is
+ * a WIDER window (request sent → last token — TTFT included), so its figure
+ * reads lower for the same model and the two must never be compared directly;
+ * the console states this in the column tooltip.
+ * Null when the turn never streamed (genMs undefined) — callers render '—',
+ * never a synthesized number.
  */
 export const decodeRate = (outputTokens: number, genMs: number | undefined): number | null =>
   outputTokens > 0 && typeof genMs === 'number' && genMs > 0 ? (outputTokens / genMs) * 1000 : null;
@@ -44,6 +48,21 @@ export const formatRate = (rate: number | null): string =>
   rate === null ? '—' : rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
 
 /**
+ * Output-speed label for a token-per-second figure. Kept separate from
+ * `formatRate` because this one is a serving metric shown next to latencies:
+ * a 4-digit value would overflow its column, so ≥1000 collapses to 1.2K.
+ * The value is output tokens ÷ decode window (first streamed chunk → stream
+ * end) — OTel's `time_per_output_token` inverted, and the same "per query,
+ * after the first token" boundary Artificial Analysis uses for its
+ * agentic/system load tests. OpenRouter's `Throughput` is a WIDER window
+ * (request sent → last token) and therefore reads lower for the same model;
+ * the tooltip states this so nobody compares the two directly.
+ */
+const SPEED_COMPACT = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+export const formatSpeed = (rate: number | null): string =>
+  rate === null ? '—' : rate >= 1000 ? SPEED_COMPACT.format(rate) : formatRate(rate);
+
+/**
  * Recorded-cost display: 2–6 fraction digits with trailing zeros trimmed
  * ($0.000123 per-request precise, $2.50 aggregate-clean). en-US fixed so
  * the grouping stays stable across locales (labels are translated, numbers
@@ -51,6 +70,21 @@ export const formatRate = (rate: number | null): string =>
  */
 export const formatCost = (usd: number): string =>
   '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+
+/**
+ * Dense-table cost label. Same intent as `formatCost`, but capped at the width
+ * a fixed column can actually hold: sub-dollar figures keep their 6 decimals
+ * (that is where precision carries information — $0.000123 vs $0.000124), and
+ * dollar-and-above figures stop at 2, because `$267.469544` (11 glyphs) is
+ * wider than any sane cost column and the excess decimals never matter at that
+ * magnitude. Pair with `formatCost` in the cell's tooltip for the exact value.
+ */
+export const formatCostCompact = (usd: number): string =>
+  '$' +
+  usd.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: Math.abs(usd) >= 1 ? 2 : 6,
+  });
 
 /**
  * Smart-unit latency label for stats displays: sub-second stays in ms,

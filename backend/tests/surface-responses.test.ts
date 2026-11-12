@@ -60,7 +60,7 @@ function stubResult(modelUsed: string, response: unknown, sessionId = 'sess-1'):
     fallbackOccurred: false,
     latencyMs: 1,
     sessionId,
-    traceId: 'trace-1',
+    requestId: 'trace-1',
   };
 }
 

@@ -326,7 +326,7 @@ export const ProviderModelsDialog: React.FC<{
           : t('op.pmAutofillMatched', { id: matchedId })
       );
     } catch (err: any) {
-      toast.error(`Failed: ${err.message}`);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setFilling(false);
     }
@@ -914,7 +914,7 @@ export const ProviderModelsDialog: React.FC<{
             overflowY: 'auto',
             padding: '12px 14px',
             borderRadius: 10,
-            background: 'var(--card-bg, #111113)',
+            background: 'var(--card-bg)',
             border: '1px solid var(--card-border)',
             boxShadow: '0 16px 40px rgba(0,0,0,0.55)',
             fontSize: 'var(--text-xs)',

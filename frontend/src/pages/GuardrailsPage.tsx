@@ -32,11 +32,12 @@ const TRIP_PRESETS: { label: string; ms: number }[] = [
 ];
 
 /** Trip scopes in panel order — 'model' first = today's default flow. */
-const TRIP_SCOPES: BreakerTripScope[] = ['model', 'credential', 'pair'];
+const TRIP_SCOPES: BreakerTripScope[] = ['model', 'credential', 'pair', 'provider'];
 const SCOPE_LABEL_KEY: Record<BreakerTripScope, string> = {
   model: 'guardrails.scopeModel',
   credential: 'guardrails.scopeCredential',
   pair: 'guardrails.scopePair',
+  provider: 'guardrails.scopeProvider',
 };
 
 /** Header stat pill: `.badge` with the EN-oriented casing/spacing reset — these
@@ -285,7 +286,7 @@ export const GuardrailsPage: React.FC = () => {
       toast.success(t('guardrails.resetSuccess'));
       void refreshStatus?.(); // immediate card refresh — don't wait for the 3s poll
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setIsResetting(false);
     }
@@ -307,7 +308,8 @@ export const GuardrailsPage: React.FC = () => {
   };
 
   /** Trip from a pair card at the panel's chosen scope. The card supplies the
-   *  model and credential targets — the panel only picks the blast radius. */
+   *  targets — model/credential for the narrow scopes, provider for the
+   *  host-level takedown; the panel only picks the blast radius. */
   const handleTrip = async (c: PairCard, cooldownMs: number) => {
     const scope = tripScope;
     setTrippingKey(c.key);
@@ -317,7 +319,8 @@ export const GuardrailsPage: React.FC = () => {
         await api.tripBreaker(c.modelId, opts);
         toast.success(t('guardrails.tripSuccess', { model: c.modelId }));
       } else {
-        const res = await api.tripBreakersScoped(scope, { model: c.modelId, credential: c.prefix, ...opts });
+        const target = scope === 'provider' ? { provider: c.provider } : { model: c.modelId, credential: c.prefix };
+        const res = await api.tripBreakersScoped(scope, { ...target, ...opts });
         toast.success(t('guardrails.tripScopeSuccess', { scope: t(SCOPE_LABEL_KEY[scope]), n: res.affected ?? 0 }));
       }
       loadStoreCredentials(true); // takedown badges / roster refresh
@@ -330,24 +333,36 @@ export const GuardrailsPage: React.FC = () => {
     }
   };
 
-  /** Scoped reset from an open panel — the undo door for an credential/pair trip. */
+  /** Scoped reset from an open panel — the undo door for a credential/pair/provider trip. */
   const handleResetScope = async (c: PairCard) => {
     const scope = tripScope;
     if (scope === 'model') return;
     // A credential-wide reset clears every pair breaker of this key for the
     // active provider (manager.resetByScope 'credential' skips other providers'
     // pairs sharing the same prefix) — count from the same predicate it walks.
-    if (scope === 'credential') {
-      const mine = pairBreakers.filter(
-        (p) => p.keyHashPrefix === c.prefix && p.provider === c.provider,
-      );
+    // Provider-wide resets get the same confirm door: both are bulk undos.
+    if (scope === 'credential' || scope === 'provider') {
+      const mine =
+        scope === 'provider'
+          ? pairBreakers.filter((p) => p.provider === c.provider)
+          : pairBreakers.filter((p) => p.keyHashPrefix === c.prefix && p.provider === c.provider);
       const ok = await confirmDialog({
-        title: t('guardrails.resetCredentialConfirmTitle', { credential: c.prefix }),
-        description: t('guardrails.resetCredentialConfirmDesc', {
-          total: mine.length,
-          open: mine.filter((p) => p.state === 'OPEN').length,
-          half: mine.filter((p) => p.state === 'HALF_OPEN').length,
-        }),
+        title:
+          scope === 'provider'
+            ? t('guardrails.resetProviderConfirmTitle', { provider: c.provider })
+            : t('guardrails.resetCredentialConfirmTitle', { credential: c.prefix }),
+        description:
+          scope === 'provider'
+            ? t('guardrails.resetProviderConfirmDesc', {
+                total: mine.length,
+                open: mine.filter((p) => p.state === 'OPEN').length,
+                half: mine.filter((p) => p.state === 'HALF_OPEN').length,
+              })
+            : t('guardrails.resetCredentialConfirmDesc', {
+                total: mine.length,
+                open: mine.filter((p) => p.state === 'OPEN').length,
+                half: mine.filter((p) => p.state === 'HALF_OPEN').length,
+              }),
         danger: true,
         confirmLabel: t('guardrails.resetScope'),
       });
@@ -355,7 +370,8 @@ export const GuardrailsPage: React.FC = () => {
     }
     setResettingScope(true);
     try {
-      const res = await api.resetBreakersScoped(scope, { model: c.modelId, credential: c.prefix });
+      const target = scope === 'provider' ? { provider: c.provider } : { model: c.modelId, credential: c.prefix };
+      const res = await api.resetBreakersScoped(scope, target);
       const n = res.resetCount ?? 0;
       if (n > 0) {
         toast.success(t('guardrails.resetScopeSuccess', { n }));
@@ -372,9 +388,10 @@ export const GuardrailsPage: React.FC = () => {
   /**
    * Recover a card AT THE SCOPE IT WAS TRIPPED WITH (symmetric with the trip):
    * the tuple's recorded `scope` label picks the undo —
-   *   'model'      -> reset every tuple of the model (恢复模型级熔断)
-   *   'credential' -> reset every tuple of (provider, credential) (恢复凭证熔断)
+   *   'model'      -> reset every tuple of the model (model-level recovery)
+   *   'credential' -> reset every tuple of (provider, credential)
    *   'pair'       -> reset exactly this (model × credential) tuple
+   *   'provider'   -> reset every tuple of every model of the provider
    * A model-mirror card (chain-less sentinel) resets the model's tuples.
    */
   const handleRecoverPair = async (c: PairCard) => {
@@ -384,6 +401,9 @@ export const GuardrailsPage: React.FC = () => {
       if (c.snapSource === 'model-mirror' || scope === 'model') {
         await api.resetBreakers(c.modelId);
         toast.success(t('guardrails.resetModelScopeSuccess', { model: c.modelId }));
+      } else if (scope === 'provider') {
+        const res = await api.resetBreakersScoped('provider', { provider: c.provider });
+        toast.success(t('guardrails.resetScopeSuccess', { n: res.resetCount ?? 0 }));
       } else if (scope === 'credential') {
         // Aim at the SNAP's own tuple key — a sentinel-backed single-credential
         // card carries the store prefix, but the trip lives on the '' tuple.
@@ -537,7 +557,7 @@ export const GuardrailsPage: React.FC = () => {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 'var(--font-semibold)', color: 'var(--text)' }} title={c.unmatched ? t('guardrails.unmatchedHint') : undefined}>
+          <span style={{ fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }} title={c.unmatched ? t('guardrails.unmatchedHint') : undefined}>
             {c.label}
           </span>
           {singlePoint && c.snap?.state !== 'OPEN' && (
@@ -640,21 +660,21 @@ export const GuardrailsPage: React.FC = () => {
 
         {tripPanelKey === c.key ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '8px', borderTop: '1px dashed var(--card-border)' }}>
-            {c.chainLen >= 2 ? (
-              <span style={{ display: 'inline-flex' }} title={t('guardrails.tripScopeTip')}>
-                <Combobox
-                  value={tripScope}
-                  onChange={(v) => setTripScope(v === 'credential' || v === 'pair' ? v : 'model')}
-                  options={scopeOptions}
-                  style={{ fontSize: 'var(--text-xs)', padding: '4px 8px', width: '160px' }}
-                  panelMinWidth={210}
-                />
-              </span>
-            ) : (
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                {t(SCOPE_LABEL_KEY.model)} · {t('guardrails.singleCredHint')}
-              </div>
-            )}
+            {/* Single-credential columns hide credential/pair (they collapse onto
+                the model tuple) but keep provider — a host-level takedown is a
+                distinct blast radius even for a chainless provider. */}
+            <span
+              style={{ display: 'inline-flex' }}
+              title={c.chainLen >= 2 ? t('guardrails.tripScopeTip') : `${t('guardrails.singleCredHint')} ${t('guardrails.tripScopeTip')}`}
+            >
+              <Combobox
+                value={tripScope}
+                onChange={(v) => setTripScope((TRIP_SCOPES as string[]).includes(v) ? (v as BreakerTripScope) : 'model')}
+                options={c.chainLen >= 2 ? scopeOptions : scopeOptions.filter((o) => o.value === 'model' || o.value === 'provider')}
+                style={{ fontSize: 'var(--text-xs)', padding: '4px 8px', width: '160px' }}
+                panelMinWidth={210}
+              />
+            </span>
             <input
               type="text"
               className="input"
@@ -734,9 +754,11 @@ export const GuardrailsPage: React.FC = () => {
                     ? t('guardrails.resetting')
                     : c.snap?.scope === 'model'
                       ? t('guardrails.resetModelLevel')
-                      : c.snap?.scope === 'credential'
-                        ? t('guardrails.resetCredentialScope')
-                        : t('guardrails.resetOne')}
+                      : c.snap?.scope === 'provider'
+                        ? t('guardrails.resetProviderScope')
+                        : c.snap?.scope === 'credential'
+                          ? t('guardrails.resetCredentialScope')
+                          : t('guardrails.resetOne')}
                 </span>
               </button>
             ) : modelTripped ? (

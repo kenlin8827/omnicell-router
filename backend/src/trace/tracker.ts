@@ -3,10 +3,33 @@ import { getEnvPaths } from '../config/env.js';
 import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { ClientConversationRef } from '../session/session-manager.js';
+import { mintRequestId } from '../observability/request-identity.js';
 import { openTraceStore, type TraceStore } from './persist.js';
+import { percentile } from '../utils/percentile.js';
 
+/**
+ * One request's observation record — the console trace plane.
+ *
+ * Identity (ADR-0021): unqualified names ARE the gateway's own — this service
+ * is the default namespace, so only foreign namespaces are prefixed.
+ *   - `requestId` — names THIS request (unique, immutable, the store key and
+ *     the console row identity);
+ *   - `sessionId` — groups its turns into a conversation;
+ *   - `clientRequestId` — the CALLER's correlation value: optional,
+ *     repeatable, never a key. The caller's conversation alias rides
+ *     `request.clientRef` (ADR-0002's clientRefs), not a second field here.
+ * The wire-level values live in the capture archive; the trace plane holds no
+ * generic "trace id" abstraction.
+ */
 export interface ExecutionTrace {
-  traceId: string;
+  requestId: string;
+  /** Caller's correlation value (W3C trace-id / x-request-id …); may repeat. */
+  clientRequestId?: string;
+  /**
+   * Gateway conversation entity id (ADR-0002) — groups this turn's siblings.
+   * Under `header_fallback` its VALUE is adopted from a vendor header, so it
+   * can coincide with a client string; it is still the resolved entity id.
+   */
   sessionId: string;
   turnNumber: number;
   timestamp: number;
@@ -38,9 +61,10 @@ export interface ExecutionTrace {
     /**
      * Non-sensitive subset of inbound request headers. Three categories:
      *   - userAgent / acceptLanguage: client fingerprint.
-     *   - requestId: cross-service correlation id (x-request-id /
-     *     x-trace-id / x-correlation-id / request-id / traceparent), lets
-     *     console traces be joined with upstream logs / reverse proxies.
+     *   - clientRequestId: the CALLER's correlation value (x-request-id /
+     *     x-trace-id / x-correlation-id / request-id / traceparent) —
+     *     correlation only, may repeat across requests, never a key. Lets
+     *     console rows be joined with upstream logs / reverse proxies.
      * Authorization / x-api-key / cookies / any other credential-bearing
      * header are intentionally omitted. `undefined` when the inbound wire
      * did not expose headers (e.g. internal calls). Forgiving forward-
@@ -50,7 +74,7 @@ export interface ExecutionTrace {
     clientHeaders?: {
       userAgent?: string;
       acceptLanguage?: string;
-      requestId?: string;
+      clientRequestId?: string;
     };
     /**
      * Client-minted conversation id this turn carried (Cursor's agent-wire
@@ -76,6 +100,9 @@ export interface ExecutionTrace {
   execution: {
     modelUsed: string;
     provider: string;
+    // The provider's own call id (`x-request-id`) lives on the capture
+    // archive's upstream-response event, where the wire is in hand — the
+    // trace plane does not carry a second, unpopulated copy.
     /**
      * Display-safe sha256 prefix of the credential that SERVED this turn
      * (same chain-head degeneracy as the ratelimit credential subject, so a
@@ -102,6 +129,15 @@ export interface ExecutionTrace {
      * alongside ttftMs for non-streamed turns.
      */
     genMs?: number;
+    /**
+     * Perceived stall time: total time the committed attempt's stream spent in
+     * gaps of ≥1 s between two consecutive chunks the client received with
+     * visible output (answer text, tool-call fragments or reasoning/thinking
+     * deltas). Measured at the relay, carried through verbatim. Undefined for
+     * non-streamed turns and for streams with fewer than two such chunks;
+     * `0` means a measured stream with no felt pause.
+     */
+    stalledMs?: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
     failoverOccurred?: boolean;
@@ -193,8 +229,9 @@ export interface UsageStatsSummary {
 }
 
 export class TraceTracker {
-  private traces = new Map<string, ExecutionTrace>(); // traceId -> trace
-  private sessionTraceIndex = new Map<string, string[]>(); // sessionId -> traceId[]
+  private traces = new Map<string, ExecutionTrace>(); // requestId -> trace
+  /** sessionId -> requestId[] — one entry per RECORD. */
+  private sessionTraceIndex = new Map<string, string[]>();
   private traceOrder: string[] = []; // Ring buffer order for LRU eviction
   private readonly maxTraces: number;
   // Durable layer (optional): write-through SQLite + boot replay + aged sweep.
@@ -232,8 +269,16 @@ export class TraceTracker {
   /**
    * Record a new request trajectory entry (write-through to the durable
    * store when persistence is enabled).
+   *
+   * The record is keyed by its own `requestId`, so two requests that happen
+   * to share a caller `clientRequestId` stay two records. A producer that
+   * omitted the id (legacy/planted row) and a duplicate key (should be
+   * impossible) both get a fresh id — this store NEVER overwrites one record
+   * with another.
    */
   public record(trace: ExecutionTrace): void {
+    if (!trace.requestId) trace.requestId = mintRequestId();
+    if (this.traces.has(trace.requestId)) trace.requestId = mintRequestId();
     this.insertMemory(trace);
     if (this.store) {
       this.store.insert(trace);
@@ -244,8 +289,18 @@ export class TraceTracker {
     }
   }
 
-  /** Memory-only insert: LRU ring eviction + indexes. Used for boot replay. */
+  /**
+   * Memory-only insert: LRU ring eviction + indexes. Used for boot replay.
+   * Idempotent by `requestId` (a replayed/pending row that is already in the
+   * ring replaces its own object instead of indexing twice).
+   */
   private insertMemory(trace: ExecutionTrace): void {
+    const existing = this.traces.get(trace.requestId);
+    if (existing) {
+      this.traces.set(trace.requestId, trace);
+      return;
+    }
+
     // 1. If buffer reached max capacity, evict oldest
     while (this.traceOrder.length >= this.maxTraces) {
       const oldestId = this.traceOrder.shift();
@@ -263,12 +318,12 @@ export class TraceTracker {
     }
 
     // 2. Insert new trace
-    this.traces.set(trace.traceId, trace);
-    this.traceOrder.push(trace.traceId);
+    this.traces.set(trace.requestId, trace);
+    this.traceOrder.push(trace.requestId);
 
-    // 3. Index by sessionId
+    // 3. Index by sessionId — one entry per request record.
     const sessionList = this.sessionTraceIndex.get(trace.sessionId) || [];
-    sessionList.push(trace.traceId);
+    sessionList.push(trace.requestId);
     this.sessionTraceIndex.set(trace.sessionId, sessionList);
   }
 
@@ -276,17 +331,15 @@ export class TraceTracker {
    * Get all traces belonging to a specific session in chronological order
    */
   public getTracesBySession(sessionId: string): ExecutionTrace[] {
-    const traceIds = this.sessionTraceIndex.get(sessionId) || [];
-    return traceIds
+    const recordIds = this.sessionTraceIndex.get(sessionId) || [];
+    return recordIds
       .map(id => this.traces.get(id))
       .filter((t): t is ExecutionTrace => Boolean(t));
   }
 
-  /**
-   * Get a single trace by its trace ID
-   */
-  public getTrace(traceId: string): ExecutionTrace | undefined {
-    return this.traces.get(traceId);
+  /** Exact lookup by the gateway-owned request id (the store key). */
+  public getTrace(requestId: string): ExecutionTrace | undefined {
+    return this.traces.get(requestId);
   }
 
   /**
@@ -309,18 +362,18 @@ export class TraceTracker {
     const offset = options?.offset ?? 0;
     const sinceTs = options?.sinceTs;
 
-    let traceIds: string[];
+    let recordIds: string[];
     if (options?.sessionId) {
-      traceIds = [...(this.sessionTraceIndex.get(options.sessionId) || [])].reverse();
+      recordIds = [...(this.sessionTraceIndex.get(options.sessionId) || [])].reverse();
     } else {
       // Reverse order (most recent first)
-      traceIds = [...this.traceOrder].reverse();
+      recordIds = [...this.traceOrder].reverse();
     }
 
     // Window filter: apply BEFORE pagination so `total` matches the
     // filtered set. `t.timestamp` is set by the orchestrator at record time.
     if (typeof sinceTs === 'number') {
-      traceIds = traceIds.filter(id => {
+      recordIds = recordIds.filter(id => {
         const t = this.traces.get(id);
         return t ? t.timestamp >= sinceTs : false;
       });
@@ -330,14 +383,14 @@ export class TraceTracker {
     // page slice must describe the model-scoped population.
     if (options?.modelId) {
       const modelId = options.modelId;
-      traceIds = traceIds.filter(id => {
+      recordIds = recordIds.filter(id => {
         const t = this.traces.get(id);
         return t ? t.execution.modelUsed === modelId : false;
       });
     }
 
-    const total = traceIds.length;
-    const pagedIds = traceIds.slice(offset, offset + limit);
+    const total = recordIds.length;
+    const pagedIds = recordIds.slice(offset, offset + limit);
     const data = pagedIds
       .map(id => this.traces.get(id))
       .filter((t): t is ExecutionTrace => Boolean(t));
@@ -470,10 +523,27 @@ export class TraceTracker {
    * pass over the session's chronological traces: request count, model
    * switches (adjacent modelUsed changes), cumulative token consumption
    * (input / output / cached), cumulative recorded cost, the summed
-   * end-to-end latency, and the decode-TPS pairing (genOutputTokens over
-   * genMsSum) accumulated ONLY over streamed traces — a session mixing
-   * streamed and buffered turns still yields a pure decode rate, never a
-   * blended one.
+   * end-to-end latency, and the industry-standard serving pair accumulated
+   * ONLY over streamed traces:
+   *
+   *   - `ttftP50Ms` / `ttftP95Ms` / `ttftSamples` — time to first token,
+   *     reported as PERCENTILES. A mean is the wrong statistic for a latency
+   *     distribution: one 30 s cold start would dominate a 20-turn session.
+   *     This is what every published latency table reports (Artificial
+   *     Analysis: median + P95; OpenRouter: P50).
+   *   - `genOutputTokens` / `genMsSum` — output speed (tokens ÷ decode
+   *     window). Kept as a numerator/denominator pair so the caller divides
+   *     once and can never disagree with the precomputed value.
+   *   - `stallRatio` — the share of the summed decode windows spent in felt
+   *     pauses (gaps ≥1 s between visible-output chunks). TTFT says when the
+   *     answer starts, the decode rate says how fast it flows on average, and
+   *     neither can express a stream that runs at a healthy average while
+   *     sitting frozen for seconds. A SHARE, not a maximum: repeated stutters
+   *     and one long freeze land on the same scale, and answer length does not
+   *     skew the figure.
+   *
+   * A session mixing streamed and buffered turns still yields pure
+   * streamed-only figures, never a blended one.
    */
   public getSessionAggregates(sessionId: string): {
     traceCount: number;
@@ -485,6 +555,18 @@ export class TraceTracker {
     totalLatencyMs: number;
     genOutputTokens: number;
     genMsSum: number;
+    /** Streamed turns that reported a ttftMs — the percentile sample size. */
+    ttftSamples: number;
+    /**
+     * Share (0..1) of the summed decode windows spent in felt pauses — gaps
+     * ≥1 s between visible-output chunks, summed per turn. Undefined when no
+     * streamed turn produced two output chunks to measure a gap between.
+     */
+    stallRatio?: number;
+    /** Median time to first token over those turns (undefined = never streamed). */
+    ttftP50Ms?: number;
+    /** 95th-percentile time to first token over the same turns. */
+    ttftP95Ms?: number;
     /**
      * Latest turn's thinking-effort snapshot (with ADR-0012 provenance),
      * lifted from the chronologically last trace. Display-only: effort
@@ -506,6 +588,9 @@ export class TraceTracker {
     let totalLatencyMs = 0;
     let genOutputTokens = 0;
     let genMsSum = 0;
+    let stalledMsSum = 0;
+    let stallWindowMs = 0;
+    const ttftSamples: number[] = [];
     let prevModel: string | null = null;
     for (const t of traces) {
       if (prevModel !== null && t.execution.modelUsed !== prevModel) switchCount++;
@@ -519,6 +604,11 @@ export class TraceTracker {
         genOutputTokens += t.finops.outputTokens;
         genMsSum += t.execution.genMs;
       }
+      if (typeof t.execution.ttftMs === 'number') ttftSamples.push(t.execution.ttftMs);
+      if (typeof t.execution.stalledMs === 'number' && typeof t.execution.genMs === 'number' && t.execution.genMs > 0) {
+        stalledMsSum += t.execution.stalledMs;
+        stallWindowMs += t.execution.genMs;
+      }
     }
     const last = traces[traces.length - 1];
     return {
@@ -531,6 +621,10 @@ export class TraceTracker {
       totalLatencyMs,
       genOutputTokens,
       genMsSum,
+      ttftSamples: ttftSamples.length,
+      ttftP50Ms: percentile(ttftSamples, 0.5),
+      ttftP95Ms: percentile(ttftSamples, 0.95),
+      stallRatio: stallWindowMs > 0 ? stalledMsSum / stallWindowMs : undefined,
       lastRequestedEffort: last?.execution.requestedEffort,
       lastActualEffort: last?.execution.actualEffort,
       lastEffortSource: last?.execution.effortSource,
@@ -542,8 +636,8 @@ export class TraceTracker {
    * Remove traces for a specific session (memory + durable store)
    */
   public deleteBySession(sessionId: string): void {
-    const traceIds = this.sessionTraceIndex.get(sessionId) || [];
-    for (const id of traceIds) {
+    const recordIds = this.sessionTraceIndex.get(sessionId) || [];
+    for (const id of recordIds) {
       this.traces.delete(id);
       const idx = this.traceOrder.indexOf(id);
       if (idx !== -1) this.traceOrder.splice(idx, 1);

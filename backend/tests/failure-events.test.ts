@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { bootServer, makeConfig as seamMakeConfig } from './helpers/systemone-seam.js';
+import { toCallCredential } from '../src/providers/boot-direct.js';
+import { keyHashPrefix } from '../src/opencode/credentials/types.js';
 // This suite always runs with the Layer 2 micro-classifier disabled —
 // pin it once instead of threading the option through every call site.
 const makeConfig = (providers: any[], models: any[], systemone?: any): RouterConfig =>
@@ -72,7 +74,7 @@ afterAll(() => {
 });
 
 describe('FailureEventLog — ring, coalescing, filters', () => {
-  test('repeats of the same model+provider+errorClass+role fold into one row', () => {
+  test('repeats of the same model+provider+keyHashPrefix+errorClass+role fold into one row', () => {
     const log = new FailureEventLog();
     const base = { model: 'm1', provider: 'p', errorClass: 'RATE_LIMITED' as const, status: 429, message: 'rate', role: 'serving' as const };
     log.record({ ...base, sessionId: 's1' }, 1000);
@@ -90,6 +92,36 @@ describe('FailureEventLog — ring, coalescing, filters', () => {
     expect(coalesced.lastTs).toBe(2000); // repeat moved lastTs
     expect(coalesced.sessionId).toBe('s1'); // first occurrence owns the attribute
     expect(coalesced.count).toBe(2);
+  });
+
+  test('the credential axis splits rows: two keys of one model never fold together', () => {
+    const log = new FailureEventLog();
+    const base = { model: 'm1', provider: 'p', errorClass: 'AUTHENTICATION_ERROR' as const, status: 401, message: 'bad key', role: 'serving' as const };
+    // Coalescing is consecutive-only (it compares against the ring head), so
+    // runs are interleaved per key the way a round-robin pool would emit them.
+    log.record({ ...base, keyHashPrefix: 'aaaa' }, 1000);
+    log.record({ ...base, keyHashPrefix: 'aaaa' }, 2000);
+    log.record({ ...base, keyHashPrefix: 'bbbb' }, 3000); // other key — own pair row
+    log.record({ ...base, keyHashPrefix: 'bbbb' }, 4000);
+
+    const rows = log.list();
+    expect(rows.length).toBe(2);
+    const bbbb = rows.find((r) => r.keyHashPrefix === 'bbbb')!; // newest first
+    const aaaa = rows.find((r) => r.keyHashPrefix === 'aaaa')!;
+    expect(aaaa.count).toBe(2);
+    expect(bbbb.count).toBe(2);
+    expect(aaaa.lastTs).toBe(2000);
+    expect(bbbb.lastTs).toBe(4000);
+    expect(log.list({ keyHashPrefix: 'bbbb' }).map((r) => r.keyHashPrefix)).toEqual(['bbbb']);
+  });
+
+  test('an unattributed failure (no credential) is its own model-scope row', () => {
+    const log = new FailureEventLog();
+    const base = { model: 'm1', provider: 'p', errorClass: 'TIMEOUT' as const, message: 'deadline', role: 'l2-decision' as const };
+    log.record(base, 1000);
+    log.record({ ...base, keyHashPrefix: 'aaaa' }, 2000); // attributed — never folds into the bare row
+    expect(log.list().length).toBe(2);
+    expect(log.list({ limit: 1 })[0].keyHashPrefix).toBe('aaaa');
   });
 
   test('list() narrows by model / provider / errorClass / role and caps by limit', () => {
@@ -155,8 +187,8 @@ describe('FailureEventLog durable mirror (traces.db, independent handle)', () =>
       expect(store).not.toBeNull();
       const log = new FailureEventLog();
       log.attachStore(store!);
-      log.record({ model: 'm1', provider: 'p', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 1000);
-      log.record({ model: 'm1', provider: 'p', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 2000); // coalesces to ×2
+      log.record({ model: 'm1', provider: 'p', keyHashPrefix: 'kp1', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 1000);
+      log.record({ model: 'm1', provider: 'p', keyHashPrefix: 'kp1', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 2000); // coalesces to ×2
       log.record({ model: 'm2', provider: 'p', errorClass: 'TIMEOUT', message: 'b', role: 'l2-decision' }, 3000);
 
       // A fresh log + fresh handle over the SAME dir — the boot-replay shape.
@@ -169,6 +201,7 @@ describe('FailureEventLog durable mirror (traces.db, independent handle)', () =>
       const m1 = rows.find((r) => r.model === 'm1')!;
       expect(m1.count).toBe(2); // the coalesced count survives the round-trip
       expect(m1.status).toBe(429);
+      expect(m1.keyHashPrefix).toBe('kp1'); // the pair axis survives too
 
       // clear() wipes ring AND mirror.
       log2.clear();
@@ -236,7 +269,12 @@ describe('Serving emitter — a real candidate-pool failure lands in the ledger'
         [{ name: 'rl', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'rl/m1', provider: 'rl', upstreamModel: 'm1', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { orchestrator } = bootServer(config);
+      const { orchestrator, registry } = bootServer(config);
+      // The seam registers providers WITHOUT a credential chain, but the stamp
+      // is what is under test — seed the same chain boot would build for a
+      // single inline key (toCallCredential hashes it into the prefix).
+      registry.refreshCredentialChain('rl', [toCallCredential('sk-test')]);
+      const expectedPrefix = keyHashPrefix('sk-test');
       const req: ChatCompletionRequest = { model: 'rl/m1', messages: [{ role: 'user', content: 'hello' }] };
       // The chain has exactly one candidate: the attempt fails, the in-place
       // retry fails too, then the pool exhausts and process() throws.
@@ -251,6 +289,9 @@ describe('Serving emitter — a real candidate-pool failure lands in the ledger'
       expect(row.errorClass).toBe('RATE_LIMITED');
       expect(row.status).toBe(429);
       expect(row.count).toBe(2); // in-place retry coalesced into the same row
+      // Pair attribution: the provider's single key is stamped on the row, so
+      // the console can name the credential that actually failed.
+      expect(row.keyHashPrefix).toBe(expectedPrefix);
     } finally {
       upstream.stop(true);
     }
@@ -271,6 +312,7 @@ describe('Decision emitter — wire failure and deadline land as role=l2-decisio
         [{ id: 'l2-fail/jev', provider: 'l2-fail', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
+      registry.refreshCredentialChain('l2-fail', [toCallCredential('sk-test')]);
       const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-fail/jev', timeoutMs: 5000 },
@@ -291,6 +333,9 @@ describe('Decision emitter — wire failure and deadline land as role=l2-decisio
       expect(row.status).toBe(500);
       expect(row.sessionId).toBe('sess-l2dec-1');
       expect(row.message).toContain('500');
+      // The decision wire call runs through the real registry, so the error
+      // carries the credential stamp — the row is pair-attributed.
+      expect(row.keyHashPrefix).toBe(keyHashPrefix('sk-test'));
     } finally {
       upstream.stop(true);
     }
@@ -331,6 +376,7 @@ describe('Decision emitter — wire failure and deadline land as role=l2-decisio
       expect(row.role).toBe('l2-decision');
       expect(row.errorClass).toBe('TIMEOUT');
       expect(row.status).toBeUndefined(); // no HTTP response ever arrived
+      expect(row.keyHashPrefix).toBeUndefined(); // abandoned call — no credential stamp to attribute
       expect(row.sessionId).toBe('sess-l2dec-2');
       expect(row.message).toContain('timeout');
     } finally {
@@ -355,8 +401,8 @@ describe('GET /api/admin/failure-events — equality filters, newest first', () 
       const { app, registry } = bootServer(config);
 
       const log = getFailureEventLog();
-      log.record({ model: 'a/m1', provider: 'a', errorClass: 'RATE_LIMITED', status: 429, message: 'x', role: 'serving' }, 1000);
-      log.record({ model: 'b/m2', provider: 'b', errorClass: 'TIMEOUT', message: 'y', role: 'l2-decision' }, 2000);
+      log.record({ model: 'a/m1', provider: 'a', keyHashPrefix: 'ka', errorClass: 'RATE_LIMITED', status: 429, message: 'x', role: 'serving' }, 1000);
+      log.record({ model: 'b/m2', provider: 'b', keyHashPrefix: 'kb', errorClass: 'TIMEOUT', message: 'y', role: 'l2-decision' }, 2000);
       log.record({ model: 'c/m3', provider: 'c', errorClass: 'TIMEOUT', message: 'z', role: 'l2-decision' }, 3000);
 
       const all = await app.inject({ method: 'GET', url: '/api/admin/failure-events' });
@@ -369,6 +415,11 @@ describe('GET /api/admin/failure-events — equality filters, newest first', () 
       const events = filtered.json().events;
       expect(events.length).toBe(1);
       expect(events[0].model).toBe('c/m3');
+
+      // The pair axis narrows server-side too.
+      const byPair = await app.inject({ method: 'GET', url: '/api/admin/failure-events?keyHashPrefix=kb' });
+      expect(byPair.statusCode).toBe(200);
+      expect(byPair.json().events.map((e: FailureEvent) => e.model)).toEqual(['b/m2']);
 
       // Sanity: the decision layer path feeds the same ring (real emission, not seeding).
       await Layer2Decision.evaluate(

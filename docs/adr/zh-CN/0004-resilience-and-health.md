@@ -17,21 +17,26 @@
 | QUOTA | 402/`insufficient_quota`/余额措辞 | credential | `trip.quota.cooldownMs`（12h 档） | 从不 SUSPECT |
 | AUTH | 401/`invalid_api_key`… | credential | `trip.auth.cooldownMs` | `markSuspect:true` |
 | RATE_LIMIT | 429/503+限流措辞；遵从 `Retry-After` | 命中凭证级措辞表→credential，否则 pair | `clamp(RA·1000,[1s,maxCooldown])`；无 RA → `min(60s,initial)` | 短突发（RA ≤ `maxRateLimitWaitMs`）原地可重试；**长 RA 硬熔且以该时长为冷却——信任上游自报的等待** |
-| SERVICE_UNAVAILABLE | 5xx/网络 | model | 阶梯（30s→×2→5h 顶） | — |
-| CLIENT_ERROR | 400/422 + 措辞 | 永不跳闸 | — | 仅 `counting.clientErrors` ON 时计数（唯一的反转项） |
-| UNKNOWN | 其余一切 | pair | 统计计数 | — |
+| SERVICE_UNAVAILABLE | 5xx/408/425/网络 | 端点证据（5xx/超时/reset）→model；**主机级连接失败（DNS `ENOTFOUND`/`EAI_AGAIN`、TCP `ECONNREFUSED`、TLS/证书）→provider** | 阶梯（30s→×2→5h 顶） | 主机级证据只喂**统计**阶梯——从不硬熔（一次 DNS 抖动不得放倒整个 provider，阶梯阈值自会吸收） |
+| CLIENT_ERROR | 请求 fault 类 4xx **按状态码**：400–499 中除 403/404/408/410/425 外的一切（401/402/429 已在前面归入各自类别）——无措辞白名单 | 永不跳闸 | — | 仅 `counting.clientErrors` ON 时计数（唯一的反转项） |
+| UNKNOWN | 其余一切，含 403（权限）与 404/410（死模型地址），各带明确 reason | pair | 统计计数 | 绝不放宽：同一把 key 在别的模型上可能服务正常 |
 
-作用域规则：仅当错误携带凭证归属（由 `registry.execute` 统一盖戳）才允许 scoped 跳闸；无归属错误永不带 `tripScope`（缺省 = model）。规则 per-class `scope` 覆写诊断——在归属**之后**生效，从不之前。
+作用域规则：仅当错误携带凭证归属（由 `registry.execute` 统一盖戳）才允许 scoped 跳闸；无归属错误永不带 `tripScope`（缺省 = model）。**唯一例外是主机级连接失败**：其半径是 PROVIDER——与凭证、模型无关——故 `tripScope:'provider'` 有无归属都随行（provider 由模型注册可知，扇出覆盖每一把凭证、含哨兵元组）。盖戳同时落在诊断自身（`ErrorDiagnosis.usedKeyHashPrefix`），调用方选择前缀缺席时管理器从它归因——退化选择（全不健康/全禁用/无会话）仍在链头执行，该次尝试的凭证级错误必须冷却真正服务它的那把凭证，而不是模型断路器。规则 per-class `scope` 覆写诊断——在归属**之后**生效，从不之前。
+
+**控制台参考（只读）。** 上面这套分类器固定映射会在 `/admin/breaker-rules` 以只读参考弹窗呈现，由区块头部按钮唤起——不做内联块，因为页面的纵向流属于可配置规则树。它只回答一个问题：每条规则的 `auto` 作用域解析到什么、以及为什么请求类 415 永不跳闸而 403 会计数，因此只打印影响面：硬跳/计数/忽略这类处置是分类器在**任何覆写之前**给出的判定，真正生效的处置归 A 区所有，再只读地复述一遍会让页面出现两个真相。行为事实（默认作用域、硬跳/计数/忽略处置、是否有计数开关，以及主机级/凭证额度/长 Retry-After/SUSPECT 等变体）单点来源于 `CLASSIFIER_TAXONOMY`（`resilience/error-classifier.ts`，与 `classify()` 同文件），经状态载荷的 `circuitBreakers.classifier` 暴露，并由 `classifier-taxonomy.test.ts` 钉死到真实 `classify()` 输出——描述符是行为的**摘要**，绝非第二份实现，该测试即防漂移守卫。触发条件文案是按稳定 category 键控的特许 i18n 拷贝；弹窗是参考而非配置（规则树**覆写**这些默认值，从不重定义映射）。旧网关省略该字段时头部按钮不渲染，参考也就无处可达。
 
 ### 2. (模型 × 凭证) 元组上的三态机；作用域即扇出写入
 
 `CLOSED | HALF_OPEN | OPEN`（`CircuitBreakerState`）——这套词汇属于断路器组件，**永不**用于模型级聚合（见 §4）。唯一存在的状态机是键为 `modelId::keyHashPrefix` 的 (模型 × 凭证)**元组**断路器；`keyHashPrefix === ''` 是链外凭证（provider 配置内置 key）的**哨兵**元组，故一切 legacy 模型级路径恰好退化为一个元组。没有模型级断路器状态机：所谓"模型级"是这些元组的派生折叠（`getAllSnapshots`/`getSnapshot`）——最坏态胜出，仅为摘要/UI 兼容而留。
 
-跳闸作用域是对元组的**扇出写入**，每个目标记录自己的作用域标签（`CircuitBreakerSnapshot.scope`）：
+跳闸作用域是对元组的**扇出写入**，每个目标记录管理器盖的作用域标签（`tuple.lastScope`，在 pair 快照视图中以 `scope` 呈现）——**四级**粒度，由窄到宽：
 
 - `pair` → 单个元组（provider + modelId + 凭证）；
 - `credential` → (provider, 凭证) 在其可达的全部模型上的每一个元组；
 - `model` → 该 modelId 的**每一个**元组（等量扇出记账：每个元组的阶梯都吃到模型级失败，故一把 key 服务着垂死上游仍在阈值处拄倒整个模型）；编排层传入完整凭证链，故未服务过失败尝试的 key 也被覆盖——MANUAL 模型级跳闸同样贯通整条链（REST 入口经注册表解析 provider 链），操作员下架不会在无失败史的模型上退化成哨兵元组。
+- `provider` → 该 provider 服务的**每个模型的每个元组**（已注册模型 ∪ 已携带其元组的模型——与 credential 作用域同款幽灵覆盖契约）。自动入口**保留给**主机级连接失败（§1）：证据只喂统计阶梯、从不硬熔，且不带凭证归属。手动 provider 下架（控制台/REST）是普通手动跳闸，同款冷却钳位。provider 跳闸从不标 SUSPECT，也从不触其他 provider 的元组。
+
+手动下架（model/provider 级）比失败扇出多一条保证：**未知凭证链**时哨兵元组必被纳入——它是 `modelAvailability(model, [])` 读取的链外执行路径，故游离 pair 元组（如此前一次 credential 跳闸留下的）不能吸走整个扇出、让模型在未触动的哨兵上继续服务。已知非空链则恰好覆盖链上元组；那时运行时从不查哨兵，故不多造一行。
 
 探测：per-class 连续失败阶梯 + 滑动失败率窗（默认阈值 3/窗 20/50%；`initialCooldownMs` 30s、×2 递增、`maxCooldownMs` 5h 顶；quota 固定 12h）。恢复试飞：`recovery.halfOpen.{maxProbes,successThreshold,maxWaitMs}` + `onCanaryFailure: backoff|initial|close`（MANUAL 强制 backoff；默认阈值 1 = 金丝雀一击即闭）。试飞是**按元组**的：模型级扇出跳闸后每个元组各自需要 `successThreshold` 次成功，故整模型恢复时延随凭证数增长（有意为之——元组只在其**自己的** key 再次服务成功时关闭）。每模型探针预算（每探测周期 `halfOpen.maxProbes`）在同一模型的诸元组间共享，扇出无法放大后台负载。
 
@@ -70,7 +75,7 @@
 
 ### 8. 操作员表面
 
-`X-OCR-*` 头单点归属 `surfaces/ocr-headers.ts`（默认值是冻结契约；传输层决定**送达方式**而非内容）：chat 腿 13 基头（`Tier`、`Tier-Escalated`、`Layer`、`Model`、`Failover`、`Failover-Attempts`、`Failover-Path`、`InPlace-Retries`、`Breaker-State`、`Session-ID`、`Session-Ratchet`、`Session-Lookup`、`Trace-ID`、`Latency-MS`）+ 条件 `TTFT-MS`/`Gen-MS`（仅当落定尝试真正流式时——网关实测的首 token 等待与解码窗口，两者相除即控制台解码 TPS；缓冲轮次两首都缺席）、`Thinking-Requested/Actual/Degraded` 与 `Variant`；决策面恰 3 头（ADR-0008）。断路器管理 API：`GET /api/admin/health/circuit-breakers`（模型+pair 快照 + 规则横幅）、`POST .../reset?scope=model|credential|pair&credential=<keyHashPrefix>`（清冷却/失败计数/滑窗/阶梯位——**从不**清 SUSPECT）、`POST .../trip`（手动，默认 1h，钳 [1s, 7d]）、`POST /api/admin/health/suspect-credentials/clear`。重复的配置告警一律过 `WarnThrottle`（每进程去重一次 + 60s ≤ 50 条折叠）。
+`X-OCR-*` 头单点归属 `surfaces/ocr-headers.ts`（默认值是冻结契约；传输层决定**送达方式**而非内容）：chat 腿 13 基头（`Tier`、`Tier-Escalated`、`Layer`、`Model`、`Failover`、`Failover-Attempts`、`Failover-Path`、`InPlace-Retries`、`Breaker-State`、`Session-ID`、`Session-Ratchet`、`Session-Lookup`、`Request-ID`、`Latency-MS`）+ 条件 `TTFT-MS`/`Gen-MS`（仅当落定尝试真正流式时——网关实测的首 token 等待与解码窗口，两者相除即控制台的输出速度（output speed，OTel `time_per_output_token` 的倒数）；缓冲轮次两首都缺席）、`Thinking-Requested/Actual/Degraded` 与 `Variant`；决策面恰 3 头（ADR-0008）。断路器管理 API：`GET /api/admin/health/circuit-breakers`（模型+pair 快照 + 规则横幅）、`POST .../reset?scope=model|credential|pair|provider&credential=<keyHashPrefix>&provider=<id>`（清冷却/失败计数/滑窗/阶梯位——**从不**清 SUSPECT）、`POST .../trip`（手动，默认 1h，钳 [1s, 7d]；同款四级作用域——`provider` 必须带 provider id，model/provider 下架经注册表贯通该 provider 的完整凭证链；落在零个元组上的跳闸回 400 且带 `affected:0`，绝不假成功）、`POST /api/admin/health/suspect-credentials/clear`。重复的配置告警一律过 `WarnThrottle`（每进程去重一次 + 60s ≤ 50 条折叠）。`/api/admin/status` 的 `circuitBreakers` 块还额外携带静态 `classifier` 参考映射（§1），供熔断规则只读参考弹窗渲染；它是增量字段，旧网关省略时头部按钮不渲染。
 
 ## 后果
 

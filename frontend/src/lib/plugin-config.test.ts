@@ -172,6 +172,13 @@ describe('gateway card vocabulary', () => {
     }
   });
 
+  it('defaults the ocr/ namespace toggle OFF until the operator opts in', () => {
+    const vocabulary = gatewayVocabulary(cursorSchema);
+    expect(parseGatewayCfg({}, vocabulary).catalogPrefix).toBe(false);
+    expect(parseGatewayCfg({ catalogPrefix: true }, vocabulary).catalogPrefix).toBe(true);
+    expect(parseGatewayCfg({ catalogPrefix: false }, vocabulary).catalogPrefix).toBe(false);
+  });
+
   it('falls back safely when a schema declares neither', () => {
     const parsed = parseGatewayCfg(
       { modelListMode: 'custom', models: ['ocr/pro'] },

@@ -19,7 +19,9 @@ import type { StreamRoutingFacts } from '../utils/chat-stream.js';
 
 /**
  * The 13 base X-OCR headers plus conditionals for a chat-shaped execution
- * result (chat / anthropic / responses wires share this exact set).
+ * result (chat / anthropic / responses wires share this exact set). ADR-0021:
+ * `X-OCR-Request-ID` names THIS request (the console row); the caller's own
+ * correlation value is never echoed back.
  *
  * Conditional additions:
  * - X-OCR-TTFT-MS / X-OCR-Gen-MS: only when the committed attempt streamed.
@@ -52,7 +54,7 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     'X-OCR-Session-ID': result.sessionId || '',
     'X-OCR-Session-Ratchet': result.sessionRatchetApplied ? 'true' : 'false',
     'X-OCR-Session-Lookup': result.sessionLookupType || '',
-    'X-OCR-Trace-ID': result.traceId || '',
+    'X-OCR-Request-ID': result.requestId || '',
     'X-OCR-Latency-MS': (result.latencyMs ?? 0).toString(),
   };
   // TTFT/TPS split: emitted ONLY when the committed attempt actually streamed.
@@ -98,7 +100,7 @@ export function buildChatOcrRoutingHeaders(
     'X-OCR-Session-ID': facts.sessionId || '',
     'X-OCR-Session-Ratchet': facts.sessionRatchetApplied ? 'true' : 'false',
     'X-OCR-Session-Lookup': facts.sessionLookupType || '',
-    'X-OCR-Trace-ID': facts.traceId || '',
+    'X-OCR-Request-ID': facts.requestId || '',
   };
   if (facts.requestedEffort && facts.requestedEffort !== 'none') {
     // The REQUEST half of the thinking pair is a client fact (known now); the

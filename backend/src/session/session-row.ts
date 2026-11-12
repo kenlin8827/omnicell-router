@@ -154,11 +154,61 @@ export function sessionTitleOf(traces: ExecutionTrace[]): string | undefined {
   return first.request.firstUserSummary || first.request.userPromptSummary || undefined;
 }
 
+/**
+ * Who MINTED a session's id — the other half of "why does this id look like
+ * that". The gateway only mints at cold start (`sess_` + 16 hex); every
+ * earlier identity layer adopts a value the CLIENT chose (explicit session
+ * header, an embedded metadata.user_id UUID, the OpenAI `user` field, or a
+ * vendor `x-<app>-session-id` header). Without this marker an operator cannot
+ * tell a gateway id from a client id in the session table — the ids
+ * themselves carry no reliable shape (a vendor header may be any string, and
+ * older gateway ids keep resolving by design).
+ */
+export type SessionIdSource = 'gateway' | 'client';
+
+/**
+ * Identity layers that adopt a client-minted value as the session id. Every
+ * other layer (`cold_start`, the content anchors, `conversation_key`, the
+ * `client_ref` alias) resolves an id the GATEWAY minted — the alias binds a
+ * gateway session, it does not rename one. Keep this set in sync with
+ * `SessionLookupType` (types/router.ts) and the resolver's layer comments.
+ */
+const CLIENT_NAMED_LOOKUP_TYPES: ReadonlySet<string> = new Set([
+  'explicit_header',   // 1. x-session-id / x-conversation-id / router_options.session_id
+  'embedded_user_id',  // 2. Claude Code metadata.user_id → cc_<uuid>
+  'request_user',      // 3. bare OpenAI request.user
+  'header_fallback',   // 9. vendor x-<app>-session-id rename of a fresh mint
+]);
+
+/**
+ * Derive the id's minting side from the BIRTH lookup type (the entity's
+ * `origin.lookupType` when live, else the earliest trace's
+ * `routing.sessionLookupType`). Birth is the right turn: later turns re-resolve
+ * the same id through content anchors, so reading the last turn would report
+ * `prefix_chain` for a session the client actually named. `undefined` when no
+ * turn ever recorded a lookup type (traces replayed from before the field
+ * existed) — the console then prints no marker rather than a guess.
+ */
+export function sessionIdSourceOf(
+  traces: ExecutionTrace[],
+  birthLookupType?: string
+): SessionIdSource | undefined {
+  const lookup = birthLookupType || traces[0]?.routing?.sessionLookupType;
+  if (!lookup) return undefined;
+  return CLIENT_NAMED_LOOKUP_TYPES.has(lookup) ? 'client' : 'gateway';
+}
+
 /** One console session row. */
 export interface SessionRow extends SessionEntityView, SessionAggregates {
   /** Gateway-internal loopback row — derived from the id, never stored. */
   internal: boolean;
   entryMode: SessionEntryMode;
+  /**
+   * Which side minted `id` (see SessionIdSource). Both row shapes derive it the
+   * same way, so a restart cannot flip the marker. Null when no trace carries a
+   * lookup type — the console then renders the id alone.
+   */
+  idSource: SessionIdSource | null;
   currentModel: string | null;
   currentProvider: string | null;
   /**

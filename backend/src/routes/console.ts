@@ -49,6 +49,7 @@ import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
+import { CLASSIFIER_TAXONOMY } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
 import { maskSecret, isValidProviderId, PROVIDER_ID_RULE, getProviderNodeById } from '../opencode/user-config.js';
@@ -1047,6 +1048,12 @@ export function registerConsoleRoutes(
       ...cbManager.getSummary(),
       pairs: cbManager.getPairSummary(),
       rules: cbManager.getRulesStatus(),
+      // Static read-only reference: the classifier's fixed error-class mapping
+      // (ADR-0004 §1), single-sourced from CLASSIFIER_TAXONOMY. The console's
+      // breaker-rules page renders it to explain what each rule's `auto` scope
+      // resolves to and why e.g. 415 never trips while 403 counts. Additive:
+      // older gateways omit it and the panel stays hidden.
+      classifier: CLASSIFIER_TAXONOMY,
     };
     const metrics = orchestrator.getTracker().getStats();
     const clients = await getAllClientStatuses();
@@ -5417,9 +5424,9 @@ export function registerConsoleRoutes(
 
   /**
    * Read the HTTP exchange events written by the capture pipeline.
-   * Each inference turn produces 2-4 events sharing the same `traceId`:
+   * Each inference turn produces 2-4 events sharing the same `requestId`:
    * client-request, gateway-response, upstream-request, upstream-response.
-   * The console joins them into one logical turn via `traceId` / `spanId`.
+   * The console joins them into one logical turn via `requestId`.
    */
   app.get('/api/admin/capture/:date/:file/events', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { Settings2, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Settings2, AlertTriangle, RotateCcw, BookOpen } from 'lucide-react';
 import {
   api,
   type GatewayStatusResponse,
@@ -9,17 +9,24 @@ import {
   type ResolvedBreakerRules,
   type BreakerScopeOverride,
   type OnCanaryFailureMode,
+  type ClassifierTaxonomyEntry,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { Dialog } from '../components/Dialog';
 import { DurationInput } from '../components/DurationInput';
 import { InfoTip } from '../components/InfoTip';
 import { Switch } from '../components/Switch';
 
 import { FONT_MONO } from '../lib/fonts';
-import { DEFAULT_PROBE_INTERVAL_MS } from '../lib/defaults';
+import {
+  DEFAULT_PROBE_INTERVAL_MS,
+  DEFAULT_MAX_RATE_LIMIT_WAIT_MS,
+  RATE_LIMIT_MIN_COOLDOWN_MS,
+  RATE_LIMIT_NO_RETRY_AFTER_CAP_MS,
+} from '../lib/defaults';
 /* ═══════════════════════════════════════════════════════════════════════════
  * Breaker-rules page — Configuration UX contract (spec
  * docs/design/circuit-breaker-rules-config.md): three collapsible blocks A/B/C
@@ -27,6 +34,10 @@ import { DEFAULT_PROBE_INTERVAL_MS } from '../lib/defaults';
  * disposition table, `auto | custom` on every numeric input, human
  * blast-radius Comboboxes, shadow switch, five-switch header badge, restart
  * note. No separate summary card — the section header carries it all.
+ * The error-classifier reference is a READ-ONLY lookup dialog (header button),
+ * not an inline block: it costs no vertical space in the editing flow, and it
+ * shows the blast radius only — the effective disposition is whatever block A
+ * says, so a second copy of it here would be a stale drift twin.
  * Wire truth: `circuitBreaker.rules` carries materialized booleans/enums;
  * an ABSENT numeric key = "auto" (inherit the global knob) — the toggle maps
  * to key presence/absence exactly (undefined → dropped by JSON.stringify).
@@ -61,7 +72,7 @@ const durationLabels = (t: (path: string, params?: Record<string, string | numbe
 });
 
 const asScope = (v: string): BreakerScopeOverride =>
-  v === 'pair' || v === 'credential' || v === 'model' ? v : 'auto';
+  v === 'pair' || v === 'credential' || v === 'model' || v === 'provider' ? v : 'auto';
 const asCanary = (v: string): OnCanaryFailureMode => (v === 'initial' || v === 'close' ? v : 'backoff');
 
 /** Client-side mirror of backend resolveBreakerRules — the fallback view of
@@ -92,7 +103,9 @@ function deriveResolvedRules(cb: CircuitBreakerConfig, maxRateLimitWaitMs?: numb
         enabled: bool(r.counting?.unknownErrors?.enabled, true),
         minCooldownMs: num(r.counting?.unknownErrors?.minCooldownMs, initial),
       },
-      rateLimitErrors: { minCooldownMs: num(r.counting?.rateLimitErrors?.minCooldownMs, Math.min(60_000, initial)) },
+      rateLimitErrors: {
+        minCooldownMs: num(r.counting?.rateLimitErrors?.minCooldownMs, Math.min(RATE_LIMIT_NO_RETRY_AFTER_CAP_MS, initial)),
+      },
       clientErrors: { enabled: bool(r.counting?.clientErrors?.enabled, false) },
     },
     trip: {
@@ -110,8 +123,8 @@ function deriveResolvedRules(cb: CircuitBreakerConfig, maxRateLimitWaitMs?: numb
       rateLimit: {
         enabled: bool(r.trip?.rateLimit?.enabled, true),
         // Default borrowed from the retry family; the breaker copy never rewrites it.
-        hardTripAboveMs: num(r.trip?.rateLimit?.hardTripAboveMs, maxRateLimitWaitMs ?? 2000),
-        minCooldownMs: num(r.trip?.rateLimit?.minCooldownMs, 1000),
+        hardTripAboveMs: num(r.trip?.rateLimit?.hardTripAboveMs, maxRateLimitWaitMs ?? DEFAULT_MAX_RATE_LIMIT_WAIT_MS),
+        minCooldownMs: num(r.trip?.rateLimit?.minCooldownMs, RATE_LIMIT_MIN_COOLDOWN_MS),
         scope: asScope(r.trip?.rateLimit?.scope ?? 'auto'),
       },
       consecutiveFailures: {
@@ -345,12 +358,13 @@ const Params: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>{children}</div>
 );
 
-const BREAKER_SCOPE_VALUES: BreakerScopeOverride[] = ['auto', 'pair', 'credential', 'model'];
+const BREAKER_SCOPE_VALUES: BreakerScopeOverride[] = ['auto', 'pair', 'credential', 'model', 'provider'];
 const SCOPE_R_KEY: Record<BreakerScopeOverride, string> = {
   auto: 'breakerRules.rScopeAuto',
   pair: 'breakerRules.rScopePair',
   credential: 'breakerRules.rScopeCredential',
   model: 'breakerRules.rScopeModel',
+  provider: 'breakerRules.rScopeProvider',
 };
 const CANARY_R_KEY: Record<OnCanaryFailureMode, string> = {
   backoff: 'breakerRules.canaryBackoff',
@@ -358,12 +372,41 @@ const CANARY_R_KEY: Record<OnCanaryFailureMode, string> = {
   close: 'breakerRules.canaryClose',
 };
 
+/* ── Read-only classifier reference (ADR-0004 §1) ──────────────────────────
+ * The behavioral facts (defaultScope / countingToggle / variants) arrive
+ * single-sourced from the gateway's CLASSIFIER_TAXONOMY; these maps only pick
+ * the i18n label for each enum value. The trigger prose is sanctioned copy
+ * keyed by the stable category — no behavior is re-declared here.
+ * Deliberately NOT rendered: `disposition`. It is the classifier's pre-override
+ * default, not the effective behavior — block A owns that, and a read-only copy
+ * of it here would either contradict the draft or force an "advice vs. truth"
+ * distinction the page does not need. The reference answers one question only:
+ * how wide does an "auto" radius reach for each class. */
+const CLS_ROW_KEY: Record<ClassifierTaxonomyEntry['category'], string> = {
+  QUOTA_EXHAUSTED: 'breakerRules.rowQuota',
+  AUTHENTICATION_ERROR: 'breakerRules.rowAuth',
+  RATE_LIMITED: 'breakerRules.rowRate',
+  CLIENT_ERROR: 'breakerRules.rowClient',
+  SERVICE_UNAVAILABLE: 'breakerRules.rowServer',
+  UNKNOWN: 'breakerRules.rowUnknown',
+};
+const CLS_TRIGGER_KEY: Record<ClassifierTaxonomyEntry['category'], string> = {
+  QUOTA_EXHAUSTED: 'breakerRules.clsTriggerQuota',
+  AUTHENTICATION_ERROR: 'breakerRules.clsTriggerAuth',
+  RATE_LIMITED: 'breakerRules.clsTriggerRate',
+  CLIENT_ERROR: 'breakerRules.clsTriggerClient',
+  SERVICE_UNAVAILABLE: 'breakerRules.clsTriggerServer',
+  UNKNOWN: 'breakerRules.clsTriggerUnknown',
+};
+
 interface BreakerRulesSectionProps {
   /** Effective (startup-resolved) ruleset + banner state from /api/admin/status. */
   live?: BreakerRulesStatus;
+  /** Static classifier reference mapping; absent on older gateways (panel hidden). */
+  classifier?: ClassifierTaxonomyEntry[];
 }
 
-const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
+const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live, classifier }) => {
   const { t } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
@@ -371,6 +414,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
   const [retryBoundary, setRetryBoundary] = useState<number | undefined>(undefined);
   const [loadErr, setLoadErr] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Read-only classifier lookup — a dialog, so the reference never pushes the
+  // editable blocks down the scroll region.
+  const [clsOpen, setClsOpen] = useState(false);
   // Collapsible A/B/C blocks — default expanded (spec: first-time reading
   // order stays visible); the open flags only drive summary chevron rotation.
   const [openBlocks, setOpenBlocks] = useState({ a: true, b: true, c: true, d: true });
@@ -620,6 +666,64 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     whiteSpace: 'nowrap',
   };
 
+  // ── Read-only classifier reference cells (no inputs — reference, not config) ──
+  // Sizes: 11px notes under a 12px body — the smallest step this table needs.
+  // `--text-3xs` (9px) is reserved for inline pills elsewhere; at dialog scale it
+  // reads as broken hierarchy, not as a footnote.
+  /** Radius chip. `soft` = the class is not counted by default, so the pill is
+   *  dimmed and dashed: the radius is where it WOULD reach, not where it acts. */
+  const clsPill = (text: string, color: string, soft = false) => (
+    <span
+      className="badge"
+      style={{
+        color,
+        borderColor: 'var(--card-border)',
+        borderStyle: soft ? 'dashed' : 'solid',
+        whiteSpace: 'nowrap',
+        fontSize: 'var(--text-xs)',
+        padding: '2px 9px',
+      }}
+    >
+      {text}
+    </span>
+  );
+  const clsRow = (e: ClassifierTaxonomyEntry) => {
+    // Advisory only: this class is not counted unless block A's switch is ON,
+    // so the radius pill is dimmed instead of presented as the effective state.
+    const notCountedByDefault = e.disposition === 'ignored';
+    return (
+      <tr key={e.category}>
+        <th scope="row" style={{ ...td, textAlign: 'left', verticalAlign: 'top', padding: '9px 10px' }}>
+          <div style={{ fontWeight: 'var(--font-semibold)' }}>{t(CLS_ROW_KEY[e.category])}</div>
+          {e.countingToggle ? (
+            <div style={{ marginTop: 3, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+              {t('breakerRules.clsToggle')}
+            </div>
+          ) : null}
+        </th>
+        <td style={{ ...td, verticalAlign: 'top', padding: '9px 10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          {t(CLS_TRIGGER_KEY[e.category])}
+        </td>
+        <td style={{ ...td, verticalAlign: 'top', padding: '9px 10px' }}>
+          {/* Pill + optional InfoTip for conditional radius variants.
+              Notes are only shown on hover so rows stay compact. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            {clsPill(t(SCOPE_R_KEY[e.defaultScope]), notCountedByDefault ? 'var(--text-dim)' : 'var(--accent)', notCountedByDefault)}
+            {(e.hostScope || e.credentialScope || (notCountedByDefault && e.countingToggle)) ? (
+              <InfoTip
+                text={[
+                  e.hostScope ? t('breakerRules.clsHostNote', { scope: t(SCOPE_R_KEY[e.hostScope]) }) : '',
+                  e.credentialScope ? t('breakerRules.clsCredNote', { scope: t(SCOPE_R_KEY[e.credentialScope]) }) : '',
+                  notCountedByDefault && e.countingToggle ? t('breakerRules.clsClientNote') : '',
+                ].filter(Boolean).join('\n')}
+              />
+            ) : null}
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
   const durLabels = durationLabels(t);
   const defaultRows: { label: string; value: string; key: string; note?: string }[] = [
     { label: t('breakerRules.kEnabled'), value: cb.enabled === false ? t('breakerRules.stateOff') : t('breakerRules.stateOn'), key: 'circuitBreaker.enabled' },
@@ -639,10 +743,11 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
   ];
 
   return (
-    /* SettingsPage/RulesPage pattern: the header stays pinned (flexShrink 0)
+    <>
+    {/* SettingsPage/RulesPage pattern: the header stays pinned (flexShrink 0)
        and the body is the card's own scroll region, so save/discard are
        reachable while editing ANY block. .card padding is zeroed and
-       re-applied per region (header / scroll body). */
+       re-applied per region (header / scroll body). */}
     <div
       className="card"
       style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 0 }}
@@ -668,6 +773,20 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           >
             {t('breakerRules.autoTripping')}: {view.text}
           </span>
+          {/* Classifier reference — a lookup, not an editing block: opens a
+              read-only dialog so it costs no height in the flow below. */}
+          {classifier && classifier.length > 0 ? (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setClsOpen(true)}
+              title={t('breakerRules.clsHint', { auto: t('breakerRules.clsAutoScope') })}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <BookOpen size={13} />
+              {t('breakerRules.clsTitle')}
+            </button>
+          ) : null}
         </div>
         <span style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           {/* Shadow switch — top-right of the section (UX contract). */}
@@ -1172,6 +1291,39 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
       </div>
       </div>
     </div>
+    {/* Classifier reference dialog — READ-ONLY: class → trigger → blast radius.
+        No disposition column on purpose: it would only be the classifier's
+        pre-override default (advice), while block A owns the effective one —
+        printing both on one page is how two truths get started. */}
+    {clsOpen && classifier && classifier.length > 0 ? (
+      <Dialog
+        title={t('breakerRules.clsTitle')}
+        subtitle={<span>{t('breakerRules.clsHint', { auto: t('breakerRules.clsAutoScope') })}</span>}
+        headerActions={<span className="badge" style={blockBadge}>{t('breakerRules.clsBadge')}</span>}
+        onClose={() => setClsOpen(false)}
+        closeLabel={t('common.close')}
+        width={700}
+      >
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', minWidth: 580, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: 168 }} />
+              <col />
+              <col style={{ width: 196 }} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col" style={{ ...th, padding: '6px 10px' }}>{t('breakerRules.thClass')}</th>
+                <th scope="col" style={{ ...th, padding: '6px 10px' }}>{t('breakerRules.clsThTrigger')}</th>
+                <th scope="col" style={{ ...th, padding: '6px 10px' }}>{t('breakerRules.clsThRadius', { auto: t('breakerRules.clsAutoScope') })}</th>
+              </tr>
+            </thead>
+            <tbody>{classifier.map(clsRow)}</tbody>
+          </table>
+        </div>
+      </Dialog>
+    ) : null}
+    </>
   );
 };
 
@@ -1181,10 +1333,11 @@ export const BreakerRulesPage: React.FC = () => {
   // automatic-tripping state (UX rule 6); saves hot-apply, no restart note.
   const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
   const live = status?.circuitBreakers?.rules;
+  const classifier = status?.circuitBreakers?.classifier;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <BreakerRulesSection live={live} />
+      <BreakerRulesSection live={live} classifier={classifier} />
     </div>
   );
 };

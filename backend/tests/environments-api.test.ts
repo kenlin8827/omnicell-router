@@ -18,6 +18,7 @@ import {
   getEnvPaths,
   readPointer,
 } from '../src/config/env.js';
+import { DEFAULT_GATEWAY_PORT } from '../src/config/defaults.js';
 import { loadConfig } from '../src/config/index.js';
 import { hashPassword } from '../src/auth/web-auth.js';
 import { createServer } from '../src/server.js';
@@ -57,7 +58,7 @@ beforeEach(() => {
   // The bootstrap default gets a real directory + config — exactly what the
   // gateway boot does via ensureEnvScaffold() + ensureDefaultConfigFile().
   ensureEnvScaffold('default');
-  fs.writeFileSync(getEnvPaths('default').configPath, 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n', 'utf8');
+  fs.writeFileSync(getEnvPaths('default').configPath, `port: ${DEFAULT_GATEWAY_PORT}\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n`, 'utf8');
   created.push(HOME);
 });
 
@@ -280,7 +281,7 @@ describe('POST /api/admin/environments/:name/switch', () => {
 
   it('happy path: pin pointer, spawn with ONLY envName, schedule exit, report restarting', async () => {
     await createEnv({ name: 'dev' });
-    fs.writeFileSync(getEnvPaths('dev').configPath, 'port: 4321\n', 'utf8'); // differs from current 3000
+    fs.writeFileSync(getEnvPaths('dev').configPath, 'port: 4321\n', 'utf8'); // differs from the booted default port
     const a = makeApp({ spawnChild: (o) => { spawnCalls.push(o); return true; }, scheduleExit: () => { exitCalls++; } });
     const res = await a.inject({ method: 'POST', url: '/api/admin/environments/dev/switch', payload: {} });
     expect(res.statusCode).toBe(200);
@@ -295,7 +296,7 @@ describe('POST /api/admin/environments/:name/switch', () => {
 
   it('same port → no newPort field', async () => {
     await createEnv({ name: 'same' });
-    fs.writeFileSync(getEnvPaths('same').configPath, 'port: 3000\n', 'utf8');
+    fs.writeFileSync(getEnvPaths('same').configPath, `port: ${DEFAULT_GATEWAY_PORT}\n`, 'utf8');
     const a = makeApp({ spawnChild: () => true, scheduleExit: () => {} });
     const body = json(await a.inject({ method: 'POST', url: '/api/admin/environments/same/switch', payload: {} }));
     expect(body.status).toBe('restarting');

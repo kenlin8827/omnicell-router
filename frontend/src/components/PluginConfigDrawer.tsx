@@ -33,6 +33,7 @@ const GATEWAY_CLIENT_FACING_FIELDS: Record<string, true> = {
   modelListMode: true,
   models: true,
   catalogReplace: true,
+  catalogPrefix: true,
 };
 
 /** Plugins whose model surface is edited on a Client Hub card. */

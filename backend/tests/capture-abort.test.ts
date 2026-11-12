@@ -320,7 +320,7 @@ describe('capture-abort (real listener, Fastify leg)', () => {
     // Staged X-OCR mirror reaches the capture too (beginSse parity).
     assert.ok(ev.wire.responseHeaders['x-ocr-tier'], 'staged X-OCR-Tier captured');
     assert.ok(ev.wire.responseHeaders['x-ocr-model'], 'staged X-OCR-Model captured');
-    assert.ok(ev.wire.responseHeaders['x-ocr-trace-id'], 'staged X-OCR-Trace-ID captured');
+    assert.ok(ev.wire.responseHeaders['x-ocr-request-id'], 'staged X-OCR-Request-ID captured');
     // Single-stash guard for the SSE path: exactly one DONE sentinel.
     assert.equal(ev.wire.responseBody.split('data: [DONE]').length - 1, 1, 'responseBody stashed exactly once');
     assert.equal(resEvents.some((e) => e.wire.status === 499), false, 'no 499 on a live socket');

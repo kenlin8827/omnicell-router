@@ -264,7 +264,7 @@ export const UsagePage: React.FC = () => {
                   </span>
                 ))}
                 {scopedTraces.map(tr => (
-                  <React.Fragment key={tr.traceId}>
+                  <React.Fragment key={tr.requestId}>
                     <span style={{ color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
                     <span style={{ color: 'var(--text-dim)' }}>
                       {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
