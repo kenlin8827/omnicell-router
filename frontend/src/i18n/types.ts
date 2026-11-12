@@ -572,6 +572,11 @@ export interface TranslationDict {
     filterOriginBuiltin: string;
     filterOriginCustom: string;
     filterOriginPlugin: string;
+    /** Connected-tab takedown filter (all / enabled / disabled providers). */
+    filterStatus: string;
+    filterStatusAll: string;
+    filterStatusEnabled: string;
+    filterStatusDisabled: string;
     pluginTag: string;
     pluginOriginTip: string;
     addCredentialQuick: string;
@@ -760,6 +765,8 @@ export interface TranslationDict {
     credentialEnabled: string;
     /** Per-provider credential maintenance (enlarged table dialog on KeysPage). */
     credentialManage: string;
+    /** Header status for a provider card that has no credential yet. */
+    credentialsNone: string;
     pmEmptyBadge: string;
     noBaseUrl: string;
     credentialZoomDesc: string;

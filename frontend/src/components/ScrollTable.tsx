@@ -62,9 +62,10 @@ export const stickyBodyCell: React.CSSProperties = {
  * Use this for every bounded, scrolling table. A page-level table keeps a plain header row too.
  *
  * The scrolling viewport carries `.scroll-table-viewport`, which styles/index.css uses to
- * size its scrollbars above the global 6px decoration: on a wide table this bar is the only
- * way to reach the right-hand columns (and the pinned action column), so it has to be
- * grabbable rather than merely visible.
+ * draw its bar thinner than the global 6px decoration at rest and fatter on hover: on a wide
+ * table this bar is the only way to reach the right-hand columns (and the pinned action
+ * column), so it has to be grabbable rather than merely visible — a constant 10px hit area
+ * with a small resting pill.
  */
 export const ScrollTable: React.FC<{
   columns: ScrollTableColumn[];

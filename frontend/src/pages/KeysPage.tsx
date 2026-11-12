@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { providerLogoSources } from '../components/ProviderLogo';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, ArrowUpToLine } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, ArrowUpToLine, CloudDownload } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -67,7 +68,7 @@ const byDisplayName = (a: { id: string; name?: string }, b: { id: string; name?:
 const cardFlex: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: '10px',
+  gap: '12px',
 };
 
 const CATALOG_PAGE_SIZE = 20;
@@ -172,9 +173,13 @@ const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSS
 );
 
 /** Provider logo on the fixed light `--logo-plate-bg` plate, unfiltered
- *  (see index.css). Falls back to an initial-letter chip. */
+ *  (see index.css). Bundled official glyph first, catalog/plugin logo next,
+ *  initial-letter chip last (source chain: lib/provider-logos + catalog). */
 const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ id, logo, size = 28 }) => {
-  const [failed, setFailed] = useState(false);
+  const sources = providerLogoSources(id, logo);
+  const [step, setStep] = useState(0);
+  useEffect(() => setStep(0), [id, logo]);
+  const src = sources[step];
   const chip: React.CSSProperties = {
     width: size,
     height: size,
@@ -187,7 +192,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
     flexShrink: 0,
     overflow: 'hidden',
   };
-  if (!logo || failed) {
+  if (!src) {
     return (
       <div style={chip}>
         <span
@@ -207,11 +212,11 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
   return (
     <div style={chip}>
       <img
-        src={logo}
+        src={src}
         alt={id}
-        width={Math.round(size * 0.72)}
-        height={Math.round(size * 0.72)}
-        onError={() => setFailed(true)}
+        width={Math.round(size * 0.78)}
+        height={Math.round(size * 0.78)}
+        onError={() => setStep((s) => s + 1)}
         style={{ objectFit: 'contain' }}
         loading="lazy"
       />
@@ -236,6 +241,26 @@ const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
 
 type TFn = (path: string, params?: Record<string, string | number>) => string;
 
+
+/** Provider-takedown marker: a FILLED pill (the meta chips stay outline-only)
+ *  so a disabled provider card reads as out of service at a glance, not just
+ *  by reading a small label among the identity chips. */
+const takedownBadgeStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  alignSelf: 'flex-start',
+  background: 'color-mix(in srgb, var(--accent-rose) 14%, transparent)',
+  color: 'var(--accent-rose)',
+  border: '1px solid color-mix(in srgb, var(--accent-rose) 45%, transparent)',
+  borderRadius: '99px',
+  padding: '2px 9px',
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-semibold)',
+  lineHeight: 1.4,
+  whiteSpace: 'nowrap',
+  flexShrink: 0,
+};
 /** Relative "last synced" label (just now / N min ago / …) — "never" when absent. */
 const syncTimeAgo = (ts: number | undefined, t: TFn): string => {
   if (!ts) return t('op.syncNever');
@@ -1278,11 +1303,17 @@ export const KeysPage: React.FC = () => {
   const [catalogOrigin, setCatalogOrigin] = useState('all');
   const [connectedQuery, setConnectedQuery] = useState('');
   const [connectedOrigin, setConnectedOrigin] = useState('all');
+  // Takedown filter for the Connected tab: disabled providers stay listed
+  // (they are not deleted), so the tab needs an explicit all/enabled/disabled
+  // selector instead of relying on the badge as the only signal.
+  const [connectedStatus, setConnectedStatus] = useState<'all' | 'enabled' | 'disabled'>('all');
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(CATALOG_PAGE_SIZE);
   const [connectedPage, setConnectedPage] = useState(1);
   const [connectedPageSize, setConnectedPageSize] = useState(CONNECTED_PAGE_SIZE);
   const [refreshingConnected, setRefreshingConnected] = useState(false);
+  // Transient "just copied" marker for a card's endpoint (Check icon swap).
+  const [copiedEndpoint, setCopiedEndpoint] = useState<string | null>(null);
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
   // The backend-owned npm SDK vocabulary (providers/vocabulary.ts) — dropdown
   // order AND the v2-package → v1-alias display mapping come from here, so the
@@ -1690,8 +1721,12 @@ export const KeysPage: React.FC = () => {
             p.models.some((m) => m.toLowerCase().includes(q))
         )
       : [...ocProviders];
-    return list.filter((p) => matchOrigin(connectedOrigin, p)).sort(byDisplayName);
-  }, [ocProviders, connectedQuery, connectedOrigin]);
+    return list
+      .filter((p) => matchOrigin(connectedOrigin, p))
+      .filter((p) => connectedStatus === 'all' || Boolean(p.disabled) === (connectedStatus === 'disabled'))
+      .sort(byDisplayName);
+  }, [ocProviders, connectedQuery, connectedOrigin, connectedStatus]);
+  const takedownCount = useMemo(() => ocProviders.filter((p) => p.disabled).length, [ocProviders]);
   const pagedConnected = useMemo(() => {
     const start = (connectedPage - 1) * connectedPageSize;
     return connectedResults.slice(start, start + connectedPageSize);
@@ -1729,16 +1764,40 @@ export const KeysPage: React.FC = () => {
     catalogPage * catalogPageSize
   );
 
-  const tabBtn = (tab: typeof activeTab, label: string, count?: number): React.CSSProperties => ({
-    padding: '7px 14px',
-    borderRadius: '8px',
-    fontSize: 'var(--text-md)',
-    fontWeight: activeTab === tab ? 'var(--font-bold)' : 'var(--font-medium)',
-    color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
-    background: activeTab === tab ? 'var(--surface-hover)' : 'transparent',
-    border: activeTab === tab ? '1px solid var(--card-border)' : '1px solid transparent',
+  // Segmented controls (page tabs, takedown filter): one bordered chip track,
+  // the active segment marked by accent text + weight alone — a raised surface
+  // (or its own inner border) inside the track read as a second box. Counts
+  // stay plain tabular text for the same reason.
+  const segStyle = (active: boolean, fontSize = 'var(--text-md)'): React.CSSProperties => ({
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 12px',
+    borderRadius: 7,
+    fontSize,
+    fontWeight: active ? 'var(--font-semibold)' : 'var(--font-medium)',
+    color: active ? 'var(--accent)' : 'var(--text-muted)',
+    background: 'transparent',
+    border: '1px solid transparent',
     cursor: 'pointer',
+    transition: 'color 0.15s',
+    whiteSpace: 'nowrap',
   });
+  const countStyle = (active: boolean): React.CSSProperties => ({
+    fontSize: 'var(--text-2xs)',
+    fontVariantNumeric: 'tabular-nums',
+    color: active ? 'var(--accent)' : 'var(--text-dim)',
+  });
+  const segTrackStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    gap: 2,
+    padding: 4,
+    borderRadius: 10,
+    background: 'var(--chip-bg)',
+    border: '1px solid var(--card-border)',
+    alignSelf: 'flex-start',
+    width: 'fit-content',
+  };
 
   const loadOpenCodeProviders = async (): Promise<boolean> => {
     try {
@@ -2061,18 +2120,47 @@ export const KeysPage: React.FC = () => {
         )}
 
         {/* ---- Tabs ---- */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-          <button style={tabBtn('connected', t('op.tabConnected'))} onClick={() => setActiveTab('connected')}>
-            {t('op.tabConnected')} ({ocProviders.length})
+        <div
+          role="tablist"
+          style={{ ...segTrackStyle, marginBottom: 12 }}
+        >
+          <button
+            role="tab"
+            aria-selected={activeTab === 'connected'}
+            style={segStyle(activeTab === 'connected')}
+            onClick={() => setActiveTab('connected')}
+          >
+            <Plug size={13} />
+            <span>{t('op.tabConnected')}</span>
+            <span style={countStyle(activeTab === 'connected')}>{ocProviders.length}</span>
           </button>
-          <button style={tabBtn('catalog', t('op.tabCatalog'))} onClick={() => setActiveTab('catalog')}>
-            {t('op.tabCatalog')} ({catalogResults.length})
+          <button
+            role="tab"
+            aria-selected={activeTab === 'catalog'}
+            style={segStyle(activeTab === 'catalog')}
+            onClick={() => setActiveTab('catalog')}
+          >
+            <CloudDownload size={13} />
+            <span>{t('op.tabCatalog')}</span>
+            <span style={countStyle(activeTab === 'catalog')}>{catalogResults.length}</span>
           </button>
-          <button style={tabBtn('custom', t('op.tabCustom'))} onClick={() => setActiveTab('custom')}>
-            {t('op.tabCustom')}
+          <button
+            role="tab"
+            aria-selected={activeTab === 'custom'}
+            style={segStyle(activeTab === 'custom')}
+            onClick={() => setActiveTab('custom')}
+          >
+            <Plus size={13} />
+            <span>{t('op.tabCustom')}</span>
           </button>
-          <button style={tabBtn('sync', t('op.syncTab'))} onClick={() => setActiveTab('sync')}>
-            {t('op.syncTab')}
+          <button
+            role="tab"
+            aria-selected={activeTab === 'sync'}
+            style={segStyle(activeTab === 'sync')}
+            onClick={() => setActiveTab('sync')}
+          >
+            <RefreshCw size={13} />
+            <span>{t('op.syncTab')}</span>
           </button>
         </div>
 
@@ -2124,9 +2212,32 @@ export const KeysPage: React.FC = () => {
         {/* Divider under the toolbar separates the filter controls from the
             provider card grid (the catalog tab has the same rule). */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0, borderBottom: '1px solid var(--card-border)', paddingBottom: 12, marginBottom: 14 }}>
-          {/* Origin filter leads the toolbar: it is the coarsest selector, so
-              it sits leftmost and the search/filter controls refine within it
-              (same layout as the catalog tab). */}
+          {/* Takedown state leads the toolbar as a segmented control (three
+              fixed states, no need to open a menu): disabled providers stay
+              in the list, so this is the fastest way to find them. Origin
+              below it then narrows within the chosen state. */}
+          <div role="group" aria-label={t('op.filterStatus')} style={{ ...segTrackStyle, flexShrink: 0 }}>
+            {([
+              ['all', t('op.filterStatusAll'), ocProviders.length],
+              ['enabled', t('op.filterStatusEnabled'), ocProviders.length - takedownCount],
+              ['disabled', t('op.filterStatusDisabled'), takedownCount],
+            ] as const).map(([value, label, count]) => {
+              const active = connectedStatus === value;
+              return (
+                <button
+                  key={value}
+                  aria-pressed={active}
+                  style={segStyle(active, 'var(--text-sm)')}
+                  onClick={() => { setConnectedStatus(value); setConnectedPage(1); }}
+                >
+                  <span>{label}</span>
+                  <span style={countStyle(active)}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+          {/* Origin filter: the second-coarsest selector, refining the
+              takedown state above (same shape as the catalog tab's). */}
           <Combobox
             style={{ fontSize: 'var(--text-sm)', flexShrink: 0, width: 'fit-content', minWidth: 180 }}
             forceFilter
@@ -2193,19 +2304,74 @@ export const KeysPage: React.FC = () => {
             // Key writes need a registered integration (see canWriteCredential).
             const keyWritable = canWriteCredential(p.id);
             return (
-            <div key={p.id} className="sub-card" style={cardFlex}>
+            <div
+              key={p.id}
+              className="sub-card provider-card"
+              data-disabled={p.disabled ? 'true' : undefined}
+              // Takedown is a card-level state, so the surface says it too: a
+              // rose tint + border that no enabled card can show. A small chip
+              // alone was indistinguishable from the other identity chips.
+              style={p.disabled ? {
+                ...cardFlex,
+                background: 'color-mix(in srgb, var(--accent-rose) 4%, var(--bg-elev))',
+                borderColor: 'color-mix(in srgb, var(--accent-rose) 40%, var(--card-border))',
+              } : cardFlex}
+            >
               {/* Header: identity left, credential status pill right. The
                   pill is the card's health readout AND its maintenance entry
                   (dot + live/total), so the corner carries information instead
                   of a row of identical icon buttons. */}
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                <ProviderLogo id={p.id} logo={p.logo} size={44} />
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
-                  <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', fontFamily: FONT_MONO, lineHeight: 1.25, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }} title={p.id}>{p.id}</span>
-                  {p.name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>{p.name}</span>}
+                <div style={p.disabled ? { filter: 'grayscale(1)', opacity: 0.55 } : undefined}>
+                  <ProviderLogo id={p.id} logo={p.logo} size={48} />
                 </div>
-                {caps && credentialList.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
+                  {/* Human name leads; the provider id is the canonical key so
+                      it stays visible, just demoted to monospace secondary. */}
+                  <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name ?? p.id}>{p.name ?? p.id}</span>
+                  {p.name && p.name !== p.id && <span style={{ fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.id}>{p.id}</span>}
+                  {/* Endpoint sits under the name, not on its own full-width
+                      row: the header already spends 48px on the logo, and a
+                      separate band left a dead gap to the right of short ids. */}
+                  {p.baseURL ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0 }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.baseURL}>
+                        {p.baseURL}
+                      </span>
+                      <button
+                        className="btn btn-sm"
+                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 2px', height: 16, minHeight: 16, color: copiedEndpoint === p.id ? 'var(--accent)' : 'var(--text-dim)' }}
+                        title={t('common.copy')}
+                        aria-label={t('common.copy')}
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(p.baseURL ?? '').then(() => {
+                            setCopiedEndpoint(p.id);
+                            window.setTimeout(() => setCopiedEndpoint((cur) => (cur === p.id ? null : cur)), 1200);
+                          });
+                        }}
+                      >
+                        {copiedEndpoint === p.id ? <Check size={11} /> : <Copy size={11} />}
+                      </button>
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontStyle: 'italic' }}>{t('op.noBaseUrl')}</span>
+                  )}
+                  {/* Takedown marker lives with the identity (not among the
+                      capability chips) and carries the operator's reason. */}
+                  {p.disabled && (
+                    <span
+                      style={takedownBadgeStyle}
+                      title={p.disabledReason ? `${t('op.providerDisabledBadge')} — ${p.disabledReason}` : t('op.providerDisabledBadge')}
+                    >
+                      <PowerOff size={11} />
+                      {t('op.providerDisabledBadge')}
+                    </span>
+                  )}
+                </div>
+              {caps && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  {credentialList.length > 0 ? (
+                    <>
                     {/* Read-only health readout — NOT a control. */}
                     <span
                       style={{
@@ -2245,39 +2411,22 @@ export const KeysPage: React.FC = () => {
                     >
                       <Key size={12} />
                     </button>
-                  </div>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.credentialsNone')}</span>
+                  )}
+                </div>
                 )}
               </div>
 
-              {/* Meta: endpoint on its own line (single-line ellipsis keeps
-                  every card's meta block the same height), then identity chips
-                  with the provider utilities right-aligned on the same row.
-                  `models` is the DEF-NODE list and is the routing truth: the
-                  boot pool excludes a provider with no maintained models even
-                  when the catalog knows some (see the "[OCR] excluded" log). */}
+              {/* Meta: identity chips on the left, provider utilities
+                  right-aligned on the same row. `models` is the DEF-NODE list
+                  and is the routing truth: the boot pool excludes a provider
+                  with no maintained models even when the catalog knows some
+                  (see the "[OCR] excluded" log). */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-                {/* The endpoint line is always present; an absent baseURL is
-                    stated instead of leaving a silently empty row. */}
-                {p.baseURL ? (
-                  <span style={{ fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.baseURL}>
-                    {p.baseURL}
-                  </span>
-                ) : (
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
-                    {t('op.noBaseUrl')}
-                  </span>
-                )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, rowGap: 4, flexWrap: 'wrap' }}>
-                    {p.disabled && (
-                      <span
-                        style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
-                        title={p.disabledReason ? `${t('op.providerDisabledBadge')} — ${p.disabledReason}` : t('op.providerDisabledBadge')}
-                      >
-                        <PowerOff size={9} />
-                        {t('op.providerDisabledBadge')}
-                      </span>
-                    )}
                     {displayNpm(p.npm) && (
                       <span
                         style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
@@ -2316,51 +2465,14 @@ export const KeysPage: React.FC = () => {
                         descriptions), identical on every card — a per-card
                         repetition carried zero information. */}
                   </div>
-                  {/* Provider utilities: quiet ghost icons in a delimited
-                      group, sharing the chips row so no row is half empty. */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, paddingLeft: 8, borderLeft: '1px solid var(--divider)' }}>
-                    {p.defNode && (
-                      <button
-                        className="btn btn-sm"
-                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--text-dim)' }}
-                        disabled={busy}
-                        title={t('op.editDefTitle')}
-                        aria-label={t('op.editDefTitle')}
-                        onClick={() => openDefEdit(p)}
-                      >
-                        <Pencil size={12} />
-                      </button>
-                    )}
-                    <button
-                      className="btn btn-sm"
-                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: p.disabled ? 'var(--accent-emerald)' : 'var(--text-dim)' }}
-                      disabled={busy || testingIds.size > 0 || testAll.running}
-                      title={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
-                      aria-label={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
-                      onClick={() => handleToggleProviderDisabled(p)}
-                    >
-                      {p.disabled ? <Power size={12} /> : <PowerOff size={12} />}
-                    </button>
-                    <button
-                      className="btn btn-sm"
-                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--accent-rose)' }}
-                      disabled={busy || testingIds.size > 0 || testAll.running}
-                      title={t('op.deleteBtn')}
-                      aria-label={t('op.deleteBtn')}
-                      onClick={() => handleDelete(p)}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
                 </div>
               </div>
 
-              {/* Footer: the probe result gets its own line (squeezed beside
-                  three buttons it wrapped one token per line), then the action
-                  row. `margin-top: auto` + the divider keep button rows aligned
-                  across a grid row regardless of how much meta each card
-                  carries. */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 'auto', paddingTop: 10, borderTop: '1px solid var(--divider)' }}>
+              {/* Footer: probe result line first, then the action row. No
+                  divider — the card already carries one frame, and a second
+                  hairline made every card read as two stacked boxes. Actions
+                  sit on the content axis (left), not on a trailing rail. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 'auto' }}>
                 {testResults[p.id] && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span
@@ -2401,9 +2513,13 @@ export const KeysPage: React.FC = () => {
                     )}
                   </div>
                 )}
-                {/* All actions left-aligned in chain-of-use order: the write
-                    action first, then the two diagnostics. */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                {/* Bottom rail: primary chain-of-use actions on the content
+                    axis, provider utilities (edit / takedown / delete) on the
+                    trailing edge — destructive controls stay away from the
+                    primary action and the card's mid-row stops carrying a
+                    second right-hand cluster under the health readout. */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-sm"
                     disabled={!keyWritable}
@@ -2436,6 +2552,43 @@ export const KeysPage: React.FC = () => {
                     >
                       <Cpu size={12} />
                       <span>{t('op.pmManage')}</span>
+                    </button>
+                  </div>
+                </div>
+                  {/* Provider utilities on the trailing edge: edit def-node,
+                      takedown toggle, delete. */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    {p.defNode && (
+                      <button
+                        className="btn btn-sm"
+                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--text-dim)' }}
+                        disabled={busy}
+                        title={t('op.editDefTitle')}
+                        aria-label={t('op.editDefTitle')}
+                        onClick={() => openDefEdit(p)}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-sm"
+                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: p.disabled ? 'var(--accent-emerald)' : 'var(--text-dim)' }}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                      title={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
+                      aria-label={t(p.disabled ? 'op.providerEnable' : 'op.providerDisable')}
+                      onClick={() => handleToggleProviderDisabled(p)}
+                    >
+                      {p.disabled ? <Power size={12} /> : <PowerOff size={12} />}
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 6px', height: 24, minHeight: 24, color: 'var(--accent-rose)' }}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                      title={t('op.deleteBtn')}
+                      aria-label={t('op.deleteBtn')}
+                      onClick={() => handleDelete(p)}
+                    >
+                      <Trash2 size={12} />
                     </button>
                   </div>
                 </div>
@@ -2539,18 +2692,23 @@ export const KeysPage: React.FC = () => {
               // Connected rows keep their place in the grid: static badge plus a
               // quick "add credential" affordance that opens the same inline key
               // editor as a fresh connect (connectProvider adds one credential).
-              <div key={c.id} className="sub-card" style={{ ...cardFlex, padding: 12 }}>
+              <div key={c.id} className="sub-card provider-card" style={cardFlex}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <ProviderLogo id={c.id} logo={c.logo} size={38} />
+                  <ProviderLogo id={c.id} logo={c.logo} size={42} />
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
+                    {/* id + protocol share the secondary line so the display
+                        name gets the full card width (it was truncating at
+                        "Volcengine A…" whenever the npm badge sat beside it). */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
+                      {c.npm && (
+                        <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '0 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
+                          {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {c.npm && (
-                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
-                      {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
-                    </span>
-                  )}
                   {c.pluginOrigin && (
                     <span
                       style={{ fontSize: 'var(--text-2xs)', color: 'var(--accent)', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderRadius: 4, padding: '1px 4px' }}
