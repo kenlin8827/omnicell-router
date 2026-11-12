@@ -72,7 +72,7 @@ const bufferedResult = (over: Partial<ExecutionResult> = {}): ExecutionResult =>
     inplaceRetries: 0,
     latencyMs: 1200,
     sessionId: 'sess-1',
-    traceId: 'trace-1',
+    requestId: 'trace-1',
     actualEffort: 'low',
     requestedEffort: 'low',
     ...over,
@@ -176,7 +176,7 @@ describe('client-side chunk forwarding', () => {
 
 describe('X-OCR header split', () => {
   it('routing block carries no completion-time lies', () => {
-    const h = buildChatOcrRoutingHeaders({ modelUsed: 'p/m', tierUsed: 'lite', traceId: 't' }, 'gate');
+    const h = buildChatOcrRoutingHeaders({ modelUsed: 'p/m', tierUsed: 'lite', requestId: 't' }, 'gate');
     expect(h['X-OCR-Model']).toBe('p/m');
     expect(h['X-OCR-Latency-MS']).toBeUndefined();
     expect(h['X-OCR-Failover']).toBeUndefined();
@@ -205,7 +205,7 @@ describe('chat pipeline relay ordering', () => {
       process: async (req: ChatCompletionRequest, ctx: Record<string, unknown>, relay?: any) => {
         seen.hasRelay = relay !== undefined;
         if (!relay) return bufferedResult();
-        relay.stageRouting({ modelUsed: 'p/m', tierUsed: 'lite', layerUsed: 'layer0', traceId: 't', sessionId: 's' });
+        relay.stageRouting({ modelUsed: 'p/m', tierUsed: 'lite', layerUsed: 'layer0', requestId: 't', sessionId: 's' });
         relay.onChunk(chunk({ role: 'assistant', content: 'a' }));
         markWritten();
         await written; // proves the byte went out before the call resolved
@@ -233,6 +233,7 @@ describe('chat pipeline relay ordering', () => {
     // headers were the routing subset only
     const headers = ops.find((o) => o.op === 'beginSse')?.arg as Record<string, string>;
     expect(headers['X-OCR-Model']).toBe('p/m');
+    expect(headers['X-OCR-Request-ID']).toBe('t');
     expect(headers['X-OCR-Latency-MS']).toBeUndefined();
   });
 
@@ -328,7 +329,7 @@ describe('provider streaming leg (capture + error class)', () => {
       const stream = await provider.createStream(
         { model: 'x', messages: [] } as ChatCompletionRequest,
         modelReg(),
-        { recorder: fakeRecorder(events), sessionId: 's', traceId: 't', model: 'x' } as any
+        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
       );
       for await (const _c of stream) void _c;
     } finally {
@@ -344,7 +345,7 @@ describe('provider streaming leg (capture + error class)', () => {
     // (Range vs request-ts is pinned in capture.test.ts — the raw event here
     // carries no ts; the real recorder assigns it at persist time.)
     expect(typeof events[1].firstByteTs).toBe('number');
-    expect(events.map((e) => e.spanId)[0]).toBe(events[1].spanId);
+    expect(events.map((e) => e.exchangeId)[0]).toBe(events[1].exchangeId);
   });
 
   it('raises UpstreamError (not a bare Error) on a non-2xx head, and pairs the event', async () => {
@@ -366,7 +367,7 @@ describe('provider streaming leg (capture + error class)', () => {
       await provider.createStream(
         { model: 'x', messages: [] } as ChatCompletionRequest,
         modelReg(),
-        { recorder: fakeRecorder(events), sessionId: 's', traceId: 't', model: 'x' } as any
+        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
       );
     } catch (err) {
       caught = err;

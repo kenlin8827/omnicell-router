@@ -120,7 +120,7 @@ omnicell-router/
                                       │
                                       ▼
                [Step 6: 链路诊断标头注入与客户端流式交付]
-                - 注入 X-OCR-Trace-ID, X-OCR-Tier, X-OCR-Thinking-Source 等标头
+                - 注入 X-OCR-Request-ID、X-OCR-Session-ID、X-OCR-Tier、X-OCR-Thinking-Source 等标头
                 - 执行 SSE 重新分块切片并推向客户端
 ```
 

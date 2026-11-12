@@ -892,7 +892,7 @@ const RoundCard: React.FC<{
           )}
           {round.steps.map((st, i) => (
             <TranscriptBlock
-              key={`${st.turn.traceId}-${st.idx}`}
+              key={`${st.turn.requestId}-${st.idx}`}
               st={st}
               label={`${ordinal}-${i + 1}`}
               date={date}
@@ -981,7 +981,7 @@ const FocusRoundView: React.FC<{
       )}
       {round.steps.map((st, i) => (
         <TranscriptBlock
-          key={`${st.turn.traceId}-${st.idx}`}
+          key={`${st.turn.requestId}-${st.idx}`}
           st={st}
           label={`${ordinal}-${i + 1}`}
           date={date}
@@ -1137,7 +1137,7 @@ export const SessionTranscript: React.FC<{
       ) : (
         shown.map((r, i) => (
           <RoundCard
-            key={`${r.steps[0]?.turn.traceId ?? 'r'}-${i}`}
+            key={`${r.steps[0]?.turn.requestId ?? 'r'}-${i}`}
             round={r}
             ordinal={i + 1 + roundOffset}
             date={date}

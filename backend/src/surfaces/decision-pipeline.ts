@@ -1,11 +1,10 @@
-import crypto from 'node:crypto';
 import { isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
 import { loadConfig } from '../config/index.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { SessionManager } from '../session/session-manager.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext } from '../observability/http-exchange.js';
 import type { UpstreamEventContext } from '../observability/upstream-events.js';
-import { resolveTraceId } from '../observability/trace-id.js';
+import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { validateSystemoneRequest } from '../protocols/systemone/convert.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -167,7 +166,7 @@ export async function runDecisionSurface(
   // nothing, like the chat leg) and before execution. Skipped whole when the
   // gate is off: zero events, byte-identical to the pre-capture path. The
   // client leg covers the gateway's OWN inbound exchange; the SAME identity
-  // (trace/session) also seeds an UpstreamEventContext passed to the
+  // (requestId/sessionId) also seeds an UpstreamEventContext passed to the
   // executor, so the provider leg (the native vendor call or the synthesized
   // conversion chat call, per the model's wire)
   // emits its request/response pair too — the full chain is visible
@@ -184,13 +183,16 @@ export async function runDecisionSurface(
     // callee edits included) is logged and the request proceeds unrecorded.
     try {
     const pctx = t.captureProcessContext();
-    // traceId: mirror orchestrator.process — transport-captured headers first
-    // (fastifyRequest / clientRequest), then the plain transport headers,
-    // minting a 32-hex id only when no header source exists at all.
+    // Client correlation value: transport-captured headers first
+    // (fastifyRequest / clientRequest), then the plain transport headers.
+    // Optional (ADR-0021) — absent when the caller sent none; the gateway's
+    // own request id is minted below.
     const traceHeaders = pctx.fastifyRequest?.headers ?? pctx.clientRequest?.headers ?? t.headers;
-    const traceId = traceHeaders
-      ? resolveTraceId({ headers: traceHeaders }, 'client-or-mint').traceId
-      : crypto.randomUUID().replace(/-/g, '').slice(0, 32);
+    const clientRequestId = traceHeaders
+      ? resolveClientRequestId({ headers: traceHeaders }).clientRequestId
+      : undefined;
+    // Gateway-owned per-request id (ADR-0021) — the capture turn-join key.
+    const requestId = mintRequestId();
     // sessionId: archive key ONLY (same SessionManager entry the chat leg
     // pre-resolves through; no ratchet, no turn registration).
     const keyId = captureKeyIdentity(pctx.fastifyRequest ?? pctx.clientRequest)?.id;
@@ -208,7 +210,8 @@ export async function runDecisionSurface(
       req: pctx.fastifyRequest ?? pctx.clientRequest,
       body: sysBody,
       sessionId,
-      traceId,
+      clientRequestId,
+      requestId,
       model: effective,
       conversationKey,
     });
@@ -223,7 +226,8 @@ export async function runDecisionSurface(
     upstreamEventContext = {
       recorder,
       sessionId,
-      traceId,
+      clientRequestId,
+      requestId,
       model: effective,
       apiKey: captureKeyIdentity(pctx.fastifyRequest),
       conversationKey,

@@ -15,7 +15,8 @@ export interface StreamRoutingFacts {
   sessionId?: string;
   sessionRatchetApplied?: boolean;
   sessionLookupType?: string;
-  traceId?: string;
+  /** Gateway-owned request id (ADR-0021). */
+  requestId?: string;
   requestedEffort?: ReasoningEffort;
   variantUsed?: string;
 }

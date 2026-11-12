@@ -51,7 +51,7 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
   const port = Number(u.port) || (secure ? 443 : 80);
   const headers: Record<string, string | string[]> = { ...plan.requestHeaders, host: u.host };
   const captureCtx: UpstreamEventContext | undefined = plan.capture?.recorder.isEnabled() ? plan.capture : undefined;
-  const spanId = emitUpstreamRequestOnce(captureCtx, {
+  const exchangeId = emitUpstreamRequestOnce(captureCtx, {
     url: plan.url,
     method: 'POST',
     requestHeaders: headers as Record<string, string>,
@@ -61,7 +61,7 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
   await new Promise<void>((resolve) => {
     const fail = (status: number, message: string, err?: unknown): void => {
       emitUpstreamFailureOnce(captureCtx, {
-        spanId,
+        exchangeId,
         url: plan.url,
         method: 'POST',
         status,
@@ -82,7 +82,7 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
       });
       up.on('end', () => {
         emitUpstreamResponseOnce(captureCtx, {
-          spanId,
+          exchangeId,
           url: plan.url,
           method: 'POST',
           status: up.statusCode || 502,
@@ -95,7 +95,7 @@ export async function relayDirectForward(t: TransportContext, plan: DirectForwar
       });
       up.on('error', (err) => {
         emitUpstreamFailureOnce(captureCtx, {
-          spanId,
+          exchangeId,
           url: plan.url,
           method: 'POST',
           status: up.statusCode || 502,

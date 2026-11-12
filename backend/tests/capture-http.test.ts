@@ -35,7 +35,7 @@ const IS_BUN = typeof (globalThis as { Bun?: unknown }).Bun === 'object';
 interface ClientEvent {
   status: string;
   phase: string;
-  spanId: string;
+  exchangeId: string;
   wire: {
     requestLine: string;
     requestHeaders: Record<string, string>;
@@ -123,7 +123,7 @@ describe('capture-http (Fastify leg event shape, inject)', () => {
     const req = events.find((e) => e.phase === 'request')!;
     const resp = events.find((e) => e.phase === 'response')!;
     assert.ok(req && resp, 'both phases present');
-    assert.equal(req.spanId, resp.spanId, 'request and response events pair on spanId');
+    assert.equal(req.exchangeId, resp.exchangeId, 'request and response events pair on exchangeId');
 
     // Request-side shape.
     assert.equal(req.wire.requestLine, 'POST /v1/chat/completions HTTP/1.1', 'requestLine non-empty origin-form');

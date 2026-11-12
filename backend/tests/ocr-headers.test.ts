@@ -34,7 +34,7 @@ const BASE_13 = [
   'X-OCR-Session-ID',
   'X-OCR-Session-Ratchet',
   'X-OCR-Session-Lookup',
-  'X-OCR-Trace-ID',
+  'X-OCR-Request-ID',
   'X-OCR-Latency-MS',
 ];
 
@@ -57,7 +57,7 @@ describe('buildChatOcrHeaders — frozen base set', () => {
         sessionId: 'sess-7',
         sessionRatchetApplied: true,
         sessionLookupType: 'prefix_chain',
-        traceId: 'trace-7',
+        requestId: 'trace-7',
       }),
       'lite'
     );
@@ -72,7 +72,7 @@ describe('buildChatOcrHeaders — frozen base set', () => {
     assert.equal(headers['X-OCR-Session-ID'], 'sess-7');
     assert.equal(headers['X-OCR-Session-Ratchet'], 'true');
     assert.equal(headers['X-OCR-Session-Lookup'], 'prefix_chain');
-    assert.equal(headers['X-OCR-Trace-ID'], 'trace-7');
+    assert.equal(headers['X-OCR-Request-ID'], 'trace-7');
     assert.equal(headers['X-OCR-Latency-MS'], '42');
   });
 
@@ -176,7 +176,7 @@ describe('buildChatOcrHeaders — stub tolerance (frozen ?? / || defaults)', () 
     assert.equal(headers['X-OCR-Session-ID'], '');
     assert.equal(headers['X-OCR-Session-Ratchet'], 'false');
     assert.equal(headers['X-OCR-Session-Lookup'], '');
-    assert.equal(headers['X-OCR-Trace-ID'], '');
+    assert.equal(headers['X-OCR-Request-ID'], '');
     assert.equal(headers['X-OCR-Latency-MS'], '0');
   });
 

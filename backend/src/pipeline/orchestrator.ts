@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 import { ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChunk } from '../types/openai.js';
 import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
@@ -59,7 +58,7 @@ import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
-import { resolveTraceId } from '../observability/trace-id.js';
+import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
@@ -158,15 +157,15 @@ function hasVisibleOutput(chunk: ChatCompletionChunk): boolean {
  * Pull a non-sensitive subset of inbound headers for the trace's
  * `clientHeaders` field. Three categories:
  *   - user-agent / accept-language — client fingerprint.
- *   - request id (x-request-id / x-trace-id / x-correlation-id / request-id /
- *     traceparent) — cross-service correlation, NOT a credential.
- * Authorization / x-api-key / cookies / anything else are intentionally
- * omitted (raw headers carry API keys). Fastify surfaces headers as
+ *   - clientRequestId (x-request-id / x-trace-id / x-correlation-id /
+ *     request-id / traceparent) — the caller's correlation value, NOT a
+ *     credential and never a key. Authorization / x-api-key / cookies /
+ *     anything else are intentionally omitted (raw headers carry API keys).
+ *     Fastify surfaces headers as
  * `string | string[] | undefined`; arrays collapse to their first value to
  * keep the field scalar. Returns undefined when nothing matched so the
  * trace stays compact for the common no-headers path.
  */
-const REQUEST_ID_KEYS = ['x-request-id', 'x-trace-id', 'x-correlation-id', 'request-id', 'traceparent'];
 
 /**
  * Pull the upstream target host from an inbound header map. On the MITM
@@ -190,7 +189,7 @@ function pickHeaderHost(
 
 function extractClientHeaders(
   headers?: Record<string, string | string[] | undefined>
-): { userAgent?: string; acceptLanguage?: string; requestId?: string } | undefined {
+): { userAgent?: string; acceptLanguage?: string; clientRequestId?: string } | undefined {
   if (!headers) return undefined;
   const pick = (key: string): string | undefined => {
     const v = headers[key] ?? headers[key.toLowerCase()];
@@ -200,16 +199,12 @@ function extractClientHeaders(
   };
   const ua = pick('user-agent');
   const al = pick('accept-language');
-  let rid: string | undefined;
-  for (const k of REQUEST_ID_KEYS) {
-    rid = pick(k);
-    if (rid) break;
-  }
+  const rid = resolveClientRequestId({ headers }).clientRequestId;
   if (ua === undefined && al === undefined && rid === undefined) return undefined;
   return {
     ...(ua !== undefined ? { userAgent: ua } : {}),
     ...(al !== undefined ? { acceptLanguage: al } : {}),
-    ...(rid !== undefined ? { requestId: rid } : {}),
+    ...(rid !== undefined ? { clientRequestId: rid } : {}),
   };
 }
 
@@ -318,7 +313,7 @@ export class PipelineOrchestrator {
       this.config.classifier,
       this.registry,
       this.config.systemone?.defaultModel,
-      // Decision-call capture identity: the outer turn's trace/session (only
+      // Decision-call capture identity: the outer turn's requestId/sessionId (only
       // exists while the capture master is on). The LAYER 2 DECISION applies
       // the recorder master gate (requestCapture.enabled) — when off it
       // passes nothing further, so this arg alone changes nothing today.
@@ -376,21 +371,20 @@ export class PipelineOrchestrator {
   ): Promise<ExecutionResult> {
     const captureEnabled = this.captureRecorder.isEnabled();
 
-    // Capture pipeline state — see observability/http-exchange.ts and
-    // observability/upstream-events.ts for the wire emit contract. The
-    // `traceId` shared across all four events is sourced from the inbound
-    // request on BOTH legs (W3C `traceparent`, `x-request-id`, ...) so the
-    // gateway stays transparent in distributed traces: the Fastify leg reads
-    // its own request headers, the MITM leg the original clientRequest
-    // headers, then plain `headers` (legacy/test callers). Only when NO
-    // header source exists at all do we mint a fresh 32-hex id
-    // (OpenTelemetry compliant).
+    // Turn identity (ADR-0021), minted ONCE per request:
+    //   - `requestId` — the record key / console row id (ours);
+    //   - `clientRequestId` — the caller's correlation value (optional, may
+    //     repeat across requests; correlation only, never a key).
+    // Headers come from the transport that owns the leg: the Fastify leg
+    // reads its own request, the MITM leg the original clientRequest headers,
+    // then plain `headers` (in-process/test callers).
     const traceHeaders =
       context?.fastifyRequest?.headers ?? context?.clientRequest?.headers ?? context?.headers;
-    const traceResolution = traceHeaders
-      ? resolveTraceId({ headers: traceHeaders }, 'client-or-mint')
-      : { traceId: crypto.randomUUID().replace(/-/g, '').slice(0, 32), source: 'minted' as const };
-    const captureOutTraceId = traceResolution.traceId;
+    const clientRequest = traceHeaders ? resolveClientRequestId({ headers: traceHeaders }) : {};
+    const turnIdentity = {
+      requestId: mintRequestId(),
+      ...(clientRequest.clientRequestId ? { clientRequestId: clientRequest.clientRequestId } : {}),
+    };
 
     let captureSessionId = '';
     let preResolvedSession: SessionResolveResult | undefined;
@@ -441,7 +435,8 @@ export class PipelineOrchestrator {
         apiKey: keyIdentity,
         body: snapshotRequest,
         sessionId: captureSessionId,
-        traceId: captureOutTraceId,
+        clientRequestId: turnIdentity.clientRequestId,
+        requestId: turnIdentity.requestId,
         model: request.model || 'auto',
         conversationKey,
       });
@@ -453,7 +448,8 @@ export class PipelineOrchestrator {
       upstreamEventContext = {
         recorder: this.captureRecorder,
         sessionId: captureSessionId,
-        traceId: captureOutTraceId,
+        clientRequestId: turnIdentity.clientRequestId,
+        requestId: turnIdentity.requestId,
         model: request.model || 'auto',
         // Key attribution: the Fastify leg carries authInfo (attached by the
         // auth preHandler); MITM / master-key legs resolve to undefined and
@@ -468,7 +464,7 @@ export class PipelineOrchestrator {
       context,
       preResolvedSession,
       upstreamEventContext,
-      captureOutTraceId,
+      turnIdentity,
       relay
     );
   }
@@ -488,9 +484,11 @@ export class PipelineOrchestrator {
     context?: ProcessContext,
     preResolvedSession?: SessionResolveResult,
     upstreamEventContext?: UpstreamEventContext,
-    traceId?: string,
+    turnIdentity?: { requestId: string; clientRequestId?: string },
     relay?: StreamRelay
   ): Promise<ExecutionResult> {
+    const clientRequestId = turnIdentity?.clientRequestId;
+    const requestId = turnIdentity?.requestId ?? mintRequestId();
     const startTime = Date.now();
 
     // 1. Optimize message prefix order & resolve virtual routing models
@@ -812,7 +810,7 @@ export class PipelineOrchestrator {
         modelUsed: request.model || 'unknown',
         fallbackOccurred: false,
         sessionId,
-        traceId,
+        requestId,
         latencyMs: Date.now() - startTime,
       };
     }
@@ -1550,7 +1548,7 @@ export class PipelineOrchestrator {
               sessionId,
               sessionRatchetApplied: ratchetApplied,
               sessionLookupType: sessionResolve.lookupType,
-              traceId: traceId ?? 'unknown',
+              requestId,
               requestedEffort,
               variantUsed,
             },
@@ -1694,7 +1692,7 @@ export class PipelineOrchestrator {
             sessionId,
             sessionRatchetApplied: ratchetApplied,
             sessionLookupType: sessionResolve.lookupType,
-            traceId: traceId ?? 'unknown',
+            requestId,
             requestedEffort,
             variantUsed,
           },
@@ -1924,12 +1922,10 @@ export class PipelineOrchestrator {
         });
       }
     }
-
-    // 8. Session Trajectory Recording — the traceId is shared with the
-    // capture event stream (the OTel traceId sourced from the client request
-    // — see resolveTraceId). One id now joins capture events and the trace
-    // record, so a console reader can pull both streams by traceId.
-    const sharedTraceId = traceId ?? 'unknown';
+    // 8. Session Trajectory Recording. The record is keyed by its own
+    // `requestId` (ADR-0021); the caller's `clientRequestId` is stored beside
+    // it as correlation only, because a caller may reuse one value for every
+    // request of a conversation.
 
     // The summary names the user message THAT TRIGGERED this turn. A
     // tool-result continuation turn carries the whole history, so its last
@@ -1964,7 +1960,8 @@ export class PipelineOrchestrator {
     }
 
     this.traceTracker.record({
-      traceId: sharedTraceId,
+      requestId,
+      ...(clientRequestId ? { clientRequestId } : {}),
       sessionId,
       turnNumber: sessionTurnCount,
       timestamp: startTime,
@@ -2048,7 +2045,7 @@ export class PipelineOrchestrator {
       sessionId,
       sessionRatchetApplied: ratchetApplied,
       sessionLookupType: sessionResolve.lookupType,
-      traceId: sharedTraceId,
+      requestId,
       latencyMs,
       ttftMs,
       genMs,

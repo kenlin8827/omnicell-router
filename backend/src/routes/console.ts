@@ -5417,9 +5417,9 @@ export function registerConsoleRoutes(
 
   /**
    * Read the HTTP exchange events written by the capture pipeline.
-   * Each inference turn produces 2-4 events sharing the same `traceId`:
+   * Each inference turn produces 2-4 events sharing the same `requestId`:
    * client-request, gateway-response, upstream-request, upstream-response.
-   * The console joins them into one logical turn via `traceId` / `spanId`.
+   * The console joins them into one logical turn via `requestId`.
    */
   app.get('/api/admin/capture/:date/:file/events', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Maximize2, Minimize2, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency } from '../lib/format';
@@ -360,6 +360,64 @@ const EFFORT_SOURCE_KEY: Record<string, string> = {
   default: 'sessions.thinkSrcDefault',
 };
 const effortSourceKey = (src: string): string => EFFORT_SOURCE_KEY[src] ?? 'sessions.thinkSrcDefault';
+
+/**
+ * Micro-badge stating which side MINTED a session id (see SessionIdSource,
+ * backend/src/session/session-row.ts). The id's shape is not evidence: a client
+ * naming it (`x-conversation-id`, embedded metadata.user_id, request.user) is
+ * adopted verbatim, so a 36-char UUID in this column is the CLIENT's choice,
+ * not a verbose gateway — the gateway's own mint is `sess_` + 16 hex. Icon-only
+ * so the id stays the row's subject; the tooltip carries the sentence, and
+ * aria-label keeps the word available to screen readers. Rendered IN FRONT of
+ * the id: as a prefix it labels the value that follows, and it is not the
+ * first thing an ellipsized cell drops.
+ *
+ * Colour: the CHIP stays neutral for both sides (`--chip-bg` / `--divider`, the
+ * same quiet treatment as the internal badge and the client-ref chips) and only
+ * the GLYPH is tinted. Provenance is not a status, so it must not paint blocks
+ * of accent into the first column — on this gateway the client side is the
+ * COMMON case (every WorkBuddy turn names its own id), and an accent block per
+ * row would read as a warning and compete with the accent's selection/focus
+ * meaning elsewhere. The tinted glyph keeps the one surprising fact ("the
+ * client chose this string") noticeable without shouting.
+ */
+function IdSourceBadge({
+  source,
+  t,
+  style,
+}: {
+  source: 'gateway' | 'client';
+  t: Translate;
+  style?: React.CSSProperties;
+}) {
+  const client = source === 'client';
+  const Icon = client ? Laptop : Server;
+  const label = t(client ? 'sessions.idSourceClient' : 'sessions.idSourceGateway');
+  return (
+    <span
+      title={t(client ? 'sessions.idSourceClientTip' : 'sessions.idSourceGatewayTip')}
+      role="img"
+      aria-label={label}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 16,
+        height: 16,
+        flex: 'none',
+        borderRadius: '4px',
+        verticalAlign: 'middle',
+        background: 'var(--chip-bg)',
+        border: '1px solid var(--divider)',
+        color: client ? 'var(--accent)' : 'var(--text-dim)',
+        cursor: 'help',
+        ...style,
+      }}
+    >
+      <Icon size={10} strokeWidth={2.4} />
+    </span>
+  );
+}
 
 /**
  * Tier-cell tooltip suffix: the LATEST turn's thinking-effort sample, lifted
@@ -1034,23 +1092,31 @@ export const SessionsPage: React.FC = () => {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    <span
-                      title={s.id}
-                      style={{
-                        cursor: 'copy',
-                        display: 'inline-block',
-                        maxWidth: '100%',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        verticalAlign: 'middle',
-                      }}
-                      onClick={async () => {
-                        const ok = await copyToClipboard(s.id);
-                        if (ok) toast.success(t('sessions.copiedSessionId'));
-                        else toast.error(t('sessions.copyFailed'));
-                      }}
-                    >
-                      {formatSessionId(s.id)}
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      {/* Minting side rides IN FRONT of the id (see
+                          IdSourceBadge): as a prefix it labels the value that
+                          follows, always stays visible when the cell ellipsizes
+                          (a trailing badge is the first thing a truncated row
+                          drops), and keeps the copy target = the id alone. */}
+                      {s.idSource && <IdSourceBadge source={s.idSource} t={t} />}
+                      <span
+                        title={s.id}
+                        style={{
+                          cursor: 'copy',
+                          flex: '1 1 auto',
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                        onClick={async () => {
+                          const ok = await copyToClipboard(s.id);
+                          if (ok) toast.success(t('sessions.copiedSessionId'));
+                          else toast.error(t('sessions.copyFailed'));
+                        }}
+                      >
+                        {formatSessionId(s.id)}
+                      </span>
                     </span>
                     {/* Internal marker: with the filter on, internal rows never
                         reach the client at all (server-side exclusion), so this
@@ -1121,7 +1187,7 @@ export const SessionsPage: React.FC = () => {
                             <span
                               style={{
                                 flex: 'none',
-                                fontSize: '9px',
+                                fontSize: 'var(--text-3xs)',
                                 letterSpacing: '0.08em',
                                 textTransform: 'uppercase',
                                 color: 'var(--text-dim)',
@@ -1606,7 +1672,45 @@ export const SessionsPage: React.FC = () => {
                 wordBreak: 'break-all',
               }}
             >
-              <span>{timeline.session.id}</span>
+              <span>
+                {/* Same minting-side marker as the table row, IN FRONT of the id
+                    for the same reason (it labels the value that follows). The
+                    dialog keeps the WORD beside the icon: it is where the
+                    operator decides whether the id's length is the client's
+                    choice or the gateway's, and a bare tooltip would hide it. */}
+                {timeline.session.idSource && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      marginRight: 8,
+                      verticalAlign: 'middle',
+                    }}
+                  >
+                    <IdSourceBadge source={timeline.session.idSource} t={t} />
+                    <span
+                      style={{
+                        fontFamily: 'inherit',
+                        fontSize: 'var(--text-2xs)',
+                        letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                        color:
+                          timeline.session.idSource === 'client'
+                            ? 'var(--accent)'
+                            : 'var(--text-dim)',
+                      }}
+                    >
+                      {t(
+                        timeline.session.idSource === 'client'
+                          ? 'sessions.idSourceClient'
+                          : 'sessions.idSourceGateway'
+                      )}
+                    </span>
+                  </span>
+                )}
+                {timeline.session.id}
+              </span>
               {/* The row can only afford a truncated prefix of a client-minted
                   conversation id; this dialog is where the FULL value is
                   readable and copyable (ADR-0002 §1). */}
@@ -2247,7 +2351,7 @@ export const SessionsPage: React.FC = () => {
                         ? tr.execution.stalledMs / tr.execution.genMs
                         : undefined;
                     return (
-                    <tr key={tr.traceId} style={{ borderBottom: '1px solid var(--divider)' }}>
+                    <tr key={tr.requestId} style={{ borderBottom: '1px solid var(--divider)' }}>
                       <td style={DETAIL_TD_CENTER}>#{tr.turnNumber}</td>
                       <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</td>
                       <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>

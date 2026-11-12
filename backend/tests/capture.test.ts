@@ -390,12 +390,12 @@ describe('CaptureRecorder', () => {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 4096 });
       const wire = { requestLine: '', requestHeaders: {}, requestBody: '', responseLine: '', status: 0, responseHeaders: {}, responseBody: '' };
       // Turn 1 (ok): full 4-event cycle.
-      for (const [direction, phase, spanId] of [
+      for (const [direction, phase, exchangeId] of [
         ['client', 'request', 's1'], ['upstream', 'request', 's2'],
         ['upstream', 'response', 's2'], ['client', 'response', 's1'],
       ] as const) {
         await rec.recordEvent({
-          eventType: 'http-exchange', direction, phase, spanId, traceId: 't1',
+          eventType: 'http-exchange', direction, phase, exchangeId, requestId: 't1',
           sessionId: 'sess_evt', model: 'auto', status: 'ok',
           wire: direction === 'client' && phase === 'request'
             ? { ...wire, requestBody: JSON.stringify({ messages: [{ role: 'user', content: '事件流预览文本' }] }) }
@@ -403,13 +403,13 @@ describe('CaptureRecorder', () => {
         });
       }
       // Turn 2 (failed): upstream response is an error → ONE failed turn,
-      // even though a gateway-response error event also carries the traceId.
-      for (const [direction, phase, spanId, status] of [
+      // even though a gateway-response error event also carries the requestId.
+      for (const [direction, phase, exchangeId, status] of [
         ['client', 'request', 's3', 'ok'], ['upstream', 'request', 's4', 'ok'],
         ['upstream', 'response', 's4', 'error'], ['client', 'response', 's3', 'error'],
       ] as const) {
         await rec.recordEvent({
-          eventType: 'http-exchange', direction, phase, spanId, traceId: 't2',
+          eventType: 'http-exchange', direction, phase, exchangeId, requestId: 't2',
           sessionId: 'sess_evt', model: 'auto', status, wire,
         });
       }
@@ -492,8 +492,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'request',
-      spanId: wireId,
-      traceId: correlationId,
+      exchangeId: wireId,
+      requestId: correlationId,
       sessionId,
       model,
       status: 'ok',
@@ -512,8 +512,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'upstream',
       phase: 'request',
-      spanId: `${wireId}_out`,
-      traceId: correlationId,
+      exchangeId: `${wireId}_out`,
+      requestId: correlationId,
       sessionId,
       model,
       status: 'ok',
@@ -532,8 +532,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'upstream',
       phase: 'response',
-      spanId: `${wireId}_out`,
-      traceId: correlationId,
+      exchangeId: `${wireId}_out`,
+      requestId: correlationId,
       sessionId,
       model,
       status: opts.outboundError ? 'error' : 'ok',
@@ -553,8 +553,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'response',
-      spanId: wireId,
-      traceId: correlationId,
+      exchangeId: wireId,
+      requestId: correlationId,
       sessionId,
       model,
       status: opts.inboundStatus && opts.inboundStatus >= 400 ? 'error' : 'ok',
@@ -585,17 +585,17 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(linesB.length, 4, 'turn B writes 4 events into its own session file');
   });
 
-  it('groups events into logical turns by traceId (groupEventsIntoTurns)', () => {
-    const traceId = 'trace_grp_1';
+  it('groups events into logical turns by requestId (groupEventsIntoTurns)', () => {
+    const requestId = 'trace_grp_1';
     const events = [
       // client req (ts 1000)
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
       // upstream req (ts 1005)
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'b', ts: 1005, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w2', id: 'b', ts: 1005, wire: emptyWire() } as any,
       // upstream resp (ts 1500)
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'c', ts: 1500, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w2', id: 'c', ts: 1500, wire: emptyWire() } as any,
       // client resp (ts 1520)
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
     ];
     const turns = CaptureRecorder.groupEventsIntoTurns(events);
     assert.equal(turns.length, 1);
@@ -613,21 +613,55 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(t.gatewayGenMs, undefined);
   });
 
+  it('keeps two requests apart when the caller reuses ONE clientRequestId (ADR-0021)', () => {
+    // Field shape: one client reuses a single traceparent trace-id for a whole
+    // conversation. Capture turns key on the gateway requestId, so the two
+    // requests stay two turns instead of merging into one.
+    const clientRequestId = '570cec004726436b8a6abb220f621bff';
+    const mk = (
+      requestId: string,
+      exchangeId: string,
+      id: string,
+      ts: number,
+      direction: 'client' | 'upstream',
+      phase: 'request' | 'response'
+    ) =>
+      ({ eventType: 'http-exchange', direction, phase, requestId, exchangeId, clientRequestId, sessionId: 's', model: 'auto', status: 'ok', id, ts, wire: emptyWire() } as any);
+    const events = [
+      mk('req_a', 'a1', 'a-req', 1000, 'client', 'request'),
+      mk('req_a', 'a2', 'a-up-req', 1005, 'upstream', 'request'),
+      mk('req_a', 'a2', 'a-up-res', 1500, 'upstream', 'response'),
+      mk('req_a', 'a1', 'a-res', 1520, 'client', 'response'),
+      mk('req_b', 'b1', 'b-req', 2000, 'client', 'request'),
+      mk('req_b', 'b2', 'b-up-req', 2005, 'upstream', 'request'),
+      mk('req_b', 'b2', 'b-up-res', 2500, 'upstream', 'response'),
+      mk('req_b', 'b1', 'b-res', 2520, 'client', 'response'),
+    ];
+    const turns = CaptureRecorder.groupEventsIntoTurns(events);
+    assert.equal(turns.length, 2, 'one turn per request, not per caller correlation value');
+    assert.deepEqual(turns.map(t => t.requestId), ['req_a', 'req_b']);
+    assert.equal(turns[0].gatewayResponse?.id, 'a-res');
+    assert.equal(turns[1].gatewayResponse?.id, 'b-res');
+    assert.equal(turns[0].upstreamLatencyMs, 1500 - 1005);
+    assert.equal(turns[1].upstreamLatencyMs, 2500 - 2005);
+    assert.ok(turns.every(t => t.clientRequestId === clientRequestId), 'correlation value carried over');
+  });
+
   it('keeps the l2-decision leg in separate slots (not overwritten by the serving leg)', () => {
     // One routed turn with an L2 decision leg: decision req/resp fire FIRST, then
     // the serving upstream pair. The decision pair must survive in its own
     // decisionRequest/decisionResponse slots — the serving leg's last-write-wins
     // merge must never erase it, and neither pair may pollute the other.
-    const traceId = 'trace_grp_decision';
+    const requestId = 'trace_grp_decision';
     const events = [
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
-      // decision req/resp (purpose l2-decision, its own spanId)
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'l2-decision-model', status: 'ok', spanId: 'w2', id: 'j1', ts: 1005, purpose: 'l2-decision', wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'l2-decision-model', status: 'ok', spanId: 'w2', id: 'j2', ts: 1300, firstByteTs: 1200, purpose: 'l2-decision', wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
+      // decision req/resp (purpose l2-decision, its own exchangeId)
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', requestId, sessionId: 's', model: 'l2-decision-model', status: 'ok', exchangeId: 'w2', id: 'j1', ts: 1005, purpose: 'l2-decision', wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId, sessionId: 's', model: 'l2-decision-model', status: 'ok', exchangeId: 'w2', id: 'j2', ts: 1300, firstByteTs: 1200, purpose: 'l2-decision', wire: emptyWire() } as any,
       // serving upstream req/resp
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w3', id: 'b', ts: 1310, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w3', id: 'c', ts: 1500, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w3', id: 'b', ts: 1310, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w3', id: 'c', ts: 1500, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
     ];
     const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
     assert.equal(t.decisionRequest?.id, 'j1');
@@ -644,16 +678,16 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
   });
 
   it('derives TTFT and decode window from firstByteTs (TTFT/TPS split)', () => {
-    const traceId = 'trace_grp_2';
+    const requestId = 'trace_grp_2';
     const events = [
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'b', ts: 1005, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w2', id: 'b', ts: 1005, wire: emptyWire() } as any,
       // Upstream response: first chunk at 1150, fully received at 1500
       // → upstream TTFT = 145, decode window = 350.
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'c', ts: 1500, firstByteTs: 1150, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w2', id: 'c', ts: 1500, firstByteTs: 1150, wire: emptyWire() } as any,
       // Gateway response: first chunk to the client at 1180, finalized 1520
       // → gateway TTFT = 180, decode window = 340.
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, firstByteTs: 1180, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'd', ts: 1520, firstByteTs: 1180, wire: emptyWire() } as any,
     ];
     const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
     assert.equal(t.upstreamTtftMs, 1150 - 1005);
@@ -666,12 +700,12 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     // The core invariant the user asked for: "if you sent a request,
     // record it; you don't have to wait for the response." We test by
     // checking that the client-request line in the JSONL appears BEFORE
-    // the client-response line for the same spanId.
+    // the client-response line for the same exchangeId.
     const sessionId = 'sess_indep';
     const wireId = 'wire_indep';
     await recorder.recordEvent({
       eventType: 'http-exchange', direction: 'client', phase: 'request',
-      spanId: wireId, traceId: 'c1', sessionId, model: 'auto',
+      exchangeId: wireId, requestId: 'c1', sessionId, model: 'auto',
       status: 'ok',
       wire: { requestLine: 'POST /x HTTP/1.1', requestHeaders: {}, requestBody: '{}', responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
     });
@@ -679,20 +713,20 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     // be on disk even though the response is a failure.
     await recorder.recordEvent({
       eventType: 'http-exchange', direction: 'upstream', phase: 'request',
-      spanId: 'w_out', traceId: 'c1', sessionId, model: 'auto',
+      exchangeId: 'w_out', requestId: 'c1', sessionId, model: 'auto',
       status: 'ok',
       wire: { requestLine: 'POST https://x HTTP/1.1', requestHeaders: {}, requestBody: '{}', responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
     });
     await recorder.recordEvent({
       eventType: 'http-exchange', direction: 'upstream', phase: 'response',
-      spanId: 'w_out', traceId: 'c1', sessionId, model: 'auto',
+      exchangeId: 'w_out', requestId: 'c1', sessionId, model: 'auto',
       status: 'error',
       wire: { requestLine: '', requestHeaders: {}, requestBody: '', responseLine: 'HTTP/1.1 503 Service Unavailable', status: 503, responseHeaders: {}, responseBody: '' },
       error: 'upstream 503',
     });
     await recorder.recordEvent({
       eventType: 'http-exchange', direction: 'client', phase: 'response',
-      spanId: wireId, traceId: 'c1', sessionId, model: 'auto',
+      exchangeId: wireId, requestId: 'c1', sessionId, model: 'auto',
       status: 'error',
       wire: { requestLine: '', requestHeaders: {}, requestBody: '', responseLine: 'HTTP/1.1 502 Bad Gateway', status: 502, responseHeaders: {}, responseBody: '' },
     });
@@ -706,8 +740,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(req.direction, 'client');
     assert.equal(res.phase, 'response');
     assert.equal(res.direction, 'client');
-    assert.equal(req.spanId, res.spanId);
-    assert.equal(req.traceId, res.traceId);
+    assert.equal(req.exchangeId, res.exchangeId);
+    assert.equal(req.requestId, res.requestId);
     // Failure is durable on both sides.
     const outRes = JSON.parse(lines[2]);
     assert.equal(outRes.status, 'error');
@@ -732,9 +766,9 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     // Each turn has all four events paired.
     for (const t of result.turns) {
       assert.ok(t.clientRequest && t.gatewayResponse && t.upstreamRequest && t.upstreamResponse,
-        `turn ${t.traceId} missing event pair`);
-      assert.equal(t.clientRequest!.spanId, t.gatewayResponse!.spanId);
-      assert.equal(t.upstreamRequest!.spanId, t.upstreamResponse!.spanId);
+        `turn ${t.requestId} missing event pair`);
+      assert.equal(t.clientRequest!.exchangeId, t.gatewayResponse!.exchangeId);
+      assert.equal(t.upstreamRequest!.exchangeId, t.upstreamResponse!.exchangeId);
     }
   });
 
@@ -749,7 +783,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     // 3 requests at 1 per page = 3 pages, counted BACK from the newest end.
     const p1 = await recorder.readEvents(dateDir, file, 1, 'none', 1);
     assert.equal(p1.turns.length, 1);
-    assert.equal(p1.turns[0].traceId, 'corr_page_3');
+    assert.equal(p1.turns[0].requestId, 'corr_page_3');
     assert.equal(p1.totalTurns, 3, 'the header tally still covers the whole window');
     assert.equal(p1.page, 1);
     assert.equal(p1.turns[0].requestNumber, 3, 'request numbering is chronological over the window');
@@ -761,25 +795,25 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
 
     const p2 = await recorder.readEvents(dateDir, file, 1, 'none', 2);
     assert.equal(p2.turns.length, 1);
-    assert.equal(p2.turns[0].traceId, 'corr_page_2');
+    assert.equal(p2.turns[0].requestId, 'corr_page_2');
     assert.equal(p2.hasOlder, true);
     assert.equal(p2.hasNewer, true);
 
     // Last page reaches the window floor: nothing older.
     const p3 = await recorder.readEvents(dateDir, file, 1, 'none', 3);
     assert.equal(p3.turns.length, 1);
-    assert.equal(p3.turns[0].traceId, 'corr_page_1');
+    assert.equal(p3.turns[0].requestId, 'corr_page_1');
     assert.equal(p3.hasOlder, false);
     assert.equal(p3.hasNewer, true);
 
     // No overlap between pages (each turn appears exactly once).
-    const traces = [...p1.turns, ...p2.turns, ...p3.turns].map(t => t.traceId);
+    const traces = [...p1.turns, ...p2.turns, ...p3.turns].map(t => t.requestId);
     assert.deepEqual(new Set(traces).size, 3);
 
     // Out-of-range pages clamp to the window instead of answering empty.
     const high = await recorder.readEvents(dateDir, file, 1, 'none', 99);
     assert.equal(high.page, 3);
-    assert.equal(high.turns[0].traceId, 'corr_page_1');
+    assert.equal(high.turns[0].requestId, 'corr_page_1');
     const low = await recorder.readEvents(dateDir, file, 1, 'none', 0);
     assert.equal(low.page, 1);
   });
@@ -851,7 +885,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     for (const [i, messages] of [turn1, turn2, turn3].entries()) {
       await recorder.recordEvent({
         eventType: 'http-exchange', direction: 'client', phase: 'request',
-        spanId: `prompt_w${i}`, traceId: `prompt_t${i}`, sessionId, model: 'auto', status: 'ok',
+        exchangeId: `prompt_w${i}`, requestId: `prompt_t${i}`, sessionId, model: 'auto', status: 'ok',
         wire: {
           requestLine: 'POST /v1/chat/completions HTTP/1.1',
           requestHeaders: {},
@@ -902,7 +936,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     for (const [i, messages] of [longHistory, compacted].entries()) {
       await recorder.recordEvent({
         eventType: 'http-exchange', direction: 'client', phase: 'request',
-        spanId: `shrink_w${i}`, traceId: `shrink_t${i}`, sessionId, model: 'auto', status: 'ok',
+        exchangeId: `shrink_w${i}`, requestId: `shrink_t${i}`, sessionId, model: 'auto', status: 'ok',
         wire: {
           requestLine: 'POST /v1/chat/completions HTTP/1.1',
           requestHeaders: {},
@@ -922,8 +956,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     // Archives written before the prompt positions existed must render exactly
     // as they did: no stamp, no comparison, summary kept.
     const events = [
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'old1', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a1', id: 'a1', ts: 1000, promptSummary: 'legacy prompt', wire: emptyWire() },
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'old2', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a2', id: 'a2', ts: 2000, promptSummary: 'legacy prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'old1', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: 'a1', ts: 1000, promptSummary: 'legacy prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'old2', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a2', id: 'a2', ts: 2000, promptSummary: 'legacy prompt', wire: emptyWire() },
     ] satisfies HttpExchangeEvent[];
     const turns = CaptureRecorder.groupEventsIntoTurns(events);
     assert.deepEqual(turns.map(t => t.promptSummary), ['legacy prompt', 'legacy prompt']);
@@ -937,7 +971,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     for (const [i, messages] of [turn1, turn2].entries()) {
       await recorder.recordEvent({
         eventType: 'http-exchange', direction: 'client', phase: 'request',
-        spanId: `legacy_w${i}`, traceId: `legacy_t${i}`, sessionId, model: 'auto', status: 'ok',
+        exchangeId: `legacy_w${i}`, requestId: `legacy_t${i}`, sessionId, model: 'auto', status: 'ok',
         wire: {
           requestLine: 'POST /v1/chat/completions HTTP/1.1',
           requestHeaders: {},
@@ -1011,8 +1045,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'request',
-      spanId: 'wire_tok_2',
-      traceId: 'corr_tok_2',
+      exchangeId: 'wire_tok_2',
+      requestId: 'corr_tok_2',
       sessionId,
       model: 'lite',
       status: 'ok',
@@ -1030,8 +1064,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'response',
-      spanId: 'wire_tok_2',
-      traceId: 'corr_tok_2',
+      exchangeId: 'wire_tok_2',
+      requestId: 'corr_tok_2',
       sessionId,
       model: 'lite',
       status: 'ok',
@@ -1048,12 +1082,12 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100);
-    const t = result.turns.find(x => x.traceId === 'corr_tok_2');
+    const t = result.turns.find(x => x.requestId === 'corr_tok_2');
     assert.ok(t?.gatewayResponse);
     assert.equal(t.gatewayResponse!.completionTokens, 42);
   });
 
-  it('readTurn returns the full turn by client-request id; unknown ids answer null', async () => {
+  it('readTurn resolves a turn by its event id OR by the turn id; unknown keys answer null', async () => {
     const sessionId = 'sess_read_turn';
     await emitOneTurn('corr_turn_1', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
@@ -1062,10 +1096,16 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     const clientReqId = meta.turns[0].clientRequest!.id;
     const res = await recorder.readTurn(dateDir, file, clientReqId);
     assert.ok(res);
-    assert.equal(res!.turn.traceId, 'corr_turn_1');
+    assert.equal(res!.turn.requestId, 'corr_turn_1');
     // Full bodies restored — this is the per-turn fetch behind the drawer.
     assert.equal(res!.turn.clientRequest!.wire.requestBody, '{"messages":[]}');
     assert.equal(res!.turn.upstreamResponse!.wire.responseBody, '{"choices":[]}');
+    // The console keys the drawer on the TURN id (what the row carries and
+    // every React key uses), not on an internal event id — both must resolve.
+    const byTurnId = await recorder.readTurn(dateDir, file, meta.turns[0].requestId);
+    assert.ok(byTurnId);
+    assert.equal(byTurnId!.turn.clientRequest!.wire.requestBody, '{"messages":[]}');
+    assert.equal(byTurnId!.turn.gatewayResponse!.id, res!.turn.gatewayResponse!.id);
     assert.equal(await recorder.readTurn(dateDir, file, 'evt_missing'), null);
   });
 
@@ -1074,7 +1114,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     const bigBody = 'x'.repeat(2048); // > maxBodyBytes (1024)
     await recorder.recordEvent({
       eventType: 'http-exchange', direction: 'upstream', phase: 'request',
-      spanId: 'w_out', traceId: 'corr_t', sessionId, model: 'auto',
+      exchangeId: 'w_out', requestId: 'corr_t', sessionId, model: 'auto',
       status: 'ok',
       wire: { requestLine: 'POST x HTTP/1.1', requestHeaders: {}, requestBody: bigBody, responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
     });
@@ -1095,7 +1135,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     const bigBody = '汉'.repeat(600);
     await recorder.recordEvent({
       eventType: 'http-exchange', direction: 'upstream', phase: 'request',
-      spanId: 'w_cjk', traceId: 'corr_cjk', sessionId, model: 'auto',
+      exchangeId: 'w_cjk', requestId: 'corr_cjk', sessionId, model: 'auto',
       status: 'ok',
       wire: { requestLine: 'POST x HTTP/1.1', requestHeaders: {}, requestBody: bigBody, responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
     });
@@ -1141,7 +1181,7 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
       },
       requestBody: '{}',
       sessionId,
-      traceId: 'trace_redact',
+      requestId: 'trace_redact',
       model: 'auto',
       proxy: 'http://user:pass@proxy.local:8080',
     });
@@ -1194,7 +1234,7 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
       requestHeaders: {},
       requestBody: '{}',
       sessionId,
-      traceId: 'trace_redact_query',
+      requestId: 'trace_redact_query',
       model: 'auto',
     });
     emitClientRequest({
@@ -1206,7 +1246,7 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
       },
       body: { marker: 'origin-form' },
       sessionId,
-      traceId: 'trace_redact_query',
+      requestId: 'trace_redact_query',
       model: 'auto',
     });
     await new Promise((r) => setTimeout(r, 100));
@@ -1237,16 +1277,16 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
     assert.ok(originLine.includes('foo=bar'), 'origin-form benign param preserved');
   });
 
-  it('groupEventsIntoTurns keeps turns separate when a client reuses one traceId', () => {
+  it('groupEventsIntoTurns keeps turns separate when a client reuses one requestId', () => {
     const events = [
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a1', id: '1', ts: 1000, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a1', id: '2', ts: 1100, wire: emptyWire() } as any,
-      // Same constant traceId, NEW turn (client sends fixed x-request-id).
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'b1', id: '3', ts: 2000, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'b1', id: '4', ts: 2100, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: '1', ts: 1000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: '2', ts: 1100, wire: emptyWire() } as any,
+      // Same constant requestId, NEW turn (client sends fixed x-request-id).
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'b1', id: '3', ts: 2000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'b1', id: '4', ts: 2100, wire: emptyWire() } as any,
     ];
     const turns = CaptureRecorder.groupEventsIntoTurns(events);
-    assert.equal(turns.length, 2, 'constant traceId must not collapse turns');
+    assert.equal(turns.length, 2, 'constant requestId must not collapse turns');
     assert.equal(turns[0].clientRequest?.id, '1');
     assert.equal(turns[0].gatewayResponse?.id, '2');
     assert.equal(turns[1].clientRequest?.id, '3');
@@ -1301,8 +1341,8 @@ describe('CaptureRecorder per-session seal (maxSessionMB)', () => {
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'request',
-      spanId: `w_seal_${i}`,
-      traceId: `t_seal_${i}`,
+      exchangeId: `w_seal_${i}`,
+      requestId: `t_seal_${i}`,
       sessionId: SESSION,
       model: 'lite',
       status: 'ok',

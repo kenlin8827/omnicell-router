@@ -27,13 +27,13 @@ const recorder = new CaptureRecorder({
 const dateDir = CaptureRecorder.localDateDir(new Date());
 
 /** One client-request event with the given request line + JSON body. */
-function clientRequest(sessionId: string, traceId: string, requestLine: string, body: unknown): Parameters<CaptureRecorder['recordEvent']>[0] {
+function clientRequest(sessionId: string, requestId: string, requestLine: string, body: unknown): Parameters<CaptureRecorder['recordEvent']>[0] {
   return {
     eventType: 'http-exchange',
     direction: 'client',
     phase: 'request',
-    spanId: `span-${traceId}`,
-    traceId,
+    exchangeId: `span-${requestId}`,
+    requestId,
     sessionId,
     model: 'probe-model',
     status: 'ok',

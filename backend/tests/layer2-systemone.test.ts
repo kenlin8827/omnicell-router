@@ -703,8 +703,8 @@ describe('decision-call capture (requestCapture.enabled master)', () => {
     eventType: string;
     direction: 'client' | 'upstream';
     phase: 'request' | 'response';
-    spanId: string;
-    traceId: string;
+    exchangeId: string;
+    requestId: string;
     sessionId: string;
     purpose?: string;
     wire: {
@@ -827,11 +827,11 @@ describe('decision-call capture (requestCapture.enabled master)', () => {
     const resp = decisionEvents.find((e) => e.phase === 'response')!;
     expect(req.direction).toBe('upstream');
     expect(resp.direction).toBe('upstream');
-    expect(resp.spanId).toBe(req.spanId); // one exchange, two events
+    expect(resp.exchangeId).toBe(req.exchangeId); // one exchange, two events
     // ATTACHED TO THE OUTER REQUEST'S IDENTITY: same trace/session as the
     // outer client-request event.
     const outer = events.find((e) => e.direction === 'client' && e.phase === 'request')!;
-    expect(req.traceId).toBe(outer.traceId);
+    expect(req.requestId).toBe(outer.requestId);
     expect(req.sessionId).toBe(outer.sessionId);
     // The decision layer's decision wire carried the conversation state (marker) and
     // the credential header reached disk ONLY redacted.

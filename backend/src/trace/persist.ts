@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ExecutionTrace } from './tracker.js';
 
 /**
@@ -12,6 +13,14 @@ import type { ExecutionTrace } from './tracker.js';
  * the inference hot path.
  */
 /**
+ * Store schema version (PRAGMA user_version). v2 = records keyed by the
+ * gateway's own `requestId`; v1 keyed by the CALLER's trace id, which is a
+ * trace-wide correlation value and collapsed distinct requests of one
+ * distributed trace onto a single row (ADR-0021).
+ */
+const DB_VERSION = 2;
+
+/**
  * Normalize a legacy persisted trace (written before the 2026-10 observability
  * rework) into the current ExecutionTrace shape: old prompt/completion field
  * names map to input/output/cached, the derived `savedCostUsd` is dropped.
@@ -19,22 +28,32 @@ import type { ExecutionTrace } from './tracker.js';
  * that catalog price changes make impossible to recompute. Removable once
  * every legacy row has aged past the trace retention window.
  */
-function normalizeReplayedTrace(raw: any): ExecutionTrace | null {
+function normalizeReplayedTrace(raw: unknown): ExecutionTrace | null {
   if (!raw || typeof raw !== 'object') return null;
-  const f = raw.finops;
-  if (f && typeof f === 'object') {
-    if (f.inputTokens === undefined && f.promptTokens !== undefined) {
-      f.inputTokens = Number(f.promptTokens) || 0;
-      f.outputTokens = Number(f.completionTokens) || 0;
-      f.cachedTokens = Number(f.cachedPromptTokens) || 0;
-      delete f.promptTokens;
-      delete f.completionTokens;
-      delete f.cachedPromptTokens;
-    }
-    delete f.savedCostUsd;
-    f.costUsd = Number(f.costUsd) || 0;
+  const record = raw as Record<string, unknown>;
+  // Rows written before request identity existed carry no `requestId`; the
+  // migration stored them under their trace id, so replay keeps that key.
+  // A row with NEITHER id is corrupt (or from a foreign writer): skip it —
+  // keying it on '' would make every such row collapse onto one entry.
+  if (typeof record.requestId !== 'string' || !record.requestId) {
+    record.requestId = String(record.traceId ?? '');
   }
-  return raw as ExecutionTrace;
+  if (!record.requestId) return null;
+  const f = record.finops;
+  if (f && typeof f === 'object') {
+    const fin = f as Record<string, unknown>;
+    if (fin.inputTokens === undefined && fin.promptTokens !== undefined) {
+      fin.inputTokens = Number(fin.promptTokens) || 0;
+      fin.outputTokens = Number(fin.completionTokens) || 0;
+      fin.cachedTokens = Number(fin.cachedPromptTokens) || 0;
+      delete fin.promptTokens;
+      delete fin.completionTokens;
+      delete fin.cachedPromptTokens;
+    }
+    delete fin.savedCostUsd;
+    fin.costUsd = Number(fin.costUsd) || 0;
+  }
+  return record as unknown as ExecutionTrace;
 }
 
 export interface TraceStore {
@@ -49,7 +68,7 @@ export interface TraceStore {
   close(): void;
 }
 
-export async function openTraceStore(dir: string): Promise<TraceStore | null> {
+async function tryOpenTraceStore(dir: string): Promise<TraceStore | null> {
   let Database: typeof import('bun:sqlite').Database;
   try {
     ({ Database } = await import('bun:sqlite'));
@@ -61,26 +80,100 @@ export async function openTraceStore(dir: string): Promise<TraceStore | null> {
     fs.mkdirSync(dir, { recursive: true });
     const db = new Database(path.join(dir, 'traces.db'), { create: true });
     db.run('PRAGMA journal_mode = WAL;');
-    db.run(`CREATE TABLE IF NOT EXISTS traces (
-      trace_id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      ts INTEGER NOT NULL,
-      data TEXT NOT NULL
-    )`);
+    // The file is shared with the FinOps / failure-event / quota / ratelimit
+    // stores (each with its own handle), so contend politely and keep the
+    // schema switch atomic.
+    db.run('PRAGMA busy_timeout = 5000;');
+    const version = Number(
+      (db.query('PRAGMA user_version').get() as { user_version?: number } | null)?.user_version ?? 0
+    );
+    // `user_version` is FILE-wide (SQLite has no per-table version): this store
+    // is its sole owner — every other store on the file only runs
+    // `CREATE TABLE IF NOT EXISTS` and must never touch it.
+    //
+    // The VERSION alone is not trusted: a file written by an intermediate
+    // build can carry the v2 number with a different shape (observed in the
+    // wild: `request_id` PK plus a NOT NULL `trace_id`, which makes every
+    // write fail the NOT NULL constraint — silently, because writes fail
+    // open). The rebuild below is therefore gated on the SHAPE as well.
+    const cols = db
+      .query('PRAGMA table_info(traces)')
+      .all() as { name: string; pk: number }[];
+    const byName = new Map(cols.map(c => [c.name, c]));
+    const shapeIsV2 =
+      cols.length === 4 &&
+      byName.get('request_id')?.pk === 1 &&
+      ['request_id', 'session_id', 'ts', 'data'].every(c => byName.has(c));
+    if (version > DB_VERSION) {
+      // A newer build already migrated this file. Forward-compat: read it as
+      // it is, do not attempt a down-migration (the columns we need — data is
+      // a JSON blob — are stable across versions).
+    } else if (!shapeIsV2) {
+      // v1 keyed records by the CALLER's trace id (PK trace_id), so a client
+      // reusing one traceparent collapsed distinct requests onto one row
+      // (ADR-0021). v2 keys on the gateway request id and has no trace-id
+      // column at all. SQLite cannot drop a PRIMARY KEY column, hence the
+      // rebuild; the whole switch runs in ONE transaction so a crash can
+      // never strand half a table (a killed process leaves user_version
+      // untouched and re-runs).
+      //
+      // Key precedence: a row that already carries a gateway `request_id`
+      // keeps it (an intermediate build may have written one); only rows
+      // that have none fall back to the caller value — the same value replay
+      // normalization would derive.
+      const migrate = db.transaction(() => {
+        const hasRequestId = byName.has('request_id');
+        const hasTraceId = byName.has('trace_id');
+        const keyExpr =
+          hasRequestId && hasTraceId
+            ? "CASE WHEN request_id IS NOT NULL AND request_id <> '' THEN request_id ELSE trace_id END"
+            : hasRequestId
+              ? 'request_id'
+              : hasTraceId
+                ? 'trace_id'
+                : '';
+        db.run('DROP TABLE IF EXISTS traces_v2');
+        db.run(`CREATE TABLE traces_v2 (
+          request_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          data TEXT NOT NULL
+        )`);
+        if (
+          keyExpr &&
+          ['session_id', 'ts', 'data'].every(c => byName.has(c))
+        ) {
+          db.run(`INSERT OR IGNORE INTO traces_v2 (request_id, session_id, ts, data)
+                  SELECT ${keyExpr}, session_id, ts, data FROM traces`);
+        }
+        db.run('DROP TABLE IF EXISTS traces');
+        db.run('ALTER TABLE traces_v2 RENAME TO traces');
+        db.run(`PRAGMA user_version = ${DB_VERSION}`);
+      });
+      migrate();
+    }
     db.run('CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id)');
     db.run('CREATE INDEX IF NOT EXISTS idx_traces_ts ON traces(ts)');
 
+    // A storage failure must stay off the hot path, but it must not be
+    // INVISIBLE either: a schema drift used to turn every write into a silent
+    // no-op. One warning per process makes that state visible.
+    let insertWarned = false;
     return {
       insert(trace) {
         try {
-          db.query('INSERT OR REPLACE INTO traces (trace_id, session_id, ts, data) VALUES (?, ?, ?, ?)').run([
-            trace.traceId,
+          db.query('INSERT OR REPLACE INTO traces (request_id, session_id, ts, data) VALUES (?, ?, ?, ?)').run([
+            trace.requestId,
             trace.sessionId,
             trace.timestamp,
             JSON.stringify(trace),
           ]);
-        } catch {
+        } catch (err) {
           // storage hiccup must not break the hot path
+          if (!insertWarned) {
+            insertWarned = true;
+            console.warn('[trace] persist write failed — traces are NOT being stored:', err);
+          }
         }
       },
 
@@ -127,7 +220,7 @@ export async function openTraceStore(dir: string): Promise<TraceStore | null> {
           for (let i = 0; i < 200; i++) {
             const row = db.query('SELECT SUM(LENGTH(data)) AS bytes FROM traces').get() as { bytes: number | null };
             if (!row?.bytes || row.bytes <= maxTotalBytes) break;
-            db.run('DELETE FROM traces WHERE trace_id IN (SELECT trace_id FROM traces ORDER BY ts ASC LIMIT 500)');
+            db.run('DELETE FROM traces WHERE request_id IN (SELECT request_id FROM traces ORDER BY ts ASC LIMIT 500)');
           }
         } catch {
           // ignore
@@ -142,9 +235,26 @@ export async function openTraceStore(dir: string): Promise<TraceStore | null> {
         }
       },
     };
-  } catch {
-    return null; // db open/init failed — memory-only mode
+  } catch (err) {
+    // Logged, never silent: a failed open (lock contention during the
+    // v1→v2 rebuild, corrupt file, permissions) degrades the store to
+    // memory-only, and that state must be visible — otherwise "traces
+    // stopped persisting" looks exactly like "no traffic".
+    console.warn('[trace] store open failed:', err);
+    return null;
   }
+}
+
+/**
+ * Open the durable trace store, retrying ONCE. The first attempt can lose a
+ * lock race with the OUTGOING process during a hot restart (the schema
+ * rebuild needs the write lock; `busy_timeout` absorbs 5s of contention).
+ */
+export async function openTraceStore(dir: string): Promise<TraceStore | null> {
+  const first = await tryOpenTraceStore(dir);
+  if (first) return first;
+  await delay(1000);
+  return tryOpenTraceStore(dir);
 }
 
 /**

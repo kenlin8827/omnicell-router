@@ -21,8 +21,8 @@ function ev(overrides: Partial<HttpExchangeEvent>): HttpExchangeEvent {
     eventType: 'http-exchange',
     direction: 'client',
     phase: 'request',
-    spanId: 'w1',
-    traceId: 'trace_x',
+    exchangeId: 'w1',
+    requestId: 'trace_x',
     sessionId: 'sess_span',
     conversationKey: 'conv_A',
     model: 'auto',
@@ -60,8 +60,8 @@ describe('CaptureRecorder cross-midnight stitching', () => {
   const DAY1 = '2026-06-01';
   const DAY2 = '2026-06-02';
   const FILE = 'sess_span.jsonl';
-  const REQ = ev({ id: 'evt_req', ts: Date.parse(`${DAY1}T23:59:58`), traceId: 't1', spanId: 'w1', phase: 'request', direction: 'client' });
-  const RESP = ev({ id: 'evt_resp', ts: Date.parse(`${DAY2}T00:00:03`), traceId: 't1', spanId: 'w1', phase: 'response', direction: 'client' });
+  const REQ = ev({ id: 'evt_req', ts: Date.parse(`${DAY1}T23:59:58`), requestId: 't1', exchangeId: 'w1', phase: 'request', direction: 'client' });
+  const RESP = ev({ id: 'evt_resp', ts: Date.parse(`${DAY2}T00:00:03`), requestId: 't1', exchangeId: 'w1', phase: 'response', direction: 'client' });
 
   before(() => {
     tmp = makeTmpDir();
@@ -106,7 +106,7 @@ describe('CaptureRecorder cross-midnight stitching', () => {
     // Same conversation, minted a fresh session id the next day.
     const SIBLING = 'sess_span_minted.jsonl';
     shard(tmp, DAY2, SIBLING, [
-      ev({ id: 'evt_sib', ts: Date.parse(`${DAY2}T08:00:00`), traceId: 't2', spanId: 'w2', phase: 'request', direction: 'client', conversationKey: 'conv_A' }),
+      ev({ id: 'evt_sib', ts: Date.parse(`${DAY2}T08:00:00`), requestId: 't2', exchangeId: 'w2', phase: 'request', direction: 'client', conversationKey: 'conv_A' }),
     ]);
     const result = await recorder.readEventsStitched(DAY1, FILE, 100);
     assert.equal(result.totalLines, 3);
@@ -118,7 +118,7 @@ describe('CaptureRecorder cross-midnight stitching', () => {
     // The request event lives in DAY1's shard; ask from DAY2's view.
     const result = await recorder.readTurnStitched(DAY2, FILE, 'evt_req');
     assert.ok(result);
-    assert.equal(result!.turn.traceId, 't1');
+    assert.equal(result!.turn.requestId, 't1');
   });
 
   it('readEvents (non-stitched) keeps showing only the local shard', async () => {
@@ -127,5 +127,51 @@ describe('CaptureRecorder cross-midnight stitching', () => {
     // The orphan response forms its own window-local "turn" — exactly the
     // pre-stitch behavior the stitched path exists to fix.
     assert.equal(result.totalTurns, 1);
+  });
+
+  it('reads a pre-ADR-0021 archive: legacy keys normalize, one turn per trace', async () => {
+    // Archive written before request identity existed: `spanId` / `traceId`,
+    // no `requestId`. The reader maps it once (exchangeId / clientRequestId)
+    // and keys turns by the old trace id — the best identity those files have.
+    const DATE = '2026-05-20';
+    const LEGACY = 'sess_legacy.jsonl';
+    const legacyWire = {
+      requestLine: 'POST /v1/chat/completions HTTP/1.1',
+      requestHeaders: {},
+      requestBody: '{}',
+      responseLine: '',
+      status: 0,
+      responseHeaders: {},
+      responseBody: '',
+    };
+    const legacy = (id: string, spanId: string, phase: 'request' | 'response', ts: number) =>
+      JSON.stringify({
+        id,
+        ts,
+        eventType: 'http-exchange',
+        direction: 'client',
+        phase,
+        spanId,
+        traceId: 'legacy_trace',
+        sessionId: 'sess_legacy',
+        model: 'auto',
+        status: 'ok',
+        wire: legacyWire,
+      });
+    shard(tmp, DATE, LEGACY, []);
+    const file = path.join(tmp, DATE, LEGACY);
+    fs.appendFileSync(
+      file,
+      [legacy('lg_req', 'w1', 'request', 1000), legacy('lg_res', 'w1', 'response', 1050)].join('\n') + '\n',
+      'utf8'
+    );
+
+    const result = await recorder.readEvents(DATE, LEGACY, 10);
+    assert.equal(result.totalLines, 2);
+    assert.equal(result.totalTurns, 1);
+    assert.equal(result.turns[0].requestId, 'legacy_trace', 'joined on the only id the file has');
+    assert.equal(result.turns[0].clientRequestId, 'legacy_trace');
+    assert.equal(result.events[0].exchangeId, 'w1', 'spanId mapped at the boundary');
+    assert.equal(result.events[1].id, 'lg_res', 'request/response pairing survives');
   });
 });

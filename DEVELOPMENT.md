@@ -120,7 +120,7 @@ All inbound traffic is intercepted by the Fastify server, normalized into an int
                                       │
                                       ▼
                [Step 6: Diagnostic Headers & Stream Delivery]
-                - Injects X-OCR-Trace-ID, X-OCR-Tier, X-OCR-Thinking-Source headers
+                - Injects X-OCR-Request-ID, X-OCR-Session-ID, X-OCR-Tier, X-OCR-Thinking-Source headers
                 - SSE re-chunking and client delivery
 ```
 

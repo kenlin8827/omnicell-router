@@ -43,6 +43,7 @@ import {
   deriveSessionEntryMode,
   projectSessionEntity,
   promptTurnsOf,
+  sessionIdSourceOf,
   sessionTitleOf,
   type SessionRow,
   boundCredentialLabelOf,
@@ -84,6 +85,9 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
     internal: isInternalSessionId(id),
     maxTier,
     entryMode: deriveSessionEntryMode(traces),
+    // Birth trace, not the latest: later turns re-resolve the SAME id through
+    // content anchors, which would mislabel a client-named id as gateway.
+    idSource: sessionIdSourceOf(traces) ?? null,
     ...currentModelOf(traces),
     // Title from the birth trace: this row has no entity, so the trace is the
     // only place the opening prompt survived (ADR-0002 §3).
@@ -1249,6 +1253,10 @@ export function createServer(
         // Entry mode is trace-derived for live rows too: the session entity
         // itself does not record how the client addressed its turns.
         entryMode: deriveSessionEntryMode(sessTraces),
+        // The entity's birth lookup type is the exact answer (the trace ring can
+        // evict the birth trace); the earliest surviving trace is the fallback,
+        // so a live row and its post-restart reconstruction still agree.
+        idSource: sessionIdSourceOf(sessTraces, s.origin?.lookupType) ?? null,
         ...traceTracker.getSessionAggregates(s.id),
       };
       const boundCredentialLabel = boundCredentialLabelOf(
@@ -1444,7 +1452,9 @@ export function createServer(
     };
   });
 
-  // 3H. Query Single Execution Trace by traceId
+  // 3H. Query Single Execution Trace by requestId (the gateway-owned key).
+  // A caller correlation value is NOT accepted here: it may cover several
+  // requests (ADR-0021), so resolving it would be a guess.
   app.get('/api/admin/traces/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const trace = orchestrator.getTraceTracker().getTrace(id);

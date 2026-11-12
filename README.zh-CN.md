@@ -303,16 +303,20 @@ main();
 
 ### 1. HTTP 响应诊断标头
 每次网关调用均返回完整的调用链路诊断标头：
-* `X-OCR-Trace-ID`: 本轮请求的全局唯一跟踪 ID。
+* `X-OCR-Request-ID`: 网关自有的单次请求 ID（`req_…`），全局唯一且不可变——它是控制台行的身份，也是 traces 接口唯一接受的键。调用方自己的关联值不会被回显。
 * `X-OCR-Tier`: 实际调用的目标梯队（`lite`, `plus`, `pro`, `ultra`）。
+* `X-OCR-Layer`: 实际执行的级联层（`layer0`, `layer1`, `layer2`）。
 * `X-OCR-Model`: 最终调用的物理模型标识。
 * `X-OCR-Thinking-Effort`: 生效的思考预算（`low`, `medium`, `high`, `max`）。
 * `X-OCR-Thinking-Source`: 思考预算决策来源（`client`, `l2-decision`, `entry`, `escalation`, `default`）。
 * `X-OCR-Failover`: 是否触发了故障转移（`true` / `false`）。
 * `X-OCR-Failover-Attempts`: 取得成功前尝试的模型次数。
+* `X-OCR-Failover-Path`: 成功前走过的 `provider:model@tier` 尝试链（逗号分隔）。
+* `X-OCR-In-Place-Retries`: 落定尝试在同一候选上的重试次数。
 * `X-OCR-Breaker-State`: 执行实例的熔断器状态（`CLOSED`, `HALF_OPEN`）。
-* `X-OCR-Session-ID`: 计算出的零标头会话 ID。
+* `X-OCR-Session-ID`: 由网关解析出的会话 ID。
 * `X-OCR-Session-Ratchet`: 本轮是否被单调棘轮锁定（`true` / `false`）。
+* `X-OCR-Session-Lookup`: 会话命名的解析层（`explicit_header`, `embedded_user_id`, `request_user`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`）。
 * `X-OCR-Cost-USD`: 本次请求实际花费金额（美元）。
 * `X-OCR-Saved-USD`: 相较于 plus 基准模型所节约的金额。
 * `X-OCR-Latency-MS`: 网关端到端处理耗时（毫秒）。

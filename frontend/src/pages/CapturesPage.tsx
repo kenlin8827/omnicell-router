@@ -408,9 +408,9 @@ const CaptureDrawer: React.FC<{
 
   useEffect(() => {
     setTab(initialTab ?? 'clientRequest');
-    // Keyed by the client-request event id, not the traceId: a client that
-    // reuses one traceId produces multiple turns sharing it.
-  }, [turn.clientRequest?.id ?? turn.traceId, initialTab]);
+    // Keyed by the gateway turn id: one request = one drawer, independent of
+    // any caller-supplied correlation value.
+  }, [turn.requestId, initialTab]);
 
   // Wire-side tabs, one per HTTP exchange phase. The naming is symmetric:
   // direction (client | upstream) × phase (request | response) — the same
@@ -526,12 +526,12 @@ const CaptureDrawer: React.FC<{
               {new Date(headerTs).toLocaleString()}
             </span>
           )}
-          {/* TraceId — copy-on-click in the drawer header (kept out of the
+          {/* RequestId — copy-on-click in the drawer header (kept out of the
               list rows: machine bookkeeping, rarely read inline). */}
           <span
-            title={turn.traceId}
+            title={turn.requestId}
             onClick={async () => {
-              const ok = await copyToClipboard(turn.traceId);
+              const ok = await copyToClipboard(turn.requestId);
               if (ok) toast.success(t('captures.copied'));
               else toast.error(t('common.failed'));
             }}
@@ -542,8 +542,30 @@ const CaptureDrawer: React.FC<{
               cursor: 'copy',
             }}
           >
-            {shortId(turn.traceId)}
+            {shortId(turn.requestId)}
           </span>
+          {/* Caller correlation id — the OTHER half of the identity pair
+              (ADR-0021). Shown only when the caller supplied one and it
+              differs from the gateway id; the `←` reads "this came from the
+              client", so a row can be joined to the caller's own logs. */}
+          {turn.clientRequestId && turn.clientRequestId !== turn.requestId && (
+            <span
+              title={t('captures.clientRequestId')}
+              onClick={async () => {
+                const ok = await copyToClipboard(turn.clientRequestId!);
+                if (ok) toast.success(t('captures.copied'));
+                else toast.error(t('common.failed'));
+              }}
+              style={{
+                fontSize: 'var(--text-xs)',
+                color: 'var(--text-dim)',
+                fontFamily: FONT_MONO,
+                cursor: 'copy',
+              }}
+            >
+              ← {shortId(turn.clientRequestId)}
+            </span>
+          )}
           <span
             style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             title={t('captures.inboundModel')}
@@ -587,7 +609,7 @@ const CaptureDrawer: React.FC<{
               title={`${t('captures.gatewayLatency')} · ${turn.gatewayLatencyMs} ms`}
               style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
-              <ArrowDownRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}
+              <ArrowDownRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text-main)' }} /> {fmtLatency(turn.gatewayLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
                 {legTimingText(turn, 'gateway')}
               </span>
@@ -598,7 +620,7 @@ const CaptureDrawer: React.FC<{
               title={`${t('captures.upstreamLatency')} · ${turn.upstreamLatencyMs} ms`}
               style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
-              <ArrowUpRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}
+              <ArrowUpRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text-main)' }} /> {fmtLatency(turn.upstreamLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
                 {legTimingText(turn, 'upstream')}
               </span>
@@ -891,7 +913,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
           fontFamily: FONT_MONO,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          color: 'var(--text)',
+          color: 'var(--text-main)',
         }}
       >
         {statusLine || '(no status line)'}
@@ -1043,7 +1065,7 @@ const ReplayResultDialog: React.FC<{
               {t('captures.replaying')}
             </div>
           ) : result.status === 'error' ? (
-            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--error, #c0392b)', fontFamily: FONT_MONO, padding: '8px 12px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)', fontFamily: FONT_MONO, padding: '8px 12px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
               {result.message}
             </div>
           ) : (
@@ -1059,7 +1081,7 @@ const ReplayResultDialog: React.FC<{
                   fontFamily: FONT_MONO,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
-                  color: 'var(--text)',
+                  color: 'var(--text-main)',
                 }}
               >
                 {result.statusLine}
@@ -1535,7 +1557,7 @@ export const CapturesPage: React.FC = () => {
           const res = await api.getCaptureEvents(date, file, CHAT_PAGE, 'chat', true, p);
           if (seq !== loadSeqRef.current) return;
           for (const t of res.turns.slice().reverse()) {
-            const key = t.clientRequest?.id ?? `${t.traceId}:${t.roundNumber ?? ''}:${t.requestNumber ?? ''}`;
+            const key = t.requestId;
             if (seen.has(key)) continue;
             seen.add(key);
             acc.push(t);
@@ -1674,7 +1696,7 @@ export const CapturesPage: React.FC = () => {
       setDrawerMiss(false);
       return;
     }
-    const key = meta.clientRequest?.id ?? meta.traceId;
+    const key = meta.requestId;
     const cached = fetchedTurnsRef.current.get(key);
     if (cached) {
       setDrawerTurn(cached);
@@ -2861,7 +2883,8 @@ export const CapturesPage: React.FC = () => {
                               turnStart !== undefined &&
                               (prevStart === undefined || fmtDay(prevStart) !== fmtDay(turnStart));
                             return (
-                              <React.Fragment key={`${turn.traceId}-${idx}`}>                                {dayChanged && (
+                              <React.Fragment key={turn.requestId}>
+                                {dayChanged && (
                                   <div
                                     style={{
                                       position: 'relative',
@@ -3037,7 +3060,7 @@ export const CapturesPage: React.FC = () => {
                                     ].filter(Boolean).join('\n')}
                                     style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
                                   >
-                                    <ArrowDownRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}{legRateText(turn, 'gateway')}
+                                    <ArrowDownRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text-main)' }} /> {fmtLatency(turn.gatewayLatencyMs)}{legRateText(turn, 'gateway')}
                                   </span>
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
@@ -3049,7 +3072,7 @@ export const CapturesPage: React.FC = () => {
                                     ].filter(Boolean).join('\n')}
                                     style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
                                   >
-                                    <ArrowUpRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}{legRateText(turn, 'upstream')}
+                                    <ArrowUpRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text-main)' }} /> {fmtLatency(turn.upstreamLatencyMs)}{legRateText(turn, 'upstream')}
                                   </span>
                                 )}
                                 {/* L2 decision layer leg: one compact badge — latency inline,

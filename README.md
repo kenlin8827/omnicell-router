@@ -311,16 +311,20 @@ The arbitration pipeline executes in four disciplined steps:
 
 ### 1. HTTP Response Headers
 Every proxied response carries diagnostic metadata:
-* `X-OCR-Trace-ID`: Unique per-turn execution trace identifier.
+* `X-OCR-Request-ID`: Gateway-owned id of THIS request (`req_…`). Unique and immutable — the console row identity and the only id the trace endpoints resolve. The caller's own correlation value is never echoed back.
 * `X-OCR-Tier`: Executed model tier (`lite`, `plus`, `pro`, `ultra`).
+* `X-OCR-Layer`: Executed cascade layer (`layer0`, `layer1`, `layer2`).
 * `X-OCR-Model`: Exact physical model invoked upstream.
 * `X-OCR-Thinking-Effort`: Applied reasoning budget (`low`, `medium`, `high`, `max`).
 * `X-OCR-Thinking-Source`: Origin of the reasoning effort decision (`client`, `l2-decision`, `entry`, `escalation`, `default`).
 * `X-OCR-Failover`: Whether upstream failover occurred (`true` / `false`).
 * `X-OCR-Failover-Attempts`: Number of candidate attempts before success.
+* `X-OCR-Failover-Path`: Comma-separated `provider:model@tier` chain walked before success.
+* `X-OCR-In-Place-Retries`: Same-candidate retry count for the committed attempt.
 * `X-OCR-Breaker-State`: Health state of the invoked candidate (`CLOSED`, `HALF_OPEN`).
-* `X-OCR-Session-ID`: Resolved zero-header session identifier.
+* `X-OCR-Session-ID`: Resolved gateway session id for this conversation.
 * `X-OCR-Session-Ratchet`: Whether the monotonic ratchet locked the tier (`true` / `false`).
+* `X-OCR-Session-Lookup`: Which resolution layer named the session (`explicit_header`, `embedded_user_id`, `request_user`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`).
 * `X-OCR-Cost-USD`: Calculated cost for the execution turn.
 * `X-OCR-Saved-USD`: Net savings compared to the baseline tier.
 * `X-OCR-Latency-MS`: Gateway execution latency in milliseconds.

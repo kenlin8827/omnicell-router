@@ -10,8 +10,10 @@ import { emitUpstreamRequest, emitUpstreamResponse } from './http-exchange.js';
  */
 export interface UpstreamEventContext {
   sessionId: string;
-  /** OpenTelemetry traceId shared across all events of one inference turn. */
-  traceId: string;
+  /** Caller correlation value, when it sent one (see HttpExchangeEvent). */
+  clientRequestId?: string;
+  /** Gateway turn id (ADR-0021) — the capture turn-join key. */
+  requestId: string;
   model: string;
   recorder: CaptureRecorder;
   /**
@@ -31,12 +33,12 @@ export interface UpstreamEventContext {
    * Non-default call label forwarded onto every event emitted through this
    * context. The Layer 2 decision layer's decision-model leg carries 'l2-decision' so
    * the archive can tell it apart from candidate-execution events sharing the
-   * SAME trace/session (the outer request's identity).
+   * SAME requestId/sessionId (the outer request's identity).
    */
   purpose?: HttpExchangeEvent['purpose'];
 }
 
-/** Returns the spanId minted by `emitUpstreamRequest`, or undefined when the context is absent (capture off / mock mode / tests). */
+/** Returns the exchangeId minted by `emitUpstreamRequest`, or undefined when the context is absent (capture off / mock mode / tests). */
 export function emitUpstreamRequestOnce(
   ctx: UpstreamEventContext | undefined,
   args: {
@@ -58,7 +60,8 @@ export function emitUpstreamRequestOnce(
     requestHeaders: args.requestHeaders,
     requestBody: args.requestBody,
     sessionId: ctx.sessionId,
-    traceId: ctx.traceId,
+    clientRequestId: ctx.clientRequestId,
+    requestId: ctx.requestId,
     model: args.model ?? ctx.model,
     proxy: args.proxy,
     purpose: ctx.purpose,
@@ -71,7 +74,7 @@ export function emitUpstreamRequestOnce(
 export function emitUpstreamResponseOnce(
   ctx: UpstreamEventContext | undefined,
   args: {
-    spanId: string | undefined;
+    exchangeId: string | undefined;
     url: string;
     method: string;
     status: number;
@@ -83,7 +86,7 @@ export function emitUpstreamResponseOnce(
     model?: string;
   }
 ): void {
-  if (!ctx || !args.spanId) return;
+  if (!ctx || !args.exchangeId) return;
   emitUpstreamResponse({
     recorder: ctx.recorder,
     url: args.url,
@@ -94,9 +97,10 @@ export function emitUpstreamResponseOnce(
     responseBody: args.responseBody,
     firstByteTs: args.firstByteTs,
     sessionId: ctx.sessionId,
-    traceId: ctx.traceId,
+    clientRequestId: ctx.clientRequestId,
+    requestId: ctx.requestId,
     model: args.model ?? ctx.model,
-    spanId: args.spanId,
+    exchangeId: args.exchangeId,
     purpose: ctx.purpose,
     apiKey: ctx.apiKey,
     conversationKey: ctx.conversationKey,
@@ -112,7 +116,7 @@ export function emitUpstreamResponseOnce(
 export function emitUpstreamFailureOnce(
   ctx: UpstreamEventContext | undefined,
   args: {
-    spanId: string | undefined;
+    exchangeId: string | undefined;
     url: string;
     method: string;
     status: number;
@@ -125,7 +129,7 @@ export function emitUpstreamFailureOnce(
     model?: string;
   }
 ): void {
-  if (!ctx || !args.spanId) return;
+  if (!ctx || !args.exchangeId) return;
   emitUpstreamResponse({
     recorder: ctx.recorder,
     url: args.url,
@@ -136,9 +140,10 @@ export function emitUpstreamFailureOnce(
     responseBody: args.responseBody ?? '',
     firstByteTs: args.firstByteTs,
     sessionId: ctx.sessionId,
-    traceId: ctx.traceId,
+    clientRequestId: ctx.clientRequestId,
+    requestId: ctx.requestId,
     model: args.model ?? ctx.model,
-    spanId: args.spanId,
+    exchangeId: args.exchangeId,
     error: args.error,
     purpose: ctx.purpose,
     apiKey: ctx.apiKey,
@@ -156,7 +161,7 @@ export function emitUpstreamFailureOnce(
  */
 export async function withUpstreamFailureGuard<T>(
   ctx: UpstreamEventContext | undefined,
-  spanId: string | undefined,
+  exchangeId: string | undefined,
   url: string,
   method: string,
   fn: () => Promise<T>,
@@ -167,7 +172,7 @@ export async function withUpstreamFailureGuard<T>(
   } catch (err: any) {
     const status = typeof err?.status === 'number' ? err.status : 0;
     emitUpstreamFailureOnce(ctx, {
-      spanId,
+      exchangeId,
       url,
       method,
       status,

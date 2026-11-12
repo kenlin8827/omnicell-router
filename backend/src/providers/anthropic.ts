@@ -249,7 +249,7 @@ export class AnthropicProvider implements LLMProvider {
     const payload = buildAnthropicPayload(request, model);
 
     // Event-stream emit BEFORE the fetch fires. Independent of the response.
-    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+    const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
       url,
       method: 'POST',
       requestHeaders: headers,
@@ -269,7 +269,7 @@ export class AnthropicProvider implements LLMProvider {
       // so console readers never see a dangling request event.
       const res = await withUpstreamFailureGuard(
         upstreamEventContext,
-        spanId,
+        exchangeId,
         url,
         'POST',
         () => proxiedFetch(url, {
@@ -290,7 +290,7 @@ export class AnthropicProvider implements LLMProvider {
         } catch (err: any) {
           emitUpstreamFailureOnce(upstreamEventContext, {
             model: model.upstreamModel,
-            spanId,
+            exchangeId,
             url,
             method: 'POST',
             status: res.status,
@@ -303,7 +303,7 @@ export class AnthropicProvider implements LLMProvider {
         const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -332,7 +332,7 @@ export class AnthropicProvider implements LLMProvider {
       } catch (err: any) {
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -343,7 +343,7 @@ export class AnthropicProvider implements LLMProvider {
       }
       emitUpstreamResponseOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,

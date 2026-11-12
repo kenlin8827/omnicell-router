@@ -182,7 +182,7 @@ export class ResponsesProvider implements LLMProvider {
     const payload = buildResponsesPayload(request, model);
 
     // Event-stream emit BEFORE the fetch fires. Independent of the response.
-    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+    const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
       url,
       method: 'POST',
       requestHeaders: headers,
@@ -200,7 +200,7 @@ export class ResponsesProvider implements LLMProvider {
     try {
       const res = await withUpstreamFailureGuard(
         upstreamEventContext,
-        spanId,
+        exchangeId,
         url,
         'POST',
         () => proxiedFetch(
@@ -225,7 +225,7 @@ export class ResponsesProvider implements LLMProvider {
         } catch (err: any) {
           emitUpstreamFailureOnce(upstreamEventContext, {
             model: model.upstreamModel,
-            spanId,
+            exchangeId,
             url,
             method: 'POST',
             status: res.status,
@@ -238,7 +238,7 @@ export class ResponsesProvider implements LLMProvider {
         const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -265,7 +265,7 @@ export class ResponsesProvider implements LLMProvider {
       } catch (err: any) {
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -276,7 +276,7 @@ export class ResponsesProvider implements LLMProvider {
       }
       emitUpstreamResponseOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,

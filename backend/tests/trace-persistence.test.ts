@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Database } from 'bun:sqlite';
 import { TraceTracker, type ExecutionTrace } from '../src/trace/tracker.js';
 
 let seq = 0;
 const mkTrace = (over: { sessionId: string; timestamp: number } & Partial<ExecutionTrace>): ExecutionTrace => ({
-  traceId: `trace_persist_test_${++seq}`,
+  requestId: `trace_persist_test_${++seq}`,
   sessionId: over.sessionId,
   turnNumber: 1,
   timestamp: over.timestamp,
@@ -409,4 +410,142 @@ describe('TraceTracker.getUsageStats / getSessionAggregates — raw token aggreg
     );
     assert.equal(tracker.getSessionAggregates('nosilent').stallRatio, 0);
   });
+});
+
+describe('traces.db v1 → v2 migration (ADR-0021)', () => {
+  it('re-keys legacy trace-id rows under the same value and keeps them readable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-traces-mig-'));
+    const legacyTraceId = 'a'.repeat(32);
+    // v1 shape: primary key was the CALLER's trace id, no request column.
+    const db = new Database(path.join(dir, 'traces.db'), { create: true });
+    db.run(`CREATE TABLE traces (
+      trace_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      data TEXT NOT NULL
+    )`);
+    const legacyRow = mkTrace({ sessionId: 'sess_legacy', timestamp: 1000 });
+    const legacyJson = { ...legacyRow } as Record<string, unknown>;
+    delete legacyJson.requestId;
+    legacyJson.traceId = legacyTraceId;
+    db.run('INSERT INTO traces (trace_id, session_id, ts, data) VALUES (?, ?, ?, ?)', [
+      legacyTraceId,
+      'sess_legacy',
+      1000,
+      JSON.stringify(legacyJson),
+    ]);
+    db.close();
+
+    const reopened: TraceTracker[] = [];
+    try {
+      const tracker = new TraceTracker(10, { ...PERSIST, dir });
+      reopened.push(tracker);
+      await tracker.whenReady;
+      const rows = tracker.getTracesBySession('sess_legacy');
+      assert.equal(rows.length, 1, 'the legacy row is replayed');
+      assert.equal(rows[0].requestId, legacyTraceId, 'key = its old (unique) trace id');
+      assert.equal(tracker.getTrace(legacyTraceId)?.sessionId, 'sess_legacy');
+      // A NEW write keeps both rows distinct even when a caller reuses that value.
+      tracker.record(mkTrace({ sessionId: 'sess_legacy', timestamp: 2000, clientRequestId: legacyTraceId }));
+      assert.equal(tracker.getTracesBySession('sess_legacy').length, 2);
+    } finally {
+      await cleanup(dir, reopened);
+    }
+  });
+
+  it('reads a NEWER file version as-is instead of down-migrating it', async () => {
+    // A downgraded binary must never rewrite a file a newer build owns: the
+    // row shape it needs (`data` JSON) is stable, so it replays and keeps
+    // writing. Guard: version > DB_VERSION skips the migration branch.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-traces-newer-'));
+    const seeded = mkTrace({ sessionId: 'sess_newer', timestamp: 1000 });
+    const seed = new Database(path.join(dir, 'traces.db'), { create: true });
+    seed.run(`CREATE TABLE traces (
+      request_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      future_column TEXT
+    )`);
+    seed.run('INSERT INTO traces (request_id, session_id, ts, data, future_column) VALUES (?, ?, ?, ?, ?)', [
+      seeded.requestId,
+      'sess_newer',
+      1000,
+      JSON.stringify(seeded),
+      'keep-me',
+    ]);
+    seed.run('PRAGMA user_version = 99');
+    seed.close();
+
+    const reopened: TraceTracker[] = [];
+    try {
+      const tracker = new TraceTracker(10, { ...PERSIST, dir });
+      reopened.push(tracker);
+      await tracker.whenReady;
+      assert.equal(tracker.getTrace(seeded.requestId)?.sessionId, 'sess_newer');
+      // Still writable, and the unknown column survives (no rebuild happened).
+      tracker.record(mkTrace({ sessionId: 'sess_newer', timestamp: 2000 }));
+      const check = new Database(path.join(dir, 'traces.db'), { create: true });
+      // bun:sqlite returns untyped rows; these two pragmas are the only
+      // untrusted reads here and both are asserted below.
+      const info = check.query('PRAGMA table_info(traces)').all() as Array<{ name: string }>;
+      const versionRow = check.query('PRAGMA user_version').get() as { user_version?: number } | null;
+      const version = Number(versionRow?.user_version);
+      check.close();
+      assert.ok(info.some(c => c.name === 'future_column'), 'schema untouched');
+      assert.equal(version, 99, 'user_version untouched');
+    } finally {
+      await cleanup(dir, reopened);
+    }
+  });
+
+  it('rebuilds a v2-numbered file whose SHAPE is wrong (request_id PK + NOT NULL trace_id)', async () => {
+    // Observed in a real deployment: an intermediate build left this shape
+    // behind. The version said 2, so a version-only gate skipped the rebuild
+    // and every later write failed the `trace_id NOT NULL` constraint — a
+    // silent no-op for the whole trace store. The gate now checks the shape.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-traces-mixed-'));
+    // Recent ts: the boot sweep deletes rows older than the retention window,
+    // and this test is about the SHAPE migration, not retention.
+    const seededAt = Date.now();
+    const mixed = mkTrace({ sessionId: 'sess_mixed', timestamp: seededAt, requestId: 'req_keep_me' });
+    const seed = new Database(path.join(dir, 'traces.db'), { create: true });
+    seed.run(`CREATE TABLE traces (
+      request_id TEXT PRIMARY KEY,
+      trace_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      data TEXT NOT NULL
+    )`);
+    seed.run('INSERT INTO traces (request_id, trace_id, session_id, ts, data) VALUES (?, ?, ?, ?, ?)', [
+      'req_keep_me',
+      'b'.repeat(32),
+      'sess_mixed',
+      seededAt,
+      JSON.stringify(mixed),
+    ]);
+    seed.run('PRAGMA user_version = 2');
+    seed.close();
+
+    const reopened: TraceTracker[] = [];
+    try {
+      const tracker = new TraceTracker(10, { ...PERSIST, dir });
+      reopened.push(tracker);
+      await tracker.whenReady;
+      // The gateway key survives; the caller value does NOT replace it.
+      assert.equal(tracker.getTrace('req_keep_me')?.sessionId, 'sess_mixed');
+      // And new writes now land (they were silently dropped before).
+      tracker.record(mkTrace({ sessionId: 'sess_mixed', timestamp: 2000 }));
+      const check = new Database(path.join(dir, 'traces.db'), { create: true });
+      const info = check.query('PRAGMA table_info(traces)').all() as Array<{ name: string; pk: number }>;
+      const count = check.query('SELECT COUNT(*) AS c FROM traces').get() as { c: number };
+      check.close();
+      assert.deepEqual(info.map(c => c.name), ['request_id', 'session_id', 'ts', 'data']);
+      assert.equal(info.find(c => c.name === 'request_id')?.pk, 1);
+      assert.equal(count.c, 2, 'the migrated row plus the new one');
+    } finally {
+      await cleanup(dir, reopened);
+    }
+  });
+
 });

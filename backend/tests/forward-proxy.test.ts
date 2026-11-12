@@ -247,7 +247,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
           modelUsed: 'mock-1',
           fallbackOccurred: false,
           sessionId: 'sess-1',
-          traceId: 'trace-1',
+          requestId: 'trace-1',
           latencyMs: 5,
         };
       },
@@ -324,8 +324,8 @@ describe('forward-proxy: LLM protocol interceptor', () => {
             recordEvent: (ev: any) => finalized.push(ev),
             isEnabled: () => true,
           },
-          spanId: 'span-1',
-          traceId: 'trace-1',
+          exchangeId: 'span-1',
+          requestId: 'trace-1',
           pending: {
             sessionId: 'sess-1',
             model: 'auto',
@@ -340,7 +340,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
             usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           },
           tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
-          sessionId: 'sess-1', traceId: 'trace-1', latencyMs: 1,
+          sessionId: 'sess-1', requestId: 'trace-1', latencyMs: 1,
         };
       },
     } as any;
@@ -488,8 +488,8 @@ describe('forward-proxy: LLM protocol interceptor', () => {
       process: async (request: any, ctx: any) => {
         ctx.onClientExchange?.({
           recorder: { recordEvent: (ev: any) => finalized.push(ev), isEnabled: () => true },
-          spanId: 'span-9',
-          traceId: 'trace-9',
+          exchangeId: 'span-9',
+          requestId: 'trace-9',
           pending: {
             sessionId: 'sess-9',
             model: 'auto',
@@ -506,7 +506,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
             usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           },
           tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
-          sessionId: 'sess-9', traceId: 'trace-9', latencyMs: 1,
+          sessionId: 'sess-9', requestId: 'trace-9', latencyMs: 1,
         };
       },
     } as any;
@@ -588,7 +588,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     },
     tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
-    sessionId: 'sess-h', traceId: 'trace-h', latencyMs: 1,
+    sessionId: 'sess-h', requestId: 'trace-h', latencyMs: 1,
   });
 
   it('MITM anthropic stream: full message_start…message_stop frame sequence', async () => {
@@ -698,7 +698,7 @@ describe('forward-proxy: over-the-wire routing (interceptor + MITM combined)', (
         modelUsed: 'mock-2',
         fallbackOccurred: false,
         sessionId: 'sess-2',
-        traceId: 'trace-2',
+        requestId: 'trace-2',
         latencyMs: 9,
       }),
     } as any;
@@ -918,7 +918,7 @@ describe('forward-proxy: hot-apply (live forwardProxy config, no restart)', () =
   });
 });
 describe('forward-proxy: direct-leg capture parity (ADR-0003 §7a)', () => {
-  it('a direct-forward turn lands in the capture archive as client request + upstream pair sharing one traceId', async () => {
+  it('a direct-forward turn lands in the capture archive as client request + upstream pair sharing one requestId', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-directcap-'));
     // Fake headroom sidecar: rewrites the user message — proves the direct
     // turn's compression runs INSIDE the pipeline now (and reaches the origin).
@@ -1033,11 +1033,11 @@ describe('forward-proxy: direct-leg capture parity (ADR-0003 §7a)', () => {
     assert.ok(clientRes, 'gateway response event captured');
     assert.ok(upReq, 'upstream request event captured');
     assert.ok(upRes, 'upstream response event captured');
-    // One turn: all four events share the traceId; request↔response pair by spanId.
-    const traceIds = new Set(events.map((e) => e.traceId));
-    assert.equal(traceIds.size, 1, `all direct-forward events share one traceId, got ${traceIds.size}`);
-    assert.equal(clientReq.spanId, clientRes.spanId, 'client request/response pair by spanId');
-    assert.equal(upReq.spanId, upRes.spanId, 'upstream request/response pair by spanId');
+    // One turn: all four events share the requestId; request↔response pair by exchangeId.
+    const traceIds = new Set(events.map((e) => e.requestId));
+    assert.equal(traceIds.size, 1, `all direct-forward events share one requestId, got ${traceIds.size}`);
+    assert.equal(clientReq.exchangeId, clientRes.exchangeId, 'client request/response pair by exchangeId');
+    assert.equal(upReq.exchangeId, upRes.exchangeId, 'upstream request/response pair by exchangeId');
     assert.ok(upReq.wire.requestLine.includes(`${lanIp}:${upstreamPort}`), 'upstream request line shows the ORIGINAL destination');
     assert.ok(upReq.wire.requestBody.includes('big-pickle'), 'unregistered model name rides the verbatim forward');
     assert.ok(upRes.wire.responseBody.includes('echo'), 'upstream response body captured');

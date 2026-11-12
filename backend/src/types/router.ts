@@ -226,7 +226,13 @@ export interface ExecutionResult {
   sessionId?: string;
   sessionRatchetApplied?: boolean;
   sessionLookupType?: SessionLookupType;
-  traceId?: string;
+  /**
+   * Gateway-owned id of THIS request (ADR-0021) — returned as
+   * `X-OCR-Request-ID` so a caller/operator can name the exact console row.
+   * Distinct from `sessionId` (the conversation); the caller's own
+   * correlation value is never echoed back.
+   */
+  requestId?: string;
   latencyMs: number;
   /**
    * Industry TTFT/TPS split of the committed attempt, measured at the relay:

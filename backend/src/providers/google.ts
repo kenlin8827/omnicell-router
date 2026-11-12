@@ -240,7 +240,7 @@ export class GoogleProvider implements LLMProvider {
     };
 
     // Event-stream emit BEFORE the fetch fires. Independent of the response.
-    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+    const exchangeId = emitUpstreamRequestOnce(upstreamEventContext, {
       url,
       method: 'POST',
       requestHeaders: outboundHeaders,
@@ -258,7 +258,7 @@ export class GoogleProvider implements LLMProvider {
     try {
       const res = await withUpstreamFailureGuard(
         upstreamEventContext,
-        spanId,
+        exchangeId,
         url,
         'POST',
         () => proxiedFetch(
@@ -283,7 +283,7 @@ export class GoogleProvider implements LLMProvider {
         } catch (err: any) {
           emitUpstreamFailureOnce(upstreamEventContext, {
             model: model.upstreamModel,
-            spanId,
+            exchangeId,
             url,
             method: 'POST',
             status: res.status,
@@ -294,7 +294,7 @@ export class GoogleProvider implements LLMProvider {
         }
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -320,7 +320,7 @@ export class GoogleProvider implements LLMProvider {
       } catch (err: any) {
         emitUpstreamFailureOnce(upstreamEventContext, {
           model: model.upstreamModel,
-          spanId,
+          exchangeId,
           url,
           method: 'POST',
           status: res.status,
@@ -331,7 +331,7 @@ export class GoogleProvider implements LLMProvider {
       }
       emitUpstreamResponseOnce(upstreamEventContext, {
         model: model.upstreamModel,
-        spanId,
+        exchangeId,
         url,
         method: 'POST',
         status: res.status,
