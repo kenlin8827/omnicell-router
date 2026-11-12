@@ -156,7 +156,7 @@ export function parseGatewayCfg(
     model: String(values.model ?? 'auto').replace(/^ocr\//, ''),
     forceModel: values.forceModel === true,
     catalogReplace: values.catalogReplace === true,
-    catalogPrefix: values.catalogPrefix !== false,
+    catalogPrefix: values.catalogPrefix === true,
     modelListMode,
     models: Array.isArray(values.models)
       ? values.models.map((id) => String(id).replace(/^ocr\//, ''))
