@@ -1001,6 +1001,34 @@ export function registerConsoleRoutes(
     return reply.status(404).send('Not Found');
   });
 
+  // 1b. Public assets copied verbatim from frontend/public (Vite emits them at
+  // the dist root). The hashed `assets/` handler above covers bundles only —
+  // without this route the SPA wildcard below answers `/admin/provider-logos/*`
+  // with index.html, so every bundled logo silently fell back to the remote
+  // catalog (or a monogram) in production/desktop builds. Names are stable (not
+  // content-hashed), so the response revalidates instead of caching immutably.
+  const PUBLIC_MIME: Record<string, string> = {
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.ico': 'image/x-icon',
+    '.txt': 'text/plain; charset=utf-8',
+    '.webmanifest': 'application/manifest+json',
+  };
+  app.get('/admin/provider-logos/:file', async (req: FastifyRequest<{ Params: { file: string } }>, reply: FastifyReply) => {
+    const file = req.params.file;
+    if (!file || file.includes('/') || file.includes('\\') || file.includes('..') || file.includes('\0')) {
+      return reply.status(400).send('Bad Request');
+    }
+    const dir = path.join(FRONTEND_DIST, 'provider-logos');
+    const filePath = path.join(dir, file);
+    if (!path.resolve(filePath).startsWith(path.resolve(dir) + path.sep)) {
+      return reply.status(400).send('Bad Request');
+    }
+    const mime = PUBLIC_MIME[path.extname(file).toLowerCase()];
+    if (!mime || !fs.existsSync(filePath)) return reply.status(404).send('Not Found');
+    return reply.header('Cache-Control', 'no-cache').type(mime).send(fs.readFileSync(filePath));
+  });
+
   // 2. React SPA HTML Handler
   const handleHtml = async (_req: any, reply: any) => {
     const indexHtmlPath = path.join(FRONTEND_DIST, 'index.html');
