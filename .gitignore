@@ -40,3 +40,6 @@ frontend/.vite/
 
 # Local code-graph index (CodeGraph MCP cache), never part of the tree.
 /.codegraph/
+
+# Local rollback snapshots (not source; never part of the tree).
+/.recovery/
