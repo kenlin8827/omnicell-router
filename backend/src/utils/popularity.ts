@@ -19,6 +19,8 @@ import type { HarnessHostId } from '../harness/types.js';
  *  - Not covered by the index: DeepSeek Harness (278k GitHub stars in its first
  *    three months, 2026-11-10) ranks between the 81 and 75 tiers; OpenClaw
  *    (394k stars, but personal-agent traffic) ranks below OpenCode/Pi.
+ *    WorkBuddy (Tencent's office-agent IDE) has no index figure — it sits with
+ *    the other vendor IDEs between Grok and Qoder by judgment, not measurement.
  *
  * Aliases share their product's row (`cursor-proxy` = Cursor,
  * `opencode-proxy` = OpenCode, `qoder-proxy` = Qoder). `universal` is not a
@@ -44,6 +46,7 @@ const POPULARITY_ROWS: readonly (readonly RankedRuntimeId[])[] = [
   ['omp'],
   ['kimi'],
   ['grok'],
+  ['workbuddy'],
   ['qoder-proxy'],
   ['factory'],
 ];

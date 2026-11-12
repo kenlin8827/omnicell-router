@@ -209,10 +209,10 @@ export const OverviewPage: React.FC = () => {
                 </div>
                 <div>
                   {c.hooked ? (
-                    <span className="badge badge-success">{t('overview.hooked')}</span>
+                    <span className="badge badge-success">{t(c.hookKind === 'launcher' ? 'clients.launcherHookedBadge' : 'overview.hooked')}</span>
                   ) : (
                     <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
-                      {t('overview.notHooked')}
+                      {t(c.hookKind === 'launcher' ? 'clients.launcherNotHookedBadge' : 'overview.notHooked')}
                     </span>
                   )}
                 </div>

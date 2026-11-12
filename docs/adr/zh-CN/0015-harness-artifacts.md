@@ -6,11 +6,12 @@
 - **修订**：2026-11-01 —— MCP 轴新增操作者包源（`npm` / `pypi`），落在 `harness/mcp-market.json`；该轴**共享**：只有一个 `shared` 桶，包源不钉 harness（解析出的启动命令与宿主无关），旧 harness 桶按共享读取并在下次写入时拍平。
 - **修订**：2026-11-02 —— MCP 添加/编辑表单的远程（URL）半区把请求头改为「名 + 值」行：registry 的 `remotes[].transport.headers` 预填名称，`setKeys` 标记已存值，值留空时保留它（或写入宿主的环境变量引用），填写则按字面写入且永不回显。传输分段标为「远程 URL」而不是「SSE」：已核实的宿主都不声明 transport 字段（§D8）。
 - **修订**：2026-11-03 —— `openclaw` 以三类能力加入宿主目录：技能（`~/.openclaw/skills` 全局、裸工作区 `skills/` 项目，二者另读共享树，`readsUniversal`）、CLI 物化 MCP 落点（§D8.13 的 JSON5 变体：中央 `~/.openclaw/openclaw.json` 把服务嵌在 `mcp.servers`——带注释、可裸键的 JSON5，经 `json5` 读取，只由 `openclaw mcp add` / `mcp unset` 写入，仅全局）、插件子进程落点（`openclaw plugins install <spec> --force`；git 行走 `--marketplace` 命令链）。MCP 落点格式联合新增 `json5`，容器键变为点路径感知（`mcpContainerAt` / `ensureMcpContainer`）。MCP 语法经出厂 2026.10.10 二进制实测（真实 add/unset 往返确认了嵌套容器、`${KEY}` 引用与 `--no-probe`；CLI 的 `--header` 取 `KEY=value`，而非其行文示例的 `KEY: value`）。
+- **修订**：2026-11-11 —— 第十三个流量客户端 `workbuddy` 加入 `SupportedClient`。它的 `config` hook 管理 WorkBuddy 用户级 `models.json` 的自定义模型行。路径解析照抄客户端自己的规则：`WORKBUDDY_CONFIG_DIR` / `CODEBUDDY_CONFIG_DIR` 覆盖，其次 `WORKBUDDY_DATA_FOLDER_NAME`，再按 `.workbuddy`、`.workbuddy-ai`、`.codebuddy`（中国版 / 国际版 / 旧版）取第一个已存在的文件或目录，默认 `.workbuddy`。hook 标记是行内的 `vendor` 字段（该文件的严格 schema 会拒绝外来顶层 `OCR_WATERMARK`）；归属按行判定，因此 setup 与用户自有自定义模型合并，teardown 只剥离 OCR 行。仅当用户文件本来就声明了 `availableModels` 才追加该键——否则注入它会**替换**内置模型列表。URL 写 `/v1` 根地址（WorkBuddy 会规范化为 `/v1/chat/completions`），绝不写完整 chat-completions 路径，也绝不设 `CODEBUDDY_BASE_URL`（客户端会给它追加 `/v2`）。`~/.workbuddy` 不在 `<ocrHome>` 下：它是厂商的用户配置目录，所以 hook 不触碰环境 book-set，与其它改写配置的客户端一致。
 - **关联**：ADR-0010（定义归属 + 物化目标）、ADR-0006（凭证库——本域从不读取）、ADR-0013（观测账本先例）、ADR-0007（环境布局、废纸篓删除）
 
 ## 背景
 
-网关与十二个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`、`cursor-proxy`、`qoder-proxy`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器让运行时的请求流经网关（改写配置、设置服务环境，或生成代理启动器），到此为止。
+网关与十三个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`、`workbuddy`、`cursor-proxy`、`qoder-proxy`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器让运行时的请求流经网关（改写配置、设置服务环境，或生成代理启动器），到此为止。
 
 运行时还能获得的东西——**技能**（指令目录）、**MCP 服务**（工具后端）、**插件**（运行时插件/包）——过去只能由各家 CLI 装进各自目录，网关里没有任何记录。三个后果：
 

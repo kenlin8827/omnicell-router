@@ -135,6 +135,7 @@ ocr setup openclaw      # Hook OpenClaw to route via OCR
 ocr setup omp           # Hook OMP (oh-my-pi) to route via OCR
 ocr setup kimi          # Hook Kimi Code CLI to route via OCR
 ocr setup grok          # Hook Grok CLI to route via OCR
+ocr setup workbuddy     # Hook WorkBuddy (models.json custom models) to route via OCR
 ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + qoder-gateway plugin
 
 # Launch through the OCR-managed launchers (after setup)
@@ -184,12 +185,12 @@ OmniCellRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints
 2. Enable `OpenAI API Key` and input any placeholder string (e.g., `sk-ocr`).
 3. Set `Override OpenAI Base URL` to:
    ```
-   http://127.0.0.1:3000/v1
+   http://127.0.0.1:4000/v1
    ```
 4. In the model selector, add and select the virtual model: `auto`.
 
 ### 2. Claude Code / OpenCode CLI / Chatbox
-1. **API Base URL**: `http://127.0.0.1:3000/v1`
+1. **API Base URL**: `http://127.0.0.1:4000/v1`
 2. **API Key**: any `sk-ocr-*` key created on the console /keys page (or any placeholder if the gateway runs keyless).
 3. **Model**: `auto` (or explicit tier aliases like `plus`).
 
@@ -198,7 +199,7 @@ OmniCellRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:3000/v1",
+    base_url="http://127.0.0.1:4000/v1",
     api_key="sk-ocr"
 )
 
@@ -217,7 +218,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://127.0.0.1:3000/v1',
+  baseURL: 'http://127.0.0.1:4000/v1',
   apiKey: 'sk-ocr',
 });
 

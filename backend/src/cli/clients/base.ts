@@ -2,14 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ClientHookKind, ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
-import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
+import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_GATEWAY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
 import { caCertPath } from '../../forward-proxy/ca.js';
 import type { RouterConfig } from '../../config/types.js';
 import { runCommand } from '../../utils/run-command.js';
 import { getForwardProxyStatus } from '../../forward-proxy/status.js';
 import { probeCaTrustedCached } from '../../forward-proxy/ca-trust.js';
-export const OCR_DEFAULT_PORT = 4000;
+/** Last-resort fallback URL when config is unreadable; mirrors the config default. */
+export const OCR_DEFAULT_PORT = DEFAULT_GATEWAY_PORT;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
 export const OCR_DEFAULT_V1_URL = `${OCR_DEFAULT_URL}/v1`;
 export const OCR_WATERMARK = 'omnicell-router-managed';

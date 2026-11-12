@@ -63,14 +63,27 @@
   the SHIPPED 2026.10.10 binary (a real add/unset round-trip confirmed the nested container,
   `${KEY}` references and `--no-probe`; the CLI's `--header` takes `KEY=value`, not the
   `KEY: value` its prose examples show).
+- **Amended**: 2026-11-11 — a thirteenth traffic client, `workbuddy`, joins `SupportedClient`.
+  Its `config` hook owns WorkBuddy's user-level `models.json` custom-model rows. The path resolver
+  mirrors the client's own: `WORKBUDDY_CONFIG_DIR` / `CODEBUDDY_CONFIG_DIR` override, then
+  `WORKBUDDY_DATA_FOLDER_NAME`, then the first EXISTING file/folder among `.workbuddy`,
+  `.workbuddy-ai`, `.codebuddy` (China / international / legacy editions), defaulting to
+  `.workbuddy`. The hook marker is the row's `vendor` field (the file's strict schema rejects a
+  foreign top-level `OCR_WATERMARK`); ownership is per-row, so setup merges with the user's own
+  custom models and teardown strips only OCR rows. `availableModels` is added to only when the
+  user's file already declares it — injecting that key otherwise REPLACES the built-in model list.
+  The URL is the `/v1` root (WorkBuddy normalizes it to `/v1/chat/completions`), never a full
+  chat-completions path and never `CODEBUDDY_BASE_URL` (which the client suffixes with `/v2`).
+  `~/.workbuddy` is NOT under `<ocrHome>`: it is the vendor's user config dir, so the hook leaves
+  the environment book-sets alone, exactly like the other config-rewrite clients.
 - **Related**: ADR-0010 (definition ownership + materialization targets), ADR-0006 (credential store —
   never read by this domain), ADR-0013 (observation-ledger precedent), ADR-0007 (environment layout,
   trash-based delete)
 
 ## Context
 
-The gateway already owns a **client** relationship with twelve runtimes (`SupportedClient`: `opencode`,
-`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `cursor-proxy`,
+The gateway already owns a **client** relationship with thirteen runtimes (`SupportedClient`: `opencode`,
+`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `workbuddy`, `cursor-proxy`,
 `qoder-proxy`). That relationship is about **traffic**: an adapter makes the runtime's requests flow
 through the gateway (config rewrite, service env, or a proxy launcher), and stops there.
 

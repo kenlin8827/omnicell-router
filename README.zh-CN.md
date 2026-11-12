@@ -125,6 +125,7 @@ ocr setup openclaw      # 将 OpenClaw 接入 OCR
 ocr setup omp           # 将 OMP (oh-my-pi) 接入 OCR
 ocr setup kimi          # 将 Kimi Code CLI 接入 OCR
 ocr setup grok          # 将 Grok CLI 接入 OCR
+ocr setup workbuddy     # 将 WorkBuddy（models.json 自定义模型）接入 OCR
 ocr setup qoder-proxy   # 通过 OCR 前置代理 + qoder-gateway 插件接入 Qoder
 
 # 通过 OCR 托管的启动脚本运行（setup 之后）
@@ -176,12 +177,12 @@ OmniCellRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为�
 2. 开启 `OpenAI API Key`，输入任意占位符字符串（如 `sk-ocr`）。
 3. 展开 `Override OpenAI Base URL`，填入：
    ```
-   http://127.0.0.1:3000/v1
+   http://127.0.0.1:4000/v1
    ```
 4. 在模型选择列表中，添加并选中虚拟模型：`auto`。
 
 ### 2. Claude Code / OpenCode CLI / Chatbox
-1. **API Base URL**: `http://127.0.0.1:3000/v1`
+1. **API Base URL**: `http://127.0.0.1:4000/v1`
 2. **API Key**: 任意占位符字符串（或已配置的 `adminApiKey`）。
 3. **Model**: 输入 `auto`（或显式层级别名如 `auto-plus`）。
 
@@ -190,7 +191,7 @@ OmniCellRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为�
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:3000/v1",
+    base_url="http://127.0.0.1:4000/v1",
     api_key="sk-ocr"
 )
 
@@ -209,7 +210,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://127.0.0.1:3000/v1',
+  baseURL: 'http://127.0.0.1:4000/v1',
   apiKey: 'sk-ocr',
 });
 

@@ -466,7 +466,7 @@ export class QoderProxyClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `Qoder hooked: start the desktop app via ${lPath} (Chromium legs use --proxy-server; the agent SDK uses grpc_proxy/http(s)_proxy). ${cliBin ? `Qoder CLI launcher: ${cliPath} (run \`qoder-cli-launcher -p "..."\`). ` : ''}${staled.length > 0 ? `Marked ${staled.length} cached model catalog(s) stale — quit Qoder completely first, then launch through the proxy; it will serve the old list and refetch in the background through the gateway. ` : ''}Install/enable the \`qoder-gateway\` plugin for OCR models; the desktop launcher disables TLS verification for the Node/grpc SDK because its daemon ignores every CA store except the compiled-in one.`,
+      message: `Qoder launcher written at ${lPath}. Start the desktop app via \`ocr qoder\` — the takeover happens at launch time; Qoder itself is untouched.${cliBin ? ` Qoder CLI launcher: ${cliPath} (run \`ocr qoder-cli -p "..."\`). ` : ' '}${staled.length > 0 ? `Marked ${staled.length} cached model catalog(s) stale — quit Qoder completely first, then launch through the proxy; it will serve the old list and refetch in the background through the gateway. ` : ''}Install/enable the \`qoder-gateway\` plugin for OCR models; the desktop launcher disables TLS verification for the Node/grpc SDK because its daemon ignores every CA store except the compiled-in one.`,
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
@@ -489,13 +489,13 @@ export class QoderProxyClientAdapter implements ClientAdapter {
       }
     }
     if (removed.length === 0) {
-      return { success: false, reasonCode: 'not_active', message: 'Qoder proxy mode is not active — no launcher to remove.' };
+      return { success: false, reasonCode: 'not_active', message: 'No Qoder launcher to delete — run `ocr setup qoder-proxy` first.' };
     }
     // The CA and Qoder's own files are intentionally untouched — the catalog
     // mtimes setup backdated are left stale, so the next launch refreshes them.
     return {
       success: true,
-      message: `Qoder proxy mode disabled: removed ${removed.join(', ')}. Start Qoder normally (no proxy) — the MITM CA remains in the trust store if you imported it manually.`,
+      message: `Qoder launchers deleted (${removed.join(', ')}). Qoder itself was never modified — start it normally for a direct connection. The MITM CA remains in the trust store if you imported it manually.`,
     };
   }
 }

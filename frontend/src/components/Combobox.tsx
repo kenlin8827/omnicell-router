@@ -61,6 +61,11 @@ type ComboboxBaseProps = {
   forceFilter?: boolean;
   /** Non-interactive trigger (e.g. a slot owned by another control). */
   disabled?: boolean;
+  /** Validation error state — red border on the trigger, cleared by the caller. */
+  invalid?: boolean;
+  /** Outward handle to the trigger button — form validation scrolls to and
+   *  focuses the refused field (ref into a `<button>`, not into the component). */
+  triggerRef?: (el: HTMLButtonElement | null) => void;
   /**
    * Chrome level. `default` = the bordered field look (`.input`). `ghost` = no border/background
    * until hover or focus — for dense toolbars and the console header, where a row of bordered
@@ -112,7 +117,7 @@ export type ComboboxProps = ComboboxBaseProps &
 const FILTER_THRESHOLD = 8;
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {
-  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant, hideMetaInTrigger, hoverMetaOnly } = props;
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant, hideMetaInTrigger, hoverMetaOnly, invalid, triggerRef: externalTriggerRef } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -120,6 +125,11 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [pos, setPos] = useState<DropdownPosition | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  // Dual ref binding: internal keyboard/focus logic + optional outward handle.
+  const setTriggerRef = (el: HTMLButtonElement | null) => {
+    (triggerRef as React.MutableRefObject<HTMLButtonElement | null>).current = el;
+    externalTriggerRef?.(el);
+  };
   const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
@@ -268,11 +278,12 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
     <>
       <button
         type="button"
-        ref={triggerRef}
-        className={variant === 'ghost' ? 'input input-ghost' : 'input'}
+        ref={setTriggerRef}
+        className={`${variant === 'ghost' ? 'input input-ghost' : 'input'}${invalid ? ' is-invalid' : ''}`}
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-invalid={invalid || undefined}
         disabled={disabled}
         title={selected?.label}
         onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}

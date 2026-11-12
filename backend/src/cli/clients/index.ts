@@ -11,6 +11,7 @@ import { KimiClientAdapter } from './kimi.js';
 import { OpenClawClientAdapter } from './openclaw.js';
 import { CursorProxyClientAdapter } from './cursor-proxy.js';
 import { QoderProxyClientAdapter } from './qoder-proxy.js';
+import { WorkBuddyClientAdapter } from './workbuddy.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 import { popularityRank } from '../../utils/popularity.js';
 import { compareVersions } from '../../utils/semver.js';
@@ -26,6 +27,7 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   grok: new GrokClientAdapter(),
   kimi: new KimiClientAdapter(),
   openclaw: new OpenClawClientAdapter(),
+  workbuddy: new WorkBuddyClientAdapter(),
   'cursor-proxy': new CursorProxyClientAdapter(),
   'qoder-proxy': new QoderProxyClientAdapter(),
 };
