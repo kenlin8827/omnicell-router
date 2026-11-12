@@ -1,6 +1,6 @@
 {
   "name": "omnicell-router",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "High-performance OmniCellRouter (OCR) & Cascading Gateway",
   "publishConfig": {
     "access": "public"
@@ -46,7 +46,8 @@
     "test:system": "bun --no-env-file scripts/full-system-test.ts",
     "check:typography": "node frontend/scripts/check-typography.mjs",
     "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit && bun --no-env-file scripts/typecheck-plugins.ts",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "logos:fetch": "bun --no-env-file scripts/fetch-provider-logos.ts"
   },
   "keywords": [
     "llm",
