@@ -755,11 +755,19 @@ export function createServer(
   // bounded ring + traces.db mirror (survives restarts). Optional equality
   // filters narrow server-side; display-only plane, never gates routing.
   app.get('/api/admin/failure-events', async (req) => {
-    const query = req.query as { model?: string; provider?: string; errorClass?: string; role?: string; limit?: string };
+    const query = req.query as {
+      model?: string;
+      provider?: string;
+      keyHashPrefix?: string;
+      errorClass?: string;
+      role?: string;
+      limit?: string;
+    };
     const limit = query.limit !== undefined ? Math.min(Math.max(parseInt(query.limit, 10) || 200, 0), 500) : 200;
     const events = getFailureEventLog().list({
       model: query.model || undefined,
       provider: query.provider || undefined,
+      keyHashPrefix: query.keyHashPrefix || undefined,
       errorClass: query.errorClass || undefined,
       role: query.role || undefined,
       limit,

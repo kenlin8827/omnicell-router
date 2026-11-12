@@ -398,6 +398,7 @@ export class Layer2Decision {
           recordFailureEvent({
             model: model.id,
             provider: model.provider,
+            keyHashPrefix: diagnosis.usedKeyHashPrefix,
             errorClass: diagnosis.category,
             status: diagnosis.statusCode,
             message: failureReason,
@@ -428,6 +429,9 @@ export class Layer2Decision {
           recordFailureEvent({
             model: model.id,
             provider: model.provider,
+            // Deadline rows carry no error object, hence no registry stamp: the
+            // credential is unknown, so this row stays model-scope (absent
+            // prefix) rather than guessing one.
             errorClass: 'TIMEOUT',
             message: error,
             role: 'l2-decision',

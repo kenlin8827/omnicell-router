@@ -230,6 +230,10 @@ export class ActiveHealthProber {
       recordFailureEvent({
         model: model.id,
         provider: model.provider,
+        // The probe ran through `credentialKeyHashPrefix`; the diagnosis stamp
+        // names the credential that actually answered when the execution path
+        // re-stamped it (registry invariant for chain-less providers absent).
+        keyHashPrefix: diagnosis.usedKeyHashPrefix ?? credentialKeyHashPrefix,
         errorClass: diagnosis.category,
         status: diagnosis.statusCode,
         message: err?.message ?? String(err),

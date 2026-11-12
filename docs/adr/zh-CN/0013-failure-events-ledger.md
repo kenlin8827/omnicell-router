@@ -22,18 +22,18 @@
 
 ### 1. 一本账，每次失败的上游模型调用一条事件
 
-新增 `backend/src/observability/failure-events.ts`。记录形状：`{ id, ts, lastTs, count, model, provider, errorClass, status?, message, role, sessionId? }`。`errorClass` = 错误分类器的 `ErrorCategory` 词汇（与熔断规则、网关错误面同一种语言），外延 `TIMEOUT`——被放弃的决策层调用没有可分类的 HTTP 状态。`role` 区分发射者：今天是 `serving`（候选池尝试）与 `l2-decision`（路由决策层线上调用）；`probe` 预留在词汇里，未来健康探测若加发射点无需改 schema。
+新增 `backend/src/observability/failure-events.ts`。记录形状：`{ id, ts, lastTs, count, model, provider, keyHashPrefix?, errorClass, status?, message, role, sessionId? }`，身份是**配对**（provider × model × 凭证），而非仅模型——健康模型上死掉的钥匙是凭证故障，只按模型记的行会把“哪把钥匙死了”藏起来。`keyHashPrefix` 是限流面与配额面已在使用的展示安全凭证身份（ADR-0006 的 key-hash 身份；原始密钥永不入账）。它**可选**，缺失是诚实的而非缺陷：无凭证链的 provider（P3 前烘焙钥匙）、凭证选择之前就失败的调用、以及决策层被放弃调用的 `TIMEOUT`（错误对象从未返回，无处盖戳）都是模型域的观测。`errorClass` = 错误分类器的 `ErrorCategory` 词汇（与熔断规则、网关错误面同一种语言），外延 `TIMEOUT`——被放弃的决策层调用没有可分类的 HTTP 状态。`role` 区分发射者：今天是 `serving`（候选池尝试）与 `l2-decision`（路由决策层线上调用）；`probe` 预留在词汇里，未来健康探测若加发射点无需改 schema。
 
 ### 2. 两个发射点，构造上即 fail-open
 
-- **业务（serving）**——编排器候选池的逐候选 catch，恰在分类器判定已在手的点位：每个被诊断的失败都随类别、状态、消息与所属会话入账，**无论**后续候选是否救回本轮（failover 结果是路由的事；调用失败是事实）。原地重试的失败与任何重复一样走合并。
-- **决策层（decision）**——决策层线上调用的 catch（与任何上游错误同样分类）与截止时间分支（`errorClass: 'TIMEOUT'`）。截止时间已赢下竞速后迟到的 rejection 绝不重复入账——超时分支独占那次观测。两类决策层行都携带触发轮次的会话 id（`routeAsync` → `evaluate` 穿透传入），死掉的决策层可归因到受害会话——与决策层的捕获身份不同，这条归因不依赖 capture 总开关。
+- **业务（serving）**——编排器候选池的逐候选 catch，恰在分类器判定已在手的点位：每个被诊断的失败都随类别、状态、消息与所属会话入账，**无论**后续候选是否救回本轮（failover 结果是路由的事；调用失败是事实）。凭证取自选中的候选，回退到 registry 的 `usedCredentialKeyHashPrefix` 错误戳（熔断器读的同一个戳）。原地重试的失败与任何重复一样走合并。
+- **决策层（decision）**——决策层线上调用的 catch（与任何上游错误同样分类，凭证取自错误戳）与截止时间分支（`errorClass: 'TIMEOUT'`，无凭证——调用被放弃、没有响应，故该行是模型域的）。截止时间已赢下竞速后迟到的 rejection 绝不重复入账——超时分支独占那次观测。两类决策层行都携带触发轮次的会话 id（`routeAsync` → `evaluate` 穿透传入），死掉的决策层可归因到受害会话——与决策层的捕获身份不同，这条归因不依赖 capture 总开关。
 
 不入账——账本观测的是**调用**，不是拒绝：策略拒绝、被熔断跳过的候选、被禁用的凭据、空池（都没出网）；内容级失败同样不入（200 但答案不可解析——那是 /auto last-outcome 面的辖域）。
 
 ### 3. 风暴合并——限流账本的同一规则
 
-同 model+provider+errorClass+role 的连续重复在 10 秒窗口内折叠为一行：`count` 递增、`lastTs` 前移、按稳定 `id` UPSERT。一场 429 风暴是一个不断增长观测，而不是几百行。错误 `message` 为日志级英文、截断到 400 字符——一行是一个观测，不是 wire body 的档案。
+同 model+provider+keyHashPrefix+errorClass+role 的连续重复在 10 秒窗口内折叠为一行：`count` 递增、`lastTs` 前移、按稳定 `id` UPSERT。凭证是身份的一部分：同一模型的两把钥匙永不折叠，因此钥匙 A 的 429 风暴无法掩盖钥匙 B 的配额死亡。折叠仍是连续的（只与 ring 头比较）——交错轮询的池因此产出两行配对行，那正是它该显示的事实。一场 429 风暴是一个不断增长观测，而不是几百行。错误 `message` 为日志级英文、截断到 400 字符——一行是一个观测，不是 wire body 的档案。
 
 ### 4. 存储与 quota_events 完全同构
 
@@ -45,7 +45,7 @@
 
 ### 6. 控制台面
 
-`GET /api/admin/failure-events`（等值过滤 `model`/`provider`/`errorClass`/`role`，可选 `limit`，最新在前）+ `POST /api/admin/failure-events/clear`（ring + 镜像；熔断/限流状态不受影响）+ `DELETE /api/admin/failure-events/:id`（单删一条——ring 行与镜像行同生共死；合并 ×N 的观测是一行、整体消亡；与 route-entries 删除同一 `{ removed }` 契约）。失败观测页在**同一份过滤视图**上渲染两段：上方按模型聚合卡带（失败总数、原因构成、最近一次），下方合并后的事件列表——卡带与表格永远回答同一个问题。
+`GET /api/admin/failure-events`（等值过滤 `model`/`provider`/`keyHashPrefix`/`errorClass`/`role`，可选 `limit`，最新在前）+ `POST /api/admin/failure-events/clear`（ring + 镜像；熔断/限流状态不受影响）+ `DELETE /api/admin/failure-events/:id`（单删一条——ring 行与镜像行同生共死；合并 ×N 的观测是一行、整体消亡；与 route-entries 删除同一 `{ removed }` 契约）。失败观测页在**同一份过滤视图**上渲染两段：上方按**配对**聚合条（模型 × 凭证、失败总数、原因构成、最近一次），下方合并后的事件列表——聚合条与表格永远回答同一个问题。表格带一列 Credential 显示 `#prefix`（模型域行淡显并以“未归因”为提示，RateLimitPage 的同一先例）；页面不拉取凭证库——展示安全的前缀就是身份，标签留在它自己的页面。事件表是 `ScrollTable`（仓库标准：表头是滚动体**外**的普通行，体拥有两个滚动轴），行操作列**固定**在右侧（`sticky`）且只有一格（查看（眼睛按钮）+ 复制 + 删除）——两格 sticky 都落在 `right: 0` 会重叠，而一格就是整行的点击面。消息列是**唯一弹性轨道**（其余七列声明 px 宽度）：表格因此填满窗口，而不是永远索要横向滚动；多余的宽度（或不足的宽度）都落在唯一「内容本来就有损」的列上，并带 240px 下限——再窄，两行截断就只能显示碎片。由于该钉住列只能靠横向滚动触达，表体滚动条是这一页最主要的操作入口，因此 `.scroll-table-viewport` 只放大**命中区**到 10px，而绘制的滑块仍是全站那条 6px 细条（2px 透明边框 + `background-clip: content-box`，Chromium 仍按滑块命中），并仅在悬停时加深——大的是抓取目标，不是条本身。眼睛按钮的存在理由：只靠“点行打开”是不可见的可发现性问题（SessionsPage 的同一先例）。合并计数 `×N` 渲染在时间格内，是时间戳的**不可压缩兄弟**（时间戳先省略），因此带日期的行永远不会把计数画到 Role 徽标上。点击行打开只读详情抽屉（`frontend/src/components/Drawer.tsx`），按 id 从表格正在渲染的**同一个**实时 `FailureEvent[]` 解析——不二次取数，故面板不可能与账本漂移，行消失（删除/清空）时自动关闭。它存在的理由：表格必须把消息夹到两行，而消息**就是**账本留下的载荷（至多 400 字符）——抽屉给出完整可选中文本，外加 role、原因、状态、累计次数、provider、凭证、首次/最近出现与会话，并提供「复制为 JSON」便于开 issue。主要信息是**一张**带边框的描述表（label / value 单元格），消息是该表的一整行，落单的一对（会话）横向占满整行。标题命名**记录本身**——`<事件详情> - <事件 id>`——副标题以 `<provider>/<model> <凭证>` 的形式命名配对（空白分隔，不用点分隔）：账本存的是注册 id，部分 provider 会命名空间化成 `<provider>/<model>`、部分不会，因此抽屉总是渲染**限定形式**——单写 `qoder` 不是模型，脱离 provider 的裸 `dfmodel` 也不是——而列表保留账本记录的原样（它没有 provider 列可依靠）。只有一项**故意不**作为描述表的一行出现：事件 id——它是记录的句柄，属于标题（也在「复制为 JSON」载荷里），不该占一行。同样不出现的还有列表本身的会话列（九列已把消息挤出窗口；会话 id 属详情镜头字段，仍可搜索）。熔断、配额与限流状态**故意不**在此复刻——那些面拥有自己的真相，第二处读数只会制造第二个缓存。
 
 ## 后果
 
@@ -53,4 +53,5 @@
 - 每次上游失败都跨重启持久（有界于 ring 预算）——账本是观测，不是档案。
 - 路由零影响：没有任何消费者拿账本做门控；写入 fail-open；平面只展示。
 - QPS 下死掉的决策层产出：每模型一条节流告警、/auto 卡片最新判定、合并后的账本行——三个诚实信号取代沉默。
-- 测试：`failure-events`（record/合并/列表过滤/清空，持久化往返含启动重放，经真实候选池的 serving 发射，决策层线上错误与超时的发射）。
+- 一个死掉的钥匙不再能藏在健康的模型后面：配对行直接指名 `#prefix`，控制台可以把它对照限流/配额面，而不必再去猜是哪个 provider 出的问题。
+- 测试：`failure-events`（record/合并/列表过滤/清空（含凭证轴的拆分与过滤），持久化往返含启动重放，经真实候选池的 serving 发射（预置凭证链），决策层线上错误（带凭证戳）与超时（无凭证、模型域）的发射）。
