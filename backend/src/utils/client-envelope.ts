@@ -73,11 +73,25 @@ const KNOWN_METADATA: Record<string, true> = {
 /** Own-key membership (a tag named `constructor` is not known metadata). */
 const isKnownMetadata = (name: string): boolean => Object.hasOwn(KNOWN_METADATA, name);
 
-/** Transport wrapper: the inner text IS the human content, kept bare. */
-const WRAPPER_TAG = 'user_query';
+/**
+ * Transport wrappers: the inner text IS the human content, kept bare.
+ *
+ * A closed vocabulary on purpose. Rule 3 below blanks ANY tag-only message,
+ * because a client envelope (Cursor's context bundle) is indistinguishable
+ * from a human prompt wrapped in markup without knowing the client — naming
+ * the wrappers is the safe side of that bet. Measured wrappers: Claude
+ * Code's `<user_query>`; WorkBuddy 5.x wraps the whole prompt in
+ * `<session>` (2026-11). A new client that wraps differently shows up as an
+ * empty summary until its tag is listed here; its TITLE still resolves via
+ * the last-resort unwrap below, so nothing is lost from the console.
+ */
+const WRAPPER_TAGS: Record<string, true> = {
+  user_query: true,
+  session: true,
+};
 
 /** Leftover wrapper tags inside a captured body (a nested wrapper, if any). */
-const WRAPPER_TAGS_RE = /<\/?user_query>/gi;
+const WRAPPER_TAGS_RE = /<\/?(?:user_query|session)>/gi;
 
 /**
  * Display-budget ceiling. Every caller renders at most a 200-char snippet, so
@@ -184,7 +198,7 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
       stack.length = idx;
       if (isKnownMetadata(name)) {
         // Rule 2: dropped wherever it sits.
-      } else if (name === WRAPPER_TAG) {
+      } else if (Object.hasOwn(WRAPPER_TAGS, name)) {
         // Capture at any depth, but never from inside known client metadata
         // (a hook's `<user_query>` example is not this turn's prompt).
         if (!stack.some((t) => isKnownMetadata(t.name))) {
@@ -220,10 +234,45 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
   if (stack.length > 0) add(text.slice(stack[0].start), true);
 
   if (wrapped) return wrapped;
-  if (opts.keepUnknownEnvelope) return flatten(chunks.join(' '));
+  if (opts.keepUnknownEnvelope) {
+    // Last resort (naming a conversation, never a summary): a LONE plain-text
+    // block is a wrapper around human text — an unrecognized client tag such
+    // as WorkBuddy's `<session>` before it was listed — so unwrap it instead
+    // of either blanking the title or quoting raw tags. A bundle (several
+    // sibling blocks) or a body that is itself markup stays a raw shell.
+    const lone = loneWrapperBody(text);
+    if (lone) return lone;
+    return flatten(chunks.join(' '));
+  }
   // Rule 3: only tags, no outside text → a client envelope.
   if (!outsideNonEmpty && structural) return '';
   return flatten(chunks.join(' '));
+}
+
+/**
+ * Body of a message that is exactly ONE top-level element with plain-text
+ * content — the structural shape of a client wrapper. `undefined` for
+ * anything else (bundles, nested markup, known metadata, known wrappers).
+ *
+ * String slicing, not a backtracking regex: this runs on client-controlled
+ * bodies and the module's whole point is staying linear on hostile input.
+ */
+function loneWrapperBody(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('<') || !trimmed.endsWith('>')) return undefined;
+  const openEnd = trimmed.indexOf('>');
+  if (openEnd < 0) return undefined;
+  const openName = trimmed.slice(1, openEnd).trim().split(/\s+/)[0].toLowerCase();
+  if (!/^[a-z_][\w.:-]*$/.test(openName)) return undefined;
+  if (Object.hasOwn(KNOWN_METADATA, openName) || Object.hasOwn(WRAPPER_TAGS, openName)) return undefined;
+  const closeStart = trimmed.lastIndexOf('</');
+  const closeEnd = trimmed.lastIndexOf('>');
+  if (closeStart <= openEnd || closeEnd <= closeStart) return undefined;
+  if (trimmed.slice(closeStart + 2, closeEnd).trim().toLowerCase() !== openName) return undefined;
+  const body = trimmed.slice(openEnd + 1, closeStart);
+  // Nested markup means a client bundle, not a wrapper around one prompt.
+  if (!body.trim() || /<\/?[A-Za-z_][\w.:-]*(?:\s[^<>]*?)?\/?>/.test(body)) return undefined;
+  return flatten(body) || undefined;
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   safeWriteJson,
   defaultGatewayPort,
 } from './base.js';
+import { resolveClientModelMeta } from './model-meta.js';
 import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
 
 /**
@@ -206,6 +207,14 @@ export class WorkBuddyClientAdapter implements ClientAdapter {
       || (typeof previousKey === 'string' ? previousKey : '')
       || FALLBACK_API_KEY;
 
+    // Capability envelope from the live gateway catalog (model-meta.ts):
+    // image input is claimed only when the id's resolved members ALL declare
+    // it (virtual-meta.ts intersection rule — a vision-incapable failover
+    // member would 400 the attachment). Without injected deps (standalone
+    // CLI) every id resolves to nothing and image stays false, the legacy
+    // conservative claim. Tool calling is required for agent turns; the
+    // gateway serves it for every routed model, so it stays pinned true.
+    const meta = await resolveClientModelMeta(ids);
     const entry = (id: string): Record<string, unknown> => ({
       id,
       name: id,
@@ -213,11 +222,8 @@ export class WorkBuddyClientAdapter implements ClientAdapter {
       url: targetUrl,
       apiKey,
       useCustomProtocol: false,
-      // Tool calling is required for agent turns. Image input is NOT claimed:
-      // the gateway resolves the real model per request, and the vendor warns
-      // against enabling capabilities the service does not actually support.
       supportsToolCall: true,
-      supportsImages: false,
+      supportsImages: Array.isArray(meta[id]?.input) && meta[id].input!.includes('image'),
       ...(contextWindow ? { maxInputTokens: contextWindow } : {}),
     });
 

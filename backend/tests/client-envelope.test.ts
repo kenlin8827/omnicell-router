@@ -53,8 +53,13 @@ describe('displayPromptText — client envelope normalizer', () => {
     assert.equal(displayPromptText('<task>修复登录</task>'), '');
     assert.equal(
       displayPromptText('<task>修复登录</task>', { keepUnknownEnvelope: true }),
-      '<task>修复登录</task>',
-      'a pure-markup human prompt survives the permissive pass'
+      '修复登录',
+      'a lone plain-text block is a WRAPPER: the permissive pass unwraps it'
+    );
+    assert.equal(
+      displayPromptText('<session> 关注当天的行情 </session>'),
+      '关注当天的行情',
+      'the measured WorkBuddy wrapper unwraps in the strict pass too'
     );
     assert.equal(displayPromptText('<a>hey'), '<a>hey', 'unclosed markup is not an envelope');
     assert.equal(displayPromptText('x </a> y'), 'x </a> y', 'a stray closer is plain text');
@@ -63,7 +68,7 @@ describe('displayPromptText — client envelope normalizer', () => {
   it('firstDisplayText: strict pass skips envelopes, permissive keeps a markup prompt', () => {
     assert.equal(firstDisplayText(['<user_info>x</user_info>', '<user_query>你是谁</user_query>']), '你是谁');
     assert.equal(firstDisplayText(['<environment_context>x</environment_context>', '你是谁']), '你是谁');
-    assert.equal(firstDisplayText(['<task>修复登录</task>']), '<task>修复登录</task>');
+    assert.equal(firstDisplayText(['<task>修复登录</task>']), '修复登录');
     assert.equal(firstDisplayText(['<timestamp>11/8/2026</timestamp>']), undefined);
     const capped = firstDisplayText(['x'.repeat(300)], 200);
     assert.equal(capped?.length, 200);

@@ -7,6 +7,9 @@ import {
   workbuddyConfigCandidates,
   resolveWorkbuddyConfigPath,
 } from '../src/cli/clients/workbuddy.js';
+import { setGatewayMetaDeps, type GatewayMetaDeps } from '../src/cli/clients/model-meta.js';
+import type { ProviderRegistry } from '../src/providers/registry.js';
+import type { CatalogProviderRecord } from '../src/opencode/catalog/types.js';
 
 /**
  * WorkBuddy adapter: the config hook writes the vendor's user-level
@@ -28,6 +31,7 @@ describe('WorkBuddy client adapter — config hook', () => {
   });
 
   afterEach(() => {
+    setGatewayMetaDeps(undefined);
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -172,6 +176,93 @@ describe('WorkBuddy client adapter — config hook', () => {
     const res = await adapter.teardown();
     expect(res.success).toBe(true);
     expect(res.message).toContain('No OCR hook present');
+  });
+
+  /**
+   * supportsImages comes from the live gateway catalog via the model-meta
+   * seam (same envelope math as pi's `input` modalities): a virtual ref is
+   * image-true only when EVERY tier member declares image input; a concrete
+   * id follows its own catalog record. Without injected deps (standalone
+   * CLI) nothing resolves and every row stays false — the conservative
+   * legacy claim.
+   */
+  describe('setup capability envelope (catalog-driven supportsImages)', () => {
+    const injectDeps = (overrides: {
+      models?: Record<string, any>;
+      catalog?: CatalogProviderRecord[];
+      tierPools?: Record<string, any[]>;
+    }) => {
+      const stub = {
+        getModel: (id: string) => overrides.models?.[id],
+        getCombos: () => [],
+        getVariantExposures: () => [],
+        getCandidateModelsForTier: (tier: string) => overrides.tierPools?.[tier] ?? [],
+      } as unknown as ProviderRegistry;
+      const deps: GatewayMetaDeps = {
+        registry: stub,
+        catalogList: async () => overrides.catalog ?? [],
+      };
+      setGatewayMetaDeps(() => deps);
+    };
+
+    const catModel = (id: string, image: boolean): CatalogProviderRecord['models'][number] =>
+      ({ id, modalities: { input: image ? ['text', 'image'] : ['text'], output: ['text'] } } as any);
+
+    it('concrete image-capable row claims supportsImages, text-only row does not', async () => {
+      injectDeps({
+        models: {
+          'prov/visionary': { id: 'prov/visionary', provider: 'prov', upstreamModel: 'visionary' },
+          'prov/thinker': { id: 'prov/thinker', provider: 'prov', upstreamModel: 'thinker' },
+        },
+        catalog: [{
+          id: 'prov', custom: false, connected: true, sources: [],
+          models: [catModel('visionary', true), catModel('thinker', false)],
+        }],
+      });
+      await adapter.setup({ port: 4000, models: { main: 'prov/visionary' }, apiKey: 'k', extraModels: ['prov/thinker'], virtualModels: [] });
+      const cfg = readJson(configPath);
+      const byId = Object.fromEntries(cfg.models.map((m: any) => [m.id, m]));
+      expect(byId['prov/visionary'].supportsImages).toBe(true);
+      expect(byId['prov/thinker'].supportsImages).toBe(false);
+    });
+
+    it('tier alias claims images only when EVERY member is image-capable', async () => {
+      injectDeps({
+        tierPools: { pro: [{ id: 'prov/a' }, { id: 'prov/b' }] },
+        catalog: [{
+          id: 'prov', custom: false, connected: true, sources: [],
+          models: [catModel('a', true), catModel('b', false)],
+        }],
+      });
+      await adapter.setup({
+        port: 4000, models: { main: 'pro' }, apiKey: 'k',
+        virtualModels: ['pro'],
+        // 'pro' is the main id; the envelope still resolves it as a tier alias.
+      });
+      const pro = readJson(configPath).models.find((m: any) => m.id === 'pro');
+      expect(pro.supportsImages).toBe(false);
+
+      // All members capable → true.
+      injectDeps({
+        tierPools: { pro: [{ id: 'prov/a' }, { id: 'prov/b' }] },
+        catalog: [{
+          id: 'prov', custom: false, connected: true, sources: [],
+          models: [catModel('a', true), catModel('b', true)],
+        }],
+      });
+      await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'k', virtualModels: [] });
+      const pro2 = readJson(configPath).models.find((m: any) => m.id === 'pro');
+      expect(pro2.supportsImages).toBe(true);
+    });
+
+    it('without injected deps every row keeps the conservative false claim', async () => {
+      setGatewayMetaDeps(undefined);
+      await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'k', extraModels: ['prov/thinker'] });
+      for (const m of readJson(configPath).models) {
+        expect(m.supportsImages).toBe(false);
+        expect(m.supportsToolCall).toBe(true);
+      }
+    });
   });
 });
 
