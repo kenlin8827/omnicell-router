@@ -52,6 +52,20 @@ export const DEFAULT_DEV_PORT = 4700;
  *  the health prober and the quota prober). */
 export const DEFAULT_PROBE_INTERVAL_MS = 60_000;
 
+/** Longest 429 Retry-After wait the in-place retry path may sleep out — mirrors
+ *  backend `DEFAULT_MAX_RATE_LIMIT_WAIT_MS` (backend/src/resilience/circuit-breaker.ts).
+ *  The breaker's hard/counted boundary borrows it (trip.rateLimit.hardTripAboveMs). */
+export const DEFAULT_MAX_RATE_LIMIT_WAIT_MS = 2000;
+
+/** Floor of any Retry-After-derived 429 cooldown — mirrors backend
+ *  `RATE_LIMIT_MIN_COOLDOWN_MS` (backend/src/resilience/circuit-breaker.ts). */
+export const RATE_LIMIT_MIN_COOLDOWN_MS = 1000;
+
+/** Cap of the no-Retry-After 429 counted floor — mirrors backend
+ *  `RATE_LIMIT_NO_RETRY_AFTER_CAP_MS` (backend/src/resilience/circuit-breaker.ts).
+ *  The effective floor is `min(this, initialCooldownMs)`. */
+export const RATE_LIMIT_NO_RETRY_AFTER_CAP_MS = 60_000;
+
 /** Upper bound for a per-credential spread weight — mirrors backend
  *  `CREDENTIAL_WEIGHT_MAX` (backend/src/config/defaults.ts). Integers >= 1;
  *  absence = 1. Weights only shape the NEW-session hash spread. */

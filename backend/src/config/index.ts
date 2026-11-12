@@ -5,9 +5,9 @@ import { DirectivesConfig, Layer2DecisionConfig, RequestCaptureConfig, RouteEntr
 import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
 import { lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
+import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
 import { EFFORT_LADDER } from '../types/router.js';
 import { resolveDirectivePrefix } from '../pipeline/directives.js';
-import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential-selection.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
   DEFAULT_FORWARD_PROXY_PORT,
@@ -28,7 +28,6 @@ import {
   DEFAULT_ROUTE_ENTRIES_MAX,
   DEFAULT_GATEWAY_PORT,
 } from './defaults.js';
-import { DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 import { migrateConfig, toDiskConfig, toRuntimeConfig, SCHEMA_VERSION, type DiskConfig } from './schema.js';
@@ -155,25 +154,10 @@ const DEFAULT_CONFIG: RouterConfig = {
     maxTotalMB: 100,
   },
   circuitBreaker: {
-    enabled: true,
-    failureThreshold: 3,
-    slidingWindowSize: 20,
-    failureRateThreshold: 0.5,
-    initialCooldownMs: 30000,
-    maxCooldownMs: 5 * 3600 * 1000, // 5 hours max cooldown
-    cooldownMultiplier: 2.0,
-    quotaCooldownMs: 12 * 3600 * 1000, // 12 hours for quota/balance exhaustion
-    halfOpenMaxProbes: 1,
-    activeProbing: {
-      enabled: false,
-      intervalMs: DEFAULT_PROBE_INTERVAL_MS,
-    },
-    credentialAffinity: {
-      // a session keeps its credential while its pair breaker is up;
-      // idle past this window it re-spreads like a new session (the upstream
-      // prompt cache is gone by then anyway). 300000 = Anthropic cache TTL.
-      cacheTtlMs: DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
-    },
+    // Global knobs mirror the runtime default exactly once (single source:
+    // resilience/circuit-breaker.ts); shadow/persistence/rules below are
+    // config-only surfaces with no runtime twin.
+    ...DEFAULT_CIRCUIT_BREAKER_CONFIG,
     // Shadow mode (spec docs/design/circuit-breaker-rules-config.md): rules
     // evaluate and record fully but the gate never denies; manual trips,
     // DISABLED and SUSPECT stay enforced.
@@ -213,7 +197,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       backoffMs: 200,
       jitterMs: 100,
       retryOnCauses: [...DEFAULT_RETRIABLE_CAUSES],
-      maxRateLimitWaitMs: 2000,
+      maxRateLimitWaitMs: DEFAULT_MAX_RATE_LIMIT_WAIT_MS,
     },
     failover: {
       enabled: true,
@@ -472,8 +456,8 @@ function resolveCircuitBreaker(parsed: any): CircuitBreakerConfig {
   const ms = (v: unknown): number | undefined =>
     typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
   const flag = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
-  const scope = (v: unknown): 'auto' | 'pair' | 'credential' | 'model' =>
-    v === 'pair' || v === 'credential' || v === 'model' ? v : 'auto';
+  const scope = (v: unknown): 'auto' | 'pair' | 'credential' | 'model' | 'provider' =>
+    v === 'pair' || v === 'credential' || v === 'model' || v === 'provider' ? v : 'auto';
   const canaryMode = (v: unknown): 'backoff' | 'initial' | 'close' =>
     v === 'initial' || v === 'close' ? v : 'backoff';
 

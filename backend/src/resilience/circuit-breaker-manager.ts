@@ -108,7 +108,7 @@ interface PairRecord {
   keyHashPrefix: string;
   provider: string;
   breaker: CircuitBreaker;
-  /** Blast-radius label of the last scoped trip/failure delivered here ('model' | 'credential' | 'pair'). */
+  /** Blast-radius label of the last scoped trip/failure delivered here ('model' | 'credential' | 'pair' | 'provider'). */
   lastScope?: TripScope;
 }
 
@@ -138,8 +138,11 @@ const STATE_SEVERITY: Record<CircuitBreakerState, number> = { CLOSED: 0, HALF_OP
  *   scope 'pair'      -> this one tuple (provider + modelId + credential)
  *   scope 'credential' -> every tuple of (provider, credential) — the key, on
  *                         every model it can reach
- *   scope 'model'      -> every tuple of the modelId (the upstream/model is
+ *   scope 'model'      -> every tuple of the modelId (the model endpoint is
  *                         what failed — key-independent)
+ *   scope 'provider'   -> every tuple of every model of the provider (the
+ *                         provider HOST is what failed — DNS / TCP / TLS,
+ *                         key- AND model-independent)
  *
  * A provider whose chain has a single (or no) credential routes through the
  * sentinel tuple `keyHashPrefix === ''`: every legacy model-level path
@@ -253,6 +256,19 @@ export class CircuitBreakerManager {
     return Array.from(out);
   }
 
+  /**
+   * Models a provider-wide trip covers: everything registered for the
+   * provider, plus any model that already carries one of its tuples (same
+   * ghost-coverage contract as credentialModelIds).
+   */
+  private providerModelIds(providerId: string): string[] {
+    const out = new Set<string>(this.modelsOfProvider(providerId));
+    for (const tuple of this.tuples.values()) {
+      if (tuple.provider === providerId) out.add(tuple.modelId);
+    }
+    return Array.from(out);
+  }
+
   /** Tuple prefixes currently materialized for a model. */
   private tuplePrefixesOf(modelId: string): string[] {
     const out: string[] = [];
@@ -276,6 +292,23 @@ export class CircuitBreakerManager {
         : this.tuplePrefixesOf(modelId);
     const effective = prefixes.length > 0 ? prefixes : [''];
     return effective.map((prefix) => this.getOrCreateTuple(modelId, prefix, provider));
+  }
+
+  /**
+   * Tuple set for a MANUAL takedown (model/provider scope). Same fan-out as
+   * the failure path, plus one guarantee: with no known credential chain the
+   * sentinel tuple is always included — it is the chain-less execution path
+   * that modelAvailability(model, []) reads. Without it, stray pair tuples
+   * (e.g. from an earlier credential trip) would absorb the whole fan-out and
+   * leave the model serving on its untouched sentinel. A known non-empty
+   * chain covers exactly the chain tuples — the sentinel is never consulted
+   * at runtime then, so no extra row is invented.
+   */
+  private manualTakedownTargets(modelId: string, provider?: string, chainPrefixes?: readonly string[]): PairRecord[] {
+    const targets = this.modelTupleTargets(modelId, provider, chainPrefixes);
+    if (chainPrefixes && chainPrefixes.length > 0) return targets;
+    if (targets.some((t) => t.keyHashPrefix === '')) return targets;
+    return [...targets, this.getOrCreateTuple(modelId, '', provider)];
   }
 
   /** The pair breaker for (model, credential), or undefined if none exists. */
@@ -687,16 +720,19 @@ export class CircuitBreakerManager {
    *
    *   'pair'      -> this one (model, credential) tuple
    *   'credential' -> every model this credential can reach; SUSPECT if diagnosed
- *   'model'     -> EVERY tuple of the modelId (fan-out accounting: each tuple's
+   *   'model'     -> EVERY tuple of the modelId (fan-out accounting: each tuple's
    *                  ladder sees the model-level failure, so one key serving a
    *                  dying upstream trips the whole model at the threshold)
+   *   'provider'  -> EVERY tuple of EVERY model of the provider (host-level
+   *                  failure; same equal fan-out accounting, one ladder rung
+   *                  per tuple per failed request)
    *
    * A rule `scope` override replaces the classifier's blast radius here —
    * AFTER credential attribution (invariant 4).
    *
-   * `chainPrefixes` (optional, orchestrator-only) widens the model-scope
-   * fan-out to the full credential chain so a model-level trip covers keys
-   * that never served the failing attempt.
+   * `chainPrefixes` (optional, orchestrator-only) widens the model- and
+   * provider-scope fan-out to the full credential chain so the trip covers
+   * keys that never served the failing attempt.
    */
   public recordFailureScoped(
     modelId: string,
@@ -771,11 +807,13 @@ export class CircuitBreakerManager {
     // A missing probe prefix still resolves to the physical stamp inside
     // recordFailureScoped (`keyHashPrefix ?? diagnosis.usedKeyHashPrefix`).
     this.recordFailureScoped(modelId, diagnosis, provider, probePrefix);
-    // Mirror applyFailure's branch condition: a model scope (or a chain-less
-    // attribution, which degenerates to it) already delivered to every existing
-    // tuple of the model, the armed one included. A '' armed prefix is the
-    // sentinel tuple, not a credential — anything else here would fan out twice.
-    if (this.effectiveScope(diagnosis) === 'model') return;
+    // Mirror applyFailure's branch condition: a model or provider scope (or a
+    // chain-less attribution, which degenerates to model) already delivered to
+    // every existing tuple of the model, the armed one included. A '' armed
+    // prefix is the sentinel tuple, not a credential — anything else here
+    // would fan out twice.
+    const physicalScope = this.effectiveScope(diagnosis);
+    if (physicalScope === 'model' || physicalScope === 'provider') return;
     const attributed = probePrefix ?? diagnosis.usedKeyHashPrefix;
     if (!attributed) return;
     if (!armedPrefix || armedPrefix === attributed) return;
@@ -859,6 +897,17 @@ export class CircuitBreakerManager {
     };
 
     const scope = this.effectiveScope(diagnosis);
+    if (scope === 'provider') {
+      // Host blast radius: every model of the provider, every credential.
+      // The chain prefixes belong to the provider (one baseUrl, one chain),
+      // so the caller's chain widens every model's fan-out alike.
+      for (const targetId of this.providerModelIds(owner)) {
+        for (const tuple of this.modelTupleTargets(targetId, owner, chainPrefixes)) {
+          deliver(tuple, 'provider');
+        }
+      }
+      return;
+    }
     if (scope === 'model' || !keyHashPrefix) {
       // Model blast radius: every tuple of the model (chain prefixes widen the
       // fan-out; a chain-less provider degenerates to the sentinel tuple).
@@ -1056,6 +1105,24 @@ export class CircuitBreakerManager {
       }
       return this.resetScoped(target.modelId, target.keyHashPrefix);
     }
+    if (scope === 'provider') {
+      if (!target.providerId) {
+        return { resetCount: 0, message: "scope 'provider' requires a provider." };
+      }
+      this.schedulePersist();
+      let count = 0;
+      for (const tuple of this.tuples.values()) {
+        if (tuple.provider !== target.providerId) continue;
+        tuple.breaker.reset();
+        count++;
+      }
+      return {
+        resetCount: count,
+        message: count
+          ? `Reset ${count} pair breaker(s) for provider '${target.providerId}'.`
+          : `No pair breakers found for provider '${target.providerId}'.`,
+      };
+    }
 
     // credential: every tuple breaker of this credential. SUSPECT is NOT cleared here —
     // it needs the explicit clear endpoint (administrative, not a cooldown).
@@ -1094,7 +1161,7 @@ export class CircuitBreakerManager {
     chainPrefixes?: readonly string[]
   ): TripResult {
     this.schedulePersist();
-    const targets = this.modelTupleTargets(modelId, provider, chainPrefixes);
+    const targets = this.manualTakedownTargets(modelId, provider, chainPrefixes);
     const cooldownMs = this.manualCooldownMs(options);
     for (const tuple of targets) {
       tuple.lastScope = 'model';
@@ -1201,10 +1268,41 @@ export class CircuitBreakerManager {
   }
 
   /**
+   * Manually trip a whole PROVIDER: every tuple of every model it serves
+   * (operator takedown of a host — maintenance, billing, a blocked egress).
+   * No SUSPECT mark: a manual trip is a temporary takedown with a cooldown.
+   */
+  public tripProvider(
+    providerId: string,
+    options?: ManualTripOptions,
+    chainPrefixes?: readonly string[]
+  ): TripResult {
+    this.schedulePersist();
+    const cooldownMs = this.manualCooldownMs(options);
+    const reason = `Manual trip: ${this.manualReason(options)}`;
+    let affected = 0;
+    for (const modelId of this.providerModelIds(providerId)) {
+      for (const tuple of this.manualTakedownTargets(modelId, providerId, chainPrefixes)) {
+        tuple.lastScope = 'provider';
+        tuple.breaker.trip(reason, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
+        affected++;
+      }
+    }
+    return {
+      tripped: affected > 0,
+      affected,
+      message: affected
+        ? `Provider '${providerId}' tripped (OPEN) on ${affected} tuple(s) for ${CircuitBreakerManager.minutes(cooldownMs)}.`
+        : `Provider '${providerId}' has no models or pair breakers to trip.`,
+    };
+  }
+
+  /**
    * Manual (console/REST) trip with explicit scope. `model` is the legacy
-   * scope and stays the default; `credential` and `pair` address the finer grain.
-   * `affected` counts the breakers actually taken down, so a caller can tell a
-   * no-op (unknown credential) from a real trip without parsing prose.
+   * scope and stays the default; `credential`, `pair` and `provider` address
+   * the other grains. `affected` counts the breakers actually taken down, so a
+   * caller can tell a no-op (unknown credential) from a real trip without
+   * parsing prose.
    */
   public tripByScope(scope: TripScope, target: ScopeTarget, options?: ManualTripOptions): TripResult {
     if (scope === 'model') {
@@ -1218,6 +1316,12 @@ export class CircuitBreakerManager {
         return { tripped: false, affected: 0, message: "scope 'pair' requires both model and credential." };
       }
       return this.tripPair(target.modelId, target.keyHashPrefix, options, target.providerId);
+    }
+    if (scope === 'provider') {
+      if (!target.providerId) {
+        return { tripped: false, affected: 0, message: "scope 'provider' requires a provider." };
+      }
+      return this.tripProvider(target.providerId, options, target.chainPrefixes);
     }
     if (!target.keyHashPrefix) {
       return { tripped: false, affected: 0, message: "scope 'credential' requires an credential (keyHashPrefix)." };

@@ -132,6 +132,115 @@ describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
     assert.equal(diagnosis.hardTrip, false);
     assert.equal(diagnosis.isRetriable, false);
   });
+
+  it('should treat request-fault 4xx (415/413/plain 400) as CLIENT_ERROR by STATUS, not wording', () => {
+    // Regression: 415 used to fall through to UNKNOWN (counted) because the
+    // CLIENT_ERROR branch demanded 400/422 + wording markers — three unsupported
+    // media-type responses tripped the pair breaker. The status is the signal.
+    for (const status of [400, 413, 415, 422]) {
+      const err = new UpstreamError({
+        message: `Upstream returned status ${status}`,
+        status,
+        provider: 'anthropic',
+        modelId: 'claude-3-5-sonnet',
+      });
+      const diagnosis = ErrorClassifier.classify(err, 'claude-3-5-sonnet', 'anthropic');
+      assert.equal(diagnosis.category, 'CLIENT_ERROR', `status ${status}`);
+      assert.equal(diagnosis.shouldTripBreaker, false, `status ${status}`);
+      assert.equal(diagnosis.hardTrip, false, `status ${status}`);
+      assert.equal(diagnosis.isRetriable, false, `status ${status}`);
+    }
+  });
+
+  it('should keep 403/404/410 counted but PAIR-scoped (real pair faults, never widened)', () => {
+    const forbidden = ErrorClassifier.classify(
+      Object.assign(new UpstreamError({ message: 'Forbidden', status: 403, provider: 'openai', modelId: 'gpt-4o' }), { usedCredentialKeyHashPrefix: 'k1' }),
+      'gpt-4o',
+      'openai'
+    );
+    assert.equal(forbidden.category, 'UNKNOWN');
+    assert.equal(forbidden.shouldTripBreaker, true);
+    assert.equal(forbidden.tripScope, 'pair');
+    assert.equal(forbidden.usedKeyHashPrefix, 'k1');
+    assert.match(forbidden.reason ?? '', /Forbidden \(403\)/);
+
+    for (const status of [404, 410]) {
+      const gone = ErrorClassifier.classify(
+        Object.assign(new UpstreamError({ message: 'model not found', status, provider: 'openai', modelId: 'gpt-4o' }), { usedCredentialKeyHashPrefix: 'k1' }),
+        'gpt-4o',
+        'openai'
+      );
+      assert.equal(gone.category, 'UNKNOWN', `status ${status}`);
+      assert.equal(gone.shouldTripBreaker, true, `status ${status}`);
+      assert.equal(gone.tripScope, 'pair', `status ${status}`);
+      assert.match(gone.reason ?? '', /Model address not found/, `status ${status}`);
+    }
+
+    // Chain-less: no attribution means no tripScope at all (legacy semantics).
+    const chainless = ErrorClassifier.classify(
+      new UpstreamError({ message: 'Forbidden', status: 403, provider: 'openai', modelId: 'gpt-4o' }),
+      'gpt-4o',
+      'openai'
+    );
+    assert.equal(chainless.tripScope, undefined);
+  });
+
+  it('should classify 408 as SERVICE_UNAVAILABLE / NETWORK_TIMEOUT (not a client fault)', () => {
+    const diagnosis = ErrorClassifier.classify(
+      new UpstreamError({ message: 'Request Timeout', status: 408, provider: 'openai', modelId: 'gpt-4o' }),
+      'gpt-4o',
+      'openai'
+    );
+    assert.equal(diagnosis.category, 'SERVICE_UNAVAILABLE');
+    assert.equal(diagnosis.networkCause, 'NETWORK_TIMEOUT');
+    assert.equal(diagnosis.hardTrip, false);
+  });
+
+  it('should scope host-level connection failures (DNS/TCP-refused/TLS) to the PROVIDER', () => {
+    const cases: Array<[string, string]> = [
+      ['TypeError: fetch failed (ENOTFOUND)', 'DNS_ERROR'],
+      ['TypeError: fetch failed (ECONNREFUSED)', 'GATEWAY_ERROR'],
+      ['unable to verify the first certificate', 'GATEWAY_ERROR'],
+      ['self-signed certificate in certificate chain', 'GATEWAY_ERROR'],
+    ];
+    for (const [message, cause] of cases) {
+      const diagnosis = ErrorClassifier.classify(new Error(message), 'claude-3-5-sonnet', 'anthropic');
+      assert.equal(diagnosis.category, 'SERVICE_UNAVAILABLE', message);
+      assert.equal(diagnosis.networkCause, cause, message);
+      assert.equal(diagnosis.tripScope, 'provider', message);
+      // Statistical evidence only — one blip must never hard-trip a provider.
+      assert.equal(diagnosis.hardTrip, false, message);
+      assert.equal(diagnosis.shouldTripBreaker, true, message);
+    }
+
+    // Attribution rides along when present, but never narrows the host scope.
+    const attributed = ErrorClassifier.classify(
+      Object.assign(new Error('fetch failed (ECONNREFUSED)'), { usedCredentialKeyHashPrefix: 'k9' }),
+      'claude-3-5-sonnet',
+      'anthropic'
+    );
+    assert.equal(attributed.tripScope, 'provider');
+    assert.equal(attributed.usedKeyHashPrefix, 'k9');
+  });
+
+  it('should keep endpoint-level 5xx MODEL-scoped (host reachable, model failing)', () => {
+    const diagnosis = ErrorClassifier.classify(
+      Object.assign(new UpstreamError({ message: 'Internal server error', status: 500, provider: 'openai', modelId: 'gpt-4o' }), { usedCredentialKeyHashPrefix: 'k1' }),
+      'gpt-4o',
+      'openai'
+    );
+    assert.equal(diagnosis.category, 'SERVICE_UNAVAILABLE');
+    assert.equal(diagnosis.tripScope, 'model');
+    assert.equal(diagnosis.hardTrip, false);
+
+    // Chain-less 5xx keeps the legacy model-level trip: no tripScope key.
+    const chainless = ErrorClassifier.classify(
+      new UpstreamError({ message: 'Internal server error', status: 500, provider: 'openai', modelId: 'gpt-4o' }),
+      'gpt-4o',
+      'openai'
+    );
+    assert.equal(chainless.tripScope, undefined);
+  });
 });
 
 describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () => {

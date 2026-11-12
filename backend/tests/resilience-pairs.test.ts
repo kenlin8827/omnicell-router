@@ -133,10 +133,29 @@ describe('(a) classifier tripScope + credentialSuspect table', () => {
     expect(net.tripScope).toBe('model');
   });
 
+  it('host-level connection failure (DNS / refused / TLS) -> provider', () => {
+    const dns = ErrorClassifier.classify(stamped(0, 'fetch failed (ENOTFOUND)', K), 'p/m1', 'p');
+    expect(dns.category).toBe('SERVICE_UNAVAILABLE');
+    expect(dns.tripScope).toBe('provider');
+    expect(dns.usedKeyHashPrefix).toBe(K); // attribution rides along, never narrows
+    expect(dns.hardTrip).toBe(false); // statistical evidence only
+    const refused = ErrorClassifier.classify(stamped(0, 'fetch failed (ECONNREFUSED)', K), 'p/m1', 'p');
+    expect(refused.tripScope).toBe('provider');
+    const tls = ErrorClassifier.classify(stamped(0, 'self-signed certificate in chain', K), 'p/m1', 'p');
+    expect(tls.tripScope).toBe('provider');
+  });
+
   it('unclassified -> pair (Decision 6: under-cool rather than over-cool)', () => {
-    const d = ErrorClassifier.classify(stamped(418, 'something nobody recognizes', K), 'p/m1', 'p');
+    const d = ErrorClassifier.classify(new Error('something nobody recognizes'), 'p/m1', 'p');
     expect(d.category).toBe('UNKNOWN');
-    expect(d.tripScope).toBe('pair');
+    expect(d.tripScope).toBeUndefined(); // chain-less: no attribution, no scope stamp
+    const attributed = ErrorClassifier.classify(
+      Object.assign(new Error('something nobody recognizes'), { usedCredentialKeyHashPrefix: K }),
+      'p/m1',
+      'p'
+    );
+    expect(attributed.category).toBe('UNKNOWN');
+    expect(attributed.tripScope).toBe('pair');
   });
 
   it('CLIENT_ERROR -> no trip at all, even under attribution', () => {
@@ -159,7 +178,7 @@ describe('(a) classifier tripScope + credentialSuspect table', () => {
     ['rate', 429, 'too many requests', 'pair'],
     ['rate-weekly', 429, 'weekly limit reached', 'credential'],
     ['outage', 503, 'bad gateway', 'model'],
-    ['unknown', 418, 'something nobody recognizes', 'pair'],
+    ['unknown', 403, 'forbidden', 'pair'],
     ['client', 400, 'context_length_exceeded', undefined],
   ];
 
@@ -349,6 +368,102 @@ describe('(d) model trip takes every credential out', () => {
     expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
     expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined();
     expect(manager.modelAvailability('p/x', ['K1', 'K2']).available).toBe(true); // no tuple is out
+  });
+});
+
+// ─── (d2) provider scope: host-level faults cool the whole provider ─────────
+
+describe('(d2) provider scope fans out over every model of the provider, never wider', () => {
+  const hostDown = () => diagnosis({ category: 'SERVICE_UNAVAILABLE', tripScope: 'provider', hardTrip: false });
+
+  it('one DNS blip adds one rung per tuple; the threshold trips every model x chain tuple', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    manager.registerModel(model('q/z', 'q')); // other provider must stay untouched
+    const chain = ['K1', 'K2'];
+
+    // Equal fan-out accounting: one failed request = one rung on EVERY tuple,
+    // and a single blip never trips (threshold 3 absorbs it — no false kill).
+    manager.recordFailureScoped('p/x', hostDown(), 'p', 'K1', chain);
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('CLOSED');
+    expect(manager.getPairBreaker('p/y', 'K2')?.getState()).toBe('CLOSED');
+
+    manager.recordFailureScoped('p/x', hostDown(), 'p', 'K1', chain);
+    manager.recordFailureScoped('p/x', hostDown(), 'p', 'K1', chain);
+
+    for (const m of ['p/x', 'p/y']) {
+      for (const k of chain) {
+        expect(manager.getPairBreaker(m, k)?.getState()).toBe('OPEN');
+      }
+    }
+    expect(manager.modelAvailability('p/x', chain).available).toBe(false);
+    expect(manager.modelAvailability('p/y', chain).available).toBe(false);
+    expect(manager.modelAvailability('q/z', ['K1']).available).toBe(true); // provider boundary holds
+    expect(
+      manager.snapshotsWithPairs().find((s) => s.modelId === 'p/y' && s.keyHashPrefix === 'K2')?.scope
+    ).toBe('provider');
+  });
+
+  it('without a chain the provider fan-out degenerates to each model sentinel', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    for (let i = 0; i < 3; i++) manager.recordFailureScoped('p/x', hostDown(), 'p', 'K1');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/y', '')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined(); // attribution never materializes a tuple
+  });
+
+  it('a real classified DNS failure never hard-trips on its own', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    const dns = ErrorClassifier.classify(new Error('fetch failed (ENOTFOUND)'), 'p/x', 'p');
+    manager.recordFailureScoped('p/x', dns, 'p');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED');
+    expect(manager.getPairBreaker('p/x', '')?.getSnapshot().consecutiveFailures).toBe(1);
+  });
+
+  it('manual provider trip + resetByScope(provider) round-trip across the whole chain', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    manager.registerModel(model('q/z', 'q'));
+
+    const r = manager.tripByScope('provider', { providerId: 'p', chainPrefixes: ['K1', 'K2'] }, { cooldownMs: 60_000 });
+    expect(r.affected).toBe(4); // 2 models x 2 chain credentials
+    expect(manager.modelAvailability('p/x', ['K1', 'K2']).available).toBe(false);
+    expect(manager.modelAvailability('p/y', ['K1', 'K2']).available).toBe(false);
+    expect(manager.modelAvailability('q/z', ['K1', 'K2']).available).toBe(true);
+
+    const reset = manager.resetByScope('provider', { providerId: 'p' });
+    expect(reset.resetCount).toBe(4);
+    expect(manager.modelAvailability('p/x', ['K1', 'K2']).available).toBe(true);
+    expect(manager.modelAvailability('p/y', ['K1', 'K2']).available).toBe(true);
+  });
+
+  it('resetByScope(provider) without a provider id is a no-op with a message', () => {
+    const { manager } = makeManager();
+    const r = manager.resetByScope('provider', {});
+    expect(r.resetCount).toBe(0);
+    expect(r.message).toContain('requires a provider');
+  });
+
+  it('a chain-less provider takedown also trips the sentinel when stray pair tuples exist', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    // A prior credential trip materialized pair tuples, but the provider has
+    // no chain — the sentinel stays the chain-less execution path.
+    manager.tripByScope('credential', { keyHashPrefix: 'K1', providerId: 'p' }, { cooldownMs: 60_000 });
+    manager.resetByScope('credential', { keyHashPrefix: 'K1', providerId: 'p' });
+
+    const r = manager.tripByScope('provider', { providerId: 'p' }, { cooldownMs: 60_000 });
+    expect(r.affected).toBe(4); // (K1 + sentinel) x 2 models
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/y', '')?.getState()).toBe('OPEN');
+    expect(manager.modelAvailability('p/x', []).available).toBe(false);
+    expect(manager.modelAvailability('p/y', []).available).toBe(false);
   });
 });
 
@@ -606,6 +721,19 @@ describe('recordProbeFailure attribution', () => {
     // record must be skipped — one failure, one rung.
     manager.recordProbeFailure('p/x', counted({ tripScope: 'model' }), 'p', 'K2', 'K1');
     expect(rung()).toBe(2);
+  });
+
+  it('a provider-scope probe verdict never doubles the fan-out rung either', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    const counted = (over: Partial<ErrorDiagnosis>): ErrorDiagnosis =>
+      diagnosis({ category: 'SERVICE_UNAVAILABLE', hardTrip: false, retryAfterSeconds: undefined, ...over });
+    manager.recordFailureScoped('p/x', counted({ tripScope: 'pair' }), 'p', 'K1');
+    const rung = (): number => manager.getPairBreaker('p/x', 'K1')!.getSnapshot().consecutiveFailures;
+    expect(rung()).toBe(1);
+    manager.recordProbeFailure('p/x', counted({ tripScope: 'provider' }), 'p', 'K2', 'K1');
+    expect(rung()).toBe(2); // one fan-out rung, physical record skipped
+    expect(manager.getPairBreaker('p/x', 'K2')).toBeUndefined(); // no chain: armed tuple not materialized
   });
 
   it('a credential-scope probe verdict charges the credential that served it, never the armed one', () => {
@@ -999,6 +1127,18 @@ describe('(c3) a manual model-scope trip takes the WHOLE chain out', () => {
     manager.registerModel(model('p/x', 'p'));
     expect(manager.modelAvailability('p/x', []).available).toBe(true);
   });
+
+  it('a chain-less model takedown trips the sentinel even when stray pair tuples exist', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.tripByScope('pair', { modelId: 'p/x', keyHashPrefix: 'K1', providerId: 'p' }, { cooldownMs: 60_000 });
+    manager.resetByScope('pair', { modelId: 'p/x', keyHashPrefix: 'K1' });
+
+    const r = manager.trip('p/x', undefined, 'p'); // no chain known
+    expect(r.affected).toBe(2); // stray K1 tuple + the sentinel
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
+    expect(manager.modelAvailability('p/x', []).available).toBe(false);
+  });
 });
 
 // ─── (c4) recovery symmetry: resetByScope restores exactly what the trip touched ──
@@ -1063,6 +1203,27 @@ describe('(c4) recovery symmetry per scope, including the lastScope label round-
     second.restoreState();
     expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K1')?.scope).toBe('pair');
     expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K2')?.scope).toBe('model');
+  });
+
+  it('the provider scope label survives a persisted restart too', () => {
+    const paths = sandboxPaths();
+    const clock = makeClock();
+    const credentialState = new CredentialStateStore({ paths, now: clock.now });
+    const store = new BreakerStateStore({ paths, debounceMs: 3_600_000 });
+    const first = new CircuitBreakerManager(CELL_CFG, clock.now, credentialState);
+    first.registerModel(model('p/x', 'p'));
+    first.attachStateStore(store);
+
+    first.tripByScope('provider', { providerId: 'p', chainPrefixes: ['K1'] }, { cooldownMs: 60_000 });
+    expect(first.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K1')?.scope).toBe('provider');
+    store.flush();
+
+    const store2 = new BreakerStateStore({ paths, debounceMs: 3_600_000 });
+    const second = new CircuitBreakerManager(CELL_CFG, clock.now, credentialState);
+    second.registerModel(model('p/x', 'p'));
+    second.attachStateStore(store2);
+    second.restoreState();
+    expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K1')?.scope).toBe('provider');
   });
 });
 

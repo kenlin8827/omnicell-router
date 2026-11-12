@@ -13,6 +13,7 @@ import type { RouterConfig } from '../src/config/types.js';
  *   scope 'model'   (default, legacy body)  -> model trip, today's behavior
  *   scope 'credential' (keyHashPrefix)         -> every pair breaker of one credential
  *   scope 'pair'    (model + credential)       -> exactly one breaker
+ *   scope 'provider' (provider id)             -> every tuple of every model of the provider
  * plus the explicit SUSPECT clear endpoint. Bad combos keep returning 400.
  *
  * The suspect store is sandboxed through OCR_HOME before the server is built
@@ -55,6 +56,10 @@ const config = {
 
 const { app, registry } = createServer(config, true);
 const cb = () => registry.getCircuitBreakerManager();
+// The scope label is manager-stamped (tuple.lastScope), not part of the
+// breaker's own snapshot — read it through the merged pair view.
+const tupleSnap = (model: string, prefix: string) =>
+  cb().snapshotsWithPairs().find((s) => s.modelId === model && s.keyHashPrefix === prefix);
 
 beforeAll(async () => {
   await app.ready();
@@ -152,6 +157,64 @@ describe('POST /api/admin/health/circuit-breakers/trip — scopes', () => {
 
     const pairWithoutModel = await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', credential: 'kA' });
     expect(pairWithoutModel.statusCode).toBe(400);
+
+    const providerWithoutId = await post('/api/admin/health/circuit-breakers/trip', { scope: 'provider' });
+    expect(providerWithoutId.statusCode).toBe(400);
+    expect(providerWithoutId.json().message).toContain('requires a provider');
+  });
+});
+
+describe('POST /api/admin/health/circuit-breakers — provider scope', () => {
+  it("scope 'provider' trips every model of the provider (sentinel tuples when no pairs exist)", async () => {
+    cb().reset();
+    const res = await post('/api/admin/health/circuit-breakers/trip', {
+      scope: 'provider',
+      provider: 'mock',
+      cooldownMs: 60000,
+      reason: 'host outage',
+    });
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json.scope).toBe('provider');
+    expect(json.affected).toBeGreaterThanOrEqual(2); // plus-1 + plus-2
+    expect(cb().getPairBreaker('plus-1', '')?.getState()).toBe('OPEN');
+    expect(cb().getPairBreaker('plus-2', '')?.getState()).toBe('OPEN');
+    expect(tupleSnap('plus-1', '')?.scope).toBe('provider');
+  });
+
+  it("scope 'provider' also covers existing pair tuples and never marks SUSPECT", async () => {
+    cb().reset();
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kP' });
+    const res = await post('/api/admin/health/circuit-breakers/trip', { scope: 'provider', provider: 'mock', cooldownMs: 60000 });
+    expect(res.statusCode).toBe(200);
+    expect(cb().getPairBreaker('plus-1', 'kP')?.getState()).toBe('OPEN');
+    expect(tupleSnap('plus-1', 'kP')?.scope).toBe('provider');
+    expect(cb().getCredentialStateStore().list()).toEqual([]); // manual != administrative
+  });
+
+  it("scope 'provider' reset recovers every tuple of the provider", async () => {
+    cb().reset();
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'provider', provider: 'mock', cooldownMs: 60000 });
+    const res = await post('/api/admin/health/circuit-breakers/reset', { scope: 'provider', provider: 'mock' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().resetCount).toBeGreaterThanOrEqual(2);
+    expect(cb().getPairBreaker('plus-1', '')?.getState()).toBe('CLOSED');
+    expect(cb().getPairBreaker('plus-2', '')?.getState()).toBe('CLOSED');
+  });
+
+  it('400s provider scope without a provider id on both endpoints', async () => {
+    const trip = await post('/api/admin/health/circuit-breakers/trip', { scope: 'provider' });
+    expect(trip.statusCode).toBe(400);
+    const reset = await post('/api/admin/health/circuit-breakers/reset', { scope: 'provider' });
+    expect(reset.statusCode).toBe(400);
+    expect(reset.json().message).toContain('requires a provider');
+  });
+
+  it('an unknown provider trips nothing (400, not a fake success)', async () => {
+    cb().reset();
+    const res = await post('/api/admin/health/circuit-breakers/trip', { scope: 'provider', provider: 'no-such-provider' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().affected).toBe(0);
   });
 });
 

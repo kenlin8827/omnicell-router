@@ -14,7 +14,7 @@ export const STATE_ORDER: Record<BreakerInfo['state'], number> = { OPEN: 0, HALF
  *
  * `snap` resolves the tuple's own breaker state:
  *   pair breaker    — the tuple's state machine (scope label explains the
- *                     blast radius: 'pair' | 'credential' | 'model')
+ *                     blast radius: 'pair' | 'credential' | 'model' | 'provider')
  *   sentinel        — a single-credential chain routes through the '' tuple,
  *                     which IS this credential's breaker
  *   model fold      — single-credential chains fall back to the derived model
@@ -84,14 +84,18 @@ export function isTakenDown(c: PairCard): boolean {
 
 /**
  * Whether this card may surface the derived model fold as a MODEL-level
- * takedown. Only a fold whose own blast radius is `model` qualifies: a
- * credential- or pair-scoped sibling trip raises the same fold (worst-state
- * aggregate), and painting THAT as the model layer relabels a credential
- * fault as a model outage on a card whose own tuple is healthy (ADR-0004 §2:
- * the fold is display context, never the card's own truth).
+ * takedown. Only a fold whose own blast radius is `model` or `provider`
+ * qualifies: a credential- or pair-scoped sibling trip raises the same fold
+ * (worst-state aggregate), and painting THAT as the model layer relabels a
+ * credential fault as a model outage on a card whose own tuple is healthy
+ * (ADR-0004 §2: the fold is display context, never the card's own truth).
  */
 export function isModelWideTrip(c: PairCard): boolean {
-  return !!c.modelSnap && c.modelSnap.state !== 'CLOSED' && c.modelSnap.scope === 'model';
+  return (
+    !!c.modelSnap &&
+    c.modelSnap.state !== 'CLOSED' &&
+    (c.modelSnap.scope === 'model' || c.modelSnap.scope === 'provider')
+  );
 }
 
 export function effectiveCooldown(c: PairCard): number {

@@ -49,6 +49,7 @@ import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
+import { CLASSIFIER_TAXONOMY } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
 import { maskSecret, isValidProviderId, PROVIDER_ID_RULE, getProviderNodeById } from '../opencode/user-config.js';
@@ -1047,6 +1048,12 @@ export function registerConsoleRoutes(
       ...cbManager.getSummary(),
       pairs: cbManager.getPairSummary(),
       rules: cbManager.getRulesStatus(),
+      // Static read-only reference: the classifier's fixed error-class mapping
+      // (ADR-0004 §1), single-sourced from CLASSIFIER_TAXONOMY. The console's
+      // breaker-rules page renders it to explain what each rule's `auto` scope
+      // resolves to and why e.g. 415 never trips while 403 counts. Additive:
+      // older gateways omit it and the panel stays hidden.
+      classifier: CLASSIFIER_TAXONOMY,
     };
     const metrics = orchestrator.getTracker().getStats();
     const clients = await getAllClientStatuses();

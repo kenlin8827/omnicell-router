@@ -109,9 +109,9 @@ function sanitizeRecord(raw: unknown): BreakerRecord | null {
     }
     if (Object.keys(clean).length) rec.reasonParams = clean as BreakerRecord['reasonParams'];
   }
-  // Scope label: closed three-value vocabulary — anything else is a hand-edit
+  // Scope label: closed four-value vocabulary — anything else is a hand-edit
   // artifact and drops losslessly.
-  if (r.scope === 'pair' || r.scope === 'credential' || r.scope === 'model') rec.scope = r.scope;
+  if (r.scope === 'pair' || r.scope === 'credential' || r.scope === 'model' || r.scope === 'provider') rec.scope = r.scope;
   if (typeof r.category === 'string' && (ERROR_CATEGORIES as readonly string[]).includes(r.category)) {
     rec.category = r.category as BreakerRecord['category'];
   }

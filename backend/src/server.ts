@@ -806,23 +806,31 @@ export function createServer(
   //   model   -> every tuple breaker of the model (modelId); no model = reset everything
   //   credential -> every tuple breaker of one credential (keyHash prefix)
   //   pair    -> one (model, credential) tuple breaker
+  //   provider -> every tuple breaker of every model of the provider
   // Resetting an credential never lifts its SUSPECT flag — that is administrative
   // state and needs 1E (or a console reconnect / Push).
   app.post('/api/admin/health/circuit-breakers/reset', async (req, reply) => {
-    const query = req.query as { model?: string; credential?: string; scope?: string };
-    const body = (req.body || {}) as { model?: string; credential?: string; scope?: string };
+    const query = req.query as { model?: string; credential?: string; provider?: string; scope?: string };
+    const body = (req.body || {}) as { model?: string; credential?: string; provider?: string; scope?: string };
     const targetModel = query?.model || body?.model;
     const credential = query?.credential || body?.credential;
+    const provider = query?.provider || body?.provider;
     // No model AND no credential = the legacy BULK reset (every tuple breaker);
     // with no target there is no scope to validate — everything resets.
     const scopeRaw: string | undefined =
-      body?.scope || query?.scope || (targetModel || credential ? 'model' : undefined);
+      body?.scope || query?.scope || (targetModel || credential || provider ? 'model' : undefined);
     const cbManager = registry.getCircuitBreakerManager();
 
-    if (scopeRaw !== undefined && scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair') {
+    if (
+      scopeRaw !== undefined &&
+      scopeRaw !== 'model' &&
+      scopeRaw !== 'credential' &&
+      scopeRaw !== 'pair' &&
+      scopeRaw !== 'provider'
+    ) {
       return reply.status(400).send({
         status: 'error',
-        message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential' or 'pair')`,
+        message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential', 'pair' or 'provider')`,
       });
     }
     if (scopeRaw === 'credential' && !credential) {
@@ -833,6 +841,9 @@ export function createServer(
     }
     if (scopeRaw === 'pair' && (!targetModel || !credential)) {
       return reply.status(400).send({ status: 'error', message: "scope 'pair' requires a model and an credential" });
+    }
+    if (scopeRaw === 'provider' && !provider) {
+      return reply.status(400).send({ status: 'error', message: "scope 'provider' requires a provider id" });
     }
 
     // No scope (no target) = bulk reset of every tuple breaker.
@@ -845,38 +856,40 @@ export function createServer(
     const result = cbManager.resetByScope(scope, {
       modelId: targetModel,
       keyHashPrefix: credential,
-      providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
+      providerId: provider ?? (targetModel ? registry.getModel(targetModel)?.provider : undefined),
     });
-    return { status: 'ok', scope, model: targetModel, credential, ...result };
+    return { status: 'ok', scope, model: targetModel, credential, provider, ...result };
   });
 
   // 1D. Manually trip a circuit breaker (admin takes a model, one credential,
-  // or one (model, credential) pair out of rotation from the console).
-  // Legacy body {model, reason?, cooldownMs?} is scope 'model' = today's trip.
+  // one (model, credential) pair, or a whole provider out of rotation from the
+  // console). Legacy body {model, reason?, cooldownMs?} is scope 'model'.
   app.post('/api/admin/health/circuit-breakers/trip', async (req, reply) => {
-    const query = req.query as { model?: string; credential?: string; scope?: string };
+    const query = req.query as { model?: string; credential?: string; provider?: string; scope?: string };
     const body = (req.body || {}) as {
       model?: string;
       reason?: string;
       cooldownMs?: number;
       scope?: string;
       credential?: string;
+      provider?: string;
     };
     const targetModel = query?.model || body?.model;
     const credential = query?.credential || body?.credential;
+    const provider = query?.provider || body?.provider;
     const scopeRaw = body?.scope || query?.scope || 'model';
     const cbManager = registry.getCircuitBreakerManager();
 
-    if (scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair') {
+    if (scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair' && scopeRaw !== 'provider') {
       return reply.status(400).send({
         status: 'error',
-        message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential' or 'pair')`,
+        message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential', 'pair' or 'provider')`,
       });
     }
     if (scopeRaw === 'model' && !targetModel) {
       return reply.status(400).send({ status: 'error', message: 'Model id is required (?model= or body.model)' });
     }
-    if (scopeRaw !== 'model' && !credential) {
+    if ((scopeRaw === 'credential' || scopeRaw === 'pair') && !credential) {
       return reply.status(400).send({
         status: 'error',
         message: `scope '${scopeRaw}' requires an credential (keyHash prefix)`,
@@ -885,8 +898,12 @@ export function createServer(
     if (scopeRaw === 'pair' && !targetModel) {
       return reply.status(400).send({ status: 'error', message: "scope 'pair' requires a model" });
     }
+    if (scopeRaw === 'provider' && !provider) {
+      return reply.status(400).send({ status: 'error', message: "scope 'provider' requires a provider id" });
+    }
 
     const scope = scopeRaw as TripScope;
+    const providerId = provider ?? (targetModel ? registry.getModel(targetModel)?.provider : undefined);
     // A manual trip is a temporary takedown with a cooldown; it NEVER marks
     // SUSPECT (that is the administrative state an auth failure earns).
     const result = cbManager.tripByScope(
@@ -894,21 +911,24 @@ export function createServer(
       {
         modelId: targetModel,
         keyHashPrefix: credential,
-        providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
-        // Model-scope takedown spans the FULL credential chain — without it a
-        // healthy chained model with no prior failures would trip only the
-        // sentinel tuple and keep serving on every chain credential.
+        providerId,
+        // Model/provider-scope takedowns span the FULL credential chain —
+        // without it a healthy chained model with no prior failures would trip
+        // only the sentinel tuple and keep serving on every chain credential.
+        // Chains are provider-level, so one lookup covers every model.
         chainPrefixes:
-          scope === 'model' && targetModel
-            ? registry.getCredentialChain(registry.getModel(targetModel)?.provider ?? '')?.map((c) => c.keyHashPrefix)
+          (scope === 'model' || scope === 'provider') && providerId
+            ? registry.getCredentialChain(providerId)?.map((c) => c.keyHashPrefix)
             : undefined,
       },
       { reason: body.reason, cooldownMs: typeof body.cooldownMs === 'number' ? body.cooldownMs : undefined }
     );
     if (result.affected === 0) {
-      return reply.status(400).send({ status: 'error', scope, model: targetModel, credential, message: result.message });
+      return reply
+        .status(400)
+        .send({ status: 'error', scope, model: targetModel, credential, provider, affected: result.affected, message: result.message });
     }
-    return { status: 'ok', scope, model: targetModel, credential, ...result };
+    return { status: 'ok', scope, model: targetModel, credential, provider, ...result };
   });
 
   // 1E. Clear an credential's SUSPECT flag. The flag is set

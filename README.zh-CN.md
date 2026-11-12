@@ -336,7 +336,7 @@ main();
 | `/api/admin/route-entries/:hash` | `DELETE` | 删除经验表中的指定条目。 |
 | `/api/admin/failure-events` | `GET` | 查询上游物理模型调用失败事件账本（支持过滤）。 |
 | `/api/admin/failure-events/clear` | `POST` | 清空内存环与 SQLite 持久化故障事件记录。 |
-| `/api/admin/health/circuit-breakers/reset` | `POST` | 手动重置处于熔断状态的模型、凭据或对熔断器。 |
+| `/api/admin/health/circuit-breakers/reset` | `POST` | 手动重置处于熔断状态的模型、凭据、对或服务商熔断器。 |
 | `/v1/sessions` | `GET` | 查看活跃多轮会话状态、锁定梯队与绑定模型。 |
 | `/v1/traces` | `GET` | 分页查询请求执行轨迹。 |
 | `/v1/metrics` | `GET` | 查看实时 FinOps 统计、梯队流量占比与累计成本节约。 |

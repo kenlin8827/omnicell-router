@@ -344,7 +344,7 @@ Every proxied response carries diagnostic metadata:
 | `/api/admin/route-entries/:hash` | `DELETE` | Removes an entry from the experience table. |
 | `/api/admin/failure-events` | `GET` | Queries upstream model call failure events with optional filters. |
 | `/api/admin/failure-events/clear` | `POST` | Clears in-memory ring and durable SQLite failure events ledger. |
-| `/api/admin/health/circuit-breakers/reset` | `POST` | Manually resets tripped circuit breakers across `model`, `credential`, or `pair` scopes. |
+| `/api/admin/health/circuit-breakers/reset` | `POST` | Manually resets tripped circuit breakers across `model`, `credential`, `pair`, or `provider` scopes. |
 | `/v1/sessions` | `GET` | Lists active multi-turn sessions, pinned models, and turn counts. |
 | `/v1/traces` | `GET` | Paginated query of recent request execution traces. |
 | `/v1/metrics` | `GET` | Real-time FinOps metrics, tier distribution, and cumulative cost savings. |
