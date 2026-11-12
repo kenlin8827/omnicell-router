@@ -2523,7 +2523,8 @@ export const koKR: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "현재 필터에 맞는 {count}개 행만 삭제합니다 (전체 {total}개). 필터가 없으면 전체입니다.",
+    clearLiveNote: "현재 필터에 맞는 {count}개 행을 라이브 보기에서만 숨깁니다 (전체 {total}개). 디스크 기록은 삭제되지 않으며 기록 모드에 그대로 남습니다.",
+    clearLiveDone: "라이브 보기에서 {count}개 행을 숨겼습니다 (디스크 기록 유지)",
     rpcMethodHint: "RPC 호출은 항상 POST를 사용합니다 — 동작 이름은 경로(/pkg.Service/Method)에 있습니다",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2557,7 +2558,7 @@ export const koKR: TranslationDict = {
     title: '프록시 트래픽 로그',
     hint: '인바운드 포워드 프록시를 통과하는 가로채지 않은 모든 HTTP 교환과 CONNECT 터널 결정을 최신순으로 표시합니다. LLM 프로토콜 트래픽은 여기에 표시되지 않으며 /traces 아카이브에 보관됩니다.',
     clearPersistHint: '영구 저장된 히스토리에서 일치하는 행을 삭제합니다(day 파일 및 body 파일 포함). 되돌릴 수 없습니다',
-    clearPersistNote: '참고: 히스토리 모드의 삭제는 디스크의 영구 저장 레코드를 대상으로 하며 메모리 링 제한을 받지 않습니다.',
+    clearPersistNote: '참고: 히스토리 모드는 디스크의 영구 저장 레코드만 삭제합니다. 라이브 보기의 사본은 해당 행이 자연히 사라지거나 게이트웨이가 재시작될 때까지 남습니다.',
     clearPersistScope: '모든 영구 저장 소스(프록시 로그 + 플러그인 피드)에서 일치하는 {count}건을 삭제합니다. 되돌릴 수 없습니다.',
     histFilterHint: '히스토리 모드에서는 이 필터가 반환된 페이지(서버 페이징 결과)에만 적용됩니다',
     modeLive: '실시간',

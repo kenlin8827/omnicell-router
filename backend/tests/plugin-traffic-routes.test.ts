@@ -6,6 +6,13 @@ import { loadConfig } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { stageGateway, commitGateways, removeGateway } from '../src/plugins/gateways.js';
 import type { ClientGatewayPlugin, TrafficExchange } from '../src/plugins/types.js';
+import {
+  clearProxyAccessLog,
+  createAccessTap,
+  listProxyAccessEvents,
+  setProxyAccessLogPersistDir,
+  setProxyAccessLogSettingsReader,
+} from '../src/forward-proxy/access-log.js';
 
 /**
  * Generic plugin-traffic console routes (ADR-0017, Wireshark dissector model).
@@ -146,10 +153,23 @@ describe('plugin-traffic routes', () => {
   });
 });
 
-describe('filter-scoped clear (traffic-delete)', () => {
+describe('live-scope clear (traffic-live-clear)', () => {
   const day = (): string => new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const tsOf = (iso: string): number => Date.parse(iso);
+  const liveRows = async (): Promise<Record<string, unknown>[]> => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/proxy-log?scope=live' });
+    return (res.json() as { rows: { source: string; ex: Record<string, unknown> }[] }).rows
+      .filter((r) => r.source === DECODER)
+      .map((r) => r.ex);
+  };
+  const historyRows = async (): Promise<Record<string, unknown>[]> => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/proxy-log?scope=history&kind=http&page=1&limit=50' });
+    return (res.json() as { rows: { source: string; ex: Record<string, unknown> }[] }).rows
+      .filter((r) => r.source === DECODER)
+      .map((r) => r.ex);
+  };
 
-  it('deletes only the named rows and their sidecars, never a neighbour', async () => {
+  it('hides only the named rows from the live view, never the feed', async () => {
     const d = day();
     writeBody(`${d}/cx-keep-req.bin`, Buffer.from('keep'));
     writeBody(`${d}/cx-drop-req.bin`, Buffer.from('drop'));
@@ -160,17 +180,16 @@ describe('filter-scoped clear (traffic-delete)', () => {
 
     const res = await app.inject({
       method: 'POST',
-      url: '/api/admin/traffic-delete',
-      payload: { plugins: { [DECODER]: ['cx-drop'] } },
+      url: '/api/admin/traffic-live-clear',
+      payload: { plugins: { [DECODER]: [{ key: 'cx-drop', ts: tsOf('2026-11-06T00:00:01.000Z') }] } },
     });
     expect(res.statusCode).toBe(200);
-    expect((res.json() as { deleted: { plugins: Record<string, number> } }).deleted.plugins[DECODER]).toBe(1);
+    expect((res.json() as { hidden: { plugins: Record<string, number> } }).hidden.plugins[DECODER]).toBe(1);
 
-    const feed = await app.inject({ method: 'GET', url: `/api/admin/plugin-traffic/${DECODER}` });
-    const paths = (feed.json() as { events: Record<string, unknown>[] }).events.map((e) => e.path);
-    expect(paths).toEqual(['/keep']);
-    // The dropped row's bytes go with it; the survivor's are untouched.
-    expect(fs.existsSync(path.join(feedDir(), 'bodies', `${d}/cx-drop-req.bin`))).toBe(false);
+    expect((await liveRows()).map((e) => e.path)).toEqual(['/keep']);
+    // The split: the feed (history scope) and the bytes are untouched.
+    expect((await historyRows()).map((e) => e.path)).toEqual(['/drop', '/keep']);
+    expect(fs.existsSync(path.join(feedDir(), 'bodies', `${d}/cx-drop-req.bin`))).toBe(true);
     expect(fs.existsSync(path.join(feedDir(), 'bodies', `${d}/cx-keep-req.bin`))).toBe(true);
   });
 
@@ -178,21 +197,103 @@ describe('filter-scoped clear (traffic-delete)', () => {
     writeFeed([{ ts: '2026-11-06T00:00:02.000Z', path: '/legacy-row' }]);
     const res = await app.inject({
       method: 'POST',
-      url: '/api/admin/traffic-delete',
-      payload: { plugins: { [DECODER]: ['2026-11-06T00:00:02.000Z'] } },
+      url: '/api/admin/traffic-live-clear',
+      payload: { plugins: { [DECODER]: [{ key: '2026-11-06T00:00:02.000Z', ts: tsOf('2026-11-06T00:00:02.000Z') }] } },
     });
-    expect((res.json() as { deleted: { plugins: Record<string, number> } }).deleted.plugins[DECODER]).toBe(1);
-    const feed = await app.inject({ method: 'GET', url: `/api/admin/plugin-traffic/${DECODER}` });
-    expect((feed.json() as { events: unknown[] }).events).toHaveLength(0);
+    expect((res.json() as { hidden: { plugins: Record<string, number> } }).hidden.plugins[DECODER]).toBe(1);
+    expect(await liveRows()).toHaveLength(0);
+    expect(await historyRows()).toHaveLength(1);
   });
 
   it('ignores keys that match nothing instead of wiping the feed', async () => {
     writeFeed([{ id: 'cx-a', ts: '2026-11-06T00:00:03.000Z', path: '/a' }]);
     await app.inject({
       method: 'POST',
-      url: '/api/admin/traffic-delete',
-      payload: { plugins: { [DECODER]: ['cx-nope'] } },
+      url: '/api/admin/traffic-live-clear',
+      payload: { plugins: { [DECODER]: [{ key: 'cx-nope', ts: tsOf('2026-11-06T00:00:03.000Z') }] } },
     });
+    expect((await liveRows()).map((e) => e.path)).toEqual(['/a']);
+    expect((await historyRows()).map((e) => e.path)).toEqual(['/a']);
+  });
+  it('hides a ring row from the live view without touching its day file', async () => {
+    const persistDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-pa-live-'));
+    setProxyAccessLogPersistDir(persistDir);
+    clearProxyAccessLog();
+    setProxyAccessLogSettingsReader(() => ({ enabled: true, persist: true, persistDays: 7 }));
+    const tap = createAccessTap({ host: 'p.test', port: 80, method: 'GET', path: '/ring', requestHeaders: { host: 'p.test' } });
+    expect(tap).toBeDefined();
+    tap!.finish(200, {});
+    const row = listProxyAccessEvents()[0]!;
+    const persisted = (): string[] =>
+      fs.readdirSync(persistDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .flatMap((f) => fs.readFileSync(path.join(persistDir, f), 'utf8').split('\n').filter(Boolean))
+        .map((l) => (JSON.parse(l) as { id: string }).id);
+    expect(persisted()).toContain(row.id);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/traffic-live-clear',
+      payload: { proxy: [{ key: row.id, ts: row.ts }] },
+    });
+    expect((res.json() as { hidden: { proxy: number } }).hidden.proxy).toBe(1);
+
+    const live = await app.inject({ method: 'GET', url: '/api/admin/proxy-log?scope=live' });
+    const ids = (live.json() as { rows: { source: string; ev: { id: string } }[] }).rows
+      .filter((r) => r.source === 'proxy')
+      .map((r) => r.ev.id);
+    expect(ids).not.toContain(row.id);
+    expect(listProxyAccessEvents().map((e) => e.id)).not.toContain(row.id);
+    // The live action is ring-only: the persisted scope still owns the row, and
+    // the history read ignores the live tombstone.
+    expect(persisted()).toContain(row.id);
+    const hist = await app.inject({ method: 'GET', url: '/api/admin/proxy-log?scope=history&kind=http&page=1&limit=50' });
+    const histIds = (hist.json() as { rows: { source: string; ev: { id: string } }[] }).rows
+      .filter((r) => r.source === 'proxy')
+      .map((r) => r.ev.id);
+    expect(histIds).toContain(row.id);
+
+    clearProxyAccessLog();
+    fs.rmSync(persistDir, { recursive: true, force: true });
+  });
+
+});
+
+describe('history clear (proxy-log/history/delete)', () => {
+  const day = (): string => new Date().toISOString().slice(0, 10).replace(/-/g, '');
+
+  it('deletes plugin rows under the default http kind filter', async () => {
+    const d = day();
+    writeBody(`${d}/cx-hist-req.bin`, Buffer.from('body'));
+    writeFeed([
+      { id: 'cx-hist', ts: '2026-11-06T00:00:04.000Z', authority: 'api.test.sh', method: 'GET', path: '/h', status: 200, reqBodyFile: `${d}/cx-hist-req.bin` },
+    ]);
+
+    // The history read shows plugin rows as HTTP; the delete must match them.
+    const hist = await app.inject({ method: 'GET', url: '/api/admin/proxy-log?scope=history&kind=http&page=1&limit=50' });
+    expect((hist.json() as { total: number }).total).toBe(1);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/proxy-log/history/delete',
+      payload: { kind: 'http' },
+    });
+    expect((res.json() as { deleted: { plugins: Record<string, number> } }).deleted.plugins[DECODER]).toBe(1);
+    expect(fs.existsSync(path.join(feedDir(), 'bodies', `${d}/cx-hist-req.bin`))).toBe(false);
+    const feed = await app.inject({ method: 'GET', url: `/api/admin/plugin-traffic/${DECODER}` });
+    expect((feed.json() as { events: unknown[] }).events).toHaveLength(0);
+  });
+
+  it('leaves plugin rows alone for a connect-scoped clear', async () => {
+    writeFeed([
+      { id: 'cx-keep-kind', ts: '2026-11-06T00:00:05.000Z', authority: 'api.test.sh', method: 'GET', path: '/k' },
+    ]);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/proxy-log/history/delete',
+      payload: { kind: 'connect' },
+    });
+    expect((res.json() as { deleted: { plugins: Record<string, number> } }).deleted.plugins[DECODER]).toBeUndefined();
     const feed = await app.inject({ method: 'GET', url: `/api/admin/plugin-traffic/${DECODER}` });
     expect((feed.json() as { events: unknown[] }).events).toHaveLength(1);
   });

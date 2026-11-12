@@ -2548,7 +2548,8 @@ export const enUS: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "Deletes only the {count} rows matching the current filter (of {total}); with no filter that means everything.",
+    clearLiveNote: "Hides the {count} rows matching the current filter from the LIVE view only (of {total}); nothing on disk is deleted, and History still lists them.",
+    clearLiveDone: "Hid {count} rows from the live view (disk records kept)",
     rpcMethodHint: "RPC calls always use POST — the operation is the PATH (/pkg.Service/Method), not the HTTP verb",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2582,7 +2583,7 @@ export const enUS: TranslationDict = {
     title: 'Proxy Traffic Log',
     hint: 'Every NON-intercepted HTTP exchange and CONNECT tunnel decision through the inbound forward proxy, newest first. LLM-protocol traffic is NOT listed here — it lives in the /traces archive.',
     clearPersistHint: 'Delete matching rows from the persisted history (day files + body files). This cannot be undone.',
-    clearPersistNote: 'Note: history mode deletes PERSISTED records on disk, not limited by the memory ring.',
+    clearPersistNote: 'Note: history mode deletes PERSISTED records on disk only; the live view keeps its own copy until that row ages out or the gateway restarts.',
     clearPersistScope: 'This deletes {count} matching rows across ALL persisted sources (proxy log + plugin feeds). This cannot be undone.',
     histFilterHint: 'In history mode this filter applies within the returned page (server-paged), not the whole history',
     modeLive: 'Live',

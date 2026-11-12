@@ -2503,7 +2503,8 @@ export const zhCN: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "仅删除当前筛选命中的 {count} 条（共 {total} 条）；不设筛选即删除全部。",
+    clearLiveNote: "仅从实时视图隐藏当前筛选命中的 {count} 条（共 {total} 条）；磁盘记录与 body 文件一概不动，切到历史模式仍可查看/删除。",
+    clearLiveDone: "已从实时视图隐藏 {count} 条（磁盘记录保留）",
     rpcMethodHint: "RPC 调用固定用 POST：操作方法在路径里（/pkg.Service/Method），不在 HTTP 动词里",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2537,7 +2538,7 @@ export const zhCN: TranslationDict = {
     title: '代理流量日志',
     hint: '记录经入站转发的所有未被拦截接管的 HTTP 交互与 CONNECT 隧道决策，最新在前。LLM 协议流量不在此列——它在 /traces 归档中查看。',
     clearPersistHint: '从持久化历史中删除匹配行（含 day 文件与 body 文件），不可恢复',
-    clearPersistNote: '注意：历史模式删除的是磁盘上的持久化记录，不受内存 ring 限制。',
+    clearPersistNote: '注意：历史模式只删除磁盘上的持久化记录；实时视图里的副本会保留到该行自然淘汰或网关重启。',
     clearPersistScope: '将从所有持久化源（代理日志 + 插件 feed）中删除匹配的 {count} 条记录，不可恢复。',
     histFilterHint: '历史模式下该筛选作用于当前返回页（服务器分页结果），并非全量历史',
     modeLive: '实时',

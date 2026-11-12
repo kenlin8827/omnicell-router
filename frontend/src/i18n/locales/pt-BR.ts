@@ -2524,7 +2524,8 @@ export const ptBR: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "Apaga apenas as {count} linhas que correspondem ao filtro atual (de {total}); sem filtro, todas.",
+    clearLiveNote: "Oculta apenas da visualização AO VIVO as {count} linhas que correspondem ao filtro atual (de {total}); nada é apagado no disco e o histórico continua listando-as.",
+    clearLiveDone: "{count} linhas ocultadas da visualização ao vivo (registros em disco mantidos)",
     rpcMethodHint: "Chamadas RPC sempre usam POST — a operação está no CAMINHO (/pkg.Service/Method), não no verbo HTTP",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2558,7 +2559,7 @@ export const ptBR: TranslationDict = {
     title: 'Registro de tráfego do proxy',
     hint: 'Cada troca HTTP NÃO interceptada e cada decisão de túnel CONNECT pelo forward proxy de entrada, mais recentes primeiro. O tráfego do protocolo LLM NÃO aparece aqui — ele fica no arquivo /traces.',
     clearPersistHint: 'Exclui as linhas correspondentes do histórico persistido (arquivos day + arquivos de body). Irreversível',
-    clearPersistNote: 'Nota: no modo histórico a exclusão atinge registros PERSISTIDOS em disco, sem o limite do ring em memória.',
+    clearPersistNote: 'Nota: o modo histórico apaga apenas registros PERSISTIDOS no disco; a visualização ao vivo mantém sua cópia até a linha expirar ou o gateway reiniciar.',
     clearPersistScope: 'Isso exclui {count} linhas correspondentes em TODAS as fontes persistidas (log do proxy + feeds de plugins). Irreversível.',
     histFilterHint: 'No modo histórico, este filtro se aplica dentro da página retornada (página do servidor)',
     modeLive: 'Ao vivo',

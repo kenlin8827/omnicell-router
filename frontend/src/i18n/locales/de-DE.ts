@@ -2525,7 +2525,8 @@ export const deDE: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "Löscht nur die {count} Zeilen, die dem aktuellen Filter entsprechen (von {total}); ohne Filter sind das alle.",
+    clearLiveNote: "Blendet nur die {count} zum aktuellen Filter passenden Zeilen aus der LIVE-Ansicht aus (von {total}); auf der Platte wird nichts gelöscht, der Verlauf zeigt sie weiterhin.",
+    clearLiveDone: "{count} Zeilen aus der Live-Ansicht ausgeblendet (Datenträger unverändert)",
     rpcMethodHint: "RPC-Aufrufe nutzen immer POST — die Operation steht im PFAD (/pkg.Service/Method), nicht im HTTP-Verb",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2559,7 +2560,7 @@ export const deDE: TranslationDict = {
     title: 'Proxy-Traffic-Protokoll',
     hint: 'Jeder NICHT-interceptierte HTTP-Transfer und jede CONNECT-Tunnel-Entscheidung über den eingehenden Forward-Proxy, neueste zuerst. LLM-Protokoll-Traffic wird hier NICHT aufgeführt — er liegt im /traces-Archiv.',
     clearPersistHint: 'Löscht passende Zeilen aus dem persistenten Verlauf (Day-Dateien + Body-Dateien). Nicht widerrufbar',
-    clearPersistNote: 'Hinweis: Im Verlaufsmodus werden PERSISTIERTE Datensätze auf der Platte gelöscht — nicht auf den Speicherring beschränkt.',
+    clearPersistNote: 'Hinweis: Der Verlaufsmodus löscht nur persistierte Datensätze auf der Platte; die Live-Ansicht behält ihre Kopie, bis die Zeile altert oder das Gateway neu startet.',
     clearPersistScope: 'Löscht {count} passende Zeilen über ALLE persistenten Quellen (Proxy-Log + Plugin-Feeds). Nicht widerrufbar.',
     histFilterHint: 'Im Verlaufsmodus wirkt dieser Filter nur innerhalb der gelieferten Seite (serverseitig gepaggt)',
     modeLive: 'Live',

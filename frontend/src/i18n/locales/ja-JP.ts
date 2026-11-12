@@ -2523,7 +2523,8 @@ export const jaJP: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "現在のフィルターに一致する {count} 件のみ削除します（全体 {total} 件）。フィルターなしなら全件です。",
+    clearLiveNote: "現在のフィルターに一致する {count} 件をライブ表示からのみ隠します（全体 {total} 件）。ディスク上の記録は削除されず、履歴には残ります。",
+    clearLiveDone: "ライブ表示から {count} 件を非表示にしました（ディスク上の記録は保持）",
     rpcMethodHint: "RPC 呼び出しは常に POST——操作名はパス（/pkg.Service/Method）にあり、HTTP メソッドではありません",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2557,7 +2558,7 @@ export const jaJP: TranslationDict = {
     title: 'プロキシトラフィックログ',
     hint: 'インバウンドフォワードプロキシを通過する、インターセプトされなかったすべての HTTP 通信と CONNECT トンネルの判定を、新しい順に表示します。LLM プロトコルのトラフィックはここに表示されません — /traces アーカイブに記録されます。',
     clearPersistHint: '永続化された履歴から一致する行を削除します（day ファイルと body ファイル含む）。元に戻せません',
-    clearPersistNote: '注意：履歴モードで削除するのはディスク上の永続化レコードであり、メモリリングの制限を受けません。',
+    clearPersistNote: '注意：履歴モードはディスク上の永続化レコードのみを削除します。ライブ表示側のコピーは、その行が自然に消えるかゲートウェイが再起動するまで残ります。',
     clearPersistScope: 'すべての永続化ソース（プロキシログ + プラグインフィード）から一致する {count} 件を削除します。元に戻せません。',
     histFilterHint: '履歴モードではこのフィルタは返されたページ（サーバー側ページング結果）にのみ適用されます',
     modeLive: 'ライブ',

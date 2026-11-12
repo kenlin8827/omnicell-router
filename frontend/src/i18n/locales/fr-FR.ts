@@ -2544,7 +2544,8 @@ export const frFR: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "Supprime uniquement les {count} lignes correspondant au filtre courant (sur {total}) ; sans filtre, toutes.",
+    clearLiveNote: "Masque uniquement de la vue EN DIRECT les {count} lignes correspondant au filtre courant (sur {total}) ; rien n'est supprimé sur le disque et l'historique les affiche toujours.",
+    clearLiveDone: "{count} lignes masquées de la vue en direct (enregistrements disque conservés)",
     rpcMethodHint: "Les appels RPC utilisent toujours POST — l'opération est dans le CHEMIN (/pkg.Service/Method), pas dans le verbe HTTP",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2578,7 +2579,7 @@ export const frFR: TranslationDict = {
     title: 'Journal du trafic proxy',
     hint: 'Chaque échange HTTP NON intercepté et chaque décision de tunnel CONNECT via le forward proxy entrant, les plus récents d’abord. Le trafic du protocole LLM n’est PAS listé ici — il figure dans l’archive /traces.',
     clearPersistHint: 'Supprime les lignes correspondantes de l’historique persisté (fichiers day + fichiers de corps). Irréversible',
-    clearPersistNote: 'Note : en mode historique, la suppression touche les enregistrements PERSISTÉS sur disque, sans limite au ring mémoire.',
+    clearPersistNote: 'Note : le mode historique ne supprime que les enregistrements PERSISTÉS sur le disque ; la vue en direct conserve sa copie jusqu’à l’expiration de la ligne ou au redémarrage de la passerelle.',
     clearPersistScope: 'Ceci supprime {count} lignes correspondantes dans TOUTES les sources persistées (journal proxy + flux plugins). Irréversible.',
     histFilterHint: 'En mode historique, ce filtre s’applique dans la page renvoyée (paginée côté serveur)',
     modeLive: 'Direct',

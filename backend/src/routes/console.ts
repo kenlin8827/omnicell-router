@@ -42,7 +42,8 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
-import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deleteProxyAccessEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
+import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
+import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
@@ -1250,6 +1251,12 @@ export function registerConsoleRoutes(
             }
             if (methodF && ex.method !== methodF) continue;
             if (hostF && (ex.authority ?? '').toLowerCase() !== hostF) continue;
+            // Plugin rows are HTTP by definition (the console's `kindOf`):
+            // a CONNECT/WS filter excludes them, and a status filter prunes
+            // them — otherwise the federated total counts rows the delete
+            // path (and the rendered table) never includes.
+            if (kindF && kindF !== 'http') continue;
+            if (statusF && String(ex.status ?? '') !== statusF) continue;
             rows.push({ source: id, tsMs: Date.parse(ex.ts ?? '') || 0, ex });
           }
         }
@@ -1279,7 +1286,9 @@ export function registerConsoleRoutes(
     // scope=live (default) — the merged tail: ring + every plugin feed tail.
     const s = proxyAccessLogSettings();
     const rows: TimelineRow[] = [];
+    const hiddenProxy = liveHiddenProxyIds();
     for (const e of listProxyAccessEvents()) {
+      if (hiddenProxy.has(e.id)) continue;
       rows.push({ source: 'proxy', ev: { ...e, reqBodyToken: bodyTokenOf(e.reqBodyFile), resBodyToken: bodyTokenOf(e.resBodyFile) } });
     }
     for (const { id } of trafficDecoders()) {
@@ -1305,7 +1314,12 @@ export function registerConsoleRoutes(
       } catch {
         // Unreadable feed dir = empty feed.
       }
-      for (const ex of events) rows.push({ source: id, ex: decoratePluginRow(id, ex) } as TimelineRow);
+      const hiddenPlugin = liveHiddenPluginKeys(id);
+      for (const ex of events) {
+        const key = typeof ex.id === 'string' ? ex.id : ex.ts;
+        if (key && hiddenPlugin.has(key)) continue;
+        rows.push({ source: id, ex: decoratePluginRow(id, ex) } as TimelineRow);
+      }
     }
     rows.sort((a, b) => (tsOf(a) || 0) - (tsOf(b) || 0));
     return {
@@ -1323,14 +1337,14 @@ export function registerConsoleRoutes(
   });
 
   // 3A2c. HISTORY delete by FILTER — the history-mode counterpart of the
-  // clear button. The visible-keys rule (traffic-delete) cannot apply here:
-  // the console only holds ONE page of the persisted federation at a time, so
-  // "what I see" and "what I asked to delete" would diverge. Instead the
-  // console sends the SAME filter vocabulary it queries with and the backend
-  // deletes every matching persisted row across ALL sources: proxy day JSONL
-  // (`deleteProxyAccessEvents` = ring + day files + body sidecars) and each
-  // plugin feed's day JSONL + orphaned body sidecars. The response reports
-  // per-source counts so the confirm toast is never a guess.
+  // clear button. History is the PERSISTED scope, so this rewrite touches the
+  // day JSONL + body sidecars only and leaves the live ring alone (ADR-0017
+  // §5: the same row may still be listed in the live view until it ages out).
+  // The console only holds ONE page of the persisted federation at a time, so
+  // "what I see" and "what I asked to delete" would diverge; the console sends
+  // the SAME filter vocabulary it queries with and the backend deletes every
+  // matching persisted row across ALL sources. The response reports per-source
+  // counts so the confirm toast is never a guess.
   app.post('/api/admin/proxy-log/history/delete', async (req) => {
     const b = (req.body ?? {}) as Record<string, string | undefined>;
     const kindF = b.kind ?? '';
@@ -1338,18 +1352,23 @@ export function registerConsoleRoutes(
     const statusF = b.status ?? '';
     const hostF = (b.host ?? '').toLowerCase();
 
-    // Proxy side: ids → the row-scoped deleter (ring + day files + sidecars).
+    // Proxy side: ids → the persisted-row deleter (day files + body sidecars).
     const ids = readProxyAccessHistory({
       kind: kindF || undefined,
       method: methodF || undefined,
       status: statusF || undefined,
       host: hostF || undefined,
     }).map((e) => e.id);
-    const proxyDeleted = ids.length > 0 ? deleteProxyAccessEvents(ids) : 0;
+    const proxyDeleted = ids.length > 0 ? deletePersistedProxyEvents(ids) : 0;
 
     // Plugin side: rewrite each feed's day files without the matching lines.
     const deletedPlugins: Record<string, number> = {};
     for (const { id } of trafficDecoders()) {
+      // Plugin rows are ALWAYS `http` (the console's `kindOf`): a CONNECT/WS
+      // filter cannot match them, but the default `http` filter must — the
+      // history table renders those rows, so refusing every kind filter left
+      // them behind after a clear (the "clear is not clean" bug).
+      if (kindF && kindF !== 'http') continue;
       const dir = path.join(trafficRoot(), id);
       let files: string[] = [];
       try {
@@ -1381,13 +1400,6 @@ export function registerConsoleRoutes(
             (!methodF || ex.method === methodF) &&
             (!hostF || (ex.authority ?? '').toLowerCase() === hostF) &&
             (!statusF || String((ex as { status?: number }).status ?? '') === statusF);
-          if (hit && kindF) {
-            // `kind` is proxy-only vocabulary: a filtered history delete never
-            // carries it, but if one ever does, refuse plugin matching rather
-            // than guess (count drift beats wrong deletes).
-            keptOut.push(line);
-            continue;
-          }
           if (hit) {
             touched = true;
             removed++;
@@ -1435,11 +1447,11 @@ export function registerConsoleRoutes(
   });
 
 
-  // 3A1b. Clear the WHOLE traffic view — the console renders one timeline, so
-  // "clear" must empty every source behind it, not just the core ring. Gateway
-  // feeds are plugin-owned artifacts on disk (day JSONL + captured bodies), so
-  // they are removed here rather than through the plugin: the console owns the
-  // feed layout (ADR-0017 §5).
+  // 3A1b. Explicit FULL wipe across BOTH scopes — ring, proxy day files +
+  // bodies, and every plugin feed dir. This is an admin API, not either
+  // console button: live clear hides only, history delete rewrites only
+  // (ADR-0017 §5). Gateway feeds are console-owned artifacts on disk, so they
+  // are removed here rather than through the plugin.
   app.post('/api/admin/traffic-clear', async () => {
     clearProxyAccessLog();
     const cleared: string[] = [];
@@ -1457,101 +1469,44 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * 3A1c. Delete EXACTLY the rows the console is showing — the filter-scoped
-   * counterpart of `/traffic-clear`.
+   * 3A1c. Hide EXACTLY the rows the LIVE view is showing — the live-scope
+   * counterpart of the history delete. Live and history are scopes over the
+   * same feeds, not separate stores (ADR-0017 §5), so this route never touches
+   * a file: proxy rows leave the ring, and plugin rows are recorded in a
+   * live-only tombstone overlay that the live read applies and history
+   * ignores. The persisted day JSONL and body sidecars stay intact and remain
+   * listed/deletable from History mode.
    *
-   * The console sends row KEYS, never a predicate: the filter lives in one
-   * place (the page) and a backend copy would drift into deleting more than
-   * the operator can see. A key is `id` (proxy events, plugin exchanges that
-   * carry one) or `ts` (feed rows written before ids existed), matched the same
-   * way on both sides.
+   * The console sends row keys (`id`, else the legacy feed `ts`) with their
+   * timestamps, never a predicate: the filter lives in one place (the page)
+   * and a backend copy would drift into hiding more than the operator sees.
    */
-  app.post('/api/admin/traffic-delete', async (req) => {
+  app.post('/api/admin/traffic-live-clear', async (req) => {
     const body = (req.body ?? {}) as { proxy?: unknown; plugins?: unknown };
-    const asKeys = (v: unknown): string[] =>
-      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
-    const proxyKeys = asKeys(body.proxy);
-    const deleted: { proxy: number; plugins: Record<string, number> } = {
-      proxy: deleteProxyAccessEvents(proxyKeys),
-      plugins: {},
-    };
-    const pluginEntries = body.plugins && typeof body.plugins === 'object'
-      ? Object.entries(body.plugins as Record<string, unknown>)
-      : [];
-    for (const [decoderId, rawKeys] of pluginEntries) {
-      const keys = new Set(asKeys(rawKeys));
-      if (keys.size === 0) continue;
-      const dir = path.join(trafficRoot(), decoderId);
-      let removed = 0;
-      const bodyIds = new Set<string>();
-      try {
-        if (!fs.existsSync(dir)) continue;
-        const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
-        for (const f of files) {
-          const abs = path.join(dir, f);
-          let text: string;
-          try {
-            text = fs.readFileSync(abs, 'utf8');
-          } catch {
-            continue;
-          }
-          const kept: string[] = [];
-          let touched = false;
-          for (const line of text.split(/\r?\n/)) {
-            if (!line) continue;
-            let row: Record<string, unknown>;
-            try {
-              row = JSON.parse(line) as Record<string, unknown>;
-            } catch {
-              kept.push(line); // torn tail line, not ours to judge
-              continue;
-            }
-            const key = typeof row.id === 'string' ? row.id : typeof row.ts === 'string' ? row.ts : undefined;
-            if (key !== undefined && keys.has(key)) {
-              touched = true;
-              removed++;
-              if (typeof row.id === 'string') bodyIds.add(row.id);
-              continue;
-            }
-            kept.push(line);
-          }
-          if (!touched) continue;
-          try {
-            if (kept.length === 0) fs.unlinkSync(abs);
-            else fs.writeFileSync(abs, kept.join('\n') + '\n');
-          } catch {
-            // Best effort — the row is gone from the feed view either way.
-          }
+    const asLiveKeys = (v: unknown): LiveHiddenKey[] => {
+      if (!Array.isArray(v)) return [];
+      const out: LiveHiddenKey[] = [];
+      for (const x of v) {
+        if (!x || typeof x !== 'object' || !('key' in x) || !('ts' in x)) continue;
+        if (typeof x.key === 'string' && x.key.length > 0 && typeof x.ts === 'number' && Number.isFinite(x.ts)) {
+          out.push({ key: x.key, ts: x.ts });
         }
-        // Sidecar bytes are named `<day>/<id>-<side>.bin`: drop only the ones
-        // whose row just went away, never a neighbour's.
-        const bodiesRoot = path.join(dir, 'bodies');
-        if (bodyIds.size > 0 && fs.existsSync(bodiesRoot)) {
-          for (const day of fs.readdirSync(bodiesRoot)) {
-            const dayDir = path.join(bodiesRoot, day);
-            let names: string[];
-            try {
-              names = fs.readdirSync(dayDir);
-            } catch {
-              continue;
-            }
-            for (const name of names) {
-              const owner = name.replace(/-(?:req|res)\.bin$/, '');
-              if (!bodyIds.has(owner)) continue;
-              try {
-                fs.unlinkSync(path.join(dayDir, name));
-              } catch {
-                // Locked file (Windows) — the row is gone, the blob is orphaned.
-              }
-            }
-          }
-        }
-      } catch {
-        // Unreadable feed dir = nothing to delete.
       }
-      deleted.plugins[decoderId] = removed;
+      return out;
+    };
+    // Only ids the ring actually holds are part of the live view right now;
+    // the tombstones cover the plugin tail rows (history ignores them).
+    const ringIds = new Set(listProxyAccessEvents().map((e) => e.id));
+    const liveProxy = asLiveKeys(body.proxy).filter((k) => ringIds.has(k.key));
+    const plugins: Record<string, LiveHiddenKey[]> = {};
+    if (body.plugins && typeof body.plugins === 'object' && !Array.isArray(body.plugins)) {
+      for (const [decoderId, raw] of Object.entries(body.plugins)) {
+        plugins[decoderId] = asLiveKeys(raw);
+      }
     }
-    return { status: 'ok', deleted };
+    forgetProxyAccessRingEvents(liveProxy.map((k) => k.key));
+    const hidden = hideLiveEvents(liveProxy, plugins);
+    return { status: 'ok', hidden };
   });
 
   // 3A2b. Generic plugin-traffic feed (Wireshark dissector model, ADR-0017

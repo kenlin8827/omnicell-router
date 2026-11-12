@@ -2522,7 +2522,8 @@ export const esES: TranslationDict = {
     },
   },
   proxyLog: {
-    clearScopeNote: "Borra solo las {count} filas que coinciden con el filtro actual (de {total}); sin filtro, todas.",
+    clearLiveNote: "Oculta solo de la vista EN VIVO las {count} filas que coinciden con el filtro actual (de {total}); no se borra nada en disco y el historial las sigue mostrando.",
+    clearLiveDone: "Se ocultaron {count} filas de la vista en vivo (registros en disco intactos)",
     rpcMethodHint: "Las llamadas RPC siempre usan POST — la operación está en la RUTA (/pkg.Service/Method), no en el verbo HTTP",
     encProto: 'proto',
     encJson: 'JSON',
@@ -2556,7 +2557,7 @@ export const esES: TranslationDict = {
     title: 'Registro de tráfico del proxy',
     hint: 'Cada intercambio HTTP NO interceptado y cada decisión de túnel CONNECT a través del forward proxy entrante, los más recientes primero. El tráfico del protocolo LLM NO aparece aquí — está en el archivo /traces.',
     clearPersistHint: 'Elimina las filas coincidentes del historial persistido (archivos day + archivos de body). No se puede deshacer',
-    clearPersistNote: 'Nota: en modo historial se eliminan registros PERSISTIDOS en disco, sin el límite del anillo en memoria.',
+    clearPersistNote: 'Nota: el modo historial solo borra registros PERSISTIDOS en disco; la vista en vivo conserva su copia hasta que la fila caduque o el gateway se reinicie.',
     clearPersistScope: 'Esto elimina {count} filas coincidentes en TODAS las fuentes persistidas (registro proxy + feeds de plugins). No se puede deshacer.',
     histFilterHint: 'En modo historial, este filtro se aplica dentro de la página devuelta (paginación del servidor)',
     modeLive: 'En vivo',
