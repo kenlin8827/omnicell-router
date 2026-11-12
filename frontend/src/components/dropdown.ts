@@ -54,7 +54,7 @@ export const dropdownOptionStyle: React.CSSProperties = {
   gap: 8,
   padding: '7px 10px',
   borderRadius: 6,
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   cursor: 'pointer',
   color: 'var(--text-main)',
   // Mono for model ids, but JetBrains Mono/Consolas have no CJK glyphs — without

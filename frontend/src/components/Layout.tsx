@@ -66,10 +66,10 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
   ] },
   { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
-    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
-    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
+    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
     { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [

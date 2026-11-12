@@ -42,7 +42,7 @@ const DETAIL_CLAMP: React.CSSProperties = {
   overflow: 'hidden',
   marginTop: 2,
   fontSize: 'var(--text-xs)',
-  fontWeight: 'var(--font-normal)',
+  fontWeight: 'var(--font-regular)',
   color: 'var(--text-dim)',
   lineHeight: 'var(--leading-normal)',
 };
@@ -239,7 +239,7 @@ export function PluginsManagePage(): React.ReactElement {
                   the localized description clamped to two lines; the tooltip keeps
                   the full text plus where the plugin was loaded from. */}
               {p.error ? (
-                <div style={{ ...DETAIL_CLAMP, color: 'var(--accent-red)' }} title={p.error}>
+                <div style={{ ...DETAIL_CLAMP, color: 'var(--accent-rose)' }} title={p.error}>
                   {p.error}
                 </div>
               ) : (

@@ -163,7 +163,7 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
             style={{
               padding: '14px',
               borderRadius: '8px',
-              border: '1px solid var(--accent-border, var(--card-border))',
+              border: '1px solid var(--card-border)',
               background: 'var(--surface-hover)',
               display: 'flex',
               flexDirection: 'column',
@@ -183,8 +183,8 @@ export const ProjectsDialog: React.FC<ProjectsDialogProps> = ({
                   gap: 6,
                   padding: '6px 10px',
                   borderRadius: '6px',
-                  background: 'var(--rose-soft, rgba(239, 68, 68, 0.1))',
-                  color: 'var(--accent-rose, #ef4444)',
+                  background: 'color-mix(in srgb, var(--accent-rose) 10%, transparent)',
+                  color: 'var(--accent-rose)',
                   fontSize: 'var(--text-sm)',
                 }}
               >

@@ -69,7 +69,7 @@ const CatalogPicker: React.FC<{
   };
 
   const height = compact ? '26px' : '34px';
-  const fontSize = compact ? '11px' : '12px';
+  const fontSize = compact ? 'var(--text-xs)' : 'var(--text-sm)';
 
   return (
     <div ref={containerRef} style={{ position: 'relative', width: compact ? '100%' : '160px', minWidth: 0, flexShrink: 0 }}>
@@ -135,7 +135,7 @@ const CatalogPicker: React.FC<{
             maxWidth: '260px',
             maxHeight: '180px',
             overflowY: 'auto',
-            background: 'var(--card-bg, #1e1e24)',
+            background: 'var(--card-bg)',
             border: '1px solid var(--divider)',
             borderRadius: '6px',
             boxShadow: '0 6px 16px rgba(0, 0, 0, 0.4)',
@@ -164,7 +164,7 @@ const CatalogPicker: React.FC<{
                   borderRadius: '4px',
                   border: 'none',
                   background: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
-                  color: isSelected ? 'var(--primary, #3b82f6)' : 'var(--text)',
+                  color: isSelected ? 'var(--primary, #3b82f6)' : 'var(--text-main)',
                   cursor: 'pointer',
                   textAlign: 'left',
                   width: '100%',
@@ -650,11 +650,11 @@ export const HarnessSourcesDrawer: React.FC<{
                   gap: '8px',
                   padding: '6px 12px',
                   borderRadius: '6px',
-                  background: 'var(--chip-bg, rgba(255, 255, 255, 0.04))',
+                  background: 'var(--chip-bg)',
                   border: '1px solid var(--divider)',
                 }}
               >
-                <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-medium)', color: 'var(--text)' }}>{formatSourceLabel(s)}</span>
+                <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-medium)', color: 'var(--text-main)' }}>{formatSourceLabel(s)}</span>
                 <span
                   style={{
                     fontSize: 'var(--text-2xs)',
@@ -682,10 +682,10 @@ export const HarnessSourcesDrawer: React.FC<{
           display: 'flex',
           flexDirection: 'column',
           gap: '12px',
-          background: 'var(--card-bg, #1e1e24)',
+          background: 'var(--card-bg)',
         }}
       >
-        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)', color: 'var(--text)' }}>
+        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>
           {isSkill ? t('harness.srcMgmt.addSkill') : isMcp ? t('harness.srcMgmt.addMcp') : kind === 'plugin' ? t('harness.srcMgmt.addPlugin') : t('harness.srcMgmt.add')}
         </div>
 
@@ -951,7 +951,7 @@ export const HarnessSourcesDrawer: React.FC<{
               }}
             >
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-start' }}>
-                <div style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', color: 'var(--text)' }}>
+                <div style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>
                   {builtin.length > 0 ? t('harness.srcMgmt.emptyPluginCustom') : t('harness.srcMgmt.emptyPlugin')}
                 </div>
                 {[
@@ -1036,7 +1036,7 @@ export const HarnessSourcesDrawer: React.FC<{
                       fontFamily: 'var(--font-mono)',
                       fontSize: 'var(--text-sm)',
                       fontWeight: 'var(--font-semibold)',
-                      color: 'var(--text)',
+                      color: 'var(--text-main)',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
@@ -1136,7 +1136,7 @@ export const HarnessSourcesDrawer: React.FC<{
                         display: 'inline-flex',
                         borderRadius: '4px',
                       }}
-                      onMouseEnter={(ev) => (ev.currentTarget.style.color = 'var(--danger, #ef4444)')}
+                      onMouseEnter={(ev) => (ev.currentTarget.style.color = 'var(--accent-rose)')}
                       onMouseLeave={(ev) => (ev.currentTarget.style.color = 'var(--text-muted)')}
                     >
                       <Trash2 size={13} />

@@ -73,6 +73,7 @@ export interface TranslationDict {
     clear: string;
     close: string;
     copy: string;
+    dismissToast: string;
     requiredFields: string;
   };
   pagination: {
@@ -156,7 +157,7 @@ export interface TranslationDict {
     factFailover: string;
     factThinking: string;
     factBreaker: string;
-    factTrace: string;
+    factRequest: string;
     factSession: string;
     factTokens: string;
   };
@@ -611,6 +612,7 @@ export interface TranslationDict {
     pmEffortXhigh: string;
     pmEffortMax: string;
     pmBodyInvalid: string;
+    pmModelNotFound: string;
     pmAdd: string;
     pmRemoveVariant: string;
     pmModalities: string;
@@ -953,6 +955,7 @@ hiddenBadge: string;
     scopeModel: string;
     scopeCredential: string;
     scopePair: string;
+    scopeProvider: string;
     tripScopeTip: string;
     tripScopeSuccess: string;
     resetScope: string;
@@ -960,6 +963,8 @@ hiddenBadge: string;
     resetScopeNone: string;
     resetCredentialConfirmTitle: string;
     resetCredentialConfirmDesc: string;
+    resetProviderConfirmTitle: string;
+    resetProviderConfirmDesc: string;
     /** The (model × credential) matrix grid. */
     singlePoint: string;
     singlePointTip: string;
@@ -976,6 +981,7 @@ hiddenBadge: string;
     modelLevel: string;
     resetModelLevel: string;
     resetCredentialScope: string;
+    resetProviderScope: string;
     resetModelScopeSuccess: string;
     emptyMatrix: string;
     emptyMatrixCta: string;
@@ -1029,6 +1035,7 @@ hiddenBadge: string;
     rScopePair: string;
     rScopeCredential: string;
     rScopeModel: string;
+    rScopeProvider: string;
     markSuspect: string;
     markSuspectWarn: string;
     /** Shown in the auth row's params cell when disposition is "ignore": the
@@ -1100,6 +1107,28 @@ hiddenBadge: string;
     kDebounce: string;
     kHardBoundary: string;
     kHardBoundaryNote: string;
+    /** Read-only classifier reference dialog (ADR-0004 §1) — class → trigger →
+     *  default blast radius. Deliberately no disposition copy: block A owns it. */
+    clsTitle: string;
+    clsBadge: string;
+    clsHint: string;
+    clsThTrigger: string;
+    clsThRadius: string;
+    /** Wire term for the "inherit the class default" scope. Identical in every
+     *  locale — config says `auto` (like kindAuto / modelAuto), so it is a key
+     *  rather than a literal baked into the sentence above. */
+    clsAutoScope: string;
+    clsTriggerQuota: string;
+    clsTriggerAuth: string;
+    clsTriggerRate: string;
+    clsTriggerClient: string;
+    clsTriggerServer: string;
+    clsTriggerUnknown: string;
+    /** Variant notes; clsHostNote/clsCredNote interpolate a {scope} label. */
+    clsHostNote: string;
+    clsCredNote: string;
+    clsClientNote: string;
+    clsToggle: string;
   };
   usage: {
     sessionTitle: string;
@@ -1237,6 +1266,15 @@ hiddenBadge: string;
     internalBadge: string;
     /** Badge tooltip — the reserved `ocr-internal:` prefix explains the classification. */
     internalBadgeTip: string;
+    /** Minting-side markers for the session id itself (SessionIdSource in
+     *  backend/src/session/session-row.ts): 'gateway' when the gateway minted
+     *  it, 'client' when an earlier identity layer adopted a client value. */
+    idSourceGateway: string;
+    idSourceClient: string;
+    /** Tooltips: gateway = cold start / content anchor; client = explicit
+     *  session header, embedded user id or request.user adopted verbatim. */
+    idSourceGatewayTip: string;
+    idSourceClientTip: string;
     filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;
@@ -1483,6 +1521,9 @@ hiddenBadge: string;
       monthly: string;
       rolling: string;
       credits: string;
+      /** Org/team credit package (Qoder Teams: `orgResourcePackage`) — the
+       *  second pool behind the account's own quota. */
+      orgPool: string;
       balance: string;
       sessionHours: string;
       session5h: string;
@@ -1618,6 +1659,8 @@ hiddenBadge: string;
     outboundModel: string;
     tabClientRequest: string;
     tabGatewayResponse: string;
+    /** Tooltip of the caller correlation id chip in the capture drawer (ADR-0021). */
+    clientRequestId: string;
     tabUpstreamRequest: string;
     tabUpstreamResponse: string;
     tabDecisionRequest: string;

@@ -116,7 +116,7 @@ const Prose: React.FC<{
     borderRadius: 6,
     fontSize: 'var(--text-sm)',
     lineHeight: 'var(--leading-normal)',
-    color: color ?? 'var(--text)',
+    color: color ?? 'var(--text-main)',
     wordBreak: 'break-word',
   };
   const shell: React.CSSProperties = { ...baseShell, ...clampStyle };

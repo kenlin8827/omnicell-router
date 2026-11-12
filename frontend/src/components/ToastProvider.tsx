@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { CheckCircle, Info, TriangleAlert, X } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext';
 
 type ToastType = 'success' | 'error' | 'info' | 'warning';
 
@@ -40,6 +41,8 @@ const MAX_STACK = 4;
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
+  // `t` from useI18n would shadow the toast item named `t` in the render map below.
+  const { t: tr } = useI18n();
 
   const dismiss = useCallback((id: number) => {
     setToasts((cur) => cur.map((t) => (t.id === id ? { ...t, leaving: true } : t)));
@@ -91,7 +94,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             <div
               key={t.id}
               onClick={() => dismiss(t.id)}
-              title="Dismiss"
+              title={tr('common.dismissToast')}
               style={{
                 pointerEvents: 'auto',
                 cursor: 'pointer',

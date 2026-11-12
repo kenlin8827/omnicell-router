@@ -99,7 +99,7 @@ export const Drawer: React.FC<DrawerProps> = ({
           flexDirection: 'column',
           animation: 'ocr-slide-in-right 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
           boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.28)',
-          background: 'var(--card-bg, #1e1e24)',
+          background: 'var(--card-bg)',
         }}
       >
         {/* Header */}
@@ -120,7 +120,7 @@ export const Drawer: React.FC<DrawerProps> = ({
                 margin: 0,
                 fontSize: 'var(--text-xl)',
                 fontWeight: 'var(--font-semibold)',
-                color: 'var(--text)',
+                color: 'var(--text-main)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -191,7 +191,7 @@ export const Drawer: React.FC<DrawerProps> = ({
               justifyContent: 'flex-end',
               gap: '10px',
               flexShrink: 0,
-              background: 'var(--card-bg-header, rgba(255, 255, 255, 0.02))',
+              background: 'var(--card-bg)',
             }}
           >
             {footer}

@@ -231,12 +231,12 @@ export const RouteEntriesPage: React.FC = () => {
       </p>
 
       {gate && gate.enabled === false && (
-        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--divider)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div style={{ background: 'var(--bg-elev)', border: '1px solid var(--divider)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
           {t('routeEntries.gateDisabled')}
         </div>
       )}
       {gate && gate.enabled !== false && (
-        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--divider)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div style={{ background: 'var(--bg-elev)', border: '1px solid var(--divider)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
           {t('routeEntries.directiveNote')}
         </div>
       )}

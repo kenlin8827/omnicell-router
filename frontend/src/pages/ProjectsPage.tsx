@@ -158,8 +158,8 @@ export const ProjectsPage: React.FC = () => {
                 gap: 8,
                 padding: '8px 12px',
                 borderRadius: '6px',
-                background: 'var(--rose-soft, rgba(239, 68, 68, 0.1))',
-                color: 'var(--accent-rose, #ef4444)',
+                background: 'color-mix(in srgb, var(--accent-rose) 10%, transparent)',
+                color: 'var(--accent-rose)',
                 fontSize: 'var(--text-sm)',
               }}
             >

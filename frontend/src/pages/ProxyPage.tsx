@@ -33,7 +33,7 @@ export const ProxyPage: React.FC = () => {
       await api.saveConfig({ proxy });
       toast.success(t('proxy.savedNotice'));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setSaving(false);
     }

@@ -58,7 +58,7 @@ const clientActionErrorText = (err: unknown, t: TFn): string => {
   const e = err as { reasonCode?: string; params?: Record<string, string>; message?: string };
   const key = e?.reasonCode ? CLIENT_REASON_KEY[e.reasonCode] : undefined;
   if (key) return t(key, e.params ?? {});
-  return 'Failed: ' + (e?.message ?? String(err));
+  return t('common.failed') + (e?.message ?? String(err));
 };
 
 /**
@@ -1245,7 +1245,7 @@ export const ClientsPage: React.FC = () => {
           <InfoTip text={t('clients.gatewayModelsInfo', { client: c.displayName })} />
         </div>
         {plugin && !plugin.loaded ? (
-          <div style={{ color: 'var(--warning, #eab308)', lineHeight: 'var(--leading-normal)' }}>
+          <div style={{ color: 'var(--accent-amber)', lineHeight: 'var(--leading-normal)' }}>
             {plugin.installed
               ? t(plugin.disabled ? 'clients.gatewayPluginDisabled' : 'clients.gatewayPluginNotLoaded', { client: c.displayName })
               : t('clients.gatewayPluginMissing', { client: c.displayName })}
@@ -1311,7 +1311,7 @@ export const ClientsPage: React.FC = () => {
                   triggerRef={el => { keyPickerRefs.current[c.name] = el; }}
                 />
                 {!apiKeySel[c.name] ? (
-                  <span style={{ gridColumn: '1 / -1', color: 'var(--warning)', fontSize: 'var(--text-xs)' }}>
+                  <span style={{ gridColumn: '1 / -1', color: 'var(--accent-amber)', fontSize: 'var(--text-xs)' }}>
                     {t('clients.gatewayKeyRequired')}
                   </span>
                 ) : null}
@@ -1773,7 +1773,7 @@ export const ClientsPage: React.FC = () => {
                       style={
                         c.version.meetsMin
                           ? { background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
-                          : { background: 'var(--warning-bg, rgba(234,179,8,.15))', color: 'var(--warning, #eab308)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
+                          : { background: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)', color: 'var(--accent-amber)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
                       }
                     >
                       v{c.version.current}

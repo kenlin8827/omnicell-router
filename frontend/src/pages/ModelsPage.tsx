@@ -146,7 +146,7 @@ export const ModelsPage: React.FC = () => {
       toast.success(locked ? t('models.lockedToast', { id: key }) : t('models.unlockedToast', { id: key }));
       await load(); // aggregation changed — refresh the rendered prices
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 
@@ -163,7 +163,7 @@ export const ModelsPage: React.FC = () => {
       await load();
       toast.info(t(hidden ? 'models.hiddenToast' : 'models.shownToast', { id: `${m.providerId}/${m.id}` }));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 

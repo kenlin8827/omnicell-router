@@ -172,7 +172,7 @@ export const SettingsPage: React.FC = () => {
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 3000);
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 
@@ -735,7 +735,7 @@ export const SettingsPage: React.FC = () => {
               spellCheck={false}
             />
             {prefixInvalid && (
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber, #f59e0b)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', lineHeight: 'var(--leading-normal)', marginTop: '6px' }}>
                 {t('settings.dirPrefixInvalid', { prefix: directivePrefix })}
               </div>
             )}
@@ -838,9 +838,9 @@ export const SettingsPage: React.FC = () => {
                     borderRadius: '999px',
                     whiteSpace: 'nowrap',
                     flexShrink: 0,
-                    color: 'var(--accent-amber, #f59e0b)',
-                    background: 'color-mix(in srgb, var(--accent-amber, #f59e0b) 15%, transparent)',
-                    border: '1px solid color-mix(in srgb, var(--accent-amber, #f59e0b) 35%, transparent)',
+                    color: 'var(--accent-amber)',
+                    background: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)',
                   }}
                 >
                   {t('settings.waUnsaved')}
@@ -873,7 +873,7 @@ export const SettingsPage: React.FC = () => {
               </label>
 
               {waConfig.forced && (
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber, #f59e0b)', lineHeight: 'var(--leading-normal)' }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', lineHeight: 'var(--leading-normal)' }}>
                   {t('settings.waForcedHint')}
                 </div>
               )}

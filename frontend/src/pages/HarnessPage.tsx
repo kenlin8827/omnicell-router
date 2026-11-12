@@ -5759,7 +5759,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     overflow: 'auto',
                     padding: 8,
                     borderRadius: 6,
-                    background: 'var(--surface-2)',
+                    background: 'var(--bg-elev)',
                     color: 'var(--text-dim)',
                     fontFamily: 'var(--font-mono)',
                     fontSize: 'var(--text-xs)',

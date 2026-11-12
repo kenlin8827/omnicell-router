@@ -150,7 +150,7 @@ export const ModelEditDialog: React.FC<{
           : t('op.pmAutofillMatched', { id: matchedId })
       );
     } catch (err: any) {
-      toast.error(`Failed: ${err.message}`);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setFilling(false);
     }
@@ -161,7 +161,7 @@ export const ModelEditDialog: React.FC<{
       try {
         const res = await opencodeApi.listProviderModels(providerId);
         const d = (res.models || {})[modelId];
-        if (!d) throw new Error(`Model '${modelId}' not found for provider '${providerId}'`);
+        if (!d) throw new Error(t('op.pmModelNotFound', { model: modelId, provider: providerId }));
         defFlags.current = { reasoning: d?.reasoning, temperature: d?.temperature };
         const next = formFromDef(modelId, d);
         setForm(next);
@@ -247,7 +247,7 @@ export const ModelEditDialog: React.FC<{
       onSaved?.();
       onClose();
     } catch (err: any) {
-      toast.error(`Failed: ${err.message}`);
+      toast.error(t('common.saveFailed') + err.message);
     } finally {
       setSaving(false);
     }

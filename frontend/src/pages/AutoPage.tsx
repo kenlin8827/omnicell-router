@@ -48,7 +48,7 @@ export const AutoPage: React.FC = () => {
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 5000);
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 
@@ -202,7 +202,7 @@ export const AutoPage: React.FC = () => {
               </div>
             )}
             {(layer2.enabled ?? false) && decisionOutcome && !decisionOutcome.ok && (
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-red, #f87171)', display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 'var(--leading-normal)', padding: '6px 8px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-red, #f87171) 30%, transparent)', background: 'color-mix(in srgb, var(--accent-red, #f87171) 8%, transparent)' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)', display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 'var(--leading-normal)', padding: '6px 8px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', background: 'color-mix(in srgb, var(--accent-rose) 8%, transparent)' }}>
                 <TriangleAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
                 <span>
                   {t('auto.decisionLastFail', {

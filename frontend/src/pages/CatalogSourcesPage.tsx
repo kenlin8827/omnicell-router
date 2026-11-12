@@ -592,7 +592,7 @@ const OcrCatalogPanel: React.FC = () => {
       await loadData();
       toast.success(locked ? t('models.lockedToast', { id: key }) : t('models.unlockedToast', { id: key }));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 
@@ -605,7 +605,7 @@ const OcrCatalogPanel: React.FC = () => {
       await loadData();
       toast.info(t(hidden ? 'models.hiddenToast' : 'models.shownToast', { id: `${providerId}/${m.id}` }));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 
@@ -1077,7 +1077,7 @@ const OcrEditModal: React.FC<{
       onSaved();
       onClose();
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setSaving(false);
     }
@@ -1090,7 +1090,7 @@ const OcrEditModal: React.FC<{
       onSaved();
       onClose();
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 
@@ -1467,7 +1467,7 @@ export const CatalogSourcesPage: React.FC = () => {
       setSources(res.sources);
       setSyncIntervalMs(res.syncIntervalMs);
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
       setSources([]);
     }
   }, [toast]);
@@ -1492,7 +1492,7 @@ export const CatalogSourcesPage: React.FC = () => {
       toast.success(t('catalogPage.refreshed', { id }));
       await load();
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       markBusy(id, false);
     }
@@ -1504,7 +1504,7 @@ export const CatalogSourcesPage: React.FC = () => {
       setSyncIntervalMs(ms);
       toast.success(t('catalogPage.syncIntervalSaved'));
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
       await load();
     }
   };
@@ -1515,7 +1515,7 @@ export const CatalogSourcesPage: React.FC = () => {
       toast.success(t('catalogPage.refreshedAll'));
       await load();
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     } finally {
       setRefreshingAll(false);
     }
@@ -1527,7 +1527,7 @@ export const CatalogSourcesPage: React.FC = () => {
       toast.success(enabled ? t('catalogPage.enabledOn', { id: source.id }) : t('catalogPage.enabledOff', { id: source.id }));
       await load();
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
       await load();
     }
   };
@@ -1544,7 +1544,7 @@ export const CatalogSourcesPage: React.FC = () => {
       toast.success(t('catalogPage.removed'));
       await load();
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(t('common.failed') + err.message);
     }
   };
 

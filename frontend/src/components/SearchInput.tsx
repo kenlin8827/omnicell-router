@@ -51,7 +51,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({ value, onChange, place
             cursor: 'pointer',
             padding: 0,
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text)'; }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-main)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-dim)'; }}
         >
           <X size={12} />
