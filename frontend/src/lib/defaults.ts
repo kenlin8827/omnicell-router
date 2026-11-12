@@ -34,12 +34,18 @@ export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 
-/** Packaged gateway port — mirrors backend `OCR_DEFAULT_PORT`
+/** Packaged gateway port — mirrors backend `DEFAULT_GATEWAY_PORT`
+ *  (backend/src/config/defaults.ts), which in turn matches `OCR_DEFAULT_PORT`
  *  (backend/src/cli/clients/base.ts). Last-resort fallback for console
  *  snippets when neither the status poll nor the page origin can report the
- *  real listening port (config.yaml `port` is the source of truth; its
- *  in-code default 3000 applies to bare `bun run dev` only). */
+ *  real listening port (config.yaml `port` is the source of truth). */
 export const DEFAULT_GATEWAY_PORT = 4000;
+
+/** `bun run dev` listen port — mirrors backend `DEFAULT_DEV_PORT`. The Vite
+ *  proxy falls back to this when `PORT` is absent (running the frontend alone),
+ *  so the console never proxies to a port the dev backend does not own.
+ *  Update both copies in the same commit. */
+export const DEFAULT_DEV_PORT = 4700;
 
 /** `circuitBreaker.activeProbing.intervalMs` backend default — mirrors backend
  *  `DEFAULT_PROBE_INTERVAL_MS` (backend/src/utils/probe-interval.ts, shared by

@@ -10,7 +10,7 @@ import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { Dialog } from '../components/Dialog';
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX } from '../lib/defaults';
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX, DEFAULT_GATEWAY_PORT } from '../lib/defaults';
 import { readNavPreference, writeNavPreference, type NavPreference, type NavStyleId } from '../lib/navStyle';
 
 // UI mirror of the backend's resolveDirectivePrefix (backend/src/pipeline/
@@ -395,8 +395,8 @@ export const SettingsPage: React.FC = () => {
               <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.port')}</label>
               <input
                 type="number"
-                value={config.port || 3000}
-                onChange={e => setConfig({ ...config, port: parseInt(e.target.value) || 3000 })}
+                value={config.port || DEFAULT_GATEWAY_PORT}
+                onChange={e => setConfig({ ...config, port: parseInt(e.target.value) || DEFAULT_GATEWAY_PORT })}
                 className="input"
               />
             </div>

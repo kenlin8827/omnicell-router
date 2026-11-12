@@ -26,6 +26,7 @@ import {
   DEFAULT_LAYER2_TIMEOUT_MS,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_ROUTE_ENTRIES_MAX,
+  DEFAULT_GATEWAY_PORT,
 } from './defaults.js';
 import { DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
@@ -69,7 +70,7 @@ export const MAX_GRACE_SLEEPERS = 64;
 export const RATE_LIMIT_CHECKPOINT_INTERVAL_MS = 30_000;
 
 const DEFAULT_CONFIG: RouterConfig = {
-  port: parseInt(process.env.PORT || '3000', 10),
+  port: parseInt(process.env.PORT || String(DEFAULT_GATEWAY_PORT), 10),
   host: process.env.HOST || '127.0.0.1',
   adminKey: process.env.OCR_ADMIN_KEY || process.env.ROUTER_API_KEY || undefined,
   // First-boot tier defaults are EMPTY pools: defaultConfigYaml() writes the
@@ -616,6 +617,14 @@ let _schemaVersionWarned = false;
 let _schemaOrderWarned = false;
 /** One-shot guard for the forward-proxy rule-table lint (ADR-0018). */
 let _rulesLintWarned = false;
+/**
+ * The port the config FILE names, captured on the read path. The `PORT` env
+ * lever overrides the LISTEN port but must never become a file value: a
+ * `PORT=4700 bun run dev` boot would otherwise persist 4700 onto an installed
+ * gateway's config.yaml (boot-time saves such as the catalog sync run
+ * unconditionally) and silently relocate that gateway on its next restart.
+ */
+let _diskPort: number | undefined;
 
 /**
  * Boot-time egress lint (ADR-0018). The console renders the same codes per row
@@ -640,6 +649,9 @@ function warnForwardProxyRulesOnce(raw: unknown, proxyEnabled: boolean): void {
 
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
+  // Only the ACTIVE file's port is remembered (an explicit configPath is a
+  // read of some other fixture/env and must not steer saveConfig's writes).
+  if (configPath === undefined) _diskPort = undefined;
   if (fs.existsSync(resolvedPath)) {
     try {
       const raw = fs.readFileSync(resolvedPath, 'utf8');
@@ -682,6 +694,9 @@ export function loadConfig(configPath?: string): RouterConfig {
         return DEFAULT_CONFIG;
       }
       const flat = toRuntimeConfig(parsed as unknown as DiskConfig) as Record<string, any>;
+      if (configPath === undefined) {
+        _diskPort = typeof flat.port === 'number' && Number.isFinite(flat.port) ? flat.port : undefined;
+      }
       warnForwardProxyRulesOnce(flat.forwardProxy, flat.proxy?.enabled === true);
       return {
         ...DEFAULT_CONFIG,
@@ -758,6 +773,10 @@ export function defaultConfigYaml(): string {
   // `models` is the RUNTIME carrier (index.ts assigns boot.models) — the
   // retired yaml surface must not reappear in the fresh-install template.
   const { models: _omitted, ...template } = DEFAULT_CONFIG;
+  // `PORT` is a bootstrap lever (see saveConfig): a template written during a
+  // PORT-fed boot (e.g. `bun run dev`) must still name the product default, or
+  // that one boot's env value would silently become the env's permanent port.
+  template.port = DEFAULT_GATEWAY_PORT;
   // ZERO-COMMENT disk contract (ADR-0016): config.yaml carries values only —
   // field comments are console-rendered on demand (see comments-zh/en.ts).
   return stringify({ schemaVersion: SCHEMA_VERSION, ...toDiskConfig(template) });
@@ -961,6 +980,16 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
       delete (bodyRest.requestCapture as Record<string, unknown>).systemone;
     }
     const merged = { ...current, ...bodyRest };
+    // `PORT` is a bootstrap lever, never a file value (see _diskPort): a save
+    // that does not itself name a port keeps the file's own value, so a dev
+    // boot's env port cannot relocate an installed gateway on its next restart.
+    // A file that names no port must stay port-less — deleting the key lets the
+    // next boot re-derive it (PORT or DEFAULT_GATEWAY_PORT) instead of freezing
+    // this boot's env value into the file.
+    if (process.env.PORT?.trim() && bodyRest.port === undefined) {
+      if (_diskPort !== undefined) merged.port = _diskPort;
+      else delete (merged as Record<string, unknown>).port;
+    }
     // `current` comes from loadConfig(): the retired surfaces and the models
     // runtime carrier are already stripped to [] — do not persist empty
     // retired keys into the file (defaultConfigYaml omits them too).

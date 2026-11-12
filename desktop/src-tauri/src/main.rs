@@ -49,6 +49,10 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+/// Fallback gateway port for this shell. Mirrors backend `DEFAULT_GATEWAY_PORT`
+/// (backend/src/config/defaults.ts) — Rust cannot import the TS constant, so
+/// change both in the same commit. The live port still comes from the gateway's
+/// own `ocr.info.json` / config.yaml (see read_gateway_port / watch loop).
 const PORT: u16 = 4000;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 
