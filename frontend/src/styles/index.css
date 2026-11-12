@@ -37,9 +37,9 @@
   --scrollbar-thumb: rgba(169, 190, 204, 0.18);
   --scrollbar-thumb-hover: rgba(169, 190, 204, 0.3);
   /* Hover/active weight for the table viewport's thumb (see
-     `.scroll-table-viewport`): the rest state reuses `--scrollbar-thumb` so the
-     console keeps ONE scrollbar look; the hit-area trick, not the paint, is what
-     makes wide tables grabbable. */
+     `.scroll-table-viewport`): the table rests on `--scrollbar-thumb` at a
+     narrower painted width and switches to these stronger weights only while
+     the pointer is on its grab rail, so it never reads as a fat slab. */
   --scrollbar-thumb-strong: rgba(169, 190, 204, 0.45);
   --scrollbar-thumb-strong-hover: rgba(169, 190, 204, 0.65);
 }
@@ -227,6 +227,17 @@ td, th {
   border: 1px solid var(--card-border);
   border-radius: 10px;
   padding: 16px;
+}
+
+/* Provider grid cards: interactive feedback lives on the container (the card
+   holds its own action buttons). Disabled/taken-down cards keep their rose
+   frame and never lift on hover. */
+.provider-card {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.provider-card:not([data-disabled='true']):hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--card-border));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
 }
 
 /* Collapsible variant of .sub-card (a <details> carrying the sub-card class):
@@ -1243,15 +1254,18 @@ input[type='checkbox']:not(.switch):disabled {
 }
 
 /* ScrollTable body (components/ScrollTable.tsx): the viewport that actually
-   scrolls. The global 6px decoration is not something you can acquire with a
-   pointer, and on a wide table this is the ONLY way to reach the right-hand
-   columns — so the HIT AREA grows to 10px while the pill stays 6px wide: the
-   thumb is inset by a 2px transparent border with `background-clip: content-box`,
-   which Chrome still counts as thumb for hit-testing. Visually it is exactly the
-   app's own scrollbar (track transparent, thumb at `--scrollbar-thumb`), and it
-   only asserts itself while the pointer is on it.
-   This is the GitHub/VS Code idiom — never a fatter-looking bar, always a bigger
-   grab target. */
+   scrolls. The bar is THIN at rest and fattens when the pointer reaches it, so
+   it never sits as a fat slab beside the data:
+     - rail (hit area) is a constant 10px. On a wide table this is the ONLY way
+       to reach the right-hand columns, so it stays grabbable even while the
+       pill looks 4px;
+     - the transparent border is paint-only inset — Chrome still hit-tests the
+       full 10px as thumb, so `background-clip: content-box` paints a 4px pill
+       (10 - 2x3) and hover shrinks that border to 1px, fattening the pill to
+       8px and giving it the strong weight;
+     - `:active` keeps the fat pill while dragging, so it does not collapse
+       under the cursor mid-drag.
+   This is the GitHub/VS Code idiom: a small resting mark, a fat grab target. */
 .scroll-table-viewport::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -1262,15 +1276,17 @@ input[type='checkbox']:not(.switch):disabled {
 .scroll-table-viewport::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 999px;
-  border: 2px solid transparent;
+  border: 3px solid transparent;
   background-clip: content-box;
 }
 .scroll-table-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-strong);
+  border-width: 1px;
   background-clip: content-box;
 }
 .scroll-table-viewport::-webkit-scrollbar-thumb:active {
   background: var(--scrollbar-thumb-strong-hover);
+  border-width: 1px;
   background-clip: content-box;
 }
 .scroll-table-viewport::-webkit-scrollbar-corner {
