@@ -70,7 +70,7 @@
 
 ### 8. 操作员表面
 
-`X-OCR-*` 头单点归属 `surfaces/ocr-headers.ts`（默认值是冻结契约；传输层决定**送达方式**而非内容）：chat 腿 13 基头（`Tier`、`Tier-Escalated`、`Layer`、`Model`、`Failover`、`Failover-Attempts`、`Failover-Path`、`InPlace-Retries`、`Breaker-State`、`Session-ID`、`Session-Ratchet`、`Session-Lookup`、`Trace-ID`、`Latency-MS`）+ 条件 `TTFT-MS`/`Gen-MS`（仅当落定尝试真正流式时——网关实测的首 token 等待与解码窗口，两者相除即控制台解码 TPS；缓冲轮次两首都缺席）、`Thinking-Requested/Actual/Degraded` 与 `Variant`；决策面恰 3 头（ADR-0008）。断路器管理 API：`GET /api/admin/health/circuit-breakers`（模型+pair 快照 + 规则横幅）、`POST .../reset?scope=model|credential|pair&credential=<keyHashPrefix>`（清冷却/失败计数/滑窗/阶梯位——**从不**清 SUSPECT）、`POST .../trip`（手动，默认 1h，钳 [1s, 7d]）、`POST /api/admin/health/suspect-credentials/clear`。重复的配置告警一律过 `WarnThrottle`（每进程去重一次 + 60s ≤ 50 条折叠）。
+`X-OCR-*` 头单点归属 `surfaces/ocr-headers.ts`（默认值是冻结契约；传输层决定**送达方式**而非内容）：chat 腿 13 基头（`Tier`、`Tier-Escalated`、`Layer`、`Model`、`Failover`、`Failover-Attempts`、`Failover-Path`、`InPlace-Retries`、`Breaker-State`、`Session-ID`、`Session-Ratchet`、`Session-Lookup`、`Trace-ID`、`Latency-MS`）+ 条件 `TTFT-MS`/`Gen-MS`（仅当落定尝试真正流式时——网关实测的首 token 等待与解码窗口，两者相除即控制台的输出速度（output speed，OTel `time_per_output_token` 的倒数）；缓冲轮次两首都缺席）、`Thinking-Requested/Actual/Degraded` 与 `Variant`；决策面恰 3 头（ADR-0008）。断路器管理 API：`GET /api/admin/health/circuit-breakers`（模型+pair 快照 + 规则横幅）、`POST .../reset?scope=model|credential|pair&credential=<keyHashPrefix>`（清冷却/失败计数/滑窗/阶梯位——**从不**清 SUSPECT）、`POST .../trip`（手动，默认 1h，钳 [1s, 7d]）、`POST /api/admin/health/suspect-credentials/clear`。重复的配置告警一律过 `WarnThrottle`（每进程去重一次 + 60s ≤ 50 条折叠）。
 
 ## 后果
 

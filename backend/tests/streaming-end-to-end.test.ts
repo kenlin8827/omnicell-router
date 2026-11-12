@@ -177,6 +177,66 @@ describe('true streaming through the candidate pool', () => {
       assert.ok(trace.execution.genMs! >= 55, `decode window should cover the 60ms stall, got ${trace.execution.genMs}`);
       assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
       assert.ok(trace.execution.genMs! <= trace.execution.latencyMs);
+      // Perceived stall ratio: the two visible chunks ('part-' then 'one')
+      // are ~60 ms apart — below the 1 s felt-pause threshold — so a measured
+      // turn reports 0 (smooth), never a fabricated pause. The role-only
+      // opener and the usage frame neither create nor erase a gap.
+      assert.equal(trace.execution.stalledMs, 0, `sub-second gaps are not stalls, got ${trace.execution.stalledMs}`);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it('reasoning deltas are stream progress — a thinking phase is never one long stall', async () => {
+    let pulled = 0;
+    const server = serve({
+      port: 0,
+      async fetch() {
+        const stream = new ReadableStream({
+          async pull(c) {
+            const step = pulled++;
+            // Four visible deltas, 400 ms apart: content → reasoning →
+            // reasoning → content, then the terminator. A REAL delay is the
+            // point: stalled time is measured from Date.now() across a real
+            // socket, and fake timers can drive neither Bun's HTTP server nor
+            // the gateway's clock (sanctioned integration-test exception).
+            // Each hop stays under the 1 s threshold; only IGNORING the
+            // reasoning hops would merge them into one ≥1 s pause (1.2 s).
+            if (step > 0 && step < 4) {
+              const { promise, resolve } = Promise.withResolvers<void>();
+              setTimeout(resolve, 400);
+              await promise;
+            }
+            if (step === 0) return c.enqueue(chunkLine({ role: 'assistant', content: 'a' }));
+            if (step === 1) return c.enqueue(chunkLine({ reasoning_content: 'think-1' }));
+            if (step === 2) return c.enqueue(chunkLine({ reasoning_content: 'think-2' }));
+            if (step === 3) return c.enqueue(chunkLine({ content: 'b' }));
+            c.enqueue(chunkLine({}, 'stop'));
+            c.enqueue('data: [DONE]\n\n');
+            c.close();
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    await waitListening(server.port);
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
+    const { relay } = makeRelaySink();
+
+    try {
+      await orchestrator.process(request('stub/one'), {}, relay);
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.ok(trace, 'the turn must be traced');
+      // The relay forwards reasoning verbatim (chat-stream.ts), so the client
+      // receives progress during thinking. Counting only content/tool_calls
+      // would leave a single 1.2 s gap and count it as stalled time; with
+      // reasoning counted, every hop is 400 ms and the turn is smooth.
+      assert.equal(
+        trace.execution.stalledMs,
+        0,
+        `reasoning deltas are progress, not a stall; got ${trace.execution.stalledMs}`
+      );
     } finally {
       server.stop(true);
     }

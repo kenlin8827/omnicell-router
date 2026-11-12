@@ -4,6 +4,7 @@ import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { ClientConversationRef } from '../session/session-manager.js';
 import { openTraceStore, type TraceStore } from './persist.js';
+import { percentile } from '../utils/percentile.js';
 
 export interface ExecutionTrace {
   traceId: string;
@@ -102,6 +103,15 @@ export interface ExecutionTrace {
      * alongside ttftMs for non-streamed turns.
      */
     genMs?: number;
+    /**
+     * Perceived stall time: total time the committed attempt's stream spent in
+     * gaps of ≥1 s between two consecutive chunks the client received with
+     * visible output (answer text, tool-call fragments or reasoning/thinking
+     * deltas). Measured at the relay, carried through verbatim. Undefined for
+     * non-streamed turns and for streams with fewer than two such chunks;
+     * `0` means a measured stream with no felt pause.
+     */
+    stalledMs?: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
     failoverOccurred?: boolean;
@@ -470,10 +480,27 @@ export class TraceTracker {
    * pass over the session's chronological traces: request count, model
    * switches (adjacent modelUsed changes), cumulative token consumption
    * (input / output / cached), cumulative recorded cost, the summed
-   * end-to-end latency, and the decode-TPS pairing (genOutputTokens over
-   * genMsSum) accumulated ONLY over streamed traces — a session mixing
-   * streamed and buffered turns still yields a pure decode rate, never a
-   * blended one.
+   * end-to-end latency, and the industry-standard serving pair accumulated
+   * ONLY over streamed traces:
+   *
+   *   - `ttftP50Ms` / `ttftP95Ms` / `ttftSamples` — time to first token,
+   *     reported as PERCENTILES. A mean is the wrong statistic for a latency
+   *     distribution: one 30 s cold start would dominate a 20-turn session.
+   *     This is what every published latency table reports (Artificial
+   *     Analysis: median + P95; OpenRouter: P50).
+   *   - `genOutputTokens` / `genMsSum` — output speed (tokens ÷ decode
+   *     window). Kept as a numerator/denominator pair so the caller divides
+   *     once and can never disagree with the precomputed value.
+   *   - `stallRatio` — the share of the summed decode windows spent in felt
+   *     pauses (gaps ≥1 s between visible-output chunks). TTFT says when the
+   *     answer starts, the decode rate says how fast it flows on average, and
+   *     neither can express a stream that runs at a healthy average while
+   *     sitting frozen for seconds. A SHARE, not a maximum: repeated stutters
+   *     and one long freeze land on the same scale, and answer length does not
+   *     skew the figure.
+   *
+   * A session mixing streamed and buffered turns still yields pure
+   * streamed-only figures, never a blended one.
    */
   public getSessionAggregates(sessionId: string): {
     traceCount: number;
@@ -485,6 +512,18 @@ export class TraceTracker {
     totalLatencyMs: number;
     genOutputTokens: number;
     genMsSum: number;
+    /** Streamed turns that reported a ttftMs — the percentile sample size. */
+    ttftSamples: number;
+    /**
+     * Share (0..1) of the summed decode windows spent in felt pauses — gaps
+     * ≥1 s between visible-output chunks, summed per turn. Undefined when no
+     * streamed turn produced two output chunks to measure a gap between.
+     */
+    stallRatio?: number;
+    /** Median time to first token over those turns (undefined = never streamed). */
+    ttftP50Ms?: number;
+    /** 95th-percentile time to first token over the same turns. */
+    ttftP95Ms?: number;
     /**
      * Latest turn's thinking-effort snapshot (with ADR-0012 provenance),
      * lifted from the chronologically last trace. Display-only: effort
@@ -506,6 +545,9 @@ export class TraceTracker {
     let totalLatencyMs = 0;
     let genOutputTokens = 0;
     let genMsSum = 0;
+    let stalledMsSum = 0;
+    let stallWindowMs = 0;
+    const ttftSamples: number[] = [];
     let prevModel: string | null = null;
     for (const t of traces) {
       if (prevModel !== null && t.execution.modelUsed !== prevModel) switchCount++;
@@ -519,6 +561,11 @@ export class TraceTracker {
         genOutputTokens += t.finops.outputTokens;
         genMsSum += t.execution.genMs;
       }
+      if (typeof t.execution.ttftMs === 'number') ttftSamples.push(t.execution.ttftMs);
+      if (typeof t.execution.stalledMs === 'number' && typeof t.execution.genMs === 'number' && t.execution.genMs > 0) {
+        stalledMsSum += t.execution.stalledMs;
+        stallWindowMs += t.execution.genMs;
+      }
     }
     const last = traces[traces.length - 1];
     return {
@@ -531,6 +578,10 @@ export class TraceTracker {
       totalLatencyMs,
       genOutputTokens,
       genMsSum,
+      ttftSamples: ttftSamples.length,
+      ttftP50Ms: percentile(ttftSamples, 0.5),
+      ttftP95Ms: percentile(ttftSamples, 0.95),
+      stallRatio: stallWindowMs > 0 ? stalledMsSum / stallWindowMs : undefined,
       lastRequestedEffort: last?.execution.requestedEffort,
       lastActualEffort: last?.execution.actualEffort,
       lastEffortSource: last?.execution.effortSource,

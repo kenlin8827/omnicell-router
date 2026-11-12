@@ -668,6 +668,8 @@ export interface TraceRecord {
     ttftMs?: number;
     /** Decode window (first chunk → stream drained) — the decode-TPS denominator; undefined as above. */
     genMs?: number;
+    /** Total time in felt pauses (gaps ≥1 s between chunks carrying output the client received); undefined = no measurable gap. */
+    stalledMs?: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
     failoverOccurred?: boolean;
@@ -1076,11 +1078,28 @@ export interface SessionRecord {
   /** Summed end-to-end latency (ms) across the session's traces. Part of the
    *  admin payload; the console renders per-turn latency instead. */
   totalLatencyMs: number;
-  /** Output tokens summed over STREAMED traces only — decode-TPS numerator. */
+  /** Output tokens summed over STREAMED traces only — the output-speed numerator. */
   genOutputTokens: number;
-  /** Summed decode window (ms) over the same streamed traces — decode-TPS
+  /** Summed decode window (ms) over the same streamed traces — output-speed
    *  denominator, paired with genOutputTokens. */
   genMsSum: number;
+  /** Streamed turns that reported a ttftMs — the percentile sample size. */
+  ttftSamples: number;
+  /**
+   * Time to first token over streamed turns, as PERCENTILES (never a mean:
+   * one cold start would dominate a short session). P50 = the typical wait,
+   * P95 = the tail. Undefined when the session never streamed.
+   */
+  ttftP50Ms?: number;
+  ttftP95Ms?: number;
+  /**
+   * Share (0..1) of the summed decode windows the client spent in felt pauses
+   * — gaps ≥1 s between chunks carrying output (text, tool-call or reasoning
+   * deltas), summed per streamed turn. A share, not a maximum: repeated
+   * stutters and one long freeze land on the same scale, and answer length
+   * does not skew it. Undefined when no turn produced a measurable gap.
+   */
+  stallRatio?: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
   /**
@@ -2905,6 +2924,7 @@ export const api = {
   async getFailureEvents(params?: {
     model?: string;
     provider?: string;
+    keyHashPrefix?: string;
     errorClass?: string;
     role?: string;
     limit?: number;
@@ -2912,6 +2932,7 @@ export const api = {
     const qs = new URLSearchParams();
     if (params?.model) qs.set('model', params.model);
     if (params?.provider) qs.set('provider', params.provider);
+    if (params?.keyHashPrefix) qs.set('keyHashPrefix', params.keyHashPrefix);
     if (params?.errorClass) qs.set('errorClass', params.errorClass);
     if (params?.role) qs.set('role', params.role);
     if (params?.limit !== undefined) qs.set('limit', String(params.limit));
@@ -4760,8 +4781,10 @@ export interface RateLimitEvent {
 /**
  * One failed upstream MODEL CALL — mirrors backend `FailureEvent`
  * (GET /api/admin/failure-events). `role` splits serving-pool attempts from
- * decision wire calls; repeats of the same model+provider+errorClass+role fold
- * into one entry (`count`, `lastTs`) within the 10s coalescing window.
+ * decision wire calls; `keyHashPrefix` names the credential that served the
+ * failed call (the pair axis — absent = no attributable credential). Repeats
+ * of the same model+provider+credential+errorClass+role fold into one entry
+ * (`count`, `lastTs`) within the 10s coalescing window.
  */
 export type FailureEventRole = 'serving' | 'l2-decision' | 'probe';
 
@@ -4785,6 +4808,8 @@ export interface FailureEvent {
   count: number;
   model: string;
   provider: string;
+  /** Display-safe credential prefix, ADR-0006 key-hash identity. */
+  keyHashPrefix?: string;
   errorClass: FailureErrorClass;
   status?: number;
   message: string;

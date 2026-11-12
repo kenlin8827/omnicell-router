@@ -38,10 +38,20 @@ import type { ErrorCategory } from '../resilience/types.js';
  * insert, replayed into the ring at boot. Fail-open everywhere: a failure
  * event must never break the request path it observes.
  *
- * Coalescing: consecutive repeats of the same model+provider+errorClass+role
- * within EVENT_COALESCE_WINDOW_MS fold into one entry with a bumped `count`
- * (a 429 storm is one observation, not 500) — the rate-limit ledger's
- * exact rule. A repeat UPSERTs the same row by `id`.
+ * Attribution granularity is the (provider × model × credential) PAIR — the
+ * same unit the breaker's tuples and the quota ledger use (ADR-0009/0013).
+ * `keyHashPrefix` names the credential that actually served the failed call
+ * (the registry stamp, ADR-0006), so a dead key inside a healthy pool stays
+ * visible instead of reading as "the model failed"; it is absent when the
+ * call had no attributable credential (chain-less provider, pool exhausted
+ * before selection).
+ *
+ * Coalescing: consecutive repeats of the same
+ * model+provider+keyHashPrefix+errorClass+role within
+ * EVENT_COALESCE_WINDOW_MS fold into one entry with a bumped `count` (a 429
+ * storm on one key is one observation, not 500) — the rate-limit ledger's
+ * exact rule, widened by the credential axis so two keys of one provider
+ * never fold into each other. A repeat UPSERTs the same row by `id`.
  */
 
 export type FailureEventRole = 'serving' | 'l2-decision' | 'probe';
@@ -67,6 +77,10 @@ export interface FailureEvent {
   model: string;
   /** Provider owning the model (a model id alone can be ambiguous across providers). */
   provider: string;
+  /** Display-safe credential prefix that served the failed call (the pair
+   *  axis, ADR-0006 key-hash identity). Absent when no credential could be
+   *  attributed — the row is then model-scope, not credential-scope. */
+  keyHashPrefix?: string;
   errorClass: FailureErrorClass;
   /** Upstream HTTP status when the error carried one (absent for timeouts / network tears). */
   status?: number;
@@ -83,6 +97,7 @@ export interface FailureEvent {
 export interface FailureEventInput {
   model: string;
   provider: string;
+  keyHashPrefix?: string;
   errorClass: FailureErrorClass;
   status?: number;
   message: string;
@@ -121,6 +136,7 @@ export class FailureEventLog {
       last &&
       last.model === input.model &&
       last.provider === input.provider &&
+      last.keyHashPrefix === input.keyHashPrefix &&
       last.errorClass === input.errorClass &&
       last.role === input.role &&
       now - last.lastTs <= EVENT_COALESCE_WINDOW_MS
@@ -137,6 +153,7 @@ export class FailureEventLog {
       count: 1,
       model: input.model,
       provider: input.provider,
+      keyHashPrefix: input.keyHashPrefix,
       errorClass: input.errorClass,
       status: input.status,
       message: truncateEventMessage(input.message, EVENT_MESSAGE_MAX_CHARS),
@@ -154,13 +171,19 @@ export class FailureEventLog {
   list(filter?: {
     model?: string;
     provider?: string;
+    keyHashPrefix?: string;
     errorClass?: string;
     role?: string;
     limit?: number;
   }): FailureEvent[] {
-    let rows = this.ring.rows().reverse();
+    // Newest first BY TIME, not by insertion: a coalesced row keeps its original
+    // slot in the ring while `lastTs` moves, so insertion order would render the
+    // table out of order (and disagree with the mirror replay, which sorts by
+    // `last_ts`). Ties keep insertion order via the stable sort.
+    let rows = this.ring.rows().sort((a, b) => b.lastTs - a.lastTs);
     if (filter?.model) rows = rows.filter((e) => e.model === filter.model);
     if (filter?.provider) rows = rows.filter((e) => e.provider === filter.provider);
+    if (filter?.keyHashPrefix) rows = rows.filter((e) => e.keyHashPrefix === filter.keyHashPrefix);
     if (filter?.errorClass) rows = rows.filter((e) => e.errorClass === filter.errorClass);
     if (filter?.role) rows = rows.filter((e) => e.role === filter.role);
     if (filter?.limit !== undefined && filter.limit >= 0) rows = rows.slice(0, filter.limit);

@@ -244,5 +244,169 @@ describe('TraceTracker.getUsageStats / getSessionAggregates — raw token aggreg
     assert.equal(agg.cachedTokens, 40);
     assert.equal(agg.costUsd, 0.003);
     assert.equal(agg.totalLatencyMs, 50, '20ms + 30ms summed across the session traces');
+    assert.equal(agg.ttftSamples, 0, 'buffered fixtures carry no ttftMs');
+    assert.equal(agg.ttftP50Ms, undefined, 'no samples, no percentile — the console renders "—"');
+    assert.equal(agg.ttftP95Ms, undefined);
+    assert.equal(agg.genMsSum, 0);
+    assert.equal(agg.genOutputTokens, 0);
+  });
+
+  it('sums TTFT / decode windows only over streamed turns', () => {
+    const tracker = new TraceTracker(500);
+    const now = Date.now();
+    tracker.record(
+      mkTrace({
+        sessionId: 'streamed',
+        timestamp: now - 200,
+        execution: {
+          modelUsed: 'm',
+          provider: 'p',
+          tierUsed: 'lite',
+          latencyMs: 120,
+          fallbackOccurred: false,
+          ttftMs: 40,
+          genMs: 80,
+        },
+        finops: { inputTokens: 10, outputTokens: 20, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+    tracker.record(
+      mkTrace({
+        sessionId: 'streamed',
+        timestamp: now - 100,
+        execution: {
+          modelUsed: 'm',
+          provider: 'p',
+          tierUsed: 'lite',
+          latencyMs: 200,
+          fallbackOccurred: false,
+          ttftMs: 60,
+          genMs: 140,
+        },
+        finops: { inputTokens: 10, outputTokens: 30, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+    // Buffered turn: no ttft/gen — must not dilute the streamed averages.
+    tracker.record(
+      mkTrace({
+        sessionId: 'streamed',
+        timestamp: now,
+        execution: {
+          modelUsed: 'm',
+          provider: 'p',
+          tierUsed: 'lite',
+          latencyMs: 50,
+          fallbackOccurred: false,
+        },
+        finops: { inputTokens: 5, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+
+    const agg = tracker.getSessionAggregates('streamed');
+    assert.equal(agg.ttftSamples, 2, 'only the two streamed turns carry a ttftMs');
+    assert.equal(agg.ttftP50Ms, 50, 'median of [40, 60]');
+    assert.equal(agg.ttftP95Ms, 59, 'linear interpolation toward the tail');
+    assert.equal(agg.genMsSum, 220);
+    assert.equal(agg.genOutputTokens, 50, 'only the two streamed turns contribute output to output speed');
+    assert.equal(agg.totalLatencyMs, 370);
+  });
+
+  it('TTFT percentiles surface the tail instead of being dragged by a mean', () => {
+    const tracker = new TraceTracker(500);
+    const now = Date.now();
+    // Nine ordinary turns plus one cold start: the mean would land near 3.6s,
+    // a value NO turn experienced, while P50 stays at the typical 200ms.
+    [200, 210, 220, 230, 240, 250, 260, 270, 280].forEach((ttftMs, i) => {
+      tracker.record(
+        mkTrace({
+          sessionId: 'tail',
+          timestamp: now - 10_000 + i,
+          execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: ttftMs + 50, fallbackOccurred: false, ttftMs, genMs: 50 },
+          finops: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+        })
+      );
+    });
+    tracker.record(
+      mkTrace({
+        sessionId: 'tail',
+        timestamp: now,
+        execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: 31_000, fallbackOccurred: false, ttftMs: 30_000, genMs: 1000 },
+        finops: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+
+    const agg = tracker.getSessionAggregates('tail');
+    assert.equal(agg.ttftSamples, 10);
+    assert.ok(agg.ttftP50Ms! < 300, `P50 stays at the typical turn, got ${agg.ttftP50Ms}`);
+    assert.ok(agg.ttftP95Ms! > 10_000, `P95 surfaces the cold start, got ${agg.ttftP95Ms}`);
+  });
+
+  it('stallRatio weighs every felt pause against the whole decode window', () => {
+    const tracker = new TraceTracker(500);
+    const now = Date.now();
+    // Nine measured-smooth turns (no gap reached 1 s) plus one turn that froze
+    // for 8 s inside a 8.8 s decode window. A maximum would report 8000 ms and
+    // ignore that 8/10.6 s of the session's streaming time was healthy; the
+    // ratio reports the actual stalled fraction.
+    Array.from({ length: 9 }, (_, i) => i).forEach((i) => {
+      tracker.record(
+        mkTrace({
+          sessionId: 'freeze',
+          timestamp: now - 5000 + i,
+          execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: 400, fallbackOccurred: false, ttftMs: 200, genMs: 200, stalledMs: 0 },
+          finops: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+        })
+      );
+    });
+    tracker.record(
+      mkTrace({
+        sessionId: 'freeze',
+        timestamp: now,
+        execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: 9000, fallbackOccurred: false, ttftMs: 200, genMs: 8800, stalledMs: 8000 },
+        finops: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+    // A buffered turn carries no stalledMs/genMs pair — it must neither clear
+    // nor dilute the ratio.
+    tracker.record(
+      mkTrace({
+        sessionId: 'freeze',
+        timestamp: now + 1,
+        execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: 50, fallbackOccurred: false },
+        finops: { inputTokens: 5, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+
+    const agg = tracker.getSessionAggregates('freeze');
+    const expected = 8000 / (9 * 200 + 8800);
+    assert.ok(
+      typeof agg.stallRatio === 'number' && Math.abs(agg.stallRatio - expected) < 1e-9,
+      `stall ratio must be 8000 summed ms over 10600 summed decode ms, got ${agg.stallRatio}`
+    );
+  });
+
+  it('stallRatio is undefined without a measured gap, and 0 when measured smooth', () => {
+    const tracker = new TraceTracker(500);
+    tracker.record(
+      mkTrace({
+        sessionId: 'nosilent',
+        timestamp: Date.now(),
+        execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: 100, fallbackOccurred: false, ttftMs: 50, genMs: 50 },
+        finops: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+    // A single visible chunk yields no gap — '—', never 0.
+    assert.equal(tracker.getSessionAggregates('nosilent').stallRatio, undefined);
+    // A measured stream whose gaps all stayed under 1 s is a real 0 — smooth,
+    // not unmeasured.
+    tracker.record(
+      mkTrace({
+        sessionId: 'nosilent',
+        timestamp: Date.now() + 1,
+        execution: { modelUsed: 'm', provider: 'p', tierUsed: 'lite', latencyMs: 300, fallbackOccurred: false, ttftMs: 50, genMs: 250, stalledMs: 0 },
+        finops: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: 0 },
+      })
+    );
+    assert.equal(tracker.getSessionAggregates('nosilent').stallRatio, 0);
   });
 });

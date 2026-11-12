@@ -44,6 +44,20 @@
 
 TraceTracker：环 5000 + 按环境 `traces.db`（WAL）持久化，保留 7 天 / 100 MB，逐小时清扫；记录 = 请求摘要（安全 `clientHeaders` 子集）+ routing（reason/reasonCode/reasonParams 含驱逐归因，ADR-0002）+ execution + finops。管理面：traces（环→库，冷会话可从持久化 trace 重建）、sessions（活行 join）、logs（环尾 ≤ 5000）。Fastify 逐请求访问日志**刻意关闭**（UI 轮询噪音；onError 保 5xx 底）——请求观测是 trace/capture 平面的职责，不是 stdout 的。捕获接缝实名 `observability/http-exchange`（客户腿）+ `observability/upstream-events`（`UpstreamEventContext` 贯穿 `process()`，provider 侧 emit 契约）——不存在其他事件汇抽象。
 
+延迟词汇沿用业界 TTFT/TPS 拆分（OpenRouter：`Total = TTFT + output tokens / TPS`），在线上只测一次、处处派生。trace 的 execution 块携带 `ttftMs`（进程开始 → 落定尝试的首个转发 chunk——用户体感，含路由/排队/prefill 以及提交前的失败尝试）与 `genMs`（首 chunk → 流完全排干——解码窗口）。捕获平面在每条腿上打同一批时刻：流式响应事件（两条腿）携带 `firstByteTs`（上游 SSE 读端 / 网关 SSE 写端），`CaptureTurnSummary` 由此派生每腿的 `ttftMs`/`genMs`。
+
+**控制台指标词汇（2026-11 修订；2026-12 为体感卡顿率指标增补）——三个已发布指标，均非臆造。** TTFT 与输出速率命名对齐 OpenTelemetry GenAI 语义约定，每个数字都能对应到一个标准仪器，无需翻译；卡顿率借用流媒体 QoE 的 rebuffering ratio 口径，标注为无 OTel GenAI 对应物的体感指标：
+
+- **TTFT**（`gen_ai.server.time_to_first_token`；vLLM `time_to_first_token_seconds`）——逐轮 `ttftMs`，以 **P50 与 P95 百分位**报告，绝不用算术平均。延迟是长尾分布：一次 30 秒冷启动就能把 20 轮的均值拖到没人体验过的水平，而 P50 仍停在典型轮次、P95 承载长尾。所有公开延迟表都是这么报的（Artificial Analysis：中位数 + P95；OpenRouter：P50）。
+- **输出速率**（output speed）——输出 tokens ÷ 解码窗口（`genMs`），即 `gen_ai.server.time_per_output_token` 的倒数（vLLM `inter_token_latency_seconds`）。聚合按 token 加权（`Σtokens ÷ Σwindows`），绝不是逐轮比率的平均。
+- **卡顿率**（逐轮 `stalledMs`，会话 `stallRatio`；控制台标签"卡顿率"）——落定尝试的流中，客户端等待两块带流式输出的 chunk 之间 ≥1 秒停顿所占的流式时间比例。流式输出 = 正文、工具调用片段，**以及思考/推理增量**（`reasoning_content` / `reasoning`）：中继原样转发思考文本（`utils/chat-stream.ts`），排除它就会把推理模型的整段思考算成停顿。只有 role 的开场、`finish_reason` 帧与结尾 usage 帧都不算输出。停顿逐轮累加（`stalledMs`），再除以该会话所有可测流式轮次的解码窗口之和（`stallRatio`）——与视频流媒体 QoE 的 rebuffering ratio 同一个量，只是作用在客户端收到的流上。用占比而非最长值，反复的小顿挫与一次长冻结落在同一把尺子上，答案长短也不会扭曲数字——这正是最长间隔取最大值表达不了的维度，也是它被替换而非扩展的原因。非流式轮次、或输出 chunk 不足两块时为 undefined（'—'）；`0` 表示已测量且平滑。占比达到 10% 标琥珀色。测量点在网关中继，客户端绘制与网络抖动不在窗口内。
+
+窗口边界属于指标定义本身，因此凡出现该数字处都须说明：本速率**不含 TTFT**，与 OTel 的 `time_per_output_token`、Artificial Analysis 的每查询速度一致；OpenRouter 的 `Throughput` 从请求发出量到最后一个 token，**包含** TTFT（同一模型其数值更低——两者不可比）。
+
+**不发布"预填速率"。** Prefill 是服务端内部测量（`vllm:request_prefill_time_seconds` 与 `vllm:prompt_tokens_total` 配对）；代理只看得见 TTFT，而 TTFT 融合了排队、网络往返、服务商排队、缓存读取、prefill 与首个 decode step。任何 `输入 ÷ TTFT` 的速率追踪的是缓存命中率而非模型吞吐（同一硬件上 99% 命中的会话可读到冷启动的约 100 倍），因此既不显示，也不用网关无法观测的阶段命名。
+
+控制台的速率数字在**两个平面**上都只除解码窗口；端到端故事留在延迟列。缓冲式单发交换没有打点，渲染为 '—'——绝不由总延迟反造速率。
+
 ## 后果
 
 - 单一执行漏斗 ⇒ 安全过滤、熔断记账、限流扣槽各只有一个是非之地；入口模式差异是同一机制上的策略字段。
