@@ -240,6 +240,72 @@ td, th {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
 }
 
+/* Provider-card footer: one grid, two placements for the utility triad
+   (edit / takedown / delete). Default: the triad rides the chip row's
+   trailing edge. `.inline-utils` (set by ProviderCardFooter after MEASURING
+   that the three action labels plus the triad fit on one line) drops it onto
+   the action row instead — a label-width guess would be wrong in at least
+   one locale ("Test" vs "Credential hinzufügen"). */
+.provider-card-foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'chips utils'
+    'actions actions';
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-card-foot.has-probe {
+  grid-template-areas:
+    'chips utils'
+    'probe probe'
+    'actions actions';
+}
+.provider-card-chips {
+  grid-area: chips;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  row-gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.provider-card-probe {
+  grid-area: probe;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.provider-card-actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.provider-card-utils {
+  grid-area: utils;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: end;
+}
+/* Utilities on the action row's trailing edge — the whole cluster on one line
+   for the active locale. */
+.provider-card-foot.inline-utils {
+  grid-template-areas:
+    'chips chips'
+    'actions utils';
+}
+.provider-card-foot.inline-utils.has-probe {
+  grid-template-areas:
+    'chips chips'
+    'probe probe'
+    'actions utils';
+}
+
 /* Collapsible variant of .sub-card (a <details> carrying the sub-card class):
    the summary row is the section header — kill the native disclosure marker,
    the page renders its own chevron. */

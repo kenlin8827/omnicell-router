@@ -261,6 +261,49 @@ const takedownBadgeStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
   flexShrink: 0,
 };
+
+/** Provider-card footer: chip row, probe result, action row and the utility
+ *  triad in ONE grid. The triad shares the chip row's trailing edge by
+ *  default and only drops onto the action row when the three action labels
+ *  plus the triad actually fit — label widths are locale-dependent
+ *  ("Test" vs "Credential hinzufügen"), so the fit is MEASURED, never guessed
+ *  from a breakpoint: a guessed threshold either orphans the triad on a
+ *  wrapped second line or never moves it at all. */
+const ProviderCardFooter: React.FC<{ hasProbe: boolean; children: React.ReactNode }> = ({ hasProbe, children }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const { lang } = useI18n();
+  const [inlineUtils, setInlineUtils] = useState(false);
+  const measure = useCallback(() => {
+    const el = ref.current;
+    const actions = el?.querySelector<HTMLElement>('.provider-card-actions');
+    const utils = el?.querySelector<HTMLElement>('.provider-card-utils');
+    if (!el || !actions || !utils) return;
+    // Button widths are content-sized (never stretched), so their sum is the
+    // same whether the triad currently sits on this row or on the chip row —
+    // no feedback loop between the measured state and the layout it causes.
+    const gap = 8;
+    const labels = Array.from(actions.children).reduce((w, c) => w + c.getBoundingClientRect().width, 0);
+    const need = labels + gap * Math.max(0, actions.children.length - 1) + gap + utils.getBoundingClientRect().width;
+    setInlineUtils(need <= el.clientWidth);
+  }, []);
+  // Labels change with the locale (width, same DOM), so re-measure on it.
+  useEffect(() => { measure(); }, [measure, lang]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure]);
+  return (
+    <div
+      ref={ref}
+      className={`provider-card-foot${hasProbe ? ' has-probe' : ''}${inlineUtils ? ' inline-utils' : ''}`}
+    >
+      {children}
+    </div>
+  );
+};
 /** Relative "last synced" label (just now / N min ago / …) — "never" when absent. */
 const syncTimeAgo = (ts: number | undefined, t: TFn): string => {
   if (!ts) return t('op.syncNever');
@@ -2332,15 +2375,19 @@ export const KeysPage: React.FC = () => {
                   {p.name && p.name !== p.id && <span style={{ fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.id}>{p.id}</span>}
                   {/* Endpoint sits under the name, not on its own full-width
                       row: the header already spends 48px on the logo, and a
-                      separate band left a dead gap to the right of short ids. */}
+                      separate band left a dead gap to the right of short ids.
+                      The row is fit-content, NOT flex:1 — the copy glyph must
+                      sit against the endpoint it copies. A stretched text
+                      column pushed the glyph to the card's far edge whenever
+                      the URL was shorter than the column (every api.* host). */}
                   {p.baseURL ? (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0 }}>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.baseURL}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, width: 'fit-content', maxWidth: '100%' }}>
+                      <span style={{ flex: '0 1 auto', minWidth: 0, fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.baseURL}>
                         {p.baseURL}
                       </span>
                       <button
                         className="btn btn-sm"
-                        style={{ border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 2px', height: 16, minHeight: 16, color: copiedEndpoint === p.id ? 'var(--accent)' : 'var(--text-dim)' }}
+                        style={{ flexShrink: 0, border: 'none', background: 'transparent', boxShadow: 'none', padding: '0 2px', height: 16, minHeight: 16, color: copiedEndpoint === p.id ? 'var(--accent)' : 'var(--text-dim)' }}
                         title={t('common.copy')}
                         aria-label={t('common.copy')}
                         onClick={() => {
@@ -2419,14 +2466,15 @@ export const KeysPage: React.FC = () => {
                 )}
               </div>
 
-              {/* Meta: identity chips on the left, provider utilities
-                  right-aligned on the same row. `models` is the DEF-NODE list
-                  and is the routing truth: the boot pool excludes a provider
-                  with no maintained models even when the catalog knows some
-                  (see the "[OCR] excluded" log). */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, rowGap: 4, flexWrap: 'wrap' }}>
+              {/* Footer: chip row, probe result, action row and the utility
+                  triad share one grid (ProviderCardFooter) so the triad can
+                  ride the chip row instead of orphaning itself on a wrapped
+                  line. `models` is the DEF-NODE list and is the routing
+                  truth: the boot pool excludes a provider with no maintained
+                  models even when the catalog knows some (see the
+                  "[OCR] excluded" log). */}
+              <ProviderCardFooter hasProbe={Boolean(testResults[p.id])}>
+                <div className="provider-card-chips">
                     {displayNpm(p.npm) && (
                       <span
                         style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
@@ -2464,17 +2512,12 @@ export const KeysPage: React.FC = () => {
                         the bound store is PAGE-level truth (stated in the tab
                         descriptions), identical on every card — a per-card
                         repetition carried zero information. */}
-                  </div>
                 </div>
-              </div>
 
-              {/* Footer: probe result line first, then the action row. No
-                  divider — the card already carries one frame, and a second
-                  hairline made every card read as two stacked boxes. Actions
-                  sit on the content axis (left), not on a trailing rail. */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 'auto' }}>
+                {/* Probe result: full-width grid row between the chips and
+                    the action row it was triggered from. */}
                 {testResults[p.id] && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <div className="provider-card-probe">
                     <span
                       style={{
                         flex: 1,
@@ -2513,13 +2556,12 @@ export const KeysPage: React.FC = () => {
                     )}
                   </div>
                 )}
-                {/* Bottom rail: primary chain-of-use actions on the content
-                    axis, provider utilities (edit / takedown / delete) on the
-                    trailing edge — destructive controls stay away from the
-                    primary action and the card's mid-row stops carrying a
-                    second right-hand cluster under the health readout. */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                {/* Action row: primary chain-of-use actions on the content
+                    axis. On wide cards the utility triad (edit / takedown /
+                    delete) joins this row's trailing edge; on narrow cards it
+                    stays on the chip row instead of wrapping into an orphaned
+                    second line. */}
+                <div className="provider-card-actions">
                   <button
                     className="btn btn-sm"
                     disabled={!keyWritable}
@@ -2533,7 +2575,6 @@ export const KeysPage: React.FC = () => {
                     {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
                     <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
                   </button>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button
                       className="btn btn-sm"
                       disabled={testingIds.size > 0 || testAll.running}
@@ -2552,12 +2593,11 @@ export const KeysPage: React.FC = () => {
                     >
                       <Cpu size={12} />
                       <span>{t('op.pmManage')}</span>
-                    </button>
-                  </div>
+                  </button>
                 </div>
-                  {/* Provider utilities on the trailing edge: edit def-node,
-                      takedown toggle, delete. */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                {/* Provider utilities: edit def-node, takedown toggle,
+                    delete. */}
+                <div className="provider-card-utils">
                     {p.defNode && (
                       <button
                         className="btn btn-sm"
@@ -2591,8 +2631,7 @@ export const KeysPage: React.FC = () => {
                       <Trash2 size={12} />
                     </button>
                   </div>
-                </div>
-              </div>
+              </ProviderCardFooter>
 
               {modelsPanelId === p.id && (
                 <ProviderModelsDialog
