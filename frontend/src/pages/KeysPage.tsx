@@ -35,6 +35,7 @@ import {
 import { ProviderModelsDialog } from '../components/ProviderModelsDialog';
 import { SearchInput } from '../components/SearchInput';
 import { Dialog } from '../components/Dialog';
+import { ScrollTable, type ScrollTableColumn } from '../components/ScrollTable';
 import { AddCredentialDialog } from '../components/AddCredentialDialog';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -508,6 +509,9 @@ const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) 
 type CredentialZoomRowProps = {
   credential: CredentialHealth;
   caps: CredentialStoreCapabilities;
+  /** The zoom table's weight column exists only for a store that carries one;
+   *  header and every row cell must agree or the measured column tracks shift. */
+  showWeight: boolean;
   /**
    * This is the provider's ONLY routable credential, so it is what actually
    * serves even when the store leaves `active` false (opencode v2 does not flag
@@ -559,7 +563,10 @@ type CredentialZoomRowProps = {
 
 /** Compact icon-button look shared by every per-credential action. */
 const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)' };
-const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-none)' };
+/** One row height for every zoom-table control: the number input, the icon
+ *  buttons and the status chips all sit on the same 28px baseline. */
+const ZOOM_CTRL: React.CSSProperties = { height: 28, minHeight: 0, padding: '2px 6px', lineHeight: 1, fontSize: 'var(--text-sm)' };
+const CRED_ICON_BTN_LG: React.CSSProperties = { ...ZOOM_CTRL, padding: '2px 7px' };
 
 /**
  * Status badges for one credential — used by the maintenance (zoom) table so
@@ -570,25 +577,29 @@ const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining
   const { t } = useI18n();
   return (
     <>
-      {credential.disabled && (
-        <span
-          style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-          title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
-        >
-          <PowerOff size={9} />
-          {t('op.credentialDisabled')}
-        </span>
-      )}
-      {!credential.routable && (
-        <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
-          <Ban size={11} />
-        </span>
-      )}
-      {credential.suspect && (
-        <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
-          <AlertTriangle size={11} />
-        </span>
-      )}
+      {/* Leading state slot: a fixed width keeps the timing/limit chips that
+          follow aligned across rows, whether or not this row is disabled. */}
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 58, flex: '0 0 58px' }}>
+        {credential.disabled && (
+          <span
+            style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+            title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
+          >
+            <PowerOff size={9} />
+            {t('op.credentialDisabled')}
+          </span>
+        )}
+        {!credential.routable && (
+          <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
+            <Ban size={11} />
+          </span>
+        )}
+        {credential.suspect && (
+          <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
+            <AlertTriangle size={11} />
+          </span>
+        )}
+      </span>
       {remaining > 0 && (
         <span
           style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
@@ -801,20 +812,22 @@ const CredentialActions: React.FC<CredentialActionsProps> = ({
   );
 };
 
-const ZOOM_TH: React.CSSProperties = {
-  textAlign: 'left',
+/** Head cells for the ScrollTable: override its uppercase label treatment
+ *  (wrong for CJK) and clip short labels to the fixed column tracks. */
+const ZOOM_HEAD: React.CSSProperties = {
   fontSize: 'var(--text-sm)',
   fontWeight: 'var(--font-bold)',
   color: 'var(--text-dim)',
-  padding: '5px 10px',
-  borderBottom: '1px solid var(--border)',
+  padding: '7px 6px',
+  textTransform: 'none',
+  letterSpacing: 'normal',
   whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 };
-/** Action column headers: centered, wrapping so each column is as wide as its button. */
-const ZOOM_TH_ACT: React.CSSProperties = { ...ZOOM_TH, textAlign: 'center', padding: '4px 2px', whiteSpace: 'normal' };
 const ZOOM_TD: React.CSSProperties = {
-  padding: '8px 10px',
-  borderBottom: '1px solid var(--border)',
+  padding: '6px 10px',
+  borderBottom: '1px solid var(--divider)',
   verticalAlign: 'middle',
   whiteSpace: 'nowrap',
 };
@@ -825,6 +838,7 @@ const ZOOM_TD: React.CSSProperties = {
 const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
   credential,
   caps,
+  showWeight,
   soleServing,
   prefixVisible,
   pending,
@@ -954,39 +968,46 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
       </td>
       {/* Weight: editable only when the bound store can carry one (OCR file);
           v2-bound rows render the read-only badge. Blur/Enter commits, the
-          backend clamps — the input mirrors the same 1..MAX range. */}
-      <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
-        {caps?.weight && onEditWeight ? (
-          <input
-            type="number"
-            className="input"
-            min={1}
-            max={CREDENTIAL_WEIGHT_MAX}
-            key={credential.weight ?? 1}
-            defaultValue={credential.weight ?? 1}
-            disabled={pending}
-            aria-label={t('op.credentialWeight')}
-            style={{ width: 58, fontSize: 'var(--text-md)', textAlign: 'center' }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-            }}
-            onBlur={(e) => {
-              const n = Math.floor(Number(e.target.value));
-              const clamped = Number.isFinite(n) ? Math.min(Math.max(n, 1), CREDENTIAL_WEIGHT_MAX) : 1;
-              if (clamped !== (credential.weight ?? 1)) onEditWeight(credential, clamped);
-              else e.target.value = String(credential.weight ?? 1);
-            }}
-          />
-        ) : (
-          (credential.weight ?? 1) > 1 && (
-            <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-              ×{credential.weight}
-            </span>
-          )
-        )}
-      </td>
-      <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+          backend clamps — the input mirrors the same 1..MAX range. The column
+          exists only when showWeight, matching the conditional header so the
+          measured tracks never shift. */}
+      {showWeight && (
+        <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
+          {caps?.weight && onEditWeight ? (
+            <input
+              type="number"
+              className="input"
+              min={1}
+              max={CREDENTIAL_WEIGHT_MAX}
+              key={credential.weight ?? 1}
+              defaultValue={credential.weight ?? 1}
+              disabled={pending}
+              aria-label={t('op.credentialWeight')}
+              style={{ ...ZOOM_CTRL, width: 58, fontSize: 'var(--text-md)', textAlign: 'center' }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
+              onBlur={(e) => {
+                const n = Math.floor(Number(e.target.value));
+                const clamped = Number.isFinite(n) ? Math.min(Math.max(n, 1), CREDENTIAL_WEIGHT_MAX) : 1;
+                if (clamped !== (credential.weight ?? 1)) onEditWeight(credential, clamped);
+                else e.target.value = String(credential.weight ?? 1);
+              }}
+            />
+          ) : (
+            (credential.weight ?? 1) > 1 && (
+              <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                ×{credential.weight}
+              </span>
+            )
+          )}
+        </td>
+      )}
+      {/* Status: left-aligned so badges start at the same x on every row. The
+          conditional state badge lives in a fixed-width leading slot inside
+          CredentialStatusBadges, so the timing/limit chips never shift. */}
+      <td style={ZOOM_TD}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <CredentialStatusBadges credential={credential} remaining={remaining} />
           {/* Suspect-clear is a per-row conditional (suspect rows only), so it
               rides the status cell instead of an always-empty column. */}
@@ -997,10 +1018,10 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           )}
         </span>
       </td>
-      {/* One action per column — the header above IS the label. Compact cells:
-          the button sets the column's width, nothing more. */}
+      {/* One action per column — the short header above names the action; the
+          full label stays on the button's title / aria-label. */}
       {(['pin', 'test', 'limits', 'toggle', 'disconnect'] as const).map((kind) => (
-        <td key={kind} style={{ ...ZOOM_TD, padding: '8px 2px', textAlign: 'center' }}>
+        <td key={kind} style={{ ...ZOOM_TD, padding: '6px 2px', textAlign: 'center' }}>
           {action(kind)}
         </td>
       ))}
@@ -2912,10 +2933,26 @@ export const KeysPage: React.FC = () => {
           const soleRoutableId = liveIds.length === 1 ? liveIds[0] : null;
           const masks = credentialList.map((a) => a.maskedKey ?? a.id);
           const ambiguousMasks = new Set(masks.filter((m, i) => masks.indexOf(m) !== i));
+          const showWeight = Boolean(caps?.weight);
+          const actLabel = (short: string, full: string) => <span title={full}>{short}</span>;
+          const zoomColumns: ScrollTableColumn[] = [
+            { key: 'position', label: '#', width: 36, align: 'center' },
+            { key: 'name', label: t('op.credentialZoomColName'), width: 140 },
+            { key: 'key', label: t('op.credentialZoomColKey'), width: 156 },
+            ...(showWeight ? [{ key: 'weight', width: 64, align: 'center' as const, label: <>{t('op.credentialWeight')} <InfoTip text={t('op.credentialWeightTip')} /></> }] : []),
+            { key: 'status', label: t('op.credentialZoomColStatus'), width: 200 },
+            { key: 'pin', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColPin'), t('op.credentialPin')) },
+            { key: 'test', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColTest'), t('op.credentialTest')) },
+            { key: 'limits', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColLimits'), t('op.credentialLimits')) },
+            { key: 'toggle', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColToggle'), `${t('op.credentialDisable')} / ${t('op.credentialEnable')}`) },
+            { key: 'disconnect', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColDisconnect'), t('op.credentialDisconnect')), headStyle: { color: 'var(--accent-rose)' } },
+          ];
+          const zoomMinWidth = zoomColumns.reduce((sum, c) => sum + (typeof c.width === 'number' ? c.width : 0), 0);
           const rowProps = (a: CredentialHealth, i: number) => ({
             credential: a,
             position: i + 1,
             caps: caps!,
+            showWeight,
             soleServing: soleRoutableId === a.id,
             prefixVisible: a.maskedKey ? ambiguousMasks.has(a.maskedKey) : true,
             pending: pendingCredential === `${p.id}:${a.id}`,
@@ -2971,29 +3008,15 @@ export const KeysPage: React.FC = () => {
               }
             >
               {caps && credentialList.length > 0 && (
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...ZOOM_TH, textAlign: 'center', padding: '5px 4px' }}>#</th>
-                      <th style={ZOOM_TH}>{t('op.credentialZoomColName')}</th>
-                      <th style={ZOOM_TH}>{t('op.credentialZoomColKey')}</th>
-                      {caps?.weight && <th style={{ ...ZOOM_TH, textAlign: 'center' }}>{t('op.credentialWeight')} <InfoTip text={t('op.credentialWeightTip')} /></th>}
-                      <th style={ZOOM_TH}>{t('op.credentialZoomColStatus')}</th>
-                      {/* One column per action — the header IS the label. Headers
-                          wrap so each column stays as wide as its button. */}
-                      <th style={ZOOM_TH_ACT}>{t('op.credentialPin')}</th>
-                      <th style={ZOOM_TH_ACT}>{t('op.credentialTest')}</th>
-                      <th style={ZOOM_TH_ACT}>{t('op.credentialLimits')}</th>
-                      <th style={ZOOM_TH_ACT}>{t('op.credentialZoomColToggle')}</th>
-                      <th style={{ ...ZOOM_TH_ACT, color: 'var(--accent-rose)' }}>{t('op.credentialDisconnect')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {credentialList.map((a, i) => (
-                      <CredentialZoomRow key={a.id} {...rowProps(a, i)} />
-                    ))}
-                  </tbody>
-                </table>
+                <ScrollTable
+                  minWidth={zoomMinWidth}
+                  headCellStyle={ZOOM_HEAD}
+                  columns={zoomColumns}
+                >
+                  {credentialList.map((a, i) => (
+                    <CredentialZoomRow key={a.id} {...rowProps(a, i)} />
+                  ))}
+                </ScrollTable>
               )}
             </Dialog>
           );

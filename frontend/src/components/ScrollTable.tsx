@@ -8,6 +8,10 @@ export interface ScrollTableColumn {
   align?: 'left' | 'center' | 'right';
   /** Extra style for this column's header cell (padding, alignment fine-tuning). */
   headStyle?: React.CSSProperties;
+  /** Pin the column to the right edge of the scroll viewport: it stays visible
+   * while the body scrolls sideways (used for row action columns that would
+   * otherwise be the first thing a horizontal scroll hides). */
+  sticky?: 'right';
 }
 
 const HEAD_CELL: React.CSSProperties = {
@@ -33,6 +37,19 @@ const baseTable = (fixed: boolean): React.CSSProperties => ({
   fontSize: 'var(--text-sm)',
 });
 
+// Pinned-column cells: opaque background (scrolled rows slide UNDER them, so a
+// translucent surface would show the content bleeding through) plus a divider
+// edge marking the pin seam. The HEAD cell style is applied by this component;
+// body cells are rendered by the caller, so export the body style for the
+// caller's <td>.
+export const stickyBodyCell: React.CSSProperties = {
+  position: 'sticky',
+  right: 0,
+  zIndex: 2,
+  background: 'var(--card-bg)',
+  borderLeft: '1px solid var(--divider)',
+};
+
 /**
  * A table whose header is a NORMAL ROW outside the scrolling body — never `position: sticky`.
  * Only the body scrolls, so its scrollbar belongs to the body and scrolled rows never slide
@@ -43,6 +60,11 @@ const baseTable = (fixed: boolean): React.CSSProperties => ({
  * currently overflows. Horizontal scrolling is mirrored onto the head.
  *
  * Use this for every bounded, scrolling table. A page-level table keeps a plain header row too.
+ *
+ * The scrolling viewport carries `.scroll-table-viewport`, which styles/index.css uses to
+ * size its scrollbars above the global 6px decoration: on a wide table this bar is the only
+ * way to reach the right-hand columns (and the pinned action column), so it has to be
+ * grabbable rather than merely visible.
  */
 export const ScrollTable: React.FC<{
   columns: ScrollTableColumn[];
@@ -90,6 +112,13 @@ export const ScrollTable: React.FC<{
   }, [columns.length]);
 
   const hasDeclaredWidth = columns.some((column) => column.width !== undefined);
+  // `position: sticky` cells live inside a `border-collapse: collapse` table —
+  // collapsed borders make sticky offsets unreliable (the seam border lands on
+  // the row edge instead of the cell). Only a pinned column forces `separate`
+  // on the BODY table; callers that use one draw no per-row borders in JS, so
+  // the CSS class below re-adds the row rule the collapse used to provide.
+  const hasSticky = columns.some((column) => column.sticky);
+  const bodyBorderCollapse: React.CSSProperties['borderCollapse'] = hasSticky ? 'separate' : 'collapse';
   const declaredColgroup = (
     <colgroup>
       {columns.map((column) => (
@@ -138,6 +167,7 @@ export const ScrollTable: React.FC<{
                     ...HEAD_CELL,
                     ...headCellStyle,
                     ...(column.align ? { textAlign: column.align } : {}),
+                    ...(column.sticky ? stickyBodyCell : {}),
                     ...column.headStyle,
                   }}
                 >
@@ -150,6 +180,7 @@ export const ScrollTable: React.FC<{
       </div>
       <div
         ref={bodyRef}
+        className="scroll-table-viewport"
         onScroll={(event) => {
           if (headRef.current) headRef.current.scrollLeft = event.currentTarget.scrollLeft;
         }}
@@ -162,7 +193,15 @@ export const ScrollTable: React.FC<{
       >
         <table
           ref={bodyTableRef}
-          style={{ ...baseTable(hasDeclaredWidth), ...(minWidth !== undefined ? { minWidth } : {}) }}
+          className={hasSticky ? 'scroll-table-sticky' : undefined}
+          style={{
+            ...baseTable(hasDeclaredWidth),
+            borderCollapse: bodyBorderCollapse,
+            // `separate` defaults to 2px cellspacing; zero it so tracks match
+            // the collapse layout used by every other ScrollTable.
+            borderSpacing: 0,
+            ...(minWidth !== undefined ? { minWidth } : {}),
+          }}
         >
           {declaredColgroup}
           <tbody className="scroll-table-body">

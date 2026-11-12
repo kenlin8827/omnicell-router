@@ -55,7 +55,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   { id: 'grp-access', headingKey: 'nav.grpAccess', shortKey: 'nav.shortAccess', icon: Cable, items: [
     { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
     { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
-    { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
+    { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone },
     { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
   ] },
   { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: Server, items: [

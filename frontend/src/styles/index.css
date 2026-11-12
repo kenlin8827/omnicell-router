@@ -36,6 +36,12 @@
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(45, 212, 191, 0.55);
   --scrollbar-thumb: rgba(169, 190, 204, 0.18);
   --scrollbar-thumb-hover: rgba(169, 190, 204, 0.3);
+  /* Hover/active weight for the table viewport's thumb (see
+     `.scroll-table-viewport`): the rest state reuses `--scrollbar-thumb` so the
+     console keeps ONE scrollbar look; the hit-area trick, not the paint, is what
+     makes wide tables grabbable. */
+  --scrollbar-thumb-strong: rgba(169, 190, 204, 0.45);
+  --scrollbar-thumb-strong-hover: rgba(169, 190, 204, 0.65);
 }
 
 [data-theme="light"] {
@@ -75,6 +81,8 @@
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(15, 118, 110, 0.35);
   --scrollbar-thumb: rgba(34, 64, 73, 0.18);
   --scrollbar-thumb-hover: rgba(34, 64, 73, 0.3);
+  --scrollbar-thumb-strong: rgba(34, 64, 73, 0.42);
+  --scrollbar-thumb-strong-hover: rgba(34, 64, 73, 0.62);
 }
 
 /* Shared component tokens resolve from the active scheme. */
@@ -886,6 +894,13 @@ details.sub-card > summary::-webkit-details-marker {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
+/* Validation error state (Combobox `invalid`): rose border, and it wins over
+   the focus accent so the error stays legible while the operator retries. */
+.input.is-invalid,
+.input.is-invalid:focus {
+  border-color: var(--accent-rose);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-rose) 22%, transparent);
+}
 
 /* Borderless variant (Combobox `variant="ghost"`): the trigger carries no chrome until it is
    hovered, focused or open, so a dense toolbar / the console header reads as "current value,
@@ -1211,6 +1226,57 @@ input[type='checkbox']:not(.switch):disabled {
   border-bottom: 0;
 }
 
+/* A ScrollTable with a pinned (sticky) column renders its body with
+   `border-collapse: separate` (collapse breaks sticky offsets), which drops
+   the collapsed row rule — this class restores it. */
+.scroll-table-sticky td {
+  border-bottom: 1px solid var(--divider);
+}
+.scroll-table-sticky tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Label/value descriptions table (the failure detail drawer): the wrapper
+   already draws the outer frame, so the last row must not add a second rule. */
+.desc-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ScrollTable body (components/ScrollTable.tsx): the viewport that actually
+   scrolls. The global 6px decoration is not something you can acquire with a
+   pointer, and on a wide table this is the ONLY way to reach the right-hand
+   columns — so the HIT AREA grows to 10px while the pill stays 6px wide: the
+   thumb is inset by a 2px transparent border with `background-clip: content-box`,
+   which Chrome still counts as thumb for hit-testing. Visually it is exactly the
+   app's own scrollbar (track transparent, thumb at `--scrollbar-thumb`), and it
+   only asserts itself while the pointer is on it.
+   This is the GitHub/VS Code idiom — never a fatter-looking bar, always a bigger
+   grab target. */
+.scroll-table-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll-table-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-table-viewport::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.scroll-table-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-strong);
+  background-clip: content-box;
+}
+.scroll-table-viewport::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-strong-hover);
+  background-clip: content-box;
+}
+.scroll-table-viewport::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Animations */
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
@@ -1305,24 +1371,28 @@ input[type='checkbox']:not(.switch):disabled {
   opacity: 1;
 }
 
-/* Sessions table — merged tokens cell (In/Out + Cached/Hit stat grid). The
-   column width is locked by table-layout:fixed and never clips overflow, so
-   the cell reacts to its OWN width via a container query (not the viewport:
-   the column is what gains/loses space): two 2-row halves when the column
-   has room, a single 4-row stack when too narrow — otherwise the second
-   half's numbers bleed into the Cost column. */
-.tokens-stat-wrap {
-  container-type: inline-size;
-}
-.tokens-stat-grid {
+/* Sessions table — volume tokens cell (In/Cached/Out/Hit) and speed cell
+   (TTFT P50 / P95 / output rate / stall ratio) SHARE ONE SHAPE at every width —
+   both 1×4: one metric per line, full label + bare value. Four rows fit the
+   row height set by the session-id cell, and the two stat cells sit on the
+   same baselines.
+
+   1×4 (not 2×2) is the lesson of the 2×2 experiment: a fixed-layout column
+   gives each half only ~half the width, and a half is too narrow for
+   "label + value" once the label carries the unit (TTFT P95 / 输出 tok/s /
+   Cached) — labels ellipsized and the cell became unreadable. One column
+   gives every row the cell's full width; the height is free because the
+   session-id cell is taller than four lines anyway.
+
+   Shape-fixed, never reflowed by content: the column width is locked by
+   table-layout:fixed, so a narrow window must not wrap a row onto a second
+   line — each row keeps one line and ellipsizes instead (label yields
+   first, number never clips; the exact value is in the cell tooltip). */
+.tokens-stat-grid,
+.tokens-speed-stack {
   display: grid;
-  grid-template-columns: 1fr;
-  column-gap: 14px;
-}
-@container (min-width: 160px) {
-  .tokens-stat-grid {
-    grid-template-columns: 1fr 1fr;
-  }
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 2px;
 }
 
 /* ── Harness rail (landing pages: plugins / MCP) ──────────────────────

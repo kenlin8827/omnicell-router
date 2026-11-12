@@ -173,9 +173,9 @@ export const RouteEntriesPage: React.FC = () => {
 
   const thStyle: React.CSSProperties = {
     textAlign: 'left', fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-label)',
-    color: 'var(--text-dim)', padding: '8px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap',
+    color: 'var(--text-dim)', padding: '8px 10px', borderBottom: '1px solid var(--divider)', whiteSpace: 'nowrap',
   };
-  const tdStyle: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid var(--border)', verticalAlign: 'middle', fontSize: 'var(--text-sm)' };
+  const tdStyle: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid var(--divider)', verticalAlign: 'middle', fontSize: 'var(--text-sm)' };
 
   const sortTh = (labelKey: string, key: SortKey) => (
     <th
@@ -231,12 +231,12 @@ export const RouteEntriesPage: React.FC = () => {
       </p>
 
       {gate && gate.enabled === false && (
-        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--divider)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
           {t('routeEntries.gateDisabled')}
         </div>
       )}
       {gate && gate.enabled !== false && (
-        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
+        <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--divider)', borderRadius: 8, padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', marginBottom: 12 }}>
           {t('routeEntries.directiveNote')}
         </div>
       )}
@@ -313,7 +313,7 @@ export const RouteEntriesPage: React.FC = () => {
                     <span style={{
                       fontSize: 'var(--text-xs)', padding: '2px 8px', borderRadius: 999,
                       color: SOURCE_COLORS[row.source] ?? 'var(--text-dim)',
-                      border: `1px solid ${SOURCE_COLORS[row.source] ?? 'var(--border)'}`,
+                      border: `1px solid ${SOURCE_COLORS[row.source] ?? 'var(--divider)'}`,
                       whiteSpace: 'nowrap',
                     }}>
                       {t(`routeEntries.source_${row.source}`)}
