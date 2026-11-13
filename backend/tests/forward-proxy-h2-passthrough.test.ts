@@ -423,6 +423,7 @@ describe('forward-proxy: ALPN matrix on the MITM leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: async () => false,
     });
     try {
@@ -440,6 +441,7 @@ describe('forward-proxy: ALPN matrix on the MITM leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: async () => false,
     });
     try {

@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
-import { DirectivesConfig, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoManualNode, MihomoRuleTarget, MihomoRuleType, MihomoRoutingMode, MihomoGroupType, MihomoSubscription, ProxyConfig, ProxyMode, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
+import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig } from './types.js';
 import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
-import { lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
+import { INTERCEPT_POSTURES, lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
 import { EFFORT_LADDER } from '../types/router.js';
@@ -15,6 +15,7 @@ import {
   DEFAULT_FORWARD_PROXY_HOST,
   DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
   DEFAULT_FORWARD_PROXY_RULES,
+  DEFAULT_FORWARD_PROXY_INTERCEPT,
   FORWARD_PROXY_MAX_CONNECTIONS_MIN,
   FORWARD_PROXY_MAX_CONNECTIONS_MAX,
   DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS,
@@ -146,10 +147,13 @@ const DEFAULT_CONFIG: RouterConfig = {
     host: DEFAULT_FORWARD_PROXY_HOST,
     maxConnections: DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS,
     requireCredential: false, // opt-in: loopback clients must also present an API key
-    // Rule table (ADR-0018): the fresh-install seed routes everything through
-    // the outbound proxy policy, decrypted. Inert until BOTH this listener and
-    // `proxy.enabled` are on, so it costs a fresh install nothing.
+    // Rule table (ADR-0018 Revision 4): the fresh-install seed routes everything
+    // through the outbound proxy policy as a BLIND TUNNEL. Inert until BOTH this
+    // listener and `proxy.enabled` are on, so it costs a fresh install nothing.
     rules: DEFAULT_FORWARD_PROXY_RULES,
+    // Interception posture: decrypt only what a capability declares (live
+    // client-gateway plugin claims + explicit `ingress: intercept` rows).
+    intercept: DEFAULT_FORWARD_PROXY_INTERCEPT,
     accessLog: { enabled: true, persist: true, persistDays: DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS },
     // Upstream TLS trust for the origin legs (ADR-0019): system trust store
     // unless the operator names a private CA or disables verification.
@@ -387,6 +391,10 @@ function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
     requireCredential: fp.requireCredential === true,
     accessLog: fp.accessLog,
     rules: fp.rules,
+    /** ADR-0018 Revision 4: only the two declared words survive; anything else
+     *  (a typo, a retired spelling) falls back to the claims posture — the
+     *  SAFE direction, never to machine-wide decryption. */
+    intercept: normalizeInterceptPosture(rawFp.intercept),
     upstreamTls: fp.upstreamTls,
     unresolvedModel: fp.unresolvedModel,
   };
@@ -401,6 +409,18 @@ function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
     accessLog: normalizeAccessLogConfig(fp.accessLog),
     upstreamTls: normalizeUpstreamTlsConfig(fp.upstreamTls),
   } as RouterConfig['forwardProxy'];
+}
+
+/**
+ * Resolve `forwardProxy.intercept` (ADR-0018 Revision 4): exactly `'claims'`
+ * and `'all'` parse; every other value (a typo, a retired word, a non-string)
+ * is ignored and the safe posture applies. Junk must never buy machine-wide
+ * decryption.
+ */
+function normalizeInterceptPosture(raw: unknown): InterceptPosture {
+  return typeof raw === 'string' && (INTERCEPT_POSTURES as readonly string[]).includes(raw)
+    ? (raw as InterceptPosture)
+    : DEFAULT_FORWARD_PROXY_INTERCEPT;
 }
 
 /**
@@ -650,7 +670,7 @@ function warnForwardProxyRulesOnce(raw: unknown, proxyEnabled: boolean): void {
   _rulesLintWarned = true;
   // Lint the RAW rows (position-preserving): `lintRules` runs the same parse as
   // the resolver, so a warning's index addresses the row the operator typed.
-  for (const w of lintRules(fp.rules, proxyEnabled)) {
+  for (const w of lintRules(fp.rules, proxyEnabled, normalizeInterceptPosture(fp.intercept))) {
     const at = w.ruleIndex === undefined ? '' : ` rule #${w.ruleIndex + 1}`;
     console.warn(`[Config] forwardProxy.rules${at}: ${w.code}${w.detail ? ` (${w.detail})` : ''}`);
   }

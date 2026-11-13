@@ -1,14 +1,15 @@
 # ADR-0018: The Forward-Proxy Rule Table
 
 Date: 2026-12
-Status: Accepted (revised twice — see the two Revision sections)
+Status: Accepted (revised three times — see the Revision sections)
 Governs: `backend/src/forward-proxy/rules.ts` (the resolver),
 `backend/src/forward-proxy/egress.ts` (`ruleDecision` / `isRuleRejected` /
 `ruleTunnels` / `transitEgressFor` / `transitProxyFor`),
 `backend/src/forward-proxy/server.ts` and `h2-forward.ts` (every transit leg),
 `backend/src/surfaces/direct-forward.ts`,
 `backend/src/config/index.ts` (`resolveForwardProxyConfig`),
-`backend/src/routes/console.ts` (lint + dry-run endpoint),
+`backend/src/routes/console.ts` (lint + dry-run + tighten endpoints),
+`backend/src/plugins/gateways.ts` (`listGatewayHosts` — the claim set, ADR-0017),
 `frontend/src/pages/ProxyAccessPage.tsx` (the rule card).
 
 ## Context
@@ -45,6 +46,107 @@ An intermediate revision split this into two ordered tables (`egressRules` +
 complaint: one host's outcome lived in two lists, and the word "decrypt" became a
 first-class config concept. Interception is the product's default posture, not a
 mode — so it belongs in a DEFAULT, not in a table of its own.
+
+## Revision 4 — interception is DECIDED (the claims posture)
+
+Revisions 1–3 all kept one unexamined premise: **interception is the default**,
+and the table's job is to spell out exceptions. A machine-level traffic census
+(25 proxied hosts, 5 of which the gateway actually needs to read) made the cost
+of that premise visible: ~92% of decrypted bytes were decrypted for no reason,
+and the collateral damage is not theoretical —
+
+- IDEA keeps its OWN per-host trust store (`<config>/ssl/cacerts`) next to the
+  JBR cacerts we can patch, so `analytics.services.jetbrains.com.cn` popped
+  "untrusted server certificate: OmniCellRouter Forward Proxy CA";
+- `github.com` was MITM'd, answered 502, and the IDE's Junie ACP 215 MB binary
+  download looped forever;
+- every interceptor bug became a machine-wide TLS incident, papered over by
+  `connect (mitm setup failed, blind tunnel fallback)`.
+
+The premise is now inverted. **A host is decrypted when something DECLARES it,
+not because nothing forbade it.** `ForwardProxyConfig.intercept` names the two
+postures:
+
+```yaml
+forwardProxy:
+  intercept: claims   # default
+  rules:
+    - { match: "*", ingress: passthrough, egress: proxy }
+```
+
+`resolveHost` resolves in this order (it stays a pure function — the caller
+passes the claim set in, so the module never imports the plugin registry):
+
+1. **loopback** → `direct` + blind tunnel (unchanged invariant);
+2. **a SPECIFIC matching row** (`match !== '*'`) → that row's `ingress`/`egress`
+   verbatim: the operator outranks every claim, so `reject` and `passthrough`
+   both override one;
+3. **the host is CLAIMED** by a live client-gateway plugin (`listGatewayHosts()`,
+   ADR-0017) → the catch-all's `egress`, decrypted, `reason: 'claim'`;
+4. **`intercept: 'all'`** → the catch-all's `egress`, decrypted (audit mode);
+5. **otherwise** → the catch-all's `egress`, blind tunnel.
+
+Consequences of that order, stated plainly because each one is a decision:
+
+- **The catch-all row's `ingress` is a DEFAULT POSTURE, not a blanket order.**
+  Under `claims`, `{ match: '*', ingress: intercept }` decrypts nothing a plugin
+  does not claim — the row reads stronger than it acts, so `lintRules` reports
+  `catch-all-intercepts` (only when the posture is `claims`). The fresh-install
+  seed is `{ match: '*', ingress: passthrough, egress: proxy }`.
+- **`reject` is unchanged.** A catch-all `reject` is still an admission gate for
+  every host it covers, and no claim un-blocks it — a claim is permission to
+  read, never permission to reach. Write a specific row above it for the
+  exception.
+- **`egress` is unchanged.** The posture touches exactly one axis; a `proxy` row
+  is still `proxy`, and every transit leg keeps calling the same resolver.
+- **`reason` gains `claim`.** The ledger and the console probe can now say "this
+  was decrypted because a plugin declared it", instead of implying the operator
+  wrote a row.
+
+### Why the claim set is not a second table
+
+The rejected design is `forwardProxy.decryptRules: [...]` — an operator list of
+"decrypt these". It is the wrong shape for three reasons:
+
+- **The entries are derived, not chosen.** `listGatewayHosts()` is a projection
+  of what is installed and enabled. A hand-maintained copy would be a second
+  truth that drifts on every plugin install (this repo's own manifest drift — a
+  host in `AUTHORITIES` but not in `plugin.json` — is the same failure one level
+  down);
+- **the decision already exists at the moment it is needed.** A host is claimed
+  precisely because a plugin must READ it; "decrypt exactly what something is
+  reading" is a derivation, and any operator list restating it can only be too
+  narrow (a silent no-op) or too wide (the very exposure this revision removes);
+- **a second table doubles the reading for one host** — the same objection §1
+  and the Non-goals raise against `decryptRules`. Revising the DEFAULT satisfies
+  the capability without a second surface: the operator still has the row table
+  for exceptions in BOTH directions (a specific `intercept` row adds a host, a
+  specific `passthrough`/`reject` row takes one away).
+
+Operators are not left without the audit posture: `intercept: 'all'` restores
+machine-wide decryption, and it is deliberately a VISIBLE switch — a boot WARN,
+a warn-toned banner in the rule card while it is on, and a red note in the
+tightening flow. A standing machine-wide TLS interception must never live only
+in a YAML value.
+
+### Old installs are not migrated silently
+
+An install that predates this revision carries `{ match: '*', ingress:
+intercept, egress: proxy }`. Under the new posture that row decrypts nothing
+extra, so the safe direction is already in force — but the file now says
+something it does not do. The console reports `catch-all-intercepts` and offers
+`POST /api/admin/forward-proxy/tighten`, which rewrites the catch-all to
+`ingress: passthrough` (keeping its `egress`), sets `intercept: claims` and goes
+through the normal config save (hot-applied, no restart). Nothing rewrites the
+operator's file on boot; the button IS the consent.
+
+The rewrite is narrow by contract: it touches the catch-all's `ingress` and the
+posture, and nothing else — specific `intercept` rows keep decrypting (they are
+the operator's own exceptions), every other row is written back verbatim, and a
+second click is a no-op rather than a re-write. The button is a one-shot
+migration affordance rather than a standing control: it renders inside the
+`catch-all-intercepts` finding and disappears with it — a table that is already
+tight has nothing to tighten, and a permanently greyed button would be noise.
 
 ## Revision 2 — the two-field `{ ingress, egress }` row
 
@@ -193,10 +295,10 @@ spelling: `egressRules` / `decryptRules` are dropped on load.
   loopback `reject` is unspellable — deliberate. Loopback always resolves to
   `ingress: passthrough` + `egress: direct`, no matter what the table says.
 - **An unmatched host is `direct` + intercepted.** A `reject` fallback would turn
-  one missing rule into a total outage on the machine's traffic valve; a
-  "not intercepted" fallback would silently turn full capture off for a config
-  that only wanted one exception. Both fallbacks equal the pre-ADR-0018 defaults,
-  so an EMPTY table changes nothing.
+  one missing rule into a total outage on the machine's traffic valve.
+  *(Superseded by Revision 4: an unmatched host keeps the fallback's `egress`
+  but is blind-tunneled unless it is claimed or `intercept: 'all'` is on. The
+  `reject` half of this invariant still holds.)*
 
 ### 3. `reject` is an ADMISSION gate, checked before interception
 
@@ -278,11 +380,11 @@ An install that still carries them therefore lands on the shipped default table
 
 No schema bump: the disk schema never declared these keys on the v1 side either,
 so dropping them is a shrink, not a version change. The fresh-install template
-seeds `enabled: false` + `rules: [{ match: '*', ingress: intercept, egress:
-proxy }]` — one catch-all: intercept everything, exit through the outbound proxy.
-The listener is the master gate, so the seed routes nothing until the operator
-turns the proxy on — and when they do, "everything through the outbound proxy" is
-the posture a blocked network needs. `reject` is never seeded.
+seeds `enabled: false` + `rules: [{ match: '*', ingress: passthrough, egress:
+proxy }]` (Revision 4 — the seed used to intercept everything) — one catch-all:
+blind-tunnel everything, exit through the outbound proxy, and decrypt only what a
+gateway plugin claims. The listener is the master gate, so the seed routes
+nothing until the operator turns the proxy on. `reject` is never seeded.
 
 ### 7. The console is part of the contract
 
@@ -290,12 +392,18 @@ An ordered table is only readable if you can ask it a question, so
 `POST /api/admin/forward-proxy/rules/resolve` returns, for the UNSAVED table:
 
 - `warnings` — lint codes (`invalid-rule`, `unreachable-rule`, `no-catch-all`,
-  `proxy-rule-without-proxy`) carrying the index of the row the operator typed;
-  the console renders the wording through i18n, the backend owns the rule;
+  `catch-all-intercepts`, `proxy-rule-without-proxy`) carrying the index of the
+  row the operator typed; the console renders the wording through i18n, the
+  backend owns the rule;
 - `decision` — `{ action, tunnel, reason, ruleIndex, match }` for a probe host
   (`action` is the EXIT — direct / proxy / reject — and `tunnel` says whether it
-  is blind), produced by the SAME `resolveHost` the proxy legs call, so the
-  preview cannot disagree with reality.
+  is blind), produced by the SAME `resolveHost` the proxy legs call. Since
+  Revision 4 the response also carries `intercept` (the live posture or the
+  UNSAVED one from the request body), `claimed` (the live claim set) and
+  `claimSources` (the same set grouped per plugin — the console's "who decrypts
+  this host" answer), because those now decide `tunnel` for every host no
+  specific row names — a preview that omitted them would answer a different
+  question than the proxy does.
 
 The console speaks the row's OWN two fields and nothing else: one dropdown for
 `ingress` (Intercept / Passthrough / Reject), one toggle for `egress`
@@ -332,9 +440,12 @@ bypass list even when its egress was "via proxy".
 - The page's three-part egress UI (global switch + per-row checkbox + a
   provider-scoped list reached through a hostname) and its separate MITM
   allow-list collapse into one rule card.
-- `mitmHosts` users lose the opt-in allow-list mode; the equivalent is a
-  catch-all row carrying the `passthrough` ingress (`ingress: passthrough,
-  egress: proxy`).
+- `mitmHosts` users lose the opt-in allow-list mode; since Revision 4 the
+  allow-list posture IS the default (a `passthrough` catch-all plus the plugin
+  claim set), and `intercept: 'all'` is the explicit way back to full capture.
+- Decryption follows capability: installing a client-gateway plugin is the act
+  that grants it interception, and uninstalling it revokes that grant on the next
+  request (the claim set is read live, never cached).
 - A config that sets `proxy.includes` and expects it to gate transit traffic now
   sees the rule table win. That is the intended correction, and it is why `proxy`
   resolves through `outboundProxyUrl()`.

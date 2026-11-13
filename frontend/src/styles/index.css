@@ -730,6 +730,44 @@ details.sub-card > summary::-webkit-details-marker {
   font-size: var(--text-xs);
 }
 
+/* Action living INSIDE a finding note (`EgressNote`'s `action` slot). It is TEXT,
+   not a control box, and that is a layout constraint rather than a taste:
+   the note sets 11px/1.5, so its line box is 16.5px. Any inline box tall enough
+   to read as a button (>= 20px, and stock `btn-sm` is 28.5px) is taller than
+   that line box, so the line it sits on grows and ONLY that line's leading
+   changes — the paragraph reads as if it had a gap punched in it. Styled like
+   the sentence it lives in: same font, inherited color (`currentColor` derives
+   from the note's tone, so warn = red and info = dim without a second class),
+   underline for affordance, zero vertical padding, no border, no shadow. */
+.btn-note {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: 3px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.btn-note:hover {
+  color: inherit;
+  filter: brightness(1.25);
+}
+.btn-note:focus-visible {
+  outline: 2px solid color-mix(in srgb, currentColor 60%, transparent);
+  outline-offset: 2px;
+}
+.btn-note:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
+
 /* Toggle chip for multi-select option rows (thinking-effort ladder,
    capability pickers, filter pills). Rendered by components/Chip.tsx as a
    real <button> carrying `aria-pressed`, so the unselected state must still

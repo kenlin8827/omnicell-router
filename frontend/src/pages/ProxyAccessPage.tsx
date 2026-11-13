@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
-import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta, type CaTrustResponse } from '../lib/api';
+import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta, type CaTrustResponse, type ClaimSource } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -19,6 +19,8 @@ import { sortModelOptions } from '../lib/model-options';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
 
 import { FONT_MONO } from '../lib/fonts';
+import { Dialog } from '../components/Dialog';
+import { ScrollTable, type ScrollTableColumn } from '../components/ScrollTable';
 
 /** Default rows per page — page 1 follows the live tail, so the default is generous. */
 const PAGE_SIZE = 100;
@@ -49,6 +51,10 @@ interface ForwardProxyShape {
   /** The rule table (ADR-0018) — one ordered list, first match wins; each row is
    *  `{ match, ingress, egress }`: what happens at ingress and where the bytes exit. */
   rules?: ForwardProxyRule[];
+  /** Interception posture (ADR-0018 Revision 4): `claims` = decrypt only what a
+   *  live gateway plugin claims (+ explicit intercept rows); `all` = every host
+   *  is decrypted (audit mode). Hot-applies on save. */
+  intercept?: InterceptPosture;
   /** Concurrent inbound socket cap (default 512). Raw-YAML page only. */
   maxConnections?: number;
   unresolvedModel?: { onMiss?: string; hosts?: Record<string, string> };
@@ -91,10 +97,14 @@ const LOG_TD: React.CSSProperties = {
  * cells of the same template, so a column label can never drift off the field
  * it names (the ingress control is pinned, the match input takes the slack, and
  * the egress / actions tracks size to their widest row).
+ *
+ * The ingress track is wide enough for the LONGEST ingress label in the shipped
+ * locales (`Abfangen (entschlüsseln)`) — a narrower pin ellipsizes the half of
+ * the label that carries the consequence (decrypt). Bump it with the labels.
  */
 const RULE_GRID: React.CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '18px minmax(0, 1fr) 170px max-content max-content',
+  gridTemplateColumns: '18px minmax(0, 1fr) 210px max-content max-content',
   columnGap: '6px',
   rowGap: '8px',
   alignItems: 'center',
@@ -123,8 +133,20 @@ const fmtBytes = (n: number): string => (n === 0 ? '0' : n < 1024 ? String(n) : 
  * Inline advisory strip for the egress card (ADR-0018).
  * `warn` = the table cannot do what it says (no catch-all / proxy rules with the
  * outbound proxy off); `info` = the table is currently inert (listener off).
+ *
+ * `action` is the finding's own one-shot fix. It trails the sentence IN THE SAME
+ * INLINE FLOW, so it sits at the end of the text when there is room and wraps
+ * when there is not — the sentence always keeps the full width. Two layout
+ * constraints hold this together:
+ * - Never a flex row with the action as a sibling: the control becomes a column
+ *   constraint, the prose wraps early into a narrow ragged block, and the button
+ *   floats in the whitespace the wrap created.
+ * - Whatever is passed must be TEXT-LEVEL (see `.btn-note`): the line box here is
+ *   16.5px, so any inline box tall enough to look like a button grows the single
+ *   line it sits on, and the paragraph reads as if a gap were punched into it.
+ *   That is a layout constraint, not a style preference.
  */
-const EgressNote: React.FC<{ tone: 'warn' | 'info'; text: string }> = ({ tone, text }) => (
+const EgressNote: React.FC<{ tone: 'warn' | 'info'; text: string; action?: React.ReactNode }> = ({ tone, text, action }) => (
   <div
     style={{
       display: 'flex',
@@ -141,7 +163,13 @@ const EgressNote: React.FC<{ tone: 'warn' | 'info'; text: string }> = ({ tone, t
     }}
   >
     {tone === 'warn' && <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />}
-    <span>{text}</span>
+    <div style={{ minWidth: 0 }}>
+      <span>{text}</span>
+      {/* Plain inline wrapper: the action is text, so it must stay in the
+          paragraph's flow (an inline-flex wrapper re-introduces a box with its
+          own height, which is the gap this layout exists to avoid). */}
+      {action && <span style={{ marginLeft: '8px' }}>{action}</span>}
+    </div>
   </div>
 );
 
@@ -1615,6 +1643,13 @@ export const ProxyAccessPage: React.FC = () => {
   const [ruleWarnings, setRuleWarnings] = useState<RuleWarning[]>([]);
   const [probeHost, setProbeHost] = useState('');
   const [probeDecision, setProbeDecision] = useState<HostDecision | null>(null);
+  /** Hosts a live client-gateway plugin claims — decrypted under the `claims`
+   *  posture even when the table says `passthrough` (ADR-0018 Revision 4). */
+  const [claimedHosts, setClaimedHosts] = useState<string[]>([]);
+  /** The same claim set attributed per plugin — the "who decrypts what" dialog. */
+  const [claimSources, setClaimSources] = useState<ClaimSource[]>([]);
+  const [claimsOpen, setClaimsOpen] = useState(false);
+  const [tightening, setTightening] = useState(false);
   /** unresolvedModel host-override rows — per-row onMiss value. */
   const [missRows, setMissRows] = useState<{ host: string; onMiss: string }[]>([]);
   /** onMiss is ONE flat picker: the two verbs first, then the modelRef pool
@@ -1716,15 +1751,37 @@ export const ProxyAccessPage: React.FC = () => {
     const host = probeHost.trim();
     const timer = setTimeout(() => {
       api
-        .resolveForwardProxyRules({ host: host || undefined, rules: ruleRows })
+        .resolveForwardProxyRules({ host: host || undefined, rules: ruleRows, intercept: fp?.intercept })
         .then(r => {
           setRuleWarnings(r.warnings);
           setProbeDecision(r.decision);
+          setClaimedHosts(r.claimed ?? []);
+          setClaimSources(r.claimSources ?? []);
         })
         .catch(() => {});
     }, 350);
     return () => clearTimeout(timer);
-  }, [probeHost, ruleRows]);
+  }, [probeHost, ruleRows, fp?.intercept]);
+
+  /** One-click tighten (ADR-0018 Revision 4): rewrite the catch-all to a blind
+   *  tunnel and pin the posture to `claims`. The backend performs the save (and
+   *  the hot-apply); this only re-reads the result, so the table on screen is
+   *  what the proxy now runs. */
+  const handleTighten = async () => {
+    setTightening(true);
+    try {
+      const r = await api.tightenForwardProxyRules();
+      setRuleRows(r.rules);
+      setRuleWarnings(r.warnings);
+      setFp(prev => ({ ...(prev || {}), rules: r.rules, intercept: r.intercept }));
+      bootSnapshot.current = { ...bootSnapshot.current, rules: r.rules, intercept: r.intercept };
+      toast.success(t('forwardProxy.ruleTightenDone'));
+    } catch (err: any) {
+      toast.error(t('common.failed') + err.message);
+    } finally {
+      setTightening(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -1793,6 +1850,12 @@ export const ProxyAccessPage: React.FC = () => {
    *  the probe must not invent a second name for what the operator just picked. */
   const ingressLabel = (tunnel: boolean): string =>
     tunnel ? t('forwardProxy.ingressPassthrough') : t('forwardProxy.ingressIntercept');
+  /** Columns of the "decrypted without a rule" dialog: the host, and WHICH live
+   *  plugin declares it (that attribution is the whole reason the list exists). */
+  const claimColumns: ScrollTableColumn[] = [
+    { key: 'host', label: t('forwardProxy.ruleClaimsColHost'), width: '64%' },
+    { key: 'plugin', label: t('forwardProxy.ruleClaimsColPlugin') },
+  ];
   /** Row-level lint sentence for EVERY code in the mirrored union. Banner-level
    *  codes return null (the note above the table already says it); the `never`
    *  assertion makes a new backend code a typecheck failure here rather than a
@@ -1803,6 +1866,9 @@ export const ProxyAccessPage: React.FC = () => {
       case 'unreachable-rule': return t('forwardProxy.ruleUnreachable');
       case 'proxy-rule-without-proxy': return null;
       case 'no-catch-all': return null;
+      // Table-level: the catch-all row reads as "decrypt everything" but the
+      // claims posture makes it decrypt nothing unclaimed — banner above.
+      case 'catch-all-intercepts': return null;
       default: {
         const unmapped: never = code;
         throw new Error(`unmapped rule warning: ${unmapped}`);
@@ -2121,6 +2187,35 @@ export const ProxyAccessPage: React.FC = () => {
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '12px', lineHeight: 1.5 }}>
               {t('forwardProxy.ruleTableHint')}
             </div>
+            {/* Interception posture (ADR-0018 Revision 4). Default `claims`:
+                decrypt only what a live gateway plugin claims plus explicit
+                intercept rows — everything else stays a blind tunnel. `all` is
+                the audit posture and says so in red. */}
+            <label style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer', marginBottom: '12px' }}>
+              <span style={{ display: 'block' }}>
+                {t('forwardProxy.interceptAll')}
+                <span style={{ display: 'block', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px', lineHeight: 'var(--leading-normal)' }}>
+                  {t('forwardProxy.interceptAllHint', { claimed: String(claimedHosts.length) })}
+                </span>
+              </span>
+              <Switch
+                checked={fp.intercept === 'all'}
+                onChange={v => setFp({ ...fp, intercept: v ? 'all' : 'claims' })}
+              />
+            </label>
+            {fp.intercept === 'all' && (
+              <EgressNote tone="warn" text={t('forwardProxy.interceptAllWarning')} />
+            )}
+            {claimedHosts.length > 0 && (
+              <button
+                className="btn btn-sm"
+                style={{ marginBottom: '10px', gap: '6px' }}
+                onClick={() => setClaimsOpen(true)}
+              >
+                <ShieldCheck size={13} />
+                <span>{t('forwardProxy.ruleClaimsBtn', { n: String(claimedHosts.length) })}</span>
+              </button>
+            )}
             {fp.enabled !== true && <EgressNote tone="info" text={t('forwardProxy.ruleDormant')} />}
             {ruleWarnings.some(w => w.code === 'proxy-rule-without-proxy') && (
               <EgressNote tone="warn" text={t('forwardProxy.ruleProxyOff')} />
@@ -2130,6 +2225,27 @@ export const ProxyAccessPage: React.FC = () => {
             )}
             {ruleWarnings.some(w => w.code === 'no-catch-all') && (
               <EgressNote tone="warn" text={t('forwardProxy.ruleNoCatchAll')} />
+            )}
+            {/* The tighten action is a one-shot MIGRATION affordance, not a
+                standing control: it lives inside the finding it clears and
+                disappears with it (the `action` slot of EgressNote). A table
+                that is already tight has nothing to tighten, so a permanently
+                greyed button would only be noise — re-open the finding (put the
+                catch-all back to `intercept`) to see it again. */}
+            {ruleWarnings.some(w => w.code === 'catch-all-intercepts') && (
+              <EgressNote
+                tone="warn"
+                text={t('forwardProxy.ruleCatchAllIntercepts')}
+                action={
+                  /* A sentence-level action, not a control box: anything tall enough
+                     to be a button is taller than the note's 16.5px line box, so it
+                     punches a gap into exactly one line of the paragraph. See
+                     `.btn-note` in styles/index.css. */
+                  <button className="btn-note" disabled={tightening} onClick={handleTighten}>
+                    {t('forwardProxy.ruleTighten')}
+                  </button>
+                }
+              />
             )}
             {ruleRows.length > 0 && (
               <div style={RULE_GRID}>
@@ -2254,6 +2370,11 @@ export const ProxyAccessPage: React.FC = () => {
               <input
                 type="text"
                 placeholder={t('forwardProxy.ruleProbe')}
+                /* Placeholder doubles as the hint, so mirror it as the
+                   accessible name — a placeholder stops being announced once
+                   the operator types, and that is exactly when the field's
+                   meaning matters most. */
+                aria-label={t('forwardProxy.ruleProbe')}
                 value={probeHost}
                 onChange={e => setProbeHost(e.target.value)}
                 className="input"
@@ -2268,10 +2389,15 @@ export const ProxyAccessPage: React.FC = () => {
                         index: String((probeDecision.ruleIndex ?? 0) + 1),
                         match: probeDecision.match ?? '',
                       })
-                    : t(
-                        probeDecision.reason === 'loopback' ? 'forwardProxy.ruleProbeLoopback' : 'forwardProxy.ruleProbeFallback',
-                        { action: exitLabel(probeDecision.action), mode: ingressLabel(probeDecision.tunnel) },
-                      )}
+                    : probeDecision.reason === 'claim'
+                      ? t('forwardProxy.ruleProbeClaim', {
+                          action: exitLabel(probeDecision.action),
+                          mode: ingressLabel(probeDecision.tunnel),
+                        })
+                      : t(
+                          probeDecision.reason === 'loopback' ? 'forwardProxy.ruleProbeLoopback' : 'forwardProxy.ruleProbeFallback',
+                          { action: exitLabel(probeDecision.action), mode: ingressLabel(probeDecision.tunnel) },
+                        )}
                 </span>
               )}
             </div>
@@ -2516,6 +2642,29 @@ export const ProxyAccessPage: React.FC = () => {
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <ProxyAccessLogCard />
         </div>
+      )}
+      {/* Who gets decrypted without a rule: the live claim set, attributed per
+          plugin. A table (not an inline sentence) because the operator's real
+          answer is "which plugin drags THIS host into the pipeline". */}
+      {claimsOpen && (
+        <Dialog
+          title={t('forwardProxy.ruleClaimsTitle')}
+          subtitle={t('forwardProxy.ruleClaimsHint')}
+          onClose={() => setClaimsOpen(false)}
+          closeLabel={t('common.close')}
+          width={580}
+        >
+          <ScrollTable columns={claimColumns} maxHeight={380} empty={t('forwardProxy.ruleClaimsEmpty')}>
+            {claimSources.flatMap(src =>
+              src.hosts.map(host => (
+                <tr key={`${src.pluginId}:${host}`}>
+                  <td style={{ padding: '8px 10px', fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' }}>{host}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{src.pluginId}</td>
+                </tr>
+              )),
+            )}
+          </ScrollTable>
+        </Dialog>
       )}
     </div>
   );

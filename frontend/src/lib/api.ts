@@ -605,12 +605,23 @@ export interface CaTrustResponse {
  *
  * ONE ordered table, first match wins. Each row carries TWO fields splitting
  * the decision into its axes: `ingress` — what happens at ingress (`intercept`
- * = MITM, the default posture; `passthrough` = blind tunnel; `reject` = 403 on
- * admission) — and `egress` — where the bytes exit (`direct` / `proxy`). A
- * `reject` row uses `egress: 'direct'`. Loopback is always passthrough +
- * direct; an unmatched host falls back to direct + intercepted.
+ * = MITM (a specific row means it; on the catch-all row it is only the default
+ * posture for hosts nothing claims); `passthrough` = blind tunnel; `reject` =
+ * 403 on admission) — and `egress` — where the bytes exit (`direct` /
+ * `proxy`). A `reject` row uses `egress: 'direct'`. Loopback is always
+ * passthrough + direct; an unmatched host takes the catch-all's `egress` and is
+ * blind-tunneled unless a live client-gateway plugin CLAIMS it or the audit
+ * posture (`intercept: 'all'`) is on (ADR-0018 Revision 4).
  */
 export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/**
+ * The interception posture (ADR-0018 Revision 4) — `'claims'` (default) decrypts
+ * only plugin-claimed hosts and explicit `ingress: intercept` rows; `'all'` is
+ * the machine-wide audit posture. Parity-checked against the backend's
+ * `INTERCEPT_POSTURES` by `forward-proxy-console-vocabulary-parity.test.ts`.
+ */
+export type InterceptPosture = 'claims' | 'all';
 
 /** Where the bytes exit. */
 export type RuleEgress = 'direct' | 'proxy';
@@ -630,6 +641,7 @@ export type RuleWarningCode =
   | 'invalid-rule'
   | 'unreachable-rule'
   | 'no-catch-all'
+  | 'catch-all-intercepts'
   | 'proxy-rule-without-proxy';
 
 export interface RuleWarning {
@@ -644,7 +656,8 @@ export interface RuleWarning {
 export interface HostDecision {
   action: RuleExit;
   tunnel: boolean;
-  reason: 'loopback' | 'rule' | 'fallback';
+  /** `claim` = a live client-gateway plugin claims this host, so it is decrypted. */
+  reason: 'loopback' | 'rule' | 'claim' | 'fallback';
   ruleIndex?: number;
   match?: string;
 }
@@ -655,8 +668,28 @@ export interface RulesResolveResponse {
   warnings: RuleWarning[];
   /** `config.proxy.enabled` — a `proxy` row is inert while this is false. */
   proxyEnabled: boolean;
+  /** Interception posture in force (or the UNSAVED one when the body carried it). */
+  intercept: InterceptPosture;
+  /** Hosts a live client-gateway plugin claims — decrypted under `claims`. */
+  claimed: string[];
+  /** The same claim set, attributed: which plugin declares which hosts. */
+  claimSources: ClaimSource[];
   /** Null when the request carried no probe host. */
   decision: HostDecision | null;
+}
+
+/** One live client-gateway plugin and the hosts it claims. */
+export interface ClaimSource {
+  pluginId: string;
+  hosts: string[];
+}
+
+/** `POST /api/admin/forward-proxy/tighten` — the catch-all rewritten to a blind tunnel. */
+export interface TightenRulesResponse {
+  status: string;
+  rules: ForwardProxyRule[];
+  intercept: InterceptPosture;
+  warnings: RuleWarning[];
 }
 
 /**
@@ -2449,12 +2482,27 @@ export const api = {
    * SAME resolver the proxy legs use, so the preview can never disagree with the
    * live decision. Pass `rules` to test UNSAVED edits.
    */
-  async resolveForwardProxyRules(args: { host?: string; rules?: ForwardProxyRule[] }): Promise<RulesResolveResponse> {
+  async resolveForwardProxyRules(args: {
+    host?: string;
+    rules?: ForwardProxyRule[];
+    intercept?: InterceptPosture;
+  }): Promise<RulesResolveResponse> {
     const res = await fetch('/api/admin/forward-proxy/rules/resolve', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(args),
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Tighten the rule table to the allowlist posture (ADR-0018 Revision 4):
+   * the catch-all becomes a blind tunnel (same egress) and `intercept` goes to
+   * `claims`. Only the operator can trigger it — nothing runs on boot.
+   */
+  async tightenForwardProxyRules(): Promise<TightenRulesResponse> {
+    const res = await fetch('/api/admin/forward-proxy/tighten', { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

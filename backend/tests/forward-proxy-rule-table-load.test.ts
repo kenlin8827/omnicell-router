@@ -46,9 +46,11 @@ describe('forward-proxy: loading the rule table', () => {
     assert.deepEqual(empty.forwardProxy?.rules, [], 'an empty table is a decision, not "absent"');
   });
 
-  it('a section without `rules` gets the shipped default table', () => {
+  it('a section without `rules` gets the shipped default table (blind tunnel — ADR-0018 Revision 4)', () => {
     const cfg = loadConfig(writeConfig({}));
-    assert.deepEqual(cfg.forwardProxy?.rules, [{ match: '*', ingress: 'intercept', egress: 'proxy' }]);
+    assert.deepEqual(cfg.forwardProxy?.rules, [{ match: '*', ingress: 'passthrough', egress: 'proxy' }]);
+    // The posture travels with it: the default decrypts nothing on its own.
+    assert.equal(cfg.forwardProxy?.intercept, 'claims');
   });
 
   it('a row without ingress/egress is an invalid slot — never translated', () => {
@@ -85,7 +87,16 @@ describe('forward-proxy: loading the rule table', () => {
     assert.equal(fp.viaOutboundProxy, undefined);
     assert.equal(fp.mitmHosts, undefined);
     // …and the table is untouched by them: the default posture stands.
-    assert.deepEqual(cfg.forwardProxy?.rules, [{ match: '*', ingress: 'intercept', egress: 'proxy' }]);
+    assert.deepEqual(cfg.forwardProxy?.rules, [{ match: '*', ingress: 'passthrough', egress: 'proxy' }]);
+  });
+
+  it('reads `intercept` strictly: exactly claims|all parse, junk falls back to claims', () => {
+    assert.equal(loadConfig(writeConfig({ intercept: 'all' })).forwardProxy?.intercept, 'all');
+    assert.equal(loadConfig(writeConfig({ intercept: 'claims' })).forwardProxy?.intercept, 'claims');
+    // Junk must never buy machine-wide decryption.
+    for (const junk of ['everything', 'ALL', 'true', 1, null]) {
+      assert.equal(loadConfig(writeConfig({ intercept: junk })).forwardProxy?.intercept, 'claims', String(junk));
+    }
   });
 
   it('reads `requireCredential` strictly: absent/junk is off, true is on', () => {

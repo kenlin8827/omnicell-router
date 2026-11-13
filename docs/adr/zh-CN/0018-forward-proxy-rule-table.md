@@ -1,14 +1,15 @@
 # ADR-0018：前向代理规则表
 
 日期：2026-12
-状态：已接受（两次修订——见下方两节「修订」）
+状态：已接受（三次修订——见下方各节「修订」）
 治理对象：`backend/src/forward-proxy/rules.ts`（解析器）、
 `backend/src/forward-proxy/egress.ts`（`ruleDecision` / `isRuleRejected` /
 `ruleTunnels` / `transitEgressFor` / `transitProxyFor`）、
 `backend/src/forward-proxy/server.ts` 与 `h2-forward.ts`（每条转发腿）、
 `backend/src/surfaces/direct-forward.ts`、
 `backend/src/config/index.ts`（`resolveForwardProxyConfig`）、
-`backend/src/routes/console.ts`（lint + 试算端点）、
+`backend/src/routes/console.ts`（lint + 试算 + 收紧端点）、
+`backend/src/plugins/gateways.ts`（`listGatewayHosts`——声明集合，ADR-0017）、
 `frontend/src/pages/ProxyAccessPage.tsx`（规则卡）。
 
 ## 背景
@@ -26,6 +27,54 @@
 没有办法拒绝一个主机。也没有办法说「除了这些，全部走代理」而不去动一个同时管隧道和转发的开关。而「`*.internal.com` 直连」和「`*.internal.com` 不接管」写在两个毫不相干的地方，没人能只看一处就知道一个主机的完整结果。
 
 中间修订曾把它拆成两张有序表（`egressRules` + `decryptRules`）。那消掉了冗余，但没消掉操作者真正的抱怨：一个主机的结果分居两处，而「解密」成了配置里的一等概念。接管是这个产品的默认姿态，不是一种模式——所以它应该是一个**默认值**，而不是一张表。
+
+## 修订 4——接管是被「声明」的（claims 姿态）
+
+修订 1–3 都保留了一个没被审视的前提：**接管是默认值**，规则表的职责只是把例外写出来。一次整机流量普查（25 台被代理的主机里，网关真正需要读的只有 5 台）让这个前提的代价显露出来：约 92% 的被解密字节毫无理由地被解密，而附带伤害并非理论问题——
+
+- IDEA 除了我们能打补丁的 JBR cacerts，还维护**自己**的按主机信任库（`<config>/ssl/cacerts`），于是 `analytics.services.jetbrains.com.cn` 弹出了「不可信服务器的证书：OmniCellRouter Forward Proxy CA」；
+- `github.com` 被 MITM、返回 502，IDE 里 Junie ACP 那个 215MB 二进制的下载死循环；
+- 拦截器的任何一个 bug 都变成整机 TLS 事故，只能靠 `connect (mitm setup failed, blind tunnel fallback)` 兜住。
+
+前提现在被反转：**一台主机被解密，是因为有东西「声明」了它，而不是因为没有东西禁止它。** `ForwardProxyConfig.intercept` 命名两种姿态：
+
+```yaml
+forwardProxy:
+  intercept: claims   # 默认
+  rules:
+    - { match: "*", ingress: passthrough, egress: proxy }
+```
+
+`resolveHost` 按以下顺序判定（它仍然是纯函数——声明集合由调用方传入，模块本身不 import 插件注册表）：
+
+1. **loopback** → `direct` + 盲隧道（不变量不变）；
+2. **命中的是 SPECIFIC 行**（`match !== '*'`）→ 完全按该行的 `ingress`/`egress`：运营者高于任何声明，所以 `reject` 与 `passthrough` 都能覆盖它；
+3. **该主机被 live client-gateway 插件声明**（`listGatewayHosts()`，ADR-0017）→ 兜底行的 `egress`，解密，`reason: 'claim'`；
+4. **`intercept: 'all'`** → 兜底行的 `egress`，解密（审计模式）；
+5. **其余** → 兜底行的 `egress`，盲隧道。
+
+这个顺序带来的后果，逐条写清，因为每一条都是决策：
+
+- **兜底行的 `ingress` 是「默认姿态」，不是「通杀指令」。** 在 `claims` 下，`{ match: '*', ingress: intercept }` 并不会解密任何插件没声明的主机——这一行读起来比它实际做的强，所以 `lintRules` 报 `catch-all-intercepts`（仅在姿态为 `claims` 时）。新装种子是 `{ match: '*', ingress: passthrough, egress: proxy }`。
+- **`reject` 语义不变。** 兜底的 `reject` 依然是它覆盖的每一台主机的准入门，任何声明都解不开它——声明是「可以读」的许可，永远不是「可以到达」的许可。要例外，就在它上面写一条具体行。
+- **`egress` 语义不变。** 姿态只碰一根轴；`proxy` 行依然是 `proxy`，每条转发腿仍然调同一个解析器。
+- **`reason` 增加 `claim`。** 账本与控制台探针现在能说清「这台主机被解密是因为插件声明了它」，而不是让人以为是运营者写了行。
+
+### 为什么声明集合不是第二张表
+
+被否决的设计是 `forwardProxy.decryptRules: [...]`——一张运营者手写的「解密这些」。它的形状是错的，理由有三：
+
+- **条目是推导出来的，不是挑出来的。** `listGatewayHosts()` 是「装了什么、开了什么」的投影。手维护一份副本就是第二份真相，每次装插件都会漂（本仓库自己的 manifest 漂移——`AUTHORITIES` 里有而 `plugin.json` 里没有——就是同一个失败低一层的样子）；
+- **做决策所需的信息在被需要时已经存在。** 一台主机被声明，恰恰是因为插件必须**读**它；「解密那些正被读取的东西」是推导，任何重述它的运营者列表只可能太窄（静默失效）或太宽（正是本次修订要消除的暴露面）；
+- **第二张表会让一台主机被读两遍**——§1 与非目标对 `decryptRules` 提的正是这条反对。修订「默认值」就够满足这个能力，不需要第二个表面：例外仍然写在行表里，而且是双向的（一条具体 `intercept` 行加一台主机，一条具体 `passthrough`/`reject` 行减一台）。
+
+运营者也没有失去审计姿态：`intercept: 'all'` 恢复整机解密，而且它刻意是一个**显眼**的开关——启动 WARN、开启期间规则卡里的警告横幅、以及收紧流程里的红色提示。一个常驻的整机 TLS 接管，绝不能只活在某个 YAML 值里。
+
+### 老装机不被静默迁移
+
+早于本次修订的安装带着 `{ match: '*', ingress: intercept, egress: proxy }`。在新姿态下这一行并不会多解密任何东西，所以安全方向已经生效——但文件现在写着它做不到的事。控制台报 `catch-all-intercepts` 并提供 `POST /api/admin/forward-proxy/tighten`：把兜底行改写成 `ingress: passthrough`（保留其 `egress`）、把 `intercept` 设为 `claims`，并走常规的配置保存路径（热应用，无需重启）。启动时绝不改写运营者的文件；按钮本身就是同意。
+
+改写范围是契约级的窄：只动兜底行的 `ingress` 与姿态，别的一概不碰——具体的 `intercept` 行继续解密（那是运营者自己写的例外），其余行逐字写回，第二次点击是无操作而不是再写一遍。按钮是一次性的**迁移**入口而不是常驻控件：它只在 `catch-all-intercepts` 这条发现里渲染，并随该发现一起消失——已经收紧的表没有可收紧的东西，一个常年置灰的按钮只会是噪音。
 
 ## 修订 2——两字段 `{ ingress, egress }` 行
 
@@ -111,7 +160,8 @@ forwardProxy:
 ### 2. 规则表覆盖不了的两条不变量
 
 - **loopback 永远 `egress: direct` + 透传。** `isLoopbackHost` 在查表之前判定：代理或接管 loopback 目标会招致环路（前向代理 → 上游代理 → 前向代理）并破坏本地开发。因此「拒绝 loopback」在语法上写不出来——这是刻意的。
-- **未命中 = `direct` + 接管。** 兜底成 `reject` 会让漏写一条规则变成整机流量总闸断掉；兜底成「不接管」会让只想加一条例外的配置静默关掉全量抓包。两个兜底都与 ADR-0018 之前的默认一致，所以**空表不改变任何行为**。
+- **未命中 = `direct` + 接管。** 兜底成 `reject` 会让漏写一条规则变成整机流量总闸断掉。
+  *（已被修订 4 取代：未命中的主机仍沿用兜底行的 `egress`，但只有被声明或 `intercept: 'all'` 开启时才解密，否则一律盲隧道。这条不变量的 `reject` 一半仍然成立。）*
 
 ### 3. `reject` 是准入闸，先于接管判定
 
@@ -141,14 +191,14 @@ forwardProxy:
 | `bypassHosts: [{ host: <host>, viaProxy: true }]` | `{ match: <host>, ingress: passthrough, egress: proxy }` |
 | `viaOutboundProxy: true` | 兜底行的 `egress: proxy` |
 
-不升 schema：v1 磁盘 schema 本来就没声明过这些键，丢弃它们是收缩而不是版本变更。新装模板种子为 `enabled: false` + `rules: [{ match: '*', ingress: intercept, egress: proxy }]`——一条兜底：全量接管，出口走上游代理。监听器是总闸，所以这条种子在操作者打开代理之前不路由任何流量；而一旦打开，「全部经上游代理」正是被封锁网络需要的姿态。`reject` 永不出厂。
+不升 schema：v1 磁盘 schema 本来就没声明过这些键，丢弃它们是收缩而不是版本变更。新装模板种子为 `enabled: false` + `rules: [{ match: '*', ingress: passthrough, egress: proxy }]`（修订 4——种子曾是全量接管）——一条兜底：全部盲隧道，出口走上游代理，只解密网关插件声明的主机。监听器是总闸，所以这条种子在操作者打开代理之前不路由任何流量。`reject` 永不出厂。
 
 ### 7. 控制台是契约的一部分
 
 有序表只有在能被提问时才可读，所以 `POST /api/admin/forward-proxy/rules/resolve` 针对**未保存**的表返回：
 
-- `warnings`——lint 码（`invalid-rule`、`unreachable-rule`、`no-catch-all`、`proxy-rule-without-proxy`），带操作者所写那一行的下标；措辞由控制台通过 i18n 渲染，规则归后端所有；
-- `decision`——探针主机的 `{ action, tunnel, reason, ruleIndex, match }`，由代理腿调用的**同一个** `resolveHost` 产出，所以预览不可能与真实决策不一致。
+- `warnings`——lint 码（`invalid-rule`、`unreachable-rule`、`no-catch-all`、`catch-all-intercepts`、`proxy-rule-without-proxy`），带操作者所写那一行的下标；措辞由控制台通过 i18n 渲染，规则归后端所有；
+- `decision`——探针主机的 `{ action, tunnel, reason, ruleIndex, match }`，由代理腿调用的**同一个** `resolveHost` 产出。自修订 4 起，响应还带上 `intercept`、`claimed`（live 声明集合，或请求体里未保存的姿态）与 `claimSources`（同一集合按插件归组，控制台用它回答「哪台主机是谁声明的」），因为这两者现在决定了「没有任何具体行命中的主机」的 `tunnel`——预览若省略它们，回答的就不是代理真正在回答的那个问题。
 
 控制台只说这一行**自己的两个字段**：一个下拉是 `ingress`（接管 / 透传 / 拒绝），一个开关是 `egress`（直连 / 代理），探针的回答也用同样的两个词——所以「UI 词表」不是另一套词表，它就是 schema 本身。这份镜像由 `forward-proxy-console-vocabulary-parity.test.ts` 对着后端运行时的取值表（`RULE_INGRESSES`、`RULE_EGRESSES`、`RULE_WARNING_CODES`）做一致性校验；控制台没有对应句子可渲染的 lint 码会导致类型检查失败，而不是悄悄落到一句错的话上。
 
@@ -163,7 +213,8 @@ forwardProxy:
 - 「拒绝」变得可表达，并且在账本里可观测。
 - `h2-forward` 与 h1 转发器不可能再对出站有分歧（两者都调 `transitEgressFor`）。
 - 页面上三段式的出站 UI（全局开关 + 逐行勾选 + 一个经主机名伸手进去的 provider 级列表）与单独的 MITM 白名单，收敛成一张规则卡。
-- 用 `mitmHosts` 的安装失去 opt-in 白名单模式；等价写法是一条带 `passthrough` 进站的兜底行（`ingress: passthrough, egress: proxy`）。
+- 用 `mitmHosts` 的安装失去 opt-in 白名单模式；自修订 4 起白名单姿态**就是默认**（`passthrough` 兜底 + 插件声明集合），而 `intercept: 'all'` 是显式回到全量抓包的路。
+- 解密跟随能力：安装一个 client-gateway 插件就是授予它接管的动作，卸载则在下一个请求撤销该授予（声明集合每次现读，绝不缓存）。
 - 设置了 `proxy.includes` 并指望它门控转发流量的配置，现在会看到规则表胜出。这是有意的纠正，也是 `proxy` 经 `outboundProxyUrl()` 解析的原因。
 
 ## 非目标

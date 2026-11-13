@@ -163,6 +163,7 @@ describe('forward-proxy: WebSocket frame stats on the h1 upgrade leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });

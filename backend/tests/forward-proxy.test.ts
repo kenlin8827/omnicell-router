@@ -107,9 +107,12 @@ describe('forward-proxy: SNI probing + rule resolution', () => {
     assert.equal(isLoopbackHost('api.openai.com'), false);
 
     const tunnel = [{ match: '*.internal', ingress: 'passthrough', egress: 'direct' as const }];
-    assert.equal(resolveHost('api.openai.com', tunnel).tunnel, false);
+    // Unmatched hosts tunnel under the default claims posture (ADR-0018
+    // Revision 4) and decrypt only when the audit posture is on.
+    assert.equal(resolveHost('api.openai.com', tunnel).tunnel, true);
+    assert.equal(resolveHost('api.openai.com', tunnel, { intercept: 'all' }).tunnel, false);
     assert.equal(resolveHost('db.internal', tunnel).tunnel, true);
-    assert.equal(resolveHost('1.2.3.4', tunnel).tunnel, false);
+    assert.equal(resolveHost('1.2.3.4', tunnel, { intercept: 'all' }).tunnel, false);
     // Loopback is unreachable by any rule — not even a `*` reject touches it.
     assert.deepEqual(resolveHost('127.0.0.1', [{ match: '*', ingress: 'reject', egress: 'direct' as const }]), {
       action: 'direct',
@@ -174,6 +177,7 @@ describe('forward-proxy: full MITM chain', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: dir,
+      interceptPosture: 'all',
       intercept: async (req, res) => {
         seen = { method: req.method, url: req.url, host: req.headers.host };
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -707,6 +711,7 @@ describe('forward-proxy: over-the-wire routing (interceptor + MITM combined)', (
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: createProxyInterceptor(stub),
     });
 
@@ -976,6 +981,7 @@ describe('forward-proxy: direct-leg capture parity (ADR-0003 §7a)', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: createProxyInterceptor(orchestrator),
     });
     // Plain-HTTP proxy leg: absolute-form POST for an unregistered model —
@@ -1066,6 +1072,7 @@ describe('forward-proxy: per-host terminator cache', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: async () => false,
       maxHostTerminators: 2,
       log: (m) => {

@@ -26,7 +26,7 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { registerMihomoRoutes } from './mihomo.js';
 import { reconcileMihomoSidecar } from '../proxy/mihomo-sidecar.js';
@@ -44,6 +44,7 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
+import { listGatewayHosts } from '../plugins/gateways.js';
 import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
@@ -1680,22 +1681,76 @@ export function registerConsoleRoutes(
   // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The
   // console renders the warning CODES through i18n and shows which rule a probe
   // host hits, so an ordered table is never a black box. `rules` in the body =
-  // the UNSAVED table being edited; omitted = the live one.
+  // the UNSAVED table being edited; omitted = the live one. `intercept` in the
+  // body = the UNSAVED posture toggle (same reason); omitted = the live one.
   app.post('/api/admin/forward-proxy/rules/resolve', async (req) => {
-    const body = (req.body ?? {}) as { host?: unknown; rules?: unknown };
+    const body = (req.body ?? {}) as { host?: unknown; rules?: unknown; intercept?: unknown };
     const live = getRuntimeConfigRef();
     const rawRules = Array.isArray(body.rules) ? body.rules : live?.forwardProxy?.rules;
     const proxyEnabled = live?.proxy?.enabled === true;
     const rules = normalizeRules(rawRules);
+    // ADR-0018 Revision 4: the posture and the claim set are part of the answer,
+    // because they decide `tunnel` for every host no specific row names. The
+    // preview reads the SAME registry the proxy legs do (`listGatewayHosts()`)
+    // and takes an unsaved toggle from the body, so it can never disagree with
+    // the live decision.
+    const intercept = body.intercept === 'all' || body.intercept === 'claims'
+      ? body.intercept
+      : live?.forwardProxy?.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT;
+    const claimed = [...listGatewayHosts()].sort();
+    // Per-plugin attribution for the console's "decrypted without a rule" list:
+    // the SAME live registry `listGatewayHosts()` unions, so the two can never
+    // disagree — one is the host set, the other says who claimed it.
+    const claimSources = [...listGateways().entries()]
+      .map(([pluginId, gw]) => ({ pluginId, hosts: [...new Set(gw.hosts)].sort() }))
+      .filter((s) => s.hosts.length > 0)
+      .sort((a, b) => a.pluginId.localeCompare(b.pluginId));
     const host = typeof body.host === 'string' ? body.host.trim() : '';
     return {
       status: 'ok',
       rules,
-      warnings: lintRules(rawRules, proxyEnabled),
+      warnings: lintRules(rawRules, proxyEnabled, intercept),
       proxyEnabled,
+      intercept,
+      claimed,
+      claimSources,
       // The resolver is the SAME function the proxy legs call, so the preview
       // can never disagree with the live decision.
-      decision: host ? resolveHost(host, rules) : null,
+      decision: host ? resolveHost(host, rules, { claimed: new Set(claimed), intercept }) : null,
+    };
+  });
+
+  // 3A5. One-click "tighten to allowlist" (ADR-0018 Revision 4). An install
+  // that predates the claims posture still carries the old `* → intercept`
+  // catch-all, which now decrypts nothing extra yet reads as "decrypt
+  // everything". Tightening rewrites the catch-all to a blind tunnel (keeping
+  // its egress) and pins the posture to `claims` — through the SAME save path
+  // the console's Save button uses (config.yaml write + hot-apply), and ONLY
+  // when the operator clicked: nothing here runs on boot.
+  app.post('/api/admin/forward-proxy/tighten', async (_req, reply) => {
+    const live = getRuntimeConfigRef();
+    const current = live?.forwardProxy ?? loadConfig().forwardProxy ?? {};
+    const currentRules = current.rules ?? [];
+    const catchAll = currentRules.find((r) => r?.match === '*');
+    const egress = catchAll?.egress ?? DEFAULT_FORWARD_PROXY_RULES[0].egress;
+    // Rewrite ONLY the catch-all's ingress. Specific `intercept` rows are
+    // explicit operator intent (they keep decrypting under `claims`) and every
+    // other row stays exactly as written — tightening must never be a way to
+    // lose rules the operator typed.
+    const rules = catchAll
+      ? currentRules.map((r) =>
+          r?.match === '*' && r.ingress === 'intercept' ? { ...r, ingress: 'passthrough' as const } : r,
+        )
+      : [...currentRules, { match: '*', ingress: 'passthrough' as const, egress }];
+    const saved = saveConfig({ forwardProxy: { ...current, rules, intercept: DEFAULT_FORWARD_PROXY_INTERCEPT } });
+    if (!saved.success) return reply.status(400).send(saved);
+    // Hot-apply: saveConfig's auth-view sync replaces `live.forwardProxy` and
+    // every proxy leg re-reads it per request, so no restart is involved.
+    return {
+      status: 'ok',
+      rules,
+      intercept: DEFAULT_FORWARD_PROXY_INTERCEPT,
+      warnings: lintRules(rules, live?.proxy?.enabled === true, DEFAULT_FORWARD_PROXY_INTERCEPT),
     };
   });
 

@@ -1,5 +1,6 @@
 import { globMatch } from '../utils/glob.js';
-import type { ForwardProxyRule, RuleEgress, RuleExit, RuleIngress } from '../config/types.js';
+import { DEFAULT_FORWARD_PROXY_INTERCEPT } from '../config/defaults.js';
+import type { ForwardProxyRule, InterceptPosture, RuleEgress, RuleExit, RuleIngress } from '../config/types.js';
 
 /**
  * The forward-proxy rule table (ADR-0018).
@@ -7,7 +8,8 @@ import type { ForwardProxyRule, RuleEgress, RuleExit, RuleIngress } from '../con
  * ONE ordered table. Each row carries TWO fields that split the outcome matrix
  * into its two axes:
  *
- *   `ingress` — `intercept` (MITM, the default posture) / `passthrough`
+ *   `ingress` — `intercept` (MITM a SPECIFIC host; on the catch-all row it is
+ *               the default posture for hosts nothing claims) / `passthrough`
  *               (blind tunnel) / `reject` (403 on admission);
  *   `egress`  — `direct` (straight out of the machine) / `proxy` (through the
  *               outbound proxy, `config.proxy`).
@@ -17,8 +19,11 @@ import type { ForwardProxyRule, RuleEgress, RuleExit, RuleIngress } from '../con
  *
  * Invariants no rule can override:
  *   - loopback targets are passthrough + direct (cycle safety + local dev);
- *   - an unmatched host falls back to direct + intercepted, which is the
- *     pre-ADR-0018 posture, so an EMPTY table changes nothing.
+ *   - interception is DECIDED, not defaulted (Revision 4): a host is decrypted
+ *     only when a SPECIFIC row says so, when a live client-gateway plugin
+ *     CLAIMS it, or when the operator opts into the audit posture
+ *     (`intercept: 'all'`). Everything else is a blind tunnel carrying the
+ *     catch-all row's `egress` — so an EMPTY table decrypts nothing.
  *
  * SCOPE: traffic this gateway proxies or relays for a client. The gateway's own
  * upstream calls keep their provider/model-scoped `proxy:` policy
@@ -34,6 +39,10 @@ import type { ForwardProxyRule, RuleEgress, RuleExit, RuleIngress } from '../con
 export const RULE_INGRESSES: readonly RuleIngress[] = ['intercept', 'passthrough', 'reject'];
 
 export const RULE_EGRESSES: readonly RuleEgress[] = ['direct', 'proxy'];
+
+/** The interception-posture vocabulary (ADR-0018 Revision 4), as RUNTIME data
+ *  so the console's mirror is parity-checked instead of drifting silently. */
+export const INTERCEPT_POSTURES: readonly InterceptPosture[] = ['claims', 'all'];
 
 /**
  * Validate one row.
@@ -90,20 +99,52 @@ const INVALID_RULE: ForwardProxyRule = { match: '', ingress: 'intercept', egress
 export interface RuleDecision {
   /** The EXIT: `direct` / `proxy` / `reject` — where the bytes go. */
   action: RuleExit;
-  /** Intercept (false, the default) or blind tunnel (true). */
+  /** Intercept (false) or blind tunnel (true). */
   tunnel: boolean;
-  /** `loopback` / `rule` / `fallback` — why. */
-  reason: 'loopback' | 'rule' | 'fallback';
+  /**
+   * `loopback` / `rule` / `claim` / `fallback` — why.
+   *
+   * - `rule`     → a row decided (a SPECIFIC row always does; the catch-all
+   *                row does when it is `reject`);
+   * - `claim`    → no specific row, but a live client-gateway plugin claims the
+   *                host: decrypted (ADR-0018 Revision 4);
+   * - `fallback` → no row decided the decrypt axis: the catch-all's `egress`
+   *                applies and the connection is tunneled unless the audit
+   *                posture (`intercept: 'all'`) is on.
+   */
+  reason: 'loopback' | 'rule' | 'claim' | 'fallback';
   /** Position in the table (present only for `reason: 'rule'`). */
   ruleIndex?: number;
   /** The glob that matched (present only for `reason: 'rule'`). */
   match?: string;
 }
 
+/** Inputs the resolver cannot read itself (it stays a pure function). */
+export interface ResolveOptions {
+  /** Hosts claimed by a live client-gateway plugin (`listGatewayHosts()`). */
+  claimed?: ReadonlySet<string>;
+  /** Interception posture; absent = `DEFAULT_FORWARD_PROXY_INTERCEPT`. */
+  intercept?: InterceptPosture;
+}
+
+/** Case-insensitive membership: plugin manifests are hand-written. */
+function isClaimedHost(claimed: ReadonlySet<string> | undefined, host: string): boolean {
+  if (!claimed || claimed.size === 0) return false;
+  const lower = host.toLowerCase();
+  for (const c of claimed) if (c.toLowerCase() === lower) return true;
+  return false;
+}
+
 /** The complete lint vocabulary, as RUNTIME data so the console's mirror can be
  *  parity-checked (forward-proxy-console-vocabulary-parity.test.ts) instead of
  *  drifting silently. */
-export const RULE_WARNING_CODES = ['invalid-rule', 'unreachable-rule', 'no-catch-all', 'proxy-rule-without-proxy'] as const;
+export const RULE_WARNING_CODES = [
+  'invalid-rule',
+  'unreachable-rule',
+  'no-catch-all',
+  'catch-all-intercepts',
+  'proxy-rule-without-proxy',
+] as const;
 
 export type RuleWarningCode = (typeof RULE_WARNING_CODES)[number];
 
@@ -128,17 +169,34 @@ export function normalizeRules(raw: unknown): ForwardProxyRule[] {
  * Resolve one host. Every leg (CONNECT admission, the MITM inner leg, the plain
  * absolute-URI leg, the tunnels, h2-forward, the direct-forward relay) and the
  * console preview call this, so they can never disagree.
+ *
+ * Order (ADR-0018 Revision 4):
+ *
+ *   1. loopback               → direct + tunnel (unchanged invariant)
+ *   2. a SPECIFIC matching row → that row's `ingress`/`egress`, verbatim: the
+ *                                operator outranks a claim, so `reject` and
+ *                                `passthrough` can both override one
+ *   3. the host is CLAIMED     → the catch-all's `egress`, decrypted
+ *   4. `intercept: 'all'`      → the catch-all's `egress`, decrypted (audit)
+ *   5. otherwise               → the catch-all's `egress`, blind tunnel
+ *
+ * The catch-all row's `ingress` is therefore only the default posture for hosts
+ * nothing declares — except `reject`, which keeps its admission-gate meaning
+ * (an operator blocklist no claim can un-block; write a specific row above it
+ * for the exception).
  */
-export function resolveHost(host: string, rules?: ForwardProxyRule[]): RuleDecision {
+export function resolveHost(host: string, rules?: ForwardProxyRule[], options?: ResolveOptions): RuleDecision {
   // Brackets are IPv6 syntax, not part of the name: a CONNECT target arrives as
   // `[2001:db8::1]`, a plain-HTTP `Host` header may not carry them.
   const h = (host || '').trim().replace(/^\[|\]$/g, '');
   if (!h) return { action: 'direct', tunnel: false, reason: 'fallback' };
   if (isLoopbackHost(h)) return { action: 'direct', tunnel: true, reason: 'loopback' };
+  let catchAll: { rule: ForwardProxyRule; index: number } | undefined;
   for (let i = 0; i < (rules?.length ?? 0); i += 1) {
     const rule = rules![i];
     if (!rule?.match) continue; // invalid slot — never matches
-    if (globMatch(rule.match, h)) {
+    if (!globMatch(rule.match, h)) continue;
+    if (rule.match !== '*') {
       return {
         action: ruleExit(rule.egress, rule.ingress),
         tunnel: isPassthroughIngress(rule.ingress),
@@ -147,8 +205,22 @@ export function resolveHost(host: string, rules?: ForwardProxyRule[]): RuleDecis
         match: rule.match,
       };
     }
+    // The catch-all: first match wins, so nothing after it is reachable and its
+    // ingress is the DEFAULT posture, resolved below.
+    catchAll = { rule, index: i };
+    break;
   }
-  return { action: 'direct', tunnel: false, reason: 'fallback' };
+  if (catchAll && catchAll.rule.ingress === 'reject') {
+    return { action: 'reject', tunnel: false, reason: 'rule', ruleIndex: catchAll.index, match: catchAll.rule.match };
+  }
+  // No specific row decided: the catch-all's egress still governs where the
+  // bytes go (an absent catch-all means the historical `direct`).
+  const egress = catchAll?.rule.egress ?? 'direct';
+  if (isClaimedHost(options?.claimed, h)) return { action: egress, tunnel: false, reason: 'claim' };
+  if ((options?.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT) === 'all') {
+    return { action: egress, tunnel: false, reason: 'fallback' };
+  }
+  return { action: egress, tunnel: true, reason: 'fallback' };
 }
 
 /**
@@ -158,12 +230,23 @@ export function resolveHost(host: string, rules?: ForwardProxyRule[]): RuleDecis
  * `proxyEnabled` is `config.proxy.enabled`: an `egress: 'proxy'` row on a
  * disabled outbound proxy resolves to DIRECT at runtime, so the table would
  * otherwise display a lie.
+ *
+ * `intercept` is the live posture (ADR-0018 Revision 4): a catch-all
+ * `ingress: intercept` only DOES something when the posture is `'all'`. Under
+ * `'claims'` it decrypts nothing for the hosts nothing claims — exactly the
+ * misconfiguration the operator cannot see in the row itself, hence the
+ * `catch-all-intercepts` warning.
  */
-export function lintRules(raw: unknown, proxyEnabled: boolean): RuleWarning[] {
+export function lintRules(
+  raw: unknown,
+  proxyEnabled: boolean,
+  intercept: InterceptPosture = DEFAULT_FORWARD_PROXY_INTERCEPT,
+): RuleWarning[] {
   const entries = Array.isArray(raw) ? raw : [];
   const warnings: RuleWarning[] = [];
   const seen = new Set<string>();
   let catchAllAt = -1;
+  let catchAllIngress: RuleIngress | undefined;
   entries.forEach((entry, ruleIndex) => {
     const rule = parseRule((entry ?? {}) as never);
     if (!rule) {
@@ -191,13 +274,21 @@ export function lintRules(raw: unknown, proxyEnabled: boolean): RuleWarning[] {
     } else if (seen.has(key)) {
       warnings.push({ code: 'unreachable-rule', ruleIndex, detail: 'duplicate match (first wins)' });
     }
-    if (key === '*' && catchAllAt < 0) catchAllAt = ruleIndex;
+    if (key === '*' && catchAllAt < 0) {
+      catchAllAt = ruleIndex;
+      catchAllIngress = rule.ingress;
+    }
     seen.add(key);
     if (egress === 'proxy' && !proxyEnabled) {
       warnings.push({ code: 'proxy-rule-without-proxy', ruleIndex, detail: match });
     }
   });
   if (catchAllAt < 0) warnings.push({ code: 'no-catch-all' });
+  else if (catchAllIngress === 'intercept' && intercept === 'claims') {
+    // The row READS as "decrypt everything" and does nothing of the sort: under
+    // the claims posture only claimed hosts and specific rows decrypt.
+    warnings.push({ code: 'catch-all-intercepts', ruleIndex: catchAllAt, detail: '*' });
+  }
   return warnings;
 }
 

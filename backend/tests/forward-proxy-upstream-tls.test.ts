@@ -109,6 +109,7 @@ async function startProxy(caDir: string) {
     port: 0,
     host: '127.0.0.1',
     caDir,
+    interceptPosture: 'all',
     intercept: async () => false,
     // The test seam provides ONLY the lookup; caFile / insecure come from the
     // live reader (the config surface this suite is about).

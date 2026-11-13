@@ -32,23 +32,29 @@ describe('resolveHost — first match wins, exit + posture per row', () => {
     });
     expect(resolveHost('db.internal.com', table)).toMatchObject({ action: 'direct', tunnel: true, ruleIndex: 1 });
     expect(resolveHost('api.openai.com', table)).toMatchObject({ action: 'proxy', tunnel: false, ruleIndex: 2 });
-    expect(resolveHost('anything.else', table)).toMatchObject({ action: 'proxy', ruleIndex: 3 });
+    // The catch-all is the fallback POSTURE carrier, not a row decision: its
+    // egress still applies, but under the claims posture it tunnels (ADR-0018
+    // Revision 4) and reports `fallback` rather than a rule index.
+    expect(resolveHost('anything.else', table)).toEqual({ action: 'proxy', tunnel: true, reason: 'fallback' });
   });
 
   it('a later rule never overrides an earlier one', () => {
-    const shadowed = [r('*', 'intercept', 'proxy'), r('ads.example.com', 'reject', 'direct')];
+    const shadowed = [r('*.com', 'passthrough', 'proxy'), r('ads.example.com', 'reject', 'direct')];
     expect(resolveHost('ads.example.com', shadowed).action).toBe('proxy');
     expect(resolveHost('ads.example.com', shadowed).ruleIndex).toBe(0);
   });
 
-  it('falls back to direct + intercepted when nothing matches or the table is empty', () => {
+  it('falls back to direct + blind tunnel when nothing matches or the table is empty', () => {
+    // ADR-0018 Revision 4: interception is decided (claims posture by default),
+    // so an empty table and an unmatched host both tunnel.
     expect(resolveHost('nowhere.test', [r('a.com', 'reject', 'direct')])).toEqual({
       action: 'direct',
-      tunnel: false,
+      tunnel: true,
       reason: 'fallback',
     });
-    expect(resolveHost('a.com', [])).toEqual({ action: 'direct', tunnel: false, reason: 'fallback' });
-    expect(resolveHost('a.com', undefined)).toEqual({ action: 'direct', tunnel: false, reason: 'fallback' });
+    expect(resolveHost('a.com', [])).toEqual({ action: 'direct', tunnel: true, reason: 'fallback' });
+    expect(resolveHost('a.com', undefined)).toEqual({ action: 'direct', tunnel: true, reason: 'fallback' });
+    // An empty host is not a host: no bytes are ever handed anywhere.
     expect(resolveHost('', [r('*', 'intercept', 'proxy')])).toEqual({ action: 'direct', tunnel: false, reason: 'fallback' });
   });
 
@@ -154,11 +160,13 @@ describe('lintRules — codes only, indices address the RAW array', () => {
   const codes = (rules: unknown, proxyEnabled = true) => lintRules(rules, proxyEnabled).map((w) => w.code);
 
   it('a clean table with a catch-all and an enabled proxy is silent', () => {
-    expect(codes([r('a.com', 'reject', 'direct'), r('*', 'intercept', 'proxy')])).toEqual([]);
+    expect(codes([r('a.com', 'reject', 'direct'), r('*', 'passthrough', 'proxy')])).toEqual([]);
+    // A catch-all `intercept` IS clean once the posture says "decrypt it all".
+    expect(lintRules([r('*', 'intercept', 'proxy')], true, 'all').map((w) => w.code)).toEqual([]);
   });
 
   it('flags an invalid row', () => {
-    expect(lintRules([{ match: 'a.com', ingress: 'reject', egress: 'proxy' }, r('*', 'intercept', 'direct')], true)).toEqual([
+    expect(lintRules([{ match: 'a.com', ingress: 'reject', egress: 'proxy' }, r('*', 'passthrough', 'direct')], true)).toEqual([
       { code: 'invalid-rule', ruleIndex: 0, detail: 'reject with egress proxy' },
     ]);
     expect(lintRules([{ match: 'a.com', ingress: 'intercept', egress: 'satellite' }], true)[0]).toMatchObject({
@@ -176,24 +184,24 @@ describe('lintRules — codes only, indices address the RAW array', () => {
   });
 
   it('flags an `egress: proxy` row while the outbound proxy is disabled', () => {
-    expect(codes([r('*', 'intercept', 'proxy')], false)).toEqual(['proxy-rule-without-proxy']);
-    expect(codes([r('*', 'intercept', 'direct')], false)).toEqual([]);
-    expect(lintRules([r('*', 'intercept', 'proxy')], false)[0].detail).toBe('*');
+    expect(codes([r('*', 'passthrough', 'proxy')], false)).toEqual(['proxy-rule-without-proxy']);
+    expect(codes([r('*', 'passthrough', 'direct')], false)).toEqual([]);
+    expect(lintRules([r('*', 'passthrough', 'proxy')], false)[0].detail).toBe('*');
   });
 
   it('every warning is addressable to a raw index (no table field)', () => {
-    const warnings = lintRules([{ match: '', ingress: 'intercept', egress: 'proxy' }, r('*', 'intercept', 'proxy'), r('x.com', 'intercept', 'direct')], false);
+    const warnings = lintRules([{ match: '', ingress: 'intercept', egress: 'proxy' }, r('*', 'passthrough', 'proxy'), r('x.com', 'intercept', 'direct')], false);
     expect(warnings.map((w) => w.ruleIndex)).toEqual([0, 1, 2]);
     expect(warnings.every((w) => !('table' in w))).toBe(true);
   });
 
   it('flags rows after the catch-all and duplicate matches', () => {
-    const warnings = lintRules([r('*', 'intercept', 'proxy'), r('ads.com', 'reject', 'direct'), r('*', 'reject', 'direct')], true);
+    const warnings = lintRules([r('*', 'passthrough', 'proxy'), r('ads.com', 'reject', 'direct'), r('*', 'reject', 'direct')], true);
     expect(warnings).toEqual([
       { code: 'unreachable-rule', ruleIndex: 1, detail: 'after the catch-all rule' },
       { code: 'unreachable-rule', ruleIndex: 2, detail: 'after the catch-all rule' },
     ]);
-    const dup = lintRules([r('A.com', 'intercept', 'direct'), r('a.com', 'intercept', 'proxy'), r('*', 'intercept', 'direct')], true);
+    const dup = lintRules([r('A.com', 'intercept', 'direct'), r('a.com', 'intercept', 'proxy'), r('*', 'passthrough', 'direct')], true);
     expect(dup).toEqual([{ code: 'unreachable-rule', ruleIndex: 1, detail: 'duplicate match (first wins)' }]);
   });
 

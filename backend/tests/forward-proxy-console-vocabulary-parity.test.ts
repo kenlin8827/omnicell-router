@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { RULE_EGRESSES, RULE_INGRESSES, RULE_WARNING_CODES } from '../src/forward-proxy/rules';
+import { INTERCEPT_POSTURES, RULE_EGRESSES, RULE_INGRESSES, RULE_WARNING_CODES } from '../src/forward-proxy/rules';
 
 /**
  * The console mirror (`frontend/src/lib/api.ts`) re-declares the rule vocabulary
@@ -33,5 +33,9 @@ describe('console vocabulary parity (backend ⇄ frontend/src/lib/api.ts)', () =
 
   it('every lint code has a console message', () => {
     expect(union('RuleWarningCode')).toEqual(backend(RULE_WARNING_CODES));
+  });
+
+  it('the interception posture names the same two values', () => {
+    expect(union('InterceptPosture')).toEqual(backend(INTERCEPT_POSTURES));
   });
 });

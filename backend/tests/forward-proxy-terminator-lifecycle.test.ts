@@ -93,6 +93,7 @@ describe('forward-proxy: terminator lifecycle', () => {
       host: '127.0.0.1',
       caDir: tmpCaDir(),
       maxHostTerminators: 2,
+      interceptPosture: 'all',
       intercept: async (_req, res) => {
         intercepted += 1;
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -141,6 +142,7 @@ describe('forward-proxy: client-rejected certificate', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: async (_req, res) => {
         res.writeHead(200);
         res.end('{}');

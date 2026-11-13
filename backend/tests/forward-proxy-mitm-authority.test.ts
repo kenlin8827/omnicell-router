@@ -176,6 +176,7 @@ describe('forward-proxy: MITM target port', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -201,6 +202,7 @@ describe('forward-proxy: MITM target port', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -226,6 +228,7 @@ describe('forward-proxy: no-SNI interception', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async (_req, res) => {
         intercepted += 1;
         res.writeHead(200, { 'content-type': 'application/json' });

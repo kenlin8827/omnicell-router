@@ -1,5 +1,5 @@
 import type { ReasoningEffort } from '../types/router.js';
-import type { ForwardProxyRule } from './types.js';
+import type { ForwardProxyRule, InterceptPosture } from './types.js';
 
 /**
  * Single source of truth for magic defaults that previously lived as
@@ -51,17 +51,31 @@ export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
 
 /**
- * Fresh-install rule table (ADR-0018): one catch-all — intercept everything and
- * send it through the outbound proxy policy. Inert until BOTH
+ * Fresh-install rule table (ADR-0018, Revision 4): one catch-all — blind-tunnel
+ * every host and send it through the outbound proxy policy. Inert until BOTH
  * `forwardProxy.enabled` and `proxy.enabled` are on (the listener ships
- * disabled, so this seed routes nothing by itself); it exists so an operator who
- * turns the proxy on gets the posture they almost certainly wanted (a blocked
- * network) instead of a silent direct egress. `reject` is never seeded —
- * shipping a blocklist would break traffic nobody asked to block.
+ * disabled, so this seed routes nothing by itself).
+ *
+ * The seed is PASSTHROUGH, not intercept: interception is decided by the
+ * capability set (the hosts a live client-gateway plugin claims, plus rows an
+ * operator writes `ingress: intercept`), so a seed that decrypted everything
+ * made ~92% of a real machine's TLS a side effect of installing a gateway —
+ * with the trust store of every non-Bun TLS stack (IDEA's per-host
+ * `<config>/ssl/cacerts`, pinned clients) as the blast radius. `reject` is
+ * never seeded — shipping a blocklist would break traffic nobody asked to
+ * block.
  */
 export const DEFAULT_FORWARD_PROXY_RULES: ForwardProxyRule[] = [
-  { match: '*', ingress: 'intercept', egress: 'proxy' },
+  { match: '*', ingress: 'passthrough', egress: 'proxy' },
 ];
+
+/**
+ * Forward-proxy interception posture when `forwardProxy.intercept` is unset or
+ * unreadable (ADR-0018 Revision 4): decrypt only what a capability declares
+ * (plugin claims + explicit `ingress: intercept` rows); everything else is a
+ * blind tunnel. `'all'` is the explicit audit posture and is never a default.
+ */
+export const DEFAULT_FORWARD_PROXY_INTERCEPT: InterceptPosture = 'claims';
 
 /** Forward-proxy access log: day-file retention for the persisted JSONL (auto-cleanup). */
 export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;

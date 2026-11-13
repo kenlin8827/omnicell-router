@@ -71,9 +71,11 @@ function waitFor(predicate: () => boolean, ms = 3000): Promise<void> {
 
 describe('forward-proxy: interception scope (the tunnel half of the rule table)', () => {
   it('the catch-all expresses the posture; deny wins by position; globs apply', () => {
-    // No table / no rows = intercept everything (historical posture).
-    assert.equal(resolveHost('api.example.com', []).tunnel, false);
-    assert.equal(resolveHost('api.example.com', undefined).tunnel, false);
+    // No table / no rows = blind tunnel (claims posture, ADR-0018 Revision 4);
+    // only the audit posture decrypts an unclaimed host with no table.
+    assert.equal(resolveHost('api.example.com', []).tunnel, true);
+    assert.equal(resolveHost('api.example.com', undefined).tunnel, true);
+    assert.equal(resolveHost('api.example.com', [], { intercept: 'all' }).tunnel, false);
 
     // Allow-list posture: the catch-all tunnels, named hosts are intercepted.
     const allowlist = [
@@ -174,6 +176,11 @@ describe('forward-proxy: inbound socket cap (maxConnections)', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      // The cap is admission, not interception: keep the sockets on the MITM
+      // leg so a CONNECT stays open without an upstream to dial (a blind tunnel
+      // would dial `h0.test` and drop the admitted socket on DNS failure —
+      // ADR-0018 Revision 4 changed which leg an unclaimed host takes).
+      interceptPosture: 'all',
       intercept: async () => false,
       maxConnections: 2,
     });

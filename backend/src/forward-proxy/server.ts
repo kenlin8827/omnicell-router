@@ -26,7 +26,7 @@ import {
   upstreamServernameOption,
 } from './egress.js';
 import { resolveUpstreamTls, type UpstreamTlsOptions } from './upstream-tls.js';
-import type { ForwardProxyRule } from '../config/types.js';
+import type { ForwardProxyRule, InterceptPosture } from '../config/types.js';
 import { createAccessTap, recordProxyConnect, recordProxyTunnel, type AccessTap } from './access-log.js';
 import { closeH2Pool, forwardH2, type H2UpstreamTls } from './h2-forward.js';
 import { createWsObserver } from './ws-frames.js';
@@ -38,16 +38,19 @@ import http2 from 'node:http2';
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
  *
  * Design (settled & validated on Bun 1.3.14):
- *  - INTERCEPT by default: every HTTPS CONNECT is MITM'd. The decrypted
- *    request is inspected — LLM-protocol traffic (via `intercept`) enters the
- *    routing pipeline; everything else is forwarded transparently.
+ *  - INTERCEPTION IS DECIDED (ADR-0018 Revision 4): a CONNECT is MITM'd only
+ *    when a rule row says so, when a live client-gateway plugin CLAIMS the host,
+ *    or when the operator turned on the audit posture (`intercept: 'all'`).
+ *    Everything else is a blind tunnel. The decrypted request is inspected —
+ *    LLM-protocol traffic (via `intercept`) enters the routing pipeline;
+ *    everything else is forwarded transparently.
  *  - ONE ordered rule table decides both halves per host (ADR-0018,
- *    `forwardProxy.rules`): two fields per row — `ingress` = intercept (MITM,
- *    the default posture) / passthrough (blind tunnel) / reject, `egress` =
- *    direct / proxy. First match wins; loopback is
- *    always passthrough (cycle safety + local dev); an unmatched host
- *    falls back to direct + intercepted. `reject` is answered 403 on admission
- *    — before any tunnel is opened or certificate minted.
+ *    `forwardProxy.rules`): two fields per row — `ingress` = intercept (MITM) /
+ *    passthrough (blind tunnel) / reject, `egress` = direct / proxy. First match
+ *    wins; loopback is always passthrough (cycle safety + local dev); an
+ *    unmatched host takes the catch-all's `egress` and is blind-tunneled unless
+ *    claimed or the audit posture is on. `reject` is answered 403 on admission —
+ *    before any tunnel is opened or certificate minted.
  *  - Bun node:tls gaps worked around (all verified experimentally):
  *      * no SNICallback → per-host tls.Server with an explicit cert, cached;
  *        the servername is read by peeking the raw ClientHello (sni.ts);
@@ -168,6 +171,12 @@ export interface ForwardProxyDeps {
    * hot-applies.
    */
   rules?: ForwardProxyRule[];
+  /**
+   * Interception posture boot snapshot (ADR-0018 Revision 4) — "claims" (default)
+   * decrypts only plugin-claimed hosts and specific `ingress: intercept` rows,
+   * "all" is the machine-wide audit posture. `liveForwardProxy` wins per request.
+   */
+  interceptPosture?: InterceptPosture;
   /**
    * Concurrent inbound socket cap; sockets opened past it are destroyed. Boot
    * snapshot — `liveForwardProxy` (when provided) wins per socket.
@@ -703,7 +712,7 @@ function forwardPlainViaProxy(
 export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<ForwardProxyHandle> {
   const log = deps.log ?? (() => {});
   setLiveForwardProxy(deps.liveForwardProxy);
-  setBootRules(deps.rules);
+  setBootRules(deps.rules, deps.interceptPosture);
   const ca = ensureCa(deps.caDir);
   const minter = new CertMinter(ca);
 

@@ -4,13 +4,14 @@ import { CA_CERT_FILENAME, resolveCaDir } from './ca.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import type { ForwardProxyConfig } from '../config/types.js';
-import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS } from '../config/defaults.js';
+import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_INTERCEPT, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS } from '../config/defaults.js';
 import { getRuntimeConfigRef, loadConfig } from '../config/index.js';
 import { isApiKeyUsable } from '../auth/api-keys.js';
 import { createForwardProxyServer, type ForwardProxyHandle } from './server.js';
 import { createProxyInterceptor } from './interceptor.js';
 import { setGatewayChatServices, buildGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { setProxyAccessLogSettingsReader, setProxyAccessLogPersistDir, initProxyAccessLogPersistence } from './access-log.js';
+import { listGatewayHosts } from '../plugins/gateways.js';
 import { setUpstreamTlsReader } from './upstream-tls.js';
 
 /** Literal loopback bind/listen address — 0.0.0.0/:: count as exposed. */
@@ -127,6 +128,16 @@ export async function startForwardProxy(
         'Any origin (including a MITM on the path) is accepted; use it only to get past a broken chain, never as a resting state.'
     );
   }
+  // Interception posture (ADR-0018 Revision 4): the default decrypts only
+  // plugin-claimed hosts and explicit `ingress: intercept` rows. `all` is the
+  // audit posture — a standing machine-wide decryption the operator must be
+  // told about in the log, not just in a YAML value.
+  if (cfg.intercept === 'all') {
+    console.warn(
+      '[ForwardProxy] forwardProxy.intercept is "all" — EVERY host proxied here is decrypted (machine-wide TLS interception, audit mode). ' +
+        'Every client trust store must carry this CA; set `intercept: claims` to decrypt only plugin-claimed hosts.'
+    );
+  }
   const handle = await createForwardProxyServer({
     port: cfg.port ?? DEFAULT_FORWARD_PROXY_PORT,
     host,
@@ -135,26 +146,36 @@ export async function startForwardProxy(
     resolveApiKey,
     authRequired: !loopbackBind,
     rules: cfg.rules,
-    // Hot-apply seam: rules / unresolvedModel re-read the runtime ref per
+    interceptPosture: cfg.intercept,
+    // Hot-apply seam: rules / intercept re-read the runtime ref per
     // request, so console saves need no restart.
     liveForwardProxy: () => getRuntimeConfigRef()?.forwardProxy,
     intercept,
     log: (m) => console.log(`[ForwardProxy] ${m}`),
   });
   console.log(`[ForwardProxy] ready on http://${host}:${handle.port} — MITM CA: ${path.join(caDir, CA_CERT_FILENAME)}`);
+  // One line that answers "who gets decrypted on this machine?" — the posture
+  // and the claim count are the whole answer under the default (ADR-0018
+  // Revision 4), so they belong in the boot log next to the table summary.
   const rules = cfg.rules || [];
-  if (rules.length) {
-    const catchAll = rules.some((r) => r.match === '*');
-    const tunnels = rules.filter((r) => r.ingress === 'passthrough').length;
-    console.log(
-      `[ForwardProxy] rules: ${rules.length} rule(s) (${tunnels} blind-tunnel), ` +
-        `${catchAll ? 'catch-all present' : 'NO catch-all → unmatched hosts go DIRECT'}`
+  const posture = cfg.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT;
+  const claimedCount = listGatewayHosts().size;
+  const catchAll = rules.find((r) => r.match === '*');
+  console.log(
+    `[ForwardProxy] rules: ${rules.length} rule(s) (${rules.filter((r) => r.ingress === 'passthrough').length} blind-tunnel), ` +
+      `${catchAll ? 'catch-all present' : 'NO catch-all → unmatched hosts go DIRECT'}, ` +
+      `intercept: ${posture} (${posture === 'all' ? 'EVERY host decrypted' : `${claimedCount} claimed host(s) + explicit intercept rows decrypted`})`
+  );
+  if (catchAll?.ingress === 'intercept' && posture !== 'all') {
+    console.warn(
+      '[ForwardProxy] the catch-all row says `ingress: intercept` but intercept is "claims" — it only decrypts hosts a gateway plugin claims. ' +
+        'Write `intercept: all` for machine-wide decryption, or `ingress: passthrough` on the catch-all to say what actually happens.'
     );
-    if (rules.some((r) => r.egress === 'proxy') && getRuntimeConfigRef()?.proxy?.enabled !== true) {
-      console.warn(
-        '[ForwardProxy] the rule table has "proxy" rules but proxy.enabled is not true — every proxied host falls back to DIRECT.'
-      );
-    }
+  }
+  if (rules.some((r) => r.egress === 'proxy') && getRuntimeConfigRef()?.proxy?.enabled !== true) {
+    console.warn(
+      '[ForwardProxy] the rule table has "proxy" rules but proxy.enabled is not true — every proxied host falls back to DIRECT.'
+    );
   }
   return handle;
 }

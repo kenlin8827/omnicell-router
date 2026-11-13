@@ -192,6 +192,7 @@ describe('forward-proxy: upstream SNI for an IP-literal origin', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -244,6 +245,7 @@ describe('forward-proxy: client-gateway upgrade hook', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -288,6 +290,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -333,6 +336,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -367,6 +371,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async () => false,
       upstreamTls: { ca: ca.caCertPem, lookup: toLoopback },
     });
@@ -397,6 +402,7 @@ describe('forward-proxy: WebSocket / Upgrade relay on the MITM leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async (_req, res) => {
         intercepted += 1;
         res.writeHead(200, { 'content-type': 'application/json' });

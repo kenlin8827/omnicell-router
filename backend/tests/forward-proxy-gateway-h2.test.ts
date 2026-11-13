@@ -127,6 +127,7 @@ describe('forward-proxy: client-gateway h2 leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: createProxyInterceptor(fakeOrchestrator),
     });
 
@@ -172,6 +173,7 @@ describe('forward-proxy: client-gateway h2 leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: async () => false,
     });
 
@@ -220,6 +222,7 @@ describe('forward-proxy: client-gateway h2 leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir,
+      interceptPosture: 'all',
       intercept: async (req, res) => {
         intercepted += 1;
         return realIntercept(req, res);
@@ -274,6 +277,7 @@ describe('forward-proxy: client-gateway h2 leg', () => {
       port: 0,
       host: '127.0.0.1',
       caDir: tmpCaDir(),
+      interceptPosture: 'all',
       intercept: createProxyInterceptor(fakeOrchestrator),
       authRequired: true,
       resolveApiKey: (secret) => (secret === 'sk-ocr-caller' ? { id: 'key-caller', name: 'Caller' } : undefined),

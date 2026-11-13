@@ -547,12 +547,32 @@ export interface ProxyConfig {
  * What happens at INGRESS for a forward-proxy rule row (ADR-0018, second
  * revision — the two-field shape):
  *
- *   `intercept`   → MITM the connection (the default posture — LLM traffic
- *                   enters the routing pipeline this way)
+ *   `intercept`   → MITM the connection (a SPECIFIC row means it; on the
+ *                   catch-all row it is the default posture for hosts no
+ *                   gateway plugin claims — ADR-0018 Revision 4)
  *   `passthrough` → blind-tunnel the bytes without decrypting
  *   `reject`      → 403 on admission, before any tunnel or certificate
  */
 export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/**
+ * The interception POSTURE (ADR-0018 Revision 4) — who decides that a host is
+ * decrypted at all:
+ *
+ *   `claims` (default) → the hosts a live client-gateway plugin CLAIMS
+ *                        (`listGatewayHosts()`) plus every SPECIFIC row the
+ *                        operator wrote `ingress: intercept`. Everything else is
+ *                        a blind tunnel: interception is a capability the
+ *                        gateway declares and the operator extends, not a
+ *                        blank-machine default whose breakage lands on all TLS.
+ *   `all`              → every host is decrypted (the audit posture). Explicit
+ *                        opt-in: warned at boot and banner-flagged on the
+ *                        console.
+ *
+ * It gates ONLY the decrypt/tunnel axis. `egress` still comes from the matched
+ * row, `reject` is unchanged, and loopback stays passthrough + direct.
+ */
+export type InterceptPosture = 'claims' | 'all';
 
 /** Where the bytes EXIT — out of this machine, or through `config.proxy`. */
 export type RuleEgress = 'direct' | 'proxy';
@@ -573,11 +593,13 @@ export interface ForwardProxyRule {
 /**
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
  *
- * FULL-CAPTURE by design: every proxied TLS connection is MITM'd with a locally
- * generated CA; the decrypted request is inspected — LLM-protocol traffic enters
- * the routing pipeline, anything else is forwarded transparently. No `mode`
- * switch: full capture IS the single behavior. The generated CA must be trusted
- * by the clients that use this proxy (`<caDir>/ca.pem`).
+ * INTERCEPTION IS DECIDED (ADR-0018 Revision 4): a proxied TLS connection is
+ * MITM'd with a locally generated CA only when a rule row says `intercept`, when
+ * a live client-gateway plugin claims the host, or when the operator turned on
+ * the audit posture (`intercept: 'all'`); everything else is a blind tunnel. The
+ * decrypted request is inspected — LLM-protocol traffic enters the routing
+ * pipeline, anything else is forwarded transparently. The generated CA must be
+ * trusted by the clients that DO use the intercepted leg (`<caDir>/ca.pem`).
  *
  * ONE ordered rule table (ADR-0018): each row names the host's whole outcome
  * with two fields — `ingress` (intercept / passthrough / reject) and `egress`
@@ -586,9 +608,10 @@ export interface ForwardProxyRule {
  * is an ADMISSION gate — 403 before any tunnel is opened or certificate minted.
  *
  * Invariants no rule can override: loopback is always passthrough + direct
- * (cycle safety + local dev), and an unmatched host falls back to direct +
- * intercepted, which is the pre-ADR-0018 posture — so an empty table changes
- * nothing.
+ * (cycle safety + local dev). An unmatched host takes the catch-all row's
+ * `egress` and is blind-tunneled unless it is CLAIMED by a live client-gateway
+ * plugin or `intercept: all` is set (ADR-0018 Revision 4) — interception is a
+ * declared capability, never a blank-machine default.
  *
  * Scope: traffic this gateway proxies or relays for a client. The gateway's own
  * upstream calls keep their provider/model-scoped `proxy:` policy, so a reject
@@ -619,9 +642,17 @@ export interface ForwardProxyConfig {
   };
   /**
    * The rule table (see ForwardProxyRule). Absent = every host takes the
-   * unmatched fallback (direct + intercepted). Hot-applies on save.
+   * unmatched fallback (catch-all egress, blind tunnel unless claimed — see
+   * `intercept`). Hot-applies on save.
    */
   rules?: ForwardProxyRule[];
+  /**
+   * Interception posture (see InterceptPosture; ADR-0018 Revision 4). Default
+   * `'claims'`: only plugin-claimed hosts and explicit `ingress: intercept`
+   * rows are decrypted. `'all'` restores machine-wide decryption (audit mode) —
+   * warned at boot and banner-flagged on the console. Hot-applies on save.
+   */
+  intercept?: InterceptPosture;
   /**
    * Concurrent inbound socket cap on the proxy listener; sockets opened past it
    * are destroyed immediately. Default 512, clamp 16..8192. Hot-applies on save.
