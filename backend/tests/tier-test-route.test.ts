@@ -120,7 +120,7 @@ describe('Tier console end-to-end test route', () => {
   it('should surface an EMPTY tier via the degraded landing model in modelUsed (never silent)', async () => {
     // No ultra model is registered. The tier representative for session pin
     // birth degrades inside getModelForTier (escalate→plus→lite chain, server
-    // warn reason=empty-pool) and the degraded model becomes the chain head —
+    // warn reason=empty-pool) and the degraded model becomes the leading member —
     // exactly what a real client `ultra` request gets served. The result
     // must pass that truth through: ok, but modelUsed names the NON-ultra
     // landing model (plus-1, the escalateTier), so the drift is visible.

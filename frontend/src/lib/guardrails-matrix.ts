@@ -175,7 +175,7 @@ export function buildPairCards(
   }
   // Orphan pair breakers: the model left the registry, or the prefix belongs
   // to a serving key the store roster does not list (the inline config-baked
-  // chain head — boot-direct unshifts it outside the store). Identify the
+  // default credential — boot-direct unshifts it outside the store). Identify the
   // latter through the runtime credential directory before falling back to a
   // bare #hash + unmatched explanation.
   for (const p of pairBreakers) {

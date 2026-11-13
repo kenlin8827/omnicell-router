@@ -492,7 +492,7 @@ describe('selectCredential — rate-limit shaping', () => {
     expect(allCapped.credential).toBeDefined();
   });
 
-  it('forced-failover landing prefers a slack credential over the chain head', () => {
+  it('forced-failover landing prefers a slack credential over the default credential', () => {
     const cb = makeManager();
     cb.tripPair(MODEL.id, chain[0].keyHashPrefix, { cooldownMs: 600000 }, PROVIDER); // bound head is out
     const sel = selectCredential(session('s-move', { boundKeyHashPrefix: chain[0].keyHashPrefix }), MODEL, chain, cb, {

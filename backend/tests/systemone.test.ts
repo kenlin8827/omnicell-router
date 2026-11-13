@@ -588,7 +588,7 @@ describe('System One: tier alias resolution', () => {
     },
   });
 
-  test('plus / lite resolve to the chain-head member of the named tier', async () => {
+  test('plus / lite resolve to the leading member of the named tier', async () => {
     useSandbox('plain');
     const upstream = serve({
       port: 0,
@@ -623,7 +623,7 @@ describe('System One: tier alias resolution', () => {
         { name: 'skip-b', key: 'sk-skip', modelAccess: { mode: 'deny', models: ['native/plus-b'] } },
       ]);
       const { app } = bootServer(config);
-      // plus-b is the chain head but denied; the pick must land on plus-c.
+      // plus-b is the leading member but denied; the pick must land on plus-c.
       const res = await app.inject({
         method: 'POST',
         url: '/v1/systemone',
@@ -683,7 +683,7 @@ describe('System One: tier alias resolution', () => {
     expect(res.json().error.code).toBe('model_not_allowed');
   });
 
-  test('allow-mode key naming the tier alias → tier-wide whitelist serves the chain head', async () => {
+  test('allow-mode key naming the tier alias → tier-wide whitelist serves the leading member', async () => {
     useSandbox('plain');
     const upstream = serve({
       port: 0,
@@ -697,7 +697,7 @@ describe('System One: tier alias resolution', () => {
       ]);
       const { app } = bootServer(config);
       // 'plus' in the whitelist expands to EVERY plus-tier member, so
-      // both plus-b and plus-c are admissible; the chain head serves.
+      // both plus-b and plus-c are admissible; the leading member serves.
       const res = await app.inject({
         method: 'POST',
         url: '/v1/systemone',

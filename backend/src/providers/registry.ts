@@ -79,7 +79,7 @@ export class ProviderRegistry {
    * populated ONLY through `registerProvider` (the boot path hands raw keys from
    * `buildDirectPool` here and nowhere else). NEVER serialize: masked credential
    * views keep going through the credential store's `CredentialMeta`. Chain order =
-   * selection priority (active head first); chain head = the boot-baked
+   * selection priority (active head first); default credential = the boot-baked
    * `config.apiKey` (inline-precedence case included — boot prepends it).
    */
   private credentialChains = new Map<string, CallCredential[]>();
@@ -404,7 +404,7 @@ export class ProviderRegistry {
   }
 
   /**
-   * Active credential (chain head = the boot-baked key). Providers without a
+   * Active credential (default credential = the boot-baked key). Providers without a
    * registered chain return undefined — behavior identical to reading
    * `getProviderConfig(name).apiKey` directly (single-key degeneracy).
    */
@@ -644,7 +644,7 @@ export class ProviderRegistry {
       if (home.rule.effortMap) m.effortMap = home.rule.effortMap;
       else delete m.effortMap;
     }
-    // Representatives = chain head of each tier's per-tier pool (weight desc,
+    // Representatives = leading model of each tier's per-tier pool (weight desc,
     // then rule-list order) — a model leading tier X need not lead its home
     // tier's list once pools can overlap.
     for (const tier of MEMBER_TIER_ORDER) {

@@ -124,7 +124,7 @@ describe('tier membership commit (member lists)', () => {
         []
       )
     );
-    // lite: the shared model is the sole member (chain head).
+    // lite: the shared model is the sole member (leading member).
     expect(registry.getCandidateModelsForTier('lite', false).map((m) => m.id)).toEqual(['p/shared']);
     // pro: weight 5 lifts it over the earlier-listed b.
     expect(registry.getCandidateModelsForTier('pro', false).map((m) => m.id)).toEqual(['p/shared', 'p/b']);

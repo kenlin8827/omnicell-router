@@ -291,7 +291,7 @@ describe('(c2) a credential fault with no selection prefix still cools the crede
     manager.registerModel(model('p/y', 'p'));
 
     // Degenerate selection (all-unhealthy / no-session): prefix undefined,
-    // but the chain head served the attempt and registry.execute stamped it.
+    // but the default credential served the attempt and registry.execute stamped it.
     manager.recordFailureScoped(
       'p/x',
       diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'credential', usedKeyHashPrefix: 'K1' }),

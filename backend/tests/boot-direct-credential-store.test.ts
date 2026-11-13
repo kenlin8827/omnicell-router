@@ -15,13 +15,13 @@ import path from 'node:path';
  *
  * Coverage:
  *  (a) multi-credential rows in the OCR file — the ACTIVE row is the baked
- *      chain head; P3 step 1 attaches the ordered resolveKeyChain to the
+ *      default credential; P3 step 1 attaches the ordered resolveKeyChain to the
  *      instance payload (head === baked key); rows that fail validation
  *      never route (no-credential exclusion, def present).
  *  (b) the auth.json one-shot import path — api keys route, oauth/wellknown
  *      never import, no-cred + no-def stays silent.
  *  (c) inline options.apiKey stays ABOVE the store (Decision 1) and owns the
- *      chain head.
+ *      default credential.
  */
 
 // ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ describe('(a) OCR-file boot: multi-credential rows', () => {
     expect(byName.has('p-broken')).toBe(false);
   });
 
-  it('P3 step 1: one instance per provider with MULTIPLE credentials — chain head baked, full chain attached', async () => {
+  it('P3 step 1: one instance per provider with MULTIPLE credentials — default credential baked, full chain attached', async () => {
     bindStore({
       'p-active': [
         { credentialId: 'c1', key: 'sk-active', active: true, timeUpdated: 1 },
@@ -187,7 +187,7 @@ describe('(a) OCR-file boot: multi-credential rows', () => {
     const res = await buildDirectPool();
     const inst = res.instances.filter((i) => i.name === 'p-active');
     expect(inst).toHaveLength(1);
-    expect(inst[0]!.config.apiKey).toBe('sk-active'); // the ACTIVE-first chain head is what gets baked
+    expect(inst[0]!.config.apiKey).toBe('sk-active'); // the ACTIVE-first default credential is what gets baked
     // Per-call selection chain (in-memory, registry-only payload): ordered
     // active-first, identity prefixes, operator labels only — an UNNAMED
     // credential carries NO label (the store's credentialId is a machine id,

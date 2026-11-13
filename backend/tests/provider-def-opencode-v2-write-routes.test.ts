@@ -415,7 +415,7 @@ describe('boot-direct — opencode v2-written def routes identically to the open
     expect(i2.wires.sort()).toEqual(i1.wires.sort());
     expect(i2.wires.sort()).toEqual(['anthropic', 'openai']); // model-level provider.npm → package → same wire
     // Boot-baked credential invariant (read-only check against boot-direct):
-    // the chain head is the config.apiKey the executors default to — holds for
+    // the default credential is the config.apiKey the executors default to — holds for
     // the opencode v1 and the P4-written opencode v2 shape alike (single store credential each).
     for (const inst of [i1, i2]) {
       expect(inst.credentialChain.length).toBe(1);

@@ -50,7 +50,7 @@ export async function nativeSystemoneDecision(
     throw err;
   }
   const url = `${config.baseUrl.replace(/\/+$/, '')}/systemone`;
-  // No explicit selector on the decision surface → the chain head, which IS
+  // No explicit selector on the decision surface → the leading model, which IS
   // the boot-baked key (registry invariant) — the same default registry.execute
   // uses when no credential is passed.
   const credential = registry.getCredentialChain(model.provider)?.[0];

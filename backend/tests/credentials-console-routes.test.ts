@@ -309,7 +309,7 @@ describe('hot credential-chain refresh — the runtime chain tracks the store wi
       keyHashPrefix('sk-hot-a'),
       keyHashPrefix('sk-hot-b'),
     ]);
-    // Reorder — key B becomes the chain head, hot.
+    // Reorder — key B becomes the default credential, hot.
     const rows = readOcrFile(p).providers[HOT];
     const bRow = rows.find((r: { key: string }) => r.key === 'sk-hot-b');
     const aRow = rows.find((r: { key: string }) => r.key === 'sk-hot-a');
@@ -570,7 +570,65 @@ describe('POST /opencode/providers/:id/test — store-resolved probe key', () =>
     }
   });
 
-  it('credential-addressed probe tests the EXACT row, not the chain head (multi-credential)', async () => {
+  it('provider-level probe ROTATES the enabled chain: a dead head falls through to the key that answers', async () => {
+    const p = credPaths();
+    const PID = 'rotating-provider';
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }], api: 'https://x.test/v1' }];
+    seedOcr(p, {
+      [PID]: [
+        { id: 'c1', key: 'sk-dead-head', active: true },
+        { id: 'c2', key: 'sk-live-backup', active: false },
+      ],
+    });
+    bindStore(p);
+    probeCalls = [];
+    probeImpl = async (opts: any) =>
+      opts.apiKey === 'sk-live-backup'
+        ? { ok: true, kind: 'openai', model: opts.model, latencyMs: 9 }
+        : { ok: false, kind: 'openai', model: opts.model, authHint: true, httpStatus: 401, hintCode: 'authFailed' };
+    const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json.ok).toBe(true);
+    // Two keys tried, green on the second — "the provider works" is the verdict.
+    expect(probeCalls.map((c) => c.apiKey)).toEqual(['sk-dead-head', 'sk-live-backup']);
+    // The UI can name the row that answered; the dead head is only rotation evidence.
+    expect(json.credential.id).toBe('c2');
+    expect(json.triedCredentials.map((c: any) => c.id)).toEqual(['c1', 'c2']);
+    // masked echo only — raw keys never ride back in the response
+    expect(JSON.stringify(json)).not.toContain('sk-live-backup');
+    expect(JSON.stringify(json)).not.toContain('sk-dead-head');
+  });
+
+  it('every credential failing: the LAST verdict is reported, rotation trail carries all rows tried', async () => {
+    const p = credPaths();
+    const PID = 'all-dead-provider';
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }], api: 'https://x.test/v1' }];
+    seedOcr(p, {
+      [PID]: [
+        { id: 'c1', key: 'sk-dead-a', active: true },
+        { id: 'c2', key: 'sk-dead-b', active: false },
+      ],
+    });
+    bindStore(p);
+    probeCalls = [];
+    probeImpl = async (opts: any) => ({
+      ok: false,
+      kind: 'openai',
+      model: opts.model,
+      authHint: true,
+      httpStatus: 401,
+      hintCode: 'authFailed',
+      upstreamBody: `rejected:${opts.apiKey}`,
+    });
+    const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+    const json = res.json();
+    expect(json.ok).toBe(false);
+    expect(probeCalls.map((c) => c.apiKey)).toEqual(['sk-dead-a', 'sk-dead-b']);
+    expect(json.triedCredentials.map((c: any) => c.id)).toEqual(['c1', 'c2']);
+  });
+
+  it('credential-addressed probe tests the EXACT row, never rotates (multi-credential)', async () => {
     const p = credPaths();
     catalogRecs = [{ id: 'anthropic', models: [{ id: 'claude-x' }], api: 'https://api.anthropic.test/v1', npm: '@ai-sdk/anthropic' }];
     seedOcr(p, {
@@ -658,6 +716,37 @@ describe('POST /opencode/providers/:id/test — store-resolved probe key', () =>
     expect(res.statusCode).toBe(400);
     expect(res.json().reasonCode).toBe('no_enabled_credential');
     expect(probeCalls).toHaveLength(0);
+  });
+
+  it('every stored row parked but an inline key exists: the inline key is probed (it outranks the store for routing too)', async () => {
+    const p = credPaths();
+    const PID = 'parked-with-inline';
+    writeJsonc(p, { providers: { [PID]: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://m.test/v1', apiKey: '{env:OCR_PARKED_INLINE_KEY}' }} } });
+    catalogRecs = [{ id: PID, models: [{ id: 'm1' }] }];
+    process.env.OCR_PARKED_INLINE_KEY = 'sk-inline-survivor';
+    try {
+      seedOcr(p, {
+        [PID]: [
+          { id: 'c1', key: 'sk-parked-a', active: true },
+          { id: 'c2', key: 'sk-parked-b', active: false },
+        ],
+      });
+      const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+      state.disable(PID, keyHashPrefix('sk-parked-a'), 'operator takedown');
+      state.disable(PID, keyHashPrefix('sk-parked-b'), 'operator takedown');
+      bindStore(p);
+      probeCalls = [];
+      const res = await app.inject({ method: 'POST', url: `/api/admin/opencode/providers/${PID}/test`, payload: {} });
+      // Not the no_enabled_credential 400: boot bakes the inline key as the chain
+      // head and routing prefers it, so the probe must describe THAT reality.
+      expect(res.statusCode).toBe(200);
+      expect(probeCalls.map((c) => c.apiKey)).toEqual(['sk-inline-survivor']);
+      expect(res.json().ok).toBe(true);
+      // No store row answered, so no credential echo to misattribute.
+      expect(res.json().credential).toBeUndefined();
+    } finally {
+      delete process.env.OCR_PARKED_INLINE_KEY;
+    }
   });
 
   it('unknown or non-routable credentialId: 400, no probe', async () => {

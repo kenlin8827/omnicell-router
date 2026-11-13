@@ -438,7 +438,7 @@ export interface GatewayStatusResponse {
   /**
    * Runtime credential directory (provider + keyHash prefix only). Additive:
    * older gateways omit it. Lets the guardrails matrix name an orphan breaker
-   * as the inline config-baked chain head instead of a bare #hash.
+   * as the inline config-baked default credential instead of a bare #hash.
    */
   credentialHashes?: { provider: string; keyHashPrefix: string }[];
   registeredModelsCount: number;
@@ -4526,6 +4526,9 @@ export interface TestProviderResult {
   upstreamBody?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
+  /** Credential rotation: masked rows tried, in order (only when > 1). */
+  triedCredentials?: CredentialMeta[];
+  /** Masked echo of the row that produced the verdict (addressed OR rotated). */
   credential?: CredentialMeta;
   provider?: string;
 }
@@ -5531,7 +5534,7 @@ export const opencodeApi = {
    * held this exact key for the provider, so NO second credential was created
    * (idempotent success — `credential` names the row that survived).
    * `headPreserved` = the sink auto-activated the new key and this surface handed
-   * the chain head back to the credential that was serving (opencode's `active`
+   * the default credential back to the credential that was serving (opencode's `active`
    * is ALSO the key its own CLI uses, so adding an credential must not repoint it).
    * The reply mirrors backend console.ts `connect` inline.
    */
