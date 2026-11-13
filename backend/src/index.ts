@@ -10,6 +10,7 @@ import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
+import { reconcileMihomoSidecar } from './proxy/mihomo-sidecar.js';
 import { isRestartSupervisorProcess, runRestartSupervisor, takeRestartSelfRegisterFlag, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
@@ -125,6 +126,22 @@ async function main() {
 
   const config = loadConfig();
   initProxyConfig(config.proxy);
+
+  // Mihomo sidecar (ADR-0022): when outbound proxy mode is mihomo and the
+  // master switch is on, adopt a healthy local controller or spawn mihomo.
+  // Fire-and-forget — a missing binary is logged, never a boot failure, and
+  // the download helper stays opt-in (POST /api/admin/proxy/mihomo/install).
+  if (config.proxy?.enabled === true && config.proxy.mode === 'mihomo') {
+    void reconcileMihomoSidecar(config.proxy)
+      .then((r) => {
+        if (r.ok) console.log(`[OCR] mihomo sidecar ${r.action}${r.pid ? ` (pid ${r.pid})` : ''}`);
+        else console.warn(`[OCR] mihomo sidecar ${r.action} failed: ${r.error}`);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[OCR] mihomo sidecar auto-start threw: ${message}`);
+      });
+  }
 
   // Headroom sidecar association (opt-in compression.headroom.autoStart):
   // probe <url>/health → adopt a running instance, else detached-spawn one.

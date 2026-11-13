@@ -28,6 +28,8 @@ import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from 
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
+import { registerMihomoRoutes } from './mihomo.js';
+import { reconcileMihomoSidecar } from '../proxy/mihomo-sidecar.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
@@ -2383,6 +2385,10 @@ export function registerConsoleRoutes(
     // invariant 6). Within circuitBreaker only persistence.debounceMs still
     // needs a restart — the state store binds its debounce at boot.
     initProxyConfig(loadConfig().proxy);
+    void reconcileMihomoSidecar(loadConfig().proxy).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Mihomo] reconcile after config save failed: ${message}`);
+    });
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
     applyRouteEntriesConfig(loadConfig().routeEntries); // experience-table gate: hot-applies lookup/writes
@@ -2419,6 +2425,10 @@ export function registerConsoleRoutes(
     const result = saveRawConfig(body.yaml);
     if (!result.success) return reply.status(400).send(result);
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
+    void reconcileMihomoSidecar(loadConfig().proxy).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Mihomo] reconcile after config save failed: ${message}`);
+    });
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture); // hot-apply capture too
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)
     applyRouteEntriesConfig(loadConfig().routeEntries); // hot-apply the experience-table gate too
@@ -5361,6 +5371,8 @@ export function registerConsoleRoutes(
     const r = await stopHeadroomSidecar({ url: headroomSidecarCfg()?.url });
     return { status: r.ok ? 'ok' : 'error', ...r };
   });
+
+  registerMihomoRoutes(app);
 
   /* ---------------------------------------------------------------------- *
    * 12b. Request-capture archive browser (CaptureRecorder; opt-in audit log)

@@ -292,9 +292,70 @@ export interface OpenCodeConfig {
 }
 
 /**
+ * How the outbound proxy endpoint is chosen (ADR-0022).
+ *
+ *   `manual`  — `proxy.url` (the historical behavior; the default)
+ *   `mihomo`  — the gateway-managed mihomo mixed-port on loopback
+ *               (`http://127.0.0.1:<proxy.mihomo.mixedPort>`)
+ *
+ * `includes` / `excludes` and the loopback bypass apply in both modes.
+ * An absent or unrecognized mode is `manual`, so a pre-ADR-0022 file is
+ * unchanged. Additive fields — schemaVersion stays 1 (ADR-0016: no shape
+ * change, defaults filled in loadConfig).
+ */
+export type ProxyMode = 'manual' | 'mihomo';
+
+/** One mihomo proxy-provider subscription. `id` is the provider name. */
+export interface MihomoSubscription {
+  /** Stable id, `[A-Za-z0-9_-]{1,64}` — also the mihomo provider name. */
+  id: string;
+  name: string;
+  /** http(s) subscription URL. May embed a token — never log it. */
+  url: string;
+  /** Refresh interval in seconds (mihomo proxy-provider `interval`). */
+  interval?: number;
+  /** Absent or true = included in the generated config. */
+  enabled?: boolean;
+}
+
+/**
+ * Gateway-managed mihomo (Clash Meta) core. The sidecar listens on
+ * `mixedPort` and exposes its external controller on loopback
+ * `controllerPort`. The controller secret and subscription URLs are
+ * operator secrets: redacted in env archives, never written to logs.
+ */
+export interface MihomoConfig {
+  /**
+   * Mirrors `proxy.mode === 'mihomo'` after sanitizing. A file that sets
+   * this true and omits `mode` is read as mihomo mode; an explicit
+   * `mode: manual` wins (backward compatible).
+   */
+  enabled?: boolean;
+  /** Optional absolute path to a mihomo binary. Empty = `<ocrHome>/bin/mihomo`, then PATH. */
+  binaryPath?: string;
+  /** HTTP+SOCKS mixed port bound to 127.0.0.1. Default 7890. */
+  mixedPort?: number;
+  /** External-controller port bound to 127.0.0.1. Default 9090. */
+  controllerPort?: number;
+  /**
+   * Bearer secret for the external controller. Empty until the first
+   * start, which generates one and persists it. Never logged.
+   */
+  controllerSecret?: string;
+  subscriptions?: MihomoSubscription[];
+  /** Selector group name in the generated config. Default `PROXY`. */
+  selectedGroup?: string;
+  /** group name → node name. Restored via the controller after start. */
+  selectedNodes?: Record<string, string>;
+}
+
+/**
  * Outbound proxy for upstream calls (model providers, Layer2 decision layer, catalog sync).
  * Resolution order: loopback targets are NEVER proxied → excludes (force direct)
- * → includes (non-empty: ONLY matches go through proxy) → proxy.url → direct.
+ * → includes (non-empty: ONLY matches go through proxy) → the effective endpoint → direct.
+ *
+ * The effective endpoint is `proxy.url` in `manual` mode and
+ * `http://127.0.0.1:<mihomo.mixedPort>` in `mihomo` mode (ADR-0022).
  *
  * Patterns are wildcard globs matched against the composite `provider/modelId`
  * AND the bare model id, so both levels work:
@@ -307,9 +368,11 @@ export interface OpenCodeConfig {
  */
 export interface ProxyConfig {
   enabled?: boolean; // master switch; default false (opt-in) — proxying only when explicitly true
-  url?: string; // global proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun, incl. CONNECT); empty = direct
+  mode?: ProxyMode; // default 'manual' — pre-existing files keep proxy.url
+  url?: string; // manual-mode proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun and Node, incl. CONNECT); empty = direct
   includes?: string[]; // non-empty: ONLY matching models/providers go through proxy
   excludes?: string[]; // matching models/providers force direct (evaluated before includes)
+  mihomo?: MihomoConfig;
 }
 
 /**

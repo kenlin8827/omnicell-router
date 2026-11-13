@@ -120,6 +120,24 @@ describe('resolveProxyUrl', () => {
     initProxyConfig({ enabled: true, url: 'ftp://127.0.0.1:1080' } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBeUndefined();
   });
+
+  test('mihomo mode uses the loopback mixed port and still honors excludes and loopback', () => {
+    initProxyConfig({
+      enabled: true,
+      mode: 'mihomo',
+      url: 'http://proxy.example:8080',
+      mihomo: { mixedPort: 7897, controllerPort: 9097 },
+      excludes: ['deepseek/*'],
+    } as ProxyConfig);
+    expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://127.0.0.1:7897');
+    expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
+    expect(resolveProxyUrl('http://127.0.0.1:9097/proxies')).toBeUndefined();
+  });
+
+  test('manual mode is unchanged when mode is omitted', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080' } as ProxyConfig);
+    expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
+  });
 });
 
 describe('proxiedFetch against an authenticated mock proxy', () => {

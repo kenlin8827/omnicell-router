@@ -1521,6 +1521,66 @@ export interface HeadroomSidecarOpResult {
   code: string | null;
 }
 
+// ---- mihomo outbound core (backend: proxy/mihomo-sidecar.ts, ADR-0022) ----
+
+export interface MihomoSubscription {
+  id: string;
+  name: string;
+  url: string;
+  interval?: number;
+  enabled?: boolean;
+}
+
+export interface MihomoStatus {
+  status: string;
+  installed: boolean;
+  binaryPath: string | null;
+  running: boolean;
+  managed: boolean;
+  adopted: boolean;
+  pid: number | null;
+  mode: 'manual' | 'mihomo';
+  enabled: boolean;
+  mixedPort: number;
+  controllerPort: number;
+  secretConfigured: boolean;
+  version: string | null;
+  error: string | null;
+  code: string | null;
+}
+
+export interface MihomoOpResult {
+  status: string;
+  ok: boolean;
+  action?: string;
+  reused?: boolean;
+  pid: number | null;
+  version: string | null;
+  error: string | null;
+  code: string | null;
+}
+
+export interface MihomoProviderInfo {
+  name: string;
+  vehicleType?: string;
+  updatedAt?: string;
+  nodeCount?: number;
+}
+
+export interface MihomoProxyGroup {
+  name: string;
+  type: string;
+  now: string;
+  all: string[];
+}
+
+export interface MihomoProxyNode {
+  name: string;
+  type: string;
+  delay: number | null;
+  selected: boolean;
+}
+
 /** Harness domain wire types (ADR-0015) — names mirror the backend contract 1:1. */
 export interface HarnessCopyView {
   scope: 'global' | 'project';
@@ -2358,6 +2418,110 @@ export const api = {
   async stopHeadroomSidecar(): Promise<HeadroomSidecarOpResult> {
     const res = await fetch('/api/admin/headroom/sidecar/stop', { method: 'POST' });
     return res.json();
+  },
+
+  async getMihomoStatus(): Promise<MihomoStatus> {
+    const res = await fetch('/api/admin/proxy/mihomo/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async startMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/start', { method: 'POST' });
+    return res.json();
+  },
+
+  async stopMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/stop', { method: 'POST' });
+    return res.json();
+  },
+
+  async restartMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/restart', { method: 'POST' });
+    return res.json();
+  },
+
+  async installMihomo(): Promise<{ status: string; ok: boolean; path?: string; version?: string; error?: string; code?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    return res.json();
+  },
+
+  async getMihomoSubscriptions(): Promise<{ status: string; subscriptions: MihomoSubscription[]; providers: MihomoProviderInfo[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async addMihomoSubscription(body: { name: string; url: string; interval?: number; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.message || `HTTP ${res.status}`);
+    return json;
+  },
+
+  async updateMihomoSubscription(id: string, body: Partial<MihomoSubscription>): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.message || `HTTP ${res.status}`);
+    return json;
+  },
+
+  async deleteMihomoSubscription(id: string): Promise<void> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new Error(json?.message || `HTTP ${res.status}`);
+    }
+  },
+
+  async refreshMihomoSubscription(id: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.message || `HTTP ${res.status}`);
+    return json;
+  },
+
+  async refreshAllMihomoSubscriptions(): Promise<{ status: string; refreshed: string[]; failed: string[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions/refresh', { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok && !json?.refreshed) throw new Error(json?.message || `HTTP ${res.status}`);
+    return json;
+  },
+
+  async getMihomoProxies(): Promise<{ status: string; running: boolean; group: string; now?: string | null; groups: MihomoProxyGroup[]; nodes: MihomoProxyNode[]; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async selectMihomoProxy(group: string, name: string): Promise<{ status: string; group: string; name: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group, name }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.message || `HTTP ${res.status}`);
+    return json;
+  },
+
+  async testMihomoDelay(name: string, group = false): Promise<{ status: string; delay?: number; delays?: Record<string, number>; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, group }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.message || `HTTP ${res.status}`);
+    return json;
   },
 
   async getTierPools(): Promise<TierPoolsResponse> {

@@ -31,6 +31,18 @@ export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
 /** `compression.headroom.url` backend default (loopback-only sidecar). */
 export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 
+/** `proxy.mihomo.mixedPort` backend default (ADR-0022). */
+export const DEFAULT_MIHOMO_MIXED_PORT = 7890;
+
+/** `proxy.mihomo.controllerPort` backend default. */
+export const DEFAULT_MIHOMO_CONTROLLER_PORT = 9090;
+
+/** `proxy.mihomo.selectedGroup` backend default. */
+export const DEFAULT_MIHOMO_GROUP = 'PROXY';
+
+/** Subscription refresh interval (seconds) when unset. */
+export const DEFAULT_MIHOMO_SUB_INTERVAL_SEC = 3600;
+
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
-import { DirectivesConfig, Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
+import { DirectivesConfig, Layer2DecisionConfig, MihomoConfig, MihomoSubscription, ProxyConfig, ProxyMode, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
 import { lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
@@ -27,6 +27,12 @@ import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_ROUTE_ENTRIES_MAX,
   DEFAULT_GATEWAY_PORT,
+  DEFAULT_MIHOMO_CONTROLLER_PORT,
+  DEFAULT_MIHOMO_GROUP,
+  DEFAULT_MIHOMO_MIXED_PORT,
+  DEFAULT_MIHOMO_SUB_INTERVAL_SEC,
+  MIHOMO_SUB_INTERVAL_MAX_SEC,
+  MIHOMO_SUB_INTERVAL_MIN_SEC,
 } from './defaults.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
@@ -113,7 +119,20 @@ const DEFAULT_CONFIG: RouterConfig = {
   },
   proxy: {
     enabled: false, // opt-in: proxying only when explicitly enabled
+    mode: 'manual', // ADR-0022: manual keeps proxy.url; mihomo routes via the local core
     url: 'http://127.0.0.1:7890',
+    includes: [],
+    excludes: [],
+    mihomo: {
+      enabled: false,
+      binaryPath: '',
+      mixedPort: DEFAULT_MIHOMO_MIXED_PORT,
+      controllerPort: DEFAULT_MIHOMO_CONTROLLER_PORT,
+      controllerSecret: '',
+      subscriptions: [],
+      selectedGroup: DEFAULT_MIHOMO_GROUP,
+      selectedNodes: {},
+    },
   },
   forwardProxy: {
     enabled: false, // opt-in: full-capture MITM proxy must be enabled consciously
@@ -631,6 +650,128 @@ function warnForwardProxyRulesOnce(raw: unknown, proxyEnabled: boolean): void {
   }
 }
 
+const SUBSCRIPTION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const GROUP_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function clampPort(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return fallback;
+  return n;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+}
+
+function sanitizeSubscriptions(raw: unknown): MihomoSubscription[] {
+  if (!Array.isArray(raw)) return [];
+  const out: MihomoSubscription[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const id = typeof rec.id === 'string' ? rec.id.trim() : '';
+    const name = typeof rec.name === 'string' ? rec.name.trim() : '';
+    const url = typeof rec.url === 'string' ? rec.url.trim() : '';
+    if (!SUBSCRIPTION_ID_RE.test(id) || !name || seen.has(id)) continue;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+    } catch {
+      continue;
+    }
+    seen.add(id);
+    let interval = DEFAULT_MIHOMO_SUB_INTERVAL_SEC;
+    if (typeof rec.interval === 'number' && Number.isFinite(rec.interval)) {
+      interval = Math.min(MIHOMO_SUB_INTERVAL_MAX_SEC, Math.max(MIHOMO_SUB_INTERVAL_MIN_SEC, Math.round(rec.interval)));
+    }
+    out.push({
+      id,
+      name: name.slice(0, 80),
+      url,
+      interval,
+      enabled: rec.enabled !== false,
+    });
+  }
+  return out;
+}
+
+function sanitizeSelectedNodes(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== 'string') continue;
+    const name = key.trim();
+    const node = value.trim();
+    if (!name || !node || name.length > 128 || node.length > 256) continue;
+    out[name] = node;
+  }
+  return out;
+}
+
+/**
+ * Normalize `proxy` on every read. Missing mihomo fields take the shipped
+ * defaults; junk subscriptions are dropped; `mode` stays `manual` unless the
+ * file explicitly asks for mihomo (or sets `mihomo.enabled` with no mode).
+ * Pure value cleaning — not a schema migration (ADR-0016 / ADR-0022).
+ */
+export function sanitizeProxyConfig(raw: unknown): ProxyConfig {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as ProxyConfig) : {};
+  const mihomoRaw = src.mihomo && typeof src.mihomo === 'object' && !Array.isArray(src.mihomo) ? src.mihomo : {};
+  const mode: ProxyMode = src.mode === 'mihomo' || (src.mode !== 'manual' && mihomoRaw.enabled === true) ? 'mihomo' : 'manual';
+  const group = typeof mihomoRaw.selectedGroup === 'string' && GROUP_NAME_RE.test(mihomoRaw.selectedGroup.trim())
+    ? mihomoRaw.selectedGroup.trim()
+    : DEFAULT_MIHOMO_GROUP;
+  const secret = typeof mihomoRaw.controllerSecret === 'string' ? mihomoRaw.controllerSecret.trim().slice(0, 256) : '';
+  const binaryPath = typeof mihomoRaw.binaryPath === 'string' ? mihomoRaw.binaryPath.trim().slice(0, 1024) : '';
+  const mihomo: MihomoConfig = {
+    enabled: mode === 'mihomo',
+    binaryPath,
+    mixedPort: clampPort(mihomoRaw.mixedPort, DEFAULT_MIHOMO_MIXED_PORT),
+    controllerPort: clampPort(mihomoRaw.controllerPort, DEFAULT_MIHOMO_CONTROLLER_PORT),
+    controllerSecret: secret,
+    subscriptions: sanitizeSubscriptions(mihomoRaw.subscriptions),
+    selectedGroup: group,
+    selectedNodes: sanitizeSelectedNodes(mihomoRaw.selectedNodes),
+  };
+  return {
+    enabled: src.enabled === true,
+    mode,
+    url: typeof src.url === 'string' ? src.url : DEFAULT_CONFIG.proxy?.url,
+    includes: stringList(src.includes),
+    excludes: stringList(src.excludes),
+    mihomo,
+  };
+}
+
+/**
+ * Deep-merge a proxy patch onto the stored section so a save that only
+ * names `url` / `includes` cannot wipe subscriptions or the controller secret.
+ * An explicit `subscriptions` or `selectedNodes` array/object replaces that
+ * field; omitting `mihomo` keeps the stored sidecar section.
+ */
+export function mergeProxyConfig(current: ProxyConfig | undefined, incoming: ProxyConfig): ProxyConfig {
+  const prev = current ?? {};
+  const prevMihomo = prev.mihomo ?? {};
+  const incomingMihomo = incoming.mihomo;
+  const mihomo: MihomoConfig = {
+    ...prevMihomo,
+    ...(incomingMihomo ?? {}),
+    subscriptions: incomingMihomo && Object.prototype.hasOwnProperty.call(incomingMihomo, 'subscriptions')
+      ? incomingMihomo.subscriptions
+      : prevMihomo.subscriptions,
+    selectedNodes: incomingMihomo && Object.prototype.hasOwnProperty.call(incomingMihomo, 'selectedNodes')
+      ? incomingMihomo.selectedNodes
+      : prevMihomo.selectedNodes,
+  };
+  return sanitizeProxyConfig({
+    ...prev,
+    ...incoming,
+    mihomo,
+  });
+}
+
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
   // Only the ACTIVE file's port is remembered (an explicit configPath is a
@@ -716,7 +857,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         },
         routeEntries: sanitizeRouteEntriesInput(flat.routeEntries),
         directives: sanitizeDirectivesInput(flat.directives),
-        proxy: { ...DEFAULT_CONFIG.proxy, ...flat.proxy },
+        proxy: sanitizeProxyConfig(flat.proxy ?? DEFAULT_CONFIG.proxy),
         forwardProxy: resolveForwardProxyConfig(flat.forwardProxy),
         compression: {
           rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...flat.compression?.rtk },
@@ -940,6 +1081,10 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // console's "takes effect immediately" promise is false. Strict credential
     // mode is read from the same object by the gateway plugin host.
     live.forwardProxy = fresh.forwardProxy;
+    // proxy policy is hot-applied (initProxyConfig on the save path). Keep
+    // the boot snapshot on the same object so a later reader of the live
+    // ref does not keep the pre-save endpoint.
+    live.proxy = fresh.proxy;
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober
@@ -964,6 +1109,9 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
       delete (bodyRest.requestCapture as Record<string, unknown>).systemone;
     }
     const merged = { ...current, ...bodyRest };
+    if (bodyRest.proxy && typeof bodyRest.proxy === 'object') {
+      merged.proxy = mergeProxyConfig(current.proxy, bodyRest.proxy);
+    }
     // `PORT` is a bootstrap lever, never a file value (see _diskPort): a save
     // that does not itself name a port keeps the file's own value, so a dev
     // boot's env port cannot relocate an installed gateway on its next restart.

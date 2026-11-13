@@ -89,6 +89,27 @@ export const FORWARD_PROXY_MAX_CONNECTIONS_MIN = 16;
 export const FORWARD_PROXY_MAX_CONNECTIONS_MAX = 8192;
 
 
+/**
+ * Mihomo (Clash Meta) mixed-port when `proxy.mihomo.mixedPort` is unset.
+ * The gateway's outbound calls use `http://127.0.0.1:<mixedPort>` while
+ * `proxy.mode` is `mihomo` (ADR-0022). 7890 is mihomo's own default.
+ */
+export const DEFAULT_MIHOMO_MIXED_PORT = 7890;
+
+/** External-controller port when `proxy.mihomo.controllerPort` is unset. */
+export const DEFAULT_MIHOMO_CONTROLLER_PORT = 9090;
+
+/** Selector group written into the generated mihomo config. */
+export const DEFAULT_MIHOMO_GROUP = 'PROXY';
+
+/**
+ * Subscription refresh interval (seconds) when a subscription omits `interval`.
+ * Mihomo's proxy-provider `interval` is seconds. Clamped on load.
+ */
+export const DEFAULT_MIHOMO_SUB_INTERVAL_SEC = 3600;
+export const MIHOMO_SUB_INTERVAL_MIN_SEC = 300;
+export const MIHOMO_SUB_INTERVAL_MAX_SEC = 86_400;
+
 /** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
 export const DEFAULT_HEADROOM_PORT = 8787;
 export const DEFAULT_HEADROOM_URL = `http://127.0.0.1:${DEFAULT_HEADROOM_PORT}`;

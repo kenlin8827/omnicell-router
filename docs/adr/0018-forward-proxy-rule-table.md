@@ -159,8 +159,8 @@ matched: a CONNECT target is stripped to its host before resolution.
 |---|---|---|
 | `direct` | direct | yes (the default posture) |
 | `direct-passthrough` | direct | no — blind tunnel |
-| `proxy` | outbound proxy — `proxy.enabled` + `proxy.url` | yes (the default posture) |
-| `proxy-passthrough` | outbound proxy — `proxy.enabled` + `proxy.url` | no — blind tunnel |
+| `proxy` | outbound proxy — `proxy.enabled` + the effective endpoint (ADR-0022) | yes (the default posture) |
+| `proxy-passthrough` | outbound proxy — `proxy.enabled` + the effective endpoint (ADR-0022) | no — blind tunnel |
 | `reject` | none — 403, answered on admission | — |
 
 The base word is the EXIT; the `-passthrough` suffix opts out of interception:
@@ -229,7 +229,9 @@ Admission and interception both read the CONNECT authority, never a guess:
 ### 4. `action: proxy` is host-scoped and final
 
 The `action` resolves the proxy URL through `outboundProxyUrl()` —
-`proxy.enabled` + `proxy.url` only. It deliberately does **not** consult
+`proxy.enabled` plus the effective outbound endpoint (ADR-0022): `proxy.url`
+in `manual` mode, `http://127.0.0.1:<mixedPort>` when `proxy.mode` is
+`mihomo`. It deliberately does **not** consult
 `proxy.includes` / `proxy.excludes`: those lists answer "which provider/model",
 and letting a provider-scoped list downgrade a host-scoped decision to direct is
 exactly the silent lie this table exists to remove.
