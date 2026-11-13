@@ -11,7 +11,8 @@ import {
   setProxyAccessLogPersistDir,
   setProxyAccessLogSettingsReader,
   clearProxyAccessLog,
-  deleteProxyAccessEvents,
+  deletePersistedProxyEvents,
+  forgetProxyAccessRingEvents,
   proxyAccessLogSettings,
 } from '../src/forward-proxy/access-log.js';
 import { DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES } from '../src/config/defaults.js';
@@ -102,7 +103,7 @@ describe('forward-proxy access log: bounded body capture', () => {
   });
 });
 
-describe('row-scoped deletion (the filter-scoped clear)', () => {
+describe('scoped deletion: persisted-only vs ring-only', () => {
   /** A tap that does NOT reset the ledger — these tests need several rows. */
   const nextTap = (): NonNullable<ReturnType<typeof createAccessTap>> => {
     setProxyAccessLogPersistDir(persistDir);
@@ -111,8 +112,13 @@ describe('row-scoped deletion (the filter-scoped clear)', () => {
     assert.ok(tap);
     return tap;
   };
+  const persistedIds = (): string[] =>
+    fs.readdirSync(persistDir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .flatMap((f) => fs.readFileSync(path.join(persistDir, f), 'utf8').split('\n').filter(Boolean))
+      .map((l) => (JSON.parse(l) as { id: string }).id);
 
-  it('removes exactly the named rows: ring, day file and body sidecars', () => {
+  it('persisted delete drops the day line + sidecar but leaves the live ring', () => {
     clearProxyAccessLog();
     const keep = nextTap();
     // Past the cap so the bytes really live in a sidecar (that is what gets deleted).
@@ -124,22 +130,55 @@ describe('row-scoped deletion (the filter-scoped clear)', () => {
 
     const [dropEv, keepEv] = listProxyAccessEvents();
     assert.ok(dropEv && keepEv);
-    const dropped = deleteProxyAccessEvents([dropEv.id]);
-    assert.equal(dropped, 1, 'one row matched the key');
+    const dropped = deletePersistedProxyEvents([dropEv.id]);
+    assert.equal(dropped, 1, 'one persisted row matched the key');
 
     const left = listProxyAccessEvents().map((e) => e.id);
-    assert.deepEqual(left, [keepEv.id], 'only the named row is gone from the ring');
+    assert.deepEqual(left, [dropEv.id, keepEv.id], 'history is a scope over the files — the ring is untouched');
     // Its sidecar went with it; the survivor's bytes are untouched.
     assert.ok(dropEv.resBodyFile, 'the dropped row had a sidecar');
     assert.equal(readProxyAccessBodyFile(dropEv.resBodyFile!), null);
     assert.ok(readProxyAccessBodyFile(keepEv.resBodyFile!), 'neighbour bodies survive');
+    assert.deepEqual(persistedIds(), [keepEv.id], 'the day file no longer holds the deleted copy');
+  });
 
-    // The persisted day file no longer resurrects it on reload.
-    const dayFiles = fs.readdirSync(persistDir).filter((f) => f.endsWith('.jsonl'));
-    const persisted = dayFiles
-      .flatMap((f) => fs.readFileSync(path.join(persistDir, f), 'utf8').split('\n').filter(Boolean))
-      .map((l) => JSON.parse(l) as { id: string });
-    assert.deepEqual(persisted.map((r) => r.id), [keepEv.id]);
+  it('ring delete hides the live row but keeps the day line + sidecar', () => {
+    clearProxyAccessLog();
+    const keep = nextTap();
+    keep.onResChunk(Buffer.alloc(2048, 0x4b));
+    keep.finish(200, {});
+    const drop = nextTap();
+    drop.onResChunk(Buffer.alloc(2048, 0x44));
+    drop.finish(200, {});
+
+    const [dropEv, keepEv] = listProxyAccessEvents();
+    assert.ok(dropEv && keepEv);
+    assert.equal(forgetProxyAccessRingEvents([dropEv.id]), 1, 'the live row is gone');
+
+    assert.deepEqual(listProxyAccessEvents().map((e) => e.id), [keepEv.id]);
+    assert.deepEqual(persistedIds().sort(), [keepEv.id, dropEv.id].sort(), 'the persisted scope keeps both rows');
+    assert.ok(readProxyAccessBodyFile(dropEv.resBodyFile!), 'history still owns the dropped row bytes');
+  });
+
+  it('drops the sidecar of a persisted row the ring no longer holds', () => {
+    clearProxyAccessLog();
+    const day = '20261113';
+    const ref = `${day}/pa-evicted-req.bin`;
+    fs.mkdirSync(path.join(persistDir, 'bodies', day), { recursive: true });
+    fs.writeFileSync(path.join(persistDir, 'bodies', day, 'pa-evicted-req.bin'), 'evicted-bytes');
+    fs.writeFileSync(
+      path.join(persistDir, `access-log-${day}.jsonl`),
+      JSON.stringify({
+        id: 'pa-evicted', ts: Date.now(), kind: 'http', host: 'h.test', port: 443,
+        method: 'GET', path: '/gone', reqBytes: 13, respBytes: 0, reqBodyFile: ref,
+      }) + '\n'
+    );
+
+    const ids = readProxyAccessHistory().map((e) => e.id);
+    assert.deepEqual(ids, ['pa-evicted'], 'the ring is empty — the row exists only on disk');
+    assert.equal(deletePersistedProxyEvents(ids), 1, 'the persisted row is counted as deleted');
+    assert.equal(readProxyAccessHistory().length, 0, 'its day line is gone');
+    assert.equal(readProxyAccessBodyFile(ref), null, 'its sidecar goes with it, never orphaned');
   });
 });
 

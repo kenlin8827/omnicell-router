@@ -105,7 +105,7 @@ export interface ExecutionTrace {
     // trace plane does not carry a second, unpopulated copy.
     /**
      * Display-safe sha256 prefix of the credential that SERVED this turn
-     * (same chain-head degeneracy as the ratelimit credential subject, so a
+     * (same default-credential degeneracy as the ratelimit credential subject, so a
      * single-credential provider carries attribution too). Quota tracking
      * aggregates per (provider × prefix) on this field. Forgiving
      * forward-compat: traces replayed from disk before this field existed

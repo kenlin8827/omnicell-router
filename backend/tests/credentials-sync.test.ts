@@ -432,7 +432,7 @@ describe('write sync (push): OCR file -> client', () => {
     expect(readOcr(p).providers.anthropic).toHaveLength(1); // kept
   });
 
-  it('v2: a pushed FALLBACK key never steals the active chain head', async () => {
+  it('v2: a pushed FALLBACK key never steals the active default credential', async () => {
     const p = withService(sandboxPaths());
     const ocr = new OcrStore({ paths: p, now: () => 1 });
     await ocr.connectKey('anthropic', 'sk-head'); // active head

@@ -438,7 +438,7 @@ export interface GatewayStatusResponse {
   /**
    * Runtime credential directory (provider + keyHash prefix only). Additive:
    * older gateways omit it. Lets the guardrails matrix name an orphan breaker
-   * as the inline config-baked chain head instead of a bare #hash.
+   * as the inline config-baked default credential instead of a bare #hash.
    */
   credentialHashes?: { provider: string; keyHashPrefix: string }[];
   registeredModelsCount: number;
@@ -2386,21 +2386,20 @@ export const api = {
     return res.arrayBuffer();
   },
 
-  /** Empty EVERY source behind the one traffic timeline (core ring + gateway feeds). */
-  /** Delete exactly these rows (the filter-scoped clear). Keys, not a predicate: */
-  /** the console already knows what it is showing, so the filter logic stays */
-  /** in one place instead of being re-implemented here. */
-  async deleteTrafficRows(body: {
-    proxy: string[];
-    plugins: Record<string, string[]>;
-  }): Promise<{ deleted: { proxy: number; plugins: Record<string, number> } }> {
-    const res = await fetch('/api/admin/traffic-delete', {
+  /** Hide exactly these rows from the LIVE view. Never deletes on disk: the
+   *  persisted day JSONL and body sidecars stay, so History still lists the
+   *  same rows and can delete them there. */
+  async clearLiveTraffic(body: {
+    proxy: { key: string; ts: number }[];
+    plugins: Record<string, { key: string; ts: number }[]>;
+  }): Promise<{ hidden: { proxy: number; plugins: Record<string, number> } }> {
+    const res = await fetch('/api/admin/traffic-live-clear', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as { deleted: { proxy: number; plugins: Record<string, number> } };
+    return (await res.json()) as { hidden: { proxy: number; plugins: Record<string, number> } };
   },
   async clearTrafficLog(): Promise<{ cleared: string[] }> {
     const res = await fetch('/api/admin/traffic-clear', { method: 'POST' });
@@ -4989,6 +4988,9 @@ export interface TestProviderResult {
   upstreamBody?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
+  /** Credential rotation: masked rows tried, in order (only when > 1). */
+  triedCredentials?: CredentialMeta[];
+  /** Masked echo of the row that produced the verdict (addressed OR rotated). */
   credential?: CredentialMeta;
   provider?: string;
 }
@@ -6005,7 +6007,7 @@ export const opencodeApi = {
    * held this exact key for the provider, so NO second credential was created
    * (idempotent success — `credential` names the row that survived).
    * `headPreserved` = the sink auto-activated the new key and this surface handed
-   * the chain head back to the credential that was serving (opencode's `active`
+   * the default credential back to the credential that was serving (opencode's `active`
    * is ALSO the key its own CLI uses, so adding an credential must not repoint it).
    * The reply mirrors backend console.ts `connect` inline.
    */

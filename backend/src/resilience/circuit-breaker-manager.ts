@@ -751,7 +751,7 @@ export class CircuitBreakerManager {
     // breaker record it piggybacks on.
     // Attribution ground truth: the caller's selection prefix may be absent
     // (all-unhealthy / all-disabled / no-session degeneracies still execute on
-    // the chain head), but `registry.execute` stamped the credential that
+    // the default credential), but `registry.execute` stamped the credential that
     // ACTUALLY served the failed attempt onto the error, and the classifier
     // carried it here as `diagnosis.usedKeyHashPrefix`. That stamp — not the
     // selection outcome — is what scopes the trip: a credential-fault error

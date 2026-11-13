@@ -62,7 +62,7 @@ kimi 条目从同一次响应中读取两个窗口：顶层 `usage` 对象给出
 
 ### 5. L-a、L-d 与 L-e：预留的收割层、用户表与插件层
 
-- **L-a（二期，仅预留数据面）：** 从推理响应 `x-ratelimit-*` 头收割（捕获面对响应头保留 NAMES、仅脱敏凭据形态的 VALUE，故 `x-ratelimit-*` 三件套在捕获中存活——ADR-0008 §5），挂靠在已落地的 `ExecutionTrace.execution.credentialKeyHashPrefix` 逐轮归因上（第 1 步地基：orchestrator 为实际 SERVED 凭据打戳——与限流凭证 subject 同款链头退化；SQLite 无需 DDL，因为 trace 行是 JSON blob，旧行 replay 该字段为 `undefined`，即 `clientHeaders` 前向兼容先例）。目前没有任何写入方产出 `source: measured`。
+- **L-a（二期，仅预留数据面）：** 从推理响应 `x-ratelimit-*` 头收割（捕获面对响应头保留 NAMES、仅脱敏凭据形态的 VALUE，故 `x-ratelimit-*` 三件套在捕获中存活——ADR-0008 §5），挂靠在已落地的 `ExecutionTrace.execution.credentialKeyHashPrefix` 逐轮归因上（第 1 步地基：orchestrator 为实际 SERVED 凭据打戳——与限流凭证 subject 同款默认凭证退化；SQLite 无需 DDL，因为 trace 行是 JSON blob，旧行 replay 该字段为 `undefined`，即 `clientHeaders` 前向兼容先例）。目前没有任何写入方产出 `source: measured`。
 - **L-d（config.yaml `quotaProbes:` 节）：** 长尾与自建网关（以及对内置条目的显式 fork）。用户条目受下述铁律约束——它们是铁律**唯一**约束的层（内置代码与 release 表可信，改以 §3/§4 披露代替约束）。
 - **L-e（插件知识层）：** model-service 插件可在 `ModelServicePlugin` 上声明 `quotaCheck` 能力——与代码 adapter 同一契约（入参 `QuotaAdapterContext`、出参 `QuotaProbeOutcome`；原始密钥仅进程内流转）。覆盖解析**按 wire 走**：provider def 的 npm/baseURL 解析出 wire，已加载且声明了 `quotaCheck` 的该 wire 插件覆盖该 wire 上一切持凭证的 provider。优先级是**最低层**——内置表/内置 adapter（L-b/L-c）或用户 `quotaProbes:` 条目（L-d）永远优先；插件只补**更高层未覆盖**的 provider。端点知识归插件（独立仓库、自带协议文档）；调度、429 全局退避、存储与展示词汇归 core。能力缺失或插件未装 = 无覆盖，与未覆盖 provider 不可区分（有意为之——控制台不出行，而非显示 `unverified`）。动因案例是 vendored `qoder` gRPC wire：被 §3 核对规则结构性排除在内置表之外（不在 `catalog/ocr.json`），但插件装上后理应获得额度平权。
 

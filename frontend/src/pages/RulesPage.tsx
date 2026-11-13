@@ -440,7 +440,7 @@ export const RulesPage: React.FC = () => {
 
   /** One real minimal completion through the production pipeline, pinned to
    * the tier via the auto-<tier> virtual entry — the same force_tier path a
-   * client's request takes. Only the SELECTED member (chain head / weighted
+   * client's request takes. Only the SELECTED member (default credential / weighted
    * pick) is exercised, never the whole pool; an empty tier lands on its
    * degraded fallback model, which modelUsed surfaces verbatim. Precondition
    * failures (unknown tier) localize via the reasonCode. */

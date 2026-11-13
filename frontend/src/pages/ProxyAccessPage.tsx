@@ -1016,21 +1016,15 @@ const ProxyAccessLogCard: React.FC = () => {
   }, [mode]);
 
   /**
-   * Clear = delete EXACTLY the rows on screen. The filter IS the scope: no
-   * filter means everything, a filter means what it shows — and the confirm
-   * states both counts so the blast radius is never a guess. Row KEYS travel
-   * to the backend, not a predicate: the filter logic stays in this file, a
-   * backend copy would drift into deleting rows nobody can see.
-   */
-  /**
-   * Clear = delete rows. The scope follows the mode:
-   *  live    — every matching row is resident locally, so "visible" IS the
-   *            full filter scope; row keys travel to the backend (traffic-delete).
-   *  history — the console only holds ONE server page, so keys can't express
-   *            the scope; the SAME filter vocabulary travels instead and the
-   *            backend deletes all matching persisted rows across all sources
-   *            (proxy-log/history/delete). The exact count is fetched first so
-   *            the confirm states the blast radius, never a guess.
+   * Clear = the rows the current filter shows, scoped by the ACTIVE VIEW:
+   *  live    — hide exactly those rows from the live view (ring removal + a
+   *            live-only tombstone overlay for plugin tail rows). Nothing is
+   *            deleted from disk, so History still lists them; that split is
+   *            the contract (ADR-0017 §5), and the confirm says so.
+   *  history — the console holds ONE server page, so keys can't express the
+   *            scope; the same kind/method/status/host filter travels and the
+   *            backend rewrites every matching PERSISTED row + body sidecar
+   *            (proxy-log/history/delete). The live ring is untouched.
    */
   const handleClear = useCallback(async () => {
     if (mode === 'history') {
@@ -1063,37 +1057,34 @@ const ProxyAccessLogCard: React.FC = () => {
         const n = res.deleted.proxy + Object.values(res.deleted.plugins).reduce((a, b) => a + b, 0);
         toast.success(t('proxyLog.clearDone', { count: n }));
         load();
-      } catch (err: any) {
-        toast.error(`${t('proxyLog.clear')}: ${err?.message || err}`);
+      } catch (err) {
+        toast.error(`${t('proxyLog.clear')}: ${err instanceof Error ? err.message : String(err)}`);
       }
       return;
     }
     if (visible.length === 0) return;
     const ok = await confirmDialog({
       title: t('proxyLog.clearConfirmTitle'),
-      description: [
-        t('proxyLog.clearConfirmDesc'),
-        t('proxyLog.clearScopeNote', { count: visible.length, total: merged.length }),
-      ].join('\n\n'),
+      description: t('proxyLog.clearLiveNote', { count: visible.length, total: merged.length }),
       danger: true,
       confirmLabel: t('proxyLog.clear'),
     });
     if (!ok) return;
     try {
-      const proxy: string[] = [];
-      const plugins: Record<string, string[]> = {};
+      const proxy: { key: string; ts: number }[] = [];
+      const plugins: Record<string, { key: string; ts: number }[]> = {};
       for (const r of visible) {
         const key = r.isProxy ? r.ev.id : rowKey(r.ev);
-        if (r.isProxy) proxy.push(key);
-        else (plugins[r.source] ??= []).push(key);
+        const ts = r.tsNum > 0 ? r.tsNum : Date.now();
+        if (r.isProxy) proxy.push({ key, ts });
+        else (plugins[r.source] ??= []).push({ key, ts });
       }
-      const res = await api.deleteTrafficRows({ proxy, plugins });
-      const n =
-        res.deleted.proxy + Object.values(res.deleted.plugins).reduce((a, b) => a + b, 0);
-      toast.success(t('proxyLog.clearDone', { count: n }));
+      const res = await api.clearLiveTraffic({ proxy, plugins });
+      const n = res.hidden.proxy + Object.values(res.hidden.plugins).reduce((a, b) => a + b, 0);
+      toast.success(t('proxyLog.clearLiveDone', { count: n }));
       load();
-    } catch (err: any) {
-      toast.error(`${t('proxyLog.clear')}: ${err?.message || err}`);
+    } catch (err) {
+      toast.error(`${t('proxyLog.clear')}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [confirmDialog, toast, t, load, visible, merged.length, mode, fKind, fMethod, fStatus, fHost]);
 

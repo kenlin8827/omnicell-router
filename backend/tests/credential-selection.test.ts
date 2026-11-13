@@ -296,7 +296,7 @@ describe('weighted new-session spread', () => {
   it('forced-failover landing ignores weights — chain order outranks the heavy row', () => {
     const cb = makeManager();
     // heavy row (weight 3) is the bound-and-bad one; the landing must be the
-    // chain head (weight 1), never the weighted favorite.
+    // default credential (weight 1), never the weighted favorite.
     const heavyBad: CallCredential[] = [
       { ...cred('sk-w-light', 'light'), weight: 1 },
       { ...cred('sk-w-heavy', 'heavy'), weight: 3 },

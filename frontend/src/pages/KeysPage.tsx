@@ -625,7 +625,7 @@ type CredentialZoomRowProps = {
    * = the store cannot carry weights, the row renders a read-only ×N badge).
    */
   onEditWeight?: (a: CredentialHealth, weight: number) => void;
-  /** 1-based chain slot in the list; the chain head is always #1. */
+  /** 1-based chain slot in the list; the default credential is always #1. */
   position: number;
 };
 
@@ -768,7 +768,8 @@ const CredentialActions: React.FC<CredentialActionsProps> = ({
   return (
     <>
       {/* Per-credential connectivity probe: pins the store row THIS line
-          names — the card-level Test only ever hits the head credential. */}
+          names — the card-level Test rotates the enabled chain and reports
+          whichever credential answered, so this row is never silently skipped. */}
       {want('test') && credential.routable && (
         <button
           className="btn btn-sm"
@@ -1498,7 +1499,7 @@ export const KeysPage: React.FC = () => {
       const res = await opencodeApi.reorderProviderCredentials(a.providerId, orderedIds);
       applyCredentialList(a.providerId, res.credentials);
       toast.success(t('op.credentialPinned', { label: credentialName(a, t('op.credentialUnnamed')) }));
-      // The card's own masked key mirrors the chain head — keep it honest.
+      // The card's own masked key mirrors the default credential — keep it honest.
       await loadOpenCodeProviders();
     } catch (err: any) {
       toast.error(reasonError(err));
@@ -2015,7 +2016,7 @@ export const KeysPage: React.FC = () => {
       showNotice(t('op.connectOk', { sink: sinkLabel }));
       return;
     }
-    // The sink moved the chain head and we moved it back — say so, or the
+    // The sink moved the default credential and we moved it back — say so, or the
     // operator cannot tell why the new row is not starred.
     if (res.headPreserved) {
       const added = res.credential ? credentialName(res.credential, t('op.credentialUnnamed')) : id;
@@ -2434,7 +2435,7 @@ export const KeysPage: React.FC = () => {
                           ? t('op.credentialsAllDisabledTip')
                           : liveIds.length > 1
                             ? t('op.credentialsSpreadHint', { n: liveIds.length })
-                            : t('op.credentialChainHeadTip')
+                            : t('op.credentialDefaultTip')
                       }
                     >
                       <span
@@ -2529,7 +2530,19 @@ export const KeysPage: React.FC = () => {
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                       }}
-                      title={testResults[p.id].ok ? `${testResults[p.id].model} · ${testResults[p.id].latencyMs} ms` : undefined}
+                      title={
+                        testResults[p.id].ok
+                          ? [
+                              testResults[p.id].model,
+                              `${testResults[p.id].latencyMs} ms`,
+                              testResults[p.id].credential
+                                ? credentialName(testResults[p.id].credential as CredentialMeta, t('op.credentialUnnamed'))
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')
+                          : undefined
+                      }
                     >
                       {testResults[p.id].ok
                         ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`

@@ -6,7 +6,7 @@ import type { DecisionSurface } from './types.js';
  * (protocols/systemone/decide.ts) is shared with the Layer 2 decision layer.
  *
  * Stateless decision wire: the named model is the model served (tier aliases
- * resolve to the access-filtered chain head; bare 'auto'/omit falls
+ * resolve to the leading model of the access-filtered pool; bare 'auto'/omit falls
  * back to `systemone.defaultModel`). `capture: true` is the
  * protocol-level policy: the CLIENT leg may enter the
  * http-exchange capture only when `requestCapture.enabled` (the single

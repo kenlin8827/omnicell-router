@@ -452,7 +452,7 @@ export const GuardrailsPage: React.FC = () => {
    * credentialId selects the store row, the bare model id the pairing. The
    * synthetic config-key column has no store row to pin — the provider probe
    * IS that key (there is no chain). An orphan prefix (credential gone) gets no
-   * probe: the chain head would answer for a credential nobody selected.
+   * probe: the default credential would answer for a credential nobody selected.
    */
   const pairTestTarget = (c: PairCard): ModelTestTarget | null => {
     const provPrefix = `${c.provider}/`;

@@ -1217,7 +1217,7 @@ export class PipelineOrchestrator {
           // prefix exists in the new provider's chain (prefer continuity —
           // same key material, same cache economics), and otherwise treats it
           // as stale and re-spreads with a FORCED rebind persisted after the
-          // first success. Explicitly rebinding here to the new chain head
+          // first success. Explicitly rebinding here to the new default credential
           // would pick an credential the model was never verified against.
         }
       }
@@ -1877,7 +1877,7 @@ export class PipelineOrchestrator {
       const rl = getRateLimiter();
       const clientKeyId = keyIdentityOf(context)?.id;
       if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
-      // The credential that SERVED (same chain-head degeneracy as the pool gate,
+      // The credential that SERVED (same default-credential degeneracy as the pool gate,
       // so single-credential providers carry usage too). `servedUsagePrefix`
       // also feeds the trace record below (execution.credentialKeyHashPrefix):
       // one credential attribution, two consumers (ratelimit subject + quota
@@ -2323,7 +2323,7 @@ export class PipelineOrchestrator {
 
       // Outbound sliding-window gate (`credentials:` overlay) — evaluated BEFORE the
       // breaker gate so an at-cap credential never burns a half-open canary.
-      // The chain head stands in when the selector degenerated (single-credential
+      // The default credential stands in when the selector degenerated (single-credential
       // / sessionless paths — the head IS the boot-baked credential registry.execute
       // serves with, registry invariant), so caps fire on one-key providers too.
       // NON-CONSUMING peek: the request slot is taken below only when the call
@@ -2577,7 +2577,7 @@ export class PipelineOrchestrator {
             provider: candidate.provider,
             // Pair attribution: the credential this call actually ran on — the
             // selector's prefix, else the registry stamp on the error (a
-            // selection that degenerated to the chain head still attributes).
+            // selection that degenerated to the default credential still attributes).
             keyHashPrefix: credentialPrefix ?? diagnosis.usedKeyHashPrefix,
             errorClass: diagnosis.category,
             status: diagnosis.statusCode,

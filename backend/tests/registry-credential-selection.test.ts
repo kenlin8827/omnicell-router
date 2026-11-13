@@ -82,7 +82,7 @@ describe('(c) no-selector path stays backward compatible', () => {
     const { provider, seen } = makeStub(okResponse);
     registry.registerProvider('p', provider, chain);
     const res = await registry.execute(request, model);
-    expect(seen).toEqual([undefined]); // default = undefined, NOT the chain head
+    expect(seen).toEqual([undefined]); // default = undefined, NOT the default credential
     expect(res.id).toBe('ok');
   });
 
@@ -118,7 +118,7 @@ describe('selector resolution from the registered chain', () => {
     expect(seen).toEqual([]);
   });
 
-  it('getActiveCredential returns the chain head; undefined without a chain', () => {
+  it('getActiveCredential returns the default credential; undefined without a chain', () => {
     const registry = makeRegistry();
     registry.registerProvider('p', makeStub(okResponse).provider, chain);
     registry.registerProvider('bare', makeStub(okResponse).provider);
@@ -130,7 +130,7 @@ describe('selector resolution from the registered chain', () => {
 });
 
 describe('(d) central error attribution — usedCredentialKeyHashPrefix', () => {
-  it('no-selector failure stamps the chain head (the boot-baked identity)', async () => {
+  it('no-selector failure stamps the default credential (the boot-baked identity)', async () => {
     const registry = makeRegistry();
     const boom = new UpstreamError({ message: 'invalid key', status: 401, provider: 'p', modelId: 'p/m1' });
     const { provider } = makeStub(async () => {

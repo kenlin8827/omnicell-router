@@ -119,7 +119,7 @@ describe('decision-wire pool exclusion', () => {
 
 // ---------------------------------------------------------------------------
 // Native passthrough: the client's decision body rides verbatim to
-// POST {base}/systemone with the chain-head Bearer credential and the model
+// POST {base}/systemone with the default-credential Bearer credential and the model
 // id rewritten to upstreamModel; the vendor answer passes through unmodified
 // and upstreamKind is 'native'.
 // ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ describe('native systemone passthrough', () => {
       createCompletion: async () => {
         throw new Error('chat must never reach a decision-wire provider');
       },
-    }, [{ key: 'sk-chain-head', keyHashPrefix: 'sk-ch', label: 'head' }], {
+    }, [{ key: 'sk-default-cred', keyHashPrefix: 'sk-ch', label: 'head' }], {
       name: 'ts',
       type: 'systemone',
       baseUrl,
@@ -196,7 +196,7 @@ describe('native systemone passthrough', () => {
     );
     expect(decision.upstreamKind).toBe('native');
     expect(lastRequest?.url).toBe(`http://127.0.0.1:${server.port}/v1/systemone`);
-    expect(lastRequest?.auth).toBe('Bearer sk-chain-head');
+    expect(lastRequest?.auth).toBe('Bearer sk-default-cred');
     expect(lastRequest?.betaHeader).toBe('true'); // def custom headers ride the native call
     expect(lastRequest?.body.model).toBe('d1'); // rewritten to upstreamModel
     expect(lastRequest?.body.state).toBe('the state');

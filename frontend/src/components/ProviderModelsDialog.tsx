@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Trash2, Download, Eye, EyeOff, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search, ListChecks, ArrowUp, ArrowDown } from 'lucide-react';
-import { opencodeApi, type OpenCodeModelView } from '../lib/api';
+import { opencodeApi, type OpenCodeModelView, type CredentialHealth } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
 import { effortOptionList } from '../lib/effort';
 import { modalityLabel } from '../lib/modality';
@@ -104,6 +104,21 @@ const fieldLabelStyle: React.CSSProperties = {
 };
 
 const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
+
+/** One height for every control in the dialog header. Inline `height` alone does
+ *  not win down here: shell.css floors `.input` at `min-height: 36px` and
+ *  `.btn-sm` at `min-height: 30px`, so a `height: 24` picker rendered 36 tall
+ *  next to 30-tall buttons. 30 is the smallest value the button class allows
+ *  without per-site overrides, so the whole band adopts it. */
+const HEADER_CONTROL_HEIGHT = 30;
+
+const headerControlStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  height: HEADER_CONTROL_HEIGHT,
+  minHeight: HEADER_CONTROL_HEIGHT,
+};
+
 // Effort dropdown options come from lib/effort.ts (single source of truth):
 // 6-level ladder + a UI "unset" sentinel, labels rendered as
 // `<wire> (<localized>)` so users see the protocol token they will send
@@ -215,6 +230,11 @@ export const ProviderModelsDialog: React.FC<{
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; data: ModelFormState } | null>(null);
   const [hover, setHover] = useState<{ row: ModelRow; top: number; left: number } | null>(null);
+  /** Probe credential pin — '' = let the gateway pick (default credential).
+   *  Only enabled + routable rows are offered: a disabled credential is out of
+   *  service, so probing with it would report a failure routing never produces. */
+  const [credentialId, setCredentialId] = useState('');
+  const [probeCredentials, setProbeCredentials] = useState<CredentialHealth[]>([]);
   const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
 
   const load = async () => {
@@ -239,6 +259,39 @@ export const ProviderModelsDialog: React.FC<{
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerId]);
+
+  /** Credential picker source: this provider's enabled + routable rows, in
+   *  chain order (the console already sinks disabled rows to the tail). A
+   *  failed fetch leaves the list empty — the probe then falls back to the
+   *  default credential exactly as before, so the picker is additive, never blocking. */
+  useEffect(() => {
+    let alive = true;
+    setCredentialId('');
+    opencodeApi
+      .getCredentialStore()
+      .then((res) => {
+        if (!alive) return;
+        const row = res.store?.credentials?.find((a) => a.providerId === providerId);
+        setProbeCredentials((row?.credentials ?? []).filter((c) => c.routable && !c.disabled));
+      })
+      .catch(() => {
+        if (alive) setProbeCredentials([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [providerId]);
+
+  /** Picker options — unnamed rows fall back to the same label KeysPage uses;
+   *  the FIRST option is the default credential, i.e. what an unpinned probe hits. */
+  const credentialOptions = probeCredentials.map((c) => ({
+    value: c.id,
+    label: c.label?.trim() || t('op.credentialUnnamed'),
+    meta: c.maskedKey || undefined,
+  }));
+
+  /** The pin only applies to models, never to anything stored. */
+  const pinnedCredential = credentialId || undefined;
 
   // Local view-only filter — never mutates `rows`; the upstream "Test All"
   // button keeps targeting the full set so its semantics stay "all models of
@@ -267,9 +320,10 @@ export const ProviderModelsDialog: React.FC<{
     })();
   };
 
-  /** Batch probe every listed model — confirmation above 20 real requests lives in useModelTest. */
+  /** Batch probe every listed model with the pinned credential (if any) —
+   *  confirmation above 20 real requests lives in useModelTest. */
   const handleTestAll = () =>
-    testAllTargets(rows.map((row) => ({ key: row.id, providerId, modelId: row.id })));
+    testAllTargets(rows.map((row) => ({ key: row.id, providerId, modelId: row.id, credentialId: pinnedCredential })));
 
   const refreshAll = async () => {
     await load();
@@ -626,17 +680,34 @@ export const ProviderModelsDialog: React.FC<{
               : t('op.modelsCount', { n: rows.length })}
           </span>
           {loading && rows.length > 0 && <Loader2 size={12} style={{ ...spin, color: 'var(--text-dim)' }} />}
+          {credentialOptions.length > 0 && (
+            <Combobox
+              variant="ghost"
+              clearable
+              value={credentialId}
+              onChange={setCredentialId}
+              options={credentialOptions}
+              placeholder={t('op.pmTestCredentialDefault')}
+              panelMinWidth={260}
+              style={{ ...headerControlStyle, marginLeft: 'auto', width: 'auto', maxWidth: 210, minWidth: 110, flexShrink: 1, padding: '0 6px', fontSize: 'var(--text-xs)' }}
+            />
+          )}
           <button
             className="btn btn-sm"
-            style={{ display: 'flex', alignItems: 'center', gap: 4, height: 24, padding: '0 8px', marginLeft: 'auto' }}
+            style={{
+              ...headerControlStyle,
+              gap: 4,
+              padding: '0 8px',
+              marginLeft: credentialOptions.length > 0 ? undefined : 'auto',
+            }}
             disabled={testAll.running || testingIds.size > 0 || rows.length === 0}
-            title={t('op.testAllBtn')}
+            title={credentialId ? t('op.pmTestCredentialTip', { credential: credentialOptions.find((o) => o.value === credentialId)?.label ?? credentialId }) : t('op.testAllBtn')}
             onClick={handleTestAll}
           >
             {testAll.running ? <Loader2 size={11} style={spin} /> : <Zap size={11} />}
             <span>{testAll.running ? t('op.testAllRunning', { done: testAll.done, n: testAll.total }) : t('op.testAllBtn')}</span>
           </button>
-          <button className="btn btn-sm" style={{ display: 'flex', alignItems: 'center', height: 24, padding: '0 6px' }} onClick={onClose}>
+          <button className="btn btn-sm" style={{ ...headerControlStyle, padding: '0 6px' }} onClick={onClose}>
             <X size={13} />
           </button>
         </div>
@@ -711,6 +782,9 @@ export const ProviderModelsDialog: React.FC<{
             {filteredRows.map((row, idx) => {
               const d = row.def || {};
               const effort = d.settings?.reasoningEffort;
+              // Hoisted out of the JSX tree: repeated `testResults[row.id]`
+              // indexing is unprovable for TS narrowing across `? :` branches.
+              const probe = testResults[row.id];
               return (
                 <div
                   key={row.id}
@@ -750,21 +824,32 @@ export const ProviderModelsDialog: React.FC<{
                   )}
                   {d.disabled === true && <span style={badge('var(--text-dim)', 'var(--chip-bg)')}>{t('models.hiddenBadge')}</span>}
                   {d.limit?.context ? <span style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
-                  {testResults[row.id] && (
+                  {probe && (
                     <span
                       style={{
                         fontFamily: FONT_MONO,
                         fontSize: 'var(--text-2xs)',
                         whiteSpace: 'nowrap',
-                        color: testResults[row.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                        color: probe.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                         marginLeft: d.limit?.context ? 0 : 'auto',
                       }}
-                      title={testResults[row.id].ok ? `${testResults[row.id].latencyMs} ms` : testResults[row.id].error}
+                      title={
+                        probe.ok
+                          ? [
+                              `${probe.latencyMs} ms`,
+                              probe.credential
+                                ? probe.credential.label?.trim() || t('op.credentialUnnamed')
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')
+                          : probe.error
+                      }
                     >
-                      {testResults[row.id].ok ? `✓${fmtLatency(testResults[row.id].latencyMs ?? NaN)}` : '✗'}
+                      {probe.ok ? `✓${fmtLatency(probe.latencyMs ?? NaN)}` : '✗'}
                     </span>
                   )}
-                  <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || testResults[row.id] ? 0 : 'auto' }}>
+                  <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || probe ? 0 : 'auto' }}>
                     <button
                       className="btn btn-sm btn-icon"
                       title={t('op.pmMoveUp')}
@@ -785,7 +870,7 @@ export const ProviderModelsDialog: React.FC<{
                       className="btn btn-sm btn-icon"
                       title={t('op.testBtn')}
                       disabled={testingIds.size > 0 || testAll.running}
-                      onClick={() => testOne({ key: row.id, providerId, modelId: row.id })}
+                      onClick={() => testOne({ key: row.id, providerId, modelId: row.id, credentialId: pinnedCredential })}
                     >
                       {testingIds.has(row.id) ? <Loader2 size={11} style={spin} /> : <Zap size={11} />}
                     </button>

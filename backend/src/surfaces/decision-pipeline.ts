@@ -242,7 +242,7 @@ export async function runDecisionSurface(
   // executor bypasses executeCandidatePool (and the breaker) by contract, so
   // the limiter hooks live HERE — at the SURFACE, never in decide.ts (that
   // executor is shared with the L2 decision layer, and internal legs stay unmetered
-  // by policy). Serving identity: the chain head is the credential
+  // by policy). Serving identity: the default credential is the credential
   // registry.execute serves with when no selector is passed (registry
   // invariant), so no chain = nothing addressable = pure no-op degeneracy.
   // ONE dispatch per admitted decision: the executor's effort/conversion

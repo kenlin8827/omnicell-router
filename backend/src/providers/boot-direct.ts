@@ -45,7 +45,7 @@ export interface DirectBootResult {
      * selection (active head first). INVARIANT: `credentialChain[0].key ===
      * config.apiKey` — the inline credential is prepended as head when it
      * outranks the store (Decision 1), so the baked default always equals the
-     * chain head. RAW KEYS IN MEMORY ONLY: this payload goes to
+     * default credential. RAW KEYS IN MEMORY ONLY: this payload goes to
      * `registry.registerProvider` and nothing else — never serialize it into
      * a console/API surface (masked views keep using `CredentialMeta`).
      */
@@ -200,7 +200,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       });
       continue;
     }
-    // Bake the chain head (P3 step 1); `resolved?.key` stays the defensive
+    // Bake the default credential (P3 step 1); `resolved?.key` stays the defensive
     // fallback for a store whose chain read came back empty while resolveKey
     // answered — head === baked key is an invariant the registry relies on.
     const apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
@@ -382,7 +382,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         name: rec.id,
         type: 'dispatch',
         baseUrl: baseURL,
-        // Boot-baked credential: the active-chain head —
+        // Boot-baked credential: the active default credential —
         // the same key resolveKey picks when a provider holds exactly one
         // credential. Per-call selection reads the chain below; the baked key
         // remains the no-selector default.

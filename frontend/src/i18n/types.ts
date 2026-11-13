@@ -502,6 +502,10 @@ export interface TranslationDict {
     probeDetailCopied: string;
     testAllBtn: string;
     testAllRunning: string;
+    /** Probe credential pin (models dialog): trigger placeholder = "gateway default". */
+    pmTestCredentialDefault: string;
+    /** Tooltip on the batch-test button once a credential is pinned ({credential} = masked label). */
+    pmTestCredentialTip: string;
     testAllDone: string;
     testAllConfirmTitle: string;
     testAllConfirmDesc: string;
@@ -520,6 +524,7 @@ export interface TranslationDict {
     probeUnroutableUnknownPkg: string;
     probeUnroutableDedicated: string;
     testRotated: string;
+    testRotatedCredentials: string;
     /** Test-route 400 precondition reasonCodes. */
     reasonNoTestableModel: string;
     reasonNoBaseUrl: string;
@@ -746,7 +751,7 @@ export interface TranslationDict {
     /** Per-credential drill-down (KeysPage provider cards). */
     credentialSoleServingTip: string;
     /** Chain head = opencode's own key + failover priority head, not the only serving row. */
-    credentialChainHeadTip: string;
+    credentialDefaultTip: string;
     /** Tip for the pin-to-top affordance (credential reorder). */
     credentialPinTip: string;
     /** Under-list line: several credentials DO serve at once (per-session spread). */
@@ -808,9 +813,9 @@ export interface TranslationDict {
     credentialPrefixTip: string;
     /** Button: move this credential to the head of the chain (reorder). */
     credentialPin: string;
-    /** Toast: credential was pinned to the chain head. */
+    /** Toast: credential was pinned to the default credential position. */
     credentialPinned: string;
-    /** Per-credential connectivity probe (multi-credential: the provider-level Test only ever hits the head row). */
+    /** Per-credential connectivity probe (multi-credential: the provider-level Test rotates the enabled chain instead of stopping at the head row). */
     credentialTest: string;
     credentialTestTip: string;
     credentialRename: string;
@@ -823,7 +828,7 @@ export interface TranslationDict {
     credentialLabelCleared: string;
     /** Fallback sink name when the bound store is unknown (status endpoint failed). */
     credentialStoreNeutral: string;
-    /** Adding a key must not steal the chain head (opencode's own active credential). */
+    /** Adding a key must not steal the default credential slot (opencode's own active credential). */
     headPreserved: string;
     credentialDisconnect: string;
     credentialDisconnected: string;
@@ -2860,7 +2865,8 @@ hiddenBadge: string;
     modeLive: string;
     modeHistory: string;
     histEmpty: string;
-    clearScopeNote: string;
+    clearLiveNote: string;
+    clearLiveDone: string;
     rpcMethodHint: string;
     encProto: string;
     encJson: string;
