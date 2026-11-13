@@ -667,7 +667,29 @@ kbd {
   overflow-y: auto;
   background: var(--bg);
 }
-.page-canvas { width: 100%; max-width: var(--shell-content-max); height: 100%; margin: 0 auto; }
+.page-canvas {
+  width: 100%;
+  max-width: var(--shell-content-max);
+  height: 100%;
+  margin: 0 auto;
+  /* ONE page == one canvas column that fills the viewport. A page root that
+     forgets `height:100%` (or a page whose only child is a short card) then
+     still reaches the bottom edge instead of leaving a dead band under it. The
+     rule is scoped to the ONLY child so a page that legitimately renders
+     several siblings (a fragment) keeps flowing naturally. */
+  display: flex;
+  flex-direction: column;
+}
+.page-canvas > :only-child { flex: 1; min-height: 0; }
+/* A card (or column) that must GROW to the page bottom and scroll internally:
+   the shared answer to "the card stops at its content and the page ends short".
+   Never a sticky header inside — the scroll belongs to this element. */
+.page-fill { flex: 1; min-height: 0; overflow-y: auto; }
+/* The common page shape is an intro row plus a stack of cards, where the LAST
+   card is the table/list the page exists for. It owns the leftover height, so
+   the page ends at the bottom edge instead of leaving a dead band under a card
+   that stopped at its own content. */
+.page-canvas > :only-child > .card:last-child { flex: 1 1 auto; min-height: 0; }
 
 /* Shared surfaces: quiet framing and no decorative hover lift. */
 .card {

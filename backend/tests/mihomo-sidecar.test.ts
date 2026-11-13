@@ -76,6 +76,70 @@ describe('mihomo sidecar', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('re-selects the remembered node as soon as the group lists it', async () => {
+    const dir = tempDir();
+    const calls: Array<{ method: string; url: string; body?: string }> = [];
+    const fetchImpl = (async (input: any, init?: any) => {
+      const url = String(input);
+      calls.push({ method: init?.method ?? 'GET', url, body: init?.body });
+      if (url.endsWith('/version')) return new Response(JSON.stringify({ version: 'v1' }), { status: 200 });
+      if (url.endsWith('/proxies')) {
+        return new Response(JSON.stringify({
+          proxies: { PROXY: { name: 'PROXY', type: 'Selector', now: 'node-a', all: ['node-a', 'node-b'] } },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/proxies/PROXY') && init?.method === 'PUT') return new Response(null, { status: 204 });
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    const config = baseProxy();
+    config.mihomo = { ...config.mihomo, selectedNodes: { PROXY: 'node-b' } };
+
+    const started = await startMihomoSidecar({
+      config,
+      workDir: dir,
+      fetchImpl,
+      persistSecret: () => {},
+      binaryResolver: () => ({ path: '/opt/mihomo', source: 'configured' }),
+      spawnImpl: () => healthyChild(),
+    });
+    expect(started.ok).toBe(true);
+    const selection = calls.find((call) => call.method === 'PUT' && call.url.endsWith('/proxies/PROXY'));
+    expect(selection?.body).toBe(JSON.stringify({ name: 'node-b' }));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('an automatic group is never pinned to the remembered pick', async () => {
+    const dir = tempDir();
+    const calls: Array<{ method: string; url: string }> = [];
+    const fetchImpl = (async (input: any, init?: any) => {
+      const url = String(input);
+      calls.push({ method: init?.method ?? 'GET', url });
+      if (url.endsWith('/proxies')) {
+        return new Response(JSON.stringify({
+          proxies: { PROXY: { name: 'PROXY', type: 'URLTest', now: 'node-a', all: ['node-a', 'node-b'] } },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ version: 'v1' }), { status: 200 });
+    }) as typeof fetch;
+    const config = baseProxy();
+    config.mihomo = { ...config.mihomo, groupType: 'url-test', selectedNodes: { PROXY: 'node-b' } };
+
+    const started = await startMihomoSidecar({
+      config,
+      workDir: dir,
+      fetchImpl,
+      persistSecret: () => {},
+      binaryResolver: () => ({ path: null, source: null }),
+      spawnImpl: () => healthyChild(),
+    });
+    expect(started.ok).toBe(true);
+    // PUT /proxies/{group} is mihomo's Set — a PIN that outranks the group's own
+    // delay ordering while the node stays alive, i.e. it would freeze the
+    // auto-switch this group type exists for.
+    expect(calls.some((call) => call.method === 'PUT' && call.url.endsWith('/proxies/PROXY'))).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('adopts a healthy controller without spawning', async () => {
     const dir = tempDir();
     let spawned = false;

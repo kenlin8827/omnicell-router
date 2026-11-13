@@ -1599,7 +1599,7 @@ export const CatalogSourcesPage: React.FC = () => {
   });
 
   return (
-    <div className="card">
+    <div className="card page-fill">
       <div className="card-header">
         <div className="card-title">
           <CloudDownload size={18} color="var(--accent)" />

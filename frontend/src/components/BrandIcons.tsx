@@ -24,6 +24,9 @@ import React from 'react';
  * monochrome — the colored tiles become untagged subpaths so the wrapper's
  * fill="currentColor" themes it with the rest of the row.
  * qoder.color.svg is the Qoder app icon shipped in `plugins/qoder/logo.svg`.
+ * google.color.svg is Google's official multicolor "G" mark (Wikimedia Commons,
+ *   file `Google_"G"_logo.svg`), vendored because the provider glyph for Google
+ *   AI is the Gemini sparkle, not the Google brand mark.
  */
 const BRAND_SVGS: Record<string, string> = {};
 for (const [file, raw] of Object.entries(

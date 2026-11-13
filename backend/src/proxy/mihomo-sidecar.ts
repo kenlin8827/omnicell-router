@@ -16,6 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getEnvRootDir } from '../config/env.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 import { loadConfig, saveConfig } from '../config/index.js';
 import {
   DEFAULT_MIHOMO_CONTROLLER_PORT,
@@ -218,7 +219,14 @@ function writeGeneratedConfig(dir: string, proxy: ProxyConfig, secret: string): 
     controllerPort: controller,
     secret,
     group,
+    routingMode: proxy.mihomo?.routingMode,
+    groupType: proxy.mihomo?.groupType,
+    groupInterval: proxy.mihomo?.groupInterval,
+    groupTolerance: proxy.mihomo?.groupTolerance,
+    testUrl: proxy.mihomo?.testUrl,
+    rules: proxy.mihomo?.rules ?? [],
     subscriptions: proxy.mihomo?.subscriptions ?? [],
+    manualNodes: proxy.mihomo?.manualNodes ?? [],
   });
   fs.mkdirSync(path.join(dir, 'providers'), { recursive: true });
   const yamlPath = path.join(dir, 'config.yaml');
@@ -229,7 +237,13 @@ function writeGeneratedConfig(dir: string, proxy: ProxyConfig, secret: string): 
   } catch {
     changed = true;
   }
-  if (changed) fs.writeFileSync(yamlPath, next, 'utf8');
+  if (changed) {
+    // Atomic: the file carries the controller secret and subscription URLs, and
+    // mihomo parses it on reload — a torn write would fail the whole config.
+    const tmp = `${yamlPath}.tmp`;
+    fs.writeFileSync(tmp, next, 'utf8');
+    renameWithRetry(tmp, yamlPath);
+  }
   return { yamlPath, summary: mihomoConfigSummary(rendered, { mixedPort: mixed, controllerPort: controller }), changed };
 }
 
@@ -251,15 +265,57 @@ function clientFor(port: number, secret: string, fetchImpl: typeof fetch): Mihom
   return new MihomoClient({ port, secret, fetchImpl, timeoutMs: 8000 });
 }
 
+/** How long a remembered selection is retried after the core comes up. A
+ *  provider-backed node only exists once mihomo has fetched the subscription,
+ *  which routinely finishes AFTER the controller answers /version; without the
+ *  retry a restart silently leaves the group on its first member until the
+ *  operator picks again. */
+const SELECTION_WAIT_MS = 30_000;
+const SELECTION_POLL_MS = 500;
+
+/** One attempt: select the remembered node only when the group actually lists
+ *  it. Returns false while the provider snapshot is still loading. */
+async function trySelect(client: MihomoClient, group: string, node: string): Promise<boolean> {
+  try {
+    const snapshot = await client.proxies();
+    if (!snapshot.proxies[group]?.all?.includes(node)) return false;
+    await client.select(group, node);
+    console.log(`[Mihomo] selected "${node}" in group "${group}"`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Re-apply the operator's remembered node UNDER A MANUAL GROUP. The first
+ * attempt is awaited so an already-loaded group switches immediately (startup
+ * goes through the saved node, no operator action); a provider that is still
+ * downloading is retried in the BACKGROUND, because blocking boot on a slow
+ * subscription buys nothing. Never throws: a missing node just leaves the
+ * core's default in place.
+ *
+ * `url-test` / `fallback` are skipped on purpose: their choice belongs to the
+ * core, and `PUT /proxies/{group}` is `URLTest.Set` — a PIN. A pinned node wins
+ * inside mihomo's `URLTest.fast()` for as long as it stays alive, so restoring
+ * the remembered pick would silently freeze auto-switching until the pinned
+ * node died.
+ */
 async function applySelection(proxy: ProxyConfig, port: number, secret: string, fetchImpl: typeof fetch): Promise<void> {
+  if ((proxy.mihomo?.groupType ?? 'select') !== 'select') return;
   const group = proxy.mihomo?.selectedGroup || DEFAULT_MIHOMO_GROUP;
   const node = proxy.mihomo?.selectedNodes?.[group];
   if (!node) return;
-  try {
-    await clientFor(port, secret, fetchImpl).select(group, node);
-  } catch {
-    // Providers may still be downloading. The stored selection is retried on the next start.
-  }
+  const client = clientFor(port, secret, fetchImpl);
+  if (await trySelect(client, group, node)) return;
+  void (async () => {
+    const deadline = Date.now() + SELECTION_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, SELECTION_POLL_MS));
+      if (await trySelect(client, group, node)) return;
+    }
+    console.warn(`[Mihomo] remembered node "${node}" is not in group "${group}"; leaving the core default`);
+  })();
 }
 
 function defaultSpawn(cmd: string, args: string[], opts: Record<string, unknown>): MihomoChildLike {
@@ -306,7 +362,9 @@ function fail(code: MihomoSidecarCode, error: string): MihomoOpResult {
 async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
   const proxy = proxyOf(deps);
   if (!shouldRun(proxy)) {
-    return fail('disabled', 'proxy.enabled and proxy.mode mihomo are both required');
+    // Diagnostic only: the console renders this code ('disabled') through its own
+    // i18n table, so this English text is a log/debug fallback, never the toast.
+    return fail('disabled', 'proxy is off or not in mihomo mode — enable proxy and set mode to mihomo');
   }
   const { mixed, controller } = portsOf(proxy);
   if (mixed === controller) return fail('port-collision', 'mihomo mixedPort and controllerPort must differ');
@@ -340,7 +398,7 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
       ok: true,
       action: written.changed ? 'reload' : 'adopt',
       reused: true,
-      pid: recorded && pidAlive(recorded) ? recorded : recorded,
+      pid: recorded && pidAlive(recorded) ? recorded : null,
       version: health.version,
       error: null,
       code: null,

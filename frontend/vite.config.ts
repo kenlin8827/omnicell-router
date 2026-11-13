@@ -35,6 +35,11 @@ export default defineConfig({
         target: `http://127.0.0.1:${process.env.PORT ?? DEFAULT_DEV_PORT}`,
         changeOrigin: true,
       },
+      // Proxy auto-config (ADR-0022) lives at the gateway root, not under /api.
+      '/proxy.pac': {
+        target: `http://127.0.0.1:${process.env.PORT ?? DEFAULT_DEV_PORT}`,
+        changeOrigin: true,
+      },
     },
   },
   build: {

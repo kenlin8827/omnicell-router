@@ -202,7 +202,7 @@ export const TokenSaverPage: React.FC = () => {
   const caveman = compression.caveman || {};
 
   return (
-    <div className="card">
+    <div className="card page-fill">
       <div className="card-header">
         <div className="card-title">
           <Zap size={18} color="var(--accent)" />

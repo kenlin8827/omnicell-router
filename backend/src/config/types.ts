@@ -305,6 +305,16 @@ export interface OpenCodeConfig {
  */
 export type ProxyMode = 'manual' | 'mihomo';
 
+/** mihomo's own outbound mode — unrelated to `ProxyMode` (manual vs. core). */
+export type MihomoRoutingMode = 'rule' | 'global' | 'direct';
+
+/**
+ * How the generated proxy group picks its member (ADR-0022): `select` is the
+ * manual picker, `url-test` follows the lowest measured delay, `fallback`
+ * keeps the first member that answers.
+ */
+export type MihomoGroupType = 'select' | 'url-test' | 'fallback';
+
 /** One mihomo proxy-provider subscription. `id` is the provider name. */
 export interface MihomoSubscription {
   /** Stable id, `[A-Za-z0-9_-]{1,64}` — also the mihomo provider name. */
@@ -318,12 +328,132 @@ export interface MihomoSubscription {
   enabled?: boolean;
 }
 
+/** Protocols a hand-authored node can speak. Whitelisted because every field
+ *  is rendered into the generated config; an unknown type is dropped on load. */
+export type MihomoManualNodeType = 'ss' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'http' | 'socks5';
+
+/**
+ * One node the operator typed in the console — the manual counterpart of a
+ * subscription provider (ADR-0022). Only the fields that belong to `type` are
+ * kept by the sanitizer; the renderer maps them onto mihomo's proxy shape.
+ */
+export interface MihomoManualNode {
+  /** Stable id, `[A-Za-z0-9_-]{1,64}`; never shown to the core. */
+  id: string;
+  /** Proxy name in the generated config (unique among manual nodes). */
+  name: string;
+  /** Protocol name. Typed rows are whitelisted by the sanitizer; a raw YAML
+   *  row keeps whatever protocol the operator's mapping declares. */
+  type: string;
+  server: string;
+  port: number;
+  /** Shadowsocks cipher. */
+  cipher?: string;
+  /** ss / trojan / hysteria2 / http / socks5 secret. */
+  password?: string;
+  /** vmess / vless user id. */
+  uuid?: string;
+  /** vmess only; 0 for AEAD. */
+  alterId?: number;
+  /** vmess security (`auto` / `aes-128-gcm` / `chacha20-poly1305` / `none`). */
+  vmessCipher?: string;
+  /** Transport for vmess/vless/trojan. */
+  network?: 'tcp' | 'ws' | 'grpc' | 'h2';
+  /** vmess / vless / http / socks5 TLS. */
+  tls?: boolean;
+  /** vmess/vless `servername`, trojan/hysteria2 `sni`. */
+  sni?: string;
+  /** vless only: `xtls-rprx-vision`. */
+  flow?: string;
+  /** WebSocket path for `network: ws`. */
+  wsPath?: string;
+  /** WebSocket Host header for `network: ws`. */
+  wsHost?: string;
+  /** gRPC service name for `network: grpc`. */
+  grpcServiceName?: string;
+  /** HTTP/2 transport options (`h2-opts.host` / `.path`). */
+  h2Host?: string;
+  h2Path?: string;
+  /** vless REALITY: `reality-opts.public-key` / `.short-id`. */
+  realityPublicKey?: string;
+  realityShortId?: string;
+  /** TLS ALPN list, e.g. `h2`, `http/1.1`. */
+  alpn?: string[];
+  /** uTLS fingerprint (`client-fingerprint`). */
+  clientFingerprint?: string;
+  /** UDP relay toggle (`udp: true`). */
+  udp?: boolean;
+  /** Shadowsocks SIP003 plugin: `obfs` or `v2ray-plugin`. */
+  plugin?: string;
+  /** `plugin-opts.mode` (obfs: http/tls; v2ray-plugin: websocket). */
+  pluginMode?: string;
+  /** `plugin-opts.host`. */
+  pluginHost?: string;
+  /** `plugin-opts.path` (v2ray-plugin). */
+  pluginPath?: string;
+  /** hysteria2 obfuscation type (`salamander`). */
+  obfs?: string;
+  obfsPassword?: string;
+  /** hysteria2 bandwidth hints, e.g. `100 Mbps`. */
+  up?: string;
+  down?: string;
+  /** trojan / hysteria2 / http / socks5 certificate verification opt-out. */
+  skipCertVerify?: boolean;
+  /** `plugin-opts.tls` for v2ray-plugin. */
+  pluginTls?: boolean;
+  /** http / socks5 credentials. */
+  username?: string;
+  /** hysteria2 port hopping spec, e.g. `1000-2000`. */
+  ports?: string;
+  /** TCP Fast Open (`tfo: true`). */
+  tfo?: boolean;
+  /** Preferred IP family (`ip-version`). */
+  ipVersion?: string;
+  /**
+   * Canonical Clash proxy mapping (YAML text) for a row authored by pasting a
+   * proxy definition. When present the renderer emits this mapping verbatim
+   * instead of the typed fields above, so options the console does not model
+   * (`client-fingerprint`, `reality-opts`, plugin settings, …) survive.
+   */
+  yaml?: string;
+}
+
 /**
  * Gateway-managed mihomo (Clash Meta) core. The sidecar listens on
  * `mixedPort` and exposes its external controller on loopback
  * `controllerPort`. The controller secret and subscription URLs are
  * operator secrets: redacted in env archives, never written to logs.
  */
+/** Rule kinds the generated config can carry WITHOUT external data — every
+ *  entry needs a single payload and no geo database or remote rule set, so an
+ *  operator-authored rule can never fail silently at load time. */
+export type MihomoRuleType =
+  | 'DOMAIN'
+  | 'DOMAIN-SUFFIX'
+  | 'DOMAIN-KEYWORD'
+  | 'IP-CIDR'
+  | 'IP-CIDR6'
+  | 'DST-PORT'
+  | 'SRC-PORT'
+  | 'PROCESS-NAME'
+  | 'PROCESS-PATH';
+
+/** Where a custom rule sends the match. `PROXY` is rewritten to the configured
+ *  group name at render time, so a renamed group cannot orphan the rules. */
+export type MihomoRuleTarget = 'PROXY' | 'DIRECT' | 'REJECT';
+
+export interface MihomoCustomRule {
+  type: MihomoRuleType;
+  payload: string;
+  target: MihomoRuleTarget;
+  /**
+   * Provenance label ONLY ("manual", a subscription name, "paste"). Never
+   * written into the generated config — it exists so the console can group and
+   * batch-clean rules that arrived from the same place.
+   */
+  source?: string;
+}
+
 export interface MihomoConfig {
   /**
    * Mirrors `proxy.mode === 'mihomo'` after sanitizing. A file that sets
@@ -335,6 +465,13 @@ export interface MihomoConfig {
   binaryPath?: string;
   /** HTTP+SOCKS mixed port bound to 127.0.0.1. Default 7890. */
   mixedPort?: number;
+  /**
+   * mihomo's own outbound mode (distinct from `proxy.mode`, which picks
+   * manual URL vs. core). `rule` (default) applies the generated rules — today
+   * a single `MATCH,<group>`, so it equals `global` — `direct` bypasses the
+   * tunnel entirely, which is the deliberate kill switch.
+   */
+  routingMode?: MihomoRoutingMode;
   /** External-controller port bound to 127.0.0.1. Default 9090. */
   controllerPort?: number;
   /**
@@ -343,8 +480,39 @@ export interface MihomoConfig {
    */
   controllerSecret?: string;
   subscriptions?: MihomoSubscription[];
+  /**
+   * Hand-authored nodes, rendered into the generated `proxies:` block and added
+   * to the group alongside provider members. A manual node needs no
+   * subscription and no network fetch.
+   */
+  manualNodes?: MihomoManualNode[];
   /** Selector group name in the generated config. Default `PROXY`. */
   selectedGroup?: string;
+  /**
+   * How the group picks a node. Default `select` (the console's node picker).
+   * `url-test`/`fallback` hand the choice to mihomo, so the console's picker is
+   * disabled — and the generated group carries no `DIRECT` member, because a
+   * 0 ms direct route would win every test and silently bypass the tunnel.
+   */
+  groupType?: MihomoGroupType;
+  /** Delay-test cadence in seconds for automatic groups (30..86400). Absent =
+   *  the shipped 60 s; the interval is the failure-detection window. */
+  groupInterval?: number;
+  /** `url-test` tolerance in ms: how much faster a candidate must be to switch. */
+  groupTolerance?: number;
+  /**
+   * URL used for health checks and delay tests (http/https). Default
+   * `https://www.gstatic.com/generate_204`; configurable because the endpoint
+   * must be reachable both from this machine and through the selected nodes.
+   */
+  testUrl?: string;
+  /**
+   * Operator-authored rules, matched in order BEFORE the final `MATCH,<group>`.
+   * They are the only rule source the console accepts: a subscription's own
+   * `rules:`/`proxy-groups:` stay out (ADR-0022), because importing them means
+   * importing a second, conflicting set of groups.
+   */
+  rules?: MihomoCustomRule[];
   /** group name → node name. Restored via the controller after start. */
   selectedNodes?: Record<string, string>;
 }

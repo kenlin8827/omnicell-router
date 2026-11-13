@@ -110,6 +110,53 @@ export const DEFAULT_MIHOMO_SUB_INTERVAL_SEC = 3600;
 export const MIHOMO_SUB_INTERVAL_MIN_SEC = 300;
 export const MIHOMO_SUB_INTERVAL_MAX_SEC = 86_400;
 
+/**
+ * Delay-test cadence (seconds) for an automatic group (`url-test` / `fallback`)
+ * when `proxy.mihomo.groupInterval` is unset. The interval is the failure
+ * DETECTION window, not just a display refresh: a member that dies stays
+ * selected — and its latency reading stays stale — until the next cycle, so a
+ * dead node costs up to one interval of real traffic. Mihomo's own 300 s
+ * default leaves that window at five minutes; the gateway ships one minute.
+ */
+export const DEFAULT_MIHOMO_GROUP_INTERVAL_SEC = 60;
+/**
+ * Bounds for `proxy.mihomo.groupInterval`. Every cycle issues one real request
+ * per member THROUGH that member, so 30 s is the fastest cadence that still
+ * leaves a subscription-sized node list alone (mihomo's runner up is 10 s).
+ */
+export const MIHOMO_GROUP_INTERVAL_MIN_SEC = 30;
+export const MIHOMO_GROUP_INTERVAL_MAX_SEC = 86_400;
+/** How much faster (ms) a candidate must be before `url-test` switches. */
+export const DEFAULT_MIHOMO_GROUP_TOLERANCE_MS = 50;
+/** Upper bound for `proxy.mihomo.groupTolerance`: past a few seconds the
+ *  tolerance stops describing jitter and starts describing an outage. */
+export const MIHOMO_GROUP_TOLERANCE_MAX_MS = 5000;
+
+/**
+ * URL mihomo fetches for group health checks and console delay tests. This is
+ * mihomo's own `DefaultTestURL` — a 204 endpoint (no body, one RTT) and the
+ * de-facto Clash-ecosystem convention — and it is configurable because it must
+ * be reachable from the machine AND through the nodes (a global default is not
+ * reachable everywhere).
+ */
+export const DEFAULT_MIHOMO_TEST_URL = 'https://www.gstatic.com/generate_204';
+
+/**
+ * TCP reachability probe budget for the console's add-node dialog (ms). This
+ * is a connect() deadline, not a delay measurement: the node is not in the
+ * running config yet, so the core cannot route through it.
+ */
+export const MIHOMO_NODE_PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Budget for one delay measurement through the core (ms), shared by the
+ * console's per-node, batch and URL probes and by the controller client's own
+ * default. It is the round-trip deadline AND the cut-off for calling a row
+ * "timeout": mihomo answers a dead node with delay 0, so a measurement can
+ * only be trusted when it finishes inside this budget.
+ */
+export const MIHOMO_DELAY_TIMEOUT_MS = 5000;
+
 /** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
 export const DEFAULT_HEADROOM_PORT = 8787;
 export const DEFAULT_HEADROOM_URL = `http://127.0.0.1:${DEFAULT_HEADROOM_PORT}`;

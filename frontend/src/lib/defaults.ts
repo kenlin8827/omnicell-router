@@ -43,6 +43,26 @@ export const DEFAULT_MIHOMO_GROUP = 'PROXY';
 /** Subscription refresh interval (seconds) when unset. */
 export const DEFAULT_MIHOMO_SUB_INTERVAL_SEC = 3600;
 
+/**
+ * `proxy.mihomo.groupInterval` backend default (seconds, automatic groups).
+ * The interval is the failure-detection window, so it ships at one minute
+ * instead of mihomo's five.
+ */
+export const DEFAULT_MIHOMO_GROUP_INTERVAL_SEC = 60;
+
+/** Backend bounds for `proxy.mihomo.groupInterval` (seconds). */
+export const MIHOMO_GROUP_INTERVAL_MIN_SEC = 30;
+export const MIHOMO_GROUP_INTERVAL_MAX_SEC = 86400;
+
+
+/** `proxy.mihomo.groupTolerance` backend default and upper bound (ms,
+ *  `url-test` only). */
+export const DEFAULT_MIHOMO_GROUP_TOLERANCE_MS = 50;
+export const MIHOMO_GROUP_TOLERANCE_MAX_MS = 5000;
+
+/** `proxy.mihomo.testUrl` backend default (mihomo's 204 health-check URL). */
+export const DEFAULT_MIHOMO_TEST_URL = 'https://www.gstatic.com/generate_204';
+
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 

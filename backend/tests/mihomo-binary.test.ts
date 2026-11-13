@@ -83,4 +83,46 @@ describe('mihomo binary lookup', () => {
     expect(fs.readFileSync(dest, 'utf8')).toBe('MZ-fake');
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  test('a rate-limited API falls back to the release-page tag (403)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mihomo-403-'));
+    const dest = path.join(dir, 'mihomo');
+    const tag = 'v1.19.15';
+    const payload = zlib.gzipSync(Buffer.from('#!/bin/sh\necho fallback\n'));
+    const fetchImpl = (async (url: string) => {
+      const href = String(url);
+      if (href.includes('api.github.com')) return new Response('{"message":"rate limit"}', { status: 403 });
+      if (href.endsWith('/releases/latest')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `https://github.com/MetaCubeX/mihomo/releases/tag/${tag}` },
+        });
+      }
+      return new Response(payload, { status: 200 });
+    }) as typeof fetch;
+    const result = await installMihomoBinary({ destPath: dest, platform: 'linux', arch: 'x64', fetchImpl });
+    expect(result.ok).toBe(true);
+    expect(result.version).toBe(tag);
+    expect(fs.readFileSync(dest, 'utf8')).toContain('echo fallback');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a rate-limited API with no fallback tag reports the 403 and the token hint', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mihomo-403x-'));
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('api.github.com')) return new Response('nope', { status: 403 });
+      return new Response('nope', { status: 403 });
+    }) as typeof fetch;
+    const result = await installMihomoBinary({
+      destPath: path.join(dir, 'mihomo'),
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('release-lookup-failed');
+    expect(result.error).toContain('403');
+    expect(result.error).toContain('GITHUB_TOKEN');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });

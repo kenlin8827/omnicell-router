@@ -15,12 +15,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { unzipSync } from 'fflate';
+import { githubHeaders } from '../harness/common/github.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 
 export type MihomoBinarySource = 'configured' | 'home' | 'path';
 
 const RELEASE_API = 'https://api.github.com/repos/MetaCubeX/mihomo/releases';
+/** Unauthenticated api.github.com is capped at 60 requests/hour (403 past the cap).
+ * The release page redirect carries the same tag without the API quota, so it is
+ * the fallback when the API refuses us. */
+const LATEST_RELEASE_PAGE = 'https://github.com/MetaCubeX/mihomo/releases/latest';
+const DOWNLOAD_BASE = 'https://github.com/MetaCubeX/mihomo/releases/download';
 const MAX_DOWNLOAD_BYTES = 80 * 1024 * 1024;
 const USER_AGENT = 'omnicell-router';
 
@@ -107,6 +113,9 @@ export interface InstallMihomoOptions {
   fetchImpl?: typeof fetch;
   platform?: NodeJS.Platform;
   arch?: string;
+  /** Download progress in bytes. `total` is 0 when the host sends no
+   *  Content-Length (GitHub's object host usually does). */
+  onProgress?: (downloaded: number, total: number) => void;
 }
 
 export interface InstallMihomoResult {
@@ -129,6 +138,30 @@ function unpack(buf: Buffer, gzip: boolean): Buffer {
   return Buffer.from(entries[preferred]);
 }
 
+/**
+ * Resolve the latest tag from the release-page redirect (no api.github.com).
+ * `redirect: 'manual'` exposes the 3xx Location; a runtime that followed the
+ * redirect anyway leaves the tag in the final page's HTML.
+ */
+async function resolveTagFromReleasePage(fetchImpl: typeof fetch): Promise<string | null> {
+  try {
+    const res = await fetchImpl(LATEST_RELEASE_PAGE, {
+      headers: { 'User-Agent': USER_AGENT },
+      redirect: 'manual',
+    });
+    const fromLocation = (res.headers.get('location') || '').match(/\/releases\/tag\/([^/?#]+)/);
+    if (fromLocation) return decodeURIComponent(fromLocation[1]);
+    if (res.ok) {
+      const html = await res.text();
+      const fromHtml = html.match(/\/releases\/tag\/(v?[0-9][^"'\s/?#]*)/);
+      if (fromHtml) return decodeURIComponent(fromHtml[1]);
+    }
+  } catch {
+    // No tag: the caller reports the original API failure.
+  }
+  return null;
+}
+
 export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Promise<InstallMihomoResult> {
   const fetchImpl = opts.fetchImpl ?? fetchOverride ?? fetch;
   const platform = opts.platform ?? process.platform;
@@ -136,38 +169,94 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
   const requested = (opts.version || '').trim();
   const tag = requested ? (requested.startsWith('v') ? requested : `v${requested}`) : '';
   const api = tag ? `${RELEASE_API}/tags/${encodeURIComponent(tag)}` : `${RELEASE_API}/latest`;
-  let release: { tag_name?: unknown; assets?: unknown };
+  let release: { tag_name?: unknown; assets?: unknown } | null = null;
+  let lookupFailure: InstallMihomoResult = {
+    ok: false,
+    code: 'release-lookup-failed',
+    error: 'mihomo release lookup failed',
+  };
   try {
-    const res = await fetchImpl(api, {
-      headers: { 'User-Agent': USER_AGENT, Accept: 'application/vnd.github+json' },
-    });
-    if (!res.ok) {
-      return { ok: false, code: 'release-lookup-failed', error: `mihomo release lookup failed (${res.status})` };
+    const res = await fetchImpl(api, { headers: githubHeaders() });
+    if (res.ok) {
+      release = (await res.json()) as { tag_name?: unknown; assets?: unknown };
+    } else {
+      // 403 is the anonymous hourly cap; 429 is abuse detection. Both mean
+      // "retry through the release page, not through the API".
+      const hint = res.status === 403 || res.status === 429
+        ? ' — GitHub API rate limit; set GITHUB_TOKEN or retry later'
+        : '';
+      lookupFailure = { ok: false, code: 'release-lookup-failed', error: `mihomo release lookup failed (${res.status})${hint}` };
     }
-    release = (await res.json()) as { tag_name?: unknown; assets?: unknown };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'network error';
-    return { ok: false, code: 'release-lookup-failed', error: `mihomo release lookup failed (${message})` };
+    lookupFailure = { ok: false, code: 'release-lookup-failed', error: `mihomo release lookup failed (${message})` };
   }
-  const version = typeof release.tag_name === 'string' && release.tag_name.trim() ? release.tag_name.trim() : tag;
-  if (!version) return { ok: false, code: 'release-lookup-failed', error: 'mihomo release has no tag' };
-  const wanted = mihomoAssetName(platform, arch, version);
-  if (!wanted) {
-    return { ok: false, code: 'unsupported-platform', error: `no mihomo build for ${platform}/${arch}` };
+
+  let version = '';
+  let wanted: MihomoAsset | null = null;
+  let downloadUrl = '';
+  if (release) {
+    version = typeof release.tag_name === 'string' && release.tag_name.trim() ? release.tag_name.trim() : tag;
+    if (!version) return { ok: false, code: 'release-lookup-failed', error: 'mihomo release has no tag' };
+    wanted = mihomoAssetName(platform, arch, version);
+    if (!wanted) {
+      return { ok: false, code: 'unsupported-platform', error: `no mihomo build for ${platform}/${arch}` };
+    }
+    const assets = Array.isArray(release.assets) ? release.assets as Array<{ name?: unknown; browser_download_url?: unknown }> : [];
+    const asset = assets.find((item) => item.name === wanted!.name);
+    downloadUrl = asset && typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '';
+    if (!downloadUrl) {
+      return { ok: false, code: 'asset-missing', error: `release ${version} has no ${wanted.name}` };
+    }
+  } else {
+    // API refused: take the tag from the release page and build the canonical
+    // download URL — the asset spelling is derived from the tag, not listed.
+    version = tag || (await resolveTagFromReleasePage(fetchImpl)) || '';
+    if (!version) return lookupFailure;
+    wanted = mihomoAssetName(platform, arch, version);
+    if (!wanted) {
+      return { ok: false, code: 'unsupported-platform', error: `no mihomo build for ${platform}/${arch}` };
+    }
+    downloadUrl = `${DOWNLOAD_BASE}/${encodeURIComponent(version)}/${encodeURIComponent(wanted.name)}`;
   }
-  const assets = Array.isArray(release.assets) ? release.assets as Array<{ name?: unknown; browser_download_url?: unknown }> : [];
-  const asset = assets.find((item) => item.name === wanted.name);
-  const downloadUrl = asset && typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '';
-  if (!downloadUrl) {
-    return { ok: false, code: 'asset-missing', error: `release ${version} has no ${wanted.name}` };
-  }
+
   let packed: Buffer;
   try {
     const res = await fetchImpl(downloadUrl, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/octet-stream' },
     });
     if (!res.ok) return { ok: false, code: 'download-failed', error: `mihomo download failed (${res.status})` };
-    packed = Buffer.from(await res.arrayBuffer());
+    const total = Number(res.headers.get('content-length') ?? '') || 0;
+    if (!res.body) {
+      packed = Buffer.from(await res.arrayBuffer());
+      opts.onProgress?.(packed.length, total || packed.length);
+    } else {
+      // Stream so the console can show a percentage: a release binary is tens of
+      // MB and a buffered arrayBuffer would report nothing until it finished.
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let downloaded = 0;
+      let lastReport = 0;
+      opts.onProgress?.(0, total);
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        chunks.push(value);
+        downloaded += value.byteLength;
+        if (downloaded > MAX_DOWNLOAD_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          return { ok: false, code: 'download-too-large', error: 'mihomo download exceeded 80MB' };
+        }
+        const now = Date.now();
+        if (now - lastReport >= 100) {
+          lastReport = now;
+          opts.onProgress?.(downloaded, total);
+        }
+      }
+      packed = Buffer.concat(chunks);
+      opts.onProgress?.(downloaded, total || downloaded);
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'network error';
     return { ok: false, code: 'download-failed', error: `mihomo download failed (${message})` };

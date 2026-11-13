@@ -109,12 +109,15 @@ describe('true streaming through the candidate pool', () => {
         const stream = new ReadableStream({
           async pull(c) {
             if (pulled++ === 0) {
-              // First frame goes out immediately; the rest arrives 60 ms later.
+              // First frame goes out immediately; the rest arrives 150 ms later.
               // If the gateway buffered, the relay would see nothing at t≈20 ms.
+              // (150 ms, not 60: a ReadableStream pulls eagerly, so the stall can
+              // start before the first chunk is forwarded — genMs may be shorter
+              // than the sleep by the scheduling skew.)
               c.enqueue(chunkLine({ role: 'assistant', content: 'part-' }));
               return;
             }
-            await new Promise((r) => setTimeout(r, 60));
+            await new Promise((r) => setTimeout(r, 150));
             c.enqueue(chunkLine({ content: 'one' }));
             c.enqueue(chunkLine({}, 'stop'));
             c.enqueue(
@@ -165,7 +168,7 @@ describe('true streaming through the candidate pool', () => {
       // X-OCR-Gen-MS) so a client can derive decode-TPS without reading the
       // trace store.
       assert.ok(typeof result.ttftMs === 'number' && result.ttftMs >= 0);
-      assert.ok(result.genMs! >= 55, `result.genMs should cover the 60ms stall, got ${result.genMs}`);
+      assert.ok(result.genMs! >= 100, `result.genMs should cover the 150ms stall, got ${result.genMs}`);
       // Industry TTFT/TPS split on the trace row: ttftMs = process start →
       // first forwarded chunk (user-perceived), genMs = first chunk → drained
       // stream — here the upstream's 60 ms stall must appear in the decode
@@ -174,7 +177,7 @@ describe('true streaming through the candidate pool', () => {
       assert.ok(trace, 'the turn must be traced');
       assert.equal(trace.execution.modelUsed, 'stub/one');
       assert.ok(typeof trace.execution.ttftMs === 'number' && trace.execution.ttftMs >= 0);
-      assert.ok(trace.execution.genMs! >= 55, `decode window should cover the 60ms stall, got ${trace.execution.genMs}`);
+      assert.ok(trace.execution.genMs! >= 100, `decode window should cover the 150ms stall, got ${trace.execution.genMs}`);
       assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
       assert.ok(trace.execution.genMs! <= trace.execution.latencyMs);
       // Perceived stall ratio: the two visible chunks ('part-' then 'one')
@@ -465,7 +468,10 @@ describe('schema-assertion cascade streaming', () => {
               c.enqueue(chunkLine({ role: 'assistant', content: '{"ok":' }, null, 'up-plus'));
               return;
             }
-            await new Promise((r) => setTimeout(r, 60));
+            // A ReadableStream pulls EAGERLY: this sleep can start before the
+            // consumer has forwarded the first chunk, so genMs (first forwarded
+            // chunk → stream drained) may be shorter than the sleep itself.
+            await new Promise((r) => setTimeout(r, 150));
             c.enqueue(chunkLine({ content: '"yes"}' }, 'stop', 'up-plus'));
             c.enqueue(
               `data: ${JSON.stringify({
@@ -552,7 +558,7 @@ describe('schema-assertion cascade streaming', () => {
       assert.ok(trace, 'the turn must be traced');
       assert.equal(trace.execution.modelUsed, 'stub/plus');
       assert.ok(typeof trace.execution.ttftMs === 'number' && trace.execution.ttftMs >= 0);
-      assert.ok(trace.execution.genMs! >= 55, `decode window should cover the 60ms stall, got ${trace.execution.genMs}`);
+      assert.ok(trace.execution.genMs! >= 100, `decode window should cover the 150ms stall, got ${trace.execution.genMs}`);
       assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
       // Routing facts staged on the first forwarded chunk name the ESCALATED
       // model/tier (the pool's per-attempt stageRouting overwrites), and the

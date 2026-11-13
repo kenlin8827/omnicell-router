@@ -47,3 +47,15 @@ describe('saveConfig — PORT is never persisted as a file value', () => {
     assert.equal(disk.client?.port, 4321, 'the file value wins over PORT and is re-persisted verbatim');
   });
 });
+
+describe('saveConfig — every write keeps a one-step backup', () => {
+  it('the previous file survives a console save as config.yaml.bak', () => {
+    assert.equal(saveConfig({ host: '127.0.0.1' }).success, true);
+    const afterFirst = fs.readFileSync(cfgPath, 'utf8');
+
+    assert.equal(saveConfig({ host: '0.0.0.0' }).success, true);
+
+    assert.equal(fs.readFileSync(`${cfgPath}.bak`, 'utf8'), afterFirst);
+    assert.notEqual(fs.readFileSync(cfgPath, 'utf8'), afterFirst);
+  });
+});
