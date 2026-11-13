@@ -105,6 +105,10 @@ set — that shape predates `mode` and still asks for the core.
 - A pre-existing config proxies exactly as it did.
 - Forward-proxy rows with `egress: proxy` follow the same endpoint, so a
   mihomo mode also covers transit traffic without a second URL.
+- The page lands on the scope that matches the configured `proxy.mode`:
+  `Proxy settings` for `manual`, `Mihomo (Clash)` for `mihomo`. A manual
+  install therefore never opens on the core tab reporting a core it was never
+  asked to run.
 - The admin surface is `/api/admin/proxy/mihomo/*` and the Proxy page's
   five Mihomo sections (general, subscriptions, nodes, rules, connectivity).
   Controller-backed actions (node select/test, subscription refresh) stay

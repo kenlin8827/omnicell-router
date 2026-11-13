@@ -479,8 +479,12 @@ export const ProxyPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   /** Primary nav: the proxy's mode/URL settings vs the built-in Mihomo
-   *  core, whose own three tabs live under the second scope. */
-  const [scope, setScope] = useState<'mode' | 'mihomo'>('mihomo');
+   *  core, whose own three tabs live under the second scope. It starts on the
+   *  neutral settings scope and is aligned to the CONFIGURED mode once the
+   *  config arrives: opening on the core tab while `proxy.mode` is `manual`
+   *  reads as the console having switched modes by itself, and the core card
+   *  can only report "not running" there. */
+  const [scope, setScope] = useState<'mode' | 'mihomo'>('mode');
   const [tab, setTab] = useState<Tab>('rules');
   const [status, setStatus] = useState<MihomoStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -597,6 +601,7 @@ export const ProxyPage: React.FC = () => {
       if (!next.mode) next.mode = 'manual';
       setProxy(next);
       setSubs(next.mihomo?.subscriptions || []);
+      setScope(next.mode === 'mihomo' ? 'mihomo' : 'mode');
       setLoading(false);
     }).catch(console.error);
     void refreshStatus();
