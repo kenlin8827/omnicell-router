@@ -51,7 +51,9 @@ exists only between disk and runtime through ONE declarative mapping table
 - **Every writer emits the current version** — `saveConfig`,
   `defaultConfigYaml()`, and the raw-YAML editor save (which migrates an
   older draft; a newer draft is refused). A save upgrades the file; there is
-  no downgrade path.
+  no downgrade path. `saveConfig` also snapshots the previous file to
+  `config.yaml.bak` on every write (best effort, one generation): a console
+  save must never be the only copy of the config it replaced.
 
 ### 3. One migration script per version step, chained strictly
 

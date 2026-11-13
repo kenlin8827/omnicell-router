@@ -435,6 +435,9 @@ export function createServer(
         path === '/' ||
         path === '/admin' ||
         path === '/health' ||
+        // Proxy auto-config (ADR-0022): browsers and OS network preferences
+        // fetch it without credentials and it carries no secrets.
+        path === '/proxy.pac' ||
         path.startsWith('/admin/') ||
         path.startsWith('/api/admin/')
       )

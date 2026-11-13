@@ -1521,6 +1521,224 @@ export interface HeadroomSidecarOpResult {
   code: string | null;
 }
 
+// ---- mihomo outbound core (backend: proxy/mihomo-sidecar.ts, ADR-0022) ----
+
+export interface MihomoSubscription {
+  id: string;
+  name: string;
+  url: string;
+  interval?: number;
+  enabled?: boolean;
+}
+/** Protocols a hand-authored node can speak (backend whitelist, ADR-0022). */
+export type MihomoManualNodeType = 'ss' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'http' | 'socks5';
+
+/** One node typed in the console: the manual counterpart of a subscription. */
+export interface MihomoManualNode {
+  id: string;
+  name: string;
+  /** Typed rows use the protocol whitelist; a pasted YAML row keeps its own. */
+  type: string;
+  server: string;
+  port: number;
+  cipher?: string;
+  password?: string;
+  uuid?: string;
+  alterId?: number;
+  vmessCipher?: string;
+  network?: 'tcp' | 'ws' | 'grpc' | 'h2';
+  tls?: boolean;
+  sni?: string;
+  flow?: string;
+  wsPath?: string;
+  wsHost?: string;
+  grpcServiceName?: string;
+  h2Host?: string;
+  h2Path?: string;
+  realityPublicKey?: string;
+  realityShortId?: string;
+  alpn?: string[];
+  clientFingerprint?: string;
+  udp?: boolean;
+  tfo?: boolean;
+  ipVersion?: string;
+  plugin?: string;
+  pluginMode?: string;
+  pluginHost?: string;
+  pluginPath?: string;
+  pluginTls?: boolean;
+  obfs?: string;
+  obfsPassword?: string;
+  up?: string;
+  down?: string;
+  ports?: string;
+  skipCertVerify?: boolean;
+  username?: string;
+  /** Canonical Clash proxy mapping for a node authored by pasting YAML. */
+  yaml?: string;
+  /** Form-owned fields projected from `yaml` by GET /mihomo/nodes. */
+  fields?: Partial<Omit<MihomoManualNode, 'id' | 'fields'>>;
+  /** Mapping keys the form does not model (YAML-only surface). */
+  unmodeled?: string[];
+}
+
+/** Protocol field table + enum whitelists, served by the backend. */
+export interface MihomoNodeCatalog {
+  protocols: string[];
+  fields: Record<string, string[]>;
+  enums: {
+    ssCiphers: string[];
+    vmessCiphers: string[];
+    networks: string[];
+    fingerprints: string[];
+    ssPlugins: string[];
+    obfsModes: string[];
+    ipVersions: string[];
+    obfsTypes: string[];
+  };
+}
+
+export interface MihomoStatus {
+  status: string;
+  installed: boolean;
+  binaryPath: string | null;
+  running: boolean;
+  managed: boolean;
+  adopted: boolean;
+  pid: number | null;
+  mode: 'manual' | 'mihomo';
+  enabled: boolean;
+  mixedPort: number;
+  controllerPort: number;
+  secretConfigured: boolean;
+  version: string | null;
+  error: string | null;
+  code: string | null;
+  /** mihomo's own outbound mode, as saved for the next start (default 'rule'). */
+  routingMode: MihomoRoutingMode;
+  /** What the running core reports right now; null when it is not answering. */
+  liveRoutingMode: MihomoRoutingMode | null;
+}
+
+/** Rule types that need no external data (no GEOIP/GEOSITE/RULE-SET) — the
+ *  backend whitelist, mirrored here so the editor can only offer what renders. */
+export type MihomoRuleType =
+  | 'DOMAIN' | 'DOMAIN-SUFFIX' | 'DOMAIN-KEYWORD'
+  | 'IP-CIDR' | 'IP-CIDR6' | 'DST-PORT' | 'SRC-PORT'
+  | 'PROCESS-NAME' | 'PROCESS-PATH';
+
+export type MihomoRuleTarget = 'PROXY' | 'DIRECT' | 'REJECT';
+
+/** One operator-authored rule, rendered ahead of the final `MATCH` rule. */
+export interface MihomoCustomRule {
+  type: MihomoRuleType;
+  payload: string;
+  target: MihomoRuleTarget;
+  /** Provenance label only ("manual", a subscription name, "paste") — never written to the core. */
+  source?: string;
+}
+
+export interface MihomoRuleImportInput {
+  /** 'subscription' reads the URL from config, 'text' parses what was pasted. */
+  source: 'subscription' | 'text';
+  subscriptionId?: string;
+  text?: string;
+  /** Off drops rules whose target is neither DIRECT/REJECT nor a known group. */
+  mapUnknownTarget?: boolean;
+}
+
+export interface MihomoRuleImportResult {
+  status: 'ok';
+  /** Where the parsed document came from: the core provider cache, the network, or the paste box. */
+  source?: 'cache' | 'network' | 'text';
+  rules: MihomoCustomRule[];
+  /** Why rows were dropped, so the console can report it instead of guessing. */
+  skipped: { reason: string; count: number }[];
+  total: number;
+  mappedToProxy: number;
+}
+
+export interface MihomoCustomRulesResult {
+  status: 'ok' | 'error';
+  rules?: MihomoCustomRule[];
+  message?: string;
+}
+
+/** mihomo's outbound mode — NOT the gateway's `proxy.mode` (manual vs. core). */
+export type MihomoRoutingMode = 'rule' | 'global' | 'direct';
+
+export interface MihomoRoutingModeResult {
+  status: 'ok' | 'error';
+  routingMode?: MihomoRoutingMode;
+  /** True only when the running core accepted the PATCH immediately. */
+  live?: boolean;
+  warning?: string;
+  message?: string;
+}
+
+export interface MihomoOpResult {
+  status: string;
+  ok: boolean;
+  action?: string;
+  reused?: boolean;
+  pid: number | null;
+  version: string | null;
+  error: string | null;
+  code: string | null;
+}
+
+export interface MihomoProviderInfo {
+  name: string;
+  vehicleType?: string;
+  updatedAt?: string;
+  nodeCount?: number;
+}
+
+export interface InstallMihomoResult {
+  status: string;
+  ok: boolean;
+  path?: string;
+  version?: string;
+  error?: string;
+  code?: string;
+}
+
+export interface MihomoProxyGroup {
+  name: string;
+  type: string;
+  now: string;
+  all: string[];
+}
+
+/** One row of the core's effective rule table — what is actually loaded. */
+export interface MihomoRuleRow {
+  type: string;
+  payload: string;
+  proxy: string;
+}
+
+/** How the running group picks a node: only `select` lets the console choose. */
+export type MihomoGroupType = 'select' | 'url-test' | 'fallback';
+
+export interface MihomoProxyNode {
+  name: string;
+  type: string;
+  delay: number | null;
+  selected: boolean;
+  /** Manual-node id when this row is hand-authored; null for subscription/built-in rows. */
+  manualId: string | null;
+  /** One origin per row: filter key and label source. */
+  source: MihomoNodeSource;
+}
+
+/** Where one node row came from: the subscription that contributed it, the
+ *  operator's manual list, or mihomo itself (DIRECT/REJECT/PASS). */
+export interface MihomoNodeSource {
+  kind: 'subscription' | 'manual' | 'builtin';
+  /** Subscription id for `subscription`; the manual node id for `manual`. */
+  id: string | null;
+}
+
 /** Harness domain wire types (ADR-0015) — names mirror the backend contract 1:1. */
 export interface HarnessCopyView {
   scope: 'global' | 'project';
@@ -2357,6 +2575,250 @@ export const api = {
   async stopHeadroomSidecar(): Promise<HeadroomSidecarOpResult> {
     const res = await fetch('/api/admin/headroom/sidecar/stop', { method: 'POST' });
     return res.json();
+  },
+
+  async getMihomoStatus(): Promise<MihomoStatus> {
+    const res = await fetch('/api/admin/proxy/mihomo/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getMihomoRules(): Promise<MihomoRuleRow[]> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return (body?.rules ?? []) as MihomoRuleRow[];
+  },
+
+  async setMihomoRoutingMode(mode: MihomoRoutingMode): Promise<MihomoRoutingModeResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/routing-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoRoutingModeResult;
+  },
+
+  /** Parses a subscription (or pasted rules) into a DRAFT — nothing is saved. */
+  async importMihomoRules(input: MihomoRuleImportInput): Promise<MihomoRuleImportResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoRuleImportResult;
+  },
+
+  /** Writes the whole ordered rule list and lets the core pick it up. */
+  async setMihomoCustomRules(rules: MihomoCustomRule[]): Promise<MihomoCustomRulesResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rules }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoCustomRulesResult;
+  },
+
+  async startMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/start', { method: 'POST' });
+    return res.json();
+  },
+
+  async stopMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/stop', { method: 'POST' });
+    return res.json();
+  },
+
+  async restartMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/restart', { method: 'POST' });
+    return res.json();
+  },
+
+  /**
+   * Install/update the mihomo core binary. The server answers NDJSON because the
+   * download is tens of MB: `progress` events carry (downloaded, total) bytes and
+   * exactly one `result` carries the install outcome (total 0 = unknown size).
+   */
+  async installMihomo(onProgress?: (downloaded: number, total: number) => void): Promise<InstallMihomoResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.body || !contentType.includes('ndjson')) return res.json();
+    let out: InstallMihomoResult | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return; // A malformed line must not kill the stream — skip it.
+      }
+      if (evt.type === 'progress' && typeof evt.downloaded === 'number') {
+        onProgress?.(evt.downloaded, typeof evt.total === 'number' ? evt.total : 0);
+      } else if (evt.type === 'result') {
+        out = evt as unknown as InstallMihomoResult;
+      }
+    });
+    if (!out) throw new Error(`install stream ended without a result (HTTP ${res.status})`);
+    return out;
+  },
+
+  async getMihomoSubscriptions(): Promise<{ status: string; subscriptions: MihomoSubscription[]; providers: MihomoProviderInfo[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async addMihomoSubscription(body: { name: string; url: string; interval?: number; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async updateMihomoSubscription(id: string, body: Partial<MihomoSubscription>): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async deleteMihomoSubscription(id: string): Promise<void> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw mihomoError(json, res.status);
+    }
+  },
+
+  async refreshMihomoSubscription(id: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async refreshAllMihomoSubscriptions(): Promise<{ status: string; refreshed: string[]; failed: string[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions/refresh', { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok && !json?.refreshed) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  /** Config rows with the form projection of each YAML-authored mapping. */
+  async getMihomoNodes(): Promise<{ status: string; nodes: MihomoManualNode[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  /** Protocol/field/enum table driving the node form. */
+  async getMihomoNodeCatalog(): Promise<{ status: string } & MihomoNodeCatalog> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes/catalog');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async addMihomoNode(body: Omit<MihomoManualNode, 'id'> | { yaml: string }): Promise<{ status: string; node?: MihomoManualNode; nodes?: MihomoManualNode[]; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async updateMihomoNode(id: string, body: Partial<MihomoManualNode> | { yaml: string }): Promise<{ status: string; node?: MihomoManualNode; nodes?: MihomoManualNode[]; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/nodes/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async deleteMihomoNode(id: string): Promise<void> {
+    const res = await fetch(`/api/admin/proxy/mihomo/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw mihomoError(json, res.status);
+    }
+  },
+
+  async testMihomoNode(body: { server: string; port: number } | { yaml: string }): Promise<{ status: string; reachable?: boolean; ms?: number; error?: string; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  /** Connectivity check: fetch the configured URL THROUGH the current proxy
+   *  node; unlike
+   *  `testMihomoNode` (a direct TCP probe) this proves the tunnel + URL pair.
+   *  `group` names the RUNNING group shown in the console (config may differ). */
+  async testMihomoUrl(url?: string, group?: string): Promise<{ status: string; reachable?: boolean; ms?: number; node?: string; url?: string; error?: string; message?: string }> {
+    const body: Record<string, string> = {};
+    if (url) body.url = url;
+    if (group) body.group = group;
+    const res = await fetch('/api/admin/proxy/mihomo/test-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async getMihomoProxies(group?: string): Promise<{ status: string; running: boolean; group: string; groupType?: MihomoGroupType; now?: string | null; groups: MihomoProxyGroup[]; nodes: MihomoProxyNode[]; message?: string }> {
+    const qs = group ? `?group=${encodeURIComponent(group)}` : '';
+    const res = await fetch(`/api/admin/proxy/mihomo/proxies${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async selectMihomoProxy(group: string, name: string): Promise<{ status: string; group: string; name: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group, name }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async testMihomoDelay(name: string, group = false, url?: string): Promise<{ status: string; delay?: number; delays?: Record<string, number>; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, group, ...(url ? { url } : {}) }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
   },
 
   async getTierPools(): Promise<TierPoolsResponse> {
@@ -5081,6 +5543,17 @@ export interface ProviderPurgeResult {
  * when the error body carries one (push 400 preconditions). Purely additive:
  * the message contract is unchanged and message-only callers are unaffected.
  */
+/** Controller-backed mihomo calls answer 409 `not-running` while the core is
+ * down; keep that code so the console can localize it instead of showing the
+ * transport English. */
+function mihomoError(body: any, httpStatus: number): OcApiError {
+  return new OcApiError(
+    body?.message || `HTTP ${httpStatus}`,
+    typeof body?.code === 'string' ? body.code : undefined,
+    body
+  );
+}
+
 export class OcApiError extends Error {
   readonly reasonCode?: string;
   /** Parsed non-2xx body — carries the machine params (url/cause/httpStatus)

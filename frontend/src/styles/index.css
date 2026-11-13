@@ -222,6 +222,121 @@ td, th {
    The old inline pattern used a white overlay invisible on the white card
    surface of light themes; --bg-elev carries the theme tint. Pages must use
    this class (or var(--bg-elev)) instead of duplicating the 4-property style. */
+/* In-page section rail — one page's sub-sections as a vertical menu, NOT a
+   second tab strip stacked under the page's primary tabs (two adjacent tab rows
+   read as one broken control). One surface, two panes: the rail is a tinted
+   column of the SAME panel as the section body, divided by a hairline. Two
+   floating cards read as two competing widgets, and a short card stranded
+   beside a tall one looks like a layout accident rather than a menu. */
+.page-split {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-height: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--shell-radius);
+  overflow: hidden;
+}
+.page-split-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  /* The pane owns the padding AND the scroll; the section inside stays plain. */
+  padding: 22px;
+  overflow-y: auto;
+}
+/* Inner sections keep their `card` class for their own layout styles, but the
+   surface is already the pane — a framed card inside a framed pane is one frame
+   too many. */
+.page-split-body > .card {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.page-subnav {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  width: 196px;
+  padding: 18px 12px;
+  /* One step warmer than --well-bg: the pane tint must be readable as a pane,
+     not as a hover state. */
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+  border-right: 1px solid var(--card-border);
+}
+.page-subnav .nav-item {
+  /* `.nav-item` is styled for the shell's <NavLink> rows; these three are
+     <button>s, so the anchor-only defaults (transparent ground, pointer cursor,
+     left-aligned label, full-width row) are restored here. Hover/active paint
+     still comes from shell.css, which loads after this file. */
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  min-height: 42px;
+  padding: 10px 12px;
+  font-size: var(--text-sm);
+}
+@media (max-width: 900px) {
+  .page-split { flex-direction: column; }
+  .page-subnav {
+    flex-direction: row;
+    width: 100%;
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--card-border);
+    overflow-x: auto;
+  }
+  .page-split-body { padding: 16px; }
+}
+/* A pane section whose fields scroll while its action row stays at the pane's
+   bottom edge (ProxyPage's Mihomo general tab). The negative side/bottom
+   margins cancel .page-split-body's own padding so the footer is flush with
+   the pane instead of hovering 22px above it; the scroll area restores that
+   padding for its content, which keeps the fields aligned with every other
+   tab. Only the scroll area scrolls, so content can never slide under the
+   footer and the footer needs no opaque backdrop of its own. */
+.pane-section {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  margin: 0 -22px -22px;
+}
+.pane-section-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding: 0 22px;
+  overflow-y: auto;
+}
+.pane-section-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 22px;
+  border-top: 1px solid var(--divider);
+  background: var(--card-bg);
+}
+
+@media (max-width: 900px) {
+  .pane-section { margin: 0 -16px -16px; }
+  .pane-section-scroll { padding: 0 16px; }
+  .pane-section-footer { padding: 12px 16px; }
+}
+
+
 .sub-card {
   background: var(--bg-elev);
   border: 1px solid var(--card-border);
@@ -1247,6 +1362,70 @@ input[type='checkbox']:not(.switch):indeterminate:focus-visible {
 input[type='checkbox']:not(.switch):disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* Sortable table-head label: a button that inherits the head cell's dim
+   uppercase typography and adds only a caret, so a sortable column never looks
+   like a link or a toolbar control. Generic on purpose — any ScrollTable column
+   can pass one as its `label`. */
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.th-sort:hover {
+  color: var(--text-main);
+}
+.th-sort:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 3px;
+}
+
+/* "Current node" pill in the page header: a micro-label, not a settings row.
+   Clicking it anchors to that row in the node list. */
+.current-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 460px;
+  min-width: 0;
+  padding: 5px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+  color: var(--text-main);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.current-node:hover {
+  border-color: var(--accent);
+}
+
+.current-node .node-name {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The row the group is currently routing through, matched by the accent pill in
+   its state cell. Tint only — the accent rail lives on the name cell. */
+tbody tr.is-current,
+.is-current > td {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .badge {

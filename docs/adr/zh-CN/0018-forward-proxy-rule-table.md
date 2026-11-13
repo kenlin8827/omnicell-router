@@ -98,8 +98,8 @@ forwardProxy:
 |---|---|---|
 | `direct` | 直连本机出网 | 接管（默认姿态） |
 | `direct-passthrough` | 直连本机出网 | 不接管——纯隧道 |
-| `proxy` | 走出站代理策略——`proxy.enabled` + `proxy.url` | 接管（默认姿态） |
-| `proxy-passthrough` | 走出站代理策略——`proxy.enabled` + `proxy.url` | 不接管——纯隧道 |
+| `proxy` | 走出站代理策略——`proxy.enabled` + 实际端点（ADR-0022） | 接管（默认姿态） |
+| `proxy-passthrough` | 走出站代理策略——`proxy.enabled` + 实际端点（ADR-0022） | 不接管——纯隧道 |
 | `reject` | 无——准入阶段直接回 403 | — |
 
 基础词是出口，`-passthrough` 后缀显式放弃接管：字节照样发往那个出口，但什么都不解密。（历史注：本 ADR 最初把这个 opt-out 写成可选的 `tunnel: true` 旗标；后折入单词本身——见上方「修订」。）
@@ -119,7 +119,7 @@ forwardProxy:
 
 ### 4. `action: proxy` 是主机级、终局的
 
-`action` 通过 `outboundProxyUrl()` 解析代理 URL——只看 `proxy.enabled` + `proxy.url`。它刻意**不看** `proxy.includes` / `proxy.excludes`：那两张表回答的是「哪个 provider/model」，让 provider 级列表把主机级决策降级成直连，正是这张表要消除的静默谎言。
+`action` 通过 `outboundProxyUrl()` 解析代理 URL——只看 `proxy.enabled` 加上实际出站端点（ADR-0022）：`manual` 模式是 `proxy.url`，`proxy.mode` 为 `mihomo` 时是 `http://127.0.0.1:<mixedPort>`。它刻意**不看** `proxy.includes` / `proxy.excludes`：那两张表回答的是「哪个 provider/model」，让 provider 级列表把主机级决策降级成直连，正是这张表要消除的静默谎言。
 
 `proxy.enabled !== true` 时 `proxy` 解析为直连（`resolveProxyUrl` 在没有启用代理时就是这个行为）。因为规则表否则会显示一个谎言，这个组合被双重暴露：启动告警 + 控制台横幅。
 

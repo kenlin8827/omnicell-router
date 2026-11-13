@@ -401,6 +401,33 @@ describe('buildEnvelope — redaction completeness', () => {
     expect(parse(plain.config).proxy.url).toBe('http://127.0.0.1:7890');
   });
 
+  it('mihomo controller secret and subscription URLs are redacted', async () => {
+    await seedConfig(
+      'mihomo',
+      [
+        'upstream:',
+        '  proxy:',
+        '    mode: mihomo',
+        '    mihomo:',
+        '      controllerSecret: super-secret-token',
+        '      subscriptions:',
+        '        - id: sub1',
+        '          name: Example',
+        '          url: https://sub.example/feed?token=abcdef',
+      ].join('\n') + '\n',
+    );
+    const env = buildEnvelope('mihomo', { includeSecrets: false });
+    expect(env.redactedPaths.sort()).toEqual(
+      ['upstream.proxy.mihomo.controllerSecret', 'upstream.proxy.mihomo.subscriptions[0].url'].sort(),
+    );
+    expect(env.config).not.toContain('super-secret-token');
+    expect(env.config).not.toContain('abcdef');
+    const cfg = parse(env.config) as any;
+    expect(cfg.upstream.proxy.mihomo.controllerSecret).toBe('__REDACTED__');
+    expect(cfg.upstream.proxy.mihomo.subscriptions[0].url).toBe('__REDACTED__');
+    expect(cfg.upstream.proxy.mihomo.subscriptions[0].name).toBe('Example');
+  });
+
   it('opencode.password is redacted', async () => {
     await seedConfig('opc', 'opencode:\n  password: hunter2\n  baseUrl: https://x.example\n');
     const env = buildEnvelope('opc', { includeSecrets: false });
