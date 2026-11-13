@@ -48,6 +48,14 @@ function formatClientWarnings(warnings: ClientActionWarning[] | undefined): stri
         return 'CA trust could not be verified on this platform — check the Proxy Access setup wizard if HTTPS fails.';
       case 'proxy_not_running':
         return `The forward proxy is not running on port ${w.params?.port ?? '?'} — start the gateway before launching.`;
+      case 'ide_running':
+        return 'A JetBrains IDE was running during setup: the hook applies on its next start, and the IDE rewrites proxy.settings.xml from memory when it exits — re-run setup after quitting it.';
+      case 'ide_truststore_readonly':
+        return `The IDE install's own truststore is not writable, so the MITM CA went into ${w.params?.path ?? 'a copy'} and the IDE's vmoptions now point at it — restart the IDE for JBR to pick it up.`;
+      case 'junie_install_failed':
+        return `Junie could not be provisioned (${w.params?.detail ?? 'unknown error'}) — Agent mode will fall back to the IDE's own download, which needs GitHub reachable and does not resume.`;
+      case 'junie_models_failed':
+        return `Junie's OCR model list was not written (${w.params?.detail ?? 'unknown error'}) — Agent mode will use JetBrains' cloud models instead of this gateway.`;
     }
   });
 }
@@ -78,6 +86,7 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.magenta}ocr setup workbuddy${C.reset}     Hook WorkBuddy (models.json custom models) to local OCR gateway
   ${C.magenta}ocr setup cursor-proxy${C.reset}  Hook Cursor through the OCR forward proxy (writes the launchers)
   ${C.magenta}ocr setup qoder-proxy${C.reset}   Hook Qoder (desktop + qodercli) through the OCR forward proxy
+  ${C.magenta}ocr setup jetbrains-proxy${C.reset} Hook every detected JetBrains IDE (IntelliJ IDEA, GoLand) through the OCR forward proxy
 
   ${C.magenta}ocr cursor${C.reset} [args]        Launch Cursor through the OCR launcher (run setup first)
   ${C.magenta}ocr cursor-agent${C.reset} [args]  Launch the cursor-agent CLI through the OCR launcher
@@ -93,6 +102,7 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown workbuddy${C.reset}  Unhook WorkBuddy and remove the OCR custom-model rows
   ${C.yellow}ocr teardown cursor-proxy${C.reset} Unhook Cursor and remove the OCR launchers
   ${C.yellow}ocr teardown qoder-proxy${C.reset}  Unhook Qoder and remove both OCR launchers
+  ${C.yellow}ocr teardown jetbrains-proxy${C.reset} Unhook the JetBrains IDEs, restore their proxy settings, drop the CA alias
 
 
 
@@ -349,6 +359,12 @@ async function main(): Promise<void> {
     port = parseInt(args[portIdx + 1], 10);
   }
 
+  // Parse optional --product flag (JetBrains family: act on ONE IDE, e.g.
+  // `--product goland`); absent = every detected product.
+  let product: string | undefined;
+  const productIdx = args.findIndex((a) => a === '--product');
+  if (productIdx !== -1 && args[productIdx + 1]) product = args[productIdx + 1];
+
   // Parse optional --env flag (start/restart): runs the gateway on a named
   // environment by injecting OCR_ENV into the daemon child.
   let envName: string | undefined;
@@ -433,7 +449,7 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
-      const res = await setupClient(client, { port });
+      const res = await setupClient(client, product ? { port, product } : { port });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
         for (const line of formatClientWarnings(res.warnings)) {
@@ -458,7 +474,7 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
-      const res = await teardownClient(client);
+      const res = await teardownClient(client, product ? { product } : undefined);
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
       } else {

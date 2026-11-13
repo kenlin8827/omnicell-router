@@ -11,6 +11,7 @@ import { KimiClientAdapter } from './kimi.js';
 import { OpenClawClientAdapter } from './openclaw.js';
 import { CursorProxyClientAdapter } from './cursor-proxy.js';
 import { QoderProxyClientAdapter } from './qoder-proxy.js';
+import { JetBrainsProxyClientAdapter } from './jetbrains-proxy.js';
 import { WorkBuddyClientAdapter } from './workbuddy.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 import { popularityRank } from '../../utils/popularity.js';
@@ -30,6 +31,7 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   workbuddy: new WorkBuddyClientAdapter(),
   'cursor-proxy': new CursorProxyClientAdapter(),
   'qoder-proxy': new QoderProxyClientAdapter(),
+  'jetbrains-proxy': new JetBrainsProxyClientAdapter(),
 };
 
 /** One-click roster order — the same popularity rank the harness rail uses (ADR-0015). */
@@ -99,7 +101,10 @@ export async function setupClient(
   const result = await adapter.setup(options);
   return siblingNote && result.success ? { ...result, message: result.message + siblingNote } : result;
 }
-export async function teardownClient(name: string): Promise<ClientActionResult> {
+export async function teardownClient(
+  name: string,
+  options?: Parameters<ClientAdapter['teardown']>[0]
+): Promise<ClientActionResult> {
   const adapter = getClientAdapter(name);
   if (!adapter) {
     return {
@@ -107,7 +112,7 @@ export async function teardownClient(name: string): Promise<ClientActionResult> 
       message: `Unknown client '${name}'. Supported clients: ${Object.keys(adapters).join(', ')}`,
     };
   }
-  return adapter.teardown();
+  return adapter.teardown(options);
 }
 
 /**

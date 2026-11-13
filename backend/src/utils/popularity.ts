@@ -48,6 +48,7 @@ const POPULARITY_ROWS: readonly (readonly RankedRuntimeId[])[] = [
   ['grok'],
   ['workbuddy'],
   ['qoder-proxy'],
+  ['jetbrains-proxy'],
   ['factory'],
 ];
 

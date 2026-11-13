@@ -1908,7 +1908,7 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, profile } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, profile, product } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
@@ -1916,6 +1916,8 @@ export function registerConsoleRoutes(
       virtualModels?: string[];
       agentModels?: Record<string, string>;
       profile?: { id?: string; bindings?: Record<string, string> };
+      /** Family adapters: act on ONE product (`intellij-idea`, `goland`) instead of all. */
+      product?: string;
     };
     const cleaned = models && typeof models === 'object'
       ? Object.fromEntries(Object.entries(models).map(([k, v]) => [k, String(v ?? 'auto').trim() || 'auto']))
@@ -2014,6 +2016,7 @@ export function registerConsoleRoutes(
       ...(cleanedVirtual !== undefined ? { virtualModels: cleanedVirtual } : {}),
       ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
       ...(profileEcho ? { profile: profileEcho } : {}),
+      ...(typeof product === 'string' && product.trim() ? { product: product.trim() } : {}),
     });
     if (!result.success) return reply.status(400).send(result);
     return result;
@@ -2021,7 +2024,8 @@ export function registerConsoleRoutes(
 
   const handleTeardown = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const result = await teardownClient(client);
+    const { product } = (req.body || {}) as { product?: string };
+    const result = await teardownClient(client, typeof product === 'string' && product.trim() ? { product: product.trim() } : undefined);
     if (!result.success) return reply.status(400).send(result);
     return result;
   };

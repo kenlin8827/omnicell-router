@@ -2238,6 +2238,7 @@ hiddenBadge: string;
     cursorSetupOk: string;
     cursorTeardownOk: string;
     clientErrNotActive: string;
+    clientErrTakeoverLost: string;
     cursorErrRemoveFailed: string;
     gatewayModels: string;
     gatewayModelsInfo: string;
@@ -2258,12 +2259,29 @@ hiddenBadge: string;
     gatewayPluginDisabled: string;
     gatewayPluginNotLoaded: string;
     gatewayPluginRequired: string;
+    jetbrainsHint: string;
+    jetbrainsSetupOk: string;
+    jetbrainsTeardownOk: string;
+    /** Family card: "N IDEs" badge on the collapsed row. */
+    jetbrainsProductCount: string;
     qoderErrNotFound: string;
     qoderHint: string;
     qoderSetupOk: string;
     warnCaNotTrusted: string;
+    jetbrainsCa: string;
+    jetbrainsCaImported: string;
+    jetbrainsCaAbsent: string;
+    jetbrainsCaUnknown: string;
+    jetbrainsJunie: string;
+    warnIdeRunning: string;
     warnCaTrustUnknown: string;
     warnProxyNotRunning: string;
+    /** IDE install's truststore is read-only: the CA lives in a copy its vmoptions point at. */
+    warnIdeTruststoreReadonly: string;
+    /** The ACP agent (Junie) could not be provisioned; the IDE will try its own download. */
+    warnJunieInstallFailed: string;
+    /** Junie's OCR model list could not be written (no key / locked profile dir). */
+    warnJunieModelsFailed: string;
     qoderTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;

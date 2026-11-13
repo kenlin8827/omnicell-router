@@ -45,6 +45,7 @@ const CLIENT_REASON_KEY: Record<string, string> = {
   cursor_not_found: 'clients.cursorErrNotFound',
   qoder_not_found: 'clients.qoderErrNotFound',
   not_active: 'clients.clientErrNotActive',
+  takeover_lost: 'clients.clientErrTakeoverLost',
   proxy_credential_required: 'clients.gatewayKeyRequired',
   remove_failed: 'clients.cursorErrRemoveFailed',
 };
@@ -97,6 +98,9 @@ function sameModelSelection(a: string[], b: string[]): boolean {
 const GATEWAY_PLUGIN_BY_CLIENT: Record<string, string> = {
   'cursor-proxy': 'cursor-gateway',
   'qoder-proxy': 'qoder-gateway',
+  // NO jetbrains-gateway entry: that plugin is a relay-only observer with no
+  // model catalog, and this map drives the catalog editor — pointing IDEA at it
+  // would render an empty models form for a plugin that does not own one.
 };
 
 /**
@@ -178,6 +182,10 @@ export const ClientsPage: React.FC = () => {
   const [virtualSel, setVirtualSel] = useState<Record<string, string[] | undefined>>({});
   /** Expanded/collapsed state of long model-chip walls (follow/custom lists). */
   const [extrasOpen, setExtrasOpen] = useState<Record<string, boolean>>({});
+  /** Family cards: which nested product panel is expanded, keyed `client:product`.
+   *  Nested panels start collapsed — the row above already carries each
+   *  product's status badge, so opening one is a deliberate "show me the files". */
+  const [openProducts, setOpenProducts] = useState<Record<string, boolean>>({});
   /** Per-client model-list source: 'none' (default) exposes no concrete
    *  models, 'follow' mirrors the selected API key's effective access,
    *  'custom' keeps the manual picker. */
@@ -730,7 +738,8 @@ export const ClientsPage: React.FC = () => {
     });
   }, [agents, clients, mem]);
 
-  const handleToggle = async (clientName: string, action: 'setup' | 'teardown') => {
+  /** `product` narrows a family card's action to ONE product (JetBrains IDEs). */
+  const handleToggle = async (clientName: string, action: 'setup' | 'teardown', product?: string) => {
     // Every refusal below fires while the card may still be collapsed — the fix
     // (key picker, model mode, context form) lives inside the panel, so reveal
     // it alongside the toast instead of making the operator find the row again.
@@ -828,7 +837,8 @@ export const ClientsPage: React.FC = () => {
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         profile: piPayload.profile,
         ...agentPayload,
-      } : undefined);
+        ...(product ? { product } : {}),
+      } : product ? { product } : undefined);
       // Proxy-mode notices are backend prose — show a localized one-liner instead
       // (the long hints live in the expanded card).
       setActionNotice(
@@ -838,21 +848,25 @@ export const ClientsPage: React.FC = () => {
             ? t(action === 'setup' ? 'clients.cursorSetupOk' : 'clients.cursorTeardownOk')
             : clientName === 'qoder-proxy'
               ? t(action === 'setup' ? 'clients.qoderSetupOk' : 'clients.qoderTeardownOk')
-              : (res.message || 'Updated')
+              : clientName === 'jetbrains-proxy'
+                ? t(action === 'setup' ? 'clients.jetbrainsSetupOk' : 'clients.jetbrainsTeardownOk')
+                : (res.message || 'Updated')
       );
       // Setup succeeded, but the hooked client can still fail at USE time
       // (untrusted CA, proxy not listening). Advise, never block: the CA is
       // routinely imported right after hooking.
       if (action === 'setup' && res.warnings?.length) {
         // Show ALL advisories: a listener warning must not hide the CA one.
-        toast.warning(res.warnings.map(warn => t(
-          warn.code === 'ca_not_trusted'
-            ? 'clients.warnCaNotTrusted'
-            : warn.code === 'ca_trust_unknown'
-              ? 'clients.warnCaTrustUnknown'
-              : 'clients.warnProxyNotRunning',
-          warn.params,
-        )).join(' '));
+        const warnKey: Record<string, string> = {
+          ca_not_trusted: 'clients.warnCaNotTrusted',
+          ca_trust_unknown: 'clients.warnCaTrustUnknown',
+          proxy_not_running: 'clients.warnProxyNotRunning',
+          ide_running: 'clients.warnIdeRunning',
+          ide_truststore_readonly: 'clients.warnIdeTruststoreReadonly',
+          junie_install_failed: 'clients.warnJunieInstallFailed',
+          junie_models_failed: 'clients.warnJunieModelsFailed',
+        };
+        toast.warning(res.warnings.map(warn => t(warnKey[warn.code] ?? 'clients.warnProxyNotRunning', warn.params)).join(' '));
       }
       if (action === 'setup') {
         // The hook's forced probe just refreshed the backend cache; mirror it so
@@ -1734,15 +1748,28 @@ export const ClientsPage: React.FC = () => {
                     style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: open ? 'rotate(180deg)' : 'none' }}
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>
-                    <BrandIcon name={c.name.replace(/-proxy$/, '')} size={18} />
+                    <BrandIcon name={c.name === 'jetbrains-proxy' ? 'jetbrains' : c.name.replace(/-proxy$/, '')} size={18} />
                     {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
                   </span>
-                  <span
-                    title={c.configPath}
-                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  >
-                    {c.configPath}
-                  </span>
+                  {c.products?.length ? (
+                    // A family card has no single config file to show — the paths
+                    // live in the per-product panels below.
+                    <span style={{ flex: 1 }} />
+                  ) : (
+                    <span
+                      title={c.configPath}
+                      style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {c.configPath}
+                    </span>
+                  )}
+                  {/* Family card: how many products this machine actually has.
+                      One row per product lives inside the expanded body. */}
+                  {!!c.products && c.products.length > 1 && (
+                    <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
+                      {t('clients.jetbrainsProductCount', { n: c.products.length })}
+                    </span>
+                  )}
                   {/* Collapsed launcher row: the start command is the one thing
                       worth seeing without expanding — a plain double-click of
                       the app would silently stay un-proxied. Clicking the chip
@@ -1779,11 +1806,109 @@ export const ClientsPage: React.FC = () => {
                       v{c.version.current}
                     </span>
                   )}
-                  {!open && renderActionButtons(c, false)}
+                  {!open && !c.products?.length && renderActionButtons(c, false)}
                 </div>
 
                 {open && (
                   <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {/* Family products: NESTED collapsible panels. Every IDE is
+                        taken over (and restored) on its own config root, its own
+                        JBR truststore and its own ACP directory, so its files, its
+                        trust state and its action live together — and the card
+                        itself carries no setup/teardown: "the family" is not a
+                        state that can be taken over, only its members are. */}
+                    {!!c.products?.length && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {c.products.map(p => {
+                          const key = `${c.name}:${p.id}`;
+                          const panelOpen = !!openProducts[key];
+                          const togglePanel = () => setOpenProducts(prev => ({ ...prev, [key]: !panelOpen }));
+                          return (
+                            <div key={p.id} style={{ border: '1px solid var(--card-border)', borderRadius: '10px', background: 'var(--well-bg)' }}>
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                aria-expanded={panelOpen}
+                                onClick={e => { e.stopPropagation(); togglePanel(); }}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    togglePanel();
+                                  }
+                                }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', cursor: 'pointer', userSelect: 'none' }}
+                              >
+                                <ChevronDown
+                                  size={14}
+                                  color="var(--text-dim)"
+                                  style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: panelOpen ? 'rotate(180deg)' : 'none' }}
+                                />
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)' }}>
+                                  <BrandIcon name={p.id === 'intellij-idea' ? 'idea' : p.id} size={16} />
+                                  {p.displayName}
+                                </span>
+                                {p.version && (
+                                  <span style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{p.version}</span>
+                                )}
+                                {p.hooked ? (
+                                  <span className="badge badge-success">{t('overview.hooked')}</span>
+                                ) : (
+                                  <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>{t('overview.notHooked')}</span>
+                                )}
+                              </div>
+                              {panelOpen && (
+                                <div style={{ borderTop: '1px solid var(--divider)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                                    {t('clients.configPath')}
+                                    {/* The artifacts list already starts with the
+                                        settings file; the raw path is the fallback
+                                        for a product the IDE never ran. */}
+                                    {p.artifacts.length ? p.artifacts.map(renderArtifact) : (
+                                      <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
+                                        {p.configPath}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      {p.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                                      <span>{t('clients.fileExists')} {p.exists ? t('clients.yes') : t('clients.no')}</span>
+                                    </span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      {p.backupExists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                                      <span>{t('clients.backupExists')} {p.backupExists ? t('clients.ready') : t('clients.none')}</span>
+                                    </span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      {p.caTrusted === true ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color={p.caTrusted === false ? 'var(--accent-rose)' : 'var(--text-dim)'} />}
+                                      <span>
+                                        {t('clients.jetbrainsCa')}{' '}
+                                        {p.caTrusted === true ? t('clients.jetbrainsCaImported') : p.caTrusted === false ? t('clients.jetbrainsCaAbsent') : t('clients.jetbrainsCaUnknown')}
+                                      </span>
+                                    </span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      {p.junieVersion ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                                      <span>{t('clients.jetbrainsJunie')} {p.junieVersion ?? t('clients.none')}</span>
+                                    </span>
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button
+                                      className={p.hooked ? 'btn btn-danger btn-sm' : 'btn btn-primary btn-sm'}
+                                      style={{ flex: 1 }}
+                                      onClick={e => { e.stopPropagation(); handleToggle(c.name, p.hooked ? 'teardown' : 'setup', p.id); }}
+                                      disabled={loading}
+                                    >
+                                      {p.hooked ? <Undo2 size={12} /> : <ArrowUpRight size={12} />}
+                                      <span>{p.hooked ? t('clients.teardownBtn') : t('clients.setupBtn')}</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                     {c.hookKind === 'launcher' ? (
                       // Launcher hooks own scripts, not a config file: every
                       // launcher setup writes is listed with its own existence
@@ -1793,7 +1918,7 @@ export const ClientsPage: React.FC = () => {
                         {t('clients.launcherPaths')}
                         {[{ path: c.configPath, exists: c.exists }, ...(c.artifacts ?? [])].map(renderArtifact)}
                       </div>
-                    ) : (
+                    ) : c.products?.length ? null : (
                       <>
                         <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
                           {t('clients.configPath')}
@@ -1825,7 +1950,10 @@ export const ClientsPage: React.FC = () => {
 
                     {(c.hookKind !== 'config') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
-                        {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
+                        {/* Per-client hint, NEVER the shared one: `proxyHint` is
+                            written for opencode's env-var hook and reads as
+                            nonsense on a client that has no such hook. */}
+                        {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : c.name === 'jetbrains-proxy' ? 'clients.jetbrainsHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
                       </div>
                     )}
 
@@ -2057,7 +2185,9 @@ export const ClientsPage: React.FC = () => {
                 )}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  {renderActionButtons(c, true)}
+                  {/* Family cards act per PRODUCT (nested panels) — a family-wide
+                      setup/teardown button would claim a state that does not exist. */}
+                  {!c.products?.length && renderActionButtons(c, true)}
                   {clientSlots(c).length > 0 && (
                     <button className="btn btn-sm" onClick={() => handleResetModel(c.name)} disabled={loading} title={t('clients.reset')}>
                       <RotateCcw size={12} />

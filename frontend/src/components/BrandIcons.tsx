@@ -24,6 +24,16 @@ import React from 'react';
  * monochrome — the colored tiles become untagged subpaths so the wrapper's
  * fill="currentColor" themes it with the rest of the row.
  * qoder.color.svg is the Qoder app icon shipped in `plugins/qoder/logo.svg`.
+ * idea.color.svg / goland.color.svg are JetBrains' official product icons
+ *   (resources.jetbrains.com/storage/products/company/brand/logos/IntelliJ_IDEA_icon.svg
+ *   and GoLand_icon.svg), vendored because simple-icons carries no JetBrains
+ *   product marks — and the Go language mark would label a product instead of
+ *   the language it is for. The earlier `idea.svg` was byte-identical to the
+ *   FAMILY mark, so it is gone: the console drew "IntelliJ IDEA" beside the
+ *   JetBrains logo and no reader could tell the two apart.
+ * jetbrains.svg is JetBrains' own family mark (24x24, single path, no fill) from
+ *   resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg —
+ *   the family card uses it, its product rows use the product icons above.
  * google.color.svg is Google's official multicolor "G" mark (Wikimedia Commons,
  *   file `Google_"G"_logo.svg`), vendored because the provider glyph for Google
  *   AI is the Gemini sparkle, not the Google brand mark.

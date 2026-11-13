@@ -43,7 +43,7 @@ export interface GatewayMetrics {
 }
 
 /** Where a client hook lands — mirrors backend `ClientHookKind`. */
-export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+export type ClientHookKind = 'config' | 'launcher' | 'service-env' | 'proxy-config';
 
 export interface ClientStatus {
   name: string;
@@ -66,6 +66,11 @@ export interface ClientStatus {
   /** A file an adapter owns besides its primary `configPath` (Cursor's CLI
    *  launcher); `exists` probed at status time. Mirrors backend ClientArtifact. */
   artifacts?: ClientArtifact[];
+
+  /** Family adapters (JetBrains): the product instances this machine has, each
+   *  with its own takeover state. Absent = single-product adapter. Mirrors
+   *  backend ClientProductStatus. */
+  products?: ClientProductStatus[];
 }
 
 /** Mirrors backend ClientArtifact (a file an adapter owns besides `configPath`). */
@@ -74,11 +79,40 @@ export interface ClientArtifact {
   exists: boolean;
 }
 
+/** One product instance inside a family adapter (mirrors backend ClientProductStatus). */
+export interface ClientProductStatus {
+  /** Stable product key — also the `product` action target (`intellij-idea`, `goland`). */
+  id: string;
+  displayName: string;
+  version: string | null;
+  configPath: string;
+  exists: boolean;
+  hooked: boolean;
+  backupExists: boolean;
+  /** Is the MITM root trusted where THIS product's JBR reads it (own store or
+   *  the vmoptions copy)? `unknown` when the probe cannot run. */
+  caTrusted: boolean | 'unknown';
+  /** Installed ACP agent (Junie) version for this product's config root. */
+  junieVersion: string | null;
+  /** Files this product owns (settings, backup, per-product agents dir). */
+  artifacts: ClientArtifact[];
+}
+
 /** Advise-only finding from a SUCCESSFUL client setup (backend
  *  `ClientActionWarning`): the artifact was written, but the client will still
  *  fail at use time until this is fixed. */
 export interface ClientActionWarning {
-  code: 'ca_not_trusted' | 'ca_trust_unknown' | 'proxy_not_running';
+  code:
+    | 'ca_not_trusted'
+    | 'ca_trust_unknown'
+    | 'proxy_not_running'
+    | 'ide_running'
+    /** IDE install's truststore is read-only; the CA lives in a copy its vmoptions point at. */
+    | 'ide_truststore_readonly'
+    /** The ACP agent (Junie) could not be provisioned. */
+    | 'junie_install_failed'
+    /** Junie's OCR model list could not be written. */
+    | 'junie_models_failed';
   params?: Record<string, string>;
 }
 
@@ -3020,6 +3054,8 @@ export const api = {
       agentModels?: Record<string, string>;
       /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
       profile?: { id: string; bindings: Record<string, string> };
+      /** Family adapters (JetBrains): act on ONE product (`intellij-idea`, `goland`); absent = all. */
+      product?: string;
     }
   ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {

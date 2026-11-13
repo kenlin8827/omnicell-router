@@ -23,7 +23,7 @@ export type CliAction =
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy';
+export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy' | 'jetbrains-proxy';
 
 export interface CliOptions {
   action: CliAction;
@@ -47,10 +47,13 @@ export interface DaemonInfo {
 }
 
 /** How an adapter applies its hook. `config` rewrites the client's own config
- *  file; `launcher` publishes proxy launch scripts; `service-env` sets a
- *  managed service's environment. The last two are forward-proxy hooks: they
- *  write no API key and route traffic through the inbound proxy. */
-export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+ *  file to point at the gateway; `launcher` publishes proxy launch scripts;
+ *  `service-env` sets a managed service's environment; `proxy-config` rewrites
+ *  the client's own config file to point at the inbound forward proxy (no API
+ *  key, no launcher script — the file IS the takeover, undone on teardown).
+ *  The last three are forward-proxy hooks: no key is written, traffic rides the
+ *  inbound proxy. */
+export type ClientHookKind = 'config' | 'launcher' | 'service-env' | 'proxy-config';
 
 export interface ClientHookStatus {
   name: SupportedClient;
@@ -89,6 +92,37 @@ export interface ClientHookStatus {
    *  time so the console can list every artifact without a second round-trip.
    *  Absent for single-artifact adapters. */
   artifacts?: ClientArtifact[];
+
+  /** Family adapters only: the product instances this machine actually has,
+   *  each with its own takeover state. Absent for single-product adapters —
+   *  the console then renders the card row exactly as before. */
+  products?: ClientProductStatus[];
+}
+
+/**
+ * One product instance inside a FAMILY adapter — one installed JetBrains IDE,
+ * say. Status is per instance because each product owns its own config root
+ * and truststore, so "hooked" is never a family-wide verdict: IDEA can be
+ * taken over while GoLand is untouched on the same machine.
+ */
+export interface ClientProductStatus {
+  /** Stable product key (`intellij-idea`, `goland`) — the console's row key and the `--product`/`product` action target. */
+  id: string;
+  displayName: string;
+  /** Build version the install reports (`product-info.json`), when one was found. */
+  version: string | null;
+  /** The file this product's takeover lands in. */
+  configPath: string;
+  exists: boolean;
+  hooked: boolean;
+  backupExists: boolean;
+  /** Is the MITM root trusted where THIS product's JBR reads it — its own store
+   *  or the vmoptions copy? `unknown` when the probe cannot run. */
+  caTrusted: boolean | 'unknown';
+  /** Installed ACP agent (Junie) version for this product's config root, if any. */
+  junieVersion: string | null;
+  /** The files this product owns (settings, backup, per-product agents dir). */
+  artifacts: ClientArtifact[];
 }
 
 /** A file an adapter owns besides its primary `configPath` (status echo only). */
