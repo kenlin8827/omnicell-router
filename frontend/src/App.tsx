@@ -7,6 +7,8 @@ import { KeysPage } from './pages/KeysPage';
 import { ModelsPage } from './pages/ModelsPage';
 import { CatalogSourcesPage } from './pages/CatalogSourcesPage';
 import { ProxyPage } from './pages/ProxyPage';
+import { MihomoPage } from './pages/MihomoPage';
+import { ProxyPatternsPage } from './pages/ProxyPatternsPage';
 import { ProxyAccessPage } from './pages/ProxyAccessPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
@@ -85,6 +87,10 @@ export const App: React.FC = () => {
         <Route path="models" element={<ModelsPage />} />
         <Route path="catalog" element={<CatalogSourcesPage />} />
         <Route path="proxy-upstream" element={<ProxyPage />} />
+        <Route path="proxy-clash" element={<MihomoPage />} />
+        {/* 旧地址（拆页前的 /proxy-mihomo）保留重定向，避免收藏夹失效 */}
+        <Route path="proxy-mihomo" element={<Navigate to="/proxy-clash" replace />} />
+        <Route path="proxy-patterns" element={<ProxyPatternsPage />} />
         <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />

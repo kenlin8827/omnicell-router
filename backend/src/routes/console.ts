@@ -2401,7 +2401,7 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy);
     void reconcileMihomoSidecar(loadConfig().proxy).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Mihomo] reconcile after config save failed: ${message}`);
+      console.warn(`[Clash] reconcile after config save failed: ${message}`);
     });
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
@@ -2441,7 +2441,7 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
     void reconcileMihomoSidecar(loadConfig().proxy).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Mihomo] reconcile after config save failed: ${message}`);
+      console.warn(`[Clash] reconcile after config save failed: ${message}`);
     });
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture); // hot-apply capture too
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)

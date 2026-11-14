@@ -963,6 +963,11 @@ export function sanitizeProxyConfig(raw: unknown): ProxyConfig {
   if (groupType !== 'select') delete selectedNodes[group];
   const mihomo: MihomoConfig = {
     enabled: mode === 'mihomo',
+    // Tri-state passthrough (see MihomoConfig.autoStart): only an explicit
+    // boolean is written, so "absent" keeps meaning "follow the mode". Do not
+    // materialize it — that would erase the difference between "never chosen"
+    // and "stopped by hand".
+    ...(typeof mihomoRaw.autoStart === 'boolean' ? { autoStart: mihomoRaw.autoStart } : {}),
     binaryPath,
     mixedPort: clampPort(mihomoRaw.mixedPort, DEFAULT_MIHOMO_MIXED_PORT),
     controllerPort: clampPort(mihomoRaw.controllerPort, DEFAULT_MIHOMO_CONTROLLER_PORT),

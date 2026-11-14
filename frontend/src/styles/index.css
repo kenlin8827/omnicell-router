@@ -271,8 +271,8 @@ td, th {
   border-right: 1px solid var(--card-border);
 }
 .page-subnav .nav-item {
-  /* `.nav-item` is styled for the shell's <NavLink> rows; these three are
-     <button>s, so the anchor-only defaults (transparent ground, pointer cursor,
+  /* `.nav-item` is styled for the shell's <NavLink> rows; these are <button>s,
+     so the anchor-only defaults (transparent ground, pointer cursor,
      left-aligned label, full-width row) are restored here. Hover/active paint
      still comes from shell.css, which loads after this file. */
   width: 100%;
@@ -281,7 +281,11 @@ td, th {
   background: transparent;
   min-height: 42px;
   padding: 10px 12px;
-  font-size: var(--text-sm);
+  /* Same size as the shell's own nav rows. At --text-sm (12px) this rail read
+     as a footnote next to the 14px sidebar directly to its left, and CJK
+     labels (基本设置 / 连通测试) lose their counters at 12px. These are
+     navigation targets, not annotations. */
+  font-size: var(--text-base);
 }
 @media (max-width: 900px) {
   .page-split { flex-direction: column; }
@@ -767,6 +771,33 @@ details.sub-card > summary::-webkit-details-marker {
   cursor: not-allowed;
   filter: none;
 }
+
+/* Quiet cross-page link: the "the rest of this lives over there" affordance.
+   Deliberately not `.btn` — inside a settings column a bordered button reads as
+   the next step to take *here*, and two of them out-shouted the Save button
+   beneath them. Accent text is the house link colour (see ClientsPage), so this
+   needs no chrome to read as clickable.
+   The glyph is an ARROW, not a chevron: two chevrons side by side
+   ("Clash 核心 › 代理分流 ›") parse as one breadcrumb trail, i.e. as a path the
+   reader is already on, while an arrow terminates and says "goes there". */
+.link-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  font-size: inherit;
+  line-height: var(--leading-tight);
+  text-decoration: none;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+.link-quiet:hover { text-decoration: underline; text-underline-offset: 3px; }
+.link-quiet:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+.link-quiet svg { transition: transform 140ms ease; }
+.link-quiet:hover svg { transform: translateX(2px); }
 
 /* Toggle chip for multi-select option rows (thinking-effort ladder,
    capability pickers, filter pills). Rendered by components/Chip.tsx as a

@@ -134,8 +134,8 @@ async function main() {
   if (config.proxy?.enabled === true && config.proxy.mode === 'mihomo') {
     void reconcileMihomoSidecar(config.proxy)
       .then((r) => {
-        if (r.ok) console.log(`[OCR] mihomo sidecar ${r.action}${r.pid ? ` (pid ${r.pid})` : ''}`);
-        else console.warn(`[OCR] mihomo sidecar ${r.action} failed: ${r.error}`);
+        if (r.ok) console.log(`[OCR] clash sidecar ${r.action}${r.pid ? ` (pid ${r.pid})` : ''}`);
+        else console.warn(`[OCR] clash sidecar ${r.action} failed: ${r.error}`);
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);

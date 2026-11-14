@@ -173,7 +173,7 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
   let lookupFailure: InstallMihomoResult = {
     ok: false,
     code: 'release-lookup-failed',
-    error: 'mihomo release lookup failed',
+    error: 'Clash core release lookup failed',
   };
   try {
     const res = await fetchImpl(api, { headers: githubHeaders() });
@@ -185,11 +185,11 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
       const hint = res.status === 403 || res.status === 429
         ? ' — GitHub API rate limit; set GITHUB_TOKEN or retry later'
         : '';
-      lookupFailure = { ok: false, code: 'release-lookup-failed', error: `mihomo release lookup failed (${res.status})${hint}` };
+      lookupFailure = { ok: false, code: 'release-lookup-failed', error: `Clash core release lookup failed (${res.status})${hint}` };
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'network error';
-    lookupFailure = { ok: false, code: 'release-lookup-failed', error: `mihomo release lookup failed (${message})` };
+    lookupFailure = { ok: false, code: 'release-lookup-failed', error: `Clash core release lookup failed (${message})` };
   }
 
   let version = '';
@@ -197,10 +197,10 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
   let downloadUrl = '';
   if (release) {
     version = typeof release.tag_name === 'string' && release.tag_name.trim() ? release.tag_name.trim() : tag;
-    if (!version) return { ok: false, code: 'release-lookup-failed', error: 'mihomo release has no tag' };
+    if (!version) return { ok: false, code: 'release-lookup-failed', error: 'Clash core release has no tag' };
     wanted = mihomoAssetName(platform, arch, version);
     if (!wanted) {
-      return { ok: false, code: 'unsupported-platform', error: `no mihomo build for ${platform}/${arch}` };
+      return { ok: false, code: 'unsupported-platform', error: `no Clash core build for ${platform}/${arch}` };
     }
     const assets = Array.isArray(release.assets) ? release.assets as Array<{ name?: unknown; browser_download_url?: unknown }> : [];
     const asset = assets.find((item) => item.name === wanted!.name);
@@ -215,7 +215,7 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
     if (!version) return lookupFailure;
     wanted = mihomoAssetName(platform, arch, version);
     if (!wanted) {
-      return { ok: false, code: 'unsupported-platform', error: `no mihomo build for ${platform}/${arch}` };
+      return { ok: false, code: 'unsupported-platform', error: `no Clash core build for ${platform}/${arch}` };
     }
     downloadUrl = `${DOWNLOAD_BASE}/${encodeURIComponent(version)}/${encodeURIComponent(wanted.name)}`;
   }
@@ -225,7 +225,7 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
     const res = await fetchImpl(downloadUrl, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/octet-stream' },
     });
-    if (!res.ok) return { ok: false, code: 'download-failed', error: `mihomo download failed (${res.status})` };
+    if (!res.ok) return { ok: false, code: 'download-failed', error: `Clash core download failed (${res.status})` };
     const total = Number(res.headers.get('content-length') ?? '') || 0;
     if (!res.body) {
       packed = Buffer.from(await res.arrayBuffer());
@@ -246,7 +246,7 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
         downloaded += value.byteLength;
         if (downloaded > MAX_DOWNLOAD_BYTES) {
           await reader.cancel().catch(() => undefined);
-          return { ok: false, code: 'download-too-large', error: 'mihomo download exceeded 80MB' };
+          return { ok: false, code: 'download-too-large', error: 'Clash core download exceeded 80MB' };
         }
         const now = Date.now();
         if (now - lastReport >= 100) {
@@ -259,16 +259,16 @@ export async function installMihomoBinary(opts: InstallMihomoOptions = {}): Prom
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'network error';
-    return { ok: false, code: 'download-failed', error: `mihomo download failed (${message})` };
+    return { ok: false, code: 'download-failed', error: `Clash core download failed (${message})` };
   }
   if (packed.length > MAX_DOWNLOAD_BYTES) {
-    return { ok: false, code: 'download-too-large', error: 'mihomo download exceeded 80MB' };
+    return { ok: false, code: 'download-too-large', error: 'Clash core download exceeded 80MB' };
   }
   let bytes: Buffer;
   try {
     bytes = unpack(packed, wanted.gzip);
   } catch {
-    return { ok: false, code: 'unpack-failed', error: 'mihomo archive could not be unpacked' };
+    return { ok: false, code: 'unpack-failed', error: 'Clash core archive could not be unpacked' };
   }
   if (bytes.length === 0) return { ok: false, code: 'unpack-failed', error: 'mihomo archive was empty' };
   const dest = opts.destPath ?? defaultMihomoBinaryPath(platform);

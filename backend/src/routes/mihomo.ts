@@ -193,9 +193,37 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     }
   });
 
-  app.post('/api/admin/proxy/mihomo/start', async () => opBody(await startMihomoSidecar()));
-  app.post('/api/admin/proxy/mihomo/stop', async () => opBody(await stopMihomoSidecar()));
-  app.post('/api/admin/proxy/mihomo/restart', async () => opBody(await restartMihomoSidecar()));
+  // Start/stop persist the INTENT, not just this one process operation. The
+  // post-save reconcile reads `autoStart`, so without this write a core started
+  // by hand would be killed by the next unrelated config save, and a core
+  // stopped by hand would be resurrected by it.
+  app.post('/api/admin/proxy/mihomo/start', async () => {
+    const marked = persistProxy({ mihomo: { autoStart: true } });
+    if (!marked.success) {
+      return { status: 'error' as const, ok: false, error: marked.error ?? 'save failed' };
+    }
+    const result = await startMihomoSidecar();
+    // A failed start must not leave a "should be running" flag behind, or every
+    // later save would retry a missing/broken binary.
+    if (!result.ok) persistProxy({ mihomo: { autoStart: false } });
+    return opBody(result);
+  });
+  app.post('/api/admin/proxy/mihomo/stop', async () => {
+    const result = await stopMihomoSidecar();
+    // Only persist after the process is actually down: a failed stop that
+    // marked the core as not-wanted would silently disarm auto-start.
+    if (result.ok) persistProxy({ mihomo: { autoStart: false } });
+    return opBody(result);
+  });
+  app.post('/api/admin/proxy/mihomo/restart', async () => {
+    const marked = persistProxy({ mihomo: { autoStart: true } });
+    if (!marked.success) {
+      return { status: 'error' as const, ok: false, error: marked.error ?? 'save failed' };
+    }
+    const result = await restartMihomoSidecar();
+    if (!result.ok) persistProxy({ mihomo: { autoStart: false } });
+    return opBody(result);
+  });
 
   // Streaming install: a release binary is tens of MB, so the console needs a
   // percentage instead of a button that says "downloading…" for a minute.
@@ -247,11 +275,11 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
   // controller-backed action answers with.
   app.get('/api/admin/proxy/mihomo/rules', async (_req, reply) => {
     const client = clientOrNull(currentProxy());
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     try {
       return { status: 'ok', rules: await client.rules() };
     } catch {
-      return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+      return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     }
   });
 
@@ -405,7 +433,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
       return reply.status(404).send({ status: 'error', message: 'subscription not found' });
     }
     const client = clientOrNull(proxy);
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     try {
       await client.refreshProvider(id);
       return { status: 'ok', refreshed: [id] };
@@ -418,7 +446,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     const proxy = currentProxy();
     const ids = (proxy.mihomo?.subscriptions ?? []).filter((item) => item.enabled !== false).map((item) => item.id);
     const client = clientOrNull(proxy);
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     const refreshed: string[] = [];
     const failed: string[] = [];
     for (const id of ids) {
@@ -737,7 +765,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     const proxy = currentProxy();
     const group = typeof body.group === 'string' && body.group.trim() ? body.group.trim() : (proxy.mihomo?.selectedGroup || DEFAULT_MIHOMO_GROUP);
     const client = clientOrNull(proxy);
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     try {
       await client.select(group, name);
     } catch (err) {
@@ -756,7 +784,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     if (!name) return reply.status(400).send({ status: 'error', message: 'name is required' });
     const proxy = currentProxy();
     const client = clientOrNull(proxy);
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     const timeoutMs = requestedDelayTimeout(body.timeoutMs);
     // The console may send the URL currently typed in the field, so a changed
     // but unsaved test URL is exercised immediately. Invalid input is a 400 —
@@ -784,7 +812,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
   app.post('/api/admin/proxy/mihomo/test-url', async (req, reply) => {
     const proxy = currentProxy();
     const client = clientOrNull(proxy);
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'mihomo core is not running' });
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     const body = (req.body ?? {}) as { url?: unknown; group?: unknown; timeoutMs?: unknown };
     const requested = parseRequestTestUrl(body.url);
     if (requested === null) return reply.status(400).send({ status: 'error', message: 'invalid test URL' });
@@ -825,11 +853,11 @@ function controllerFailure(err: unknown): { status: 'error'; code: string; messa
     // the code the console localizes (and routes to the core card), never with
     // the transport string. A failed delay test keeps its own codes.
     if (err.code === 'unreachable') {
-      return { status: 'error', code: 'not-running', message: 'mihomo core is not running' };
+      return { status: 'error', code: 'not-running', message: 'Clash core is not running' };
     }
     return { status: 'error', code: err.code, message: err.message };
   }
-  return { status: 'error', code: 'controller-error', message: 'mihomo controller request failed' };
+  return { status: 'error', code: 'controller-error', message: 'Clash controller request failed' };
 }
 
 /** Delay-test budget from the console: absent = the shared default, and the

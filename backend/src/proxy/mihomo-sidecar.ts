@@ -4,12 +4,17 @@
  * The gateway owns the process it spawns: pid file + an `owner` marker
  * (`spawned` vs `adopted`) live under `<env>/mihomo/`. A controller that is
  * already healthy is adopted and left running. Explicit stop kills a local
- * listener either way. Switching back to manual mode only stops a process
- * this gateway spawned — an operator's own mihomo is not touched.
+ * listener either way. When the run policy turns the core off, only a process
+ * this gateway spawned is stopped — an operator's own mihomo is not touched.
  *
- * Auto-start is `proxy.enabled && proxy.mode === 'mihomo'`. A missing binary
- * is reported (`binary-missing`); the download helper is opt-in and never
- * runs at boot. Subscription URLs and the controller secret are never logged.
+ * Run policy is `proxy.mihomo.autoStart`, NOT the outbound mode. The core is an
+ * independent capability: it can serve a manual-URL outbound setup (pre-warm
+ * subscriptions, probe nodes, offer its mixed port to other clients) and it can
+ * be stopped while `mode: mihomo` stays configured. When `autoStart` is absent
+ * the pre-split rule applies (`proxy.enabled && proxy.mode === 'mihomo'`), so
+ * existing configs behave exactly as before. A missing binary is reported
+ * (`binary-missing`); the download helper is opt-in and never runs at boot.
+ * Subscription URLs and the controller secret are never logged.
  */
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
@@ -123,8 +128,19 @@ function proxyOf(deps: MihomoSidecarDeps): ProxyConfig {
   return deps.config ?? loadConfig().proxy ?? {};
 }
 
+/**
+ * Should the core be running? Two axes are involved and they are NOT the same
+ * question: `proxy.mode` says where outbound traffic goes, `autoStart` says
+ * whether this process should exist. Only the latter is consulted here, so the
+ * core can run while outbound goes direct (and can be stopped while the mode
+ * still says mihomo — the console shows that mismatch rather than "fixing" it
+ * by restarting a process the operator just stopped).
+ *
+ * An absent `autoStart` falls back to the historical rule, which keeps every
+ * existing config byte-identical in behaviour.
+ */
 function shouldRun(proxy: ProxyConfig): boolean {
-  return proxy.enabled === true && proxy.mode === 'mihomo';
+  return proxy.mihomo?.autoStart ?? (proxy.enabled === true && proxy.mode === 'mihomo');
 }
 
 function portsOf(proxy: ProxyConfig): { mixed: number; controller: number; group: string; secret: string } {
@@ -256,7 +272,7 @@ function ensureSecret(proxy: ProxyConfig, deps: MihomoSidecarDeps): string {
     (deps.persistSecret ?? persistMihomoSecret)(secret);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'persist failed';
-    console.warn(`[Mihomo] could not persist controller secret (${message})`);
+    console.warn(`[Clash] could not persist controller secret (${message})`);
   }
   return secret;
 }
@@ -280,7 +296,7 @@ async function trySelect(client: MihomoClient, group: string, node: string): Pro
     const snapshot = await client.proxies();
     if (!snapshot.proxies[group]?.all?.includes(node)) return false;
     await client.select(group, node);
-    console.log(`[Mihomo] selected "${node}" in group "${group}"`);
+    console.log(`[Clash] selected "${node}" in group "${group}"`);
     return true;
   } catch {
     return false;
@@ -314,7 +330,7 @@ async function applySelection(proxy: ProxyConfig, port: number, secret: string, 
       await new Promise((resolve) => setTimeout(resolve, SELECTION_POLL_MS));
       if (await trySelect(client, group, node)) return;
     }
-    console.warn(`[Mihomo] remembered node "${node}" is not in group "${group}"; leaving the core default`);
+    console.warn(`[Clash] remembered node "${node}" is not in group "${group}"; leaving the core default`);
   })();
 }
 
@@ -364,10 +380,12 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
   if (!shouldRun(proxy)) {
     // Diagnostic only: the console renders this code ('disabled') through its own
     // i18n table, so this English text is a log/debug fallback, never the toast.
-    return fail('disabled', 'proxy is off or not in mihomo mode — enable proxy and set mode to mihomo');
+    // Reaching it means `autoStart` is false — the start route flips that flag
+    // before calling in, so a direct caller is the only way here.
+    return fail('disabled', 'the Clash core is marked stopped (proxy.mihomo.autoStart is false)');
   }
   const { mixed, controller } = portsOf(proxy);
-  if (mixed === controller) return fail('port-collision', 'mihomo mixedPort and controllerPort must differ');
+  if (mixed === controller) return fail('port-collision', 'Clash mixedPort and controllerPort must differ');
   const secret = ensureSecret(proxy, deps);
   const dir = mihomoWorkDir(deps);
   let written: { yamlPath: string; summary: string; changed: boolean };
@@ -375,7 +393,7 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     written = writeGeneratedConfig(dir, proxy, secret);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'config write failed';
-    return fail('spawn-failed', `could not write mihomo config (${message})`);
+    return fail('spawn-failed', `could not write the Clash config (${message})`);
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const health = await probe(fetchImpl, controller, secret);
@@ -385,7 +403,7 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
         await clientFor(controller, secret, fetchImpl).reloadConfig(written.yamlPath);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'reload failed';
-        return fail('reload-failed', `mihomo config reload failed (${message})`);
+        return fail('reload-failed', `Clash config reload failed (${message})`);
       }
     }
     const pidFile = path.join(dir, 'mihomo.pid');
@@ -393,7 +411,7 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     if (!ownerOf(dir)) writeOwner(dir, 'adopted');
     await applySelection(proxy, controller, secret, fetchImpl);
     remember(null, null);
-    console.log(`[Mihomo] ${written.changed ? 'reloaded' : 'adopted'} ${written.summary}`);
+    console.log(`[Clash] ${written.changed ? 'reloaded' : 'adopted'} ${written.summary}`);
     return {
       ok: true,
       action: written.changed ? 'reload' : 'adopt',
@@ -406,7 +424,7 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
   }
 
   const resolved = (deps.binaryResolver ?? resolveMihomoBinary)(proxy.mihomo?.binaryPath);
-  if (!resolved.path) return fail('binary-missing', 'mihomo binary not found — install it or set proxy.mihomo.binaryPath');
+  if (!resolved.path) return fail('binary-missing', 'Clash core binary not found — install it or set proxy.mihomo.binaryPath');
   const spawnImpl = deps.spawnImpl ?? defaultSpawn;
   const spawnState = { error: null as Error | null, exitCode: null as number | null };
   let child: MihomoChildLike;
@@ -420,7 +438,7 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'spawn failed';
-    return fail('spawn-failed', `failed to spawn mihomo (${message})`);
+    return fail('spawn-failed', `failed to spawn the Clash core (${message})`);
   }
   child.on?.('error', (err: Error) => {
     spawnState.error = err;
@@ -440,20 +458,20 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
   for (;;) {
     if (spawnState.error) {
       const code = (spawnState.error as NodeJS.ErrnoException).code;
-      return fail('spawn-exited', `mihomo exited immediately (${spawnState.error.message}${code ? ` [${code}]` : ''})`);
+      return fail('spawn-exited', `the Clash core exited immediately (${spawnState.error.message}${code ? ` [${code}]` : ''})`);
     }
     if (spawnState.exitCode !== null) {
-      return fail('spawn-exited', `mihomo exited immediately (code ${spawnState.exitCode})`);
+      return fail('spawn-exited', `the Clash core exited immediately (code ${spawnState.exitCode})`);
     }
     const again = await probe(fetchImpl, controller, secret);
     if (again.ok) {
       await applySelection(proxy, controller, secret, fetchImpl);
       remember(null, null);
-      console.log(`[Mihomo] started ${written.summary}${child.pid ? ` pid=${child.pid}` : ''}`);
+      console.log(`[Clash] started ${written.summary}${child.pid ? ` pid=${child.pid}` : ''}`);
       return { ok: true, action: 'start', reused: false, pid: child.pid ?? null, version: again.version, error: null, code: null };
     }
     if (Date.now() >= deadline) {
-      return fail('not-ready', `mihomo did not become ready within ${Math.round(readyTimeoutMs / 1000)}s`);
+      return fail('not-ready', `the Clash core did not become ready within ${Math.round(readyTimeoutMs / 1000)}s`);
     }
     await new Promise((r) => setTimeout(r, pollIntervalMs));
   }
@@ -477,7 +495,7 @@ async function stopUnlocked(deps: MihomoSidecarDeps, onlySpawned: boolean): Prom
     const health = await probe(fetchImpl, controller, secret);
     if (health.ok) {
       pid = (deps.pidByPortImpl ?? defaultPidByPort)(controller);
-      if (pid == null) return fail('pid-unknown', 'mihomo is listening but its pid could not be identified');
+      if (pid == null) return fail('pid-unknown', 'the Clash core is listening but its pid could not be identified');
     }
   }
   if (pid == null) {
@@ -486,11 +504,11 @@ async function stopUnlocked(deps: MihomoSidecarDeps, onlySpawned: boolean): Prom
     remember(null, null);
     return { ok: true, action: 'noop', reused: false, pid: null, version: null, error: null, code: null };
   }
-  if (!kill(pid)) return fail('kill-failed', `failed to terminate mihomo process ${pid}`);
+  if (!kill(pid)) return fail('kill-failed', `failed to terminate the Clash core process ${pid}`);
   try { fs.unlinkSync(pidFile); } catch { /* already gone */ }
   try { fs.unlinkSync(path.join(dir, 'owner')); } catch { /* already gone */ }
   remember(null, null);
-  console.log(`[Mihomo] stopped pid=${pid}`);
+  console.log(`[Clash] stopped pid=${pid}`);
   return { ok: true, action: 'stop', reused: false, pid, version: null, error: null, code: null };
 }
 
@@ -511,7 +529,11 @@ export function getMihomoStatus(extra?: MihomoSidecarDeps): Promise<MihomoStatus
     adopted: owner === 'adopted' && (health.ok || alive),
     pid: alive ? recorded : null,
     mode: proxy.mode === 'mihomo' ? 'mihomo' : 'manual',
+    /** The outbound master switch — what `proxy.enabled` means, unchanged. */
     enabled: proxy.enabled === true,
+    /** Whether the core is SUPPOSED to be running (same rule as `shouldRun`).
+     *  Distinct from `running`, which is what the controller actually answers. */
+    autoStart: proxy.mihomo?.autoStart ?? (proxy.enabled === true && proxy.mode === 'mihomo'),
     mixedPort: mixed,
     controllerPort: controller,
     secretConfigured: secret.length > 0,

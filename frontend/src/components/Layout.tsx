@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowLeftRight,
   BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, ClipboardList, CloudDownload, Cpu,
-  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
+  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
   ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
@@ -56,14 +56,23 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
     { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
     { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone },
-    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
   ] },
   { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: Server, items: [
     { to: '/providers', labelKey: 'nav.providers', icon: Plug },
     { to: '/models', labelKey: 'nav.models', icon: Cpu },
     { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
-    { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+    { to: '/proxy-patterns', labelKey: 'nav.proxyPatterns', icon: ListFilter },
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
+  ] },
+  /** Proxy capability home (ADR-0018/0022 axis): the inbound forward-proxy
+   *  rule table and the outbound endpoint live together, away from the model
+   *  vocabulary — the model-side reference (include/exclude globs) stays in the
+   *  Upstream group on the Proxy Patterns page. Inbound leads: a request enters
+   *  here before any egress decision is made. */
+  { id: 'grp-proxy', headingKey: 'nav.grpProxy', shortKey: 'nav.shortProxy', icon: Globe, items: [
+    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
+    { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+    { to: '/proxy-clash', labelKey: 'nav.proxyMihomo', icon: Cpu },
   ] },
   { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
     { to: '/combos', labelKey: 'nav.combos', icon: Layers },
@@ -113,10 +122,12 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/harness/plugins': { groupKey: 'nav.grpHarness', titleKey: 'nav.plugins' },
   '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
-  '/proxy-upstream': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
+  '/proxy-upstream': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxy' },
+  '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
+  '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
-  '/proxy-access': { groupKey: 'nav.grpAccess', titleKey: 'nav.proxyAccess' },
+  '/proxy-access': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyAccess' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
   '/breaker-rules': { groupKey: 'nav.grpSafety', titleKey: 'nav.breakerRules' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
@@ -400,7 +411,7 @@ export const Layout: React.FC = () => {
       {mobileOpen && <button className="sidebar-scrim" type="button" aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
       <aside className={`app-sidebar is-${navStyle}${railCollapsed ? ' is-compact' : ''}${railLabels ? ' has-rail-labels' : ''}${denseRows ? ' is-dense' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
         {/* First level: one glyph per group. The rail is the stable anchor —
-            its eight buttons never move, so muscle memory survives whatever
+            its group buttons never move, so muscle memory survives whatever
             the panel is showing. Only the rail style has one. */}
         {navStyle === 'rail' && <div className="app-rail">
           <NavLink to="/" className="brand-mark-link" aria-label="OmniCellRouter">

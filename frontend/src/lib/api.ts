@@ -1690,7 +1690,11 @@ export interface MihomoStatus {
   adopted: boolean;
   pid: number | null;
   mode: 'manual' | 'mihomo';
+  /** The outbound master switch (`proxy.enabled`) — not a core-run signal. */
   enabled: boolean;
+  /** Whether the core is SUPPOSED to be running. Independent of `mode`: a core
+   *  can run while outbound goes direct, and be stopped while mode says mihomo. */
+  autoStart: boolean;
   mixedPort: number;
   controllerPort: number;
   secretConfigured: boolean;

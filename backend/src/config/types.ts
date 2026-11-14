@@ -461,6 +461,22 @@ export interface MihomoConfig {
    * `mode: manual` wins (backward compatible).
    */
   enabled?: boolean;
+  /**
+   * Whether the sidecar should be RUNNING — deliberately orthogonal to
+   * `proxy.mode`, which only says whether outbound traffic goes through it.
+   * A core can be kept warm (subscriptions refreshing, nodes probed, PAC
+   * served) while outbound uses a manual URL, and the manual URL stays
+   * configured while the core is stopped.
+   *
+   * Tri-state on purpose:
+   * - `true`  → run it, regardless of mode
+   * - `false` → leave it stopped even in mihomo mode (the operator stopped it
+   *             by hand; outbound then fails loudly instead of silently
+   *             restarting the process behind their back)
+   * - absent  → fall back to `proxy.mode === 'mihomo'`, which is exactly the
+   *             pre-split behaviour, so existing configs need no migration
+   */
+  autoStart?: boolean;
   /** Optional absolute path to a mihomo binary. Empty = `<ocrHome>/bin/mihomo`, then PATH. */
   binaryPath?: string;
   /** HTTP+SOCKS mixed port bound to 127.0.0.1. Default 7890. */

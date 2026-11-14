@@ -235,12 +235,18 @@ export interface TranslationDict {
     combos: string;
     modelProfiles: string;
     proxy: string;
+    /** Nav label: the Upstream group's model-scoped proxy pattern page. */
+    proxyPatterns: string;
+    /** Nav label: the built-in Mihomo/Clash core page under Proxy Management. */
+    proxyMihomo: string;
     tokenSaver: string;
     catalogSources: string;
     grpOverview: string;
     grpTraffic: string;
     grpUpstream: string;
     grpAccess: string;
+    /** Heading of the Proxy Management first-level group (capability home). */
+    grpProxy: string;
     grpSafety: string;
     grpObservability: string;
     grpHarness: string;
@@ -251,6 +257,8 @@ export interface TranslationDict {
     shortOverview: string;
     shortAccess: string;
     shortUpstream: string;
+    /** Rail caption (<= 76px) for the Proxy Management group. */
+    shortProxy: string;
     shortTraffic: string;
     shortSafety: string;
     shortObservability: string;
@@ -2526,6 +2534,16 @@ hiddenBadge: string;
     failed: string;
     locked: string;
   };
+  /** The model-scoped proxy pattern page (Upstream group): proxyPatterns.* */
+  proxyPatterns: {
+    title: string;
+    hint: string;
+    endpoint: string;
+    endpointHint: string;
+    endpointManage: string;
+    disabled: string;
+    saveHint: string;
+  };
   proxy: {
     title: string;
     saveBtn: string;
@@ -2540,6 +2558,13 @@ hiddenBadge: string;
     excludes: string;
     addPattern: string;
     pattern: string;
+    /** Index line at the foot of the outbound page: the sibling pages that own the
+     *  rest of this capability. Link labels are taken from `nav.*`, never re-worded
+     *  here, so the index cannot drift from the sidebar. */
+    relatedPages: string;
+    /** Core card: run policy, orthogonal to the outbound mode. */
+    mihomoAutoStart: string;
+    mihomoAutoStartHint: string;
     tabGeneral: string;
     tabSettings: string;
     tabMihomo: string;

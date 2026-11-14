@@ -1,4 +1,4 @@
-# ADR-0022: Outbound Proxy — Manual URL or a Managed Mihomo Core
+# ADR-0022: Outbound Proxy — Manual URL or a Managed Clash Core
 
 Date: 2026-11-13
 Status: Accepted
@@ -34,8 +34,20 @@ are never sent back through the mixed port. `outboundProxyUrl()` (the
 forward-proxy egress, ADR-0018) uses the same endpoint and still does not
 consult the include/exclude lists.
 
-`proxy.enabled` remains the master switch. The sidecar runs only when
-`enabled` is true and `mode` is `mihomo`.
+`proxy.enabled` remains the master switch — for OUTBOUND traffic. Whether the
+sidecar runs is a separate axis: `proxy.mihomo.autoStart` decides whether the
+process should exist. The core can therefore keep running while outbound goes
+direct (subscriptions refresh, nodes stay probed, its mixed port stays usable by
+other clients), and it can be stopped while `mode: mihomo` stays configured.
+
+> **Amendment — run policy split.** Earlier revisions ran the sidecar only when
+> `enabled` was true and `mode` was `mihomo`. That conflated two questions —
+> "where does outbound traffic go" and "should this process exist" — and left the
+> core unusable as a standalone capability: a manual-URL setup could not keep it
+> warm, and any config save killed a hand-started one. `autoStart` now carries the
+> intent (`true` run, `false` stopped by hand, absent = follow `mode`), the
+> console's Start/Stop buttons persist it, and an absent value reproduces the
+> old rule exactly, so existing configs need no migration.
 
 ### 2. The sidecar is generated config plus a loopback controller
 
@@ -46,7 +58,9 @@ default — see `groupType`), `MATCH` to that group). It adopts a controller
 that is already healthy, otherwise it
 spawns `mihomo -d <dir> -f <config>`. A pid file and an `owner` marker
 (`spawned` / `adopted`) record who started it. Explicit stop kills a local
-listener. Leaving mihomo mode stops only a process this gateway spawned.
+listener. Switching away from mihomo mode no longer stops anything — the run
+policy (`autoStart`) owns that; when it does stop, it stops only a process this
+gateway spawned.
 
 Binary lookup is `proxy.mihomo.binaryPath`, then `<ocrHome>/bin/mihomo`,
 then `PATH`. Download from the MetaCubeX/mihomo GitHub releases is an
@@ -106,7 +120,7 @@ set — that shape predates `mode` and still asks for the core.
 - Forward-proxy rows with `egress: proxy` follow the same endpoint, so a
   mihomo mode also covers transit traffic without a second URL.
 - The page lands on the scope that matches the configured `proxy.mode`:
-  `Proxy settings` for `manual`, `Mihomo (Clash)` for `mihomo`. A manual
+  `Proxy settings` for `manual`, `Clash core` for `mihomo`. A manual
   install therefore never opens on the core tab reporting a core it was never
   asked to run.
 - The admin surface is `/api/admin/proxy/mihomo/*` and the Proxy page's
@@ -130,7 +144,7 @@ set — that shape predates `mode` and still asks for the core.
   process); the card says so and the operator stops the core to change them.
   The proxy page has TWO nav levels, never two tab strips in a row: the page's
   own tabs are `Proxy settings` (enable switch, manual URL, include/exclude lists)
-  and `Mihomo (Clash)`, and the five Mihomo sections (general, subscriptions,
+  and `Clash core`, and the five Clash sections (general, subscriptions,
   nodes, rules, connectivity) are a vertical menu on the left of that second
   scope — a section switch is navigation, so it reads as a menu, not as a
   second tab row stacked under the first. The rail hugs its five rows (it
@@ -146,11 +160,13 @@ set — that shape predates `mode` and still asks for the core.
   reason as a tooltip), and the binary download is disabled while the core runs —
   a live process must not have its binary replaced — and relabels to
   "Re-download" once the binary already exists.
-  The console names the sidecar **Mihomo (Clash)** in its
-  labels: Mihomo is the successor kernel operators still know by its former
-  name Clash.Meta, and the console surfaces the name they will recognize (the
-  mode option reads "Built-in Mihomo (Clash)"). ADR prose keeps the
-  architectural noun "mihomo core".
+  Every label the operator can read says **Clash**, never "Mihomo": users know
+  the product by the name Clash, while "mihomo" is only the kernel's release
+  name. The kernel name survives in exactly three places — the config key
+  `proxy.mihomo`, the `mode: mihomo` literal, and the binary / cache paths
+  (`<ocrHome>/bin/mihomo`, `<env>/mihomo/`) — because those are facts an
+  operator has to type or find on disk, not product copy. ADR prose keeps the
+  architectural noun "mihomo core" wherever it means the kernel process itself.
   The nodes listing answers per group (`GET .../proxies?group=<name>`): every
   row's type and delay is resolved from the live controller snapshot, and the
   console re-fetches when the operator switches groups instead of remapping a
@@ -419,3 +435,14 @@ set — that shape predates `mode` and still asks for the core.
   inside their own bounded box while the save bar stays pinned to the card bottom,
   and the dialog body is never itself scrollable, because nested scroll areas hide
   rows and hand the wheel to the wrong container.
+
+> **Amendment — the UI calls it Clash, everywhere.** An earlier revision
+> labelled the surface "Mihomo (Clash)" so both names were visible. That was
+> wrong: "mihomo" is a release artefact of the kernel, not a word an operator
+> recognises, and a two-name label made the console look like it had two
+> products. All operator-facing copy — the nav item, page headings, mode
+> option, status card, every error toast and the generated `config.json`
+> comments — now says Clash. Nothing else moved: the config key stays
+> `proxy.mihomo`, the `mode: mihomo` literal stays, the admin routes stay
+> `/api/admin/proxy/mihomo/*`, and the binary keeps its upstream name so
+> download, lookup and PATH resolution are unchanged.

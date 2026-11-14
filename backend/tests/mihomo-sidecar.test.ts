@@ -175,7 +175,9 @@ describe('mihomo sidecar', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('refuses to start when mode is manual, and reports a missing binary', async () => {
+  test('refuses to start under the legacy rule (no autoStart, mode manual) and reports a missing binary', async () => {
+    // `autoStart` absent means "follow the mode", so this stays a refusal —
+    // the pre-split behaviour existing configs rely on.
     const manual = await startMihomoSidecar({
       config: { enabled: true, mode: 'manual', url: 'http://127.0.0.1:7890' },
       workDir: tempDir(),
@@ -196,6 +198,38 @@ describe('mihomo sidecar', () => {
     expect(missing.ok).toBe(false);
     expect(missing.code).toBe('binary-missing');
     expect(missing.error || '').not.toContain(SECRET);
+  });
+
+  test('runs the core on its own while outbound stays manual (autoStart overrides the mode)', async () => {
+    // The whole point of the split: outbound is direct, the core is still ours.
+    const proxy = baseProxy();
+    const result = await startMihomoSidecar({
+      config: {
+        ...proxy,
+        enabled: false,
+        mode: 'manual',
+        url: 'http://127.0.0.1:7890',
+        mihomo: { ...(proxy.mihomo ?? {}), autoStart: true },
+      },
+      workDir: tempDir(),
+      fetchImpl: (() => Promise.resolve(new Response(JSON.stringify({ version: 'v9' }), { status: 200 }))) as typeof fetch,
+      persistSecret: () => {},
+      binaryResolver: () => ({ path: null, source: null }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.reused).toBe(true);
+  });
+
+  test('honours an explicit autoStart: false even in mihomo mode', async () => {
+    // Stopped by hand must not be "fixed" by an unrelated config save.
+    const proxy = baseProxy();
+    const result = await startMihomoSidecar({
+      config: { ...proxy, mihomo: { ...(proxy.mihomo ?? {}), autoStart: false } },
+      workDir: tempDir(),
+      persistSecret: () => {},
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('disabled');
   });
 
   test('stop kills the recorded pid', async () => {
