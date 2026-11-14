@@ -7,6 +7,7 @@ import { renameWithRetry } from '../utils/atomic-write.js';
 import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 import { setCaptureSecretRedaction } from '../observability/http-exchange.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
+import { harnessProfileOf, type HarnessProfile } from '../utils/harness-profiles.js';
 import { NO_TURN, type TurnDecision, type TurnIdentity } from './turn-boundary.js';
 import { migrateArchiveRoot } from './migrate/index.js';
 
@@ -83,6 +84,21 @@ export interface RawWireCapture {
   status: number;
   responseHeaders: Record<string, string>;
   responseBody: WireBody;
+}
+
+/**
+ * Header a client uses to DECLARE its human prompt (envelope layer 0) instead
+ * of relying on the gateway's inference. Display-only, same class as the
+ * session title and turn stamp — see utils/client-envelope.ts.
+ */
+const PROMPT_HINT_HEADER = 'x-ocr-prompt-hint';
+
+/** Envelope resolution inputs for one captured request body. */
+interface CapturePromptHints {
+  /** Harness vocabulary scoped to the client that sent the bytes. */
+  readonly profile?: HarnessProfile;
+  /** Self-declared human prompt; authoritative when present. */
+  readonly declaredPrompt?: string;
 }
 
 /**
@@ -769,13 +785,20 @@ export class CaptureRecorder {
 
     // A prompt-start client request gets a DISPLAY-ONLY prompt stamp. An
     // emitter that supplied one (e.g. a harness surface with a non-chat body)
-    // keeps its own text; the stamp is never a boundary signal.
+    // keeps its own text; the stamp is never a boundary signal. The harness
+    // vocabulary is scoped from THIS wire dump's UA — a Claude Code turn whose
+    // `<system-reminder>` rides beside the human text is stamped with the
+    // human text, while an identical tag from another client stays verbatim.
     const stampedPrompt =
       event.direction === 'client' &&
       event.phase === 'request' &&
       event.isPromptStart &&
       event.promptSummary === undefined
-        ? CaptureRecorder.turnPromptStamp(truncatedReq.value ?? '')
+        ? CaptureRecorder.turnPromptStamp(
+            truncatedReq.value ?? '',
+            120,
+            CaptureRecorder.hintsOfHeaders(event.wire.requestHeaders)
+          )
         : undefined;
     const full: CaptureEvent & { truncated?: boolean } = {
       ...NO_TURN,
@@ -999,14 +1022,21 @@ export class CaptureRecorder {
             if (conversationKey === undefined && typeof rec.conversationKey === 'string' && rec.conversationKey) {
               conversationKey = rec.conversationKey;
             }
-            // First client request body = the session's opening prompt.
+            // First client request body = the session's opening prompt. The
+            // harness vocabulary comes from the SAME archived record's UA, so
+            // a replayed session resolves exactly what the live turn saw.
             if (
               preview === undefined &&
               rec.direction === 'client' &&
               rec.phase === 'request' &&
               (rec.wire as RawWireCapture | undefined)?.requestBody !== undefined
             ) {
-              preview = CaptureRecorder.extractSessionPreview((rec.wire as RawWireCapture).requestBody);
+              const archivedWire = rec.wire as RawWireCapture;
+              preview = CaptureRecorder.extractSessionPreview(
+                archivedWire.requestBody,
+                120,
+                CaptureRecorder.hintsOfHeaders(archivedWire.requestHeaders)
+              );
             }
             // Inbound-protocol badge: the FIRST client request line wins.
             if (protocol === undefined && rec.direction === 'client' && rec.phase === 'request') {
@@ -2262,12 +2292,46 @@ export class CaptureRecorder {
    * text-part array), Responses API (`input`), and the truncated-string
    * form stored when a body exceeded maxBodyBytes. Fails open to undefined.
    */
-  public static extractSessionPreview(request: unknown, cap = 120): string | undefined {
+  public static extractSessionPreview(
+    request: unknown,
+    cap = 120,
+    hints: CapturePromptHints = {}
+  ): string | undefined {
+    if (hints.declaredPrompt) return CaptureRecorder.clipDisplay(hints.declaredPrompt, cap);
     // First HUMAN text, not the first user-role message: Cursor opens with a
     // `<user_info>`/`<rules>` bundle and the prompt rides the NEXT message.
-    // Same strict-then-permissive rule as the console session title.
-    const text = CaptureRecorder.firstHumanUserText(request);
+    // Same strict-then-permissive rule as the console session title, and the
+    // same harness profile (the reader resolves it from the archived UA).
+    const text = CaptureRecorder.firstHumanUserText(request, 0, hints.profile);
     if (!text) return undefined;
+    return CaptureRecorder.clipDisplay(text, cap);
+  }
+
+  /**
+   * Envelope resolution inputs for a captured request, resolved from the
+   * ARCHIVED headers — the read plane has no live request, so a replayed
+   * session must resolve exactly the vocabulary (and the self-declared prompt)
+   * its live turn saw. Cased lookup because archives preserve the client's own
+   * header spelling.
+   */
+  private static hintsOfHeaders(headers: Record<string, string> | undefined): CapturePromptHints {
+    if (!headers) return {};
+    let userAgent: string | undefined;
+    let declared: string | undefined;
+    for (const [key, value] of Object.entries(headers)) {
+      const name = key.toLowerCase();
+      if (name === 'user-agent') userAgent = value;
+      else if (name === PROMPT_HINT_HEADER) declared = value;
+    }
+    const flatDeclared = declared?.replace(/\s+/g, ' ').trim();
+    return {
+      profile: harnessProfileOf(userAgent),
+      ...(flatDeclared ? { declaredPrompt: flatDeclared } : {}),
+    };
+  }
+
+  /** Cap a one-line display text with an ellipsis. */
+  private static clipDisplay(text: string, cap: number): string | undefined {
     const flat = text.replace(/\s+/g, ' ').trim();
     if (!flat) return undefined;
     return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
@@ -2284,29 +2348,54 @@ export class CaptureRecorder {
    * previous turn's prompt. `turnPromptStamp` adds the positions the read
    * plane needs to tell those apart.
    */
-  public static extractTurnPrompt(request: unknown, cap = 120): string | undefined {
-    return CaptureRecorder.summarizePromptText(CaptureRecorder.lastUserSlot(request)?.text, cap);
+  public static extractTurnPrompt(
+    request: unknown,
+    cap = 120,
+    hints: CapturePromptHints = {}
+  ): string | undefined {
+    return CaptureRecorder.summarizePromptText(
+      CaptureRecorder.lastUserSlot(request)?.text,
+      cap,
+      hints
+    );
   }
 
   /**
    * Display-only last user message of a client-request body. Written ONLY on
    * the request that opened the turn (`isPromptStart`); the turn boundary is
    * decided structurally at the admission gate, never from this text.
+   *
+   * `hints` scopes the harness vocabulary to the client that sent the bytes
+   * (the writer reads it off the live wire's UA); omitted, only the global
+   * vocabulary plus the structural rules apply.
    */
-  public static turnPromptStamp(request: unknown, cap = 120): string | undefined {
-    const slot = CaptureRecorder.lastUserSlot(request);
-    return CaptureRecorder.summarizePromptText(slot?.text, cap);
+  public static turnPromptStamp(
+    request: unknown,
+    cap = 120,
+    hints: CapturePromptHints = {}
+  ): string | undefined {
+    return CaptureRecorder.summarizePromptText(
+      CaptureRecorder.lastUserSlot(request)?.text,
+      cap,
+      hints
+    );
   }
 
   /** Display form of a prompt: newlines flattened, empty bundle text dropped
    *  (a metadata-only turn keeps NO prompt — the timeline renders the
    *  empty-prompt glyph instead of quoting the client's context bundle as
-   *  this turn's question), capped with an ellipsis. */
-  private static summarizePromptText(text: string | undefined, cap: number): string | undefined {
+   *  this turn's question), capped with an ellipsis. A declared prompt
+   *  (envelope layer 0) is adopted verbatim. */
+  private static summarizePromptText(
+    text: string | undefined,
+    cap: number,
+    hints: CapturePromptHints = {}
+  ): string | undefined {
+    if (hints.declaredPrompt) return CaptureRecorder.clipDisplay(hints.declaredPrompt, cap);
     if (!text) return undefined;
-    const flat = displayPromptText(text);
+    const flat = displayPromptText(text, { profile: hints.profile });
     if (!flat) return undefined;
-    return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
+    return CaptureRecorder.clipDisplay(flat, cap);
   }
 
   /**
@@ -2399,7 +2488,11 @@ export class CaptureRecorder {
    * strict-then-permissive rule as the console session title
    * (`firstDisplayText`), so every surface names a conversation identically.
    */
-  private static firstHumanUserText(request: unknown, depth = 0): string | undefined {
+  private static firstHumanUserText(
+    request: unknown,
+    depth = 0,
+    profile?: HarnessProfile
+  ): string | undefined {
     if (request === null || request === undefined || depth > 2) return undefined;
     if (typeof request === 'string') {
       // Truncated bodies are stored as `JSON.slice(0, cap) + '...[TRUNCATED]'`
@@ -2410,20 +2503,28 @@ export class CaptureRecorder {
         ? request.slice(0, -TRUNCATION_SUFFIX.length)
         : request;
       try {
-        return CaptureRecorder.firstHumanUserText(JSON.parse(trimmed), depth + 1);
+        return CaptureRecorder.firstHumanUserText(JSON.parse(trimmed), depth + 1, profile);
       } catch {
         const repaired = CaptureRecorder.repairTruncatedJson(trimmed);
-        if (repaired !== null) return CaptureRecorder.firstHumanUserText(repaired, depth + 1);
+        if (repaired !== null) {
+          return CaptureRecorder.firstHumanUserText(repaired, depth + 1, profile);
+        }
         return trimmed.slice(0, 300);
       }
     }
     if (typeof request !== 'object') return undefined;
     const body = request as Record<string, unknown>;
     if (Array.isArray(body.messages)) {
-      return CaptureRecorder.firstHumanText(body.messages) ?? CaptureRecorder.stateText(body.state);
+      return (
+        CaptureRecorder.firstHumanText(body.messages, profile) ??
+        CaptureRecorder.stateText(body.state)
+      );
     }
     if (Array.isArray(body.input)) {
-      return CaptureRecorder.firstHumanText(body.input) ?? CaptureRecorder.stateText(body.state);
+      return (
+        CaptureRecorder.firstHumanText(body.input, profile) ??
+        CaptureRecorder.stateText(body.state)
+      );
     }
     if (typeof body.input === 'string') return body.input;
     // System One decision surface — evaluated content lives in `state`.
@@ -2510,14 +2611,17 @@ export class CaptureRecorder {
    * — the capture session preview's opening prompt. Walks forward and skips
    * metadata-only / image-only messages, exactly like the console title.
    */
-  private static firstHumanText(messages: unknown[]): string | undefined {
+  private static firstHumanText(
+    messages: unknown[],
+    profile?: HarnessProfile
+  ): string | undefined {
     const texts: string[] = [];
     for (const msg of messages) {
       if (!msg || typeof msg !== 'object' || !('role' in msg) || msg.role !== 'user') continue;
       const text = CaptureRecorder.messageText(msg);
       if (text) texts.push(text);
     }
-    return firstDisplayText(texts, 300);
+    return firstDisplayText(texts, 300, { profile });
   }
 
   /** Local-timezone YYYY-MM-DD — retention is by calendar day as users see it. */

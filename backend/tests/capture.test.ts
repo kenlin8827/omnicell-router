@@ -443,6 +443,98 @@ describe('CaptureRecorder', () => {
     }
   });
 
+  it('scopes harness vocabulary and declared prompts from the ARCHIVED headers', async () => {
+    // Both the write-time stamp and the read-time preview resolve the harness
+    // profile (and any declared prompt) from the request headers stored in the
+    // archive, so a replayed session resolves exactly what its live turn saw.
+    const dir = makeTmpDir();
+    try {
+      const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 65536 });
+
+      // The measured Claude Code opening request (capture session
+      // cc_c6a59aae): ONE message mixing `<system-reminder>` with the human
+      // prompt, then the SessionStart hook output as the LAST user message —
+      // which is what the per-turn stamp reads.
+      const opening = JSON.stringify({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '<system-reminder>git attribution boilerplate</system-reminder>' },
+              { type: 'text', text: '你是谁' },
+            ],
+          },
+          {
+            role: 'user',
+            content: 'SessionStart:clear hook success: <EXTREMELY_IMPORTANT>runbook</EXTREMELY_IMPORTANT>',
+          },
+        ],
+      });
+      await writeRequest(rec, {
+        sessionId: 'sess_cc',
+        wire: {
+          ...WIRE,
+          requestHeaders: { 'user-agent': 'claude-cli/2.1.317 (external, cli)' },
+          requestBody: opening,
+        },
+      });
+      // Same bytes from an unprofiled client: the hook convention is PLAIN
+      // TEXT with no structural signal, so only the profile can blank it.
+      await writeRequest(rec, {
+        sessionId: 'sess_other',
+        wire: {
+          ...WIRE,
+          requestHeaders: { 'user-agent': 'my-own-client/1.0' },
+          requestBody: opening,
+        },
+      });
+      // A self-declared prompt wins outright over any inference.
+      await writeRequest(rec, {
+        sessionId: 'sess_declared',
+        wire: {
+          ...WIRE,
+          requestHeaders: { 'x-ocr-prompt-hint': '把校验逻辑改一下' },
+          requestBody: JSON.stringify({
+            messages: [
+              { role: 'user', content: '<environment_context><cwd>D:\\r</cwd></environment_context>' },
+            ],
+          }),
+        },
+      });
+
+      // Write plane: the stamped promptSummary on the client-request line.
+      const stampOf = (sessionId: string): string | undefined => {
+        const file = path.join(
+          dir,
+          CaptureRecorder.localDateDir(new Date()),
+          CaptureRecorder.sessionFileName(sessionId)
+        );
+        for (const line of fs.readFileSync(file, 'utf8').trim().split('\n')) {
+          const ev = JSON.parse(line);
+          if (ev.direction === 'client' && ev.phase === 'request') return ev.promptSummary;
+        }
+        return undefined;
+      };
+      assert.equal(stampOf('sess_cc'), undefined, 'hook output is no prompt for a profiled client');
+      assert.ok(
+        String(stampOf('sess_other')).includes('SessionStart:clear hook success'),
+        'another client sees the same text verbatim'
+      );
+      assert.equal(stampOf('sess_declared'), '把校验逻辑改一下');
+
+      // Read plane: session previews resolve from the same archived headers.
+      // First HUMAN text is structural (rule 4), so both clients agree here.
+      const previewOf = (sessionId: string): string | undefined =>
+        rec.listSessions(rec.listDates()[0].date).find(s => s.sessionId === sessionId)?.preview;
+      assert.equal(previewOf('sess_cc'), '你是谁');
+      assert.equal(previewOf('sess_other'), '你是谁');
+      assert.equal(previewOf('sess_declared'), '把校验逻辑改一下');
+      rec.stop();
+    } finally {
+      rmrf(dir);
+    }
+  });
+
   it('listSessions tallies event-stream files per REQUEST (not per event line)', async () => {
     const dir = makeTmpDir();
     try {

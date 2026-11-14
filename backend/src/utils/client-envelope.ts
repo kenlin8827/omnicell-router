@@ -10,31 +10,48 @@
  * other turns opens with a whole context bundle as a standalone user message —
  * `<user_info>` (OS, shell, workspace path, terminal stores), then
  * `<agent_transcripts>`, `<rules>`, `<agent_skills>`, `<mcp_server_catalog>`,
- * `<hooks_context>`. Other harnesses ship their own (`<environment_context>`,
- * attachment blocks, …), and the next one will invent another. Those bytes are
- * the client's prompt and the gateway MUST forward them untouched — but a
- * summary that quotes them names the session after a metadata dump and hides
- * what the operator actually asked (the observed defects: an entire console
- * title that is one `<timestamp>` block, and one that opens with
- * `<user_info> OS Version: …`).
+ * `<hooks_context>`. Claude Code instead MIXES machinery and human text in
+ * ONE message: a session-opening user message is `<system-reminder>` (git
+ * attribution boilerplate) + the `/clear` command record + the human prompt
+ * as sibling content parts (measured 2026-11-14, claude-cli/2.1.317, capture
+ * archive session cc_c6a59aae…). Other harnesses ship their own
+ * (`<environment_context>`, attachment blocks, …), and the next one will
+ * invent another. Those bytes are the client's prompt and the gateway MUST
+ * forward them untouched — but a summary that quotes them names the session
+ * after a metadata dump and hides what the operator actually asked (the
+ * observed defects: an entire console title that is one `<timestamp>` block,
+ * one that opens with `<user_info> OS Version: …`, and one that is the raw
+ * `<system-reminder>` attribution text).
  *
- * Three rules, in order — deliberately NOT one ever-growing tag list, because
+ * FOUR rules, in order — deliberately NOT one ever-growing tag list, because
  * a list can only recognize clients that already shipped:
  *  1. A transport wrapper, when present, IS the human content: the body of
  *     `<user_query>…</user_query>` is kept bare and the rest of that message is
  *     dropped. Clients that wrap their human turns this way get unknown context
  *     tags handled for free.
- *  2. Known metadata blocks (the evidence-backed list below) are dropped
- *     wherever they sit, so a mixed message keeps only its human part.
+ *  2. Known metadata blocks (the evidence-backed list below, plus any tags a
+ *     matched harness profile contributes — see utils/harness-profiles.ts) are
+ *     dropped wherever they sit, so a mixed message keeps only its human part.
  *  3. A message that is NOTHING but XML-style blocks — no text outside them —
  *     is a client context envelope: blank it, whatever its tag names are. That
  *     is the rule that makes tomorrow's `<foo_state>` bundle behave like
  *     today's `<user_info>`.
+ *  4. A message that OPENS with top-level blocks and carries its outside text
+ *     only AFTER them is the prepend-machinery shape (Claude Code's mixed
+ *     message, and any future harness that prepends context and appends the
+ *     prompt): drop the head block-run, display the later text alone. The
+ *     guard is structural, zero vocabulary — text BEFORE the first block
+ *     disables it (a human "please analyze: <data>…" keeps everything), and
+ *     a wrapper message still resolves through rule 1 first.
  *
- * The one cost of rule 3 is a human prompt that is itself pure markup (a pasted
- * `<div>…</div>`): the display form blanks it. Session titles therefore ask for
- * `keepUnknownEnvelope` on their last-resort pass, which keeps such a message
- * instead of naming the session nothing; summaries and snippets stay strict.
+ * The one cost of rules 3/4 is a human prompt that is itself pure markup (a
+ * pasted `<div>…</div>`, or markup pasted ahead of a question): the display
+ * form blanks or trims it. All consumers render ≤ 200-char identification
+ * aids, so the intent line IS the better summary there; the raw bytes stay
+ * untouched on the wire. Session titles additionally ask for
+ * `keepUnknownEnvelope` on their last-resort pass, which keeps a tag-only
+ * message instead of naming the session nothing; summaries and snippets stay
+ * strict.
  *
  * Implementation is ONE linear scan, not a set of regex block matchers: these
  * run on the request path over arbitrary client bytes, and a `[\s\S]*?<\\/tag>`
@@ -49,6 +66,7 @@
  * conversation keys, capture or the upstream request: those consume the real
  * bytes the client sent, and rewriting them would change routing identity.
  */
+import type { HarnessProfile } from './harness-profiles.js';
 
 /**
  * Known metadata-only blocks: no human content, dropped from display text.
@@ -122,6 +140,13 @@ export interface DisplayPromptOptions {
    * titling with nothing. Known metadata blocks are stripped either way.
    */
   keepUnknownEnvelope?: boolean;
+  /**
+   * Harness vocabulary scoped to the client that sent THIS message (rule 2
+   * contribution; see utils/harness-profiles.ts). `undefined` — unknown or
+   * absent User-Agent — runs the global vocabulary only, so an unprofiled
+   * client is exactly the pre-profile behavior plus the structural rules.
+   */
+  profile?: HarnessProfile;
 }
 
 /** Shared whitespace rule: `\s+` → one space, then trim. */
@@ -131,10 +156,35 @@ function flatten(text: string): string {
 
 /**
  * Display form of a prompt: metadata envelopes stripped, human wrapper
- * unwrapped, whitespace flattened. Capped at `MAX_DISPLAY_CHARS` (every caller
- * renders ≤ 200 chars); returns '' when the message is only client metadata.
+ * unwrapped, prepend-machinery head run dropped, whitespace flattened.
+ * Capped at `MAX_DISPLAY_CHARS` (every caller renders ≤ 200 chars); returns
+ * '' when the message is only client metadata.
  */
 export function displayPromptText(text: string, opts: DisplayPromptOptions = {}): string {
+  const profile = opts.profile;
+
+  // Profile-scoped machinery prefixes (Claude Code's SessionStart hook
+  // output): a message whose OWN words open with the convention is harness
+  // machinery end to end — no structural signal exists for these, so this
+  // is the only rule that can blank them. Applies in the permissive pass
+  // too: a machinery message must never be a session's last-resort title.
+  if (profile && profile.machineryPrefixes.length > 0) {
+    // Bounded prefix copy: these run on client-controlled bodies that can be
+    // megabytes, and `trimStart()` on the whole string would copy all of it
+    // just to test an anchored convention (no real hook banner has a 4 KB
+    // whitespace leader).
+    const head = text.slice(0, 4096).trimStart().slice(0, 64);
+    for (const re of profile.machineryPrefixes) {
+      if (re.test(head)) return '';
+    }
+  }
+
+  // Rule 2 vocabulary: the global evidence-backed list plus the matched
+  // harness profile's scoped tags (one combined probe, so the scanner stays
+  // a single linear pass).
+  const isMachineryTag = (name: string): boolean =>
+    isKnownMetadata(name) || (profile?.metadataTags.has(name) ?? false);
+
   const chunks: string[] = [];
   let budget = MAX_DISPLAY_CHARS;
   let outsideNonEmpty = false;
@@ -142,9 +192,29 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
   let wrapped = '';
   const stack: OpenTag[] = [];
 
+  // Rule 4 bookkeeping (see the module doc): whether a TOP-LEVEL block has
+  // opened at least once, whether outside text appeared BEFORE the first
+  // one, and the outside text seen after the blocks. The post run carries
+  // its OWN budget so the head block-run cannot starve it.
+  let topLevelBlockSeen = false;
+  let leadingOutsideText = false;
+  const postChunks: string[] = [];
+  let postBudget = MAX_DISPLAY_CHARS;
+
   const add = (chunk: string, outside: boolean): void => {
     if (!chunk) return;
-    if (outside && !outsideNonEmpty && /\S/.test(chunk)) outsideNonEmpty = true;
+    const significant = outside && /\S/.test(chunk);
+    if (significant && !outsideNonEmpty) outsideNonEmpty = true;
+    if (significant && !topLevelBlockSeen) leadingOutsideText = true;
+    if (significant && topLevelBlockSeen && postBudget > 0) {
+      // Rule 4 keeps its OWN budget on purpose: a multi-kilobyte head block
+      // (Cursor's `<agent_transcripts>` is one) must not starve the human
+      // tail that rule 4 exists to display, or the rule would fail exactly
+      // on the messages that need it most.
+      const keptPost = chunk.length <= postBudget ? chunk : chunk.slice(0, postBudget);
+      postChunks.push(keptPost);
+      postBudget -= keptPost.length;
+    }
     if (budget <= 0) return;
     const kept = chunk.length <= budget ? chunk : chunk.slice(0, budget);
     chunks.push(kept);
@@ -196,12 +266,14 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
       const open = stack[idx];
       // Mismatched inner opens are discarded WITH their container.
       stack.length = idx;
-      if (isKnownMetadata(name)) {
-        // Rule 2: dropped wherever it sits.
+      if (isMachineryTag(name)) {
+        // Rule 2: dropped wherever it sits — global vocabulary plus any tags
+        // the matched harness profile contributes.
       } else if (Object.hasOwn(WRAPPER_TAGS, name)) {
-        // Capture at any depth, but never from inside known client metadata
-        // (a hook's `<user_query>` example is not this turn's prompt).
-        if (!stack.some((t) => isKnownMetadata(t.name))) {
+        // Capture at any depth, but never from inside client metadata (a
+        // hook's `<user_query>` example is not this turn's prompt — scoped
+        // metadata such as `<system-reminder>` counts too).
+        if (!stack.some((t) => isMachineryTag(t.name))) {
           takeWrapper(text.slice(open.bodyStart, lt));
         }
       } else if (stack.length === 0) {
@@ -218,12 +290,13 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
       // Self-closing rows carry no body; they mark structure, nothing else.
       if (stack.length === 0) {
         structural = true;
-        if (!isKnownMetadata(name)) add(raw, false);
+        if (!isMachineryTag(name)) add(raw, false);
       }
       pos = end;
       continue;
     }
 
+    if (stack.length === 0) topLevelBlockSeen = true;
     stack.push({ name, start: lt, bodyStart: end });
     pos = end;
   }
@@ -234,13 +307,23 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
   if (stack.length > 0) add(text.slice(stack[0].start), true);
 
   if (wrapped) return wrapped;
+  // Rule 4 (prepend-machinery shape): the message OPENED with top-level
+  // blocks, no text sat before the first one, and real text exists after
+  // them — the head block-run is dropped and the later text is displayed
+  // alone. Unterminated markup is unaffected in practice: its verbatim tail
+  // (which includes the raw open tag) is the ONLY post text, so the return
+  // value equals the verbatim fallback below either way.
+  if (topLevelBlockSeen && !leadingOutsideText) {
+    const postText = flatten(postChunks.join(' '));
+    if (postText) return postText;
+  }
   if (opts.keepUnknownEnvelope) {
     // Last resort (naming a conversation, never a summary): a LONE plain-text
     // block is a wrapper around human text — an unrecognized client tag such
     // as WorkBuddy's `<session>` before it was listed — so unwrap it instead
     // of either blanking the title or quoting raw tags. A bundle (several
     // sibling blocks) or a body that is itself markup stays a raw shell.
-    const lone = loneWrapperBody(text);
+    const lone = loneWrapperBody(text, profile);
     if (lone) return lone;
     return flatten(chunks.join(' '));
   }
@@ -257,14 +340,22 @@ export function displayPromptText(text: string, opts: DisplayPromptOptions = {})
  * String slicing, not a backtracking regex: this runs on client-controlled
  * bodies and the module's whole point is staying linear on hostile input.
  */
-function loneWrapperBody(text: string): string | undefined {
+function loneWrapperBody(text: string, profile?: HarnessProfile): string | undefined {
   const trimmed = text.trim();
   if (!trimmed.startsWith('<') || !trimmed.endsWith('>')) return undefined;
   const openEnd = trimmed.indexOf('>');
   if (openEnd < 0) return undefined;
   const openName = trimmed.slice(1, openEnd).trim().split(/\s+/)[0].toLowerCase();
   if (!/^[a-z_][\w.:-]*$/.test(openName)) return undefined;
-  if (Object.hasOwn(KNOWN_METADATA, openName) || Object.hasOwn(WRAPPER_TAGS, openName)) return undefined;
+  if (
+    Object.hasOwn(KNOWN_METADATA, openName) ||
+    Object.hasOwn(WRAPPER_TAGS, openName) ||
+    (profile?.metadataTags.has(openName) ?? false)
+  ) {
+    // Metadata and wrappers are NOT lone-wrapper candidates: a scoped
+    // `<system-reminder>` body is machinery, never a last-resort title.
+    return undefined;
+  }
   const closeStart = trimmed.lastIndexOf('</');
   const closeEnd = trimmed.lastIndexOf('>');
   if (closeStart <= openEnd || closeEnd <= closeStart) return undefined;
@@ -284,12 +375,19 @@ function loneWrapperBody(text: string): string | undefined {
  * carries any text at all.
  *
  * The ONE derivation behind the console session title, the per-turn prompt
- * summary and the capture-session preview — callers differ only in the cap.
+ * summary and the capture-session preview — callers differ only in the cap
+ * and in whether a harness profile is threaded through (the caller that saw
+ * the request headers resolves it; readers of a stored body resolve it from
+ * the archived wire headers the same way).
  */
-export function firstDisplayText(texts: readonly string[], cap = 200): string | undefined {
+export function firstDisplayText(
+  texts: readonly string[],
+  cap = 200,
+  opts: DisplayPromptOptions = {}
+): string | undefined {
   for (const keepUnknownEnvelope of [false, true]) {
     for (const text of texts) {
-      const flat = displayPromptText(text, { keepUnknownEnvelope });
+      const flat = displayPromptText(text, { ...opts, keepUnknownEnvelope });
       if (flat) return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
     }
   }

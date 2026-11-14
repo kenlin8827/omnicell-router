@@ -75,6 +75,7 @@ import { resolveClientRequestId, mintRequestId } from '../observability/request-
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
+import { harnessProfileOf, type HarnessProfile } from '../utils/harness-profiles.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import {
@@ -198,6 +199,63 @@ function pickHeaderHost(
   if (typeof raw === 'string') return raw;
   if (Array.isArray(raw)) return raw[0];
   return undefined;
+}
+
+/**
+ * First string value of an inbound header (Fastify's surface allows arrays
+ * and both case spellings). Display path only — nothing here steers routing.
+ */
+function pickHeaderValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string
+): string | undefined {
+  if (!headers) return undefined;
+  const raw = headers[name] ?? headers[name.toLowerCase()];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s || undefined;
+}
+
+/**
+ * Self-declared human prompt (envelope layer 0): a client that KNOWS which
+ * bytes are the human turn states them here instead of asking the gateway to
+ * infer it from markup. Adopted verbatim, so a harness whose envelope shape
+ * is unguessable is still titled correctly without a profile.
+ *
+ * Display-only and spoofable by whoever sends it — the value never reaches
+ * routing, capture bodies or the upstream request, so the cost of a forged
+ * header is one wrong session title.
+ */
+const PROMPT_HINT_HEADER = 'x-ocr-prompt-hint';
+
+/**
+ * Envelope resolution inputs for ONE request: the harness profile scoped from
+ * the User-Agent (layer 2, vocabulary) and the self-declared prompt (layer 0,
+ * authoritative). Resolved once per request on the display path.
+ */
+interface EnvelopeHints {
+  readonly profile?: HarnessProfile;
+  readonly declaredPrompt?: string;
+}
+
+/** Display cap every identification aid uses (title, per-turn summary, snippet). */
+const DISPLAY_CAP_CHARS = 200;
+
+/** Clip to the display cap with an ellipsis (already-normalized input). */
+function clipDisplayText(text: string): string {
+  return text.length <= DISPLAY_CAP_CHARS ? text : text.slice(0, DISPLAY_CAP_CHARS - 1) + '…';
+}
+
+function envelopeHintsOf(
+  headers: Record<string, string | string[] | undefined> | undefined
+): EnvelopeHints {
+  const declared = pickHeaderValue(headers, PROMPT_HINT_HEADER);
+  return {
+    profile: harnessProfileOf(pickHeaderValue(headers, 'user-agent')),
+    // Declared text is the human's own words: whitespace is flattened for the
+    // one-line surfaces, never stripped of markup or truncated mid-tag.
+    declaredPrompt: declared ? clipDisplayText(declared.replace(/\s+/g, ' ').trim()) || undefined : undefined,
+  };
 }
 
 function extractClientHeaders(
@@ -1047,14 +1105,28 @@ export class PipelineOrchestrator {
       return typeof text === 'string' ? text : '';
     };
 
+    // Envelope resolution inputs (display only): the harness vocabulary scoped
+    // from this request's User-Agent and any self-declared prompt. Headers come
+    // from whichever transport owns the leg — same precedence as the trace
+    // identity below (Fastify request, MITM client request, plain headers) —
+    // and the result is resolved ONCE here for the title, the per-turn summary
+    // and the route snippet.
+    const envelopeHints = envelopeHintsOf(
+      (context?.fastifyRequest?.headers ??
+        context?.clientRequest?.headers ??
+        context?.headers) as Record<string, string | string[] | undefined> | undefined
+    );
+
     // Session title: the FIRST user message carrying human text, flattened and
     // capped like the capture preview (array content is joined, never dropped —
     // a multimodal opening message must still name the session). Client
     // metadata envelopes are skipped, not quoted: Cursor's agent opens with a
     // standalone `<timestamp>` message or a whole `<user_info>`/`<rules>`/…
     // context bundle, which would otherwise title the session with a clock
-    // reading or an OS banner (see utils/client-envelope.ts for the rules —
-    // known tags AND any tag-only message count as envelope). Strict runs
+    // reading or an OS banner; Claude Code MIXES `<system-reminder>` + a
+    // `/clear` record with the human prompt in ONE message (see
+    // utils/client-envelope.ts for the four rules and
+    // utils/harness-profiles.ts for the scoped vocabulary). Strict runs
     // first so an unrecognized envelope never outranks a later human turn in
     // the same request; only when the whole request carries no recognized
     // human text does the permissive pass keep a tag-only message (a prompt
@@ -1065,7 +1137,11 @@ export class PipelineOrchestrator {
     // (attachOrigin, below) and the trace (step 8) — a row rebuilt from traces
     // alone has no entity at all.
     const firstUserSummary =
+      // A declared prompt (layer 0) is authoritative and outranks inference on
+      // every later turn too — but the frozen birth value still wins, because
+      // the title is a birth attribute.
       prevTraces[0]?.request.firstUserSummary ??
+      envelopeHints.declaredPrompt ??
       (() => {
         const userTexts: string[] = [];
         for (const msg of normalizedRequest.messages) {
@@ -1080,7 +1156,7 @@ export class PipelineOrchestrator {
         }
         // Strict-then-permissive pass lives in the normalizer, shared with the
         // capture-session preview (one derivation, three surfaces).
-        return firstDisplayText(userTexts, 200);
+        return firstDisplayText(userTexts, DISPLAY_CAP_CHARS, { profile: envelopeHints.profile });
       })();
 
     // Birth metadata: attach once per session (first-write-wins inside the
@@ -1953,9 +2029,20 @@ export class PipelineOrchestrator {
             effort: actualEffort,
             source: 'l2_confident',
             confidence: decision.confidence,
-            // Display aid only: client metadata envelopes (Cursor's `<timestamp>`)
-            // are dropped so the snippet names the prompt, not a clock reading.
-            snippet: routeGate.snippetEnabled === false ? undefined : lastUserText ? displayPromptText(lastUserText).slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
+            // Display aid only: client metadata envelopes (Cursor's
+            // `<timestamp>`, Claude Code's `<system-reminder>`) are dropped so
+            // the snippet names the prompt, not a clock reading or harness
+            // boilerplate — same 200-char display-aid precedent as the session
+            // attachOrigin, same harness profile as the title.
+            snippet:
+              routeGate.snippetEnabled === false
+                ? undefined
+                : (envelopeHints.declaredPrompt ??
+                  (lastUserText
+                    ? clipDisplayText(
+                        displayPromptText(lastUserText, { profile: envelopeHints.profile })
+                      ) || undefined
+                    : undefined)),
           },
           sessionId
         );
@@ -1990,7 +2077,8 @@ export class PipelineOrchestrator {
         ? lastUserMsg.content.map(textPartOf).join(' ')
         : '';
     const userPromptSummary = requestTurn.isPromptStart
-      ? displayPromptText(lastUserTextForSummary).slice(0, 200)
+      ? (envelopeHints.declaredPrompt ??
+        clipDisplayText(displayPromptText(lastUserTextForSummary, { profile: envelopeHints.profile })))
       : '';
 
     this.traceTracker.record({
