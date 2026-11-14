@@ -360,7 +360,7 @@ export const esES: TranslationDict = {
     footerOffline: 'pasarela fuera de línea',
     footerCopyUrl: 'Copiar {url}',
     footerUrlCopied: 'URL de la pasarela copiada',
-    quotaPeekTitle: 'Panel de cuota',
+    quotaPeekTitle: 'Cuota',
     quotaPeekOff: 'El sondeo de cuota está apagado — se muestra solo la última instantánea',
     quotaPeekNoPairs: 'Aún no hay pares cubiertos',
   },

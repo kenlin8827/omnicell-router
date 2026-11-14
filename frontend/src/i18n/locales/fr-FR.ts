@@ -362,7 +362,7 @@ export const frFR: TranslationDict = {
     footerOffline: 'passerelle hors ligne',
     footerCopyUrl: 'Copier {url}',
     footerUrlCopied: 'URL de la passerelle copiée',
-    quotaPeekTitle: 'Panneau de quota',
+    quotaPeekTitle: 'Quota',
     quotaPeekOff: 'Le sondage de quota est désactivé — seule la dernière capture est affichée',
     quotaPeekNoPairs: 'Aucune paire couverte pour l’instant',
   },

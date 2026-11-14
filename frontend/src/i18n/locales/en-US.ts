@@ -361,7 +361,7 @@ export const enUS: TranslationDict = {
     footerOffline: 'gateway offline',
     footerCopyUrl: 'Copy {url}',
     footerUrlCopied: 'Gateway URL copied',
-    quotaPeekTitle: 'Quota panel',
+    quotaPeekTitle: 'Quota',
     quotaPeekOff: 'Quota prober is off — showing the last snapshot only',
     quotaPeekNoPairs: 'No covered pairs yet',
   },

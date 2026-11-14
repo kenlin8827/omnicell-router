@@ -362,7 +362,7 @@ export const deDE: TranslationDict = {
     footerOffline: 'Gateway offline',
     footerCopyUrl: '{url} kopieren',
     footerUrlCopied: 'Gateway-URL kopiert',
-    quotaPeekTitle: 'Kontingent-Panel',
+    quotaPeekTitle: 'Kontingent',
     quotaPeekOff: 'Der Kontingent-Prober ist aus — nur der letzte Schnappschuss wird gezeigt',
     quotaPeekNoPairs: 'Noch keine abgedeckten Paare',
   },

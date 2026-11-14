@@ -362,7 +362,7 @@ export const ptBR: TranslationDict = {
     footerOffline: 'gateway offline',
     footerCopyUrl: 'Copiar {url}',
     footerUrlCopied: 'URL do gateway copiada',
-    quotaPeekTitle: 'Painel de cota',
+    quotaPeekTitle: 'Cota',
     quotaPeekOff: 'O sondador de cota está desligado — mostrando apenas o último retrato',
     quotaPeekNoPairs: 'Ainda não há pares cobertos',
   },

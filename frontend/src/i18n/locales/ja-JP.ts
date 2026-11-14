@@ -362,7 +362,7 @@ export const jaJP: TranslationDict = {
     footerOffline: 'ゲートウェイ切断中',
     footerCopyUrl: '{url} をコピー',
     footerUrlCopied: 'ゲートウェイ URL をコピーしました',
-    quotaPeekTitle: 'クォータパネル',
+    quotaPeekTitle: 'クォータ',
     quotaPeekOff: 'クォータプローバーはオフです — 最新のスナップショットのみ表示',
     quotaPeekNoPairs: '対象のペアはまだありません',
   },

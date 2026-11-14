@@ -362,7 +362,7 @@ export const koKR: TranslationDict = {
     footerOffline: '게이트웨이 오프라인',
     footerCopyUrl: '{url} 복사',
     footerUrlCopied: '게이트웨이 URL 복사됨',
-    quotaPeekTitle: '쿼터 패널',
+    quotaPeekTitle: '쿼터',
     quotaPeekOff: '쿼터 프로버가 꺼져 있습니다 — 마지막 스냅샷만 표시',
     quotaPeekNoPairs: '아직 대상 페어가 없습니다',
   },

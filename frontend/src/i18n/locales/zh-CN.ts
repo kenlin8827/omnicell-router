@@ -349,7 +349,7 @@ export const zhCN: TranslationDict = {
     footerOffline: '网关离线',
     footerCopyUrl: '复制 {url}',
     footerUrlCopied: '网关地址已复制',
-    quotaPeekTitle: '额度面板',
+    quotaPeekTitle: '额度',
     quotaPeekOff: '额度同步已关闭——仅显示上次快照',
     quotaPeekNoPairs: '暂无已覆盖配对',
   },
