@@ -269,7 +269,7 @@ export const UsagePage: React.FC = () => {
                     <span style={{ color: 'var(--text-dim)' }}>
                       {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
                     </span>
-                    <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
+                    <span style={{ color: 'var(--text-dim)' }}>#{tr.requestNumber}</span>
                     {/* Session view: clicking the model drills into its per-model call list. */}
                     <span
                       role={sessionFilter ? 'button' : undefined}

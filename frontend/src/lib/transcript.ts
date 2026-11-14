@@ -1,22 +1,28 @@
 /**
  * Session transcript reconstruction for the capture archive.
  *
- * Every captured turn stores the FULL pre-compression request snapshot
+ * The archive's WRITE-TIME identity decides the structure (ADR-0024):
+ * `requestId` groups the HTTP exchanges of one request, `turnIndex` groups
+ * the requests of one user-prompt turn. Nothing here infers a boundary from
+ * prompt text, message counts, history divergence or resend heuristics —
+ * those fields are read, never re-derived.
+ *
+ * Each request carries the FULL pre-compression request snapshot
  * (`clientRequest.wire.requestBody`, accumulated messages) plus the response
- * wire (JSON or SSE stream). Walking turns oldest-first, the conversation is
- * rebuilt as: [messages new since the previous snapshot] + [this turn's
- * parsed assistant output]. No backend projection needed.
+ * wire (JSON or SSE stream). Walking requests oldest-first, the conversation
+ * is rebuilt as: [messages new since the previous snapshot] + [this
+ * request's parsed assistant output]. No backend projection needed.
  *
  * Degraded cases handled here:
  *  - request bodies cut by `maxBodyBytes` (`...[TRUNCATED]`) — a bracket-repair
  *    pass salvages the largest parseable prefix (mirrors backend
  *    CaptureRecorder.repairTruncatedJson);
  *  - snapshot history rewrites (client-side compaction) — replay resumes from
- *    the divergence point, flagged per turn;
+ *    the divergence point, flagged per request;
  *  - both OpenAI chat-completions and Anthropic messages dialects, streaming
  *    and non-streaming.
  */
-import type { CaptureTurn, HttpExchangeEvent, WireBody } from './api';
+import type { CaptureRequestView, CaptureEvent, WireBody } from './api';
 
 const TRUNCATION_SUFFIX = '...[TRUNCATED]';
 
@@ -45,21 +51,23 @@ export interface TranscriptMessage {
   toolName?: string;
 }
 
-export interface TurnOutput {
+export interface RequestOutput {
   text: string;
   reasoning: string;
   toolCalls: TranscriptToolCall[];
 }
 
-export interface TranscriptTurn {
-  /** Index into the page's newest-first `turns` array (drawer contract). */
+/** One REQUEST's parsed replay — a single step inside a user-prompt turn. */
+export interface TranscriptStep {
+  /** Index into the page's newest-first `requests` array (drawer contract). */
   idx: number;
-  turn: CaptureTurn;
+  /** The canonical request + its serving-leg view slots. */
+  request: CaptureRequestView;
   ts?: number;
-  /** Messages that entered the conversation with this turn. */
+  /** Messages that entered the conversation with this request. */
   input: TranscriptMessage[];
-  /** Assistant output produced by this turn (parsed from the response wire). */
-  output: TurnOutput | null;
+  /** Assistant output produced by this request (parsed from the response wire). */
+  output: RequestOutput | null;
   hasResponseBody: boolean;
   /** Request body carried the truncation marker (newest tail may be lost). */
   reqTruncated: boolean;
@@ -71,7 +79,7 @@ export interface TranscriptTurn {
 
 // ---------------------------------------------------------------- primitives
 
-const bodyToString = (body: string | WireBody | undefined): string | null =>
+const bodyToString = (body: WireBody | undefined): string | null =>
   typeof body === 'string' ? body : null;
 
 const safeStringify = (v: unknown): string => {
@@ -230,7 +238,7 @@ const messageKey = (m: TranscriptMessage): string =>
 
 // --------------------------------------------------------- response parsing
 
-function parseJsonResponse(obj: unknown): TurnOutput | null {
+function parseJsonResponse(obj: unknown): RequestOutput | null {
   if (!obj || typeof obj !== 'object') return null;
   const o = obj as Record<string, any>;
   // OpenAI chat-completion body
@@ -262,7 +270,7 @@ function parseJsonResponse(obj: unknown): TurnOutput | null {
   return null;
 }
 
-function parseSseResponse(s: string): TurnOutput | null {
+function parseSseResponse(s: string): RequestOutput | null {
   let text = '';
   let reasoning = '';
   const calls: TranscriptToolCall[] = [];
@@ -313,7 +321,7 @@ function parseSseResponse(s: string): TurnOutput | null {
 }
 
 /** Parse a captured response wire body into the assistant turn output. */
-export function parseAssistantResponse(raw: string): TurnOutput | null {
+export function parseAssistantResponse(raw: string): RequestOutput | null {
   const s = raw.trim();
   if (!s) return null;
   if (s.startsWith('{')) {
@@ -645,7 +653,7 @@ export function splitMediaTokens(
   return out;
 }
 
-/** Collapse tokens to a short chip label for list heads (round excerpt). */
+/** Collapse tokens to a short chip label for list heads (turn excerpt). */
 export function collapseMediaTokens(text: string, chip: string): string {
   MEDIA_TOKEN_GLOBAL.lastIndex = 0;
   return text.replace(MEDIA_TOKEN_GLOBAL, chip).replace(/[ \t]{2,}/g, ' ').trim();
@@ -753,27 +761,31 @@ export function isInjectionMessage(m: TranscriptMessage): boolean {
 
 // ------------------------------------------------------------- reconstruction
 
+// ------------------------------------------------------------- reconstruction
+
 /**
- * Rebuild the conversation from the page's newest-first `turns`. Result is
- * chronological (oldest first), one entry per turn.
+ * Rebuild the conversation from the page's newest-first `requests` array.
+ * Result is chronological (oldest first), one entry per REQUEST. The only
+ * grouping key here is `requestId`; turn membership is an attribute read
+ * from `turnIndex`, not something this pass computes.
  */
-export function buildTranscript(turns: CaptureTurn[]): TranscriptTurn[] {
-  const result: TranscriptTurn[] = [];
+export function buildTranscript(requests: CaptureRequestView[]): TranscriptStep[] {
+  const result: TranscriptStep[] = [];
   const seen = new Set<string>();
   const toolNames = new Map<string, string>();
   let prevKeys: string[] = [];
   let prevOutputRendered = false;
 
-  const chrono = turns.map((t, i) => ({ t, i })).reverse();
-  for (const { t: turn, i: idx } of chrono) {
+  const chrono = requests.map((r, i) => ({ r, i })).reverse();
+  for (const { r: request, i: idx } of chrono) {
     const ts =
-      turn.clientRequest?.ts ?? turn.upstreamRequest?.ts ?? turn.gatewayResponse?.ts ?? turn.upstreamResponse?.ts;
+      request.clientRequest?.ts ?? request.upstreamRequest?.ts ?? request.clientResponse?.ts ?? request.upstreamResponse?.ts;
     let input: TranscriptMessage[] = [];
     let reqTruncated = false;
     let reqUnparsed = false;
     let diverged = false;
 
-    const rawReq = bodyToString(turn.clientRequest?.wire.requestBody);
+    const rawReq = bodyToString(request.clientRequest?.wire.requestBody);
     if (rawReq) {
       reqTruncated = rawReq.endsWith(TRUNCATION_SUFFIX);
       const msgs = normalizeMessages(parseJsonLoose(rawReq));
@@ -787,7 +799,7 @@ export function buildTranscript(turns: CaptureTurn[]): TranscriptTurn[] {
           const key = keys[j];
           if (seen.has(key)) continue;
           seen.add(key);
-          if (msg.role === 'assistant' && prevOutputRendered) continue; // already shown from its own turn
+          if (msg.role === 'assistant' && prevOutputRendered) continue; // shown by its own request
           for (const c of msg.toolCalls) if (c.id && c.name) toolNames.set(c.id, c.name);
           if (msg.toolCallId) msg.toolName = toolNames.get(msg.toolCallId);
           for (const b of msg.blocks) {
@@ -802,9 +814,9 @@ export function buildTranscript(turns: CaptureTurn[]): TranscriptTurn[] {
       }
     }
 
-    // Prefer the gateway leg (what the client actually saw); fall back to the
-    // raw upstream body when the gateway response fell outside the read window.
-    const respEvent: HttpExchangeEvent | undefined = turn.gatewayResponse ?? turn.upstreamResponse;
+    // Prefer the client leg (what the client actually saw); fall back to the
+    // raw upstream body when the client response fell outside the read window.
+    const respEvent: CaptureEvent | undefined = request.clientResponse ?? request.upstreamResponse;
     const rawResp = bodyToString(respEvent?.wire.responseBody);
     const output = rawResp ? parseAssistantResponse(rawResp) : null;
     if (output) for (const c of output.toolCalls) if (c.id && c.name) toolNames.set(c.id, c.name);
@@ -812,7 +824,7 @@ export function buildTranscript(turns: CaptureTurn[]): TranscriptTurn[] {
 
     result.push({
       idx,
-      turn,
+      request,
       ts,
       input,
       output,
@@ -825,29 +837,32 @@ export function buildTranscript(turns: CaptureTurn[]): TranscriptTurn[] {
   return result;
 }
 
-// ---------------------------------------------------------------- by-prompt rounds
+// ----------------------------------------------------------- write-time turns
 
 /**
- * One user prompt and everything it drove: a round opens with a `user` message
- * in a turn's input delta and covers the consecutive tool-call hops until the
- * answer converges (or the next prompt interrupts / the archive window ends).
- * This is the harness-style grouping: header = prompt, tail = final answer,
- * middle = the HTTP turns (each still linked to its raw wire).
+ * One USER-PROMPT TURN: every request sharing one write-time `turnIndex`.
+ * The admission gate already decided this boundary (ADR-0024); this pass
+ * only groups by it. Requests with `turnIndex: null` carry no user prompt
+ * and belong to no turn, so the conversation lens skips them — their wire
+ * is still reachable from the timeline.
  */
-export interface TranscriptRound {
-  /** User message that opened this round; null when the window starts mid-round. */
+export interface TranscriptTurn {
+  /** Immutable, session-scoped write-time turn ordinal. */
+  turnIndex: number;
+  /** User message that opened the turn; null when the window starts mid-turn. */
   prompt: TranscriptMessage | null;
-  steps: TranscriptTurn[];
+  /** One REQUEST per step, chronological. */
+  steps: TranscriptStep[];
   /** Tail answer: text of the last parsed output. */
   finalText: string;
-  /** Last non-empty reasoning stream — fallback tail when the answer came as thinking only. */
+  /** Last non-empty reasoning stream — fallback tail for thinking-only answers. */
   finalReasoning: string;
-  /** tool_calls issued by this round's outputs (hop count, for result-loss hints). */
+  /** tool_calls issued by this turn's outputs (hop count, for loss hints). */
   toolCallsIssued: number;
-  /** tool results actually observed in later turns' inputs. */
+  /** Tool results observed in later steps' inputs. */
   toolResultsSeen: number;
   finalToolCalls: TranscriptToolCall[];
-  /** Round ended with a text answer and no pending tool calls. */
+  /** Turn ended with a text answer and no pending tool calls. */
   converged: boolean;
   startTs?: number;
   endTs?: number;
@@ -855,14 +870,14 @@ export interface TranscriptRound {
   hasError: boolean;
 }
 
-export function groupIntoRounds(items: TranscriptTurn[]): TranscriptRound[] {
-  const rounds: TranscriptRound[] = [];
-  let cur: TranscriptRound | null = null;
-  // A round opens on a user message that actually carries a PROMPT. In the
-  // Anthropic dialect tool results ride inside user-role messages (as
-  // tool_result parts) — those are hop CONTINUATIONS, not new prompts;
-  // counting them as prompts shattered the loop into one pseudo-round per
-  // tool hop and stranded each result outside the round that issued the call.
+/**
+ * Group replay steps by the archive's WRITE-TIME `turnIndex`. No prompt
+ * parsing decides a split: `isPromptStart` names the opener, and the
+ * display-only `promptSummary` on that opener labels the header.
+ */
+export function groupIntoTurns(items: TranscriptStep[]): TranscriptTurn[] {
+  const turns: TranscriptTurn[] = [];
+  const byIndex = new Map<number, TranscriptTurn>();
   const isPrompt = (m: TranscriptMessage) =>
     m.role === 'user' && m.blocks.some(b => b.kind === 'text' && b.text.trim().length > 0);
   const countResults = (msgs: TranscriptMessage[]) =>
@@ -870,56 +885,32 @@ export function groupIntoRounds(items: TranscriptTurn[]): TranscriptRound[] {
       (n, m) => n + (m.role === 'tool' ? 1 : m.blocks.filter(b => b.kind === 'tool_result').length),
       0
     );
-  let curAuthoritative = false;
+
   for (const st of items) {
-    const firstPromptIdx = st.input.findIndex(isPrompt);
-    // The archive's `promptSummary` is authoritative: it is stamped only on
-    // the request that opened a round (the recorder drops it on tool-loop
-    // continuations). Parsing the delta alone mis-splits a windowed slice
-    // whose first request still carries the FULL history — every old user
-    // message in it would look like a new prompt. Archives without the
-    // positions fields fall back to delta parsing.
-    const opensRound =
-      st.turn.promptSummary !== undefined
-        ? true
-        : st.turn.clientRequest?.promptMessageCount !== undefined
-          ? false
-          : firstPromptIdx >= 0;
-    // An opener's body may carry the whole prior conversation (the current
-    // prompt is its NEWEST user text); a continuation delta only ever holds
-    // tool results. Either way the newest prompt is the one that opened it.
-    let pi = firstPromptIdx;
-    if (opensRound) {
-      for (let i = st.input.length - 1; i >= 0; i--) {
-        if (isPrompt(st.input[i])) {
-          pi = i;
-          break;
+    const turnIndex = st.request.turnIndex;
+    if (turnIndex === null) continue;
+    let turn = byIndex.get(turnIndex);
+    if (!turn) {
+      // Prefer the write-time display stamp; fall back to the newest prompt
+      // in the parsed input delta of this first visible step.
+      let prompt: TranscriptMessage | null = null;
+      if (st.request.promptSummary) {
+        prompt = {
+          role: 'user',
+          blocks: [{ kind: 'text', text: st.request.promptSummary }],
+          toolCalls: [],
+        };
+      } else {
+        for (let i = st.input.length - 1; i >= 0; i--) {
+          if (isPrompt(st.input[i])) {
+            prompt = st.input[i];
+            break;
+          }
         }
       }
-    }
-    // The archived summary is the question the ROUND selector shows; the
-    // body's last user text is often a harness context bundle. Prefer the
-    // summary so both surfaces name the round identically.
-    const promptMsg: TranscriptMessage | null =
-      opensRound && st.turn.promptSummary
-        ? {
-            role: 'user',
-            blocks: [{ kind: 'text', text: st.turn.promptSummary }],
-            toolCalls: [],
-          }
-        : pi >= 0
-          ? st.input[pi]
-          : null;
-    // Legacy archives (no positions fields) fall back to the convergence
-    // signal: a pure-text answer means the next request must be a fresh
-    // prompt. Indexed rounds never split on it — an intermediate answer can
-    // converge inside a round that the archive still numbers as one.
-    if (!cur || opensRound || (!curAuthoritative && cur.converged)) {
-      // Tool results that arrived BEFORE this prompt answer the PREVIOUS
-      // round's tool calls — credit them there, or the loss-hint misfires.
-      if (cur && pi > 0) cur.toolResultsSeen += countResults(st.input.slice(0, pi));
-      cur = {
-        prompt: promptMsg,
+      turn = {
+        turnIndex,
+        prompt,
         steps: [],
         finalText: '',
         finalReasoning: '',
@@ -930,31 +921,32 @@ export function groupIntoRounds(items: TranscriptTurn[]): TranscriptRound[] {
         totalLatencyMs: 0,
         hasError: false,
       };
-      rounds.push(cur);
-      curAuthoritative = st.turn.clientRequest?.promptMessageCount !== undefined;
+      byIndex.set(turnIndex, turn);
+      turns.push(turn);
     }
-    cur.steps.push(st);
-    cur.toolCallsIssued += st.output?.toolCalls.length ?? 0;
-    cur.toolResultsSeen += countResults(st.input.slice(Math.max(pi, 0)));
+    const skipPrompt = turn.prompt;
+    turn.steps.push(st);
+    turn.toolCallsIssued += st.output?.toolCalls.length ?? 0;
+    // The header prompt is already counted on its own step; tool results
+    // arriving in later steps answer this turn's tool calls.
+    turn.toolResultsSeen += countResults(st.input.filter(m => m !== skipPrompt));
     if (st.ts !== undefined) {
-      if (cur.startTs === undefined) cur.startTs = st.ts;
-      cur.endTs = st.ts;
+      if (turn.startTs === undefined) turn.startTs = st.ts;
+      turn.endTs = st.ts;
     }
-    cur.totalLatencyMs += st.turn.gatewayLatencyMs ?? st.turn.upstreamLatencyMs ?? 0;
+    turn.totalLatencyMs += st.request.gatewayLatencyMs ?? st.request.upstreamLatencyMs ?? 0;
     if (
-      st.turn.error ||
-      st.turn.gatewayResponse?.status === 'error' ||
-      st.turn.upstreamResponse?.status === 'error'
+      st.request.error ||
+      st.request.clientResponse?.status === 'error' ||
+      st.request.upstreamResponse?.status === 'error'
     )
-      cur.hasError = true;
+      turn.hasError = true;
     if (st.output && (st.output.text || st.output.reasoning || st.output.toolCalls.length)) {
-      // Keep the LAST non-empty text as the tail answer; `converged` marks
-      // whether the final hop itself closed with text (no pending tool call).
-      if (st.output.text) cur.finalText = st.output.text;
-      if (st.output.reasoning) cur.finalReasoning = st.output.reasoning;
-      cur.finalToolCalls = st.output.toolCalls;
-      cur.converged = st.output.toolCalls.length === 0 && st.output.text.length > 0;
+      if (st.output.text) turn.finalText = st.output.text;
+      if (st.output.reasoning) turn.finalReasoning = st.output.reasoning;
+      turn.finalToolCalls = st.output.toolCalls;
+      turn.converged = st.output.toolCalls.length === 0 && st.output.text.length > 0;
     }
   }
-  return rounds;
+  return turns;
 }

@@ -963,7 +963,7 @@ describe('trace per-pair aggregation', () => {
     const mk = (provider: string, prefix: string | undefined, cost: number) => ({
       requestId: `tr-${provider}-${prefix}-${cost}`,
       sessionId: 's',
-      turnNumber: 1,
+      requestNumber: 1,
       timestamp: Date.now(),
       request: { model: 'm', userPromptSummary: '', messageCount: 1, hasSystemPrompt: false, hasToolsOrSchema: false },
       routing: { layerUsed: 'layer0', targetTier: 'lite', confidence: 1, reason: 'x', sessionRatchetApplied: false },

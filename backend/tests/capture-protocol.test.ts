@@ -32,6 +32,9 @@ function clientRequest(sessionId: string, requestId: string, requestLine: string
     eventType: 'http-exchange',
     direction: 'client',
     phase: 'request',
+    turnIndex: 1,
+    isPromptStart: true,
+    turnDecision: 'new_prompt',
     exchangeId: `span-${requestId}`,
     requestId,
     sessionId,
@@ -101,7 +104,7 @@ describe('capture-protocol (session-list protocol badge + decision titles)', () 
     assert.equal(row!.preview, 'hello router');
   });
 
-  it('turn prompt stamps state text on decision client-request events (metadata-only reads)', async () => {
+  it('prompt stamp survives bodies=none on a prompt-start client request', async () => {
     const sid = `sess_decision_prompt_${Date.now()}`;
     await recorder.recordEvent(
       clientRequest(sid, 'tr-decision-2', 'POST /v1/systemone HTTP/1.1', {
@@ -110,9 +113,10 @@ describe('capture-protocol (session-list protocol badge + decision titles)', () 
         questions: {},
       })
     );
-    const { turns } = await recorder.readEvents(dateDir, CaptureRecorder.sessionFileName(sid), 10, 'none');
-    assert.equal(turns.length, 1);
-    assert.equal(turns[0].promptSummary, '评估当前会话语气', 'promptSummary survives bodies=none via the state path');
+    const { requests } = await recorder.readEvents(dateDir, CaptureRecorder.sessionFileName(sid), 10, 'none');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].turnIndex, 1);
+    assert.equal(requests[0].promptSummary, '评估当前会话语气', 'promptSummary survives bodies=none via the state path');
   });
 
   it('extractSessionPreview skips a Cursor context bundle and titles the real turn', () => {

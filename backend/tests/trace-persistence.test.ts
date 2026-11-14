@@ -10,7 +10,7 @@ let seq = 0;
 const mkTrace = (over: { sessionId: string; timestamp: number } & Partial<ExecutionTrace>): ExecutionTrace => ({
   requestId: `trace_persist_test_${++seq}`,
   sessionId: over.sessionId,
-  turnNumber: 1,
+  requestNumber: 1,
   timestamp: over.timestamp,
   request: {
     model: 'auto',

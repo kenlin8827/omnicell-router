@@ -5,9 +5,9 @@
  * choices-less usage frames) instead of throwing on them.
  */
 import { describe, expect, it } from 'vitest';
-import type { CaptureTurn } from './api';
-import { groupIntoRounds, messageText, mergeSseToNonStream } from './transcript';
-import type { TranscriptMessage, TranscriptTurn } from './transcript';
+import type { CaptureRequestView } from './api';
+import { groupIntoTurns, messageText, mergeSseToNonStream } from './transcript';
+import type { TranscriptMessage, TranscriptStep } from './transcript';
 
 const frame = (payload: Record<string, unknown>): string => `data: ${JSON.stringify(payload)}\n\n`;
 
@@ -52,9 +52,21 @@ const msg = (text: string, role: 'user' | 'assistant' | 'tool' = 'user'): Transc
   toolCalls: [],
 });
 
-const step = (over: Partial<TranscriptTurn>): TranscriptTurn => ({
+/** A schema-2 request view with its WRITE-TIME turn identity. */
+const request = (turnIndex: number | null, promptSummary?: string): CaptureRequestView => ({
+  requestId: `req_${turnIndex ?? 'none'}_${promptSummary ?? ''}`,
+  sessionId: 'sess_1',
+  model: 'test-model',
+  turnIndex,
+  isPromptStart: promptSummary !== undefined,
+  turnDecision: turnIndex === null ? 'no_prompt' : promptSummary !== undefined ? 'new_prompt' : 'continuation',
+  ...(promptSummary !== undefined ? { promptSummary } : {}),
+  exchanges: [],
+});
+
+const step = (over: Partial<TranscriptStep>): TranscriptStep => ({
   idx: 0,
-  turn: {} as CaptureTurn,
+  request: request(1),
   input: [],
   output: null,
   hasResponseBody: false,
@@ -64,45 +76,42 @@ const step = (over: Partial<TranscriptTurn>): TranscriptTurn => ({
   ...over,
 });
 
-describe('groupIntoRounds — archive prompt metadata', () => {
-  it('keeps a full-history opener as one round and shows its archived prompt', () => {
-    const rounds = groupIntoRounds([
-      step({
-        // The body carries Q1, a harness bundle, then the actual new prompt.
-        input: [msg('Q1'), msg('<user_info> harness'), msg('Q2')],
-        turn: {
-          promptSummary: 'Q2',
-          clientRequest: { promptMessageCount: 3 },
-        } as CaptureTurn,
-      }),
+describe('groupIntoTurns — write-time turnIndex', () => {
+  it('groups a prompt-start request and its tool-result continuation into ONE turn', () => {
+    const turns = groupIntoTurns([
+      step({ request: request(7, 'Q7'), input: [msg('Q7')] }),
+      step({ request: request(7), input: [msg('tool result', 'tool')] }),
     ]);
-    expect(rounds).toHaveLength(1);
-    expect(rounds[0].prompt && messageText(rounds[0].prompt)).toBe('Q2');
+    expect(turns).toHaveLength(1);
+    expect(turns[0].turnIndex).toBe(7);
+    expect(turns[0].steps).toHaveLength(2);
+    expect(turns[0].prompt && messageText(turns[0].prompt)).toBe('Q7');
   });
 
-  it('does not split an indexed round when an intermediate answer converges', () => {
-    const rounds = groupIntoRounds([
-      step({
-        input: [msg('Q1')],
-        turn: {
-          promptSummary: 'Q1',
-          clientRequest: { promptMessageCount: 2 },
-        } as CaptureTurn,
-        output: { text: 'intermediate', reasoning: '', toolCalls: [] },
-      }),
-      step({
-        input: [msg('tool result', 'tool')],
-        turn: { clientRequest: { promptMessageCount: 3 } } as CaptureTurn,
-      }),
-      step({
-        input: [msg('Q2')],
-        turn: {
-          promptSummary: 'Q2',
-          clientRequest: { promptMessageCount: 2 },
-        } as CaptureTurn,
-      }),
+  it('does not split a turn when an intermediate answer converges', () => {
+    const turns = groupIntoTurns([
+      step({ request: request(1, 'Q1'), output: { text: 'intermediate', reasoning: '', toolCalls: [] } }),
+      step({ request: request(1), input: [msg('tool result', 'tool')] }),
+      step({ request: request(2, 'Q2') }),
     ]);
-    expect(rounds).toHaveLength(2);
-    expect(rounds[0].steps).toHaveLength(2);
+    expect(turns.map(t => t.turnIndex)).toEqual([1, 2]);
+    expect(turns[0].steps).toHaveLength(2);
+    expect(turns[0].converged).toBe(false); // last hop carried no text answer
+  });
+
+  it('skips prompt-less requests (turnIndex: null) entirely', () => {
+    const turns = groupIntoTurns([
+      step({ request: request(null) }),
+      step({ request: request(1, 'Q1') }),
+    ]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].steps).toHaveLength(1);
+  });
+
+  it('falls back to the newest prompt in the input delta when no stamp exists', () => {
+    const turns = groupIntoTurns([
+      step({ request: request(3), input: [msg('old'), msg('<user_info> harness'), msg('new prompt')] }),
+    ]);
+    expect(turns[0].prompt && messageText(turns[0].prompt)).toBe('new prompt');
   });
 });

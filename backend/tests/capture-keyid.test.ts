@@ -2,7 +2,7 @@
  * API-key attribution on the capture event stream (per-application request
  * logs + retrieval). Pins the contract added for "which application drove
  * this captured request":
- *   • every HttpExchangeEvent of a key-authenticated turn carries
+ *   • every CaptureEvent of a key-authenticated turn carries
  *     apiKey = { id, name } (the non-secret half of ApiKeyConfig);
  *   • the raw token value NEVER reaches the archive;
  *   • master-key (client.adminKey) access carries no attribution (field absent);

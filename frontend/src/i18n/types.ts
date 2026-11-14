@@ -1631,25 +1631,25 @@ hiddenBadge: string;
     sessionDeleted: string;
     emptySessions: string;
     pickSession: string;
-    turnsTitle: string;
-    refreshTurnsHint: string;
+    detailTitle: string;
+    refreshRequestsHint: string;
     /** Detail-pane auto-refresh toggle label + title hint. */
     autoRefresh: string;
     autoRefreshHint: string;
     /** Detail header: user-prompt round count and client-request count are
      *  separate axes and must never share a label. */
-    roundsUnit: string;
+    turnsUnit: string;
     requestsUnit: string;
     /** Prompt-round navigator: "all rounds" option + labels. */
-    roundAll: string;
-    roundNoPrompt: string;
-    roundSteps: string;
+    turnAll: string;
+    turnNoPrompt: string;
+    turnRequests: string;
     /** Header tally tooltip: page requests vs the archive-wide exact count. */
     requestsCountHint: string;
     /** Header tally tooltip: user-prompt rounds over the whole archive. */
-    roundsCountHint: string;
+    turnsCountHint: string;
     /** Row tooltips explaining the two independent numbering axes. */
-    roundSeqHint: string;
+    turnSeqHint: string;
     requestSeqHint: string;
     /** Timeline header summary: total gateway latency over the displayed turns. */
     totalTime: string;
@@ -1673,7 +1673,7 @@ hiddenBadge: string;
     inboundModel: string;
     outboundModel: string;
     tabClientRequest: string;
-    tabGatewayResponse: string;
+    tabClientResponse: string;
     /** Tooltip of the caller correlation id chip in the capture drawer (ADR-0021). */
     clientRequestId: string;
     tabUpstreamRequest: string;
@@ -1733,7 +1733,7 @@ hiddenBadge: string;
     viewChat: string;
     chatFullscreen: string;
     chatExitFullscreen: string;
-    roundFocus: string;
+    turnFocus: string;
     expand: string;
     collapse: string;
     msgSystem: string;
@@ -1750,18 +1750,18 @@ hiddenBadge: string;
     msgTool: string;
     msgThinking: string;
     toolCallLabel: string;
-    turnRawBtn: string;
+    requestRawBtn: string;
     chatEmpty: string;
-    turnLoading: string;
-    turnOutOfRange: string;
-    loadingMoreRounds: string;
-    roundMidOpenNote: string;
-    roundStepsUnit: string;
-    roundOrdinal: string;
-    roundTailLabel: string;
+    requestLoading: string;
+    requestOutOfRange: string;
+    loadingMoreTurns: string;
+    turnMidOpenNote: string;
+    turnStepsUnit: string;
+    turnOrdinal: string;
+    turnTailLabel: string;
     view: string;
     answerSection: string;
-    roundUnconvergedNote: string;
+    turnUnconvergedNote: string;
     resultsMissingShort: string;
     resultsMissingNote: string;
     divergedNote: string;
@@ -2183,10 +2183,9 @@ hiddenBadge: string;
      *  launcher path (primary + CLI) under this label. */
     launcherPaths: string;
     fileExists: string;
-    backupExists: string;
+    backupMissingWarn: string;
     yes: string;
     no: string;
-    ready: string;
     none: string;
     teardownBtn: string;
     setupBtn: string;
@@ -2272,6 +2271,8 @@ hiddenBadge: string;
     jetbrainsCaImported: string;
     jetbrainsCaAbsent: string;
     jetbrainsCaUnknown: string;
+    jetbrainsCaNotHooked: string;
+    jetbrainsCaReimport: string;
     jetbrainsJunie: string;
     warnIdeRunning: string;
     warnCaTrustUnknown: string;

@@ -2,9 +2,9 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access.js';
 import type { ClientExchangeContext } from '../observability/http-exchange.js';
 import {
-  appendGatewayResponseChunk,
-  markGatewayResponseStreamStart,
-  emitGatewayResponse,
+  appendClientResponseChunk,
+  markClientResponseStreamStart,
+  emitClientResponse,
   getClientExchangeContext,
 } from '../observability/http-exchange.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
@@ -59,7 +59,7 @@ export function createFastifyTransport(
     if (reply.raw.writableEnded) return;
     const ctx = getClientExchangeContext(req);
     if (ctx && !ctx.pending.responded && ctx.recorder.isEnabled()) {
-      emitGatewayResponse(ctx, {
+      emitClientResponse(ctx, {
         statusCode: 499,
         statusMessage: 'Client Closed Request',
         getHeader: () => undefined,
@@ -79,20 +79,20 @@ export function createFastifyTransport(
 
   // Terminal-send finalize (contract §1.5): one emit decision per response —
   // real status when the socket lived, synthetic 499 when the client was
-  // already gone. `responded` dedup lives inside emitGatewayResponse; the
+  // already gone. `responded` dedup lives inside emitClientResponse; the
   // isEnabled gate + ctx presence check live here (no ctx ⇒ pre-process 400
   // or capture-off ⇒ nothing to pair).
-  const finalizeCapture = (view: Parameters<typeof emitGatewayResponse>[1]) => {
+  const finalizeCapture = (view: Parameters<typeof emitClientResponse>[1]) => {
     const ctx = getClientExchangeContext(req);
     if (!ctx || !ctx.recorder.isEnabled()) return;
     if (isClientGone()) {
-      emitGatewayResponse(ctx, {
+      emitClientResponse(ctx, {
         statusCode: 499,
         statusMessage: 'Client Closed Request',
         getHeader: () => undefined,
       });
     } else {
-      emitGatewayResponse(ctx, view);
+      emitClientResponse(ctx, view);
     }
   };
 
@@ -140,7 +140,7 @@ export function createFastifyTransport(
       Promise.resolve(reply.status(status).send(serialized)).catch((err: unknown) => logError(err, 'Fastify sendJson reply.send rejected'));
       const ctx = getClientExchangeContext(req);
       if (ctx) {
-        appendGatewayResponseChunk(ctx, serialized);
+        appendClientResponseChunk(ctx, serialized);
       }
       // view=reply: statusCode + getHeaders() — the old onResponse source.
       finalizeCapture(reply);
@@ -177,8 +177,8 @@ export function createFastifyTransport(
       // per chunk, exactly like the old handler (the [DONE] frame is the
       // last chunk, so it lands in the capture too, same as before).
       if (sseCtx) {
-        markGatewayResponseStreamStart(sseCtx);
-        appendGatewayResponseChunk(sseCtx, chunk);
+        markClientResponseStreamStart(sseCtx);
+        appendClientResponseChunk(sseCtx, chunk);
       }
       try {
         reply.raw.write(chunk);
@@ -211,7 +211,7 @@ export function createFastifyTransport(
       }
       const ctx = getClientExchangeContext(req);
       up.stream.on('data', (chunk: Buffer) => {
-        if (ctx) appendGatewayResponseChunk(ctx, chunk.toString('utf8'));
+        if (ctx) appendClientResponseChunk(ctx, chunk.toString('utf8'));
       });
       up.stream.pipe(reply.raw);
       up.stream.on('end', () => {

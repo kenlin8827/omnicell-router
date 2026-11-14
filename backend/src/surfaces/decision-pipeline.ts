@@ -4,6 +4,7 @@ import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { SessionManager } from '../session/session-manager.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext } from '../observability/http-exchange.js';
 import type { UpstreamEventContext } from '../observability/upstream-events.js';
+import { NO_TURN } from '../capture/turn-boundary.js';
 import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { validateSystemoneRequest } from '../protocols/systemone/convert.js';
@@ -214,6 +215,8 @@ export async function runDecisionSurface(
       requestId,
       model: effective,
       conversationKey,
+      // This surface carries no user prompt: NO_TURN is the first-class value.
+      turn: NO_TURN,
     });
     if (pctx.fastifyRequest) {
       setClientExchangeContext(pctx.fastifyRequest, clientExchangeCtx);
@@ -231,6 +234,7 @@ export async function runDecisionSurface(
       model: effective,
       apiKey: captureKeyIdentity(pctx.fastifyRequest),
       conversationKey,
+      turn: NO_TURN,
     };
     } catch (captureErr) {
       // Non-fatal: decision proceeds unrecorded on any capture failure.

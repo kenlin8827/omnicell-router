@@ -23,9 +23,10 @@ KEEP-BOUND、上游 429 反馈）、`backend/src/resilience/error-classifier.ts`
 
 三项要求彼此冲突，现行代码只分别满足了其中一部分：
 
-1. **一个 turn 不能被中断。** 对 coding agent 来说，一次 429 或被掐断的流会
-   报废正在跑的长任务及其已积累的上下文。几秒的等待远比中断便宜。快速失败
-   是最后手段，不是默认路径。
+1. **用户的一轮任务不能被中断。** 对 coding agent 来说，一次 429 或被掐断的流会
+   报废正在跑的长任务及其已积累的上下文。几秒的等待远比中断一次用户 turn 便宜。
+   快速失败是最后手段，不是默认路径。（**目标**是 turn 级；以下全部**机制**——
+   预算、重入、`committed`、心跳——都是 request 级，见 ADR-0024。）
 2. **换路很贵。** 重绑到另一个凭证或模型会烧掉上游 prompt cache。本地 cap
    只是提示，不是失败（`cap != failure`），因此绝不能成为已绑定会话移动的理由。
 3. **只有断路器点头之后，换路才合法。** 允许故障转移或重绑的是上游事实，
@@ -41,7 +42,7 @@ KEEP-BOUND、上游 429 反馈）、`backend/src/resilience/error-classifier.ts`
   最终抛出一个不带 `Retry-After`、也没有 `RateLimit-*` 头的普通执行错误；
 - 无 `Retry-After` 的上游 429 会通过 `penalize()` 写下 60 s 整形冷却。
 
-没有「每轮 turn 的等待预算」，三处等待可以叠加；没有心跳，长等会先撞上客户端
+没有「每个 request 的等待预算」，三处等待可以叠加；没有心跳，长等会先撞上客户端
 超时——那只是换了个名字的中断；而出站失败路径是四者中最糟的，因为客户端
 连该退避多久都不知道。
 
@@ -49,23 +50,24 @@ KEEP-BOUND、上游 429 反馈）、`backend/src/resilience/error-classifier.ts`
 
 ### 1. 一个可重入的准入函数，而不是散落各处的等待
 
-由唯一的内部函数 `admitTurn()` 统管整轮 turn 的准入、等待预算与重试计数。
+由唯一的内部函数 `admitRequest()` 统管**一个入站 request**（`requestId`）的准入、
+等待预算与重试计数。单位是 request，绝不是用户提示。
 深层不再自行开启无边界等待：要么按第 2、3 节契约原地等，要么**返回准入函数**。
 
-- 每轮最多**重入 2 次**（合计 3 次尝试）。
+- 每个 request 最多**重入 2 次**（合计 3 次尝试）。
 - 触发返回的两个条件是「内部要求重试」与「调用失败」，且两者都必须附加
   `!relay.committed` 前提（见第 4 节）。
-- 重入是**同一轮 turn 的延续**，不是新发 HTTP 请求：不二次鉴权、不二次
+- 重入是**同一个入站 request 的延续**：不二次鉴权、不二次
   `tryDispatch()` 占槽（「拒绝不计数」契约保持）、不重复计量 usage、不重复写
   trace / capture 终态。
-- 预算按**每轮累计**，不随每次尝试重置。30 s 就是三次尝试合计 30 s；否则
-  三次尝试会悄悄变成 90 s，又退回「没有全局预算」。
+- 预算按**每个 request 累计**，不随每次尝试重置。30 s 就是三次尝试合计 30 s；
+  否则三次尝试会悄悄变成 90 s，又退回「没有全局预算」。
 
 ### 1.1 控制流总览
 
 ```mermaid
 flowchart TD
-  A["turn 到达"] --> B["admitTurn()：累计预算 + 重入计数"]
+  A["request 到达"] --> B["admitRequest()：累计预算 + 重入计数"]
   B --> C{"本地 cap 命中？"}
   C -->|"否"| D["dispatch() → executeCandidatePool"]
   C -->|"apiKeys 2s / credentials 30s"| E["peek() 探测，锁定 model x credential"]
@@ -128,9 +130,9 @@ flowchart TD
 
 在入站准入路径上，两档预算耗尽是快速失败的唯一合法时机，但「失败」指的是
 **网关不再代等**，不是
-「这个 turn 报废」。客户端 SDK 只有拿到规范的 `429 + Retry-After` 才会自动退避
+「这个 request 报废」。客户端 SDK 只有拿到规范的 `429 + Retry-After` 才会自动退避
 重来；一个不带退避时刻的普通执行错误（当前 `chat-pipeline.ts` 的
-`executionError()`）会被判为不可重试，turn 在客户端侧照样丢失。因此两档超时都
+`executionError()`）会被判为不可重试，request 在客户端侧照样丢失。因此两档超时都
 必须把退避时刻交出去，以下四条是契约的一部分，不是建议：
 
 **(1) 取超时瞬间的 verdict，不取首次探测的。** 等待期间窗口继续老化，同伴也可能
@@ -209,13 +211,13 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
   做法不带 `[DONE]` 关闭。
 - **必须有心跳。** `server.ts` 与 `surfaces/` 目前没有任何周期性的 SSE
   keep-alive / `: ping` 帧（唯一的注释帧是结尾的 `: ocr-summary`，那是完成
-  摘要，不是心跳）。等待期间，`stream: true` 的 turn 必须周期性发送 SSE
+  摘要，不是心跳）。等待期间，`stream: true` 的 request 必须周期性发送 SSE
   注释帧，否则客户端
   SDK 的读超时会先触发。写出 200 SSE 头会改变终态纪律：头一经发出，最终
   失败只能是 error event 或断流，绝不能再回 429 JSON。非流式线路没有心跳
   通道，其累计预算必须压在客户端 SDK 常见超时之内。
 - **预算耗尽必须带退避时刻。** 第 2.1 节是规范而非附注：不带 `Retry-After`
-  （或其 SSE error event 等价字段）的超时拒绝，会让「turn 不被中断」的前提在
+  （或其 SSE error event 等价字段）的超时拒绝，会让「用户的一轮任务不被中断」的前提在
   客户端侧失效。`budget-exhausted` 事件必须记录 `retryAfterMs`，以及该值是
   精确值还是 `estimate`。
 - **不重复计量。** 见第 1 节。每次重入携带原始 `requestId`（ADR-0021）与
@@ -241,7 +243,7 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
 
 | 键 | 目标默认 | 说明 |
 | :--- | :--- | :--- |
-| `rateLimit.inboundGraceMs` | 2000 | 语义改为**每轮累计**预算。今天默认是 **1000**（`config/index.ts`）；**2000 是 `MAX_INBOUND_GRACE_MS` 硬钳制**，必须放宽它，否则该键根本调不高。 |
+| `rateLimit.inboundGraceMs` | 2000 | 语义改为**每请求累计**预算。今天默认是 **1000**（`config/index.ts`）；**2000 是 `MAX_INBOUND_GRACE_MS` 硬钳制**，必须放宽它，否则该键根本调不高。 |
 | `rateLimit.probeIntervalMs` | 1000 | **新增键**：两档入站预算的能力探测间隔。 |
 | `rateLimit.outboundCredentialWaitMs` | 30000 | **新增键**：本地凭证 cap 的累计预算。 |
 | `retry.inplace.maxRateLimitWaitMs` | 30000 | **复用，不新造**：该键已完整存在（`resilience/types.ts` → 磁盘 schema → 注释词典 → 前端），就是「429 最长原地等待」旋钮；今天默认 **2000**。 |
@@ -258,7 +260,7 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
 「长于客户端耐心、又短到不足以成为换路理由」的时间：硬持 socket 会撞上
 客户端超时（更糟的静默中断），换路要烧 cache 且池中同伴大概率同在该 cap
 之下。一个规范的 `429 + Retry-After` 把退避交给本来就懂退避的客户端。
-阶梯其余各处，turn 都被保住。
+阶梯其余各处，request 都被保住。
 
 ## 后果
 
@@ -281,13 +283,13 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
 - **一律换路。** 单次调用便宜，但销毁 prompt cache，且会因一个纯整形提示
   违反 keep-bound 铁律。
 - **一律快速失败。** 优化的是网关 socket，付出的是真正的产品代价——被中断
-  的 turn。
+  的用户 turn。
 - **无限排队。** 没有截止时间的隐藏队列；累计预算、重入上限与有界队列就是
   答案。
 
 ## 实现清单
 
-- [ ] 抽出 `admitTurn()`；跨重入携带 `requestId`、准入状态与累计已等待时长。
+- [ ] 抽出 `admitRequest()`；跨重入携带 `requestId`、准入状态与累计已等待时长。
 - [ ] 2 s / 30 s 累计预算 + 1 s 能力探测；保持配对锁定。
 - [ ] 把 KEEP-BOUND 的 `forced` 立即派发改成同一配对上的有界等待。
 - [ ] 实现 429 阶梯与池内最小 `Retry-After`。

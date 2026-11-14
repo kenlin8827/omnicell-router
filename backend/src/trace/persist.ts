@@ -13,12 +13,13 @@ import type { ExecutionTrace } from './tracker.js';
  * the inference hot path.
  */
 /**
- * Store schema version (PRAGMA user_version). v2 = records keyed by the
- * gateway's own `requestId`; v1 keyed by the CALLER's trace id, which is a
- * trace-wide correlation value and collapsed distinct requests of one
- * distributed trace onto a single row (ADR-0021).
+ * Store schema version (PRAGMA user_version). v3 = ADR-0024 write-time turn
+ * identity (`turnIndex` / `isPromptStart` / `turnDecision`, `requestNumber`);
+ * v2 keyed by the gateway's own `requestId`; v1 keyed by the CALLER's trace
+ * id, which collapsed distinct requests of one distributed trace onto a
+ * single row (ADR-0021).
  */
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 /**
  * Normalize a legacy persisted trace (written before the 2026-10 observability
@@ -151,6 +152,45 @@ async function tryOpenTraceStore(dir: string): Promise<TraceStore | null> {
         db.run(`PRAGMA user_version = ${DB_VERSION}`);
       });
       migrate();
+    }
+
+    // v3 (ADR-0024): one-shot normalization of stored trace blobs. The old
+    // `turnNumber` is renamed to `requestNumber`, and every row is stamped
+    // with an explicit write-time turn identity. Before this build the only
+    // boundary signal was `request.userPromptSummary` (blanked on tool-result
+    // continuations), so the migration replays it into the structured fields
+    // ONCE. Runtime readers stay strictly single-shaped: no dual-field
+    // fallback and no text heuristic on the hot path.
+    if (version < 3) {
+      db.run(`UPDATE traces SET data = REPLACE(data, '"turnNumber":', '"requestNumber":')
+              WHERE data LIKE '%"turnNumber":%'`);
+      const rows = db
+        .query('SELECT request_id, session_id, data FROM traces ORDER BY ts ASC, request_id ASC')
+        .all() as { request_id: string; session_id: string; data: string }[];
+      const update = db.query('UPDATE traces SET data = ? WHERE request_id = ?');
+      const highWater = new Map<string, number>();
+      db.transaction(() => {
+        for (const row of rows) {
+          let trace: Record<string, any>;
+          try {
+            trace = JSON.parse(row.data);
+          } catch {
+            continue;
+          }
+          if (!trace || typeof trace !== 'object' || trace.turnIndex !== undefined) continue;
+          const isPromptStart = Boolean(trace.request?.userPromptSummary);
+          const key = String(trace.sessionId ?? row.session_id ?? '');
+          const next = (highWater.get(key) ?? 0) + (isPromptStart ? 1 : 0);
+          highWater.set(key, next);
+          trace.turnIndex = next > 0 ? next : null;
+          trace.isPromptStart = isPromptStart;
+          trace.turnDecision = isPromptStart
+            ? 'new_prompt'
+            : next > 0 ? 'continuation' : 'no_prompt';
+          update.run([JSON.stringify(trace), row.request_id]);
+        }
+        db.run('PRAGMA user_version = 3');
+      })();
     }
     db.run('CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id)');
     db.run('CREATE INDEX IF NOT EXISTS idx_traces_ts ON traces(ts)');

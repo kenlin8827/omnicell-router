@@ -15,14 +15,14 @@ archival home of the full diagrams**.
 
 ## 1. Full path
 
-One turn, from admission to its single terminal. Subgraphs are the four owners of
+One request, from admission to its single terminal. Subgraphs are the four owners of
 control flow; every arrow crossing a subgraph boundary is either a re-entry into
-`admitTurn()` or a handoff to the client.
+`admitRequest()` or a handoff to the client.
 
 ```mermaid
 flowchart TD
-  subgraph A["admitTurn() — cumulative per-turn budget"]
-    A0["turn in: requestId + admission state"]
+  subgraph A["admitRequest() — cumulative per-request budget"]
+    A0["request in: requestId + admission state"]
     A1["peek() non-consuming probe"]
     A2{"local cap hit?"}
     A3["apiKeys limits: 2s budget"]
@@ -139,7 +139,7 @@ flowchart TD
   S7 -->|"no"| S10["429 + Retry-After = pool min peek.retryAfterMs"]
   S9 --> S11["suppress penalize(); breaker still records"]
   S11 --> S12{"relay.committed?"}
-  S12 -->|"no"| S13["return to admitTurn(), let probing decide"]
+  S12 -->|"no"| S13["return to admitRequest(), let probing decide"]
   S12 -->|"yes"| S14["close stream, no re-entry"]
   S6 --> S15["client backoff"]
   S10 --> S15
@@ -195,7 +195,7 @@ and target defaults are in ADR-0023 §5.
 
 | Nodes | ADR-0023 section | Governing statement |
 | :--- | :--- | :--- |
-| `A0`–`A9` | §1, §2 | one `admitTurn()`, cumulative budget, pair locked while waiting |
+| `A0`–`A9` | §1, §2 | one `admitRequest()`, cumulative budget, pair locked while waiting |
 | `P1`–`P6` | §1, consequences | `executeCandidatePool` stays the single funnel; denials are not counted |
 | `R0`–`R8` | §3 | the ladder ordered by cache cost; local caps never license a switch |
 | `E0`–`E8` | §2.1 | budget exhaustion still returns a usable backoff instant |

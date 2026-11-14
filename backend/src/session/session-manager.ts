@@ -5,6 +5,7 @@ import { ChatCompletionRequest } from '../types/openai.js';
 import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
 import { SessionConfig } from '../config/types.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
+import { classifyTurnBoundary, type TurnAssignment } from '../capture/turn-boundary.js';
 
 /**
  * RESERVED session-id namespace for the gateway's OWN loopback calls
@@ -32,7 +33,7 @@ export interface ConversationSession {
   pinnedProvider: string;
   createdAt: number;
   lastActiveAt: number;
-  turnCount: number;
+  requestCount: number;
   historyTiers: TierLevel[];
   /** Birth metadata — attached once on the first turn, immutable afterwards. */
   origin?: {
@@ -121,6 +122,7 @@ const MAX_TAIL_ENTRIES = 100_000;
 const MAX_CONVKEY_ENTRIES = 50_000;
 const MAX_BYPASS_ENTRIES = 10_000; // combo turn counters — aligns with the default session capacity
 const MAX_CLIENTREF_ENTRIES = 50_000; // client conversation refs -> session ids
+const MAX_TURN_COUNTER_ENTRIES = 10_000; // (sessionId) -> write-time turn high-water
 const CANDIDATE_CAP = 3;           // sessions a single conversation key may claim
 const ANCHOR_HEX = 20;             // anchor digest length
 const CONVERSATION_KEY_HEX = 24;   // conversation-key digest length
@@ -219,7 +221,14 @@ export class SessionManager {
   private chainAnchors = new Map<string, string>();  // 'C'-salted head-prefix hash -> sessionId
   private tailAnchors = new Map<string, string>();   // 'T'-salted trailing-window hash -> sessionId
   private convKeys = new Map<string, string[]>();    // conversation key -> candidate session ids, newest first
-  private bypassTurns = new Map<string, number>();   // combo/bypass sessionId -> recorded turn count (display-only)
+  private bypassTurns = new Map<string, number>();   // combo/bypass sessionId -> recorded request count (display-only)
+  /**
+   * Write-time turn high-water per session (ADR-0024 R2.3). This is the
+   * ONLY runtime source of `turnIndex`; retained traces are a seed for a
+   * missing/corrupt snapshot, never a fallback on the hot path.
+   * OBSERVATIONAL: never keys rate-limit budgets, billing or quota.
+   */
+  private turnCounters = new Map<string, { highWater: number; lastMessageCount?: number }>();
   /** Alias key (kind, API-key identity, client conversation id) -> sessionId. */
   private clientRefs = new Map<string, string>();
   private readonly ttlMs: number;
@@ -716,7 +725,7 @@ export class SessionManager {
           pinnedProvider: dummyModel.provider,
           createdAt: Date.now(),
           lastActiveAt: Date.now(),
-          turnCount: 1,
+          requestCount: 1,
           historyTiers: [proposedDecision.targetTier],
         },
         ratchetApplied: false,
@@ -736,7 +745,7 @@ export class SessionManager {
         pinnedProvider: initialModel.provider,
         createdAt: now,
         lastActiveAt: now,
-        turnCount: 1,
+        requestCount: 1,
         historyTiers: [proposedDecision.targetTier],
       };
       this.sessions.set(sessionId, session);
@@ -759,7 +768,7 @@ export class SessionManager {
     const intercept = opts?.allowIntercept !== false;
 
     if (this.config.strategy === 'sticky') {
-      session.turnCount++;
+      session.requestCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
@@ -791,7 +800,7 @@ export class SessionManager {
       const upgradedModel = resolveModelForTier(session.maxTier);
       session.pinnedModel = upgradedModel.id;
       session.pinnedProvider = upgradedModel.provider;
-      session.turnCount++;
+      session.requestCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
@@ -808,7 +817,7 @@ export class SessionManager {
     } else {
       // 3B. Downgrade intercepted
       const isDowngradeAttempt = proposedRank < currentMaxRank;
-      session.turnCount++;
+      session.requestCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
@@ -961,6 +970,45 @@ export class SessionManager {
    * anchors snapshot so numbering survives restarts (the live session
    * entities intentionally rebuild fresh — see loadPersisted).
    */
+  /**
+   * Allocate the request's write-time turn identity (ADR-0024 R2.1-R2.3).
+   * Called ONCE at the inbound admission gate, after the final session
+   * binding and before execution. Re-entries, failover hops, internal
+   * retries and the Layer-2 decision leg copy the returned value; they never
+   * call this again.
+   *
+   * `seed` is `max(turnIndex)` over retained traces for this session, used
+   * ONLY when the snapshot has no counter for it. The boundary rule is
+   * structural (message roles / content parts), never display text.
+   */
+  public allocateTurnIndex(
+    sessionId: string,
+    messages: Parameters<typeof classifyTurnBoundary>[0],
+    seed = 0
+  ): TurnAssignment {
+    const state = this.turnCounters.get(sessionId) ?? { highWater: Math.max(0, seed) };
+    const verdict = classifyTurnBoundary(messages, state.lastMessageCount);
+    if (verdict.isPromptStart) state.highWater += 1;
+    // A continuation always belongs to a turn. If a session opens with one
+    // (no preceding prompt in the retained window), start its sequence at 1
+    // rather than leaking a second meaning for `null`.
+    if (verdict.turnDecision !== 'no_prompt' && state.highWater === 0) state.highWater = 1;
+    state.lastMessageCount = verdict.messageCount;
+    this.setBounded(this.turnCounters, sessionId, state, MAX_TURN_COUNTER_ENTRIES);
+    this.markDirty();
+    return {
+      turnIndex: verdict.turnDecision === 'no_prompt' ? null : state.highWater,
+      isPromptStart: verdict.isPromptStart,
+      turnDecision: verdict.turnDecision,
+      messageCount: verdict.messageCount,
+    };
+  }
+
+  /** Seed helper: highest `turnIndex` retained for a session (0 when none). */
+  public turnHighWaterOf(sessionId: string): number {
+    return this.turnCounters.get(sessionId)?.highWater ?? 0;
+  }
+
   public recordBypassTurn(sessionId: string): number {
     const next = (this.bypassTurns.get(sessionId) ?? 0) + 1;
     this.setBounded(this.bypassTurns, sessionId, next, MAX_BYPASS_ENTRIES);
@@ -975,6 +1023,7 @@ export class SessionManager {
   public deleteSession(sessionId: string): boolean {
     const existed = this.sessions.delete(sessionId);
     this.bypassTurns.delete(sessionId);
+    this.turnCounters.delete(sessionId);
     // Purge anchor keys pointing at the deleted session. Scans are O(map) but
     // deletes are rare (manual UI delete / eviction at maxSessions capacity).
     for (const map of [this.chainAnchors, this.tailAnchors]) {
@@ -1043,21 +1092,21 @@ export class SessionManager {
   /* ------------------------------------------------------------ persist */
 
   /**
-   * Load anchors + conversation keys + client-ref aliases + bypass turn
-   * counters written by a previous run (per-environment JSON snapshot).
+   * Load anchors + conversation keys + client-ref aliases + bypass request
+   * counters + turn high-water counters written by a previous run.
    * Fail-open: a broken/missing file starts empty; a capture or persistence
    * problem must never break routing.
    *
-   * `v: 1` snapshots (pre-client-refs) load their four maps and simply start
-   * with no aliases — the alias is additive continuity, never a migration
-   * gate.
+   * `v: 1` / `v: 2` snapshots load their maps and simply start with no
+   * aliases / no turn counters — both are additive continuity, never a
+   * migration gate. `v: 3` adds `turnCounters`; every flush writes v3.
    */
   private loadPersisted(): void {
     if (!this.persistPath) return;
     try {
       const raw = fs.readFileSync(this.persistPath, 'utf8');
       const data = JSON.parse(raw);
-      if (data?.v !== 1 && data?.v !== 2) return;
+      if (data?.v !== 1 && data?.v !== 2 && data?.v !== 3) return;
       if (data.chainAnchors && typeof data.chainAnchors === 'object') {
         for (const [k, v] of Object.entries(data.chainAnchors)) {
           if (typeof k === 'string' && typeof v === 'string') this.setBounded(this.chainAnchors, k, v, MAX_CHAIN_ENTRIES);
@@ -1087,6 +1136,18 @@ export class SessionManager {
         for (const [k, v] of Object.entries(data.clientRefs)) {
           if (typeof k === 'string' && typeof v === 'string') {
             this.setBounded(this.clientRefs, k, v, MAX_CLIENTREF_ENTRIES);
+          }
+        }
+      }
+      if (data.turnCounters && typeof data.turnCounters === 'object') {
+        for (const [k, v] of Object.entries(data.turnCounters)) {
+          const c = v as { highWater?: unknown; lastMessageCount?: unknown };
+          if (typeof k === 'string' && typeof c?.highWater === 'number' &&
+              Number.isInteger(c.highWater) && c.highWater >= 0) {
+            this.setBounded(this.turnCounters, k, {
+              highWater: c.highWater,
+              ...(typeof c.lastMessageCount === 'number' ? { lastMessageCount: c.lastMessageCount } : {}),
+            }, MAX_TURN_COUNTER_ENTRIES);
           }
         }
       }
@@ -1130,13 +1191,14 @@ export class SessionManager {
     }
     try {
       const data = {
-        v: 2,
+        v: 3,
         savedAt: Date.now(),
         chainAnchors: Object.fromEntries(this.chainAnchors),
         tailAnchors: Object.fromEntries(this.tailAnchors),
         convKeys: Object.fromEntries(this.convKeys),
         bypassTurns: Object.fromEntries(this.bypassTurns),
         clientRefs: Object.fromEntries(this.clientRefs),
+        turnCounters: Object.fromEntries(this.turnCounters),
       };
       fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
       const tmp = `${this.persistPath}.tmp`;

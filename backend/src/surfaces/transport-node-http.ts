@@ -1,8 +1,8 @@
 import type http from 'node:http';
 import {
-  appendGatewayResponseChunk,
-  markGatewayResponseStreamStart,
-  emitGatewayResponse,
+  appendClientResponseChunk,
+  markClientResponseStreamStart,
+  emitClientResponse,
   type ClientExchangeContext,
 } from '../observability/http-exchange.js';
 import type { ProtocolSurface, TransportContext } from './types.js';
@@ -113,13 +113,13 @@ export function createNodeHttpTransport(
   const finalizeCapture = () => {
     if (!clientCtx || !clientCtx.recorder.isEnabled()) return;
     if (clientGone || res.socket?.destroyed) {
-      emitGatewayResponse(clientCtx, {
+      emitClientResponse(clientCtx, {
         statusCode: 499,
         statusMessage: 'Client Closed Request',
         getHeader: () => undefined,
       });
     } else {
-      emitGatewayResponse(clientCtx, res);
+      emitClientResponse(clientCtx, res);
     }
   };
 
@@ -168,7 +168,7 @@ export function createNodeHttpTransport(
         return;
       }
       up.stream.on('data', (chunk: Buffer) => {
-        if (clientCtx) appendGatewayResponseChunk(clientCtx, chunk.toString('utf8'));
+        if (clientCtx) appendClientResponseChunk(clientCtx, chunk.toString('utf8'));
       });
       up.stream.pipe(res);
       up.stream.on('end', () => {
@@ -195,7 +195,7 @@ export function createNodeHttpTransport(
           ...(headers ?? {}),
         });
         // Stash BEFORE end so the finalize below always sees the full body.
-        if (clientCtx) appendGatewayResponseChunk(clientCtx, serialized);
+        if (clientCtx) appendClientResponseChunk(clientCtx, serialized);
         res.end(serialized);
       } catch (err) {
         logWriteError(err, 'node-http sendJson write failed');
@@ -226,8 +226,8 @@ export function createNodeHttpTransport(
       // identical; the capture stash accumulates the same frames).
       try {
         if (clientCtx) {
-          markGatewayResponseStreamStart(clientCtx);
-          appendGatewayResponseChunk(clientCtx, chunk);
+          markClientResponseStreamStart(clientCtx);
+          appendClientResponseChunk(clientCtx, chunk);
         }
         res.write(chunk);
       } catch (err) {

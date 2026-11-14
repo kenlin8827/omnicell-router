@@ -2352,7 +2352,7 @@ export const SessionsPage: React.FC = () => {
                         : undefined;
                     return (
                     <tr key={tr.requestId} style={{ borderBottom: '1px solid var(--divider)' }}>
-                      <td style={DETAIL_TD_CENTER}>#{tr.turnNumber}</td>
+                      <td style={DETAIL_TD_CENTER}>#{tr.requestNumber}</td>
                       <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</td>
                       <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>
                         {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}

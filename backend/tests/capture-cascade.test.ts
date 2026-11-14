@@ -223,7 +223,25 @@ describe('capture-cascade (DELETE /api/admin/sessions/:id)', () => {
     try {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 365, maxTotalMB: 512, maxBodyBytes: 1024 });
       const longId = `sess_${'x'.repeat(600)}`; // >512 chars, unsafe by length → hashed name
-      await rec.record({ sessionId: longId, status: 'ok', model: 'auto', request: {} });
+      await rec.recordEvent({
+        eventType: 'http-exchange',
+        direction: 'client',
+        phase: 'request',
+        exchangeId: 'ex_longid',
+        requestId: 'req_longid',
+        sessionId: longId,
+        model: 'auto',
+        status: 'ok',
+        wire: {
+          requestLine: 'POST /v1/chat/completions HTTP/1.1',
+          requestHeaders: {},
+          requestBody: '{}',
+          responseLine: '',
+          status: 0,
+          responseHeaders: {},
+          responseBody: '',
+        },
+      });
       const matches = rec.findBySession(longId);
       assert.equal(matches.length, 1, 'long hashed archive is found, not silently skipped');
       const file = path.join(dir, matches[0].date, matches[0].file);

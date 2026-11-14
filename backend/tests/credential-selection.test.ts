@@ -67,7 +67,7 @@ const session = (id: string, over: Partial<ConversationSession> = {}): Conversat
   pinnedProvider: PROVIDER,
   createdAt: Date.now(),
   lastActiveAt: Date.now(),
-  turnCount: 1,
+  requestCount: 1,
   historyTiers: ['plus'],
   ...over,
 });

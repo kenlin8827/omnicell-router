@@ -7,6 +7,7 @@ import { renameWithRetry } from '../utils/atomic-write.js';
 import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 import { setCaptureSecretRedaction } from '../observability/http-exchange.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
+import { NO_TURN, type TurnDecision, type TurnIdentity } from './turn-boundary.js';
 
 /**
  * One captured turn — a single JSONL line in the per-session archive file.
@@ -84,83 +85,22 @@ export interface RawWireCapture {
 }
 
 /**
- * @deprecated Use `HttpExchangeEvent` instead. The turn-centric schema
- * pre-dates the HTTP exchange event stream; new capture JSONL files
- * only write `HttpExchangeEvent`. The fields below remain readable for
- * back-compat with already-written archives but the orchestrator no
- * longer writes them — every field is best-effort, last-write-wins
- * semantics that no longer match how capture actually works.
+ * One capture EVENT — a single JSONL line = one phase (`request` or
+ * `response`) of one HTTP exchange. ADR-0024 five-layer ladder:
+ * `session ⊃ turn ⊃ request ⊃ exchange ⊃ event`.
+ *
+ * Every line is self-describing: it names its `requestId` (the request
+ * layer), `exchangeId` (the exchange layer), `turnIndex` (the turn layer)
+ * and `sessionId` (the session layer). No reader reconstructs a boundary
+ * from bodies, prompt text or message counts — all of those are written here.
+ *
+ * `direction` names the LEG, not a vector: `client` = client ↔ gateway,
+ * `upstream` = gateway ↔ provider. A response event carries the same
+ * `direction` as its request. There is no `gateway` leg.
  */
-interface CaptureRecord {
-  id: string; // cap_<hex>
-  ts: number; // epoch ms
-  sessionId: string; // raw (unsanitized) session id
-  status: 'ok' | 'error';
-  model: string; // client-requested model id
-  request?: unknown;
-  /** @deprecated read-only back-compat — see HttpExchangeEvent.wire.requestBody. */
-  upstreamRequest?: unknown;
-  /**
-   * @deprecated read-only back-compat — see HttpExchangeEvent.wire.responseBody
-   * (one outbound-response event per HTTP exchange).
-   */
-  upstreamResponse?: unknown;
-  /**
-   * @deprecated read-only back-compat — replaced by the HTTP exchange event
-   * stream (one outbound-response event with status / headers / body).
-   */
-  upstreamHttp?: UpstreamHttpRecord;
-  /** @deprecated see HttpExchangeEvent.wire. */
-  upstreamWire?: RawWireCapture;
-  /** @deprecated see HttpExchangeEvent.wire. */
-  inboundWire?: RawWireCapture;
-  /** @deprecated see outbound-failure events with status + body. */
-  upstreamError?: unknown;
-  response?: unknown;
-  error?: string;
-  routing?: {
-    tierUsed?: string;
-    layerUsed?: string;
-    modelUsed?: string;
-    provider?: string;
-    fallbackOccurred?: boolean;
-    failoverPath?: string[];
-  };
-  usage?: unknown;
-  latencyMs?: number;
-  truncated?: boolean;
-}
+export const CAPTURE_SCHEMA = 2;
 
-/**
- * One HTTP-exchange event in the capture event stream. Replaces the
- * turn-centric `CaptureRecord` model: every HTTP exchange now emits TWO
- * independent events (request + response) instead of one combined record.
- *
- * Benefits over the turn model:
- *   - **Request events persist even when no response arrives** (timeout,
- *     client cancel, provider unreachable) — the request side is captured
- *     synchronously before the wire call returns, so failure is recorded.
- *   - **Request / response timing** becomes a first-class pair. Two events
- *     with the same `exchangeId` describe one exchange; their `ts`
- *     delta IS the request→response latency, computed at read time.
- *   - **Symmetry across client and upstream legs**: each direction emits
- *     its own request + response event, all four sharing one `requestId`
- *     (the gateway turn id) so the full picture joins back together.
- *
- * A single inference turn produces 2-4 events sharing the same `requestId`:
- * client-request, gateway-response, upstream-request, upstream-response.
- * File layout keeps the per-turn grouping (same `sessionId`) so the
- * session browser keeps working while the events stay individually
- * retrievable.
- *
- * Direction naming follows the gateway's POV:
- *   - `client`     = client ↔ gateway (the request that arrived, the response
- *                    that was sent back to the client)
- *   - `upstream`   = gateway ↔ upstream provider (the request the gateway
- *                    sent upstream, the response that came back)
- * This matches OpenTelemetry conventions for proxy/gateway roles.
- */
-export interface HttpExchangeEvent {
+export interface CaptureEvent {
   id: string; // evt_<hex>
   ts: number; // epoch ms — when THIS phase fired (request send / response recv)
   /** Always 'http-exchange' for this event type. */
@@ -169,6 +109,34 @@ export interface HttpExchangeEvent {
   direction: 'client' | 'upstream';
   /** 'request' = the wire side that's being sent; 'response' = the side that's being received. */
   phase: 'request' | 'response';
+  /** Archive schema version. Every line in a capture archive carries 2. */
+  schema: 2;
+  /**
+   * Provenance of a line that was upgraded by the archive migration chain:
+   * the schema it was ORIGINALLY written at (`1` for the unmarked baseline).
+   * Absent on lines the writer produced directly — which is exactly what
+   * distinguishes a gate-stamped turn identity from one reconstructed during
+   * migration. Stamped by the engine, never by a step.
+   */
+  migratedFrom?: number;
+  /**
+   * 1-based, monotonic turn ordinal WITHIN this `sessionId`, allocated once
+   * at the inbound admission gate and copied onto every event of the request.
+   * `null` is a first-class value: a request with no user prompt (standalone
+   * decision surface, probe, replay) belongs to no turn. Never derived at
+   * read time.
+   */
+  turnIndex: number | null;
+  /** True only on the request that OPENED the turn. */
+  isPromptStart: boolean;
+  /** Structural provenance for the boundary decision (see turn-boundary.ts). */
+  turnDecision: TurnDecision;
+  /**
+   * 1-based attempt ordinal WITHIN (requestId, leg). One client exchange is
+   * always 1; every upstream failover hop / in-place retry increments it.
+   * Written at emit time, never inferred at read time.
+   */
+  attempt: number;
   /**
    * Gateway-minted id of THIS HTTP exchange, shared by the request event AND
    * its matching response event (same direction): one client exchange = one
@@ -184,8 +152,8 @@ export interface HttpExchangeEvent {
    */
   clientRequestId?: string;
   /**
-   * Gateway-owned id of the INFERENCE TURN these events belong to (ADR-0021)
-   * — the turn-join key. Every event of one client request carries it;
+   * Gateway-owned id of the REQUEST these events belong to (ADR-0021) —
+   * the request-join key. Every event of one client request carries it;
    * `clientRequestId` above may be shared by several requests.
    */
   requestId: string;
@@ -236,38 +204,12 @@ export interface HttpExchangeEvent {
    */
   apiKey?: CaptureKeyIdentity;
   /**
-   * Flattened LAST user message of the request, capped — stamped on
-   * client-request events at write time so metadata-only reads
-   * (`bodies=none`) can still render the turn prompt in the console
-   * timeline. Absent on other phases/directions and for bodies without user
-   * text. Note this is the *last user message of the body*, which for a
-   * tool-result continuation is the PREVIOUS turn's prompt (clients resend
-   * the whole history) — the read plane drops it in that case, see
-   * `promptLastUserIdx`.
+   * Display-only flattened last user message of the client-request body,
+   * capped. Stamped on client-request events at write time so metadata-only
+   * reads (`bodies=none`) can render a prompt. PRESENTATION ONLY: it never
+   * decides a turn boundary — `isPromptStart` / `turnDecision` do.
    */
   promptSummary?: string;
-  /**
-   * Length of the client-request body's message array (post-parse, raw as
-   * received) — the floor the NEXT turn's `promptLastUserIdx` is compared
-   * against: clients append, so a genuinely new user message always lands at
-   * or past this index. Stamped with `promptSummary`; absent when the body
-   * carries no message array (plain-string `input`, System One `state`, a
-   * non-JSON / unrepairable body).
-   */
-  promptMessageCount?: number;
-  /**
-   * Index of the last user-role message inside `promptMessageCount`; absent
-   * when that array has no user message. An index BELOW the previous turn's
-   * `promptMessageCount` — with this turn's array no shorter than that
-   * previous one — means the message already existed at the previous turn:
-   * resent history, not this turn's question, so `groupEventsIntoTurns`
-   * drops `promptSummary` and the timeline renders the no-prompt glyph. A
-   * shrunk array (client-side compaction) disables the test: every index
-   * moved, and the last user message is normally the new prompt. Same rule
-   * the session plane applies to `userPromptSummary` (see the orchestrator's
-   * trace record).
-   */
-  promptLastUserIdx?: number;
   /** Error message if THIS phase errored (e.g. upstream request never got a response). */
   error?: string;
   /**
@@ -294,10 +236,14 @@ export interface HttpExchangeEvent {
   /**
    * Epoch ms of the FIRST streamed body chunk of this response — stamped at
    * the wire reader (upstream SSE loop / gateway SSE write) when the first
-   * chunk crosses. Paired with the event `ts` (response received / finalized)
-   * it yields the TTFT and the decode window (see CaptureTurnSummary).
-   * Undefined for buffered single-shot responses and for events recorded
-   * before the stamp existed.
+   * chunk crosses. Undefined for buffered single-shot responses.
+   *
+   * TIMING CONTRACT (single definition, no second "end" field): `ts` is the
+   * moment THIS event was recorded — request events fire before the wire
+   * call, response events fire when the response side is fully known
+   * (finalized). Therefore `response.ts - request.ts` is the whole exchange
+   * duration, `firstByteTs - request.ts` is TTFT and
+   * `response.ts - firstByteTs` is the decode window.
    */
   firstByteTs?: number;
 }
@@ -315,123 +261,120 @@ export interface CaptureKeyIdentity {
   name: string;
 }
 
+/** A leg of one request. There is no `gateway` leg — ADR-0024 §5. */
+export type CaptureExchangeLeg = 'client' | 'upstream' | 'decision';
+
 /**
- * One logical inference turn: the four http-exchange events joined by
- * `requestId` (see `groupEventsIntoTurns`).
+ * ONE HTTP exchange = one request event + its response event, paired by
+ * `exchangeId`. A request owns 2-N of these (client, upstream, every failover
+ * attempt, the Layer-2 decision pair). `attempt` is 1-based within
+ * `(requestId, leg)`; no hop is ever overwritten.
  */
-export interface CaptureTurnSummary {
-  /** Gateway turn id (ADR-0021) — the join key. */
+export interface CaptureExchange {
+  leg: CaptureExchangeLeg;
+  attempt: number;
+  exchangeId: string;
+  purpose?: ExchangePurpose;
+  request?: CaptureEvent;
+  response?: CaptureEvent;
+  /** response.ts - request.ts (whole exchange duration). */
+  latencyMs?: number;
+  /** firstByteTs - request.ts; undefined for buffered replies. */
+  ttftMs?: number;
+  /** response.ts - firstByteTs (decode window). */
+  genMs?: number;
+}
+
+/** The last exchange of a leg — the one that served the client. */
+export function primaryExchange(
+  summary: CaptureRequestSummary,
+  leg: CaptureExchangeLeg
+): CaptureExchange | undefined {
+  let found: CaptureExchange | undefined;
+  for (const ex of summary.exchanges) {
+    if (ex.leg === leg && (found === undefined || ex.attempt >= found.attempt)) found = ex;
+  }
+  return found;
+}
+
+/** Convenience projection: one side of the primary exchange of a leg. */
+export function exchangeEvent(
+  summary: CaptureRequestSummary,
+  leg: CaptureExchangeLeg,
+  phase: 'request' | 'response'
+): CaptureEvent | undefined {
+  return primaryExchange(summary, leg)?.[phase];
+}
+
+/**
+ * One REQUEST: all HTTP exchanges sharing one `requestId`, plus the
+ * write-time turn identity copied from its events. Read-plane projection
+ * over `exchanges[]` — no turn boundary, prompt or ordinal is derived here.
+ */
+export interface CaptureRequestSummary {
+  /** Gateway request id (ADR-0021) — the join key. */
   requestId: string;
   /** Caller correlation value, carried over from the client-request event. */
   clientRequestId?: string;
   sessionId: string;
   model: string;
-  /**
-   * 1-based REQUEST sequence number — one per client request, the same unit
-   * as the trace plane's `turnNumber` (backed by `ExecutionTrace.turnNumber`,
-   * see `trace/tracker.ts`). Numbered inside the read
-   * window; the read response carries `windowRequests` so the console can
-   * offset it against the exact archive tally and show an absolute number.
-   * Absent on turns whose client-request event fell outside the window (a
-   * continuation leg, not a request).
-   */
-  requestNumber?: number;
-  /**
-   * 1-based PROMPT-ROUND number — one per user prompt plus the requests it
-   * drove (tool-call hops). Continuation turns share their round's number.
-   * Numbered inside the read window; a leading prompt-less block is the
-   * visible tail of a round whose prompt sits outside the window and opens
-   * round 1. This is the console's "轮次" — never the request count.
-   */
-  roundNumber?: number;
-  /**
-   * This turn's NEW user prompt — lifted from the client-request event, and
-   * BLANKED when that request only resent the previous turn's user message
-   * (see groupEventsIntoTurns). Absent = the turn carried no fresh user
-   * message (tool-result continuation), rendered as the no-prompt glyph.
-   */
+  /** Write-time turn identity. `null` = this request belongs to no turn. */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: TurnDecision;
+  /** Display-only prompt text, stamped on the sole prompt-start request. */
   promptSummary?: string;
-  clientRequest?: HttpExchangeEvent;
-  gatewayResponse?: HttpExchangeEvent;
-  upstreamRequest?: HttpExchangeEvent;
-  upstreamResponse?: HttpExchangeEvent;
-  /**
-   * The Layer 2 decision layer's HTTP leg when one fired inside this turn
-   * (`purpose: 'l2-decision'` upstream events). Kept in SEPARATE slots — never
-   * merged into the serving upstream pair — so the console can show both
-   * calls and tell them apart (the decision layer call precedes candidate execution
-   * and would otherwise be overwritten by the last-write-wins serving leg).
-   */
-  decisionRequest?: HttpExchangeEvent;
-  decisionResponse?: HttpExchangeEvent;
-  /** Any of the four events with an error field set; "first error wins". */
+  /** 1-based REQUEST ordinal inside the read window. The pager's unit. */
+  requestNumber?: number;
+  /** Every exchange of this request, in wire order. Never last-write-wins. */
+  exchanges: CaptureExchange[];
+  /** First error across all events ("first error wins"). */
   error?: string;
-  /** Decision-leg cycle latency (decision-resp.ts - decision-req.ts). */
-  decisionLatencyMs?: number;
-  /** Gateway cycle latency (client-resp.ts - client-req.ts). */
-  gatewayLatencyMs?: number;
-  /** Upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
-  upstreamLatencyMs?: number;
-  /** TTFT / decode window for the L2 decision leg (same derivation as upstream). */
-  decisionTtftMs?: number;
-  decisionGenMs?: number;
-  /**
-   * TTFT / decode window, derived from the response event's firstByteTs and
-   * the matching request event's ts — the industry TTFT/TPS split, measured
-   * at the wire on EACH leg. Undefined when the leg was not streamed
-   * (buffered exchange) or the event predates the stamp.
-   */
-  gatewayTtftMs?: number;
-  gatewayGenMs?: number;
-  upstreamTtftMs?: number;
-  upstreamGenMs?: number;
 }
 
 /**
- * One user-prompt round over the WHOLE archive (not a read window): the
- * prompt and the contiguous request range it drove. `firstRequest` /
- * `lastRequest` are 1-based chronological request numbers, so the console can
- * map a round onto any page without loading full bodies.
+ * One TURN over the WHOLE archive, indexed by the WRITE-TIME `turnIndex`.
+ * `firstRequest` / `lastRequest` are 1-based chronological request numbers.
  */
-export interface CaptureRoundIndexEntry {
-  /** 1-based chronological round number over the whole conversation. */
-  ordinal: number;
-  /** New user message that opened the round; absent for a legacy archive. */
+export interface CaptureTurnIndexEntry {
+  /** The immutable write-time turn ordinal inside its session. */
+  turnIndex: number;
+  /** New user message that opened the turn. */
   prompt?: string;
-  /** Request send time (epoch ms) of the round's first request. */
+  /** Request send time (epoch ms) of the turn's first request. */
   startTs?: number;
-  /** Client requests in this round (the prompt turn + tool-loop hops). */
+  /** Requests in this turn (prompt request + tool-loop hops). */
   requests: number;
   firstRequest: number;
   lastRequest: number;
 }
 
-/** Exact whole-archive totals + the prompt-round index (metadata only). */
+/** Exact whole-archive totals + the write-time turn index (metadata only). */
 export interface CaptureArchiveSummary {
   requests: number;
   fragments: number;
-  rounds: CaptureRoundIndexEntry[];
+  turns: CaptureTurnIndexEntry[];
 }
 
 interface RequestIndexState {
   requests: number;
-  rounds: CaptureRoundIndexEntry[];
-  /** sessionId → previous request's prompt message count (continuation floor). */
-  lastMessageCount: Map<string, number>;
+  turns: CaptureTurnIndexEntry[];
+  /** sessionId + turnIndex -> index into `turns` (a turn may span shards). */
+  byKey: Map<string, CaptureTurnIndexEntry>;
 }
 
 const newRequestIndexState = (): RequestIndexState => ({
   requests: 0,
-  rounds: [],
-  lastMessageCount: new Map(),
+  turns: [],
+  byKey: new Map(),
 });
 
 /** Targeted line scans: the archive is compact JSON written by this recorder. */
 const RE_CAPTURE_SESSION_ID = /"sessionId":"((?:[^"\\]|\\.)*)"/;
 const RE_CAPTURE_TS = /"ts":(\d+)/;
 const RE_CAPTURE_PROMPT_SUMMARY = /"promptSummary":("(?:[^"\\]|\\.)*")/;
-const RE_CAPTURE_PROMPT_COUNT = /"promptMessageCount":(\d+)/;
-const RE_CAPTURE_PROMPT_LAST_USER = /"promptLastUserIdx":(\d+)/;
+const RE_CAPTURE_TURN_INDEX = /"turnIndex":(\d+)/;
+const RE_CAPTURE_IS_PROMPT_START = /"isPromptStart":true/;
 
 interface CaptureDateRow {
   date: string; // YYYY-MM-DD (local time)
@@ -452,9 +395,9 @@ interface CaptureSessionRow {
   sessionId: string; // same as file minus the .jsonl suffix
   bytes: number;
   mtimeMs: number;
-  turns: number; // total captured turns
-  failed: number; // turns with status === 'error'
-  lastStatus?: 'ok' | 'error'; // status of the most recent turn (badge dot)
+  requests: number; // total captured requests (ADR-0024 request layer)
+  failed: number; // requests with an error outcome
+  lastStatus?: 'ok' | 'error'; // status of the most recent request (badge dot)
   /** First user-message text of the session (single line, capped) so the console list is human-identifiable. */
   preview?: string;
   /**
@@ -486,7 +429,7 @@ interface CaptureSessionRow {
 /**
  * One archive-file hit for a session id, located by NAME across all date
  * directories. Coordinates only (enough to read/delete the archive) — row
- * metadata (turns/preview/apiKey) comes from listSessions, never from a
+ * metadata (requests/preview/apiKey) comes from listSessions, never from a
  * name-only find.
  */
 interface CaptureSessionMatch {
@@ -594,7 +537,7 @@ const READ_WINDOW_GROWTH_CEIL_BYTES = 3 * READ_WINDOW_CEIL_BYTES;
  * usage repeats.
  */
 const COMPLETION_TOKENS_RE = /"(?:completion_tokens|output_tokens)"\s*:\s*(\d+)/g;
-const deriveCompletionTokens = (ev: HttpExchangeEvent): void => {
+const deriveCompletionTokens = (ev: CaptureEvent): void => {
   if (ev.phase !== 'response') return;
   const body = ev.wire?.responseBody;
   if (typeof body !== 'string') return;
@@ -607,10 +550,10 @@ const deriveCompletionTokens = (ev: HttpExchangeEvent): void => {
 /**
  * bodies='none' strips the wire bodies (lines, status, headers kept) —
  * metadata-first reads return KB instead of MB so the console paints the
- * turn list immediately; full bodies arrive on demand via readTurn (per
+ * turn list immediately; full bodies arrive on demand via readRequest (per
  * turn) or a bodies=full re-read (conversation lens).
  */
-const stripBodies = (events: HttpExchangeEvent[]): void => {
+const stripBodies = (events: CaptureEvent[]): void => {
   for (const ev of events) {
     // Partial view of the wire: RawWireCapture declares the bodies required
     // (they are, on disk) — the stripped in-memory copy drops them.
@@ -629,7 +572,7 @@ const stripBodies = (events: HttpExchangeEvent[]): void => {
  * repeat the same history and only bloat memory. Upstream request bodies are
  * byte-identical to their client counterpart, so they always go.
  */
-const stripBodiesForChat = (events: HttpExchangeEvent[], keepRequests: Set<HttpExchangeEvent>): void => {
+const stripBodiesForChat = (events: CaptureEvent[], keepRequests: Set<CaptureEvent>): void => {
   for (const ev of events) {
     const wire = ev.wire as Partial<RawWireCapture> | undefined;
     if (!wire) continue;
@@ -662,8 +605,10 @@ export class CaptureRecorder {
   private maxSessionBytes: number;
   private storeMedia: boolean;
   private redactSecrets: boolean;
-  // Per-session seal bookkeeping: cached byte size per archive path + which
-  // archives already got their terminal `archive-overflow` line.
+  // Per-session size-cap bookkeeping: cached byte size per archive path, plus
+  // which archives already got their terminal `archive-overflow` line. This
+  // "seal" caps one runaway session; it has nothing to do with the schema
+  // carried on the lines themselves.
   private fileBytesCache = new Map<string, number>();
   private sealedFiles = new Set<string>();
   /** Whole-archive request/round summaries keyed by file stat signature. */
@@ -740,7 +685,9 @@ export class CaptureRecorder {
   /** Idempotent hourly retention sweep timer (unref'd, never blocks exit). */
   private startSweepTimer(): void {
     if (this.sweepTimer) return;
-    this.sweepTimer = setInterval(() => this.sweep(), 3_600_000);
+    this.sweepTimer = setInterval(() => {
+      this.sweep();
+    }, 3_600_000);
     this.sweepTimer.unref?.();
   }
 
@@ -752,67 +699,22 @@ export class CaptureRecorder {
   }
 
   /**
-   * @deprecated Use `recordEvent()` instead. The turn-centric `CaptureRecord`
-   * model has been superseded by `HttpExchangeEvent` (one event per HTTP
-   * side, request and response are independent). `record()` is kept only
-   * for back-compat with already-written archive files; the orchestrator
-   * no longer calls it. New code MUST use `recordEvent()`.
+   * `schema`, `turnIndex`, `isPromptStart`, `turnDecision` and `attempt` are
+   * stamped HERE — the single write point — so every archive line is fully
+   * self-describing. Production emitters pass an explicit `TurnIdentity`
+   * allocated at the admission gate; emitters that have none (standalone
+   * surfaces, tests) get `NO_TURN`, the first-class "no prompt" value.
+   * Readers never fill these in.
    */
-  public async record(entry: Omit<CaptureRecord, 'id' | 'ts'>): Promise<void> {
-    if (!this.enabled) return;
-
-    const request = this.truncateField(entry.request);
-    const upstreamRequest = this.truncateField(entry.upstreamRequest);
-    const upstreamError = this.truncateField(entry.upstreamError);
-    const response = this.truncateField(entry.response);
-    // upstreamHttp is a fixed-shape HTTP summary (URL/method/status/headers/
-    // ttfb/duration/attemptIndex/wireKind) — bounded by header whitelist, no
-    // body payload, so it never approaches maxBodyBytes. Pass through.
-    const record: CaptureRecord = {
-      ...entry,
-      id: `cap_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
-      ts: Date.now(),
-      request: request.value,
-      upstreamRequest: upstreamRequest.value,
-      upstreamError: upstreamError.value,
-      response: response.value,
-      truncated:
-        request.truncated || upstreamRequest.truncated || upstreamError.truncated || response.truncated || undefined,
-    };
-
-    const file = path.join(
-      this.rootDir,
-      CaptureRecorder.localDateDir(new Date(record.ts)),
-      CaptureRecorder.sessionFileName(record.sessionId)
-    );
-
-    try {
-      this.ensureDir(path.dirname(file));
-      await fs.promises.appendFile(file, JSON.stringify(record) + '\n', 'utf8');
-    } catch (err: any) {
-      console.warn(`[Capture] Failed to append to ${file}: ${err.message}`);
-    }
-  }
-
-  /**
-   * Append one HTTP-exchange event to the event stream. Each HTTP exchange
-   * emits TWO events (one request, one response) sharing the same
-   * `exchangeId`. One inference turn typically produces 2-4 events
-   * sharing the same `requestId`. Synchronous callers (handler scope,
-   * provider scope) can fire this the moment the wire side is known —
-   * there is no longer a "wait for the response" barrier before the
-   * request side is recorded.
-   *
-   * Same fail-open contract as `record()`: a capture failure must never
-   * break the inference hot path.
-   */
-  public async recordEvent(event: Omit<HttpExchangeEvent, 'id' | 'ts'>): Promise<void> {
+  public async recordEvent(
+    event: Omit<CaptureEvent, 'id' | 'ts' | 'schema' | 'attempt' | keyof TurnIdentity> &
+      Partial<TurnIdentity> & { attempt?: number }
+  ): Promise<void> {
     if (!this.enabled) return;
     const ts = Date.now();
 
-    // Bound wire bodies at the same maxBodyBytes cap as the legacy turn
-    // schema — a 10MB request body must not blow past the per-line JSONL
-    // budget and starve retention. `WireBody` is `string | { hex: string }`
+    // Bound wire bodies at the maxBodyBytes cap — a 10MB request body must
+    // not blow past the per-line JSONL budget and starve retention. `WireBody` is `string | { hex: string }`
     // — we count bytes in BOTH forms (UTF-8 string length, hex bytes via
     // halving). Truncation yields the same shape so the field type stays
     // stable for readers.
@@ -852,14 +754,25 @@ export class CaptureRecorder {
       responseBody: truncatedResp.value ?? '',
     };
 
-    const full: HttpExchangeEvent & { truncated?: boolean } = {
+    // A prompt-start client request gets a DISPLAY-ONLY prompt stamp. An
+    // emitter that supplied one (e.g. a harness surface with a non-chat body)
+    // keeps its own text; the stamp is never a boundary signal.
+    const stampedPrompt =
+      event.direction === 'client' &&
+      event.phase === 'request' &&
+      event.isPromptStart &&
+      event.promptSummary === undefined
+        ? CaptureRecorder.turnPromptStamp(truncatedReq.value ?? '')
+        : undefined;
+    const full: CaptureEvent & { truncated?: boolean } = {
+      ...NO_TURN,
       ...event,
+      schema: CAPTURE_SCHEMA,
+      attempt: event.attempt ?? 1,
       id: `evt_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
       ts,
       wire,
-      ...(event.direction === 'client' && event.phase === 'request'
-        ? CaptureRecorder.turnPromptStamp(truncatedReq.value ?? '')
-        : {}),
+      ...(stampedPrompt !== undefined ? { promptSummary: stampedPrompt } : {}),
       ...(truncated ? { truncated: true } : {}),
     };
 
@@ -1036,97 +949,65 @@ export class CaptureRecorder {
       try {
         const filePath = path.join(dir, f.name);
         const st = fs.statSync(filePath);
-        // Per-session outcome tally for the console badges. Two line formats
-        // share the archive:
-        //   - legacy cap_ turn records (one line per turn): counted directly.
-        //   - evt_ http-exchange events (2-4 lines per turn): collected and
-        //     grouped via groupEventsIntoTurns, so a turn counts once no
-        //     matter how many of its events carry an error status.
-        let turns = 0;
+        // Per-REQUEST outcome tally for the console badges. Every line is a
+        // schema-2 http-exchange event; events are grouped by requestId so a
+        // failover with 6 legs still counts as one request and one outcome.
+        let requests = 0;
         let failed = 0;
         let lastStatus: 'ok' | 'error' | undefined;
         let preview: string | undefined;
         let protocol: CaptureSessionProtocol | undefined;
-        // Key attribution: collect the DISTINCT identities seen in the
-        // archive (write order). Single-key sessions → one entry; rotated /
-        // mixed-key sessions → the full set so per-app retrieval matches
-        // every app that contributed. Legacy lines carry no apiKey.
+        // DISTINCT api-key identities seen in this archive, in write order.
         const seenKeys = new Map<string, CaptureKeyIdentity>();
         let conversationKey: string | undefined;
-        const streamEvents: HttpExchangeEvent[] = [];
+        const streamEvents: CaptureEvent[] = [];
         try {
           // Ceiling: the tally needs EVERY line, so this is an uncapped
           // synchronous read bounded only by the per-session seal
-          // (maxSessionMB, default 512 MB) — a date full of sealed-maximum
-          // sessions can stall the event loop for seconds per listing.
-          // Accepted: admin-console surface, operator-initiated, and the seal
-          // is what keeps the worst case finite. Upgrade path: stream the file
-          // in chunks (createReadStream + line splitter) or keep an on-disk
-          // per-file turn counter.
+          // (maxSessionMB, default 512 MB). Admin-console surface,
+          // operator-initiated.
           const content = fs.readFileSync(filePath, 'utf8');
           for (const line of content.split(/\r?\n/)) {
             if (!line.trim()) continue;
+            let rec: Record<string, unknown>;
             try {
-              const rec = JSON.parse(line);
-              // Terminal seal marker — metadata, never a turn. Skipping it here
-              // keeps the legacy else-branch below from counting it as a
-              // phantom turn (the same bug class as event lines vs turns).
-              if (rec.eventType === 'archive-overflow') continue;
-              if (rec.eventType === 'http-exchange') {
-                const ev = CaptureRecorder.normalizeArchivedEvent(rec as Record<string, unknown>);
-                if (ev) streamEvents.push(ev);
-                if (rec.apiKey && rec.apiKey.id && !seenKeys.has(String(rec.apiKey.id))) {
-                  seenKeys.set(String(rec.apiKey.id), {
-                    id: String(rec.apiKey.id),
-                    name: String(rec.apiKey.name ?? ''),
-                  });
-                }
-                if (conversationKey === undefined && typeof rec.conversationKey === 'string' && rec.conversationKey) {
-                  conversationKey = rec.conversationKey;
-                }
-                // First client request body = the session's opening turn.
-                // extractSessionPreview also accepts the raw string form
-                // (it strips a "...[TRUNCATED]" tail and repairs the cut
-                // JSON), so pass the wire body through unparsed.
-                if (
-                  preview === undefined &&
-                  rec.direction === 'client' &&
-                  rec.phase === 'request' &&
-                  rec.wire?.requestBody !== undefined
-                ) {
-                  preview = CaptureRecorder.extractSessionPreview(rec.wire.requestBody);
-                }
-                // Inbound-protocol badge: the FIRST client request's request
-                // line wins; a req-less emission (empty line) keeps looking.
-                if (protocol === undefined && rec.direction === 'client' && rec.phase === 'request') {
-                  protocol = CaptureRecorder.protocolFromRequestLine(rec.wire?.requestLine);
-                }
-              } else {
-                turns++;
-                const status = rec.status;
-                if (status === 'error') failed++;
-                if (status === 'ok' || status === 'error') lastStatus = status;
-                // Files are append-only, so the first line with a request body
-                // is the session's opening turn — capture its user text once.
-                if (preview === undefined && rec.request !== undefined) {
-                  preview = CaptureRecorder.extractSessionPreview(rec.request);
-                }
-              }
+              rec = JSON.parse(line) as Record<string, unknown>;
             } catch {
-              // Corrupt line — counts as a turn but not a failure.
-              turns++;
+              continue; // corrupt line — not a request
+            }
+            if (rec.eventType === 'archive-overflow') continue;
+            if (rec.eventType !== 'http-exchange') continue;
+            const ev = CaptureRecorder.parseArchivedEvent(rec);
+            if (ev) streamEvents.push(ev);
+            if (rec.apiKey && (rec.apiKey as CaptureKeyIdentity).id && !seenKeys.has(String((rec.apiKey as CaptureKeyIdentity).id))) {
+              const k = rec.apiKey as CaptureKeyIdentity;
+              seenKeys.set(String(k.id), { id: String(k.id), name: String(k.name ?? '') });
+            }
+            if (conversationKey === undefined && typeof rec.conversationKey === 'string' && rec.conversationKey) {
+              conversationKey = rec.conversationKey;
+            }
+            // First client request body = the session's opening prompt.
+            if (
+              preview === undefined &&
+              rec.direction === 'client' &&
+              rec.phase === 'request' &&
+              (rec.wire as RawWireCapture | undefined)?.requestBody !== undefined
+            ) {
+              preview = CaptureRecorder.extractSessionPreview((rec.wire as RawWireCapture).requestBody);
+            }
+            // Inbound-protocol badge: the FIRST client request line wins.
+            if (protocol === undefined && rec.direction === 'client' && rec.phase === 'request') {
+              protocol = CaptureRecorder.protocolFromRequestLine((rec.wire as RawWireCapture | undefined)?.requestLine);
             }
           }
-          // groupEventsIntoTurns returns chronological turns; iterate in
-          // order so lastStatus reflects the FINAL turn's outcome.
-          for (const t of CaptureRecorder.groupEventsIntoTurns(streamEvents)) {
-            turns++;
+          for (const r of CaptureRecorder.groupEventsIntoRequests(streamEvents)) {
+            requests++;
+            const clientResponse = exchangeEvent(r, 'client', 'response');
             const hasError =
-              Boolean(t.error) ||
-              [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse]
-                .some(e => e?.status === 'error');
+              Boolean(r.error) ||
+              r.exchanges.some(ex => ex.request?.status === 'error' || ex.response?.status === 'error');
             if (hasError) failed++;
-            if (t.gatewayResponse) lastStatus = t.gatewayResponse.status === 'error' ? 'error' : 'ok';
+            if (clientResponse) lastStatus = clientResponse.status === 'error' ? 'error' : 'ok';
             else if (hasError) lastStatus = 'error';
           }
         } catch {
@@ -1138,7 +1019,7 @@ export class CaptureRecorder {
           sessionId: f.name.slice(0, -JSONL_SUFFIX.length),
           bytes: st.size,
           mtimeMs: st.mtimeMs,
-          turns,
+          requests,
           failed,
           lastStatus,
           preview,
@@ -1161,14 +1042,16 @@ export class CaptureRecorder {
   }
 
   /**
-   * Read records from one archive file, newest `limit` records in
-   * chronological order. Reads at most the last readWindowBytes() of the file.
+   * Read the raw JSONL objects from the tail of one archive, newest `limit`
+   * lines in file order. No schema interpretation: archive-overflow seal
+   * markers are metadata and are filtered out, everything else is returned
+   * verbatim. Used by the generic console record view and the raw exporter.
    */
   public readRecords(
     date: string,
     file: string,
     limit = 200
-  ): { records: CaptureRecord[]; totalLines: number; fileTruncated: boolean } {
+  ): { records: Record<string, unknown>[]; totalLines: number; fileTruncated: boolean } {
     const filePath = this.resolveArchiveFile(date, file);
     if (!filePath) return { records: [], totalLines: 0, fileTruncated: false };
 
@@ -1190,13 +1073,12 @@ export class CaptureRecorder {
       // Drop the first (likely partial) line when sliced mid-line.
       if (fileTruncated && lines.length > 0) lines.shift();
 
-      const records: CaptureRecord[] = [];
+      const records: Record<string, unknown>[] = [];
       for (const raw of lines) {
         if (!raw.trim()) continue;
         try {
           const rec = JSON.parse(raw);
-          // The seal marker is metadata, not a turn — the legacy timeline must
-          // not grow a phantom record for it.
+          // The terminal seal marker is metadata, never a captured event.
           if (rec?.eventType === 'archive-overflow') continue;
           records.push(rec);
         } catch {
@@ -1225,7 +1107,7 @@ export class CaptureRecorder {
     date: string,
     file: string,
     minBytes = 0
-  ): Promise<{ events: HttpExchangeEvent[]; fileTruncated: boolean; fileBytes: number; windowBytes: number }> {
+  ): Promise<{ events: CaptureEvent[]; fileTruncated: boolean; fileBytes: number; windowBytes: number }> {
     const filePath = this.resolveArchiveFile(date, file);
     if (!filePath) return { events: [], fileTruncated: false, fileBytes: 0, windowBytes: 0 };
 
@@ -1254,7 +1136,7 @@ export class CaptureRecorder {
     const lines = text.split(/\r?\n/);
     if (fileTruncated && lines.length > 0) lines.shift();
 
-    const events: HttpExchangeEvent[] = [];
+    const events: CaptureEvent[] = [];
     const yieldLoop = () => new Promise<void>(r => setImmediate(r));
     const BATCH = 128; // lines per event-loop slice
     for (let i = 0; i < lines.length; i++) {
@@ -1263,15 +1145,11 @@ export class CaptureRecorder {
       try {
         const obj = JSON.parse(raw) as Record<string, unknown>;
         if (obj.eventType === 'http-exchange') {
-          const ev = CaptureRecorder.normalizeArchivedEvent(obj);
+          const ev = CaptureRecorder.parseArchivedEvent(obj);
           if (!ev) continue;
           deriveCompletionTokens(ev);
           events.push(ev);
         }
-        // Legacy turn-snapshot lines (`cap_…`, written by the retired
-        // record()) are skipped here: they are not HTTP-exchange events and
-        // carry no request id, so they cannot join a turn. The raw export
-        // endpoint still serves such archives verbatim.
       } catch {
         // Corrupt/partial line — skip, never fail the whole read.
       }
@@ -1280,72 +1158,49 @@ export class CaptureRecorder {
     return { events, fileTruncated, fileBytes, windowBytes };
   }
   /**
-   * One boundary normalization for archive lines written before ADR-0021:
-   * those files carry the wire vocabulary (`spanId` / `traceId`) and no
-   * `requestId`. Mapping them here keeps the DOMAIN model single-vocabulary —
-   * no reader downstream sees two spellings. A legacy file has no turn id, so
-   * its caller correlation value becomes the join key: exactly the behaviour
-   * (and the ambiguity) those archives had when they were written. Removable
-   * once capture retention has passed the cutover date.
-   *
-   * A line carrying NEITHER a request id nor a caller value is corrupt (the
-   * writer always stamped one of them): return `null` so the caller skips it —
-   * keying every such line on `''` would merge unrelated turns.
+   * Archive-line boundary validation — schema-2 only. A line is accepted
+   * only when it is a COMPLETE schema-2 http-exchange event: every scope
+   * field written by the admission gate must be present, including the
+   * first-class `turnIndex: null` for prompt-less requests. There is no
+   * legacy vocabulary, no field mapping and no derived fallback: a line is
+   * read in the shape the writer produced or not at all: there is no
+   * reader-side compatibility path for an older schema.
    */
-  private static normalizeArchivedEvent(obj: Record<string, unknown>): HttpExchangeEvent | null {
-    if (typeof obj.requestId === 'string' && obj.requestId && typeof obj.exchangeId === 'string') {
-      return obj as unknown as HttpExchangeEvent;
-    }
-    const clientRequestId = typeof obj.clientRequestId === 'string' && obj.clientRequestId
-      ? obj.clientRequestId
-      : typeof obj.traceId === 'string' && obj.traceId
-        ? obj.traceId
-        : undefined;
-    const requestId = typeof obj.requestId === 'string' && obj.requestId
-      ? obj.requestId
-      : clientRequestId;
-    if (!requestId) return null;
-    const exchangeId = typeof obj.exchangeId === 'string'
-      ? obj.exchangeId
-      : typeof obj.spanId === 'string'
-        ? obj.spanId
-        : '';
-    return {
-      ...obj,
-      exchangeId,
-      requestId,
-      ...(clientRequestId ? { clientRequestId } : {}),
-      sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : '',
-    } as unknown as HttpExchangeEvent;
+  private static parseArchivedEvent(obj: Record<string, unknown>): CaptureEvent | null {
+    if (
+      obj.schema !== CAPTURE_SCHEMA ||
+      obj.eventType !== 'http-exchange' ||
+      typeof obj.id !== 'string' || !obj.id ||
+      typeof obj.ts !== 'number' ||
+      typeof obj.requestId !== 'string' || !obj.requestId ||
+      typeof obj.exchangeId !== 'string' || !obj.exchangeId ||
+      typeof obj.sessionId !== 'string' ||
+      (obj.turnIndex !== null && typeof obj.turnIndex !== 'number') ||
+      typeof obj.isPromptStart !== 'boolean' ||
+      typeof obj.turnDecision !== 'string' ||
+      typeof obj.attempt !== 'number' ||
+      (obj.direction !== 'client' && obj.direction !== 'upstream') ||
+      (obj.phase !== 'request' && obj.phase !== 'response')
+    ) return null;
+    return obj as unknown as CaptureEvent;
   }
 
 
   /**
-   * Read HTTP exchange events from one archive file, newest `limit` events
-   * in chronological order. Returns events + a `turns` summary that
-   * groups the events by `requestId` (exchangeId-aware) so the console can
-   * render them as logical turns. The underlying file is also bounded at
-   * readWindowBytes() (pathologically large archives are tailed; the tail is
-   * what matters). `bodies='none'` strips wire bodies for metadata-first
-   * console reads — the tok/s chips keep working via the derived
-   * `completionTokens` field, and full bodies come back on demand
-   * (readTurn / bodies='full').
+   * Read the schema-2 events in one archive's tail window and project them
+   * into REQUESTS. Paging is in requests (the pager's unit): page 1 is the
+   * newest `limit` requests, and every exchange of a request always travels
+   * with it. `bodies='none'` strips wire bodies for metadata-first reads;
+   * `bodies='chat'` keeps only a prompt-start request's body plus responses.
    *
-   * `page` (1-based, counted from the NEWEST end) pages backwards in REQUESTS:
-   * page 1 is the newest `limit` logical turns, page 2 the block just older
-   * than it, and so on. Paging in turns (not raw event lines) is what makes
-   * the console's pager summary speak the same unit as its header, and a page
-   * can never hold half a turn — the four events of a turn always travel
-   * together.
+   * The read window GROWS to cover the requested page: a large body per
+   * request means a few requests can fill the default window. Growth doubles
+   * until the page fits, the whole file is read, or the growth ceiling is
+   * reached — past that the response clamps `page`/`totalPages`.
    *
-   * The read window GROWS to cover the requested page: a 13 MB body per
-   * request means a few requests can fill the default window, and a console
-   * that stopped there would look like it lost history the trace plane still
-   * shows. Growth doubles the window until the page fits, the whole file is
-   * read, or READ_WINDOW_GROWTH_CEIL_BYTES is reached — past the ceiling the
-   * response clamps `page`/`totalPages` (the pager self-heals) and deeper
-   * history stays export-only, so one pager click can never allocate a
-   * seal-sized buffer.
+   * `totalTurns` counts DISTINCT write-time `turnIndex` values in the window;
+   * it is not an ordinal and not a request count. Nothing here derives a turn
+   * boundary: the archive already carries `turnIndex`/`isPromptStart`.
    */
   public async readEvents(
     date: string,
@@ -1354,169 +1209,99 @@ export class CaptureRecorder {
     bodies: 'full' | 'none' | 'chat' = 'full',
     page = 1
   ): Promise<{
-    events: HttpExchangeEvent[];
-    turns: CaptureTurnSummary[];
+    events: CaptureEvent[];
+    requests: CaptureRequestSummary[];
     totalLines: number;
-    /** Logical turn count over ALL events in the read window (totalLines is
-     * raw event lines — 2-4 per turn — so it must never be shown as turns). */
+    /** Requests in the read window (the pager's exact denominator). */
+    totalRequests: number;
+    /** Distinct write-time turn ordinals in the read window. */
     totalTurns: number;
-    /** Requests (turns with a client-request event) in the read window —
-     *  the offset the console applies to `requestNumber` for absolute #. */
-    windowRequests: number;
-    /** User-prompt rounds in the read window: one per turn carrying a NEW
-     *  prompt, plus a leading partial block when the window starts mid-round. */
-    totalRounds: number;
     /** The window is the WHOLE file (false = only its tail was read). */
     windowComplete: boolean;
     fileTruncated: boolean;
     /** The page actually served (clamped into [1, totalPages]). */
     page: number;
-    /** Pages available in the read window (turn pages). */
+    /** Pages available in the read window (request pages). */
     totalPages: number;
-    /** Older turns remain in the read window (page < totalPages). */
     hasOlder: boolean;
-    /** Newer turns exist (page > 1). */
     hasNewer: boolean;
   }> {
     const size = Math.max(1, limit);
-    // One page plus one turn proves "older exists"; growing until then makes
-    // hasOlder exact instead of window-relative.
     const needed = page * size + 1;
     let minBytes = 0;
     let read = await this.readWindowEvents(date, file, minBytes);
     for (;;) {
-      const groups = CaptureRecorder.groupEventsIntoTurns(read.events);
+      const groups = CaptureRecorder.groupEventsIntoRequests(read.events);
       if (groups.length >= needed || !read.fileTruncated) break;
       const next = Math.min(
         Math.max(read.windowBytes * 2, this.readWindowBytes()),
         READ_WINDOW_GROWTH_CEIL_BYTES
       );
-      if (next <= read.windowBytes) break; // ceiling reached (or no growth) — stay put
+      if (next <= read.windowBytes) break;
       minBytes = next;
       read = await this.readWindowEvents(date, file, minBytes);
     }
-    const { events, fileTruncated, windowBytes } = read;
-    void windowBytes;
-    const windowComplete = !fileTruncated;
+    const { events, fileTruncated } = read;
 
-    // Turn boundaries are structural (direction/phase/requestId), so this first
-    // pass only exists to locate the page; the stamps backfilled below do not
-    // change it, which is why the indices stay valid for the second pass.
-    const groups = CaptureRecorder.groupEventsIntoTurns(events);
-    const totalPages = Math.max(1, Math.ceil(groups.length / size));
+    const allRequests = CaptureRecorder.groupEventsIntoRequests(events);
+    const totals = CaptureRecorder.numberRequests(allRequests);
+    const totalPages = Math.max(1, Math.ceil(allRequests.length / size));
     const pageNo = Math.min(Math.max(1, Math.trunc(page) || 1), totalPages);
-    const end = groups.length - (pageNo - 1) * size;
+    const end = allRequests.length - (pageNo - 1) * size;
     const sliceStart = Math.max(0, end - size);
-    const pageTurns = groups.slice(sliceStart, Math.max(sliceStart, end));
-    // The page's events — exactly the legs of its turns, in wire order.
-    const visible = new Set<HttpExchangeEvent>();
-    for (const t of pageTurns) {
-      for (const ev of [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]) {
-        if (ev) visible.add(ev);
-      }
-    }
-    const newest = events.filter(ev => visible.has(ev));
-    // Positions must be derived while the bodies are still attached.
-    CaptureRecorder.backfillPromptPositions(events, newest);
+    const pageRequests = allRequests.slice(sliceStart, Math.max(sliceStart, end));
 
-    // Group over the WHOLE read window, then keep the turns on this page.
-    // Grouping only the page would lose the previous client request a
-    // prompt-staleness decision needs (see groupEventsIntoTurns), so the
-    // oldest visible continuation would show the resent prompt again. One
-    // grouping pass also owns `totalTurns` — the header's turn count must use
-    // that, not totalLines (raw event lines, 2-4 per turn).
-    const allTurns = CaptureRecorder.groupEventsIntoTurns(events);
-    const totals = CaptureRecorder.numberTurns(allTurns);
+    // Exactly the events of this page's requests, in wire order.
+    const visible = new Set<CaptureEvent>();
+    for (const r of pageRequests) for (const ev of CaptureRecorder.requestEvents(r)) visible.add(ev);
+    const newest = events.filter(ev => visible.has(ev));
+
     if (bodies === 'none') stripBodies(events);
     else if (bodies === 'chat') {
-      const keepRequests = new Set<HttpExchangeEvent>();
-      allTurns.forEach((t, i) => {
-        if (t.clientRequest && (t.promptSummary || i === 0)) keepRequests.add(t.clientRequest);
-      });
+      const keepRequests = new Set<CaptureEvent>();
+      for (const r of allRequests) {
+        const cr = exchangeEvent(r, 'client', 'request');
+        // Only the request that OPENED a turn carries a new prompt's history.
+        if (cr && r.isPromptStart) keepRequests.add(cr);
+      }
       stripBodiesForChat(events, keepRequests);
     }
-    const turns = CaptureRecorder.turnsInWindow(allTurns, newest);
-    const hasOlder = sliceStart > 0;
     return {
       events: newest,
-      turns,
+      requests: pageRequests,
       totalLines: events.length,
-      totalTurns: allTurns.length,
-      windowRequests: totals.requests,
-      totalRounds: totals.rounds,
-      windowComplete,
+      totalRequests: totals.requests,
+      totalTurns: totals.turns,
+      windowComplete: !fileTruncated,
       fileTruncated,
       page: pageNo,
       totalPages,
-      hasOlder,
+      hasOlder: sliceStart > 0,
       hasNewer: pageNo > 1,
     };
   }
 
   /**
-   * Number a window's turns in chronological order on TWO separate axes:
-   *   - `requestNumber` — one per client request (the unit the trace plane
-   *     calls `turnNumber` — `ExecutionTrace.turnNumber`, `trace/tracker.ts`),
-   *     never per tool-result continuation.
-   *     Turns whose client-request event fell outside the window keep no
-   *     number: they are the tail of a request whose number lives on an
-   *     older page.
-   *   - `roundNumber` — one per USER PROMPT plus every request it drove; a
-   *     continuation shares its round's number. A leading prompt-less block
-   *     is the visible tail of a round that started outside the window and
-   *     therefore opens round 1.
-   * The returned totals are the read window's request and round counts.
+   * Read one REQUEST's full wire bodies. The key is its `requestId` (what the
+   * console row and every React key carries); any of its event ids is accepted
+   * too for deep links. Returns null when the key is unknown or fell outside
+   * the read window. No re-derivation: the returned summary is the archive's
+   * own write-time identity over its `exchanges[]`.
    */
-  private static numberTurns(turns: CaptureTurnSummary[]): { requests: number; rounds: number } {
-    let requests = 0;
-    let rounds = 0;
-    for (const t of turns) {
-      if (t.clientRequest) t.requestNumber = ++requests;
-      else delete t.requestNumber;
-      if (t.promptSummary || rounds === 0) rounds++;
-      t.roundNumber = rounds;
-    }
-    return { requests, rounds };
-  }
-
-  /**
-   * Read one turn's FULL wire bodies. The key is the turn id (`requestId`,
-   * what the console row carries and every React key uses); an EVENT id
-   * (`evt_…`) is accepted too for deep links, since a turn is a set of
-   * events and either id names it unambiguously. Returns null when the key
-   * is unknown or falls outside the read window.
-   */
-  public async readTurn(
+  public async readRequest(
     date: string,
     file: string,
-    turnOrEventId: string
-  ): Promise<{ turn: CaptureTurnSummary } | null> {
+    requestOrEventId: string
+  ): Promise<{ request: CaptureRequestSummary } | null> {
     const { events } = await this.readWindowEvents(date, file);
-    // Event id first (exact, cheap); then the turn id, which selects the
-    // request event so the prompt backfill below starts from the same floor.
     const anchor =
-      events.find(e => e.id === turnOrEventId) ??
-      events.find(e => e.requestId === turnOrEventId);
+      events.find(e => e.id === requestOrEventId) ??
+      events.find(e => e.requestId === requestOrEventId);
     if (!anchor) return null;
-    // Group the WHOLE window, not just the anchor's turn: the prompt
-    // staleness decision compares against the session's previous client
-    // request, so a request-only subset would re-show the resent prompt in the
-    // drawer. Grouping is metadata-only — the bodies ride on the same objects.
-    // Legacy archives carry `promptSummary` without its staleness basis —
-    // derive it from the still-attached bodies before grouping. The pass
-    // starts at the request BEFORE the anchor (it sets the anchor's floor)
-    // and runs to the end of the window; already-stamped events are skipped,
-    // so it is a no-op for archives written by this build.
-    CaptureRecorder.backfillPromptPositions(events, [anchor]);
-    const allTurns = CaptureRecorder.groupEventsIntoTurns(events);
-    CaptureRecorder.numberTurns(allTurns);
-    const turn = allTurns.find(
-      t =>
-        t.requestId === anchor.requestId ||
-        [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]
-          .some(e => e?.id === anchor.id)
-    );
-    return turn ? { turn } : null;
+    const requests = CaptureRecorder.groupEventsIntoRequests(events);
+    CaptureRecorder.numberRequests(requests);
+    const request = requests.find(r => r.requestId === anchor.requestId);
+    return request ? { request } : null;
   }
 
   /* --------------------------------------------------- cross-date stitching */
@@ -1643,15 +1428,14 @@ export class CaptureRecorder {
     bodies: 'full' | 'none' | 'chat' = 'full',
     page = 1
   ): Promise<{
-    events: HttpExchangeEvent[];
-    turns: CaptureTurnSummary[];
+    events: CaptureEvent[];
+    requests: CaptureRequestSummary[];
     totalLines: number;
+    totalRequests: number;
     totalTurns: number;
-    windowRequests: number;
-    totalRounds: number;
     windowComplete: boolean;
     fileTruncated: boolean;
-    fragments: { date: string; file: string; turns: number }[];
+    fragments: { date: string; file: string; requests: number }[];
     page: number;
     totalPages: number;
     hasOlder: boolean;
@@ -1660,15 +1444,12 @@ export class CaptureRecorder {
     const fragments = this.conversationFragments(date, file);
     const size = Math.max(1, limit);
     const needed = page * size + 1;
-    // Same window growth as readEvents, applied per fragment: a shard whose
-    // bodies blow past the default window is grown until the merged timeline
-    // covers the requested page (or every shard is read whole).
     let minBytes = 0;
-    let merged = new Map<string, HttpExchangeEvent>();
+    let merged = new Map<string, CaptureEvent>();
     let fileTruncated = false;
-    let fragmentRows: { date: string; file: string; turns: number }[] = [];
+    let fragmentRows: { date: string; file: string; requests: number }[] = [];
     for (;;) {
-      merged = new Map<string, HttpExchangeEvent>();
+      merged = new Map<string, CaptureEvent>();
       fragmentRows = [];
       fileTruncated = false;
       let grew = false;
@@ -1678,84 +1459,68 @@ export class CaptureRecorder {
         if (result.fileTruncated) fileTruncated = true;
         if (result.windowBytes > maxWindow) maxWindow = result.windowBytes;
         if (result.fileBytes > result.windowBytes) grew = true;
-        for (const ev of result.events) {
-          if (!merged.has(ev.id)) merged.set(ev.id, ev);
-        }
+        for (const ev of result.events) if (!merged.has(ev.id)) merged.set(ev.id, ev);
         fragmentRows.push({
           date: f.date,
           file: f.file,
-          turns: CaptureRecorder.groupEventsIntoTurns(result.events).length,
+          requests: CaptureRecorder.groupEventsIntoRequests(result.events).length,
         });
       }
       const all = [...merged.values()].sort((a, b) => a.ts - b.ts);
-      const groups = CaptureRecorder.groupEventsIntoTurns(all);
-      if (groups.length >= needed || !grew) break;
+      if (CaptureRecorder.groupEventsIntoRequests(all).length >= needed || !grew) break;
       const next = Math.min(Math.max(maxWindow * 2, this.readWindowBytes()), READ_WINDOW_GROWTH_CEIL_BYTES);
-      if (next <= maxWindow) break; // ceiling reached — stay put
+      if (next <= maxWindow) break;
       minBytes = next;
     }
     const all = [...merged.values()].sort((a, b) => a.ts - b.ts);
 
-    // Same turn-page arithmetic as readEvents: locate the page on a first
-    // structural grouping pass, then re-group for the prompt-staleness stamps
-    // (they never move a turn boundary).
-    const groups = CaptureRecorder.groupEventsIntoTurns(all);
-    const totalPages = Math.max(1, Math.ceil(groups.length / size));
+    const allRequests = CaptureRecorder.groupEventsIntoRequests(all);
+    const totals = CaptureRecorder.numberRequests(allRequests);
+    const totalPages = Math.max(1, Math.ceil(allRequests.length / size));
     const pageNo = Math.min(Math.max(1, Math.trunc(page) || 1), totalPages);
-    const end = groups.length - (pageNo - 1) * size;
+    const end = allRequests.length - (pageNo - 1) * size;
     const sliceStart = Math.max(0, end - size);
-    const pageTurns = groups.slice(sliceStart, Math.max(sliceStart, end));
-    const visible = new Set<HttpExchangeEvent>();
-    for (const t of pageTurns) {
-      for (const ev of [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]) {
-        if (ev) visible.add(ev);
-      }
-    }
+    const pageRequests = allRequests.slice(sliceStart, Math.max(sliceStart, end));
+    const visible = new Set<CaptureEvent>();
+    for (const r of pageRequests) for (const ev of CaptureRecorder.requestEvents(r)) visible.add(ev);
     const newest = all.filter(ev => visible.has(ev));
-    // Positions must be derived while the bodies are still attached.
-    CaptureRecorder.backfillPromptPositions(all, newest);
-    const allTurns = CaptureRecorder.groupEventsIntoTurns(all);
-    const totals = CaptureRecorder.numberTurns(allTurns);
+
     if (bodies === 'none') stripBodies(all);
     else if (bodies === 'chat') {
-      const keepRequests = new Set<HttpExchangeEvent>();
-      allTurns.forEach((t, i) => {
-        if (t.clientRequest && (t.promptSummary || i === 0)) keepRequests.add(t.clientRequest);
-      });
+      const keepRequests = new Set<CaptureEvent>();
+      for (const r of allRequests) {
+        const cr = exchangeEvent(r, 'client', 'request');
+        if (cr && r.isPromptStart) keepRequests.add(cr);
+      }
       stripBodiesForChat(all, keepRequests);
     }
-    const turns = CaptureRecorder.turnsInWindow(allTurns, newest);
-    const hasOlder = sliceStart > 0;
     return {
       events: newest,
-      turns,
+      requests: pageRequests,
       totalLines: all.length,
-      totalTurns: allTurns.length,
-      windowRequests: totals.requests,
-      totalRounds: totals.rounds,
+      totalRequests: totals.requests,
+      totalTurns: totals.turns,
       windowComplete: !fileTruncated,
       fileTruncated,
       fragments: fragmentRows,
       page: pageNo,
       totalPages,
-      hasOlder,
+      hasOlder: sliceStart > 0,
       hasNewer: pageNo > 1,
     };
   }
 
   /**
-   * readTurn across ALL fragments of the session: the anchor fragment's
-   * window is tried first, then every other fragment — a turn archived in a
-   * previous day's shard must still open its full wire bodies.
-   *
-   * Known limit: the prompt-staleness basis lives in the same fragment's
-   * window, so a turn that is the FIRST of a day shard may still show the
-   * resent prompt in the drawer (its predecessor sits in the previous shard).
-   * The stitched timeline is exact — it groups all fragments together.
+   * Resolve one request's full wire bodies across ALL fragments of the
+   * session: a request archived in a previous day's shard must still open.
    */
-  public async readTurnStitched(date: string, file: string, turnOrEventId: string): Promise<{ turn: CaptureTurnSummary } | null> {
+  public async readRequestStitched(
+    date: string,
+    file: string,
+    requestOrEventId: string
+  ): Promise<{ request: CaptureRequestSummary } | null> {
     for (const f of this.conversationFragments(date, file)) {
-      const result = await this.readTurn(f.date, f.file, turnOrEventId);
+      const result = await this.readRequest(f.date, f.file, requestOrEventId);
       if (result) return result;
     }
     return null;
@@ -1765,41 +1530,38 @@ export class CaptureRecorder {
 
   /**
    * EXACT whole-archive summary, not the read window: the request count and
-   * the USER-PROMPT ROUND INDEX (prompt + contiguous request range).
+   * the WRITE-TIME TURN INDEX (turnIndex + contiguous request range).
    *
-   * Every request starts with one client-request event (see
-   * groupEventsIntoTurns: a client request ALWAYS opens a turn), and that line
-   * is written exactly once, so this scan counts requests without grouping.
-   * Legacy `cap_` turn records (one line per turn, pre-events) count as one
-   * each; the terminal `archive-overflow` seal line carries `eventType` and is
-   * skipped.
+   * Every request starts with exactly one client-request event, so counting
+   * those lines counts requests without grouping. A client request carrying
+   * `turnIndex: null` belongs to no turn and is counted as a request only.
+   * The terminal `archive-overflow` seal line is metadata and is skipped.
    *
    * Streamed in chunks so a seal-maximum session (512 MB) never becomes one
-   * string on the heap. Prompt metadata and positions are pulled with
-   * targeted regexes — never JSON.parse on the whole line, whose request body
-   * can be many MB. Rounds use the SAME continuation rule as
-   * groupEventsIntoTurns (a resent previous user message does not open a new
-   * round), so the dropdown and the timeline agree.
+   * string on the heap. Targeted regexes pull only the metadata — never
+   * JSON.parse on the whole line, whose request body can be many MB. Turn
+   * membership is read from the archive, never inferred from prompts,
+   * message counts or resend heuristics.
    *
    * The result is DISPLAY ONLY: pagination still reads a bounded window.
    */
   public async captureSummary(date: string, file: string): Promise<CaptureArchiveSummary> {
     const filePath = this.resolveArchiveFile(date, file);
-    if (!filePath) return { requests: 0, fragments: 1, rounds: [] };
+    if (!filePath) return { requests: 0, fragments: 1, turns: [] };
     const sig = this.archiveSignature([filePath]);
     const cached = sig ? this.summaryCache.get(sig) : undefined;
     if (cached) return cached;
     const state = newRequestIndexState();
     await this.scanRequestIndex(filePath, state);
-    const summary = { requests: state.requests, fragments: 1, rounds: state.rounds };
+    const summary = { requests: state.requests, fragments: 1, turns: state.turns };
     if (sig) this.rememberSummary(sig, summary);
     return summary;
   }
 
   /**
-   * Whole STITCHED conversation: fragments in chronological order, with the
-   * continuation state carried across the midnight boundary. A request's
-   * client-request line lives in exactly one shard, so it is counted once.
+   * Whole STITCHED conversation: fragments in chronological order. One
+   * client-request line lives in exactly one shard, so a request is counted
+   * once; `byKey` carries the same (sessionId, turnIndex) across shards.
    */
   public async captureSummaryStitched(date: string, file: string): Promise<CaptureArchiveSummary> {
     const fragments = this.conversationFragments(date, file)
@@ -1813,7 +1575,7 @@ export class CaptureRecorder {
     if (cached) return cached;
     const state = newRequestIndexState();
     for (const p of paths) await this.scanRequestIndex(p, state);
-    const summary = { requests: state.requests, fragments: paths.length, rounds: state.rounds };
+    const summary = { requests: state.requests, fragments: paths.length, turns: state.turns };
     if (sig) this.rememberSummary(sig, summary);
     return summary;
   }
@@ -1845,75 +1607,59 @@ export class CaptureRecorder {
 
   /**
    * One streamed metadata pass; appends to `state` so shards chain.
-   * Byte-level: 2-4 event lines share a multi-MB request body, so the stream
-   * stays a Buffer and only a matching client-request line is decoded. This
-   * keeps the whole-archive scan proportional to the metadata, not the wire
-   * bodies.
+   * Byte-level: several event lines can share a multi-MB request body, so
+   * the stream stays a Buffer and only a matching client-request line is
+   * decoded. Only schema-2 lines are considered.
    */
   private async scanRequestIndex(filePath: string, state: RequestIndexState): Promise<void> {
     const take = (line: Buffer): void => {
       if (line.length === 0) return;
-      if (line.indexOf('"eventType"') >= 0) {
-        if (
-          line.indexOf('"eventType":"http-exchange"') < 0 ||
-          line.indexOf('"direction":"client"') < 0 ||
-          line.indexOf('"phase":"request"') < 0
-        ) {
-          return;
+      if (
+        line.indexOf('"schema":2') < 0 ||
+        line.indexOf('"eventType":"http-exchange"') < 0 ||
+        line.indexOf('"direction":"client"') < 0 ||
+        line.indexOf('"phase":"request"') < 0
+      ) return;
+      const text = line.toString('utf8');
+      state.requests++;
+      const n = state.requests;
+      const turnMatch = RE_CAPTURE_TURN_INDEX.exec(text);
+      // `turnIndex: null` (prompt-less request) belongs to no turn.
+      if (!turnMatch) return;
+      const turnIndex = Number(turnMatch[1]);
+      const sessionId = RE_CAPTURE_SESSION_ID.exec(text)?.[1] ?? '';
+      const tsMatch = RE_CAPTURE_TS.exec(text);
+      const ts = tsMatch ? Number(tsMatch[1]) : undefined;
+      const isPromptStart = RE_CAPTURE_IS_PROMPT_START.test(text);
+      const rawPrompt = RE_CAPTURE_PROMPT_SUMMARY.exec(text)?.[1];
+      let prompt: string | undefined;
+      if (isPromptStart && rawPrompt !== undefined) {
+        try {
+          prompt = JSON.parse(rawPrompt);
+        } catch {
+          prompt = undefined; // truncated/sealed line — display-only field
         }
-        const text = line.toString('utf8');
-        state.requests++;
-        const n = state.requests;
-        const sessionId = RE_CAPTURE_SESSION_ID.exec(text)?.[1] ?? '';
-        const tsMatch = RE_CAPTURE_TS.exec(text);
-        const ts = tsMatch ? Number(tsMatch[1]) : undefined;
-        const rawPrompt = RE_CAPTURE_PROMPT_SUMMARY.exec(text)?.[1];
-        let prompt: string | undefined;
-        if (rawPrompt !== undefined) {
-          try {
-            prompt = JSON.parse(rawPrompt);
-          } catch {
-            prompt = undefined; // truncated/sealed line — treat as no prompt
-          }
-        }
-        const countMatch = RE_CAPTURE_PROMPT_COUNT.exec(text);
-        const count = countMatch ? Number(countMatch[1]) : undefined;
-        const idxMatch = RE_CAPTURE_PROMPT_LAST_USER.exec(text);
-        const idx = idxMatch ? Number(idxMatch[1]) : undefined;
-        const prevCount = state.lastMessageCount.get(sessionId);
-        const resent =
-          prevCount !== undefined &&
-          count !== undefined &&
-          count >= prevCount &&
-          idx !== undefined &&
-          idx < prevCount;
-        if (resent) prompt = undefined;
-        if (prompt !== undefined || state.rounds.length === 0) {
-          state.rounds.push({
-            ordinal: state.rounds.length + 1,
-            prompt,
-            startTs: ts !== undefined && Number.isFinite(ts) ? ts : undefined,
-            requests: 0,
-            firstRequest: n,
-            lastRequest: n,
-          });
-        }
-        const round = state.rounds[state.rounds.length - 1];
-        round.requests++;
-        round.lastRequest = n;
-        if (count !== undefined) state.lastMessageCount.set(sessionId, count);
-        return;
       }
-      // Legacy turn-shaped record (pre-events archive): one line per request.
-      if (line.indexOf('"id":"cap_') >= 0) {
-        state.requests++;
-        state.rounds.push({
-          ordinal: state.rounds.length + 1,
-          requests: 1,
-          firstRequest: state.requests,
-          lastRequest: state.requests,
-        });
+      const key = `${sessionId}|${turnIndex}`;
+      let entry = state.byKey.get(key);
+      if (!entry) {
+        entry = {
+          turnIndex,
+          ...(prompt !== undefined ? { prompt } : {}),
+          ...(isPromptStart && ts !== undefined && Number.isFinite(ts) ? { startTs: ts } : {}),
+          requests: 0,
+          firstRequest: n,
+          lastRequest: n,
+        };
+        state.byKey.set(key, entry);
+        state.turns.push(entry);
+      } else if (isPromptStart) {
+        if (entry.prompt === undefined && prompt !== undefined) entry.prompt = prompt;
+        if (entry.startTs === undefined && ts !== undefined && Number.isFinite(ts)) entry.startTs = ts;
+        entry.firstRequest = Math.min(entry.firstRequest, n);
       }
+      entry.requests++;
+      entry.lastRequest = n;
     };
     try {
       const stream = fs.createReadStream(filePath, { highWaterMark: 1 << 20 });
@@ -1937,200 +1683,117 @@ export class CaptureRecorder {
   }
 
   /**
-   * Group a flat list of HTTP exchange events into logical turns by the
-   * gateway-owned `requestId` (ADR-0021) — the events of ONE client request.
-   * Each turn joins its four events: client-direction events pair by
-   * `exchangeId`, upstream events attach to the request's active turn
-   * (last-write-wins across failover hops). Legacy archives are normalized to
-   * this shape at the reader boundary, so there is exactly one key here.
+   * Group a flat list of capture events into REQUESTS by the gateway-owned
+   * `requestId`. Each request owns an `exchanges[]` list bucketed by
+   * `(leg, attempt)`, so EVERY failover hop and the Layer-2 decision pair
+   * survive — nothing is last-write-wins.
+   *
+   * No turn boundary, prompt, message count or ordinal is derived here:
+   * `turnIndex` / `isPromptStart` / `turnDecision` are copied from the
+   * write-time fields on the events, and `attempt` was stamped at emit time.
    * Pure function — exported for unit tests.
    */
-  public static groupEventsIntoTurns(events: HttpExchangeEvent[]): CaptureTurnSummary[] {
-    const byTurn = new Map<string, CaptureTurnSummary[]>();
-    /** requestId → the turn upstream events should attach to (the latest). */
-    const activeByTurn = new Map<string, CaptureTurnSummary>();
-    /** sessionId → message count of the session's previous client request; the
-     *  floor a turn's `promptLastUserIdx` must reach to be a NEW user message. */
-    const lastMessageCount = new Map<string, number>();
+  public static groupEventsIntoRequests(events: CaptureEvent[]): CaptureRequestSummary[] {
+    const byRequest = new Map<string, CaptureRequestSummary>();
+    const exchangeByKey = new Map<string, CaptureExchange>();
 
-    const newTurn = (ev: HttpExchangeEvent): CaptureTurnSummary => {
-      const t: CaptureTurnSummary = {
-        requestId: ev.requestId,
-        ...(ev.clientRequestId ? { clientRequestId: ev.clientRequestId } : {}),
-        sessionId: ev.sessionId,
-        model: ev.model,
-      };
-      let list = byTurn.get(ev.requestId);
-      if (!list) {
-        list = [];
-        byTurn.set(ev.requestId, list);
-      }
-      list.push(t);
-      return t;
-    };
+    const legOf = (ev: CaptureEvent): CaptureExchangeLeg =>
+      ev.purpose === 'l2-decision' ? 'decision' : ev.direction === 'client' ? 'client' : 'upstream';
 
     for (const ev of events) {
-      let t: CaptureTurnSummary | undefined;
-      if (ev.direction === 'client' && ev.phase === 'request') {
-        // A client request ALWAYS starts a new turn — the turn id is the
-        // gateway's per-request id, so two requests that share a caller
-        // trace id stay two turns; each gets its own row instead of one
-        // giant merged turn with last-write-wins fields.
-        t = newTurn(ev);
-        t.clientRequest = ev;
-        // The stamped prompt is the body's LAST user message — for a
-        // tool-result continuation that is the PREVIOUS turn's prompt resent
-        // inside the history, and quoting it again made every continuation
-        // row in the timeline read as a duplicate. Clients append, so a
-        // genuinely new user message always sits at or past the previous
-        // request's message count; below it, drop the summary and let the
-        // timeline render the no-prompt glyph. Same rule the session plane
-        // applies to `userPromptSummary`; events archived before the stamp
-        // existed carry no positions and keep their summary unchanged.
-        // The index test assumes an APPENDED history: when the client shrank
-        // its own array (compaction / truncation) every index moved down, so
-        // an index below the previous count proves nothing and the last user
-        // message is normally the new turn's prompt — show it.
-        const prevCount = lastMessageCount.get(ev.sessionId);
-        const resent = prevCount !== undefined
-          && ev.promptMessageCount !== undefined
-          && ev.promptMessageCount >= prevCount
-          && ev.promptLastUserIdx !== undefined
-          && ev.promptLastUserIdx < prevCount;
-        t.promptSummary = resent ? undefined : ev.promptSummary;
-        if (ev.promptMessageCount !== undefined) lastMessageCount.set(ev.sessionId, ev.promptMessageCount);
-        activeByTurn.set(ev.requestId, t);
-      } else if (ev.direction === 'client' && ev.phase === 'response') {
-        // Pair by exchangeId with the matching client request (newest first —
-        const list = byTurn.get(ev.requestId) ?? [];
-        for (let i = list.length - 1; i >= 0; i--) {
-          if (list[i].clientRequest?.exchangeId === ev.exchangeId) {
-            t = list[i];
-            break;
-          }
-        }
-        if (!t) t = newTurn(ev); // response whose request fell outside the read window
-        t.gatewayResponse = ev;
-      } else if (ev.purpose === 'l2-decision') {
-        // The L2 decision layer's HTTP leg shares the routed turn's trace but is NOT
-        // failover traffic — route it to dedicated slots so the serving
-        // leg's last-write-wins below never overwrites it. The decision layer fires
-        // BEFORE candidate execution, so a plain upstream merge would erase
-        // it and the console would only ever show one upstream call.
-        t = activeByTurn.get(ev.requestId);
-        if (!t) {
-          t = newTurn(ev);
-          activeByTurn.set(ev.requestId, t);
-        }
-        if (ev.phase === 'request') t.decisionRequest = ev;
-        else t.decisionResponse = ev;
-      } else {
-        // Upstream events attach to the trace's active turn. Failover hops
-        // overwrite each other (last-write-wins) — the final attempt is
-        // the one that produced the gateway response.
-        t = activeByTurn.get(ev.requestId);
-        if (!t) {
-          t = newTurn(ev);
-          activeByTurn.set(ev.requestId, t);
-        }
-        if (ev.phase === 'request') t.upstreamRequest = ev;
-        else t.upstreamResponse = ev;
-      }
-      if (ev.error && !t.error) t.error = ev.error;
-    }
-    const all: CaptureTurnSummary[] = [];
-    for (const list of byTurn.values()) all.push(...list);
-    for (const t of all) {
-      if (t.clientRequest && t.gatewayResponse) {
-        t.gatewayLatencyMs = t.gatewayResponse.ts - t.clientRequest.ts;
-      }
-      if (t.upstreamRequest && t.upstreamResponse) {
-        t.upstreamLatencyMs = t.upstreamResponse.ts - t.upstreamRequest.ts;
-      }
-      if (t.decisionRequest && t.decisionResponse) {
-        t.decisionLatencyMs = t.decisionResponse.ts - t.decisionRequest.ts;
-      }
-      // TTFT / decode window per leg: the response event's firstByteTs splits
-      // the cycle latency into wait-for-first-token and decode phases. Derived
-      // only when the stamp exists (streamed legs; pre-stamp events stay
-      // undefined so the console shows '—' instead of a synthesized split).
-      const derive = (req: HttpExchangeEvent, resp: HttpExchangeEvent): { ttft?: number; gen?: number } => {
-        if (resp.firstByteTs === undefined) return {};
-        return {
-          ttft: Math.max(0, resp.firstByteTs - req.ts),
-          gen: Math.max(0, resp.ts - resp.firstByteTs),
+      let summary = byRequest.get(ev.requestId);
+      if (!summary) {
+        summary = {
+          requestId: ev.requestId,
+          ...(ev.clientRequestId ? { clientRequestId: ev.clientRequestId } : {}),
+          sessionId: ev.sessionId,
+          model: ev.model,
+          turnIndex: ev.turnIndex ?? null,
+          isPromptStart: ev.isPromptStart ?? false,
+          turnDecision: ev.turnDecision ?? 'no_prompt',
+          exchanges: [],
         };
-      };
-      if (t.clientRequest && t.gatewayResponse) {
-        const d = derive(t.clientRequest, t.gatewayResponse);
-        t.gatewayTtftMs = d.ttft;
-        t.gatewayGenMs = d.gen;
+        byRequest.set(ev.requestId, summary);
       }
-      if (t.upstreamRequest && t.upstreamResponse) {
-        const d = derive(t.upstreamRequest, t.upstreamResponse);
-        t.upstreamTtftMs = d.ttft;
-        t.upstreamGenMs = d.gen;
+      // The client-request event is authoritative for identity when present.
+      if (ev.direction === 'client' && ev.phase === 'request') {
+        summary.sessionId = ev.sessionId;
+        summary.model = ev.model;
+        summary.turnIndex = ev.turnIndex ?? null;
+        summary.isPromptStart = ev.isPromptStart ?? false;
+        summary.turnDecision = ev.turnDecision ?? 'no_prompt';
+        if (ev.promptSummary !== undefined) summary.promptSummary = ev.promptSummary;
       }
-      if (t.decisionRequest && t.decisionResponse) {
-        const d = derive(t.decisionRequest, t.decisionResponse);
-        t.decisionTtftMs = d.ttft;
-        t.decisionGenMs = d.gen;
+      if (ev.error && !summary.error) summary.error = ev.error;
+
+      const leg = legOf(ev);
+      const key = `${ev.requestId}|${ev.exchangeId}`;
+      let exchange = exchangeByKey.get(key);
+      if (!exchange) {
+        exchange = {
+          leg,
+          attempt: ev.attempt ?? 1,
+          exchangeId: ev.exchangeId,
+          ...(ev.purpose ? { purpose: ev.purpose } : {}),
+        };
+        exchangeByKey.set(key, exchange);
+        summary.exchanges.push(exchange);
+      }
+      if (ev.phase === 'request') exchange.request = ev;
+      else exchange.response = ev;
+    }
+
+    const all = [...byRequest.values()];
+    for (const summary of all) {
+      summary.exchanges.sort((a, b) =>
+        (a.request?.ts ?? a.response?.ts ?? 0) - (b.request?.ts ?? b.response?.ts ?? 0) ||
+        a.attempt - b.attempt
+      );
+      for (const ex of summary.exchanges) {
+        if (!ex.request || !ex.response) continue;
+        ex.latencyMs = Math.max(0, ex.response.ts - ex.request.ts);
+        if (ex.response.firstByteTs !== undefined) {
+          ex.ttftMs = Math.max(0, ex.response.firstByteTs - ex.request.ts);
+          ex.genMs = Math.max(0, ex.response.ts - ex.response.firstByteTs);
+        }
       }
     }
     return all.sort((a, b) => {
-      const aTs = a.clientRequest?.ts ?? a.upstreamRequest?.ts ?? 0;
-      const bTs = b.clientRequest?.ts ?? b.upstreamRequest?.ts ?? 0;
-      return aTs - bTs;
+      const ts = (t: CaptureRequestSummary): number =>
+        t.exchanges[0]?.request?.ts ?? t.exchanges[0]?.response?.ts ?? 0;
+      return ts(a) - ts(b);
     });
   }
 
-  /**
-   * The turns whose events survived a tail slice, in the slice's own object
-   * identity terms: group over the FULL window (so cross-turn derivations
-   * see their predecessor) and keep only turns still anchored in `window`.
-   * A turn created from a stray trailing response (its client request fell
-   * outside the read window) has no event in the slice and drops out, exactly
-   * as the old slice-then-group order did.
-   */
-  private static turnsInWindow(all: CaptureTurnSummary[], window: HttpExchangeEvent[]): CaptureTurnSummary[] {
-    const visible = new Set(window);
-    return all.filter(t =>
-      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse]
-        .some(e => e !== undefined && visible.has(e))
-    );
+  /** Number requests 1..N inside the read window (the pager's unit). */
+  private static numberRequests(requests: CaptureRequestSummary[]): { requests: number; turns: number } {
+    requests.forEach((r, i) => { r.requestNumber = i + 1; });
+    const seen = new Set<number>();
+    for (const r of requests) if (r.turnIndex !== null) seen.add(r.turnIndex);
+    return { requests: requests.length, turns: seen.size };
+  }
+
+  /** Events belonging to a request (used for body stripping + page slicing). */
+  private static requestEvents(request: CaptureRequestSummary): CaptureEvent[] {
+    const out: CaptureEvent[] = [];
+    for (const ex of request.exchanges) {
+      if (ex.request) out.push(ex.request);
+      if (ex.response) out.push(ex.response);
+    }
+    return out;
   }
 
   /**
-   * Transitional: archives written before the prompt positions existed carry
-   * `promptSummary` without the basis the staleness rule compares against.
-   * Derive the positions from the still-attached request body for the client
-   * requests the caller is about to render — the tail window plus the one
-   * turn immediately before it (that turn sets the floor for the oldest
-   * visible continuation) — so the dedupe also covers the retention window
-   * written by earlier builds. Persisted lines are never rewritten, and the
-   * pass is a no-op once every archive carries the stamps. Must run BEFORE
-   * `stripBodies`.
+   * Requests whose events survived a tail slice. A request created from a
+   * stray trailing response (its client request fell outside the window) has
+   * no event in the slice and drops out.
    */
-  private static backfillPromptPositions(window: HttpExchangeEvent[], visible: HttpExchangeEvent[]): void {
-    const visibleSet = new Set(visible);
-    const firstVisible = window.findIndex(ev => visibleSet.has(ev));
-    let from = 0;
-    if (firstVisible >= 0) {
-      for (let i = firstVisible - 1; i >= 0; i--) {
-        if (window[i].direction === 'client' && window[i].phase === 'request') {
-          from = i;
-          break;
-        }
-      }
-    }
-    for (let i = from; i < window.length; i++) {
-      const ev = window[i];
-      if (ev.direction !== 'client' || ev.phase !== 'request') continue;
-      if (ev.promptSummary === undefined || ev.promptMessageCount !== undefined) continue;
-      const stamp = CaptureRecorder.turnPromptStamp(ev.wire?.requestBody ?? '');
-      if (stamp.promptMessageCount !== undefined) ev.promptMessageCount = stamp.promptMessageCount;
-      if (stamp.promptLastUserIdx !== undefined) ev.promptLastUserIdx = stamp.promptLastUserIdx;
-    }
+  private static requestsInWindow(
+    all: CaptureRequestSummary[],
+    window: CaptureEvent[]
+  ): CaptureRequestSummary[] {
+    const visible = new Set(window);
+    return all.filter(r => CaptureRecorder.requestEvents(r).some(e => visible.has(e)));
   }
 
   /**
@@ -2142,16 +1805,10 @@ export class CaptureRecorder {
    * route. Accepted for an operator-initiated export; upgrade path is a
    * streaming download (createReadStream piped to the reply).
    *
-   * When `exclude` is non-empty, body fields are stripped and the rest is
-   * re-serialized — metadata (ts/status/model/routing/ids) always survives.
-   * Handles both line formats:
-   *   - legacy cap_ turn records: `request` / `upstreamRequest` / `response`
-   *     / `upstreamError` fields are deleted directly.
-   *   - evt_ http-exchange events: the same exclude names map onto the
-   *     matching wire side (`request` → client request body,
-   *     `upstreamRequest`/`upstreamHttp` → upstream request body,
-   *     `response`/`upstreamError` → response bodies + the error field).
-   * Corrupt lines are kept verbatim, same fail-open policy as every read.
+   * When `exclude` is non-empty, the matching wire-side bodies of a schema-2
+   * http-exchange event are blanked and the rest of the line is re-serialized;
+   * metadata (ids / ts / status / model / routing / turn identity) always
+   * survives. Seal markers and unparseable lines pass through verbatim.
    */
   public readRawArchive(date: string, file: string, exclude?: string[]): string | null {
     const filePath = this.resolveArchiveFile(date, file);
@@ -2177,7 +1834,9 @@ export class CaptureRecorder {
             }
             if (drop.has('upstreamError')) delete rec.error;
           } else {
-            for (const f of drop) delete rec[f];
+            // Seal marker / unparseable-as-event line: keep it exactly as written.
+            out.push(line);
+            continue;
           }
           out.push(JSON.stringify(rec));
         } catch {
@@ -2314,22 +1973,6 @@ export class CaptureRecorder {
   }
 
   /* ------------------------------------------------------------- helpers */
-
-  private truncateField(value: unknown): { value: unknown; truncated: boolean } {
-    if (value === undefined || value === null) return { value: undefined, truncated: false };
-    let json: string;
-    try {
-      json = JSON.stringify(value);
-    } catch {
-      return { value: '[unserializable]', truncated: false };
-    }
-    if (Buffer.byteLength(json, 'utf8') <= this.maxBodyBytes) {
-      return { value, truncated: false };
-    }
-    // Approximate byte-budget slicing on the JSON string; stored as a plain
-    // string because truncated JSON is not parseable anyway.
-    return { value: json.slice(0, this.maxBodyBytes) + '...[TRUNCATED]', truncated: true };
-  }
 
   /* ------------------------------------------------------------ media scrub */
 
@@ -2578,25 +2221,13 @@ export class CaptureRecorder {
   }
 
   /**
-   * The client-request prompt stamp: the display summary PLUS the message
-   * positions that let the READ plane decide whether that summary belongs to
-   * this turn (see HttpExchangeEvent.promptLastUserIdx). The decision cannot
-   * be made here — it needs the previous client request of the same session,
-   * which only the archived event stream has (the recorder keeps no
-   * cross-turn state; capture stays fail-open and restart-transparent).
+   * Display-only last user message of a client-request body. Written ONLY on
+   * the request that opened the turn (`isPromptStart`); the turn boundary is
+   * decided structurally at the admission gate, never from this text.
    */
-  public static turnPromptStamp(request: unknown, cap = 120): {
-    promptSummary?: string;
-    promptLastUserIdx?: number;
-    promptMessageCount?: number;
-  } {
+  public static turnPromptStamp(request: unknown, cap = 120): string | undefined {
     const slot = CaptureRecorder.lastUserSlot(request);
-    const summary = CaptureRecorder.summarizePromptText(slot?.text, cap);
-    return {
-      ...(summary ? { promptSummary: summary } : {}),
-      ...(slot?.lastUserIdx !== undefined ? { promptLastUserIdx: slot.lastUserIdx } : {}),
-      ...(slot?.messageCount !== undefined ? { promptMessageCount: slot.messageCount } : {}),
-    };
+    return CaptureRecorder.summarizePromptText(slot?.text, cap);
   }
 
   /** Display form of a prompt: newlines flattened, empty bundle text dropped
@@ -2658,18 +2289,16 @@ export class CaptureRecorder {
   }
 
   /**
-   * The last user slot of a request body: its flattened text plus the array
-   * positions the read plane needs to judge staleness (see
-   * HttpExchangeEvent.promptLastUserIdx). `messageCount` is reported even when
-   * the array carries no user message — it is the NEXT turn's comparison
-   * floor. Both positions stay undefined for bodies whose shape is not a
-   * message array (plain-string `input`, System One `state`, unparseable raw
-   * bodies), which disables the staleness rule rather than guessing.
+   * The flattened text of a request body's LAST user slot. Display only:
+   * `promptSummary` never decides a turn boundary. Bodies that are not a
+   * message array still answers text where a surface has an obvious text
+   * channel (plain-string `input`, System One `state`); unparseable bodies
+   * answer none and render the empty-prompt glyph.
    */
   private static lastUserSlot(
     request: unknown,
     depth = 0
-  ): { text?: string; lastUserIdx?: number; messageCount?: number } | undefined {
+  ): { text?: string } | undefined {
     if (request === null || request === undefined || depth > 2) return undefined;
     if (typeof request === 'string') {
       // Same truncation-repair contract as firstHumanUserText.
@@ -2795,21 +2424,17 @@ export class CaptureRecorder {
   }
 
   /**
-   * The last user slot of a message array, with its index. A text-less tail
-   * (tool-result continuation) ENDS the walk: quoting an older user message
-   * would mislabel the turn, so only the positions come back.
+   * The last user message of a message array, flattened to display text.
+   * Pure presentation: turn boundaries are decided structurally by
+   * `classifyTurnBoundary`, never by this text or its position.
    */
-  private static lastUserSlotInMessages(messages: unknown[]): {
-    text?: string;
-    lastUserIdx?: number;
-    messageCount: number;
-  } {
+  private static lastUserSlotInMessages(messages: unknown[]): { text?: string } {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (!msg || typeof msg !== 'object' || !('role' in msg) || msg.role !== 'user') continue;
-      return { text: CaptureRecorder.messageText(msg), lastUserIdx: i, messageCount: messages.length };
+      return { text: CaptureRecorder.messageText(msg) };
     }
-    return { messageCount: messages.length };
+    return {};
   }
 
   /**

@@ -95,7 +95,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
     createdAt: first?.timestamp ?? 0,
     lastActiveAt: last?.timestamp ?? 0,
     // User-prompt turns, not raw requests (traceCount below is the requests
-    // number — the entity/ratchet turnCount would equal it on every row).
+    // number — the entity/ratchet requestCount would equal it on every row).
     turnCount: promptTurnsOf(traces),
     historyTiers: traces.map(t => t.routing.targetTier),
     // DISTINCT client API-key identities seen on this session's traces, in
@@ -1260,7 +1260,7 @@ export function createServer(
         firstUserMessage: s.firstUserMessage ?? sessionTitleOf(sessTraces),
         ...currentModelOf(sessTraces),
         // Same trace-derived turns number as reconstructed rows — the entity
-        // turnCount counts every request and would equal traceCount.
+        // requestCount counts every request and would equal traceCount.
         turnCount: promptTurnsOf(sessTraces),
         // derived, never stored, so live and trace-reconstructed rows agree.
         internal: isInternalSessionId(s.id),
@@ -1359,7 +1359,7 @@ export function createServer(
       // and the client IP stay inside the gateway, and `currentModel` reuses the
       // list's execution-view derivation so the endpoints cannot disagree.
       ...projectSessionEntity(session),
-      // Same turns number as the list rows: the entity turnCount counts EVERY
+      // Same turns number as the list rows: the entity requestCount counts EVERY
       // request — displayed next to traceCount the two would always be equal.
       turnCount: promptTurnsOf(traces),
       // Same title derivation as the list rows (entity first, birth trace as

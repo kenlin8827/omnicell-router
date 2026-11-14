@@ -188,14 +188,14 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     // Check trajectory step structure
     const firstTurn = body.data[0];
     assert.ok(firstTurn.requestId);
-    assert.strictEqual(firstTurn.turnNumber, 1);
+    assert.strictEqual(firstTurn.requestNumber, 1);
     assert.ok(firstTurn.request);
     assert.ok(firstTurn.routing);
     assert.ok(firstTurn.execution);
     assert.ok(firstTurn.finops);
 
     const secondTurn = body.data[1];
-    assert.strictEqual(secondTurn.turnNumber, 2);
+    assert.strictEqual(secondTurn.requestNumber, 2);
     assert.ok(secondTurn.timestamp >= firstTurn.timestamp);
   });
 

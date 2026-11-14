@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChunk } from '../types/openai.js';
+import { ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChunk, ChatMessage } from '../types/openai.js';
 import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
@@ -50,6 +50,19 @@ interface ForcedPassRecord {
   noteCode: RateLimitNoteCode;
 }
 import { recordRateLimitEvent, type RateLimitNoteCode } from '../ratelimit/event-log.js';
+import { NO_TURN, type TurnIdentity } from '../capture/turn-boundary.js';
+
+/**
+ * One inbound request's identity plus its WRITE-TIME turn boundary. `turn` is
+ * allocated once, after the final session binding and before the first event;
+ * every capture/emitter/trace consumer copies the same object.
+ */
+interface RequestIdentity {
+  requestId: string;
+  clientRequestId?: string;
+  turn: TurnIdentity;
+  allocated: boolean;
+}
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
@@ -356,6 +369,21 @@ export class PipelineOrchestrator {
    * SANITIZED form (credential values masked per the deny-list in
    * observability/http-exchange.ts), never raw.
    */
+  /** One-shot allocation of the write-time turn identity (ADR-0024). */
+  private allocateTurn(sessionId: string, messages: readonly ChatMessage[]): TurnIdentity {
+    // Retained traces seed the counter for sessions that predate the v3
+    // snapshot; the counter itself is authoritative once present.
+    const seed = this.traceTracker
+      .getTracesBySession(sessionId)
+      .reduce((max, t) => Math.max(max, t.turnIndex ?? 0), 0);
+    const a = this.sessionManager.allocateTurnIndex(sessionId, messages, seed);
+    return {
+      turnIndex: a.turnIndex,
+      isPromptStart: a.isPromptStart,
+      turnDecision: a.turnDecision,
+    };
+  }
+
   public async process(
     request: ChatCompletionRequest,
     context?: ProcessContext,
@@ -381,9 +409,11 @@ export class PipelineOrchestrator {
     const traceHeaders =
       context?.fastifyRequest?.headers ?? context?.clientRequest?.headers ?? context?.headers;
     const clientRequest = traceHeaders ? resolveClientRequestId({ headers: traceHeaders }) : {};
-    const turnIdentity = {
+    const turnIdentity: RequestIdentity = {
       requestId: mintRequestId(),
       ...(clientRequest.clientRequestId ? { clientRequestId: clientRequest.clientRequestId } : {}),
+      turn: NO_TURN,
+      allocated: false,
     };
 
     let captureSessionId = '';
@@ -414,7 +444,12 @@ export class PipelineOrchestrator {
         headers: context?.headers,
       });
       captureSessionId = preResolvedSession.sessionId;
-      // Deterministic conversation key stamped onto EVERY event of the turn:
+      // ADR-0024: allocate the turn boundary ONCE — after the final session
+      // binding, before the first event. Re-entries, retries, failover hops
+      // and the L2 decision leg copy it; none of them re-allocate.
+      turnIdentity.turn = this.allocateTurn(captureSessionId, snapshotRequest.messages);
+      turnIdentity.allocated = true;
+      // Deterministic conversation key stamped onto EVERY event of the request:
       // the capture archive can regroup turns even when the volatile session
       // id shifts (content-addressed, never a credential, mirrors the
       // session-manager resolution input exactly).
@@ -439,6 +474,7 @@ export class PipelineOrchestrator {
         requestId: turnIdentity.requestId,
         model: request.model || 'auto',
         conversationKey,
+        turn: turnIdentity.turn,
       });
       if (context?.fastifyRequest) {
         setClientExchangeContext(context.fastifyRequest, clientExchangeCtx);
@@ -456,6 +492,7 @@ export class PipelineOrchestrator {
         // their events simply omit the field — same as before this existed.
         apiKey: keyIdentity,
         conversationKey,
+        turn: turnIdentity.turn,
       };
     }
 
@@ -484,7 +521,7 @@ export class PipelineOrchestrator {
     context?: ProcessContext,
     preResolvedSession?: SessionResolveResult,
     upstreamEventContext?: UpstreamEventContext,
-    turnIdentity?: { requestId: string; clientRequestId?: string },
+    turnIdentity?: RequestIdentity,
     relay?: StreamRelay
   ): Promise<ExecutionResult> {
     const clientRequestId = turnIdentity?.clientRequestId;
@@ -760,6 +797,14 @@ export class PipelineOrchestrator {
         clientRef: clientRef ?? undefined,
       });
     const sessionId = sessionResolve.sessionId;
+    // Capture-disabled requests reach the admission gate only here; allocate
+    // exactly once so the trace plane carries the same identity regardless of
+    // the capture switch. `allocated` makes the two gates mutually exclusive.
+    if (turnIdentity && !turnIdentity.allocated) {
+      turnIdentity.turn = this.allocateTurn(sessionId, normalizedRequest.messages);
+      turnIdentity.allocated = true;
+    }
+    const requestTurn = turnIdentity?.turn ?? NO_TURN;
 
     // 2B. Token-saver compression (toolOutput tool-output compression → headroom
     // sidecar → outputStyle injection). All stages fail open. Snapshot the
@@ -959,14 +1004,14 @@ export class PipelineOrchestrator {
         : 'ratchet';
     let decision: RoutingDecision;
     let ratchetApplied = false;
-    let sessionTurnCount: number;
+    let sessionRequestCount: number;
     if (sessionMode === 'bypass') {
       decision = { ...initialDecision, sessionId, sessionRatchetApplied: false, sessionLookupType: sessionResolve.lookupType };
       // Bypass never mints a session entity, so getSession reads undefined
       // every turn and stamped every combo request #1 in the console's
       // request-detail table. Dedicated counter instead — display-only
       // bookkeeping, no pin/tier state (ADR-0002).
-      sessionTurnCount = this.sessionManager.recordBypassTurn(sessionId);
+      sessionRequestCount = this.sessionManager.recordBypassTurn(sessionId);
     } else {
       const ratchetResult = this.sessionManager.applyRatchet(
         sessionId,
@@ -986,7 +1031,7 @@ export class PipelineOrchestrator {
       decision.sessionRatchetApplied = ratchetResult.ratchetApplied;
       decision.sessionLookupType = sessionResolve.lookupType;
       ratchetApplied = ratchetResult.ratchetApplied;
-      sessionTurnCount = ratchetResult.session.turnCount;
+      sessionRequestCount = ratchetResult.session.requestCount;
     }
 
     // Traces already recorded for this session (this turn's trace is written
@@ -1042,7 +1087,7 @@ export class PipelineOrchestrator {
     // manager), recording the inbound wire, the layer that resolved the id,
     // the client ip and the first-message snippet for UI identification.
     const bornSession = this.sessionManager.getSession(sessionId);
-    if (bornSession && bornSession.turnCount === 1) {
+    if (bornSession && bornSession.requestCount === 1) {
       this.sessionManager.attachOrigin(
         sessionId,
         { wire: context?.wire, lookupType: sessionResolve.lookupType },
@@ -1927,43 +1972,35 @@ export class PipelineOrchestrator {
     // it as correlation only, because a caller may reuse one value for every
     // request of a conversation.
 
-    // The summary names the user message THAT TRIGGERED this turn. A
-    // tool-result continuation turn carries the whole history, so its last
-    // user message is the PREVIOUS turn's prompt — recording it again makes
-    // every continuation row in the console's request detail read as a
-    // duplicate (an empty summary renders the "no new user message"
-    // fallback glyph). The message is stale when its index already existed
-    // at the session's previous turn: clients append, so a genuinely new
-    // user message always lands at or past the previous messageCount. When
-    // this request's history SHRANK (client-side compaction / truncation)
-    // every index moved down and the comparison proves nothing, so the
-    // summary is kept — hiding a real prompt is the worse failure.
-    const lastUserIdx = (() => {
-      for (let i = normalizedRequest.messages.length - 1; i >= 0; i--) {
-        if (normalizedRequest.messages[i].role === 'user') return i;
+    // Display-only prompt text. The write-time boundary decides whether this
+    // request opened a turn; a tool-result continuation carries the previous
+    // prompt in its history and must not render a duplicate header. Text is
+    // never consulted to DECIDE that boundary — `isPromptStart` is.
+    let lastUserIdx = -1;
+    for (let i = normalizedRequest.messages.length - 1; i >= 0; i--) {
+      if (normalizedRequest.messages[i].role === 'user') {
+        lastUserIdx = i;
+        break;
       }
-      return -1;
-    })();
+    }
     const lastUserMsg = lastUserIdx >= 0 ? normalizedRequest.messages[lastUserIdx] : undefined;
     const lastUserTextForSummary = typeof lastUserMsg?.content === 'string'
       ? lastUserMsg.content
       : Array.isArray(lastUserMsg?.content)
         ? lastUserMsg.content.map(textPartOf).join(' ')
         : '';
-    // Display aid: same envelope stripping as the session title — a metadata-only
-    // turn renders as the empty-summary glyph, never as `<timestamp>…</timestamp>`.
-    let userPromptSummary = displayPromptText(lastUserTextForSummary).slice(0, 200);
-    const prevMessageCount = prevTraces[prevTraces.length - 1]?.request.messageCount ?? 0;
-    const turnMessageCount = normalizedRequest.messages.length;
-    if (userPromptSummary && turnMessageCount >= prevMessageCount && lastUserIdx < prevMessageCount) {
-      userPromptSummary = '';
-    }
+    const userPromptSummary = requestTurn.isPromptStart
+      ? displayPromptText(lastUserTextForSummary).slice(0, 200)
+      : '';
 
     this.traceTracker.record({
       requestId,
       ...(clientRequestId ? { clientRequestId } : {}),
       sessionId,
-      turnNumber: sessionTurnCount,
+      requestNumber: sessionRequestCount,
+      turnIndex: requestTurn.turnIndex,
+      isPromptStart: requestTurn.isPromptStart,
+      turnDecision: requestTurn.turnDecision,
       timestamp: startTime,
       // Key attribution on the lightweight session trajectory as well (works
       // even with capture disabled): which application's key drove this turn.

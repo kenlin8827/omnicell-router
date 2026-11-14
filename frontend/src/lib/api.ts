@@ -94,7 +94,8 @@ export interface ClientProductStatus {
   caTrusted: boolean | 'unknown';
   /** Installed ACP agent (Junie) version for this product's config root. */
   junieVersion: string | null;
-  /** Files this product owns (settings, backup, per-product agents dir). */
+  /** Files this product owns (settings, per-product agents dir) — the
+   *  `.ocr-backup` snapshot is reversible state, never an artifact. */
   artifacts: ClientArtifact[];
 }
 
@@ -744,7 +745,7 @@ export interface TraceRecord {
   clientRequestId?: string;
   /** Gateway conversation entity id (ADR-0002). */
   sessionId: string;
-  turnNumber: number;
+  requestNumber: number;
   timestamp: number;
   /** Client API-key identity (application) that drove this turn, when known. */
   apiKey?: CaptureKeyIdentity;
@@ -874,7 +875,9 @@ export interface CaptureSessionRow {
   sessionId: string;
   bytes: number;
   mtimeMs: number;
-  turns: number;
+  /** Total captured REQUESTS in this archive (ADR-0024 request layer). */
+  requests: number;
+  /** Requests with an error outcome. */
   failed: number;
   lastStatus?: 'ok' | 'error';
   /** First user-message text of the session (backend-extracted, capped) */
@@ -909,7 +912,8 @@ export interface CaptureSessionRow {
 export interface CaptureFragmentRow {
   date: string;
   file: string;
-  turns: number;
+  /** Requests contributed by this shard. */
+  requests: number;
 }
 
 /** One archive hit for a session id: coordinates only (date dir + file name) */
@@ -918,96 +922,38 @@ export interface CaptureSessionMatch {
   file: string;
 }
 
-/**
- * HTTP-level observation of the SUCCESSFUL outbound call (mirrors
- * backend UpstreamHttpRecord): URL, status, safe response-header subset,
- * TTFB, total duration, attempt index, wire kind. Absent when no
- * outbound HTTP attempt landed successfully.
- */
-export interface UpstreamHttpRecord {
-  url: string;
-  method: string;
-  status: number;
-  responseHeaders?: {
-    retryAfter?: string;
-    requestId?: string;
-    contentType?: string;
-    ratelimit?: {
-      limit?: string;
-      remaining?: string;
-      reset?: string;
-    };
-  };
-  ttfbMs: number | null;
-  durationMs: number;
-  attemptIndex: number;
-  wireKind: 'openai' | 'anthropic' | 'google' | 'responses' | 'opencode-proxy';
-}
+/** UTF-8 text, or hex for binary payloads. Mirrors backend `WireBody`. */
+export type WireBody = string | { hex: string };
 
-export interface CaptureRecord {
-  id: string;
-  ts: number;
-  sessionId: string;
-  status: 'ok' | 'error';
-  model: string;
-  request?: unknown;
-  /** Real outbound wire body (provider-translated, upstreamModel substituted). */
-  upstreamRequest?: unknown;
-  /** HTTP-level capture of the successful outbound call (last-write-wins). */
-  upstreamHttp?: UpstreamHttpRecord;
-  /** Upstream error payload (status + parsed body) when a candidate call failed */
-  upstreamError?: unknown;
-  response?: unknown;
-  error?: string;
-  routing?: {
-    tierUsed?: string;
-    layerUsed?: string;
-    modelUsed?: string;
-    provider?: string;
-    fallbackOccurred?: boolean;
-    failoverPath?: string[];
-  };
-  usage?: unknown;
-  latencyMs?: number;
-  truncated?: boolean;
-}
-
-/**
- * One HTTP-exchange event (mirrors backend HttpExchangeEvent). The capture
- * pipeline emits 2-4 events per inference turn:
- *   - direction='client',   phase='request'  — the inbound HTTP request
- *   - direction='client',   phase='response' — gateway → client response
- *   - direction='upstream', phase='request'  — gateway → provider request
- *   - direction='upstream', phase='response' — provider → gateway response
- *
- * Each req/resp pair shares one `exchangeId`. Readers join the four events of
- * ONE request by `requestId` (the gateway turn id, ADR-0021); `clientRequestId`
- * is the caller's trace-wide correlation value and may cover several requests.
- */
-export interface WireBody {
-  /** Non-UTF-8 payloads fall back to hex (mirrors backend WireBody). */
-  hex: string;
-}
-
+/** Byte-faithful wire snapshot of ONE side of ONE HTTP exchange. */
 export interface RawWireCapture {
   requestLine: string;
   requestHeaders: Record<string, string>;
-  requestBody: string | WireBody;
+  requestBody: WireBody;
   responseLine: string;
   status: number;
   responseHeaders: Record<string, string>;
-  responseBody: string | WireBody;
+  responseBody: WireBody;
 }
 
-export interface HttpExchangeEvent {
+export interface CaptureEvent {
   id: string;
   ts: number;
   eventType: 'http-exchange';
+  /** Every schema-2 archive line carries 2. */
+  schema: 2;
   direction: 'client' | 'upstream';
   phase: 'request' | 'response';
+  /** Write-time turn identity, copied onto EVERY event of the request. */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: 'new_prompt' | 'continuation' | 'ambiguous_compaction' | 'no_prompt';
+  /** 1-based attempt ordinal within (requestId, leg). */
+  attempt: number;
+  /** One HTTP request/response pair shares one exchangeId. */
   exchangeId: string;
   clientRequestId?: string;
-  /** Gateway turn id (ADR-0021) — the exact join key. */
+  /** Gateway REQUEST id (ADR-0021) — the exact join key. */
   requestId: string;
   /** The provider's own response id, when its wire exposes one. */
   upstreamRequestId?: string;
@@ -1047,83 +993,153 @@ export interface HttpExchangeEvent {
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
   /**
-   * Flattened LAST user message of the request, capped — stamped on
-   * client-request events at write time so metadata-only reads (bodies=none)
-   * still render the turn prompt in the timeline. Absent on other
-   * phases/directions and for bodies without user text. The body's last user
-   * message is only THIS turn's prompt when the client appended it: the
-   * server blanks it for resent history (tool-result continuations), so an
-   * absent summary means "no new user message", not "unknown". A history
-   * that SHRANK (client-side compaction) is exempt — its last user message
-   * is this turn's prompt even though the index looks old.
+   * Display-only flattened last user message, capped. Stamped on the
+   * prompt-start client-request event at write time so metadata-only reads
+   * (bodies=none) can render a prompt. It NEVER decides a turn boundary —
+   * `turnIndex` / `isPromptStart` do.
    */
   promptSummary?: string;
-  /** Message-array length of the client request (staleness basis for the NEXT turn). */
-  promptMessageCount?: number;
-  /** Index of the last user message inside that array (see promptSummary). */
-  promptLastUserIdx?: number;
 }
 
-export interface CaptureTurn {
-  /** Gateway turn id (ADR-0021) — the join key. */
+/** One leg of a request: client ↔ gateway, gateway ↔ provider, decision. */
+export type CaptureExchangeLeg = 'client' | 'upstream' | 'decision';
+
+/**
+ * ONE HTTP exchange = one request event + its response event, paired by
+ * `exchangeId`. A request owns 2-N of these (client, upstream, every failover
+ * attempt, the Layer-2 decision pair). `attempt` is 1-based within
+ * `(requestId, leg)`; no hop is ever overwritten.
+ */
+export interface CaptureExchange {
+  leg: CaptureExchangeLeg;
+  attempt: number;
+  exchangeId: string;
+  purpose?: 'l2-decision';
+  request?: CaptureEvent;
+  response?: CaptureEvent;
+  /** response.ts - request.ts (whole exchange duration). */
+  latencyMs?: number;
+  /** firstByteTs - request.ts (streamed replies only). */
+  ttftMs?: number;
+  /** response.ts - firstByteTs (decode window). */
+  genMs?: number;
+}
+
+/** One REQUEST: every HTTP exchange sharing one `requestId`. ADR-0024. */
+export interface CaptureRequest {
   requestId: string;
-  /** Caller correlation value, carried from the client-request event. */
   clientRequestId?: string;
   sessionId: string;
   model: string;
-  /**
-   * 1-based request sequence number inside the read window — one per client
-   * request, never per tool-result continuation. Absent when the request line
-   * fell outside the window (a continuation tail).
-   */
-  requestNumber?: number;
-  /**
-   * 1-based prompt-round number inside the read window — one per user
-   * prompt plus every request it drove. A leading prompt-less block opens
-   * round 1 (its prompt sits outside the window).
-   */
-  roundNumber?: number;
-  /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
+  /** Immutable, session-scoped write-time turn ordinal. `null` = no turn. */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: 'new_prompt' | 'continuation' | 'ambiguous_compaction' | 'no_prompt';
+  /** Display-only prompt text, present on the prompt-start request. */
   promptSummary?: string;
-  clientRequest?: HttpExchangeEvent;
-  gatewayResponse?: HttpExchangeEvent;
-  upstreamRequest?: HttpExchangeEvent;
-  upstreamResponse?: HttpExchangeEvent;
-  /** The L2 decision layer's HTTP leg when one fired inside this turn (kept in separate slots — never merged into the serving upstream pair). */
-  decisionRequest?: HttpExchangeEvent;
-  decisionResponse?: HttpExchangeEvent;
+  /** 1-based REQUEST ordinal inside the read window (the pager's unit). */
+  requestNumber?: number;
+  /** Every exchange of this request, in wire order. Never last-write-wins. */
+  exchanges: CaptureExchange[];
   error?: string;
+}
+
+/** The last exchange of a leg — the one that served the client. */
+export function primaryExchange(
+  request: CaptureRequest,
+  leg: CaptureExchangeLeg
+): CaptureExchange | undefined {
+  let found: CaptureExchange | undefined;
+  for (const ex of request.exchanges ?? []) {
+    if (ex.leg === leg && (!found || ex.attempt >= found.attempt)) found = ex;
+  }
+  return found;
+}
+
+export function exchangeEvent(
+  request: CaptureRequest,
+  leg: CaptureExchangeLeg,
+  phase: 'request' | 'response'
+): CaptureEvent | undefined {
+  return primaryExchange(request, leg)?.[phase];
+}
+
+/**
+ * UI PROJECTION ONLY. The console's chips, transcript and timeline need the
+ * SERVING leg of each exchange; `exchanges[]` above remains the complete,
+ * authoritative list and the drawer renders its tabs from it. This projection
+ * never decides a turn boundary and never invents a failover hop.
+ */
+export interface CaptureRequestView extends CaptureRequest {
+  clientRequest?: CaptureEvent;
+  clientResponse?: CaptureEvent;
+  upstreamRequest?: CaptureEvent;
+  upstreamResponse?: CaptureEvent;
+  decisionRequest?: CaptureEvent;
+  decisionResponse?: CaptureEvent;
   gatewayLatencyMs?: number;
-  upstreamLatencyMs?: number;
-  /** Decision-leg cycle latency (decision-resp.ts - decision-req.ts). */
-  decisionLatencyMs?: number;
-  /** TTFT / decode window per leg, derived from firstByteTs at read time
-   *  (backend CaptureTurnSummary). Undefined when the leg was not streamed
-   *  or the event predates the stamp. */
   gatewayTtftMs?: number;
   gatewayGenMs?: number;
+  upstreamLatencyMs?: number;
   upstreamTtftMs?: number;
   upstreamGenMs?: number;
-  /** TTFT / decode window for the decision layer leg (same derivation as upstream). */
+  decisionLatencyMs?: number;
   decisionTtftMs?: number;
   decisionGenMs?: number;
 }
 
-/** Whole-archive USER-PROMPT round (backend CaptureRoundIndexEntry). */
-export interface CaptureRoundIndexEntry {
-  ordinal: number;
+/** One pure projection from the canonical wire object. */
+export function toCaptureRequestView(raw: CaptureRequest): CaptureRequestView {
+  const view: CaptureRequestView = {
+    ...raw,
+    exchanges: Array.isArray(raw.exchanges) ? raw.exchanges : [],
+    clientRequest: exchangeEvent(raw, 'client', 'request'),
+    clientResponse: exchangeEvent(raw, 'client', 'response'),
+    upstreamRequest: exchangeEvent(raw, 'upstream', 'request'),
+    upstreamResponse: exchangeEvent(raw, 'upstream', 'response'),
+    decisionRequest: exchangeEvent(raw, 'decision', 'request'),
+    decisionResponse: exchangeEvent(raw, 'decision', 'response'),
+  };
+  const client = primaryExchange(raw, 'client');
+  const upstream = primaryExchange(raw, 'upstream');
+  const decision = primaryExchange(raw, 'decision');
+  if (client) {
+    view.gatewayLatencyMs = client.latencyMs;
+    view.gatewayTtftMs = client.ttftMs;
+    view.gatewayGenMs = client.genMs;
+  }
+  if (upstream) {
+    view.upstreamLatencyMs = upstream.latencyMs;
+    view.upstreamTtftMs = upstream.ttftMs;
+    view.upstreamGenMs = upstream.genMs;
+  }
+  if (decision) {
+    view.decisionLatencyMs = decision.latencyMs;
+    view.decisionTtftMs = decision.ttftMs;
+    view.decisionGenMs = decision.genMs;
+  }
+  return view;
+}
+
+/** One TURN over the WHOLE archive, indexed by its write-time `turnIndex`. */
+export interface CaptureTurnIndexEntry {
+  /** Immutable, session-scoped write-time turn ordinal. */
+  turnIndex: number;
+  /** New user message that opened the turn. */
   prompt?: string;
+  /** Request send time (epoch ms) of the turn's first request. */
   startTs?: number;
+  /** Requests in this turn (prompt request + tool-loop hops). */
   requests: number;
   firstRequest: number;
   lastRequest: number;
 }
 
-/** Exact whole-archive totals + prompt-round index (backend CaptureArchiveSummary). */
+/** Exact whole-archive totals + the write-time turn index. */
 export interface CaptureArchiveSummary {
   requests: number;
   fragments: number;
-  rounds: CaptureRoundIndexEntry[];
+  turns: CaptureTurnIndexEntry[];
 }
 
 // Mirrors backend SessionRow (backend/src/session/session-row.ts) — the console
@@ -4572,36 +4588,30 @@ export const api = {
     return json.matches || [];
   },
 
+  /** THE ONE capture read. Paging is in REQUESTS; each request carries its
+   *  complete `exchanges[]`, projected into a view for the console chips. */
   async getCaptureEvents(
     date: string,
     file: string,
     limit = 50,
     bodies: 'full' | 'none' | 'chat' = 'full',
     stitched = true,
-    /** 1-based page counted from the NEWEST end (page 1 = newest turn page). */
+    /** 1-based page counted from the NEWEST end. */
     page = 1
   ): Promise<{
-    events: HttpExchangeEvent[];
-    turns: CaptureTurn[];
+    events: CaptureEvent[];
+    requests: CaptureRequestView[];
     totalLines: number;
-    /** Logical turns (requests + orphan response tails) in the read window. */
+    /** Requests in the read window (the pager's exact denominator). */
+    totalRequests: number;
+    /** Distinct write-time turn ordinals in the read window. */
     totalTurns: number;
-    /** Client REQUESTS in the read window — the pager's unit. */
-    windowRequests: number;
-    /** USER-PROMPT ROUNDS in the read window; never the request count. */
-    totalRounds: number;
-    /** The read window is the whole archive (false = only its tail). */
     windowComplete: boolean;
     fileTruncated: boolean;
-    /** Present on stitched reads: per-date-dir fragments of the conversation. */
     fragments?: CaptureFragmentRow[];
-    /** The page actually served (clamped into [1, totalPages]). */
     page: number;
-    /** Turn pages available inside the read window. */
     totalPages: number;
-    /** Older turns remain in the read window (page < totalPages). */
     hasOlder: boolean;
-    /** Newer turns exist (page > 1). */
     hasNewer: boolean;
   }> {
     const params = new URLSearchParams({
@@ -4616,11 +4626,10 @@ export const api = {
     if (!res.ok) {
       return {
         events: [],
-        turns: [],
+        requests: [],
         totalLines: 0,
+        totalRequests: 0,
         totalTurns: 0,
-        windowRequests: 0,
-        totalRounds: 0,
         windowComplete: true,
         fileTruncated: false,
         page: 1,
@@ -4629,15 +4638,21 @@ export const api = {
         hasNewer: false,
       };
     }
-    return res.json();
+    const json = await res.json();
+    return {
+      ...json,
+      events: Array.isArray(json.events) ? json.events : [],
+      requests: Array.isArray(json.requests) ? json.requests.map(toCaptureRequestView) : [],
+      totalRequests: Number(json.totalRequests) || 0,
+      totalTurns: Number(json.totalTurns) || 0,
+      fragments: Array.isArray(json.fragments) ? json.fragments : undefined,
+    };
   },
 
-  /** EXACT whole-archive summary: request count (header denominator + pager
-   *  total) and the USER-PROMPT round index for the selector. Display-only —
-   *  pagination stays window-bounded. Never call round entries "requests".
-   *  Resolves `null` when the scan is unavailable: callers must keep their
-   *  previous/unknown state so the header falls back to the window tally
-   *  instead of rendering a bogus "0 requests" over live rows. */
+  /** EXACT whole-archive summary: the request count and the WRITE-TIME turn
+   *  index (one entry per `turnIndex`). Display-only — pagination stays
+   *  window-bounded. Resolves `null` when the scan is unavailable so callers
+   *  keep their previous/unknown state instead of rendering a bogus zero. */
   async getCaptureSummary(
     date: string,
     file: string,
@@ -4653,29 +4668,33 @@ export const api = {
     return {
       requests: Number(json.requests) || 0,
       fragments: Number(json.fragments) || 0,
-      rounds: Array.isArray(json.rounds) ? json.rounds : [],
+      turns: Array.isArray(json.turns) ? json.turns : [],
     };
   },
 
-  /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads).
-   *  The key is the turn id (`requestId`) or any of its event ids; stitched=1
-   *  lets a cross-midnight turn resolve from its other date-dir shard. */
-  async getCaptureTurn(date: string, file: string, turnId: string, stitched = true): Promise<CaptureTurn | null> {
+  /** Full wire bodies for ONE request, fetched on demand (metadata-first
+   *  list reads). The key is its `requestId` or any of its event ids. */
+  async getCaptureRequest(
+    date: string,
+    file: string,
+    requestId: string,
+    stitched = true
+  ): Promise<CaptureRequestView | null> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
         file
-      )}/turn?id=${encodeURIComponent(turnId)}${stitched ? '&stitched=1' : ''}`
+      )}/request?id=${encodeURIComponent(requestId)}${stitched ? '&stitched=1' : ''}`
     );
     if (!res.ok) return null;
     const json = await res.json();
-    return json.turn || null;
+    return json.request ? toCaptureRequestView(json.request) : null;
   },
 
   async getCaptureRecords(
     date: string,
     file: string,
     limit = 200
-  ): Promise<{ records: CaptureRecord[]; totalLines: number; fileTruncated: boolean }> {
+  ): Promise<{ records: Record<string, unknown>[]; totalLines: number; fileTruncated: boolean }> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?limit=${limit}`
     );

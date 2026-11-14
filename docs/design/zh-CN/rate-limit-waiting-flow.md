@@ -14,13 +14,13 @@
 
 ## 1. 全链路
 
-一轮 turn 从准入到唯一终态。四个 subgraph 是控制流的四个归属方；每条跨越
-subgraph 边界的箭头，要么是重入 `admitTurn()`，要么是向客户端交接。
+一个 request 从准入到唯一终态。四个 subgraph 是控制流的四个归属方；每条跨越
+subgraph 边界的箭头，要么是重入 `admitRequest()`，要么是向客户端交接。
 
 ```mermaid
 flowchart TD
-  subgraph A["admitTurn()：每轮累计预算"]
-    A0["turn 进入：requestId + 准入状态"]
+  subgraph A["admitRequest()：每 request 累计预算"]
+    A0["request 进入：requestId + 准入状态"]
     A1["peek() 非消耗探测"]
     A2{"命中本地 cap？"}
     A3["apiKeys limits：2s 预算"]
@@ -136,7 +136,7 @@ flowchart TD
   S7 -->|"否"| S10["429 + Retry-After = 池内最小 peek.retryAfterMs"]
   S9 --> S11["抑制 penalize()；断路器仍独立记录"]
   S11 --> S12{"relay.committed？"}
-  S12 -->|"否"| S13["返回 admitTurn()，由探测决定等待"]
+  S12 -->|"否"| S13["返回 admitRequest()，由探测决定等待"]
   S12 -->|"是"| S14["断流，禁止重入"]
   S6 --> S15["客户端退避"]
   S10 --> S15
@@ -187,7 +187,7 @@ SDK 会把 402 读成「不要重试」。仅由 token reservation 撑满的窗�
 
 | 节点 | ADR-0023 章节 | 管辖表述 |
 | :--- | :--- | :--- |
-| `A0`–`A9` | 第 1、2 节 | 唯一 `admitTurn()`；累计预算；等待期间锁定配对 |
+| `A0`–`A9` | 第 1、2 节 | 唯一 `admitRequest()`；累计预算；等待期间锁定配对 |
 | `P1`–`P6` | 第 1 节、后果 | `executeCandidatePool` 仍是唯一咽喉；拒绝不计数 |
 | `R0`–`R8` | 第 3 节 | 按 cache 成本排序的阶梯；本地 cap 永不单独授权换路 |
 | `E0`–`E8` | 第 2.1 节 | 预算耗尽仍要交出可用的退避时刻 |

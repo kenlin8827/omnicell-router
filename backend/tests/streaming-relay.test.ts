@@ -341,7 +341,7 @@ describe('provider streaming leg (capture + error class)', () => {
     expect(events[0].wire.requestBody).toContain('include_usage');
     expect(events[1].wire.responseBody).toContain('data: [DONE]');
     // Streaming responses carry the first-chunk stamp: TTFT/decode split for
-    // the capture plane derives from the SAME event (see CaptureTurnSummary).
+    // the capture plane derives from the SAME event (see CaptureRequestSummary).
     // (Range vs request-ts is pinned in capture.test.ts — the raw event here
     // carries no ts; the real recorder assigns it at persist time.)
     expect(typeof events[1].firstByteTs).toBe('number');

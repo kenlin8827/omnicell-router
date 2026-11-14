@@ -79,7 +79,6 @@ type SessionEntityView = Pick<
   | 'maxTier'
   | 'createdAt'
   | 'lastActiveAt'
-  | 'turnCount'
   | 'historyTiers'
   | 'firstUserMessage'
   | 'boundKeyHashPrefix'
@@ -93,7 +92,6 @@ export function projectSessionEntity(s: ConversationSession): SessionEntityView 
     maxTier: s.maxTier,
     createdAt: s.createdAt,
     lastActiveAt: s.lastActiveAt,
-    turnCount: s.turnCount,
     historyTiers: s.historyTiers,
     firstUserMessage: s.firstUserMessage,
     boundKeyHashPrefix: s.boundKeyHashPrefix,
@@ -126,15 +124,13 @@ export function currentModelOf(traces: ExecutionTrace[]): CurrentModelView {
 }
 
 /**
- * User-prompt turn count — the console "Turns" column. One per trace carrying
- * a NEW user prompt; the orchestrator blanks `userPromptSummary` on
- * tool-result continuations (lastUserIdx < prevMessageCount, orchestrator.ts),
- * so this never counts an agent tool loop's follow-up requests. The session
- * entity's own `turnCount` counts EVERY request — never display that number
- * next to `traceCount`, the two would always be equal.
+ * User-prompt TURN count — the console "Turns" column. The write-time
+ * `isPromptStart` flag is the single boundary: a tool-result continuation
+ * never increments it. The session entity's `requestCount` counts EVERY
+ * request — never display that number next to `traceCount`.
  */
 export function promptTurnsOf(traces: ExecutionTrace[]): number {
-  return traces.reduce((n, t) => (t.request.userPromptSummary ? n + 1 : n), 0);
+  return traces.reduce((n, t) => (t.isPromptStart ? n + 1 : n), 0);
 }
 
 /**
@@ -200,6 +196,12 @@ export function sessionIdSourceOf(
 
 /** One console session row. */
 export interface SessionRow extends SessionEntityView, SessionAggregates {
+  /**
+   * User-prompt turns — the console "Turns" column. NOT the entity's
+   * `requestCount`: that one counts every inbound request and is deliberately
+   * not projected onto the wire (ADR-0024).
+   */
+  turnCount: number;
   /** Gateway-internal loopback row — derived from the id, never stored. */
   internal: boolean;
   entryMode: SessionEntryMode;

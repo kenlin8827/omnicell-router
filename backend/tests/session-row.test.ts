@@ -36,13 +36,19 @@ describe('currentModelOf (execution view of a session)', () => {
 });
 
 describe('promptTurnsOf (console Turns column ≠ traceCount)', () => {
+  /** A trace with its WRITE-TIME turn boundary, never a text heuristic. */
   const turnTrace = (prompt: string): ExecutionTrace =>
-    ({ request: { userPromptSummary: prompt } }) as unknown as ExecutionTrace;
+    ({
+      request: { userPromptSummary: prompt },
+      isPromptStart: Boolean(prompt),
+      turnIndex: prompt ? 1 : 1,
+      turnDecision: prompt ? 'new_prompt' : 'continuation',
+    }) as unknown as ExecutionTrace;
 
-  it('counts only traces carrying a NEW user prompt', () => {
+  it('counts only prompt-start traces (tool-loop continuations excluded)', () => {
     const traces = [
       turnTrace('fix the bug'),
-      // Agent tool loop: continuation request, orchestrator blanks the summary.
+      // Agent tool loop: continuation requests share the same turnIndex.
       turnTrace(''),
       turnTrace(''),
       turnTrace('now add tests'),
@@ -50,7 +56,7 @@ describe('promptTurnsOf (console Turns column ≠ traceCount)', () => {
     assert.equal(promptTurnsOf(traces), 2);
   });
 
-  it('no prompts → 0 (a session entity can exist before any served turn)', () => {
+  it('no prompt-start → 0 (a session entity can exist before any served turn)', () => {
     assert.equal(promptTurnsOf([]), 0);
     assert.equal(promptTurnsOf([turnTrace(''), turnTrace('')]), 0);
   });
@@ -64,7 +70,6 @@ describe('projectSessionEntity (console whitelist)', () => {
     pinnedProvider: 'anchor-provider',
     createdAt: 1,
     lastActiveAt: 2,
-    turnCount: 3,
     historyTiers: ['lite', 'plus'],
     origin: { wire: 'openai', lookupType: 'header', clientIp: '10.0.0.9' },
     firstUserMessage: 'hello',
@@ -78,8 +83,7 @@ describe('projectSessionEntity (console whitelist)', () => {
       maxTier: 'plus',
       createdAt: 1,
       lastActiveAt: 2,
-      turnCount: 3,
-      historyTiers: ['lite', 'plus'],
+        historyTiers: ['lite', 'plus'],
       firstUserMessage: 'hello',
       boundKeyHashPrefix: 'abc123',
       boundAt: 4,

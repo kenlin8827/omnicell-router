@@ -28,10 +28,12 @@ gate, KEEP-BOUND, upstream-429 feedback), `backend/src/resilience/error-classifi
 Three requirements conflict, and the current code satisfies them only
 individually:
 
-1. **A turn must not be interrupted.** For a coding agent, a 429 or a truncated
-   stream discards an in-flight long task and its accumulated context. A wait of
-   seconds is far cheaper than an interrupted turn. Fast-fail is a last resort,
-   not a default.
+1. **A user turn must not be interrupted.** For a coding agent, a 429 or a
+   truncated stream discards an in-flight long task and its accumulated
+   context. A wait of seconds is far cheaper than an interrupted turn.
+   Fast-fail is a last resort, not a default. (The GOAL is turn-level; every
+   mechanism below — budgets, re-entry, `committed`, heartbeats — is
+   request-level, per ADR-0024.)
 2. **Switching paths is expensive.** Rebinding to another credential or model
    burns the upstream prompt cache. A local cap is a hint, not a failure
    (`cap != failure`), so it must never be the reason a bound session moves.
@@ -52,7 +54,7 @@ own wait independently:
 - an upstream 429 without `Retry-After` writes a 60 s shaping cooldown via
   `penalize()`.
 
-There is no per-turn waiting budget, so the three waits can stack; there is no
+There is no per-request waiting budget, so the three waits can stack; there is no
 heartbeat, so a long wait becomes a client-side timeout, which is merely an
 interruption under another name; and the outbound failure path is the worst of
 the four because the client is not even told how long to back off.
@@ -61,27 +63,29 @@ the four because the client is not even told how long to back off.
 
 ### 1. One re-entrant admission function, not scattered waits
 
-A single internal `admitTurn()` owns admission, the waiting budgets and the
-retry counter for the whole turn. Deep layers do not start their own open-ended
+A single internal `admitRequest()` owns admission, the waiting budgets and the
+retry counter for ONE inbound request (`requestId`). The unit is the request,
+never the user prompt.
+Deep layers do not start their own open-ended
 waits: they either wait in place under the contract in sections 2 and 3, or
 **return to the admission function**.
 
-- At most **2 re-entries** (3 attempts total) per turn.
+- At most **2 re-entries** (3 attempts total) per request.
 - The two triggers for a return are **internal retry requested** and **call
   failed**, both gated on `!relay.committed` (section 4).
-- A re-entry is a continuation of the SAME turn, not a new HTTP request: no
-  second authentication, no second `tryDispatch()` slot consumption (the
-  "denials are not counted" contract is preserved), no duplicate usage
-  accounting, no duplicate trace or capture terminal.
-- Budgets are **cumulative per turn**, not reset per attempt. A 30 s budget is
-  30 s across all three attempts combined; otherwise three attempts would
+- A re-entry continues the SAME inbound request: no second authentication, no
+  second `tryDispatch()` slot consumption (the "denials are not counted"
+  contract is preserved), no duplicate usage accounting, no duplicate trace or
+  capture terminal.
+- Budgets are **cumulative per request**, not reset per attempt. A 30 s budget
+  is 30 s across all three attempts combined; otherwise three attempts would
   silently become 90 s and there would be no global budget after all.
 
 ### 1.1 Control flow at a glance
 
 ```mermaid
 flowchart TD
-  A["turn arrives"] --> B["admitTurn(): cumulative budget + re-entry count"]
+  A["request arrives"] --> B["admitRequest(): cumulative budget + re-entry count"]
   B --> C{"local cap hit?"}
   C -->|"no"| D["dispatch() to executeCandidatePool"]
   C -->|"apiKeys 2s / credentials 30s"| E["peek() probe, lock model x credential"]
@@ -153,9 +157,9 @@ Fast-fail is the last branch of this function, not its entry point.
 On the inbound admission path, exhausting either budget in section 2 is the only
 legitimate moment for fast-fail, but "fail" means **the gateway stops waiting on
 the client's behalf**, not that the
-turn is discarded. A client SDK only backs off and retries on a well-formed
+request is discarded. A client SDK only backs off and retries on a well-formed
 `429 + Retry-After`; a plain execution error with no backoff hint (today's
-`executionError()` in `chat-pipeline.ts`) is read as non-retriable and the turn is
+`executionError()` in `chat-pipeline.ts`) is read as non-retriable and the request is
 lost client-side anyway. Both timeouts therefore hand the backoff instant back.
 Four rules are part of that contract, not notes on it:
 
@@ -245,12 +249,12 @@ self-contradictory.
   second independent constant.
 - **`committed` is terminal.** When bytes have reached the client, neither an
   in-place retry, a failover, nor a return to the admission function is legal:
-  all would emit a second copy of a partly consumed turn. The stream closes
+  all would emit a second copy of a partly consumed request. The stream closes
   without `[DONE]`, as today.
 - **Heartbeats are required.** No periodic SSE keep-alive / `: ping` frame exists
   in `server.ts` or `surfaces/` (the only comment frame today is the trailing
   `: ocr-summary`, a completion summary, not a heartbeat). During a wait, a
-  `stream: true` turn must emit periodic SSE
+  `stream: true` request must emit periodic SSE
   comment frames so the client SDK's read timeout does not fire first. Writing
   the 200 SSE headers changes the terminal discipline: once they are out, a
   final failure can only be an error event or a closed stream, never a 429 JSON
@@ -258,7 +262,7 @@ self-contradictory.
   budget must stay below the client SDK's common timeout.
 - **A timeout must carry a backoff instant.** Section 2.1 is normative: a
   budget-exhausted denial without `Retry-After` (or its SSE error-event
-  equivalent) breaks the "turn must not be interrupted" premise at the client.
+  equivalent) breaks the "a user turn must not be interrupted" premise at the client.
   The `budget-exhausted` ledger event must record `retryAfterMs` and whether the
   value is exact or an `estimate`.
 - **No double accounting.** See section 1. Every re-entry carries the original
@@ -289,7 +293,7 @@ code.
 
 | Key | Target default | Note |
 | :--- | :--- | :--- |
-| `rateLimit.inboundGraceMs` | 2000 | Reinterpreted as a **cumulative per-turn** budget. Today's default is **1000** (`config/index.ts`); **2000 is the hard `MAX_INBOUND_GRACE_MS` clamp**, which must be relaxed or the key cannot be raised. |
+| `rateLimit.inboundGraceMs` | 2000 | Reinterpreted as a **cumulative per-request** budget. Today's default is **1000** (`config/index.ts`); **2000 is the hard `MAX_INBOUND_GRACE_MS` clamp**, which must be relaxed or the key cannot be raised. |
 | `rateLimit.probeIntervalMs` | 1000 | **New key**: capability probe interval for both inbound budgets. |
 | `rateLimit.outboundCredentialWaitMs` | 30000 | **New key**: cumulative budget for a local credential cap. |
 | `retry.inplace.maxRateLimitWaitMs` | 30000 | **Reuse, do not invent**: this key already exists (`resilience/types.ts` → disk schema → comment dictionaries → frontend) as the "longest 429 we wait out in place" knob; today's default is **2000**. |
@@ -309,7 +313,7 @@ shorter than a cache-preserving reason to switch: holding the socket that long
 produces a client-side timeout (a worse, silent interruption), while switching
 burns the cache and the pool peers are likely under the same cap. A standard
 `429 + Retry-After` hands the backoff to a client that already knows how to do
-it. Everywhere else in the ladder the turn is preserved.
+it. Everywhere else in the ladder the request is preserved.
 
 ## Consequences
 
@@ -335,13 +339,13 @@ it. Everywhere else in the ladder the turn is preserved.
 - **Always switch paths.** Cheap per call, but destroys the prompt cache and
   violates the keep-bound iron law on a mere shaping hint.
 - **Always fast-fail.** Optimizes gateway sockets at the expense of the actual
-  product cost, which is an interrupted turn.
+  product cost, which is an interrupted user turn.
 - **Unbounded queuing.** A hidden queue with no deadline; the cumulative
   budgets, the re-entry cap and the bounded queue are the answer.
 
 ## Implementation checklist
 
-- [ ] Extract `admitTurn()`; carry `requestId`, admission state and cumulative
+- [ ] Extract `admitRequest()`; carry `requestId`, admission state and cumulative
       elapsed wait across re-entries.
 - [ ] Cumulative 2 s / 30 s budgets with 1 s capability probes; keep the pair
       locked.

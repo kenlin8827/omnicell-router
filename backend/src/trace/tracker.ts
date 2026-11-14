@@ -4,6 +4,7 @@ import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { ClientConversationRef } from '../session/session-manager.js';
 import { mintRequestId } from '../observability/request-identity.js';
+import type { TurnDecision } from '../capture/turn-boundary.js';
 import { openTraceStore, type TraceStore } from './persist.js';
 import { percentile } from '../utils/percentile.js';
 
@@ -31,7 +32,16 @@ export interface ExecutionTrace {
    * can coincide with a client string; it is still the resolved entity id.
    */
   sessionId: string;
-  turnNumber: number;
+  requestNumber: number;
+  /**
+   * Write-time turn identity (ADR-0024): the immutable, session-scoped turn
+   * ordinal and the structural verdict that allocated it. Copied verbatim
+   * onto every capture event of this request; `turnIndex: null` means the
+   * request carried no user prompt and belongs to no turn.
+   */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: TurnDecision;
   timestamp: number;
   /**
    * Client API-key identity (`config.apiKeys` entry) that authenticated this
@@ -42,11 +52,13 @@ export interface ExecutionTrace {
   apiKey?: CaptureKeyIdentity;
   request: {
     model: string;
+    /** Display-only prompt text, blank unless `isPromptStart` is true. It
+     *  NEVER decides a turn boundary — `turnIndex` does. */
     userPromptSummary: string;
     /**
      * The session's FIRST user message — console session title. Unlike
-     * `userPromptSummary` (the last user message of THIS turn, blanked on
-     * tool-result continuations), this names the whole conversation: it is
+     * `userPromptSummary` (blank on request continuations), this names the
+     * whole conversation: it is
      * derived on the opening turn and then re-stamped verbatim on every later
      * trace, so the trace ring evicting the birth record cannot blank the
      * title, and a row rebuilt from traces alone — after a restart, or for a

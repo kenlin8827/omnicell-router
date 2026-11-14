@@ -5531,24 +5531,24 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * Read the HTTP exchange events written by the capture pipeline.
-   * Each inference turn produces 2-4 events sharing the same `requestId`:
-   * client-request, gateway-response, upstream-request, upstream-response.
-   * The console joins them into one logical turn via `requestId`.
+   * Read the HTTP exchange events written by the capture pipeline and
+   * project them into REQUESTS. Every event carries its `requestId`,
+   * `exchangeId` and write-time turn identity; the recorder groups all
+   * exchanges of one request into `requests[].exchanges[]`.
    */
   app.get('/api/admin/capture/:date/:file/events', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
-    // `limit` is TURNS per page (2-4 wire events travel with their turn), so
-    // the pager's summary counts the same unit the header does. 50 turns is
-    // the console default.
+    // `limit` is REQUESTS per page (every exchange of a request always
+    // travels with it), so the pager counts the same unit as the header.
+    // 50 requests is the console default.
     const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '50', 10) || 50, 1), 500);
     // Metadata-first console reads: bodies=none strips the wire bodies (KB
-    // payload, instant paint); full bodies come back per turn via /turn or a
-    // bodies=full re-read. bodies=chat keeps round-opener request bodies +
-    // response bodies only — the conversation replay's bounded footprint.
+    // payload, instant paint); full bodies come back per request via
+    // /request or a bodies=full re-read. bodies=chat keeps prompt-start
+    // request bodies + response bodies only — the replay's bounded footprint.
     const bodiesParam = (req.query as any)?.bodies;
     const bodies = bodiesParam === 'none' ? 'none' : bodiesParam === 'chat' ? 'chat' : 'full';
     // stitched=1: merge the session's fragments from every date dir (a
@@ -5556,8 +5556,8 @@ export function registerConsoleRoutes(
     // one chronological timeline. Response carries the per-fragment breakdown.
     const stitched = (req.query as any)?.stitched === '1';
     // page=1 is the NEWEST window page; older pages count up from there.
-    // Pages are TURN pages (a page never splits a turn's events), bounded by
-    // the read window — history older than the window is export-only.
+    // Pages are REQUEST pages (a page never splits a request's events),
+    // bounded by the read window — older history is export-only.
     const page = Math.min(Math.max(parseInt((req.query as any)?.page || '1', 10) || 1, 1), 100000);
     const result = stitched
       ? await captureRecorder.readEventsStitched(date, file, limit, bodies, page)
@@ -5569,10 +5569,10 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * EXACT whole-archive summary: request count (header denominator / pager
-   * total) and the USER-PROMPT ROUND INDEX (prompt + request range) for the
-   * round selector. The events window only knows the tail; this metadata scan
-   * is streamed and never parses request bodies.
+   * EXACT whole-archive summary: the request count and the WRITE-TIME TURN
+   * INDEX (one entry per `turnIndex`, with its request range) for the turn
+   * selector. The events window only knows the tail; this metadata scan is
+   * streamed and never parses request bodies.
    * Display-only: pagination still follows a bounded read window.
    */
   app.get('/api/admin/capture/:date/:file/summary', async (req: any) => {
@@ -5585,12 +5585,13 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * Full wire bodies for ONE turn (the console passes the client-request
-   * event id). The metadata-first events read strips bodies; the drawer
-   * fetches them here when a turn is opened. Bounded by the same read
-   * window as /events — a turn archived beyond the window answers 404.
+   * Full wire bodies for ONE REQUEST (keyed by its `requestId`; an event id
+   * is accepted too for deep links). The metadata-first events read strips
+   * bodies; the drawer fetches them here when a request is opened. Bounded
+   * by the same read window as /events — a request archived beyond the
+   * window answers 404.
    */
-  app.get('/api/admin/capture/:date/:file/turn', async (req: any, reply: any) => {
+  app.get('/api/admin/capture/:date/:file/request', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -5600,13 +5601,13 @@ export function registerConsoleRoutes(
       return reply.status(400).send({ status: 'error', message: 'id query param required' });
     }
     // stitched=1: also search the session's other date-dir fragments — a
-    // cross-midnight turn's bodies live in the shard its events landed in.
+    // cross-midnight request's bodies live in the shard its events landed in.
     const stitched = (req.query as any)?.stitched === '1';
     const result = stitched
-      ? await captureRecorder.readTurnStitched(date, file, id)
-      : await captureRecorder.readTurn(date, file, id);
+      ? await captureRecorder.readRequestStitched(date, file, id)
+      : await captureRecorder.readRequest(date, file, id);
     if (!result) {
-      return reply.status(404).send({ status: 'error', message: 'Turn not found in read window' });
+      return reply.status(404).send({ status: 'error', message: 'Request not found in read window' });
     }
     return { status: 'ok', date, file, ...result };
   });
@@ -5756,7 +5757,7 @@ export function registerConsoleRoutes(
   /* ---------------------------------------------------------------------- *
    * Session observation maintenance (console /sessions page cleanup).
    * Console pages cannot present API keys, so destructive session ops live
-   * under /api/admin — same trust surface as the capture-archive deletes
+   * under /api/admin — same trust surface as the capture archive deletes
     * above. (DELETE /api/admin/sessions/:id is registered in server.ts together
     * with the rest of the sessions* surface.)
    * ---------------------------------------------------------------------- */

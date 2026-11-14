@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CaptureRecorder, type HttpExchangeEvent } from '../src/capture/recorder.js';
+import {
+  CaptureRecorder,
+  primaryExchange,
+  type CaptureEvent,
+  type CaptureRequestSummary,
+} from '../src/capture/recorder.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-capture-test-'));
@@ -11,6 +16,69 @@ function makeTmpDir(): string {
 
 function rmrf(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/** The canonical wire dump used by schema-2 fixtures. */
+const WIRE = {
+  requestLine: 'POST /v1/chat/completions HTTP/1.1',
+  requestHeaders: {} as Record<string, string>,
+  requestBody: '{}',
+  responseLine: '',
+  status: 0,
+  responseHeaders: {} as Record<string, string>,
+  responseBody: '',
+};
+
+type EventInput = Parameters<CaptureRecorder['recordEvent']>[0];
+
+/** One complete schema-2 client-request event with a write-time turn. */
+function requestEvent(over: Partial<EventInput> & { sessionId: string }): EventInput {
+  return {
+    eventType: 'http-exchange',
+    direction: 'client',
+    phase: 'request',
+    exchangeId: `ex_${over.sessionId}`,
+    requestId: `req_${over.sessionId}`,
+    model: 'auto',
+    status: 'ok',
+    turnIndex: 1,
+    isPromptStart: true,
+    turnDecision: 'new_prompt',
+    wire: { ...WIRE },
+    ...over,
+  } as EventInput;
+}
+
+/** Write one request event (replaces the retired pre-event `record()` API). */
+const writeRequest = (rec: CaptureRecorder, over: Partial<EventInput> & { sessionId: string }) =>
+  rec.recordEvent(requestEvent(over));
+
+/**
+ * TEST-ONLY assertion projection over the canonical `exchanges[]`, mirroring
+ * the frontend's UI view. It is not part of the wire contract — the recorder
+ * publishes one shape only. `attempt` ordering keeps failover hops distinct.
+ */
+function viewOf(r: CaptureRequestSummary) {
+  const client = primaryExchange(r, 'client');
+  const upstream = primaryExchange(r, 'upstream');
+  const decision = primaryExchange(r, 'decision');
+  return {
+    clientRequest: client?.request,
+    clientResponse: client?.response,
+    upstreamRequest: upstream?.request,
+    upstreamResponse: upstream?.response,
+    decisionRequest: decision?.request,
+    decisionResponse: decision?.response,
+    gatewayLatencyMs: client?.latencyMs,
+    gatewayTtftMs: client?.ttftMs,
+    gatewayGenMs: client?.genMs,
+    upstreamLatencyMs: upstream?.latencyMs,
+    upstreamTtftMs: upstream?.ttftMs,
+    upstreamGenMs: upstream?.genMs,
+    decisionLatencyMs: decision?.latencyMs,
+    decisionTtftMs: decision?.ttftMs,
+    decisionGenMs: decision?.genMs,
+  };
 }
 
 describe('CaptureRecorder', () => {
@@ -41,22 +109,16 @@ describe('CaptureRecorder', () => {
 
   it('does not write when disabled', async () => {
     const off = new CaptureRecorder({ enabled: false, dir: makeTmpDir() });
-    await off.record({ sessionId: 's1', status: 'ok', model: 'auto', request: { a: 1 } });
+    await writeRequest(off, { sessionId: 's1' });
     assert.equal(fs.readdirSync(off.getDir()).length, 0);
     off.stop();
     rmrf(off.getDir());
   });
 
   it('archives by local date directory + session id and reads back', async () => {
-    await recorder.record({
+    await writeRequest(recorder, {
       sessionId: 'sess_demo_1',
-      status: 'ok',
-      model: 'auto',
-      request: { model: 'auto', messages: [{ role: 'user', content: 'hello' }] },
-      response: { id: 'chatcmpl-1', choices: [{ message: { content: 'hi' } }] },
-      routing: { tierUsed: 'lite', modelUsed: 'm1', provider: 'p1' },
-      usage: { prompt_tokens: 3, completion_tokens: 2 },
-      latencyMs: 42,
+      wire: { ...WIRE, requestBody: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hello' }] }) },
     });
 
     const dates = recorder.listDates();
@@ -72,16 +134,20 @@ describe('CaptureRecorder', () => {
 
     const { records, totalLines } = recorder.readRecords(dates[0].date, sessions[0].file);
     assert.equal(totalLines, 1);
-    assert.equal(records[0].status, 'ok');
-    assert.equal(records[0].latencyMs, 42);
-    assert.match(records[0].id, /^cap_/);
-    assert.equal((records[0].response as any).choices[0].message.content, 'hi');
+    assert.equal(records[0].eventType, 'http-exchange');
+    assert.equal(records[0].schema, 2);
+    assert.equal(records[0].turnIndex, 1);
+    assert.equal(records[0].isPromptStart, true);
+    assert.equal(records[0].turnDecision, 'new_prompt');
+    assert.equal(records[0].attempt, 1);
+    assert.match(String(records[0].id), /^evt_/);
+    assert.equal((records[0].wire as any).requestBody.includes('hello'), true);
     assert.equal(records[0].truncated, undefined);
   });
 
   it('appends multiple turns into the same session file', async () => {
-    await recorder.record({ sessionId: 'sess_demo_1', status: 'ok', model: 'auto', request: { n: 2 } });
-    await recorder.record({ sessionId: 'sess_demo_1', status: 'error', model: 'auto', request: { n: 3 }, error: 'boom' });
+    await writeRequest(recorder, { sessionId: 'sess_demo_1', requestId: 'req_demo_2', wire: { ...WIRE, requestBody: '{"n":2}' } });
+    await writeRequest(recorder, { sessionId: 'sess_demo_1', requestId: 'req_demo_3', status: 'error', error: 'boom', wire: { ...WIRE, requestBody: '{"n":3}' } });
 
     const date = recorder.listDates()[0].date;
     const { records, totalLines } = recorder.readRecords(date, 'sess_demo_1.jsonl');
@@ -98,7 +164,7 @@ describe('CaptureRecorder', () => {
     // Stable hash for the same input
     assert.equal(file, CaptureRecorder.sessionFileName(evil));
 
-    await recorder.record({ sessionId: evil, status: 'ok', model: 'auto', request: {} });
+    await writeRequest(recorder, { sessionId: evil });
     const date = recorder.listDates()[0].date;
     const sessions = recorder.listSessions(date);
     assert.ok(sessions.some(s => s.file === file));
@@ -108,20 +174,17 @@ describe('CaptureRecorder', () => {
 
   it('truncates oversized bodies and marks the record', async () => {
     const big = 'x'.repeat(5000); // > maxBodyBytes 1024 once serialized
-    await recorder.record({
+    await writeRequest(recorder, {
       sessionId: 'sess_big',
-      status: 'ok',
-      model: 'auto',
-      request: { messages: [{ role: 'user', content: big }] },
-      response: { text: big },
+      wire: { ...WIRE, requestBody: JSON.stringify({ messages: [{ role: 'user', content: big }] }) },
     });
 
     const date = recorder.listDates()[0].date;
     const { records } = recorder.readRecords(date, 'sess_big.jsonl');
     assert.equal(records[0].truncated, true);
-    assert.equal(typeof records[0].request, 'string');
-    assert.ok(String(records[0].request).endsWith('...[TRUNCATED]'));
-    assert.equal(typeof records[0].response, 'string');
+    const body = (records[0].wire as any).requestBody;
+    assert.equal(typeof body, 'string');
+    assert.ok(body.endsWith('...[TRUNCATED]'));
   });
 
   it('rejects path traversal on reads', () => {
@@ -156,8 +219,8 @@ describe('CaptureRecorder', () => {
     const dir = makeTmpDir();
     try {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
-      await rec.record({ sessionId: 'sess_a', status: 'ok', model: 'auto', request: {} });
-      await rec.record({ sessionId: 'sess_b', status: 'ok', model: 'auto', request: {} });
+      await writeRequest(rec, { sessionId: 'sess_a' });
+      await writeRequest(rec, { sessionId: 'sess_b' });
       const date = rec.listDates()[0].date;
       assert.equal(rec.listSessions(date).length, 2);
 
@@ -179,51 +242,41 @@ describe('CaptureRecorder', () => {
     }
   });
 
-  it('readRawArchive filters excluded body fields for export', async () => {
+  it('readRawArchive filters excluded wire bodies for export', async () => {
     const dir = makeTmpDir();
     try {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
-      await rec.record({
-        sessionId: 'sess_f',
-        status: 'error',
-        model: 'auto',
-        request: { q: 1 },
-        upstreamRequest: { u: 1 },
-        upstreamError: { e: 1 },
-        error: 'boom',
+      await writeRequest(rec, {
+        sessionId: 'sess_f', status: 'error', error: 'boom',
+        wire: { ...WIRE, requestBody: '{"q":1}' },
       });
-      await rec.record({
-        sessionId: 'sess_f',
-        status: 'ok',
-        model: 'auto',
-        request: { q: 2 },
-        upstreamRequest: { u: 2 },
-        response: { r: 2 },
+      await rec.recordEvent({
+        eventType: 'http-exchange', direction: 'client', phase: 'response',
+        exchangeId: 'ex_sess_f', requestId: 'req_sess_f', sessionId: 'sess_f', model: 'auto',
+        status: 'ok', turnIndex: 1, isPromptStart: false, turnDecision: 'continuation',
+        wire: { ...WIRE, responseBody: '{"r":2}' },
       });
       const date = rec.listDates()[0].date;
 
-      // Default: verbatim, bodies intact
+      // Default: verbatim, bodies intact.
       const full = rec.readRawArchive(date, 'sess_f.jsonl');
-      assert.ok(full!.includes('"request":{"q":1}'));
-      assert.ok(full!.includes('"response":{"r":2}'));
+      const fullLines = full!.trim().split('\n').map(l => JSON.parse(l));
+      assert.equal(fullLines[0].wire.requestBody, '{"q":1}');
+      assert.equal(fullLines[1].wire.responseBody, '{"r":2}');
 
-      // Excluding all body fields keeps metadata only
+      // Excluding body classes keeps metadata (ids / status / turn identity).
       const filtered = rec.readRawArchive(date, 'sess_f.jsonl', [
-        'request',
-        'upstreamRequest',
-        'response',
-        'upstreamError',
+        'request', 'upstreamRequest', 'response',
       ])!;
       const lines = filtered.trim().split('\n').map(l => JSON.parse(l));
       assert.equal(lines.length, 2);
-      assert.equal(lines[0].request, undefined);
-      assert.equal(lines[0].upstreamRequest, undefined);
-      assert.equal(lines[0].upstreamError, undefined);
+      assert.equal(lines[0].wire.requestBody, '');
       assert.equal(lines[0].status, 'error');
-      assert.equal(lines[0].error, 'boom'); // error message is metadata, kept
-      assert.equal(lines[1].response, undefined);
+      assert.equal(lines[0].error, 'boom');
+      assert.equal(lines[0].turnIndex, 1);
+      assert.equal(lines[0].schema, 2);
+      assert.equal(lines[1].wire.responseBody, '');
       assert.equal(lines[1].status, 'ok');
-
       rec.stop();
     } finally {
       rmrf(dir);
@@ -234,17 +287,17 @@ describe('CaptureRecorder', () => {
     const dir3 = makeTmpDir();
     try {
       const hot = new CaptureRecorder({ enabled: false, dir: dir3, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
-      await hot.record({ sessionId: 's_cold', status: 'ok', model: 'auto', request: {} });
+      await writeRequest(hot, { sessionId: 's_cold' });
       assert.equal(hot.listDates().length, 0); // still disabled
 
       hot.applyConfig({ enabled: true });
       assert.equal(hot.isEnabled(), true);
-      await hot.record({ sessionId: 's_hot', status: 'ok', model: 'auto', request: {} });
+      await writeRequest(hot, { sessionId: 's_hot' });
       assert.equal(hot.listDates().length, 1);
 
       hot.applyConfig({ enabled: false });
       assert.equal(hot.isEnabled(), false);
-      await hot.record({ sessionId: 's_after_off', status: 'ok', model: 'auto', request: {} });
+      await writeRequest(hot, { sessionId: 's_after_off' });
       const sessions = hot.listSessions(hot.listDates()[0].date);
       assert.ok(!sessions.some(s => s.file === 's_after_off.jsonl'), 'no writes after hot-disable');
       // Existing archive survives a hot-disable (disable never deletes)
@@ -374,8 +427,14 @@ describe('CaptureRecorder', () => {
     const dir = makeTmpDir();
     try {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
-      await rec.record({ sessionId: 'sess_p', status: 'ok', model: 'auto', request: { model: 'auto', messages: [{ role: 'user', content: '第一条用户消息' }] } });
-      await rec.record({ sessionId: 'sess_p', status: 'ok', model: 'auto', request: { messages: [{ role: 'user', content: '第二条不覆盖预览' }] } });
+      await writeRequest(rec, {
+        sessionId: 'sess_p',
+        wire: { ...WIRE, requestBody: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: '第一条用户消息' }] }) },
+      });
+      await writeRequest(rec, {
+        sessionId: 'sess_p', requestId: 'req_p_2',
+        wire: { ...WIRE, requestBody: JSON.stringify({ messages: [{ role: 'user', content: '第二条不覆盖预览' }] }) },
+      });
       const row = rec.listSessions(rec.listDates()[0].date)[0];
       assert.equal(row.preview, '第一条用户消息');
       rec.stop();
@@ -384,7 +443,7 @@ describe('CaptureRecorder', () => {
     }
   });
 
-  it('listSessions tallies event-stream files per TURN (not per event line)', async () => {
+  it('listSessions tallies event-stream files per REQUEST (not per event line)', async () => {
     const dir = makeTmpDir();
     try {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 4096 });
@@ -414,8 +473,8 @@ describe('CaptureRecorder', () => {
         });
       }
       const row = rec.listSessions(rec.listDates()[0].date)[0];
-      assert.equal(row.turns, 2, '8 event lines = 2 turns');
-      assert.equal(row.failed, 1, 'failed counts turns, not error events');
+      assert.equal(row.requests, 2, '8 event lines = 2 requests');
+      assert.equal(row.failed, 1, 'failed counts requests, not error events');
       assert.equal(row.lastStatus, 'error');
       assert.equal(row.preview, '事件流预览文本');
       rec.stop();
@@ -428,7 +487,7 @@ describe('CaptureRecorder', () => {
     const dir = makeTmpDir();
     try {
       const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 365, maxTotalMB: 512, maxBodyBytes: 1024 });
-      await rec.record({ sessionId: 'sess_find', status: 'ok', model: 'auto', request: {} });
+      await writeRequest(rec, { sessionId: 'sess_find' });
       // Same session id on a previous local day (hand-made extra date dir)
       const today = rec.listDates()[0].date;
       const yesterday = new Date(new Date().getTime() - 86_400_000).toISOString().slice(0, 10);
@@ -436,7 +495,7 @@ describe('CaptureRecorder', () => {
       fs.writeFileSync(path.join(dir, yesterday, 'sess_find.jsonl'), '{"status":"ok"}\n');
       // Unsafe id → hashed file name must still match the raw id
       const evil = '{"device_id":"x","session_id":"<uuid>"}';
-      await rec.record({ sessionId: evil, status: 'ok', model: 'auto', request: {} });
+      await writeRequest(rec, { sessionId: evil });
 
       const safe = rec.findBySession('sess_find');
       assert.equal(safe.length, 2);
@@ -459,6 +518,7 @@ describe('CaptureRecorder', () => {
 describe('CaptureRecorder HTTP exchange event stream', () => {
   let tmp: string;
   let recorder: CaptureRecorder;
+  let turnSeq = 0;
 
   before(() => {
     tmp = makeTmpDir();
@@ -476,22 +536,41 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     rmrf(tmp);
   });
 
-  // Helper: emit one full inference turn (4 events) into the recorder
-  // with the given correlationId. Wire bodies use minimal valid shapes so
-  // the recorder's truncate pass is exercised.
-  async function emitOneTurn(
+  const promptBody = (correlationId: string, prompt?: string): string =>
+    JSON.stringify({ messages: [{ role: 'user', content: prompt ?? `prompt ${correlationId}` }] });
+
+  // Helper: emit one full REQUEST (4 events) into the recorder. Every event
+  // carries the SAME write-time turn identity — the admission gate allocates
+  // it once and no reader ever re-derives it.
+  async function emitOneRequest(
     correlationId: string,
     sessionId: string,
     model: string,
-    opts: { inboundStatus?: number; outboundStatus?: number; outboundError?: string } = {}
+    opts: {
+      inboundStatus?: number;
+      outboundStatus?: number;
+      outboundError?: string;
+      turnIndex?: number | null;
+      isPromptStart?: boolean;
+      prompt?: string;
+    } = {}
   ): Promise<{ wireId: string }> {
     const wireId = `wire_${correlationId}`;
+    const turnIndex = opts.turnIndex === undefined ? ++turnSeq : opts.turnIndex;
+    const turn = {
+      turnIndex,
+      isPromptStart: opts.isPromptStart ?? (turnIndex !== null),
+      turnDecision: turnIndex === null
+        ? 'no_prompt'
+        : opts.isPromptStart === false ? 'continuation' : 'new_prompt',
+    } as const;
     // 1. Client request — fires synchronously the moment the handler
     //    enters the orchestrator.
     await recorder.recordEvent({
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'request',
+      ...turn,
       exchangeId: wireId,
       requestId: correlationId,
       sessionId,
@@ -500,7 +579,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       wire: {
         requestLine: 'POST /v1/chat/completions HTTP/1.1',
         requestHeaders: { 'user-agent': 'omnicell-router/test', authorization: '[REDACTED]' },
-        requestBody: '{"messages":[]}',
+        requestBody: promptBody(correlationId, opts.prompt),
         responseLine: '',
         status: 0,
         responseHeaders: {},
@@ -512,6 +591,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'upstream',
       phase: 'request',
+      ...turn,
       exchangeId: `${wireId}_out`,
       requestId: correlationId,
       sessionId,
@@ -532,6 +612,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'upstream',
       phase: 'response',
+      ...turn,
       exchangeId: `${wireId}_out`,
       requestId: correlationId,
       sessionId,
@@ -553,6 +634,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       eventType: 'http-exchange',
       direction: 'client',
       phase: 'response',
+      ...turn,
       exchangeId: wireId,
       requestId: correlationId,
       sessionId,
@@ -571,11 +653,11 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     return { wireId };
   }
 
-  it('writes exactly 4 events per inference turn (inbound-req/res + outbound-req/res)', async () => {
+  it('writes exactly 4 events per request (inbound-req/res + outbound-req/res)', async () => {
     const sessionIdA = 'sess_events_aaa';
     const sessionIdB = 'sess_events_bbb';
-    await emitOneTurn('corr_aaa', sessionIdA, 'lite');
-    await emitOneTurn('corr_bbb', sessionIdB, 'plus');
+    await emitOneRequest('corr_aaa', sessionIdA, 'lite');
+    await emitOneRequest('corr_bbb', sessionIdB, 'plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const contentA = fs.readFileSync(path.join(tmp, dateDir, `${sessionIdA}.jsonl`), 'utf8');
     const linesA = contentA.split('\n').filter(l => l.trim());
@@ -585,7 +667,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(linesB.length, 4, 'turn B writes 4 events into its own session file');
   });
 
-  it('groups events into logical turns by requestId (groupEventsIntoTurns)', () => {
+  it('groups events into logical requests by requestId (groupEventsIntoRequests)', () => {
     const requestId = 'trace_grp_1';
     const events = [
       // client req (ts 1000)
@@ -597,20 +679,20 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       // client resp (ts 1520)
       { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
     ];
-    const turns = CaptureRecorder.groupEventsIntoTurns(events);
-    assert.equal(turns.length, 1);
-    const t = turns[0];
-    assert.equal(t.clientRequest?.id, 'a');
-    assert.equal(t.upstreamRequest?.id, 'b');
-    assert.equal(t.upstreamResponse?.id, 'c');
-    assert.equal(t.gatewayResponse?.id, 'd');
-    assert.equal(t.upstreamLatencyMs, 1500 - 1005);
-    assert.equal(t.gatewayLatencyMs, 1520 - 1000);
+    const requests = CaptureRecorder.groupEventsIntoRequests(events);
+    assert.equal(requests.length, 1);
+    const t = requests[0];
+    assert.equal(viewOf(t).clientRequest?.id, 'a');
+    assert.equal(viewOf(t).upstreamRequest?.id, 'b');
+    assert.equal(viewOf(t).upstreamResponse?.id, 'c');
+    assert.equal(viewOf(t).clientResponse?.id, 'd');
+    assert.equal(viewOf(t).upstreamLatencyMs, 1500 - 1005);
+    assert.equal(viewOf(t).gatewayLatencyMs, 1520 - 1000);
     // No firstByteTs on the events → no TTFT/decode split is synthesized.
-    assert.equal(t.upstreamTtftMs, undefined);
-    assert.equal(t.upstreamGenMs, undefined);
-    assert.equal(t.gatewayTtftMs, undefined);
-    assert.equal(t.gatewayGenMs, undefined);
+    assert.equal(viewOf(t).upstreamTtftMs, undefined);
+    assert.equal(viewOf(t).upstreamGenMs, undefined);
+    assert.equal(viewOf(t).gatewayTtftMs, undefined);
+    assert.equal(viewOf(t).gatewayGenMs, undefined);
   });
 
   it('keeps two requests apart when the caller reuses ONE clientRequestId (ADR-0021)', () => {
@@ -637,14 +719,14 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       mk('req_b', 'b2', 'b-up-res', 2500, 'upstream', 'response'),
       mk('req_b', 'b1', 'b-res', 2520, 'client', 'response'),
     ];
-    const turns = CaptureRecorder.groupEventsIntoTurns(events);
-    assert.equal(turns.length, 2, 'one turn per request, not per caller correlation value');
-    assert.deepEqual(turns.map(t => t.requestId), ['req_a', 'req_b']);
-    assert.equal(turns[0].gatewayResponse?.id, 'a-res');
-    assert.equal(turns[1].gatewayResponse?.id, 'b-res');
-    assert.equal(turns[0].upstreamLatencyMs, 1500 - 1005);
-    assert.equal(turns[1].upstreamLatencyMs, 2500 - 2005);
-    assert.ok(turns.every(t => t.clientRequestId === clientRequestId), 'correlation value carried over');
+    const requests = CaptureRecorder.groupEventsIntoRequests(events);
+    assert.equal(requests.length, 2, 'one turn per request, not per caller correlation value');
+    assert.deepEqual(requests.map(t => t.requestId), ['req_a', 'req_b']);
+    assert.equal(viewOf(requests[0]).clientResponse?.id, 'a-res');
+    assert.equal(viewOf(requests[1]).clientResponse?.id, 'b-res');
+    assert.equal(viewOf(requests[0]).upstreamLatencyMs, 1500 - 1005);
+    assert.equal(viewOf(requests[1]).upstreamLatencyMs, 2500 - 2005);
+    assert.ok(requests.every(t => t.clientRequestId === clientRequestId), 'correlation value carried over');
   });
 
   it('keeps the l2-decision leg in separate slots (not overwritten by the serving leg)', () => {
@@ -663,18 +745,18 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w3', id: 'c', ts: 1500, wire: emptyWire() } as any,
       { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
     ];
-    const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
-    assert.equal(t.decisionRequest?.id, 'j1');
-    assert.equal(t.decisionResponse?.id, 'j2');
+    const t = CaptureRecorder.groupEventsIntoRequests(events)[0];
+    assert.equal(viewOf(t).decisionRequest?.id, 'j1');
+    assert.equal(viewOf(t).decisionResponse?.id, 'j2');
     // Serving slots keep the serving leg, not the L2 decision leg.
-    assert.equal(t.upstreamRequest?.id, 'b');
-    assert.equal(t.upstreamResponse?.id, 'c');
-    assert.equal(t.decisionLatencyMs, 1300 - 1005);
-    assert.equal(t.decisionTtftMs, 1200 - 1005);
-    assert.equal(t.decisionGenMs, 1300 - 1200);
-    assert.equal(t.upstreamLatencyMs, 1500 - 1310);
+    assert.equal(viewOf(t).upstreamRequest?.id, 'b');
+    assert.equal(viewOf(t).upstreamResponse?.id, 'c');
+    assert.equal(viewOf(t).decisionLatencyMs, 1300 - 1005);
+    assert.equal(viewOf(t).decisionTtftMs, 1200 - 1005);
+    assert.equal(viewOf(t).decisionGenMs, 1300 - 1200);
+    assert.equal(viewOf(t).upstreamLatencyMs, 1500 - 1310);
     // Still ONE logical turn — the L2 decision leg must not inflate turn counts.
-    assert.equal(CaptureRecorder.groupEventsIntoTurns(events).length, 1);
+    assert.equal(CaptureRecorder.groupEventsIntoRequests(events).length, 1);
   });
 
   it('derives TTFT and decode window from firstByteTs (TTFT/TPS split)', () => {
@@ -689,11 +771,11 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       // → gateway TTFT = 180, decode window = 340.
       { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId, sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'w1', id: 'd', ts: 1520, firstByteTs: 1180, wire: emptyWire() } as any,
     ];
-    const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
-    assert.equal(t.upstreamTtftMs, 1150 - 1005);
-    assert.equal(t.upstreamGenMs, 1500 - 1150);
-    assert.equal(t.gatewayTtftMs, 1180 - 1000);
-    assert.equal(t.gatewayGenMs, 1520 - 1180);
+    const t = CaptureRecorder.groupEventsIntoRequests(events)[0];
+    assert.equal(viewOf(t).upstreamTtftMs, 1150 - 1005);
+    assert.equal(viewOf(t).upstreamGenMs, 1500 - 1150);
+    assert.equal(viewOf(t).gatewayTtftMs, 1180 - 1000);
+    assert.equal(viewOf(t).gatewayGenMs, 1520 - 1180);
   });
 
   it('records request event BEFORE response event (request-event independence)', async () => {
@@ -752,41 +834,41 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
   it('readEvents groups by correlationId and computes per-direction latency', async () => {
     const sessionId = 'sess_read_events';
     // Two turns, sequential — same sessionId so both land in one JSONL.
-    await emitOneTurn('corr_read_1', sessionId, 'lite');
-    await emitOneTurn('corr_read_2', sessionId, 'plus');
+    await emitOneRequest('corr_read_1', sessionId, 'lite');
+    await emitOneRequest('corr_read_2', sessionId, 'plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100);
-    assert.equal(result.turns.length, 2);
+    assert.equal(result.requests.length, 2);
     assert.equal(result.events.length, 8);
     // The header's turn tally must be the grouped count, not raw event
     // lines (4 lines per turn here — labelling totalLines as turns 4x's it).
     assert.equal(result.totalLines, 8);
     assert.equal(result.totalTurns, 2);
     // Each turn has all four events paired.
-    for (const t of result.turns) {
-      assert.ok(t.clientRequest && t.gatewayResponse && t.upstreamRequest && t.upstreamResponse,
+    for (const t of result.requests) {
+      assert.ok(viewOf(t).clientRequest && viewOf(t).clientResponse && viewOf(t).upstreamRequest && viewOf(t).upstreamResponse,
         `turn ${t.requestId} missing event pair`);
-      assert.equal(t.clientRequest!.exchangeId, t.gatewayResponse!.exchangeId);
-      assert.equal(t.upstreamRequest!.exchangeId, t.upstreamResponse!.exchangeId);
+      assert.equal(viewOf(t).clientRequest!.exchangeId, viewOf(t).clientResponse!.exchangeId);
+      assert.equal(viewOf(t).upstreamRequest!.exchangeId, viewOf(t).upstreamResponse!.exchangeId);
     }
   });
 
   it('readEvents pages backwards in requests without overlap or gaps', async () => {
     const sessionId = 'sess_read_paging';
-    await emitOneTurn('corr_page_1', sessionId, 'lite');
-    await emitOneTurn('corr_page_2', sessionId, 'lite');
-    await emitOneTurn('corr_page_3', sessionId, 'lite');
+    await emitOneRequest('corr_page_1', sessionId, 'lite');
+    await emitOneRequest('corr_page_2', sessionId, 'lite');
+    await emitOneRequest('corr_page_3', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
 
     // 3 requests at 1 per page = 3 pages, counted BACK from the newest end.
     const p1 = await recorder.readEvents(dateDir, file, 1, 'none', 1);
-    assert.equal(p1.turns.length, 1);
-    assert.equal(p1.turns[0].requestId, 'corr_page_3');
+    assert.equal(p1.requests.length, 1);
+    assert.equal(p1.requests[0].requestId, 'corr_page_3');
     assert.equal(p1.totalTurns, 3, 'the header tally still covers the whole window');
     assert.equal(p1.page, 1);
-    assert.equal(p1.turns[0].requestNumber, 3, 'request numbering is chronological over the window');
+    assert.equal(p1.requests[0].requestNumber, 3, 'request numbering is chronological over the window');
     assert.equal(p1.totalPages, 3);
     assert.equal(p1.hasOlder, true);
     assert.equal(p1.hasNewer, false);
@@ -794,251 +876,206 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(p1.events.length, 4);
 
     const p2 = await recorder.readEvents(dateDir, file, 1, 'none', 2);
-    assert.equal(p2.turns.length, 1);
-    assert.equal(p2.turns[0].requestId, 'corr_page_2');
+    assert.equal(p2.requests.length, 1);
+    assert.equal(p2.requests[0].requestId, 'corr_page_2');
     assert.equal(p2.hasOlder, true);
     assert.equal(p2.hasNewer, true);
 
     // Last page reaches the window floor: nothing older.
     const p3 = await recorder.readEvents(dateDir, file, 1, 'none', 3);
-    assert.equal(p3.turns.length, 1);
-    assert.equal(p3.turns[0].requestId, 'corr_page_1');
+    assert.equal(p3.requests.length, 1);
+    assert.equal(p3.requests[0].requestId, 'corr_page_1');
     assert.equal(p3.hasOlder, false);
     assert.equal(p3.hasNewer, true);
 
     // No overlap between pages (each turn appears exactly once).
-    const traces = [...p1.turns, ...p2.turns, ...p3.turns].map(t => t.requestId);
+    const traces = [...p1.requests, ...p2.requests, ...p3.requests].map(t => t.requestId);
     assert.deepEqual(new Set(traces).size, 3);
 
     // Out-of-range pages clamp to the window instead of answering empty.
     const high = await recorder.readEvents(dateDir, file, 1, 'none', 99);
     assert.equal(high.page, 3);
-    assert.equal(high.turns[0].requestId, 'corr_page_1');
+    assert.equal(high.requests[0].requestId, 'corr_page_1');
     const low = await recorder.readEvents(dateDir, file, 1, 'none', 0);
     assert.equal(low.page, 1);
   });
 
-  it('captureSummary tallies every request and indexes prompt rounds across the whole file', async () => {
+  it('captureSummary indexes WRITE-TIME turns across the whole file', async () => {
     const sessionId = 'sess_count_requests';
-    for (const id of ['c1', 'c2', 'c3', 'c4']) await emitOneTurn(id, sessionId, 'lite');
+    // Turn 1 = a prompt plus its tool-result continuation; turn 2 = one new
+    // prompt; the fourth request has NO prompt and belongs to no turn.
+    await emitOneRequest('c1', sessionId, 'lite', { turnIndex: 1, prompt: 'first question' });
+    await emitOneRequest('c2', sessionId, 'lite', { turnIndex: 1, isPromptStart: false });
+    await emitOneRequest('c3', sessionId, 'lite', { turnIndex: 2, prompt: 'second question' });
+    await emitOneRequest('c4', sessionId, 'lite', { turnIndex: null });
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
-    // 4 requests × 4 events; the one-event-per-request count ignores responses.
     const summary = await recorder.captureSummary(dateDir, file);
-    assert.equal(summary.requests, 4);
-    // No prompt metadata in these fixtures: one prompt-less round, 4 requests.
-    assert.equal(summary.rounds.length, 1);
+    assert.equal(summary.requests, 4, 'one client-request line = one request');
     assert.deepEqual(
-      summary.rounds.map(r => [r.firstRequest, r.lastRequest, r.requests]),
-      [[1, 4, 4]]
+      summary.turns.map(r => [r.turnIndex, r.firstRequest, r.lastRequest, r.requests, r.prompt]),
+      [
+        [1, 1, 2, 2, 'first question'],
+        [2, 3, 3, 1, 'second question'],
+      ]
     );
-    // Window reads may see fewer — the exact tally is independent of the page.
     const page1 = await recorder.readEvents(dateDir, file, 1, 'none', 1);
-    assert.equal(page1.turns.length, 1);
-    assert.equal(page1.totalTurns, 4);
-    // Unknown archive answers empty, never throws.
+    assert.equal(page1.requests.length, 1);
+    assert.equal(page1.totalRequests, 4);
+    assert.equal(page1.totalTurns, 2, 'distinct write-time turn ordinals, not requests');
     const missing = await recorder.captureSummary(dateDir, 'nope.jsonl');
     assert.equal(missing.requests, 0);
-    assert.deepEqual(missing.rounds, []);
+    assert.deepEqual(missing.turns, []);
   });
 
   it('captureSummary recounts after the archive grows (cache is stat-keyed)', async () => {
     const sessionId = 'sess_count_grows';
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
-    await emitOneTurn('g1', sessionId, 'lite');
+    await emitOneRequest('g1', sessionId, 'lite', { turnIndex: 90 });
     const first = await recorder.captureSummary(dateDir, file);
     assert.equal(first.requests, 1);
     // Appending changes the file stat, so the second scan must not serve the
     // cached tally — a stale cache would freeze the console header forever.
-    await emitOneTurn('g2', sessionId, 'lite');
+    await emitOneRequest('g2', sessionId, 'lite', { turnIndex: 90, isPromptStart: false });
     const second = await recorder.captureSummary(dateDir, file);
     assert.equal(second.requests, 2);
     assert.deepEqual(
-      second.rounds.map(r => [r.firstRequest, r.lastRequest]),
-      [[1, 2]],
-      'the grown archive is re-indexed, not merged with the cached round'
+      second.turns.map(r => [r.turnIndex, r.firstRequest, r.lastRequest, r.requests]),
+      [[90, 1, 2, 2]],
+      'the grown archive is re-indexed, not merged with the cached turn'
     );
   });
 
-  it('blanks a resent prompt on continuation turns (per-turn prompt staleness)', async () => {
-    const sessionId = 'sess_prompt_resent';
-    const prompt = 'review下未提交的代码';
-    // Agent-loop shape: every request resends the full history; the appended
-    // tail is tool traffic, so the LAST user message stays the opening prompt.
-    const turn1 = [
-      { role: 'system', content: 'sys' },
-      { role: 'assistant', content: 'ack' },
-      { role: 'user', content: prompt },
-    ];
-    const turn2 = [
-      ...turn1,
-      { role: 'assistant', content: 'tool call' },
-      { role: 'tool', content: 'tool result' },
-    ];
-    // A genuinely NEW user message lands at/after the previous message count.
-    const turn3 = [
-      ...turn2,
-      { role: 'assistant', content: 'done' },
-      { role: 'user', content: '新的问题' },
-    ];
-    for (const [i, messages] of [turn1, turn2, turn3].entries()) {
+  it('read plane copies the WRITE-TIME turn identity; no prompt heuristic', async () => {
+    const sessionId = 'sess_prompt_written';
+    // Identical bodies, DIFFERENT write-time verdicts. A reader that guessed
+    // from text would collapse these into one turn; the archive says two.
+    for (const [i, turnIndex, start] of [
+      [0, 1, true], [1, 1, false], [2, 2, true],
+    ] as const) {
       await recorder.recordEvent({
         eventType: 'http-exchange', direction: 'client', phase: 'request',
-        exchangeId: `prompt_w${i}`, requestId: `prompt_t${i}`, sessionId, model: 'auto', status: 'ok',
+        exchangeId: `pw_${i}`, requestId: `pw_req_${i}`, sessionId, model: 'auto', status: 'ok',
+        turnIndex, isPromptStart: start,
+        turnDecision: start ? 'new_prompt' : 'continuation',
         wire: {
-          requestLine: 'POST /v1/chat/completions HTTP/1.1',
-          requestHeaders: {},
-          requestBody: JSON.stringify({ messages }),
-          responseLine: '', status: 0, responseHeaders: {}, responseBody: '',
+          ...WIRE,
+          requestBody: JSON.stringify({ messages: [{ role: 'user', content: 'same resent prompt' }] }),
         },
       });
     }
     const dateDir = CaptureRecorder.localDateDir(new Date());
-    const { turns } = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
-    assert.equal(turns.length, 3);
-    assert.equal(turns[0].promptSummary, prompt, 'opening turn owns the prompt');
-    assert.equal(turns[1].promptSummary, undefined, 'resent history is not this turn\'s prompt');
-    assert.equal(turns[2].promptSummary, '新的问题', 'an appended user message is fresh');
-    assert.deepEqual(turns.map(t => t.requestNumber), [1, 2, 3]);
-    assert.deepEqual(
-      turns.map(t => t.roundNumber),
-      [1, 1, 2],
-      'a tool-result continuation shares its opening prompt\'s round'
-    );
-    const summary = await recorder.captureSummary(dateDir, `${sessionId}.jsonl`);
-    assert.deepEqual(
-      summary.rounds.map(r => [r.ordinal, r.firstRequest, r.lastRequest, r.requests, r.prompt]),
-      [
-        [1, 1, 2, 2, prompt],
-        [2, 3, 3, 1, '新的问题'],
-      ],
-      'the archive summary splits rounds exactly like the timeline'
-    );
+    const file = `${sessionId}.jsonl`;
+    const result = await recorder.readEvents(dateDir, file, 100, 'none');
+    assert.deepEqual(result.requests.map(r => r.turnIndex), [1, 1, 2]);
+    assert.deepEqual(result.requests.map(r => r.isPromptStart), [true, false, true]);
+    assert.deepEqual(result.requests.map(r => r.turnDecision), ['new_prompt', 'continuation', 'new_prompt']);
+    assert.equal(result.totalTurns, 2);
+    assert.equal(result.requests[0].promptSummary, 'same resent prompt');
+    assert.equal(result.requests[1].promptSummary, undefined, 'continuation never gets a prompt stamp');
+    const summary = await recorder.captureSummary(dateDir, file);
+    assert.deepEqual(summary.turns.map(r => [r.turnIndex, r.requests]), [[1, 2], [2, 1]]);
   });
 
-  it('keeps the prompt when the client shrinks its history (compaction)', async () => {
-    // Client-side compaction renumbers every index: the new turn's user
-    // message can sit BELOW the previous request's message count, so the
-    // append-shaped staleness test must not fire (hiding a real prompt is
-    // the worse failure).
-    const sessionId = 'sess_prompt_shrink';
-    const longHistory = [
-      { role: 'user', content: 'opening question' },
-      { role: 'assistant', content: 'reply 1' },
-      { role: 'tool', content: 'tool result' },
-      { role: 'assistant', content: 'reply 2' },
-    ];
-    const compacted = [
-      { role: 'assistant', content: 'summary of the conversation so far' },
-      { role: 'user', content: '压缩之后的新问题' },
-    ];
-    for (const [i, messages] of [longHistory, compacted].entries()) {
-      await recorder.recordEvent({
-        eventType: 'http-exchange', direction: 'client', phase: 'request',
-        exchangeId: `shrink_w${i}`, requestId: `shrink_t${i}`, sessionId, model: 'auto', status: 'ok',
-        wire: {
-          requestLine: 'POST /v1/chat/completions HTTP/1.1',
-          requestHeaders: {},
-          requestBody: JSON.stringify({ messages }),
-          responseLine: '', status: 0, responseHeaders: {}, responseBody: '',
-        },
-      });
-    }
+  it('a prompt-less request has turnIndex: null and joins no turn', async () => {
+    const sessionId = 'sess_no_prompt';
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'client', phase: 'request',
+      exchangeId: 'np_1', requestId: 'np_req_1', sessionId, model: 'auto', status: 'ok',
+      turnIndex: null, isPromptStart: false, turnDecision: 'no_prompt',
+      wire: { ...WIRE, requestBody: '{}' },
+    });
     const dateDir = CaptureRecorder.localDateDir(new Date());
-    const { turns } = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
-    assert.equal(turns.length, 2);
-    assert.equal(turns[0].promptSummary, 'opening question');
-    assert.equal(turns[1].promptSummary, '压缩之后的新问题', 'a compacted-history prompt is not resent history');
+    const file = `${sessionId}.jsonl`;
+    const result = await recorder.readEvents(dateDir, file, 100, 'none');
+    assert.equal(result.requests.length, 1);
+    assert.equal(result.requests[0].turnIndex, null);
+    assert.equal(result.totalTurns, 0);
+    const summary = await recorder.captureSummary(dateDir, file);
+    assert.equal(summary.requests, 1);
+    assert.deepEqual(summary.turns, []);
   });
 
-  it('groupEventsIntoTurns keeps a prompt when an archive carries no staleness positions', () => {
-    // Archives written before the prompt positions existed must render exactly
-    // as they did: no stamp, no comparison, summary kept.
+  it('rejects archive lines that lack the schema-2 turn identity', async () => {
+    // Schema-2 is a hard cutover: the pre-cutover schema-1 archives are
+    // upgraded in place by the boot migration pass (see
+    // capture/migrate/steps/v1-to-v2.ts). A line that is still schema-1 has
+    // not been through it, so the reader rejects it: no field mapping, no
+    // derived fallback at read time.
+    const sessionId = 'sess_schema1';
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    fs.mkdirSync(path.join(tmp, dateDir), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, dateDir, `${sessionId}.jsonl`),
+      JSON.stringify({
+        id: 'evt_old', ts: Date.now(), eventType: 'http-exchange',
+        direction: 'client', phase: 'request', exchangeId: 'old_ex',
+        requestId: 'old_req', sessionId, model: 'auto', status: 'ok',
+        promptSummary: 'old prompt', wire: WIRE,
+      }) + '\n',
+      'utf8'
+    );
+    const result = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
+    assert.equal(result.totalLines, 0);
+    assert.equal(result.requests.length, 0);
+  });
+
+  it('groupEventsIntoRequests keeps every failover ATTEMPT as its own exchange', () => {
     const events = [
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'old1', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: 'a1', ts: 1000, promptSummary: 'legacy prompt', wire: emptyWire() },
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'old2', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a2', id: 'a2', ts: 2000, promptSummary: 'legacy prompt', wire: emptyWire() },
-    ] satisfies HttpExchangeEvent[];
-    const turns = CaptureRecorder.groupEventsIntoTurns(events);
-    assert.deepEqual(turns.map(t => t.promptSummary), ['legacy prompt', 'legacy prompt']);
-  });
-
-  it('readEvents derives the staleness basis for archives written before it existed', async () => {
-    const sessionId = 'sess_prompt_legacy';
-    const prompt = 'review下未提交的代码';
-    const turn1 = [{ role: 'user', content: prompt }];
-    const turn2 = [...turn1, { role: 'assistant', content: 'tool call' }, { role: 'tool', content: 'ok' }];
-    for (const [i, messages] of [turn1, turn2].entries()) {
-      await recorder.recordEvent({
-        eventType: 'http-exchange', direction: 'client', phase: 'request',
-        exchangeId: `legacy_w${i}`, requestId: `legacy_t${i}`, sessionId, model: 'auto', status: 'ok',
-        wire: {
-          requestLine: 'POST /v1/chat/completions HTTP/1.1',
-          requestHeaders: {},
-          requestBody: JSON.stringify({ messages }),
-          responseLine: '', status: 0, responseHeaders: {}, responseBody: '',
-        },
-      });
-    }
-    // Strip the positions off the persisted lines: that is exactly what an
-    // archive written by an earlier build looks like.
-    const dateDir = CaptureRecorder.localDateDir(new Date());
-    const file = path.join(tmp, dateDir, `${sessionId}.jsonl`);
-    const legacy = fs.readFileSync(file, 'utf8')
-      .split('\n')
-      .filter(l => l.trim())
-      .map(l => {
-        const ev = JSON.parse(l);
-        delete ev.promptMessageCount;
-        delete ev.promptLastUserIdx;
-        return JSON.stringify(ev);
-      })
-      .join('\n') + '\n';
-    fs.writeFileSync(file, legacy, 'utf8');
-    const { turns } = await recorder.readEvents(dateDir, `${sessionId}.jsonl`, 100, 'none');
-    assert.equal(turns.length, 2);
-    assert.equal(turns[0].promptSummary, prompt);
-    assert.equal(turns[1].promptSummary, undefined, 'bodies still carry the basis, so legacy rows dedupe too');
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'R', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'c1', id: 'c1', ts: 1000, attempt: 1, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', requestId: 'R', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'u1', id: 'u1', ts: 1010, attempt: 1, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId: 'R', sessionId: 's', model: 'auto', status: 'error', exchangeId: 'u1', id: 'u1r', ts: 1100, attempt: 1, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', requestId: 'R', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'u2', id: 'u2', ts: 1110, attempt: 2, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', requestId: 'R', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'u2', id: 'u2r', ts: 1500, attempt: 2, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'R', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'c1', id: 'c1r', ts: 1520, attempt: 1, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+    ] as unknown as CaptureEvent[];
+    const r = CaptureRecorder.groupEventsIntoRequests(events)[0];
+    assert.equal(r.exchanges.length, 3, 'client + two upstream hops');
+    assert.deepEqual(r.exchanges.filter(e => e.leg === 'upstream').map(e => e.attempt), [1, 2]);
+    assert.equal(primaryExchange(r, 'upstream')?.response?.id, 'u2r', 'last hop serves the client');
+    assert.equal(r.turnIndex, 1);
+    assert.equal(r.isPromptStart, true);
   });
 
   it('readEvents bodies=none strips wire bodies, keeps lines/status/headers', async () => {
     const sessionId = 'sess_read_none';
-    await emitOneTurn('corr_none_1', sessionId, 'lite');
+    await emitOneRequest('corr_none_1', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100, 'none');
-    assert.equal(result.turns.length, 1);
-    const t = result.turns[0];
-    assert.ok(t.clientRequest && t.gatewayResponse && t.upstreamRequest && t.upstreamResponse);
+    assert.equal(result.requests.length, 1);
+    const t = result.requests[0];
+    assert.ok(viewOf(t).clientRequest && viewOf(t).clientResponse && viewOf(t).upstreamRequest && viewOf(t).upstreamResponse);
     // Bodies stripped — metadata-first reads ship KBs, not MBs.
-    assert.equal(t.clientRequest!.wire.requestBody, undefined);
-    assert.equal(t.upstreamResponse!.wire.responseBody, undefined);
+    assert.equal(viewOf(t).clientRequest!.wire.requestBody, undefined);
+    assert.equal(viewOf(t).upstreamResponse!.wire.responseBody, undefined);
     // Lines, status and headers survive for metadata rendering.
-    assert.equal(t.clientRequest!.wire.requestLine, 'POST /v1/chat/completions HTTP/1.1');
-    assert.equal(t.gatewayResponse!.wire.status, 200);
-    assert.equal(t.upstreamRequest!.wire.requestHeaders['content-type'], 'application/json');
+    assert.equal(viewOf(t).clientRequest!.wire.requestLine, 'POST /v1/chat/completions HTTP/1.1');
+    assert.equal(viewOf(t).clientResponse!.wire.status, 200);
+    assert.equal(viewOf(t).upstreamRequest!.wire.requestHeaders['content-type'], 'application/json');
     // Full read of the same archive still carries the bodies.
     const full = await recorder.readEvents(dateDir, file, 100, 'full');
-    assert.equal(full.turns[0].clientRequest!.wire.requestBody, '{"messages":[]}');
+    assert.equal(viewOf(full.requests[0]).clientRequest!.wire.requestBody, promptBody('corr_none_1'));
   });
 
   it('readEvents bodies=chat keeps round-opener requests + response bodies', async () => {
     const sessionId = 'sess_read_chat';
-    await emitOneTurn('corr_chat_1', sessionId, 'lite');
+    await emitOneRequest('corr_chat_1', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100, 'chat');
-    const t = result.turns[0];
+    const t = result.requests[0];
     // The first request seeds history and stays; its upstream twin is dropped.
-    assert.equal(t.clientRequest!.wire.requestBody, '{"messages":[]}');
-    assert.equal(t.upstreamRequest!.wire.requestBody, undefined);
+    assert.equal(viewOf(t).clientRequest!.wire.requestBody, promptBody('corr_chat_1'));
+    assert.equal(viewOf(t).upstreamRequest!.wire.requestBody, undefined);
     // Response bodies feed the replay's assistant output.
-    assert.equal(t.upstreamResponse!.wire.responseBody, '{"choices":[]}');
+    assert.equal(viewOf(t).upstreamResponse!.wire.responseBody, '{"choices":[]}');
   });
 
   it('readEvents derives completionTokens from the last usage block', async () => {
     const sessionId = 'sess_read_tokens';
-    await emitOneTurn('corr_tok_1', sessionId, 'lite');
+    await emitOneRequest('corr_tok_1', sessionId, 'lite');
     // Streaming-style body: usage repeats per chunk, the LAST occurrence is
     // the cumulative total.
     await recorder.recordEvent({
@@ -1082,31 +1119,31 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100);
-    const t = result.turns.find(x => x.requestId === 'corr_tok_2');
-    assert.ok(t?.gatewayResponse);
-    assert.equal(t.gatewayResponse!.completionTokens, 42);
+    const t = result.requests.find(x => x.requestId === 'corr_tok_2');
+    assert.ok(t && viewOf(t).clientResponse);
+    assert.equal(viewOf(t!).clientResponse!.completionTokens, 42);
   });
 
-  it('readTurn resolves a turn by its event id OR by the turn id; unknown keys answer null', async () => {
+  it('readRequest resolves a request by its event id OR by the requestId; unknown keys answer null', async () => {
     const sessionId = 'sess_read_turn';
-    await emitOneTurn('corr_turn_1', sessionId, 'lite');
+    await emitOneRequest('corr_turn_1', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const meta = await recorder.readEvents(dateDir, file, 100, 'none');
-    const clientReqId = meta.turns[0].clientRequest!.id;
-    const res = await recorder.readTurn(dateDir, file, clientReqId);
+    const clientReqId = viewOf(meta.requests[0]).clientRequest!.id;
+    const res = await recorder.readRequest(dateDir, file, clientReqId);
     assert.ok(res);
-    assert.equal(res!.turn.requestId, 'corr_turn_1');
+    assert.equal(res!.request.requestId, 'corr_turn_1');
     // Full bodies restored — this is the per-turn fetch behind the drawer.
-    assert.equal(res!.turn.clientRequest!.wire.requestBody, '{"messages":[]}');
-    assert.equal(res!.turn.upstreamResponse!.wire.responseBody, '{"choices":[]}');
+    assert.equal(viewOf(res!.request).clientRequest!.wire.requestBody, promptBody('corr_turn_1'));
+    assert.equal(viewOf(res!.request).upstreamResponse!.wire.responseBody, '{"choices":[]}');
     // The console keys the drawer on the TURN id (what the row carries and
     // every React key uses), not on an internal event id — both must resolve.
-    const byTurnId = await recorder.readTurn(dateDir, file, meta.turns[0].requestId);
+    const byTurnId = await recorder.readRequest(dateDir, file, meta.requests[0].requestId);
     assert.ok(byTurnId);
-    assert.equal(byTurnId!.turn.clientRequest!.wire.requestBody, '{"messages":[]}');
-    assert.equal(byTurnId!.turn.gatewayResponse!.id, res!.turn.gatewayResponse!.id);
-    assert.equal(await recorder.readTurn(dateDir, file, 'evt_missing'), null);
+    assert.equal(viewOf(byTurnId!.request).clientRequest!.wire.requestBody, promptBody('corr_turn_1'));
+    assert.equal(viewOf(byTurnId!.request).clientResponse!.id, viewOf(res!.request).clientResponse!.id);
+    assert.equal(await recorder.readRequest(dateDir, file, 'evt_missing'), null);
   });
 
   it('truncates oversized wire bodies (UTF-8 path)', async () => {
@@ -1277,23 +1314,23 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
     assert.ok(originLine.includes('foo=bar'), 'origin-form benign param preserved');
   });
 
-  it('groupEventsIntoTurns keeps turns separate when a client reuses one requestId', () => {
+  it('groupEventsIntoRequests joins on the gateway requestId, not the caller id', () => {
     const events = [
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: '1', ts: 1000, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: '2', ts: 1100, wire: emptyWire() } as any,
-      // Same constant requestId, NEW turn (client sends fixed x-request-id).
-      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'b1', id: '3', ts: 2000, wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'b1', id: '4', ts: 2100, wire: emptyWire() } as any,
-    ];
-    const turns = CaptureRecorder.groupEventsIntoTurns(events);
-    assert.equal(turns.length, 2, 'constant requestId must not collapse turns');
-    assert.equal(turns[0].clientRequest?.id, '1');
-    assert.equal(turns[0].gatewayResponse?.id, '2');
-    assert.equal(turns[1].clientRequest?.id, '3');
-    assert.equal(turns[1].gatewayResponse?.id, '4');
-    assert.equal(turns[0].gatewayLatencyMs, 100);
-    assert.equal(turns[1].gatewayLatencyMs, 100);
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'CONST', clientRequestId: 'caller-fixed', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: '1', ts: 1000, attempt: 1, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'CONST', clientRequestId: 'caller-fixed', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'a1', id: '2', ts: 1100, attempt: 1, turnIndex: 1, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', requestId: 'GATEWAY_2', clientRequestId: 'caller-fixed', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'b1', id: '3', ts: 2000, attempt: 1, turnIndex: 2, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', requestId: 'GATEWAY_2', clientRequestId: 'caller-fixed', sessionId: 's', model: 'auto', status: 'ok', exchangeId: 'b1', id: '4', ts: 2100, attempt: 1, turnIndex: 2, isPromptStart: true, turnDecision: 'new_prompt', wire: emptyWire() },
+    ] as unknown as CaptureEvent[];
+    const groups = CaptureRecorder.groupEventsIntoRequests(events);
+    assert.equal(groups.length, 2, 'the gateway mints a fresh requestId per inbound call');
+    assert.equal(viewOf(groups[0]).clientRequest?.id, '1');
+    assert.equal(viewOf(groups[0]).clientResponse?.id, '2');
+    assert.equal(viewOf(groups[1]).clientRequest?.id, '3');
+    assert.equal(viewOf(groups[1]).clientResponse?.id, '4');
+    assert.deepEqual(groups.map(g => g.turnIndex), [1, 2]);
+    assert.ok(groups.every(g => g.clientRequestId === 'caller-fixed'), 'correlation value is metadata only');
   });
+
 });
 
 function emptyWire(): any {
@@ -1416,7 +1453,7 @@ describe('CaptureRecorder per-session seal (maxSessionMB)', () => {
     assert.equal(resealed.filter(l => l.eventType === 'archive-overflow').length, 1, 'recreated archive re-seals once');
   });
 
-  it('the terminal marker is metadata, never a turn in the console readers', () => {
+  it('the terminal marker is metadata, never a request in the console readers', () => {
     // A reader that falls through to the legacy branch shows one phantom turn
     // per sealed session (the same bug class as counting event lines).
     const date = CaptureRecorder.localDateDir(new Date());
@@ -1426,7 +1463,7 @@ describe('CaptureRecorder per-session seal (maxSessionMB)', () => {
 
     const row = recorder.listSessions(date).find(r => r.file === `${SESSION}.jsonl`);
     assert.ok(row, 'sealed session is listed');
-    assert.equal(row!.turns, events, 'session tally counts exchange turns only');
+    assert.equal(row!.requests, events, 'session tally counts captured requests only');
 
     const legacy = recorder.readRecords(date, `${SESSION}.jsonl`, 500);
     assert.equal(

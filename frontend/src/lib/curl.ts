@@ -5,7 +5,7 @@
  * upstream-request leg (replayed against the provider) share the same shape:
  * `METHOD target HTTP/1.1` + header block + body.
  */
-import type { HttpExchangeEvent, ReplaySpec } from './api';
+import type { CaptureEvent, ReplaySpec } from './api';
 
 /** Extract `METHOD <target>` from a captured request line; null when absent. */
 const parseRequestLine = (requestLine: string): { method: string; target: string } | null => {
@@ -24,7 +24,7 @@ const parseRequestLine = (requestLine: string): { method: string; target: string
  *  - upstream-request leg: the captured target is already absolute-form
  *    (scheme + provider host visible) → used verbatim.
  */
-export function buildCurl(event: HttpExchangeEvent): string | null {
+export function buildCurl(event: CaptureEvent): string | null {
   const spec = buildReplaySpec(event);
   return spec ? buildCurlPosix(spec) : null;
 }
@@ -36,7 +36,7 @@ export function buildCurl(event: HttpExchangeEvent): string | null {
  * the backend — hop-by-hop header dropping happens server-side too, so the
  * spec mirrors exactly what the wire block displays.
  */
-export function buildReplaySpec(event: HttpExchangeEvent): ReplaySpec | null {
+export function buildReplaySpec(event: CaptureEvent): ReplaySpec | null {
   if (event.phase !== 'request') return null;
   const parsed = parseRequestLine(event.wire.requestLine || '');
   if (!parsed) return null;
