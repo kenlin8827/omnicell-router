@@ -8,6 +8,7 @@ import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 import { setCaptureSecretRedaction } from '../observability/http-exchange.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
 import { NO_TURN, type TurnDecision, type TurnIdentity } from './turn-boundary.js';
+import { migrateArchiveRoot } from './migrate/index.js';
 
 /**
  * One captured turn — a single JSONL line in the per-session archive file.
@@ -470,6 +471,14 @@ const TRUNCATION_SUFFIX = '...[TRUNCATED]';
 // listing in this class filters on isFile()/.jsonl, so it never surfaces as
 // a "session".
 const MEDIA_SUBDIR = 'media';
+// Startup migration does NOT wait out the quiet window: at boot this process
+// holds no append handle yet, and every rewrite re-checks the file right
+// before the swap (see migrate/engine.ts), so a request that lands mid-pass
+// makes the rewrite back off instead of losing bytes. An upgrading
+// installation therefore sees its history immediately, not up to an hour
+// later. The hourly sweep keeps the quiet window — by then the recorder IS
+// appending, and a recently written shard is simply retried next hour.
+const BOOT_MIGRATION_HOT_MS = 0;
 // Reader-side shape of the stored file name: `<64hex>.<ext>` — the route
 // accepts the bare hash (16–64 hex) and prefix-matches it against this.
 const MEDIA_FILE_RE = /^[0-9a-f]{16,64}\.[a-z0-9]{1,8}$/;
@@ -605,10 +614,11 @@ export class CaptureRecorder {
   private maxSessionBytes: number;
   private storeMedia: boolean;
   private redactSecrets: boolean;
-  // Per-session size-cap bookkeeping: cached byte size per archive path, plus
+  // Per-session SIZE-CAP bookkeeping: cached byte size per archive path, plus
   // which archives already got their terminal `archive-overflow` line. This
-  // "seal" caps one runaway session; it has nothing to do with the schema
-  // carried on the lines themselves.
+  // "seal" caps one runaway session; it has nothing to do with schema
+  // migration, which has no seal — a migrated archive always stays in the live
+  // root and stays readable.
   private fileBytesCache = new Map<string, number>();
   private sealedFiles = new Set<string>();
   /** Whole-archive request/round summaries keyed by file stat signature. */
@@ -633,6 +643,7 @@ export class CaptureRecorder {
     if (this.enabled) {
       this.ensureDir(this.rootDir);
       this.sweep();
+      void this.migrateArchives(BOOT_MIGRATION_HOT_MS);
       this.startSweepTimer();
     }
   }
@@ -677,6 +688,7 @@ export class CaptureRecorder {
       this.ensureDir(this.rootDir);
       this.startSweepTimer();
       this.sweep();
+      void this.migrateArchives(BOOT_MIGRATION_HOT_MS);
     } else {
       this.stopSweepTimer();
     }
@@ -687,6 +699,7 @@ export class CaptureRecorder {
     if (this.sweepTimer) return;
     this.sweepTimer = setInterval(() => {
       this.sweep();
+      void this.migrateArchives();
     }, 3_600_000);
     this.sweepTimer.unref?.();
   }
@@ -1163,8 +1176,9 @@ export class CaptureRecorder {
    * field written by the admission gate must be present, including the
    * first-class `turnIndex: null` for prompt-less requests. There is no
    * legacy vocabulary, no field mapping and no derived fallback: a line is
-   * read in the shape the writer produced or not at all: there is no
-   * reader-side compatibility path for an older schema.
+   * read in the shape the writer produced or not at all. A schema-1 archive
+   * is never read here — the migrator chain (`capture/migrate/`) rewrites it
+   * in place at boot, and it does so for EVERY line it can parse.
    */
   private static parseArchivedEvent(obj: Record<string, unknown>): CaptureEvent | null {
     if (
@@ -1931,6 +1945,60 @@ export class CaptureRecorder {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /* ------------------------------------------------------ schema migration */
+
+  /**
+   * Archive schema-transition pass (ADR-0008 section 5).
+   *
+   * COLD files are walked hop by hop through the steps registered in
+   * `migrate/registry.ts`, resolved by `(from, to)`. That is how an upgrading
+   * installation keeps its history: schema-1 lines become schema-2 lines IN
+   * PLACE, and every line the pass can read comes out readable — a legacy
+   * span sequence that does not close cleanly is repaired into the nearest
+   * truth-bearing shape by the step itself, never set aside.
+   *
+   * Whole-file discipline: a file is rewritten atomically or left exactly as
+   * it was. A line that is not parseable JSON is carried over byte-for-byte
+   * (and counted in `unreadable`) instead of costing the file its other
+   * thousand good rows.
+   *
+   * Runs at boot, on hot-apply enable and on the hourly sweep; fail-open per
+   * file. Rewritten files invalidate the size/seal/summary caches.
+   *
+   * `hotMs` is the quiet window a file must sit in before it is touched.
+   * Boot and hot-enable pass 0 (`BOOT_MIGRATION_HOT_MS`) so an upgraded
+   * installation shows its history at once — safety there comes from the
+   * re-check before each swap, not from waiting. The hourly sweep passes
+   * `undefined` and keeps the default window, because by then this process is
+   * appending and a shard written minutes ago is simply retried next hour.
+   */
+  public async migrateArchives(hotMs?: number): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      const res = await migrateArchiveRoot(this.rootDir, CAPTURE_SCHEMA, { hotMs });
+      if (res.files > 0) {
+        this.fileBytesCache.clear();
+        this.sealedFiles.clear();
+        this.summaryCache.clear();
+      }
+      // Reported, never silent: an upgrade that could not bring some data
+      // forward must say so once per pass instead of leaving the operator to
+      // wonder why a session looks short.
+      if (res.unreadable > 0) {
+        console.warn(
+          `[Capture] ${res.unreadable} archive line(s) are not parseable JSON — carried over verbatim, unreadable by any reader`,
+        );
+      }
+      if (res.rejected > 0) {
+        console.warn(
+          `[Capture] ${res.rejected} archive file(s) could not be migrated and were left untouched for the next pass`,
+        );
+      }
+    } catch {
+      // Fail-open: a capture problem must never break the inference hot path.
     }
   }
 

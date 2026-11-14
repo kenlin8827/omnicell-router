@@ -6,7 +6,7 @@ Implemented — 2026-11-12.
 
 ## Context
 
-A caller can legally place MANY requests inside one distributed trace: a retry, a tool loop, a sub-agent, or — as measured in the field — one client reusing a single W3C `traceparent` for an entire conversation. A trace id therefore names a DAG of spans, never one request. The gateway used to store each request's observation record under the CALLER's trace id (`traces.db` primary key `trace_id`), so eight requests sharing one `traceparent` collapsed onto one row, and a second session's row was overwritten by the first one's later turn. The console then showed a phantom session and multiplied token totals (`7 × 67 217`).
+A caller can legally place MANY requests inside one distributed trace: a retry, a tool loop, a sub-agent, or — as measured in the field — one client reusing a single W3C `traceparent` for an entire conversation. A trace id therefore names a DAG of spans, never one request. The gateway used to store each request's observation record under the CALLER's trace id (`traces.db` primary key `trace_id`), so eight requests sharing one `traceparent` collapsed onto one row, and a second session's row was overwritten by the first session's later request. The console then showed a phantom session and multiplied token totals (`7 × 67 217`).
 
 The same ambiguity reached the capture plane and the response headers: `sessionId` sometimes WAS the client's own value, `X-OCR-Trace-ID` echoed a value the caller already knew, and no surface named the gateway's own record.
 
@@ -29,9 +29,11 @@ There is no `traceId` and no `spanId` anywhere in the domain model, storage, adm
 
 ### 2. Scope ladder
 
+Revised 2026-11-14 by ADR-0024. The original ladder drew a caller trace value ABOVE gateway requests; the diagram asserted containment while the text below it said the caller value is correlation only and may repeat. A caller value is not a scope layer. The full five-layer ladder (`session ⊃ turn ⊃ request ⊃ exchange ⊃ event`) lives in ADR-0024 and `docs/design/glossary.md`; `turn` is a write-time attribute (`turnIndex`), never an entity, which is why the diagram below shows only the gateway-owned entities.
+
 ```
-trace (caller)  ⊃  requests (ours)  ⊃  exchanges (ours)
-session (ours)  ⊃  requests
+session (ours)  ⊃  requests (ours)  ⊃  exchanges (ours)
+trace (caller)  ~  requests (ours)     [correlation only, NOT a scope]
 ```
 
 A caller value may repeat across rows; the gateway's keys may not. The gateway never invents a `clientRequestId`: an invented correlation value would be a gateway-owned id in disguise.
@@ -42,20 +44,20 @@ A caller value may repeat across rows; the gateway's keys may not. The gateway n
 - `record()` never overwrites: a missing id (legacy/planted row) or a duplicate key mints a fresh `requestId`.
 - `traces.db` schema v2 (`PRAGMA user_version`) is `(request_id PRIMARY KEY, session_id, ts, data)` — no trace-id column. The gate is VERSION **and SHAPE**: a file can carry the v2 number with a foreign shape (an intermediate build left `request_id` as PK plus a NOT NULL `trace_id`, which made every write fail the constraint and — because writes fail open — silently stopped all persistence). The rebuild therefore also runs whenever `PRAGMA table_info` does not show exactly `(request_id PK, session_id, ts, data)`, and a row that already has a gateway `request_id` keeps it. The v1→v2 migration rebuilds the table inside ONE transaction (SQLite cannot drop a PRIMARY KEY column) and re-keys legacy rows under their old (primary-key-enforced, therefore unique) trace id; those v1 rows had already collapsed whatever collided, so nothing further is recoverable. `ExecutionTrace` replay normalization fills `requestId` from that key and drops rows carrying neither id. The file is shared with the FinOps / failure-event / quota-event / ratelimit stores — each has an independent handle and only runs `CREATE TABLE IF NOT EXISTS`; `user_version` is FILE-wide, so this store is its sole owner, and a version NEWER than the binary is read as-is (never down-migrated).
 - `sessionId` is the gateway entity id, with ONE sanctioned naming exception (ADR-0002 §session resolution): under `header_fallback` the gateway NAMES a freshly-resolved session after the vendor header value, so `sessionId` may coincidentally equal a client-supplied string. It is still the gateway entity (resolved by the gateway, never used as a raw key by another store); the value is not trusted across conversations.
-- Legs INSIDE one turn share that turn's `requestId`: the Layer-2 decision call made while routing a chat request is one such leg and is distinguished by `purpose: l2-decision`, not by a second id. The standalone decision SURFACE is a client request of its own and therefore mints its own `requestId` like any other.
-- Capture events carry `requestId`, `exchangeId`, `clientRequestId?`, `sessionId`, `upstreamRequestId?`; turn grouping and request/response pairing use `requestId` / `exchangeId` only.
-- Archive files written before this decision are mapped ONCE in the archive reader (`normalizeArchivedEvent`): `spanId → exchangeId`, `traceId → clientRequestId`, and the caller value becomes the join key because no gateway id exists in those files. This is data migration at an ingestion boundary — no downstream code holds two spellings, and the function is deletable once retention passes the cutover.
+- Legs INSIDE one request share its `requestId`: the Layer-2 decision call made while routing a chat request is one such leg and is distinguished by `purpose: l2-decision`, not by a second id. The standalone decision SURFACE is a client request of its own and therefore mints its own `requestId` like any other.
+- Capture events carry `requestId`, `exchangeId`, `clientRequestId?`, `sessionId`, `upstreamRequestId?`, plus the write-time turn identity (`turnIndex` / `isPromptStart` / `turnDecision`, ADR-0024); request grouping and request/response pairing use `requestId` / `exchangeId` only, and turn grouping reads the write-time `turnIndex` only.
+- Archive files written before ADR-0021's id scheme are REBUILT, not mapped field by field and not discarded. The ADR-0024 `V1ToV2Migrate` step reads the request boundary off the recorded event sequence — a client request opens a request, the upstream spans it causes belong to it, the matching client response closes it — mints a deterministic `requestId` from `(sessionId, spanId, ts)`, and derives one `exchangeId` per span AND leg. That last part is faithful to the data, not an invention: in every pre-request-layer archive we hold, a request and its response share one `spanId` — which is what an exchange id names — so the step anchors the exchange on that span while keeping the leg in the derivation, so a span reused across legs still yields distinct exchanges. The ids are new; the boundary is not guessed. The engine stamps `migratedFrom: 1`, so reconstructed identity is never mistaken for an admission-gate stamp, and a sequence that cannot be closed is repaired into the nearest truth-bearing shape (an upstream exchange outside any request becomes a prompt-less orphan request with `NO_TURN`) rather than set aside — there is no seal and no `capture-archive/`: nothing leaves the live root, so the upgraded installation can still read every line it already had.
 
 ### 4. Wire
 
 - `X-OCR-Request-ID` (new) names the exact console row.
 - `X-OCR-Session-ID` keeps naming the gateway session.
-- The capture admin endpoints take the turn id: `GET /api/admin/capture/:date/:file/turn?id=<requestId>` resolves the turn (an `evt_…` event id is accepted too, since either names it).
+- The capture admin endpoints take the request id: `GET /api/admin/capture/:date/:file/request?id=<requestId>` resolves the request (an `evt_…` event id is accepted too, since either names it).
 - `X-OCR-Trace-ID` is removed. Echoing the caller's own trace id carries no information; the caller already holds it, and the gateway is not asserting a span relationship it does not propagate.
 
 ## Consequences
 
-- A client reusing one `traceparent` for a whole conversation is harmless: each request is its own row, its own capture turn, and its own usage record.
+- A client reusing one `traceparent` for a whole conversation is harmless: each request is its own row, its own captured request, and its own usage record.
 - Token/cost aggregates can no longer be multiplied by a repeated caller id; `total` and per-row values describe distinct requests.
 - Console deep links and copy targets are the gateway's `requestId`; a caller value is never resolved server-side (it may cover several rows, so resolving it would be a guess).
 - The capture archive remains the only place the caller's correlation value is retained, which is exactly what a wire log should do.
