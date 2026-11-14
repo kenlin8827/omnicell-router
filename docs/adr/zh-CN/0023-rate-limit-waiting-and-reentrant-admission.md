@@ -12,9 +12,12 @@ KEEP-BOUND、上游 429 反馈）、`backend/src/resilience/error-classifier.ts`
 
 > **状态说明。** 本语料库的惯例（`docs/adr/README.md`）是每篇记录只描述**已落地**
 > 的行为。本篇有意打破该惯例：决策先于代码敲定，好让实现有唯一契约可循。
-> 下文的任何一节都**不是**当前运行时行为。代码落地的同一个 commit 里，状态
-> 必须改为 `已接受` / `已实现`（`AGENTS.md`：代码与管辖 ADR 同步），索引行同步
-> 更新。在此之前，请把每一节都当作目标状态。
+> **只有「背景」一节是当前运行时行为的基线**；第 1–6 节（决策、配置面、后果、
+> 实现清单）描述的是**目标状态**。代码落地的同一个 commit 里
+> （`AGENTS.md`：代码与管辖 ADR 同步）：本篇状态行改为 `已接受`，两份 ADR 索引
+> 的 0023 行状态列改为 `已实现`，两份流程图配套文档
+> （`docs/design/rate-limit-waiting-flow.md` 及其 `zh-CN/` 镜像）同步改为
+> `已实现`，并刷新索引摘要。在此之前，请把决策与配置面各节当作目标状态。
 
 ## 背景
 
@@ -30,7 +33,8 @@ KEEP-BOUND、上游 429 反馈）、`backend/src/resilience/error-classifier.ts`
 
 现行实现把应对策略散在四处，各自独立计时：
 
-- 入站鉴权门最多等 `inboundGraceMs`（默认 1 s，硬上限 2 s），然后回 429；
+- 入站鉴权门最多等 `rateLimit.inboundGraceMs`（下文简称 `inboundGraceMs`，
+  默认 1 s，硬上限 2 s），然后回 429；
 - 出站 cap 门要么跳到下一个候选，要么在 keep-bound 会话 / 最后一个候选时
   **在窗口已满的情况下强制放行**，让上游去产出那个 429；
 - 上游短 429（整数 `Retry-After <= 2 s`）原地等一次；更长的则故障转移，
@@ -46,7 +50,7 @@ KEEP-BOUND、上游 429 反馈）、`backend/src/resilience/error-classifier.ts`
 ### 1. 一个可重入的准入函数，而不是散落各处的等待
 
 由唯一的内部函数 `admitTurn()` 统管整轮 turn 的准入、等待预算与重试计数。
-深层不再自行开启无边界等待：要么按第 3 节契约原地等，要么**返回准入函数**。
+深层不再自行开启无边界等待：要么按第 2、3 节契约原地等，要么**返回准入函数**。
 
 - 每轮最多**重入 2 次**（合计 3 次尝试）。
 - 触发返回的两个条件是「内部要求重试」与「调用失败」，且两者都必须附加
@@ -64,7 +68,7 @@ flowchart TD
   A["turn 到达"] --> B["admitTurn()：累计预算 + 重入计数"]
   B --> C{"本地 cap 命中？"}
   C -->|"否"| D["dispatch() → executeCandidatePool"]
-  C -->|"apiKeys 2s / credentials 30s"| E["peek() 探测，锁定 model × credential"]
+  C -->|"apiKeys 2s / credentials 30s"| E["peek() 探测，锁定 model x credential"]
   E --> F{"窗口已开？"}
   F -->|"是"| D
   F -->|"否"| G{"累计预算或重入耗尽？"}
@@ -75,9 +79,9 @@ flowchart TD
   H -->|"429，RA ≤ 30s"| I["锁定配对原地等待"]
   I --> D
   H -->|"429，30s ~ 2min"| J["429 + Retry-After"]
-  H -->|"429，≥ 2min 且断路器放行"| K["换路 rebind"]
+  H -->|"429，≥ 2min 且可换路"| K["换路 rebind"]
   K --> D
-  H -->|"429，≥ 2min 且池内无可用"| J
+  H -->|"429，≥ 2min 且无法换路"| J
   H -->|"无 RA，或调用失败"| L{"relay.committed？"}
   L -->|"否"| B
   L -->|"是"| M["断流终态，禁止回环"]
@@ -96,7 +100,8 @@ flowchart TD
 > **完整流程图**（三张视图：全链路、429 阶梯、超时出口，附 ADR 章节对照与维护约定）
 > 单独留档于 [限流等待——完整控制流图（中文）](../../design/zh-CN/rate-limit-waiting-flow.md)
 > （[英文正本](../../design/rate-limit-waiting-flow.md)）；本 ADR 只保留这张总览。
-> 中文镜像与英文正本节点 ID、边拓扑逐字一致，只翻译标签与说明文字。
+> 中文镜像与英文正本节点 ID、边拓扑逐字一致，只翻译标签与说明文字。本 ADR
+> 只保留总览，其中省略了 Fig. 1 的心跳回路与 verdict 来源分支。
 
 ### 2. 两档入站等待预算
 
@@ -121,7 +126,8 @@ flowchart TD
 
 ### 2.1 预算耗尽时仍必须返回 `Retry-After`
 
-两档预算耗尽是快速失败的唯一合法时机，但「失败」指的是**网关不再代等**，不是
+在入站准入路径上，两档预算耗尽是快速失败的唯一合法时机，但「失败」指的是
+**网关不再代等**，不是
 「这个 turn 报废」。客户端 SDK 只有拿到规范的 `429 + Retry-After` 才会自动退避
 重来；一个不带退避时刻的普通执行错误（当前 `chat-pipeline.ts` 的
 `executionError()`）会被判为不可重试，turn 在客户端侧照样丢失。因此两档超时都
@@ -166,8 +172,9 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
 **(4) 入站超时用「被锁定配对」的时间，不用池内最小值。** 等待期间配对锁定
 （第 2 节 KEEP-BOUND），客户端重试大概率仍绑回同一 `model x credential`。
 按第 3 节的 `min(peek(...))` 作答，该值可能来自另一个凭证，客户端回来时绑定
-那个仍未开窗，于是再撞一次 30 s 超时。池内最小值只在**允许换路**
-（`Retry-After >= 2 min` 且断路器门放行）时使用。格式统一为
+那个仍未开窗，于是再撞一次 30 s 超时。池内最小值**只属于第 3 节的上游 429
+分支**，且恰好在**无法换路**（池内无候选，或断路器门不放行）时返回；入站
+预算超时一律不用它。格式统一为
 `max(1, ceil(ms / 1000))` 的 delta-seconds；错误体可选带 `waited_ms`，让客户端
 知道网关已代等过，不必再叠加自己的完整退避。
 
@@ -177,8 +184,8 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
 | :--- | :--- |
 | `Retry-After <= 30 s`（可配置） | **原地等待**，锁定同一配对，等完就地派发。cache 保住。 |
 | `30 s < Retry-After < 2 min`（可配置） | **返回失败 + `Retry-After`**。 |
-| `Retry-After >= 2 min`，池内有可用候选 | **换路**（允许 rebind），但必须过现有的 `canExecuteScoped` 断路器门。 |
-| `Retry-After >= 2 min`，池内无可用 | **返回 `Retry-After` = 池内最小可用时间**，即全池 `min(peek(subject).retryAfterMs)`（含冷却），下限 1 s。 |
+| `Retry-After >= 2 min`，`canExecuteScoped` 放行**且**池内有可用候选 | **换路**（允许 rebind）。 |
+| `Retry-After >= 2 min`，**无法换路**（池内无候选**或**断路器不放行） | **返回 `Retry-After` = 池内最小可用时间**，即全池 `min(peek(subject).retryAfterMs)`（含冷却），下限 1 s。 |
 | 无 `Retry-After` | **返回准入函数重试**——由探测而非拍脑袋的常量决定等多久。 |
 
 阈值按动作成本排序：cache 还热时等待最便宜；其次是给出规范的
@@ -195,12 +202,15 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
   `cooldowns`（`rate-limiter.ts`），因此无 `Retry-After` 分支上一次 60 s
   `penalize()` 会让 30 s 预算内的每一次探测都读到约 60 s 的可用时间，
   重入在数学上必然超时。断路器仍独立记录该失败，只抑制整形冷却；若确需
-  下限，必须与 `maxWaitMs` 同源。
+  下限，必须与 `retry.inplace.maxRateLimitWaitMs`（同一份等待预算）同源，
+  不得再立一个独立常量。
 - **`committed` 即终态。** 一旦字节已到客户端，原地重试、故障转移、返回
   准入函数都不合法：都会让客户端收到一份已消费过一半的重复输出。流按现行
   做法不带 `[DONE]` 关闭。
-- **必须有心跳。** `server.ts` 与 `surfaces/` 目前没有任何 SSE keep-alive。
-  等待期间，`stream: true` 的 turn 必须周期性发送 SSE 注释帧，否则客户端
+- **必须有心跳。** `server.ts` 与 `surfaces/` 目前没有任何周期性的 SSE
+  keep-alive / `: ping` 帧（唯一的注释帧是结尾的 `: ocr-summary`，那是完成
+  摘要，不是心跳）。等待期间，`stream: true` 的 turn 必须周期性发送 SSE
+  注释帧，否则客户端
   SDK 的读超时会先触发。写出 200 SSE 头会改变终态纪律：头一经发出，最终
   失败只能是 error event 或断流，绝不能再回 429 JSON。非流式线路没有心跳
   通道，其累计预算必须压在客户端 SDK 常见超时之内。
@@ -210,25 +220,33 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
   精确值还是 `estimate`。
 - **不重复计量。** 见第 1 节。每次重入携带原始 `requestId`（ADR-0021）与
   原始准入状态。
-- **`Retry-After` 解析要共享且无损。** 四个 provider 调用点现在都用
+- **`Retry-After` 解析要共享且无损。** 四个 provider 调用点**以及分类器自己的
+  解析**（`error-classifier.ts`，还额外要求 `parsed > 0`）现在都用
   `parseInt(header, 10)`：`0.5` 变 `0` 被丢弃，HTTP-date 变 `NaN` 被丢弃，
-  本该短等的 429 于是被误判为「无声明」而跳过原地等待分支。改为统一的
+  本该短等的 429 于是被误判为「无声明」而跳过原地等待分支。**全部**改为统一的
   `Number` + `Number.isFinite` + 毫秒化辅助函数（`harness/net.ts` 已有该形状）；
-  无法解析的 HTTP-date 显式降级为「无 `Retry-After`」，走上面的重入分支。
+  只修 provider 四处，分类器仍会丢弃同样的短等待。无法解析的 HTTP-date 显式
+  降级为「无 `Retry-After`」，走上面的重入分支。此处 `RATE_LIMIT_BURST` 是
+  `networkCause` / 可重试原因，不是分类器的 `ErrorCategory`（后者仍是
+  `RATE_LIMITED`）。
 
 ### 5. 配置面
 
-所有值都可由操作者配置，并必须进入控制台注释词典（ADR-0016）；后端默认值
-落在 `config/defaults.ts`，前端镜像在 `frontend/src/lib/defaults.ts`。
+所有值都可由操作者配置，并必须进入控制台注释词典（ADR-0016）。**下表所有默认值
+都是目标值**，不是当前运行时值。今天两个既有默认值是分散的：
+`DEFAULT_INBOUND_GRACE_MS` 在 `config/index.ts`，
+`DEFAULT_MAX_RATE_LIMIT_WAIT_MS` 在 `resilience/circuit-breaker.ts`，前端只镜像
+了后者（`frontend/src/lib/defaults.ts`）。按 `AGENTS.md` 要求把运行时默认值
+收敛到 `config/defaults.ts` 并补前端镜像，是本决策的一部分，不是对现状的描述。
 
-| 键 | 默认 | 说明 |
+| 键 | 目标默认 | 说明 |
 | :--- | :--- | :--- |
-| `rateLimit.inboundGraceMs` | 2000 | 语义改为**每轮累计**预算；必须放宽 `MAX_INBOUND_GRACE_MS = 2000` 硬钳制，否则该键根本调不高。 |
-| `rateLimit.probeIntervalMs` | 1000 | 两档入站预算的能力探测间隔。 |
-| `rateLimit.outboundCredentialWaitMs` | 30000 | 本地凭证 cap 的累计预算。 |
-| `retry.inplace.maxRateLimitWaitMs` | 30000 | **复用，不新造**：它本来就是「429 最长原地等待」旋钮（当前 2000）。 |
-| `retry.inplace.failoverThresholdMs` | 120000 | 新增：超过它换路才合法。 |
-| `retry.admission.maxReentries` | 2 | 新增，与 `inplace.maxAttempts`、`failover.maxAttempts` 语义分离。 |
+| `rateLimit.inboundGraceMs` | 2000 | 语义改为**每轮累计**预算。今天默认是 **1000**（`config/index.ts`）；**2000 是 `MAX_INBOUND_GRACE_MS` 硬钳制**，必须放宽它，否则该键根本调不高。 |
+| `rateLimit.probeIntervalMs` | 1000 | **新增键**：两档入站预算的能力探测间隔。 |
+| `rateLimit.outboundCredentialWaitMs` | 30000 | **新增键**：本地凭证 cap 的累计预算。 |
+| `retry.inplace.maxRateLimitWaitMs` | 30000 | **复用，不新造**：该键已完整存在（`resilience/types.ts` → 磁盘 schema → 注释词典 → 前端），就是「429 最长原地等待」旋钮；今天默认 **2000**。 |
+| `retry.inplace.failoverThresholdMs` | 120000 | **新增键**：超过它换路才合法。 |
+| `retry.admission.maxReentries` | 2 | **新增键**，与 `inplace.maxAttempts`、`failover.maxAttempts` 语义分离。 |
 
 `MAX_GRACE_SLEEPERS` 改为有界**等待队列**，不再是超限即丢弃的开关：超限时
 是延迟，不是回 429；只有排队超时才构成拒绝。
@@ -282,4 +300,5 @@ verdict），重入回路必须沿用；`RateLimit-Reset` 与 `Retry-After` 同�
       `Retry-After: 0.5`、已提交流、累计预算、60 s 冷却回归的测试；补测
       「等待 30 s 后返回剩余而非原始 `Retry-After`」、`costUsd` 回 429 而非 402、
       reservation-only 不得回 1 s。
-- [ ] **在同一个 commit 里**把本记录改为 `已接受` / `已实现`。
+- [ ] **在同一个 commit 里**：本篇状态行改为 `已接受`，两份 ADR 索引的 0023 行
+      状态列改为 `已实现`，两份流程图配套文档同步改为 `已实现`，并刷新索引摘要。

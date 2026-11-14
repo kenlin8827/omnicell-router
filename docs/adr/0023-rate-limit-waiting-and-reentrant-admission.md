@@ -13,10 +13,15 @@ gate, KEEP-BOUND, upstream-429 feedback), `backend/src/resilience/error-classifi
 > **Status note.** The corpus convention (`docs/adr/README.md`) is that every
 > record describes SHIPPED behavior. This record deliberately breaks that rule:
 > the decision was ratified ahead of the code so the implementation has one
-> contract to follow. NOTHING below describes current runtime behavior. Its
-> status MUST move to `Accepted` / `Implemented` in the same commit that lands
-> the code (`AGENTS.md`: code and governing ADR move together), and the index
-> row must be updated with it. Until then, treat every section as a target.
+> contract to follow. **Only the Context section is a baseline of current
+> runtime behavior**; sections 1–6 (Decision, Configuration, Consequences and
+> the checklist) describe the TARGET state. When the code lands, in the SAME
+> commit (`AGENTS.md`: code and governing ADR move together): set this Status
+> line to `Accepted`, set the Status cell of both ADR index rows to
+> `Implemented`, move both diagram companions
+> (`docs/design/rate-limit-waiting-flow.md` and its `zh-CN/` mirror) to
+> `Implemented`, and refresh the index Core Summary. Until then, treat the
+> Decision and Configuration sections as targets.
 
 ## Context
 
@@ -36,8 +41,8 @@ individually:
 The shipped behavior scatters the response across four places, each timing its
 own wait independently:
 
-- the inbound auth gate sleeps at most `inboundGraceMs` (default 1 s, hard cap
-  2 s) and then answers 429;
+- the inbound auth gate sleeps at most `rateLimit.inboundGraceMs` (shortened to
+  `inboundGraceMs` below; default 1 s, hard cap 2 s) and then answers 429;
 - the outbound cap gate either skips to the next candidate or, for a keep-bound
   session or the last candidate, **forces the call through a full window** and
   lets the upstream produce the 429;
@@ -58,8 +63,8 @@ the four because the client is not even told how long to back off.
 
 A single internal `admitTurn()` owns admission, the waiting budgets and the
 retry counter for the whole turn. Deep layers do not start their own open-ended
-waits: they either wait in place under the contract in section 3, or **return to
-the admission function**.
+waits: they either wait in place under the contract in sections 2 and 3, or
+**return to the admission function**.
 
 - At most **2 re-entries** (3 attempts total) per turn.
 - The two triggers for a return are **internal retry requested** and **call
@@ -90,9 +95,9 @@ flowchart TD
   H -->|"429, RA up to 30s"| I["wait in place on locked pair"]
   I --> D
   H -->|"429, RA 30s to 2min"| J["429 + Retry-After"]
-  H -->|"429, RA over 2min, breaker permits"| K["switch path, rebind"]
+  H -->|"429, RA over 2min, switch legal"| K["switch path, rebind"]
   K --> D
-  H -->|"429, RA over 2min, pool empty"| J
+  H -->|"429, RA over 2min, switch not possible"| J
   H -->|"no RA, or call failed"| L{"relay.committed?"}
   L -->|"no"| B
   L -->|"yes"| M["close stream, never re-enter"]
@@ -113,8 +118,11 @@ flowchart TD
 >
 > The **full diagrams** (three views: the end-to-end path, the 429 ladder, and
 > the timeout exit, with a section map and maintenance rules) are archived in
-> [Rate-Limit Waiting — Complete Control Flow](../design/rate-limit-waiting-flow.md).
-> This ADR keeps only the overview.
+> [Rate-Limit Waiting — Complete Control Flow](../design/rate-limit-waiting-flow.md)
+> ([zh-CN mirror](../design/zh-CN/rate-limit-waiting-flow.md)). The mirror has
+> identical node IDs and edge topology; only labels and prose are localized.
+> This ADR keeps only the overview, which omits the heartbeat loop and the
+> verdict-source branches of Fig. 1.
 
 ### 2. Two inbound waiting budgets
 
@@ -142,8 +150,9 @@ Fast-fail is the last branch of this function, not its entry point.
 
 ### 2.1 Budget exhaustion must still return `Retry-After`
 
-Exhausting either budget in section 2 is the only legitimate moment for fast-fail,
-but "fail" means **the gateway stops waiting on the client's behalf**, not that the
+On the inbound admission path, exhausting either budget in section 2 is the only
+legitimate moment for fast-fail, but "fail" means **the gateway stops waiting on
+the client's behalf**, not that the
 turn is discarded. A client SDK only backs off and retries on a well-formed
 `429 + Retry-After`; a plain execution error with no backoff hint (today's
 `executionError()` in `chat-pipeline.ts`) is read as non-retriable and the turn is
@@ -196,8 +205,10 @@ The pair stays locked while waiting (section 2, KEEP-BOUND), so a client retry
 will most likely rebind to the same `model x credential`. Answering with section
 3's `min(peek(...))` may advertise another credential's opening time; the client
 returns then and hits another 30 s timeout on the still-closed pair. The pool
-minimum is used only when switching is legal (`Retry-After >= 2 min` and the
-breaker gate permits). Format is uniformly `max(1, ceil(ms / 1000))`
+minimum belongs ONLY to section 3's upstream-429 branch, where it is returned
+precisely when a switch is NOT possible (no candidate, or the breaker gate
+refuses); it is never used for an admission timeout. Format is uniformly
+`max(1, ceil(ms / 1000))`
 delta-seconds; the error body may carry `waited_ms` so the client knows the
 gateway already waited and does not stack a full backoff on top.
 
@@ -207,8 +218,8 @@ gateway already waited and does not stack a full backoff on top.
 | :--- | :--- |
 | `Retry-After <= 30 s` (configurable) | **Wait in place**, locked to the same pair, then dispatch locally. The cache survives. |
 | `30 s < Retry-After < 2 min` (configurable) | **Return failure + `Retry-After`**. |
-| `Retry-After >= 2 min`, pool has an available candidate | **Switch path** (rebind allowed), but only through the existing `canExecuteScoped` breaker gate. |
-| `Retry-After >= 2 min`, no candidate available | **Return `Retry-After` = the pool's minimum time-to-available**, computed as `min(peek(subject).retryAfterMs)` over the pool including cooldowns, floored at 1 s. |
+| `Retry-After >= 2 min`, `canExecuteScoped` permits AND pool has an available candidate | **Switch path** (rebind allowed). |
+| `Retry-After >= 2 min`, switch NOT possible (no candidate OR breaker refuses) | **Return `Retry-After` = the pool's minimum time-to-available**, computed as `min(peek(subject).retryAfterMs)` over the pool including cooldowns, floored at 1 s. |
 | No `Retry-After` | **Return to the admission function** — let probing, not a guessed constant, decide the wait. |
 
 The thresholds are ordered by the cost of the action. Waiting is cheapest while
@@ -230,13 +241,16 @@ self-contradictory.
   roughly 60 s-to-available. The re-entry would be mathematically guaranteed to
   time out. The breaker still records the failure independently; only the
   shaping cooldown is suppressed. If a floor is needed, it must share its source
-  with `maxWaitMs`.
+  with `retry.inplace.maxRateLimitWaitMs` (the same waiting budget), never be a
+  second independent constant.
 - **`committed` is terminal.** When bytes have reached the client, neither an
   in-place retry, a failover, nor a return to the admission function is legal:
   all would emit a second copy of a partly consumed turn. The stream closes
   without `[DONE]`, as today.
-- **Heartbeats are required.** No SSE keep-alive exists in `server.ts` or
-  `surfaces/`. During a wait, a `stream: true` turn must emit periodic SSE
+- **Heartbeats are required.** No periodic SSE keep-alive / `: ping` frame exists
+  in `server.ts` or `surfaces/` (the only comment frame today is the trailing
+  `: ocr-summary`, a completion summary, not a heartbeat). During a wait, a
+  `stream: true` turn must emit periodic SSE
   comment frames so the client SDK's read timeout does not fire first. Writing
   the 200 SSE headers changes the terminal discipline: once they are out, a
   final failure can only be an error event or a closed stream, never a 429 JSON
@@ -249,28 +263,38 @@ self-contradictory.
   value is exact or an `estimate`.
 - **No double accounting.** See section 1. Every re-entry carries the original
   `requestId` (ADR-0021) and the original admission state.
-- **`Retry-After` parsing is shared and lossless.** The four provider call sites
-  currently use `parseInt(header, 10)`: `0.5` becomes `0` and is discarded, an
-  HTTP-date becomes `NaN` and is discarded, so a genuinely short wait is
-  misclassified as "no declaration" and skips the in-place branch. Replace them
-  with one `Number` + `Number.isFinite` + milliseconds helper (the shape already
-  used by `harness/net.ts`); an unparseable HTTP-date degrades explicitly to
-  "no `Retry-After`", which routes to the re-entry branch above.
+- **`Retry-After` parsing is shared and lossless.** Four provider call sites AND
+  the classifier's own parse (`error-classifier.ts`, which additionally requires
+  `parsed > 0`) currently use `parseInt(header, 10)`: `0.5` becomes `0` and is
+  discarded, an HTTP-date becomes `NaN` and is discarded, so a genuinely short
+  wait is misclassified as "no declaration" and skips the in-place branch.
+  Replace ALL of them with one `Number` + `Number.isFinite` + milliseconds helper
+  (the shape already used by `harness/net.ts`); fixing only the provider sites
+  would leave the classifier discarding the same short waits. An unparseable
+  HTTP-date degrades explicitly to "no `Retry-After`", which routes to the
+  re-entry branch above. Here `RATE_LIMIT_BURST` is the `networkCause` / retriable
+  cause, not the classifier's `ErrorCategory` (which stays `RATE_LIMITED`).
 
 ### 5. Configuration surface
 
 All values are operator-configurable and must appear in the console comment
-dictionaries (ADR-0016); backend defaults live in `config/defaults.ts` with a
-frontend mirror in `frontend/src/lib/defaults.ts`.
+dictionaries (ADR-0016). **Every default in the table below is a TARGET value**,
+not today's runtime value. Today the two existing defaults are scattered:
+`DEFAULT_INBOUND_GRACE_MS` lives in `config/index.ts` and
+`DEFAULT_MAX_RATE_LIMIT_WAIT_MS` in `resilience/circuit-breaker.ts`, with a
+frontend mirror only for the latter (`frontend/src/lib/defaults.ts`). Moving
+runtime defaults into `config/defaults.ts` and mirroring them on the frontend
+as `AGENTS.md` requires is part of this decision, not a description of current
+code.
 
-| Key | Default | Note |
+| Key | Target default | Note |
 | :--- | :--- | :--- |
-| `rateLimit.inboundGraceMs` | 2000 | Reinterpreted as a **cumulative per-turn** budget; the hard `MAX_INBOUND_GRACE_MS = 2000` clamp must be relaxed or the key cannot be raised. |
-| `rateLimit.probeIntervalMs` | 1000 | Capability probe interval for both inbound budgets. |
-| `rateLimit.outboundCredentialWaitMs` | 30000 | Cumulative budget for a local credential cap. |
-| `retry.inplace.maxRateLimitWaitMs` | 30000 | **Reuse, do not invent**: this is already the "longest 429 we wait out in place" knob (today 2000). |
-| `retry.inplace.failoverThresholdMs` | 120000 | New: the boundary above which a path switch becomes legal. |
-| `retry.admission.maxReentries` | 2 | New, distinct from `inplace.maxAttempts` and `failover.maxAttempts`. |
+| `rateLimit.inboundGraceMs` | 2000 | Reinterpreted as a **cumulative per-turn** budget. Today's default is **1000** (`config/index.ts`); **2000 is the hard `MAX_INBOUND_GRACE_MS` clamp**, which must be relaxed or the key cannot be raised. |
+| `rateLimit.probeIntervalMs` | 1000 | **New key**: capability probe interval for both inbound budgets. |
+| `rateLimit.outboundCredentialWaitMs` | 30000 | **New key**: cumulative budget for a local credential cap. |
+| `retry.inplace.maxRateLimitWaitMs` | 30000 | **Reuse, do not invent**: this key already exists (`resilience/types.ts` → disk schema → comment dictionaries → frontend) as the "longest 429 we wait out in place" knob; today's default is **2000**. |
+| `retry.inplace.failoverThresholdMs` | 120000 | **New key**: the boundary above which a path switch becomes legal. |
+| `retry.admission.maxReentries` | 2 | **New key**, distinct from `inplace.maxAttempts` and `failover.maxAttempts`. |
 
 `MAX_GRACE_SLEEPERS` becomes a bounded waiting **queue** rather than a
 shed-on-overflow switch: exceeding it delays, it does not answer 429. Only a
@@ -335,4 +359,6 @@ it. Everywhere else in the ladder the turn is preserved.
       budget and the 60 s cooldown regression; add tests that a 30 s wait returns
       the REMAINING rather than the original `Retry-After`, that `costUsd`
       answers 429 not 402, and that a reservation-only window never answers 1 s.
-- [ ] Move this record to `Accepted` / `Implemented` **in the same commit**.
+- [ ] In the SAME commit: set this Status line to `Accepted`, set both ADR index
+      Status cells to `Implemented`, move both diagram companions to
+      `Implemented`, and refresh the index Core Summary.

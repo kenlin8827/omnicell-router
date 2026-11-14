@@ -5,8 +5,9 @@ Companion diagrams for [ADR-0023](../adr/0023-rate-limit-waiting-and-reentrant-a
 constraints). The ADR keeps a condensed overview in §1.1; **this file is the
 archival home of the full diagrams**.
 
-> Status: **Proposed**, mirroring ADR-0023. Nothing below describes shipped
-> runtime behavior. A zh-CN mirror lives at
+> Status: **Proposed**, mirroring ADR-0023. The FLOWCHARTS describe the target
+> state; the prose notes quoting `parseInt`, `evaluate()` or `penalize()`
+> describe today's baseline, as ADR-0023's Context does. A zh-CN mirror lives at
 > [`zh-CN/rate-limit-waiting-flow.md`](./zh-CN/rate-limit-waiting-flow.md):
 > node IDs and edge topology are identical; only labels and prose are localized.
 > This file is authoritative for structure. Where a diagram and an ADR table
@@ -46,12 +47,12 @@ flowchart TD
     R2["in-place sleep on locked pair"]
     R3{"RA under 2min?"}
     R4["429 + upstream Retry-After"]
-    R5{"breaker permits + pool candidate?"}
+    R5{"switch legal: breaker + candidate?"}
     R6["switch path, rebind"]
     R7["429 + pool-min Retry-After"]
     R8["suppress shaping cooldown"]
   end
-  subgraph E["timeout exit — ADR 2.1"]
+  subgraph E["timeout exit — §2.1"]
     E0["re-read verdict at timeout"]
     E1{"binding source?"}
     E2["exact: msUntilBelow over full constraints"]
@@ -144,9 +145,12 @@ flowchart TD
   S10 --> S15
 ```
 
-`parseInt` at the four provider call sites turns `Retry-After: 0.5` into `0` and
-an HTTP-date into `NaN`; both are discarded today and misrouted to the "no
-declaration" branch. The shared parser in ADR-0023 §4 is what makes `S1` honest.
+`parseInt` at the four provider call sites AND in the classifier itself
+(`error-classifier.ts`, which also requires `parsed > 0`) turns
+`Retry-After: 0.5` into `0` and an HTTP-date into `NaN`; both are discarded today
+and misrouted to the "no declaration" branch. Replacing only the provider sites
+would leave `S1` dishonest. `RATE_LIMIT_BURST` here is the `networkCause` /
+retriable cause, not the classifier's `ErrorCategory` (`RATE_LIMITED`).
 A no-RA 429 must not write a shaping cooldown: `evaluate()` consults
 `cooldowns` before window math, so a 60s `penalize()` would make every probe
 inside a 30s budget report roughly 60s-to-available and the re-entry would be
@@ -186,10 +190,13 @@ retry storm.
 
 ## 4. Diagram-to-ADR map
 
+Config keys inside node labels drop their module prefix; fully qualified names
+and target defaults are in ADR-0023 §5.
+
 | Nodes | ADR-0023 section | Governing statement |
 | :--- | :--- | :--- |
 | `A0`–`A9` | §1, §2 | one `admitTurn()`, cumulative budget, pair locked while waiting |
-| `P1`–`P6` | §2, consequences | `executeCandidatePool` stays the single funnel; denials are not counted |
+| `P1`–`P6` | §1, consequences | `executeCandidatePool` stays the single funnel; denials are not counted |
 | `R0`–`R8` | §3 | the ladder ordered by cache cost; local caps never license a switch |
 | `E0`–`E8` | §2.1 | budget exhaustion still returns a usable backoff instant |
 | `C0`, `C1` | §4 | `committed` is terminal |
@@ -201,12 +208,16 @@ retry storm.
 - Fig. 1 is the only end-to-end picture. Figs. 2 and 3 zoom into its `R` and `E`
   subgraphs; a change to a branch must be made in both places.
 - ADR-0023 §1.1 is the condensed view of Fig. 1. If Fig. 1's topology changes,
-  check whether §1.1 still tells the same story — the two files are a deliberate
-  single-source pair, not two independent copies.
+  check whether §1.1 still tells the same story — this is the FIRST deliberate
+  pair (Fig. 1 ↔ §1.1), not two independent copies.
 - The zh-CN mirror is
-  [`zh-CN/rate-limit-waiting-flow.md`](./zh-CN/rate-limit-waiting-flow.md).
-  Node IDs and edge topology are identical to this file; only labels and prose
-  are localized. This file is authoritative for structure — a topology change
-  must land in both files in the same commit and pass a structural diff. The
-  mirror sits in a subdirectory so it stays outside the English-doc CJK scan.
-- When the code lands, move this file and ADR-0023 to `Implemented` together.
+  [`zh-CN/rate-limit-waiting-flow.md`](./zh-CN/rate-limit-waiting-flow.md) —
+  the SECOND deliberate pair (this file ↔ the mirror). Node IDs and edge
+  topology are identical; only labels and prose are localized. This file is
+  authoritative for structure: a topology change must land in both files in the
+  same commit and pass a structural diff.
+- The mirror lives in a `zh-CN/` subdirectory so it stays outside the
+  English-doc CJK scan (`docs/design/*.md` matches one level only).
+- When the code lands, ONE commit promotes the whole set: the Status line of
+  both ADR-0023 language versions → `Accepted`, both index Status cells →
+  `Implemented`, and both diagram companions → `Implemented`.

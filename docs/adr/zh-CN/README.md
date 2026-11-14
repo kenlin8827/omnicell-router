@@ -5,6 +5,10 @@
 本项目采用架构决策记录（Architecture Decision Record, ADR）来沉淀核心设计决策、背景动因及其权衡（Trade-offs），确保项目演进过程中的架构一致性与可追溯性。
 
 > **语料重置 2026-10-15：** 历史编号（0001–0021）已被有意清除（commit 285e913 及后续）。本树按**现行代码事实**重新推导——每篇记录的是已落地的行为，而非抵达它的演进过程。跨切面词汇契约：断路器状态 `CLOSED/HALF_OPEN/OPEN` 只属于 `CircuitBreaker` 层；模型级聚合读能力词 `available/recovering/unavailable`（ADR-0004）；历史 `ModelRef/ModelIdentity` 类型名从未落地代码，不得复活（ADR-0003）。
+>
+> **例外：** [ADR-0023](./0023-rate-limit-waiting-and-reentrant-admission.md)
+> 为 `拟议中`，描述**目标状态**而非已落地行为；偏离理由与「同 commit 转状态」
+> 的要求见该篇的状态说明。
 
 ## ADR 索引清单
 
@@ -31,4 +35,4 @@
 | [ADR-0019](./0019-upstream-tls-trust-and-interception-observability.md) | 上游 TLS 信任与拦截可观测性 | **已实现** | 2026-12 | MITM 校验**真实**源站证书，因此 `forwardProxy.upstreamTls.caFile` 把私有 CA **追加**到系统信任库，`insecure`（默认关闭，启动告警 + 控制台横幅）是唯一关闭校验的途径——两者热生效，且 h2 会话池 key 携带信任签名，策略变更后旧会话不会被复用；`describeUpstreamFailure` 是每条源站腿（TLS 信任 / DNS / 连接 / 超时）唯一的分类器，其错误码同时进入客户端应答与台账 note；拒绝被拦截证书（pinning）的客户端会落一行 `connect` 记录——信号是「TLS 会话关闭时零解密字节」，因为 Bun 对证书被拒不发 `tlsClientError`；被驱逐的 terminator 改为排空而非直接杀（在途 CONNECT 不再静默降级为盲隧道）；错误信封经 terminator 的 abort 钩子关闭客户端传输（Bun 对内层 `res.socket.end()` 惰性） |
 | [ADR-0020](./0020-transport-fidelity-and-tunnel-observation.md) | 传输保真与隧道观测 | **已实现** | 2026-12 | 客户端协议始终在上游重新发起（h1→h1、h2→h2 且仅在应答前回退 h1、`Upgrade:` 字节级原样），做不到保真时给明确错误，绝不静默降级；TCP 只透传——通用 TCP 拦截不在范围内——但隧道在不解密的前提下可观测：通过中继自己的 tap 从 ClientHello 取 SNI/ALPN，并在结束记录上带字节总量与存活时间；非 TLS 的 CONNECT 立刻中继，不再为不可能到来的 hello 缓冲；WebSocket 帧被计数（消息/文本/二进制/ping/pong/close code）而中继保持字节精确；两个运行时缺口在 Bun 1.3.14 上实测并如实记录：明文 `ws://`（升级 socket 吞写）与 RFC 8441 扩展 CONNECT（h2 服务端在异步应答落地前就回 405，且从不通告会让客户端尝试的 SETTINGS）；`Upgrade:` 遵循与 ADR-0018 §3a 相同的端口优先级 |
 | [ADR-0022](./0022-mihomo-outbound-proxy.md) | 出站代理——手动 URL 或托管的 Mihomo 核心 | **已实现** | 2026-11-13 | `proxy.mode` 默认 `manual`（`proxy.url` 行为不变）；`mihomo` 把走代理的调用送到网关 sidecar 持有的本机混合端口；includes/excludes 与 loopback 绕过保留；控制器密钥与订阅 URL 归档脱敏且绝不记日志；Node 的 `fetch` 忽略 `proxy`，因此 Node 上的 `proxiedFetch` 自己完成 CONNECT；schemaVersion 保持 1 |
-| [ADR-0023](./0023-rate-limit-waiting-and-reentrant-admission.md) | 限流等待与可重入准入回路 | **拟议中** | 2026-11-14 | 唯一可重入准入函数（最多重入 2 次、预算按每轮累计）；apiKey cap 2s / 凭证 cap 30s，1s 能力探测、等待期间锁定同一配对；429 阶梯按 cache 成本排序（≤30s 原地等 / <2min 回 429+Retry-After / ≥2min 且过断路器门才换路 / 池内最小 Retry-After / 无 RA 返回准入函数）；无 RA 的 429 **不写**整形冷却；committed 即终态；SSE 心跳与有界等待队列属决策本身 |
+| [ADR-0023](./0023-rate-limit-waiting-and-reentrant-admission.md) | 限流等待与可重入准入回路 | **拟议中** | 2026-11-14 | 唯一可重入准入函数（最多重入 2 次、预算按每轮累计）；apiKey cap 2s / 凭证 cap 30s，1s 能力探测、等待期间锁定同一配对；429 阶梯按 cache 成本排序（≤30s 原地等 / 30s < RA < 2min 回 429+Retry-After / ≥2min 仅在断路器放行且有候选时换路，否则回池内最小 Retry-After / 无 RA 返回准入函数）；无 RA 的 429 **不写**整形冷却；committed 即终态；SSE 心跳与有界等待队列属决策本身 |
