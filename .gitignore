@@ -16,6 +16,7 @@ tmp-*.html
 .kimi-code/
 .omp/
 .ocp/
+.workbuddy/memory/
 # tgrep trigram index built by the agent search tool: local, multi-MB, rebuildable.
 .tgrep/
 
