@@ -5,6 +5,7 @@ import {
   ClientAdapter,
   ClientActionResult,
   createBackup,
+  describeBackup,
   restoreBackup,
   safeReadJson,
   safeWriteJson,
@@ -246,9 +247,7 @@ export class WorkBuddyClientAdapter implements ClientAdapter {
       safeWriteJson(configPath, file.root);
     }
 
-    const backupNote = fs.existsSync(`${configPath}.bak.ocr`)
-      ? ` Backup saved to ${configPath}.bak.ocr`
-      : '';
+    const backupNote = describeBackup(configPath);
     return {
       success: true,
       message: `WorkBuddy configured to route via OCR (${targetUrl}, ${ids.length} model${ids.length === 1 ? '' : 's'}, key: ${apiKey === FALLBACK_API_KEY ? 'placeholder' : 'set'}).${backupNote} Reopen WorkBuddy's model picker to see the new rows.`,

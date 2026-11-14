@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   safeReadJson,
   safeWriteJson,
@@ -149,7 +150,7 @@ export class ClaudeClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `Claude configured to route via OCR (${targetUrl}${apiKey ? ', auth token updated' : ''}${contextWindow && contextWindow > 0 ? `, ctx=${contextWindow}` : ''}${pinned.length ? `, ${pinned.join(', ')}` : ', slots untouched'}). Backup saved to ${configPath}.bak.ocr`,
+      message: `Claude configured to route via OCR (${targetUrl}${apiKey ? ', auth token updated' : ''}${contextWindow && contextWindow > 0 ? `, ctx=${contextWindow}` : ''}${pinned.length ? `, ${pinned.join(', ')}` : ', slots untouched'}).${describeBackup(configPath)}`,
     };
   }
 

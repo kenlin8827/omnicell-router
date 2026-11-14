@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search, AlertTriangle } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
@@ -184,7 +184,10 @@ export const ClientsPage: React.FC = () => {
   const [extrasOpen, setExtrasOpen] = useState<Record<string, boolean>>({});
   /** Family cards: which nested product panel is expanded, keyed `client:product`.
    *  Nested panels start collapsed — the row above already carries each
-   *  product's status badge, so opening one is a deliberate "show me the files". */
+   *  product's status badge, so opening one is a deliberate "show me the files".
+   *  Deliberately NOT exclusive (unlike the card-level accordion): the body is a
+   *  few status lines, and the job is comparing file/CA state across the family's
+   *  IDEs. The card level stays single-open because the forms are tall. */
   const [openProducts, setOpenProducts] = useState<Record<string, boolean>>({});
   /** Per-client model-list source: 'none' (default) exposes no concrete
    *  models, 'follow' mirrors the selected API key's effective access,
@@ -1875,22 +1878,50 @@ export const ClientsPage: React.FC = () => {
                                       {p.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
                                       <span>{t('clients.fileExists')} {p.exists ? t('clients.yes') : t('clients.no')}</span>
                                     </span>
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                                      {p.backupExists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                                      <span>{t('clients.backupExists')} {p.backupExists ? t('clients.ready') : t('clients.none')}</span>
-                                    </span>
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                                      {p.caTrusted === true ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color={p.caTrusted === false ? 'var(--accent-rose)' : 'var(--text-dim)'} />}
-                                      <span>
-                                        {t('clients.jetbrainsCa')}{' '}
-                                        {p.caTrusted === true ? t('clients.jetbrainsCaImported') : p.caTrusted === false ? t('clients.jetbrainsCaAbsent') : t('clients.jetbrainsCaUnknown')}
-                                      </span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                      {p.caTrusted === true ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color={p.caTrusted === false && p.hooked ? 'var(--accent-rose)' : 'var(--text-dim)'} />}
+                                      {/* Trust is per IDE install (JBR reads its own cacerts,
+                                          not the OS store), so an UNHOOKED IDE legitimately
+                                          lacks the alias — setup imports it. A hooked IDE's
+                                          absence is fixed by re-running setup for THAT
+                                          product (idempotent); the proxy-access wizard's
+                                          OS-store instructions would never reach JBR. */}
+                                      {!p.hooked && p.caTrusted !== true ? (
+                                        <span>{t('clients.jetbrainsCa')} {t('clients.jetbrainsCaNotHooked')}</span>
+                                      ) : p.caTrusted === false ? (
+                                        <>
+                                          <span style={{ color: 'var(--accent-rose)' }}>{t('clients.jetbrainsCa')} {t('clients.jetbrainsCaAbsent')}</span>
+                                          <button
+                                            className="btn btn-sm"
+                                            style={{ gap: '5px' }}
+                                            disabled={loading}
+                                            onClick={e => { e.stopPropagation(); void handleToggle(c.name, 'setup', p.id); }}
+                                          >
+                                            <RefreshCw size={11} />
+                                            <span>{t('clients.jetbrainsCaReimport')}</span>
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <span>
+                                          {t('clients.jetbrainsCa')}{' '}
+                                          {p.caTrusted === true ? t('clients.jetbrainsCaImported') : t('clients.jetbrainsCaUnknown')}
+                                        </span>
+                                      )}
                                     </span>
                                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                                       {p.junieVersion ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
                                       <span>{t('clients.jetbrainsJunie')} {p.junieVersion ?? t('clients.none')}</span>
                                     </span>
                                   </div>
+                                  {/* Backup is reversible state, not a metric: only its
+                                      ABSENCE under a live takeover is actionable — teardown
+                                      could no longer restore the operator's own file. */}
+                                  {p.hooked && !p.backupExists && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>
+                                      <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+                                      <span>{t('clients.backupMissingWarn')}</span>
+                                    </div>
+                                  )}
                                   <div style={{ display: 'flex', gap: '8px' }}>
                                     <button
                                       className={p.hooked ? 'btn btn-danger btn-sm' : 'btn btn-primary btn-sm'}
@@ -1928,16 +1959,19 @@ export const ClientsPage: React.FC = () => {
                           {c.artifacts?.map(renderArtifact)}
                         </div>
 
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                            <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {c.backupExists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                            <span>{t('clients.backupExists')} {c.backupExists ? t('clients.ready') : t('clients.none')}</span>
-                          </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                          {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                          <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
                         </div>
+                        {/* Same rule as the product rows: no backup metric, only the
+                            anomaly that makes teardown unrecoverable. Config-rewrite
+                            hooks only — launcher/service-env hooks never write a backup. */}
+                        {c.hookKind === 'config' && c.hooked && !c.backupExists && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>
+                            <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+                            <span>{t('clients.backupMissingWarn')}</span>
+                          </div>
+                        )}
                         {c.name === 'workbuddy' && (
                           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
                             {t('clients.workbuddyHint')}

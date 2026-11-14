@@ -249,8 +249,9 @@ describe('omp client adapter — hook, roles, teardown', () => {
       agentModels: { slow: 'anthropic/claude-x' },
       profile: { id: 'p1', bindings: { smol: 'flash' } },
     });
-    // A second setup rewrites the backups with the HOOKED file — teardown
-    // must still end clean (restore-then-strip).
+    // A second setup must NOT replace the snapshot: the backup keeps the
+    // pre-takeover file, so teardown restores the original roles instead of
+    // the first setup's OCR-written ones (restore-then-strip still runs).
     await adapter.setup({ port: 4001, models: { main: 'auto' } });
     expect(fs.existsSync(`${modelsPath}.ocr-meta.json`)).toBe(true);
 
@@ -261,12 +262,12 @@ describe('omp client adapter — hook, roles, teardown', () => {
     expect(models.providers['omnicell-router']).toBeUndefined();
     expect(models.providers.ollama.baseUrl).toBe('http://127.0.0.1:11434');
     const roles = readYml(rolesPath).modelRoles;
-    // Router-owned presets and the default claim are gone; the deliberate
-    // foreign survivor (slow) and the pre-existing vision pin stay.
-    for (const role of ['smol', 'tiny', 'commit', 'plan', 'designer', 'task', 'advisor', 'default']) {
+    // Teardown restores the pre-takeover roles: the OCR-written pins
+    // (router presets, the default claim, the console's direct `slow` pin)
+    // are gone, the pre-existing `vision` pin survives.
+    for (const role of ['smol', 'tiny', 'commit', 'plan', 'designer', 'task', 'advisor', 'default', 'slow']) {
       expect(roles[role]).toBeUndefined();
     }
-    expect(roles.slow).toBe('anthropic/claude-x');
     expect(roles.vision).toBe('google/gemini-3-pro');
     expect(fs.existsSync(`${modelsPath}.ocr-meta.json`)).toBe(false);
     expect((await adapter.getStatus()).hooked).toBe(false);

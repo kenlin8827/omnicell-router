@@ -125,8 +125,13 @@ export function safeWriteJson(filePath: string, data: any): void {
 }
 
 export function createBackup(filePath: string): string | null {
-  if (!fs.existsSync(filePath)) return null;
   const backupPath = `${filePath}.bak.ocr`;
+  // The FIRST snapshot is the operator's original: a re-setup (model change,
+  // port move, console re-apply) reads an already-hooked file, and recopying
+  // it would make teardown restore the hook itself. Keep the pristine copy —
+  // a client teardown restores it and then deletes it; the harness writers
+  // share this helper and keep it as their own pre-image.
+  if (!fs.existsSync(filePath) || fs.existsSync(backupPath)) return null;
   try {
     fs.copyFileSync(filePath, backupPath);
     return backupPath;
@@ -145,6 +150,12 @@ export function restoreBackup(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Setup-result fragment naming the snapshot — only when one actually exists. */
+export function describeBackup(filePath: string): string {
+  const backupPath = `${filePath}.bak.ocr`;
+  return fs.existsSync(backupPath) ? ` Backup at ${backupPath}` : '';
 }
 
 export interface ClientActionResult {

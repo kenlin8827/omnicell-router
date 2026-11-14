@@ -121,7 +121,8 @@ export interface ClientProductStatus {
   caTrusted: boolean | 'unknown';
   /** Installed ACP agent (Junie) version for this product's config root, if any. */
   junieVersion: string | null;
-  /** The files this product owns (settings, backup, per-product agents dir). */
+  /** The files this product owns (settings, per-product agents dir) — the
+   *  `.ocr-backup` snapshot is reversible state, never an artifact. */
   artifacts: ClientArtifact[];
 }
 

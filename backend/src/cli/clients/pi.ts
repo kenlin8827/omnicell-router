@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   safeReadJson,
   safeWriteJson,
@@ -441,7 +442,7 @@ export class PiClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `Pi configured to route via OCR (${targetUrl}, model: ${main}${ids.length > 1 ? ` +${ids.length - 1} extra` : ''}${contextWindow ? `, ctx=${contextWindow}` : ''}, key: ${apiKey === PI_FALLBACK_API_KEY ? 'placeholder' : 'set'}). Backup saved to ${configPath}.bak.ocr${subagentNote}`,
+      message: `Pi configured to route via OCR (${targetUrl}, model: ${main}${ids.length > 1 ? ` +${ids.length - 1} extra` : ''}${contextWindow ? `, ctx=${contextWindow}` : ''}, key: ${apiKey === PI_FALLBACK_API_KEY ? 'placeholder' : 'set'}).${describeBackup(configPath)}${subagentNote}`,
     };
   }
 
@@ -584,10 +585,11 @@ export class PiClientAdapter implements ClientAdapter {
       return { success: false, message: `Configuration file not found at ${configPath}${subagentNote}` };
     }
 
-    // Restore-then-strip: a backup from a re-setup (port change, console
-    // reset-models) contains the hooked file — restoring it alone would leave
-    // the client routed while teardown claims success. Stripping the provider
-    // key after any restore makes backup contamination harmless by design.
+    // Restore-then-strip: a snapshot written by an older build (a re-setup
+    // used to overwrite it with the already-hooked file) may hold the hook,
+    // and restoring it alone would leave the client routed while teardown
+    // claims success. Stripping the provider key after any restore keeps a
+    // legacy snapshot harmless.
     if (restoreBackup(configPath)) {
       const restored = safeReadJson(configPath);
       if (restored?.providers?.[PI_PROVIDER_KEY]) {

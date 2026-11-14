@@ -226,7 +226,7 @@ export class DshClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `dsh profile(s) [${names.join(', ')}] configured to route via OCR (${targetUrl}, model: ${main}${ids.length > 1 ? ` +${ids.length - 1} extra` : ''}${contextWindow ? `, ctx=${contextWindow}` : ''}, key: ${apiKey === DSH_FALLBACK_API_KEY ? 'placeholder' : 'set'}). Backups saved next to each ${PATCH_FILENAME}`,
+      message: `dsh profile(s) [${names.join(', ')}] configured to route via OCR (${targetUrl}, model: ${main}${ids.length > 1 ? ` +${ids.length - 1} extra` : ''}${contextWindow ? `, ctx=${contextWindow}` : ''}, key: ${apiKey === DSH_FALLBACK_API_KEY ? 'placeholder' : 'set'}).${dshBackupNote(parsed.keys())}`,
     };
   }
 
@@ -240,10 +240,11 @@ export class DshClientAdapter implements ClientAdapter {
     const untouched: string[] = [];
     const failed: string[] = [];
     for (const file of files) {
-      // Restore-then-strip: a backup from a re-setup (port change, console
-      // reset-models) contains the hooked file — restoring it alone would leave
-      // the client routed while teardown claims success. Stripping the provider
-      // key after any restore makes backup contamination harmless by design.
+      // Restore-then-strip: a snapshot written by an older build (a re-setup
+      // used to overwrite it with the already-hooked file) may hold the hook,
+      // and restoring it alone would leave the client routed while teardown
+      // claims success. Stripping the provider key after any restore keeps a
+      // legacy snapshot harmless.
       if (restoreBackup(file)) {
         const entries = asPatchEntries(fs.readFileSync(file, 'utf8'));
         if (entries) {
@@ -311,4 +312,16 @@ export class DshClientAdapter implements ClientAdapter {
       throw e;
     }
   }
+}
+
+/**
+ * Success-message suffix naming the snapshots that exist. A re-setup does not
+ * overwrite an existing snapshot (`createBackup` keeps the first one), so the
+ * note reports what is on disk, never what this call just wrote.
+ */
+function dshBackupNote(files: Iterable<string>): string {
+  const snapshots = [...files]
+    .map((file) => `${file}.bak.ocr`)
+    .filter((backup) => fs.existsSync(backup));
+  return snapshots.length ? ` Backups at ${snapshots.join(', ')}` : '';
 }

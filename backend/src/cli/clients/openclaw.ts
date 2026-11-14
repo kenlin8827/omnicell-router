@@ -5,6 +5,7 @@ import { applyEdits, modify, parse, type JSONPath, type ParseError } from 'jsonc
 import {
   ClientAdapter,
   restoreBackup,
+  describeBackup,
   defaultGatewayPort,
 } from './base.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
@@ -255,9 +256,7 @@ export class OpenClawClientAdapter implements ClientAdapter {
     patch(configPath, edits);
     writeMeta(configPath, { previousModel, previousUtility, previousDecision });
 
-    const backupNote = fs.existsSync(`${configPath}.bak.ocr`)
-      ? ` Backup saved to ${configPath}.bak.ocr`
-      : '';
+    const backupNote = describeBackup(configPath);
     return {
       success: true,
       message: `OpenClaw configured to route via OCR (${targetUrl}, ${ids.length} model entr${ids.length === 1 ? 'y' : 'ies'}, primary: ${primaryRef}).${backupNote}`,

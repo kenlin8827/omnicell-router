@@ -5,6 +5,7 @@ import TOML from '@iarna/toml';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   defaultGatewayPort,
   OCR_WATERMARK,
@@ -231,9 +232,7 @@ export class KimiClientAdapter implements ClientAdapter {
 
     this.writeToml(configPath, data);
 
-    const backupNote = fs.existsSync(`${configPath}.bak.ocr`)
-      ? ` Backup saved to ${configPath}.bak.ocr`
-      : '';
+    const backupNote = describeBackup(configPath);
     return {
       success: true,
       message: `Kimi CLI configured to route via OCR (${targetUrl}, ${1 + virtuals.length + extras.length} model entr${virtuals.length + extras.length === 0 ? 'y' : 'ies'}, default: ${KimiClientAdapter.MAIN_KEY}).${backupNote}`,

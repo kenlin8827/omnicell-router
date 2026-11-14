@@ -5,6 +5,7 @@ import { parse, parseDocument, isMap, isSeq, Document, YAMLMap } from 'yaml';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   defaultGatewayPort,
 } from './base.js';
@@ -497,7 +498,7 @@ export class OmpClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `omp configured to route via OCR (${targetUrl}, model: ${main}${ids.length > 1 ? ` +${ids.length - 1} extra` : ''}${contextWindow ? `, ctx=${contextWindow}` : ''}, key: ${apiKey === OMP_FALLBACK_API_KEY ? 'placeholder' : 'set'}). Backup saved to ${configPath}.bak.ocr${roleNote}`,
+      message: `omp configured to route via OCR (${targetUrl}, model: ${main}${ids.length > 1 ? ` +${ids.length - 1} extra` : ''}${contextWindow ? `, ctx=${contextWindow}` : ''}, key: ${apiKey === OMP_FALLBACK_API_KEY ? 'placeholder' : 'set'}).${describeBackup(configPath)}${roleNote}`,
     };
   }
 
@@ -615,10 +616,11 @@ export class OmpClientAdapter implements ClientAdapter {
       return { success: false, message: `Configuration file not found at ${configPath}${roleNote}` };
     }
 
-    // Restore-then-strip: a backup from a re-setup (port change, console
-    // reset-models) contains the hooked file — restoring it alone would leave
-    // the client routed while teardown claims success. Stripping the provider
-    // key after any restore makes backup contamination harmless by design.
+    // Restore-then-strip: a snapshot written by an older build (a re-setup
+    // used to overwrite it with the already-hooked file) may hold the hook,
+    // and restoring it alone would leave the client routed while teardown
+    // claims success. Stripping the provider key after any restore keeps a
+    // legacy snapshot harmless.
     if (restoreBackup(configPath)) {
       const restored = readYamlDocument(configPath);
       if (restored !== null) {
@@ -656,8 +658,9 @@ export class OmpClientAdapter implements ClientAdapter {
   /**
    * Remove router-owned modelRoles entries from config.yml (values qualified
    * with the `omnicell-router/` prefix). Restore-then-strip like models.yml:
-   * a backup written by a re-setup contains the pins, so restoring alone
-   * would leave them behind. The user's own roles survive; an emptied
+   * a legacy snapshot (older build, or a re-setup before `createBackup` kept
+   * the FIRST copy) may contain the pins, so restoring alone would leave them
+   * behind. The user's own roles survive; an emptied
    * modelRoles node is pruned, and a config.yml that ends up completely
    * empty (fresh-install case) is removed outright.
    */

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   safeReadJson,
   defaultGatewayPort,
@@ -203,7 +204,8 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     const apiKey = options?.apiKey?.trim() || undefined;
     const agentModels = options?.agentModels;
 
-    // 1. Safety backup (single rolling .bak.ocr, restorable via teardown)
+    // 1. Safety snapshot: ONE .bak.ocr of the pre-takeover file, restored by
+    //    teardown and never overwritten by a re-setup (see createBackup).
     if (fs.existsSync(configPath)) {
       createBackup(configPath);
     }
@@ -281,7 +283,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${hasAgentPayload ? `, agents: ${applied}` : ''}${profileNote}). Backup at ${configPath}.bak.ocr`,
+      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${hasAgentPayload ? `, agents: ${applied}` : ''}${profileNote}).${describeBackup(configPath)}`,
     };
   }
 

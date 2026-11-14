@@ -273,7 +273,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       agentModels: { general: 'lite', explore: 'glm-5.3' },
       profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max' } },
     });
-    // Force the surgical fallback path: drop the rolling backup.
+    // Force the surgical fallback path: drop the snapshot.
     fs.rmSync(`${configPath}.bak.ocr`, { force: true });
 
     const teardownRes = await adapter.teardown();
@@ -1041,7 +1041,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     adapter.getConfigPath = () => configPath;
 
     await adapter.setup({ port: 4000 });
-    await adapter.setup({ port: 8000 }); // re-setup: the backup now contains pinned overrides
+    // re-setup: settings.json only appeared during the first setup, so THIS call
+    // takes the first snapshot — of the pinned file (restore-then-strip finds it).
 
     expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides.oracle.model).toBe('omnicell-router/ultra');
 

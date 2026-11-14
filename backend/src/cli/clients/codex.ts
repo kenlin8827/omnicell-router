@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   safeReadJson,
   safeWriteJson,
@@ -90,7 +91,7 @@ export class CodexClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `Codex configured to route via OCR (${targetUrl}, model: ${data.model}). Backup saved to ${configPath}.bak.ocr`,
+      message: `Codex configured to route via OCR (${targetUrl}, model: ${data.model}).${describeBackup(configPath)}`,
     };
   }
 

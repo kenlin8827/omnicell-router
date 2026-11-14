@@ -1131,7 +1131,10 @@ export class JetBrainsProxyClientAdapter implements ClientAdapter {
       const artifacts: ClientArtifact[] = [];
       if (state.settingsFile) artifacts.push({ path: state.settingsFile, exists: state.exists });
       if (state.configDir) {
-        artifacts.push({ path: ideaBackupPath(state.configDir), exists: state.backupExists });
+        // The `.ocr-backup` snapshot is reversible state, not an owned artifact:
+        // listing it renders a file that may legitimately not exist yet (never
+        // hooked) as a missing file, and its absence under a live takeover is
+        // already reported by the console's warning line.
         artifacts.push({ path: path.join(acpAgentsDir(state.configDir), 'junie'), exists: !!junie });
       }
       facts.push({ state, caTrusted, junie: junie ? { version: junie.version } : null, artifacts });
