@@ -446,3 +446,16 @@ set — that shape predates `mode` and still asks for the core.
 > `proxy.mihomo`, the `mode: mihomo` literal stays, the admin routes stay
 > `/api/admin/proxy/mihomo/*`, and the binary keeps its upstream name so
 > download, lookup and PATH resolution are unchanged.
+
+> **Amendment — the page is the "Clash Panel", the core is still "Clash Core".**
+> The nav item, breadcrumb and page subnav label moved from "Clash Core" to the
+> "Clash Panel" (zh-CN 「Clash面板」). "Core" named one component, but the page
+> owns five sections — core lifecycle, subscriptions, nodes, rules and
+> connectivity — and in a code context it read as the gateway's own kernel.
+> "Console" was rejected because it is already this product's word for the whole
+> admin UI (and Clash's own dashboards use it for live traffic views, not
+> forms); "Management" duplicated the "Proxy Management" group above it. The
+> split stays deliberate: the status card, every error toast and the generated
+> `config.json` comments still call the running process the Clash core. The
+> i18n keys, the `/proxy-clash` route, the `proxy.mihomo` config key and the
+> binary name did not move.
