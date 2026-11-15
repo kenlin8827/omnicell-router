@@ -99,6 +99,23 @@ describe('groupIntoTurns — write-time turnIndex', () => {
     expect(turns[0].converged).toBe(false); // last hop carried no text answer
   });
 
+  it('converges on the FINAL hop, not on an earlier one that happens to close', () => {
+    const turns = groupIntoTurns([
+      step({
+        request: request(1, 'Q1'),
+        output: { text: '', reasoning: '', toolCalls: [{ id: 'call_1', name: 'read', args: '{}' }] },
+      }),
+      step({
+        request: request(1),
+        input: [msg('tool result', 'tool')],
+        output: { text: 'the answer', reasoning: '', toolCalls: [] },
+      }),
+    ]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].converged).toBe(true);
+    expect(turns[0].finalText).toBe('the answer');
+  });
+
   it('skips prompt-less requests (turnIndex: null) entirely', () => {
     const turns = groupIntoTurns([
       step({ request: request(null) }),

@@ -862,7 +862,7 @@ export interface TranscriptTurn {
   /** Tool results observed in later steps' inputs. */
   toolResultsSeen: number;
   finalToolCalls: TranscriptToolCall[];
-  /** Turn ended with a text answer and no pending tool calls. */
+  /** The turn's LAST step closed with a text answer and no pending tool call. */
   converged: boolean;
   startTs?: number;
   endTs?: number;
@@ -945,8 +945,14 @@ export function groupIntoTurns(items: TranscriptStep[]): TranscriptTurn[] {
       if (st.output.text) turn.finalText = st.output.text;
       if (st.output.reasoning) turn.finalReasoning = st.output.reasoning;
       turn.finalToolCalls = st.output.toolCalls;
-      turn.converged = st.output.toolCalls.length === 0 && st.output.text.length > 0;
     }
+    // `converged` describes the turn's TAIL, so it is RECOMPUTED on every step
+    // and only the last step's verdict survives. Keeping it sticky across a
+    // later hop would let an intermediate answer — text, no pending tool call,
+    // yet the turn kept going — be reported as the turn's outcome, and would
+    // also keep claiming an answer when the final hop's body was never parsed
+    // (truncated / unparsed / aborted) or failed outright.
+    turn.converged = !!st.output && st.output.toolCalls.length === 0 && st.output.text.length > 0;
   }
   return turns;
 }
