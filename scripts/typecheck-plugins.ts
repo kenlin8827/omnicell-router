@@ -1,5 +1,5 @@
 /**
- * Typecheck the dev-tree client-gateway plugin sources.
+ * Typecheck the dev-tree client-gateway / client-adapter plugin sources.
  *
  * Plugins live outside `backend/tsconfig.json` (they are separate repositories,
  * gitignored in this checkout), so `bun run typecheck` cannot see them. Bun only
@@ -32,10 +32,18 @@ for (const id of fs.readdirSync(path.join(root, 'plugins'))) {
   if (!fs.existsSync(path.join(dir, 'index.ts')) || !fs.existsSync(manifestPath)) continue;
   // Model-service plugins use a different host contract (and some live in
   // trees pinned to another checkout layout); this gate covers the inbound
-  // gateways whose types changed with ADR-0017.
+  // gateways (ADR-0017) and the Client Hub adapters (ADR-0027), whose types
+  // are the ones a packaged plugin most easily drifts from. A multi-part
+  // package (ADR-0028) qualifies when ANY of its parts is one of those.
   try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { type?: string };
-    if (manifest.type !== 'client-gateway') continue;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      type?: string;
+      parts?: { type?: string }[];
+    };
+    const types = new Set<string>();
+    if (manifest.type) types.add(manifest.type);
+    for (const part of manifest.parts ?? []) if (part?.type) types.add(part.type);
+    if (!types.has('client-gateway') && !types.has('client-adapter')) continue;
   } catch {
     continue;
   }

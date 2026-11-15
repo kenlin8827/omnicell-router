@@ -23,7 +23,7 @@ import type { HarnessHostId } from '../harness/types.js';
  *    the other vendor IDEs between Grok and Qoder by judgment, not measurement.
  *
  * Aliases share their product's row (`cursor-proxy` = Cursor,
- * `opencode-proxy` = OpenCode, `qoder-proxy` = Qoder). `universal` is not a
+ * `opencode-gateway` = OpenCode proxy mode, `qoder-proxy` = Qoder). `universal` is not a
  * product and is deliberately absent — the rail pins it first by id. A runtime
  * absent here sorts after every ranked one (the host catalog breaks the tie).
  */
@@ -36,7 +36,7 @@ const POPULARITY_ROWS: readonly (readonly RankedRuntimeId[])[] = [
   ['antigravity'],
   ['zed'],
   ['dsh'],
-  ['opencode', 'opencode-proxy'],
+  ['opencode', 'opencode-gateway'],
   ['pi'],
   ['openclaw'],
   ['gemini-cli'],

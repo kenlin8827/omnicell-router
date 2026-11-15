@@ -94,29 +94,16 @@ function sameModelSelection(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
 }
 
-/** Proxy clients whose model surface is owned by a client-gateway plugin. */
-const GATEWAY_PLUGIN_BY_CLIENT: Record<string, string> = {
-  'cursor-proxy': 'cursor-gateway',
-  'qoder-proxy': 'qoder-gateway',
-  // NO jetbrains-gateway entry: that plugin is a relay-only observer with no
-  // model catalog, and this map drives the catalog editor — pointing IDEA at it
-  // would render an empty models form for a plugin that does not own one.
-};
-
 /**
- * The `ocr` launch verb per launcher client — the actionable start command
- * once a launcher is ready. Declared once here (not in i18n): the command IS
- * the product surface and must never drift from the CLI's passthrough verbs
- * (`ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli`).
+ * The `ocr <verb>` launch commands a hook publishes (`ClientHookStatus.launch`).
+ * The FIRST verb is the primary start command, the rest are alternates. No
+ * table here: a packaged hook's verbs (`cursor`, `qoder-cli`, …) arrive with
+ * its status row, exactly like a built-in hook's.
  */
-const LAUNCH_COMMANDS: Record<string, { primary: string; alt: string }> = {
-  'cursor-proxy': { primary: 'ocr cursor', alt: 'ocr cursor-agent' },
-  'qoder-proxy': { primary: 'ocr qoder', alt: 'ocr qoder-cli' },
-};
-
-const CLIENT_BY_GATEWAY_PLUGIN: Record<string, string> = Object.fromEntries(
-  Object.entries(GATEWAY_PLUGIN_BY_CLIENT).map(([client, plugin]) => [plugin, client]),
-);
+const launchCommandsOf = (c: ClientStatus): { primary: string; alt?: string } | null =>
+  c.launch?.length
+    ? { primary: `ocr ${c.launch[0]}`, ...(c.launch[1] ? { alt: `ocr ${c.launch[1]}` } : {}) }
+    : null;
 
 interface GatewayPluginState {
   installed: boolean;
@@ -310,7 +297,13 @@ export const ClientsPage: React.FC = () => {
       opencodeApi.listPlugins()
         .then((res) => {
           const next: Record<string, GatewayPluginState> = {};
-          for (const id of new Set(Object.values(GATEWAY_PLUGIN_BY_CLIENT))) {
+          // Which packages own a client's model surface is DECLARED by the
+          // hooks themselves (`catalogPlugin`), so this refresh covers every
+          // gateway-backed client without naming one.
+          const catalogIds = new Set(
+            (data.clients || []).map((c) => c.catalogPlugin).filter((id): id is string => !!id),
+          );
+          for (const id of catalogIds) {
             const plugin = (res.plugins || []).find((p) => p.id === id);
             next[id] = {
               installed: !!plugin,
@@ -363,7 +356,7 @@ export const ClientsPage: React.FC = () => {
     api.getProxyCaTrust().then(setCaTrust).catch(() => {});
   }, []);
 
-  const expandedPluginId = expanded ? GATEWAY_PLUGIN_BY_CLIENT[expanded] : undefined;
+  const expandedPluginId = expanded ? clients.find((c) => c.name === expanded)?.catalogPlugin : undefined;
 
   // A gateway client's model surface is plugin config, not the launcher
   // adapter. Load it only when the card is opened AND the plugin is loaded; a
@@ -395,7 +388,7 @@ export const ClientsPage: React.FC = () => {
     const pending = new Set<string>();
     for (const [pluginId, draft] of Object.entries(gatewayCfg)) {
       if (draft.modelListMode !== 'follow') continue;
-      const clientName = CLIENT_BY_GATEWAY_PLUGIN[pluginId];
+      const clientName = clients.find((c) => c.catalogPlugin === pluginId)?.name ?? '';
       const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
       if (picked && !keyModels[picked.id]) pending.add(picked.id);
     }
@@ -413,7 +406,7 @@ export const ClientsPage: React.FC = () => {
     if (!expandedPluginId) return;
     const parsed = gatewayCfg[expandedPluginId];
     if (!parsed?.boundKeyId) return;
-    const clientName = CLIENT_BY_GATEWAY_PLUGIN[expandedPluginId];
+    const clientName = clients.find((c) => c.catalogPlugin === expandedPluginId)?.name ?? '';
     const bound = apiKeys.find((k) => k.id === parsed.boundKeyId);
     if (!bound) return;
     setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.key }));
@@ -445,7 +438,7 @@ export const ClientsPage: React.FC = () => {
     // Every OCR-routed completion is charged to this key (ADR-0017): limits,
     // model access and usage attribution all hang on it, so the card cannot
     // save an unbound gateway.
-    const clientName = CLIENT_BY_GATEWAY_PLUGIN[pluginId];
+    const clientName = clients.find((c) => c.catalogPlugin === pluginId)?.name ?? '';
     const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
     if (!picked) {
       toast.error(t('clients.apiKeyRequired'));
@@ -540,7 +533,7 @@ export const ClientsPage: React.FC = () => {
     setApiKeySel(prev => {
       const next = { ...prev };
       for (const c of clients) {
-        if (next[c.name] !== undefined || GATEWAY_PLUGIN_BY_CLIENT[c.name]) continue;
+        if (next[c.name] !== undefined || c.catalogPlugin) continue;
         const id = mem[c.name]?.apiKeyId;
         const k = id ? apiKeys.find(x => x.id === id) : undefined;
         if (k) next[c.name] = k.key;
@@ -770,7 +763,7 @@ export const ClientsPage: React.FC = () => {
       // or the hook lands with the plugin still on its old list (the classic
       // "picked follow, still only auto + tiers" report). The explicit Save
       // button keeps the same contract; this only mirrors it.
-      const gatewayPluginId = GATEWAY_PLUGIN_BY_CLIENT[clientName];
+      const gatewayPluginId = clients.find((c) => c.name === clientName)?.catalogPlugin;
       if (action === 'setup' && gatewayPluginId) {
         // Every OCR-routed turn is charged to the bound key; a takeover without
         // one produces a hooked client that 401s on every OCR model. Refuse it
@@ -845,7 +838,7 @@ export const ClientsPage: React.FC = () => {
       // Proxy-mode notices are backend prose — show a localized one-liner instead
       // (the long hints live in the expanded card).
       setActionNotice(
-        clientName === 'opencode-proxy'
+        clientName === 'opencode-gateway'
           ? t(action === 'setup' ? 'clients.proxySetupOk' : 'clients.proxyTeardownOk')
           : clientName === 'cursor-proxy'
             ? t(action === 'setup' ? 'clients.cursorSetupOk' : 'clients.cursorTeardownOk')
@@ -1250,7 +1243,7 @@ export const ClientsPage: React.FC = () => {
    *  (mode / snapshot / replace / default / force), while the Plugins drawer
    *  holds the protocol/runtime keys. Same contract for every gateway client. */
   const renderGatewayCatalog = (c: ClientStatus) => {
-    const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
+    const pluginId = c.catalogPlugin;
     if (!pluginId) return null;
     const plugin = gatewayPlugins[pluginId];
     const draft = gatewayCfg[pluginId];
@@ -1532,7 +1525,7 @@ export const ClientsPage: React.FC = () => {
    */
   const renderLaunchCommands = (c: ClientStatus) => {
     if (!c.hooked || c.hookKind !== 'launcher') return null;
-    const cmds = LAUNCH_COMMANDS[c.name];
+    const cmds = launchCommandsOf(c);
     if (!cmds) return null;
     const copy = (text: string) =>
       copyToClipboard(text).then((ok) =>
@@ -1569,7 +1562,7 @@ export const ClientsPage: React.FC = () => {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, max-content)', columnGap: '10px', rowGap: '8px', alignItems: 'center' }}>
           {row(t('clients.launchCmdDesktop'), cmds.primary)}
-          {row(t('clients.launchCmdAlt'), cmds.alt)}
+          {cmds.alt ? row(t('clients.launchCmdAlt'), cmds.alt) : null}
         </div>
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
           {t('clients.launchCmdQuit', { client: c.displayName })}
@@ -1583,7 +1576,7 @@ export const ClientsPage: React.FC = () => {
     // A proxy client's launcher only exists to feed its gateway plugin.
     // Hooking without a loaded plugin would proxy every request transparently
     // while the UI claims OCR is active — block the setup, never the teardown.
-    const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
+    const pluginId = c.catalogPlugin;
     const gatewayPlugin = pluginId ? gatewayPlugins[pluginId] : undefined;
     const pluginBlocked = !!pluginId && gatewayPlugin !== undefined && !gatewayPlugin.loaded;
     // A launcher hook only publishes a start script — no client state is taken
@@ -1751,8 +1744,8 @@ export const ClientsPage: React.FC = () => {
                     style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: open ? 'rotate(180deg)' : 'none' }}
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>
-                    <BrandIcon name={c.name === 'jetbrains-proxy' ? 'jetbrains' : c.name.replace(/-proxy$/, '')} size={18} />
-                    {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
+                    <BrandIcon name={c.icon ?? c.name} size={18} />
+                    {c.shortName ?? c.displayName}
                   </span>
                   {c.products?.length ? (
                     // A family card has no single config file to show — the paths
@@ -1777,16 +1770,16 @@ export const ClientsPage: React.FC = () => {
                       worth seeing without expanding — a plain double-click of
                       the app would silently stay un-proxied. Clicking the chip
                       copies; the row's own click (expand) is stopped. */}
-                  {!open && c.hooked && c.hookKind === 'launcher' && LAUNCH_COMMANDS[c.name] && (
+                  {!open && c.hooked && c.hookKind === 'launcher' && launchCommandsOf(c) && (
                     <code
                       role="button"
                       tabIndex={0}
                       title={t('clients.manualCopied')}
-                      onClick={e => { e.stopPropagation(); void copyToClipboard(LAUNCH_COMMANDS[c.name].primary).then((ok) => ok && toast.success(t('clients.manualCopied'))); }}
-                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void copyToClipboard(LAUNCH_COMMANDS[c.name].primary).then((ok) => ok && toast.success(t('clients.manualCopied'))); } }}
+                      onClick={e => { e.stopPropagation(); void copyToClipboard(launchCommandsOf(c)?.primary ?? '').then((ok) => ok && toast.success(t('clients.manualCopied'))); }}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void copyToClipboard(launchCommandsOf(c)?.primary ?? '').then((ok) => ok && toast.success(t('clients.manualCopied'))); } }}
                       style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', padding: '3px 8px', cursor: 'copy' }}
                     >
-                      {LAUNCH_COMMANDS[c.name].primary}
+                      {launchCommandsOf(c)?.primary}
                     </code>
                   )}
                   {c.hooked ? (
@@ -1848,7 +1841,7 @@ export const ClientsPage: React.FC = () => {
                                   style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: panelOpen ? 'rotate(180deg)' : 'none' }}
                                 />
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)' }}>
-                                  <BrandIcon name={p.id === 'intellij-idea' ? 'idea' : p.id} size={16} />
+                                  <BrandIcon name={p.icon ?? p.id} size={16} />
                                   {p.displayName}
                                 </span>
                                 {p.version && (

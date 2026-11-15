@@ -38,6 +38,14 @@ describe('plugin package zip-slip guard', () => {
       assert.equal(existsSync(join(pluginsRoot(), 'evil.txt')), false);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
+      // Symmetric with the contained-entry case below: the package and its
+      // unpacked copy are the suite's OWN artifacts, so they must not outlive
+      // the run. Without this the junk row survives in whatever OCR_HOME the
+      // file ran against — a real one when the file is run outside the
+      // isolated runner (`bun tests/...`), which is exactly the pollution the
+      // runner exists to prevent.
+      rmSync(join(pluginsRoot(), 'slippery.zip'), { force: true });
+      rmSync(join(pluginsRoot(), 'unpacked', 'slippery'), { recursive: true, force: true });
     }
   });
 

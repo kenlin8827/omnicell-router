@@ -103,3 +103,21 @@ A gateway uses the mechanism for its whole operator surface — capture, the mod
 - The Bun http2 server-side quirk (unreliable `alpnProtocol` at terminator callback time) is encoded as the preface-sniff rule — do not "simplify" back to ALPN-only routing. Same family of quirks, same rule: ALPN ORDER is a server-preference decision (verified, not assumed), and the h2 compat IncomingMessage drops chunks emitted while nobody listens — so an h2 body's head must be captured synchronously, before the first await.
 - Boundaries: Tab completion, codebase indexing and login traffic are NOT intercepted (non-claimed hosts / relayed paths — Cursor keeps working against its real backend for those); the gateway carries no `x-cursor-checksum` obligations (it is the server, not the client); personal use, own machine, own account.
 - No new config.yaml section: gateway lifecycle state lives with the plugin artifacts (disabled.json / registrations.json precedent, ADR-0016 posture untouched); operator-set plugin values live in `<pluginsRoot()>/config/<id>.json`, never in schema.
+
+> **Amendment — the family is every product Junie's IDE plugin loads in.**
+> `JETBRAINS_PRODUCTS` grew from the IDEA + GoLand pair this record shipped with
+> to every IntelliJ-platform product Junie's IDE plugin supports: PyCharm,
+> WebStorm, PhpStorm, CLion, Rider, RubyMine, RustRover, DataGrip and Android
+> Studio. A product the agent cannot run in would be a row that hands out a proxy
+> and then silently no agent, so Junie's documented support list — not the
+> vendor's catalogue — is the scope rule. Two per-product fields keep Android
+> Studio ONE row instead of a second adapter: `dataRoot` (its config roots live
+> under `%APPDATA%\Google`, not `JetBrains`) and `winRoots` (its install lives
+> under `%ProgramFiles%\Android`, outside the JetBrains defaults); everything
+> inside the product is still the shared IntelliJ-platform layout, and no
+> product-shaped branch exists outside the table. `junieMin` records the agent's
+> documented version floor per product — advisory only, surfaced in the status
+> details line, never a hook refusal, because the proxy takeover itself is
+> version-independent. Table order is contract: `intellij-idea` and `goland`
+> stay at indexes 0 and 1 (default parameters and test fixtures read those
+> slots), so new rows are appended, never re-sorted.

@@ -44,7 +44,7 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
-import { listGatewayHosts } from '../plugins/gateways.js';
+import { listGatewayHosts, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
 import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
@@ -1697,12 +1697,18 @@ export function registerConsoleRoutes(
     const intercept = body.intercept === 'all' || body.intercept === 'claims'
       ? body.intercept
       : live?.forwardProxy?.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT;
-    const claimed = [...listGatewayHosts()].sort();
+    // A wildcard gateway claims EVERY host through `match()`, so a literal `'*'`
+    // in this list would print as a host name. The set is exact claims only;
+    // the wildcard's own attribution stays visible through `claimSources`.
+    const claimed = [...listGatewayHosts()].filter((h) => h !== WILDCARD_HOST_CLAIM).sort();
     // Per-plugin attribution for the console's "decrypted without a rule" list:
     // the SAME live registry `listGatewayHosts()` unions, so the two can never
     // disagree — one is the host set, the other says who claimed it.
     const claimSources = [...listGateways().entries()]
-      .map(([pluginId, gw]) => ({ pluginId, hosts: [...new Set(gw.hosts)].sort() }))
+      .map(([pluginId, gw]) => ({
+        pluginId,
+        hosts: [...new Set(gw.hosts.filter((h) => h !== WILDCARD_HOST_CLAIM))].sort(),
+      }))
       .filter((s) => s.hosts.length > 0)
       .sort((a, b) => a.pluginId.localeCompare(b.pluginId));
     const host = typeof body.host === 'string' ? body.host.trim() : '';
@@ -1916,7 +1922,7 @@ export function registerConsoleRoutes(
       virtualModels?: string[];
       agentModels?: Record<string, string>;
       profile?: { id?: string; bindings?: Record<string, string> };
-      /** Family adapters: act on ONE product (`intellij-idea`, `goland`) instead of all. */
+      /** Family adapters: act on ONE product (`intellij-idea`, `goland`, …) instead of all. */
       product?: string;
     };
     const cleaned = models && typeof models === 'object'
@@ -4938,7 +4944,7 @@ export function registerConsoleRoutes(
         } catch {
           // unreadable upload: installPluginPackage below reports it properly
         }
-        const { id: installed } = installPluginPackage(new Uint8Array(bytes));
+        const { id: installed, version: installedVersion, replacedVersion } = installPluginPackage(new Uint8Array(bytes));
         const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
         await loadInstalledPlugins();
         const plugins = listInstalledPlugins();
@@ -4952,7 +4958,10 @@ export function registerConsoleRoutes(
           // Roll BACK to the version that was working until this upload, so a
           // bad upgrade is a no-op instead of a lost plugin.
           if (previous) {
-            installPluginPackage(previous);
+            // A ROLLBACK is the one legitimate downgrade: the caller did not
+            // ask for it, the loader did — the version guard exists for
+            // uploads, and it must not block the recovery path.
+            installPluginPackage(previous, { allowDowngrade: true });
             await loadInstalledPlugins();
             return reply.code(422).send({
               status: 'error',
@@ -4973,7 +4982,7 @@ export function registerConsoleRoutes(
         // fresh defs are routable immediately
         const registered = await syncPluginPresets();
         await refreshDirectPool(registry);
-        return { status: 'ok', id: installed, plugins, registered };
+        return { status: 'ok', id: installed, version: installedVersion, replacedVersion, plugins, registered };
       } catch (err) {
         return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
       }

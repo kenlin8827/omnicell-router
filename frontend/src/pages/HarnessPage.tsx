@@ -1670,7 +1670,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   );
 
   /** The hosts the ONE-CLICK integration covers — a frontend mirror of the
-   *  harness host set, not the client ids (`opencode-proxy` folds to `opencode`).
+   *  harness host set, not the client ids (`opencode-gateway` folds to `opencode`).
    *  Hosts OUTSIDE this set are never admitted by default, however installed they are. */
   const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true, openclaw: true };
 

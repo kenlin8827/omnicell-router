@@ -30,9 +30,9 @@ export const chatSurface: ChatSurface = {
   },
 
   encodeJson(result: ExecutionResult): unknown {
-    // Direct-forward turns never reach the encoders (chat-pipeline
-    // short-circuits to relayUpstream) — the non-null assertion is the
-    // ExecutionResult contract for encode-reachable results.
+    // Every turn that reaches an encoder came out of the pipeline with a
+    // response; the field is optional only for transports that relay an
+    // origin answer verbatim (gateway plugins), which never call this.
     return result.response!;
   },
 

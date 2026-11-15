@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { KimiClientAdapter } from '../src/cli/clients/kimi.js';
+import { getAllClientAdapters } from '../src/cli/clients/index.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1345,7 +1346,10 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(14);
+    // The roster is core hooks + installed package hooks (ADR-0027/0030), so a
+    // frozen count would re-break whenever a hook moves or a package loads:
+    // the endpoint's contract is "every registered adapter is reported".
+    expect(json.clients.length).toBe(getAllClientAdapters().length);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

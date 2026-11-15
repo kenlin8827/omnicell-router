@@ -11,7 +11,7 @@
 
 ## 背景
 
-网关与十三个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`、`workbuddy`、`cursor-proxy`、`qoder-proxy`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器让运行时的请求流经网关（改写配置、设置服务环境，或生成代理启动器），到此为止。
+网关与十三个运行时（`SupportedClient`：`opencode`、`opencode-gateway`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`、`workbuddy`、`cursor-proxy`、`qoder-proxy`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器让运行时的请求流经网关（改写配置、设置服务环境，或生成代理启动器），到此为止。
 
 运行时还能获得的东西——**技能**（指令目录）、**MCP 服务**（工具后端）、**插件**（运行时插件/包）——过去只能由各家 CLI 装进各自目录，网关里没有任何记录。三个后果：
 
@@ -31,7 +31,7 @@
 | harness | 该运行时作为**制品宿主**看的那一面（技能 / MCP / 插件） | `<ocrHome>/harness/` |
 | artifact | 某一类的一个可安装单元 | manifest 记录 + 物化副本 |
 
-`opencode-proxy` 是同一运行时的**挂载模式**，不是第二个宿主：harness 域只有一个 `opencode` 目标。`cursor-proxy`（宿主 `cursor`）与 `qoder-proxy`（尚无宿主）同理。harness 状态永不进入路由真相链、永不触碰凭证（ADR-0006）、永不读取 provider 定义（ADR-0010）。
+`opencode-gateway` 是同一运行时的**挂载模式**，不是第二个宿主：harness 域只有一个 `opencode` 目标。`cursor-proxy`（宿主 `cursor`）与 `qoder-proxy`（尚无宿主）同理。harness 状态永不进入路由真相链、永不触碰凭证（ADR-0006）、永不读取 provider 定义（ADR-0010）。
 
 ### D2 — 宿主落点写在每宿主一个的适配器里
 

@@ -11,7 +11,7 @@ import { createForwardProxyServer, type ForwardProxyHandle } from './server.js';
 import { createProxyInterceptor } from './interceptor.js';
 import { setGatewayChatServices, buildGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { setProxyAccessLogSettingsReader, setProxyAccessLogPersistDir, initProxyAccessLogPersistence } from './access-log.js';
-import { listGatewayHosts } from '../plugins/gateways.js';
+import { listGatewayHosts, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
 import { setUpstreamTlsReader } from './upstream-tls.js';
 
 /** Literal loopback bind/listen address — 0.0.0.0/:: count as exposed. */
@@ -159,12 +159,20 @@ export async function startForwardProxy(
   // Revision 4), so they belong in the boot log next to the table summary.
   const rules = cfg.rules || [];
   const posture = cfg.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT;
-  const claimedCount = listGatewayHosts().size;
+  // A wildcard gateway claims every host through `match()`; it is reported as a
+  // posture of its own rather than counted as one host name.
+  const claimedHosts = listGatewayHosts();
+  const wildcard = claimedHosts.has(WILDCARD_HOST_CLAIM);
+  const claimedCount = wildcard ? claimedHosts.size - 1 : claimedHosts.size;
   const catchAll = rules.find((r) => r.match === '*');
   console.log(
     `[ForwardProxy] rules: ${rules.length} rule(s) (${rules.filter((r) => r.ingress === 'passthrough').length} blind-tunnel), ` +
       `${catchAll ? 'catch-all present' : 'NO catch-all → unmatched hosts go DIRECT'}, ` +
-      `intercept: ${posture} (${posture === 'all' ? 'EVERY host decrypted' : `${claimedCount} claimed host(s) + explicit intercept rows decrypted`})`
+      `intercept: ${posture} (${
+        posture === 'all'
+          ? 'EVERY host decrypted'
+          : `${claimedCount} claimed host(s)${wildcard ? ' + a wildcard gateway' : ''} + explicit intercept rows decrypted`
+      })`
   );
   if (catchAll?.ingress === 'intercept' && posture !== 'all') {
     console.warn(

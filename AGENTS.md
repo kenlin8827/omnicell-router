@@ -16,6 +16,25 @@ Before touching observation-scope vocabulary — the `session` / `turn` / `reque
 - `bun run build` — full build (`tsc -p backend && vite build frontend`); `bun run build:frontend` for frontend only.
 - `bun run test` — backend suite via the isolated runner (each file runs as its own process with `OCR_HOME` pointed at a sandbox). Never run `bun test backend/tests` directly — the single-process built-in runner produces ~26 phantom failures from shared-config contamination.
 
+## Plugin ids — the suffix names the HALF, never the vendor
+
+A plugin id is a path component (`<pluginsRoot>/<id>.zip`, `unpacked/<id>/`, `plugins/<id>/`) and the
+packager REFUSES a manifest whose id differs from its directory name, so the two always move together.
+Two plugins of the same vendor are two different halves of the same product, and the id says which:
+
+- `-gateway` — the INBOUND half: claims the vendor's SNI hosts on the forward proxy (ADR-0017).
+- `-models` — the OUTBOUND half: a model-service executor giving OCR the vendor's models
+  (transport, credential chain, catalog, quota).
+
+A bare vendor name is therefore never a correct id: `qoder` says nothing about which half it is and
+reads as the canonical plugin with the other one derived from it, while the two are peers. Suffixes
+name direction, not capability — `-provider` / `-direct` / `-native` / `-wire` were all rejected
+because they name a credential mode, a core-internal namespace, or one method of the SDK. The WIRE id
+inside `wires: []` is not the plugin id and is never renamed with it (`wires: ["qoder"]` on plugin
+`qoder-models`): wire ids are core protocol vocabulary, and a plugin is only how one gets executed.
+Artifacts that hold operator state keep their vendor-name spelling across a plugin rename
+(`<ocrHome>/plugins/workbuddy-auth.json`) — renaming one would silently orphan a live login.
+
 ## Language — code comments are always English
 
 Source comments (`//`, `/* */`, JSDoc), identifiers, log messages: English only. Chinese is correct **only** in product content:

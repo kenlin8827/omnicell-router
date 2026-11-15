@@ -69,7 +69,46 @@ if (files.length === 0) {
 // default env and write into it. Naming the sandbox env `itest` — a name that
 // exists in no real home — turns any such leak into an immediate boot error.
 const SANDBOX_ENV = 'itest';
-const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-test-iso-'));
+/** Directory-name prefix of every runner-owned sandbox — the ONLY thing the
+ *  failure-retention sweep below is allowed to touch. */
+const SANDBOX_PREFIX = 'ocr-test-iso-';
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), SANDBOX_PREFIX));
+
+/** How many FAILED-run sandboxes to keep, this run's included. A kept sandbox
+ *  is the only record of what a red file printed, so the newest few survive —
+ *  but an uncapped policy leaves one full OCR home per red run in the OS temp
+ *  root forever (this repo had accumulated hundreds). Pruning is scoped to
+ *  paths that are both inside os.tmpdir() and named with SANDBOX_PREFIX. */
+const KEEP_FAILED_SANDBOXES = 5;
+
+function pruneOldSandboxes(current: string): void {
+  const root = os.tmpdir();
+  let siblings: { dir: string; mtime: number }[];
+  try {
+    siblings = fs
+      .readdirSync(root)
+      .filter((name) => name.startsWith(SANDBOX_PREFIX))
+      .flatMap((name) => {
+        const dir = path.join(root, name);
+        if (dir === current) return [];
+        try {
+          return [{ dir, mtime: fs.statSync(dir).mtimeMs }];
+        } catch {
+          return [];
+        }
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch {
+    return;
+  }
+  for (const stale of siblings.slice(KEEP_FAILED_SANDBOXES - 1)) {
+    try {
+      fs.rmSync(stale.dir, { recursive: true, force: true });
+    } catch {
+      /* best effort — a locked sandbox is still better than an aborted prune */
+    }
+  }
+}
 
 /**
  * One PRISTINE sandbox per test file.
@@ -118,15 +157,35 @@ function sandboxEnvFor(tag: string): Record<string, string | undefined> {
   // every run. OCR_CA_DIR pins the default into this file's sandbox.
   const caDir = path.join(dir, 'forward-proxy');
   fs.mkdirSync(caDir, { recursive: true });
+  // Temp is the one machine-wide knob every suite was still leaking through:
+  // tests — and two production helpers (`kimi-web` staging, `pack` outdir) —
+  // mint `ocr-*` dirs with mkdtempSync under os.tmpdir(), and essentially none
+  // of them removes one. Pinned here, that debris lands inside this file's
+  // sandbox, so the runner's existing teardown (delete on green, keep on red)
+  // IS the cleanup. Node resolves os.tmpdir() from TEMP/TMP on Windows and
+  // TMPDIR elsewhere, so all three are set.
+  const tmpDir = path.join(dir, 'tmp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+  // The app-owned plugin tier is SEEDED from the build artifacts on every
+  // plugin-host rebuild (ADR-0029). Left at its default, every test that loads
+  // plugins would copy whatever this checkout's `.plugin-dist/` happens to hold
+  // — a local build output — into the sandbox, so the suite would pass or fail
+  // by machine. Pinned to a path that does not exist: seeding is a no-op, and a
+  // test that wants it sets this var to its own artifacts (plugin-upgrade.ts).
+  const bundledSrc = path.join(dir, 'plugin-artifacts');
   const env: Record<string, string | undefined> = {
     ...process.env,
     OCR_HOME: ocrHome,
     OCR_ENV: SANDBOX_ENV,
     OCR_CA_DIR: caDir,
+    OCR_BUNDLED_PLUGIN_SRC: bundledSrc,
     XDG_CONFIG_HOME: xdgConfig,
     XDG_DATA_HOME: xdgData,
     OPENCLAW_STATE_DIR: openclawState,
     OPENCLAW_CONFIG_PATH: path.join(openclawState, 'openclaw.json'),
+    TMP: tmpDir,
+    TEMP: tmpDir,
+    TMPDIR: tmpDir,
   };
   // opencode v2 service discovery (connector/OpencodeV2Store) must be inert in
   // the sandbox: DELIBERATELY UNSET (not ''), or a test hitting the connector
@@ -269,6 +328,8 @@ try {
     } catch {
       /* best effort */
     }
+  } else {
+    pruneOldSandboxes(sandbox);
   }
 }
 

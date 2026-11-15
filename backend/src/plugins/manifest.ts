@@ -10,6 +10,8 @@
  * extension point is claimed SNI hosts; the runtime view reads `wires ?? []`),
  * every other shape rule holds for both plugin types.
  */
+import type { PluginManifest, PluginPart, PluginType } from './types.js';
+
 /** Contract version the CURRENT host implements. v1 is the FIRST plugin
  *  mechanism: there is no legacy or forward compatibility — a package must
  *  declare EXACTLY this value, anything else is an illegal package (ADR-0017
@@ -27,6 +29,28 @@ export function assertSupportedPluginApi(apiVersion: number): void {
   }
 }
 
+/** The three extension axes (ADR-0017 / ADR-0027), in the order a console row
+ *  prefers to label them: a package that is both an ingress hook and a traffic
+ *  owner reads as a client adapter first, because that is the half the operator
+ *  enables and sees in the Client Hub. */
+export const PLUGIN_TYPES: readonly PluginType[] = ['client-adapter', 'client-gateway', 'model-service'];
+
+export function isPluginType(value: unknown): value is PluginType {
+  return typeof value === 'string' && (PLUGIN_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * The axes a package actually occupies. One place turns BOTH manifest
+ * spellings into the same list, so the loader, the console row, the packager
+ * and the typecheck gate never each re-derive "type or parts?" (ADR-0028).
+ * Assumes a validated manifest.
+ */
+export function normalizePluginParts(manifest: PluginManifest): PluginPart[] {
+  if (Array.isArray(manifest.parts) && manifest.parts.length > 0) return manifest.parts;
+  if (!isPluginType(manifest.type)) return [];
+  return [{ type: manifest.type, wires: manifest.wires, hosts: manifest.hosts }];
+}
+
 /** A plugin id is a PATH COMPONENT — `<pluginsRoot>/<id>.zip`,
  *  `<pluginsRoot>/unpacked/<id>/`, `<pluginsRoot>/bundled/<id>.zip` — so the
  *  manifest id is a slug: lowercase alphanumerics and dashes, starting
@@ -39,6 +63,18 @@ const PLUGIN_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 export function isValidPluginId(id: unknown): id is string {
   return typeof id === 'string' && PLUGIN_ID.test(id);
+}
+
+/**
+ * A wildcard gateway answers for EVERY host through `match()`, so an exact host
+ * in the same list could never be consulted: once the wildcard's `match()`
+ * accepts, no later row is asked. The mix is a claim its author cannot mean, so
+ * it fails at the manifest instead of silently dropping the exact entries.
+ */
+function wildcardExclusive(hosts: unknown[], where: string, fail: (msg: string) => never): void {
+  if (hosts.length > 1 && hosts.some((h) => String(h) === '*')) {
+    fail(`${where} mixes '*' with exact hosts — a wildcard gateway answers for every host, so its own exact claims can never be reached`);
+  }
 }
 
 export function validatePluginManifest(manifest: unknown, label: string): void {
@@ -56,23 +92,72 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   if (typeof m.apiVersion !== 'number' || !Number.isInteger(m.apiVersion) || m.apiVersion < 1) {
     fail('apiVersion must be a positive integer (the plugin contract version, currently 1)');
   }
-  if (m.type !== 'model-service' && m.type !== 'client-gateway') {
-    fail(`unknown plugin type '${String(m.type)}'`);
+  // --- Extension axes: `type` (exactly one) or `parts` (any subset) -------
+  // ADR-0028: the axes are independent capabilities, so the manifest states
+  // which slots a package fills. Both spellings are accepted, never together:
+  // a manifest that names its axes twice has two truths to drift apart.
+  const stringArray = (value: unknown, label: string): void => {
+    if (!Array.isArray(value) || !value.every((v) => typeof v === 'string' && v.trim())) {
+      fail(`${label} must be a non-empty-string array`);
+    }
+  };
+  if (m.type === undefined && m.parts === undefined) {
+    fail('needs `type` (one axis) or `parts` (the axes this package occupies)');
   }
-  // wires is model-service's wire list and stays EMPTY/absent for a
-  // client-gateway — the two types are separate extension axes, so neither is
-  // validated with the other's rule.
-  if (m.wires !== undefined && (!Array.isArray(m.wires) || !m.wires.every((w) => typeof w === 'string' && w))) {
-    fail('wires must be a string array');
+  if (m.type !== undefined && m.parts !== undefined) {
+    fail('declares both `type` and `parts` — use `parts` for more than one axis, `type` for exactly one');
   }
-  if (m.type === 'model-service' && (!Array.isArray(m.wires) || m.wires.length === 0)) {
-    fail('a model-service manifest needs a non-empty wires array');
-  }
-  if (m.hosts !== undefined && (!Array.isArray(m.hosts) || !m.hosts.every((h) => typeof h === 'string' && h))) {
-    fail('hosts must be a string array');
-  }
-  if (m.type === 'client-gateway' && (!Array.isArray(m.hosts) || m.hosts.length === 0)) {
-    fail('a client-gateway manifest needs a non-empty hosts array');
+  // Top-level wires/hosts are the SINGLE-part spelling of parts[].wires/hosts.
+  if (m.wires !== undefined) stringArray(m.wires, 'wires');
+  if (m.hosts !== undefined) stringArray(m.hosts, 'hosts');
+  if (m.parts !== undefined) {
+    if (!Array.isArray(m.parts) || m.parts.length === 0) fail('parts must be a non-empty array');
+    // Not a cosmetic rule: a second copy of the claim list is exactly the kind
+    // of drift a one-truth manifest exists to prevent.
+    if (Array.isArray(m.wires) && m.wires.length > 0) {
+      fail('a multi-part manifest declares `wires` on its model-service part, not at the top level');
+    }
+    if (Array.isArray(m.hosts) && m.hosts.length > 0) {
+      fail('a multi-part manifest declares `hosts` on its client-gateway part, not at the top level');
+    }
+    const seen = new Set<string>();
+    (m.parts as unknown[]).forEach((raw, i) => {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) fail(`parts[${i}] must be an object`);
+      const part = raw as Record<string, unknown>;
+      if (!isPluginType(part.type)) fail(`parts[${i}].type '${String(part.type)}' is not a plugin type`);
+      // Validated above; the assertion keeps the rest of this block readable
+      // without re-testing the same field.
+      const partType = part.type as PluginType;
+      // One instance per axis: the host registers one gateway and one adapter
+      // per package id, so a second entry would silently lose.
+      if (seen.has(partType)) fail(`parts declares '${partType}' twice — one part per extension axis`);
+      seen.add(partType);
+      if (part.wires !== undefined) stringArray(part.wires, `parts[${i}].wires`);
+      if (part.hosts !== undefined) stringArray(part.hosts, `parts[${i}].hosts`);
+      if (partType === 'model-service' && (!Array.isArray(part.wires) || part.wires.length === 0)) {
+        fail(`parts[${i}] is a model-service part and needs a non-empty wires array`);
+      }
+      if (partType === 'client-gateway') {
+        if (!Array.isArray(part.hosts) || part.hosts.length === 0) {
+          fail(`parts[${i}] is a client-gateway part and needs a non-empty hosts array`);
+        }
+        wildcardExclusive(part.hosts as unknown[], `parts[${i}].hosts`, fail);
+      }
+      if (partType === 'client-adapter' && (part.wires !== undefined || part.hosts !== undefined)) {
+        fail(`parts[${i}] is a client-adapter part — it contributes a Client Hub hook, not wires or hosts`);
+      }
+    });
+  } else {
+    if (!isPluginType(m.type)) fail(`unknown plugin type '${String(m.type)}'`);
+    if (m.type === 'model-service' && (!Array.isArray(m.wires) || m.wires.length === 0)) {
+      fail('a model-service manifest needs a non-empty wires array');
+    }
+    if (m.type === 'client-gateway') {
+      if (!Array.isArray(m.hosts) || m.hosts.length === 0) {
+        fail('a client-gateway manifest needs a non-empty hosts array');
+      }
+      wildcardExclusive(m.hosts as unknown[], 'hosts', fail);
+    }
   }
   // Flat primitives only (ADR-0017 §7): a malformed schema fails loudly
   // instead of degrading silently in the console's generic form.

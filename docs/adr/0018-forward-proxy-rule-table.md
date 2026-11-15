@@ -6,7 +6,6 @@ Governs: `backend/src/forward-proxy/rules.ts` (the resolver),
 `backend/src/forward-proxy/egress.ts` (`ruleDecision` / `isRuleRejected` /
 `ruleTunnels` / `transitEgressFor` / `transitProxyFor`),
 `backend/src/forward-proxy/server.ts` and `h2-forward.ts` (every transit leg),
-`backend/src/surfaces/direct-forward.ts`,
 `backend/src/config/index.ts` (`resolveForwardProxyConfig`),
 `backend/src/routes/console.ts` (lint + dry-run + tighten endpoints),
 `backend/src/plugins/gateways.ts` (`listGatewayHosts` — the claim set, ADR-0017),
@@ -347,9 +346,9 @@ banner.
 
 Every transit leg consults the table: `forwardTo` (plain-proxy + intercepted h1),
 `tunnel` (blind tunnels), the `Upgrade:` relay, `forwardH2` (intercepted h2
-upstream), the pipeline's `direct-forward` relay and the client-gateway relay
-(`relayUpstream`, ADR-0017 §3 — the same admission gate and egress, because a
-gateway that dialed an origin itself would silently bypass both). The gateway's own upstream
+upstream), and the client-gateway relay (`relayUpstream`, ADR-0017 §3 — the
+same admission gate and egress, because a gateway that dialed an origin itself
+would silently bypass both). The gateway's own upstream
 calls keep their provider/model-scoped `proxy:` policy (`providers/*`,
 `systemone/native`, catalog sync via `proxiedFetch`) — a `reject` rule can never
 silence inference, and the two vocabularies never collide.

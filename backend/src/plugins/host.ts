@@ -14,6 +14,7 @@ import {
   withUpstreamFailureGuard,
 } from '../observability/upstream-events.js';
 import type {
+  ClientAdapterHost,
   ClientGatewayHost,
   ClientGatewayPlugin,
   ModelServicePlugin,
@@ -21,13 +22,18 @@ import type {
   PluginAuthType,
   PluginConfigField,
   PluginConfigSection,
+  PluginEntryResult,
   PluginManifest,
   PluginView,
 } from './types.js';
-import { commitGateways, removeGateway, stageGateway, getGatewayById } from './gateways.js';
+import type { ClientAdapter } from '../cli/clients/base.js';
+import { beginPluginClientAdapterRebuild, commitPluginClientAdapterRebuild, registerPluginClientAdapter } from '../cli/clients/plugin-adapters.js';
+import { commitGateways, removeGateway, retainStagedGateways, stageGateway, getGatewayById, WILDCARD_HOST_CLAIM } from './gateways.js';
 import { getGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { invalidatePluginConfigCache, mergedPluginConfig, pluginConfigPath, writePluginConfig } from './config.js';
-import { assertSupportedPluginApi, isValidPluginId, validatePluginManifest } from './manifest.js';
+import { assertSupportedPluginApi, isValidPluginId, normalizePluginParts, validatePluginManifest } from './manifest.js';
+import { compareVersions } from '../utils/semver.js';
+import { seedBundledPlugins } from './seed.js';
 import { forwardH2 } from '../forward-proxy/h2-forward.js';
 import { getProxyCaller } from '../forward-proxy/caller-context.js';
 import { forwardTo, proxyFail, RULE_REJECTED_MESSAGE, type ForwardTarget } from '../forward-proxy/server.js';
@@ -43,9 +49,9 @@ import { isRuleRejected } from '../forward-proxy/egress.js';
  * lists what is INSTALLED rather than whatever happens to sit on disk.
  *   1. DEV  — `<OCR_PLUGIN_SRC_DIR>/<id>/plugin.json` (untracked source; opt-in)
  *   2. BUNDLED — `<ocrHome>/plugins/bundled/*.zip` (packages that ship WITH
- *      the app; nothing in the build pipeline writes here — a release or the
- *      operator places them — an operator install must not shadow one, and
- *      uninstall tombstones instead of deleting)
+ *      the app; SEEDED from the build artifacts on every rebuild (ADR-0029),
+ *      an operator install must not shadow one, and uninstall tombstones
+ *      instead of deleting)
  *   3. PACK — `<ocrHome>/plugins/*.zip` (operator-installed; extracted to
  *      `<ocrHome>/plugins/unpacked/<id>/` when absent or stale, then imported)
  *
@@ -82,10 +88,10 @@ function devSourceRoot(): string | undefined {
 
 /** The APP-OWNED package tier: packages that ship WITH the app and are never
  *  operator-owned — they win precedence over an operator install, and uninstall
- *  only writes a tombstone. The current build pipeline populates nothing here;
- *  a release that decides to ship packages drops them in, and an operator can
- *  place one deliberately. Single definition: the loader and the ownership
- *  guards must agree on one location. */
+ *  only writes a tombstone. Filled by `seedBundledPlugins()` from the build
+ *  artifacts at every rebuild (ADR-0029); an operator can also place one
+ *  deliberately. Single definition: the loader, the ownership guards and the
+ *  seeder must agree on one location. */
 export function bundledPluginsDir(): string {
   return join(pluginsRoot(), 'bundled');
 }
@@ -101,6 +107,9 @@ const nextRegistry = new Map<string, { plugin: ModelServicePlugin; view: PluginV
 /** Serializes rebuilds (reload / install / enable / disable) so concurrent
  *  callers cannot interleave and leave a last-writer-wins registry. */
 let rebuildInFlight: Promise<PluginView[]> = Promise.resolve([]);
+
+/** Set by the tail of a completed `loadInstalledPlugins()`. */
+let hostInitialized = false;
 
 /** The backend capabilities handed to every model-service plugin at load time.
  *  `dir` is the plugin's load root — the only asset root a packaged plugin has. */
@@ -146,6 +155,49 @@ async function pluginPullServices(): Promise<ModelServicePluginHost['pull']> {
     resolveCredentialKey: (id) => store.resolveKey(id)?.key,
     catalogToDef: (m) => providerDefs.catalogModelToDef(m),
     enrichFromCatalog: (models, excludeId) => autoPull.enrichFromCatalog(models as never[], excludeId),
+  };
+}
+
+/** The capabilities handed to every `client-adapter` plugin at load time
+ *  (ADR-0027). Async only because the two facts it publishes live behind the
+ *  config/CA modules, which are imported lazily so the plugin host never
+ *  depends on the Client Hub at module-init time. */
+export async function buildClientAdapterHostSdk(
+  manifest: PluginManifest,
+  dir: string
+): Promise<ClientAdapterHost> {
+  const [
+    { resolveForwardProxyEndpoint, probeClientVersion, resolveGatewayBaseUrl },
+    { caCertPath, CA_CN },
+    { getForwardProxyStatus },
+    { probeCaTrustedCached },
+    { createApiKey, listApiKeys },
+  ] = await Promise.all([
+    import('../cli/clients/base.js'),
+    import('../forward-proxy/ca.js'),
+    import('../forward-proxy/status.js'),
+    import('../forward-proxy/ca-trust.js'),
+    import('../auth/api-keys.js'),
+  ]);
+  return {
+    log: (...args: unknown[]) => console.log(`[OCR] client-adapter ${manifest.id}:`, ...args),
+    ocrHome: () => getOcrHomeDir(),
+    pluginDir: () => dir,
+    config: () => mergedPluginConfig(manifest.id, manifest.configSchema),
+    forwardProxy: () => resolveForwardProxyEndpoint(),
+    caCertPath: () => caCertPath(),
+    forwardProxyStatus: () => getForwardProxyStatus(),
+    caTrust: (caPath?: string, opts?: { force?: boolean }) =>
+      probeCaTrustedCached(caPath || caCertPath(), opts).then((r) => ({ trusted: r.trusted })),
+    caCommonName: () => CA_CN,
+    probeVersion: (cmd: string[]) => probeClientVersion(cmd),
+    gatewayBaseUrl: (apiKey?: string) => resolveGatewayBaseUrl(apiKey),
+    apiKeys: () =>
+      listApiKeys().map((k) => ({ name: k.name, key: k.key, enabled: k.enabled, expiresAt: k.expiresAt })),
+    createApiKey: (opts) => {
+      const created = createApiKey(opts);
+      return created.success && created.data?.key ? { key: created.data.key } : null;
+    },
   };
 }
 
@@ -221,6 +273,53 @@ export function buildGatewayHostSdk(manifest: PluginManifest, dir: string): Clie
   };
 }
 
+/**
+ * The capability set for a MULTI-PART package (ADR-0028). A package's
+ * `createPlugin(host)` is called ONCE and must serve every part it declared,
+ * so the seams are handed over as one union rather than one host per part.
+ *
+ * The union is safe because the seams are ADDITIVE: each part type reads a
+ * different subset (`chat`/`relayUpstream` for a gateway, `forwardProxy`/
+ * `caCertPath` for an adapter, `pull`/`upstream` for a model service), and no
+ * seam can be used to do another part's job. The alternative — calling
+ * `createPlugin` once per part — would break the one-invocation contract that
+ * lets a package share state between its halves (the OpenCode ingress and its
+ * gateway are configured from the same artifact).
+ */
+export async function buildMultiPartHostSdk(
+  manifest: PluginManifest,
+  dir: string
+): Promise<ModelServicePluginHost & ClientGatewayHost & ClientAdapterHost> {
+  const [adapterHost, pull] = await Promise.all([buildClientAdapterHostSdk(manifest, dir), pluginPullServices()]);
+  return {
+    ...buildHostSdk(manifest, dir),
+    ...buildGatewayHostSdk(manifest, dir),
+    ...adapterHost,
+    pull,
+    log: (...args: unknown[]) => console.log(`[OCR] plugin ${manifest.id}:`, ...args),
+  };
+}
+
+/** Shape test for the three single-part return values. A package that fills one
+ *  axis may return that axis' object directly (the pre-ADR-0028 contract), and
+ *  every existing package does. */
+function asEntryResult(raw: unknown): PluginEntryResult {
+  if (!raw || typeof raw !== 'object') return {};
+  const r = raw as Record<string, unknown>;
+  if (typeof r.createProvider === 'function') return { provider: r as unknown as PluginEntryResult['provider'] };
+  if (Array.isArray(r.hosts) && typeof r.match === 'function' && typeof r.handle === 'function') {
+    return { gateway: r as unknown as PluginEntryResult['gateway'] };
+  }
+  if (typeof r.getStatus === 'function' && typeof r.setup === 'function' && typeof r.teardown === 'function') {
+    return { clientAdapter: r as unknown as PluginEntryResult['clientAdapter'] };
+  }
+  return {
+    provider: r.provider as PluginEntryResult['provider'],
+    gateway: r.gateway as PluginEntryResult['gateway'],
+    clientAdapter: r.clientAdapter as PluginEntryResult['clientAdapter'],
+  };
+}
+
 function readManifest(dir: string): PluginManifest {
   const raw = JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')) as unknown;
   validatePluginManifest(raw, 'invalid plugin.json');
@@ -278,11 +377,17 @@ export function pluginEntrySpecifier(entry: string, mtimeMs: number, bun: boolea
   return bun ? `${entry.replaceAll('\\', '/')}?v=${mtimeMs}` : `${pathToFileURL(entry).href}?v=${mtimeMs}`;
 }
 
-/** Import result: exactly one of the two plugin shapes is set (manifest type). */
+/** Import result: one field per axis the manifest declares (each present only
+ *  for a part the package actually returned), plus the console row. */
 async function importPlugin(
   dir: string,
   source: PluginView['source']
-): Promise<{ plugin?: ModelServicePlugin; gateway?: ClientGatewayPlugin; view: PluginView }> {
+): Promise<{
+  provider?: ModelServicePlugin;
+  gateway?: ClientGatewayPlugin;
+  clientAdapter?: ClientAdapter;
+  view: PluginView;
+}> {
   const manifest = readManifest(dir);
   assertSupportedPluginApi(manifest.apiVersion);
   // Dev tree is source-first; a package carries the BUNDLED entry. A package
@@ -307,17 +412,32 @@ async function importPlugin(
   // edit through the watcher (`bun run dev` runs the backend under `bun --watch`,
   // which restarts the process and rebuilds the module graph) — ADR-0017 §6.
   const mod = (await import(pluginEntrySpecifier(entry, statSync(entry).mtimeMs, isBunRuntime()))) as {
-    createPlugin?: (host: ModelServicePluginHost | ClientGatewayHost) => ModelServicePlugin | ClientGatewayPlugin;
+    createPlugin?: (
+      host: ModelServicePluginHost | ClientGatewayHost | ClientAdapterHost
+    ) =>
+      | PluginEntryResult
+      | ModelServicePlugin
+      | ClientGatewayPlugin
+      | ClientAdapter
+      | Promise<PluginEntryResult | ModelServicePlugin | ClientGatewayPlugin | ClientAdapter>;
   };
   if (typeof mod.createPlugin !== 'function') throw new Error('plugin entry missing createPlugin(host)');
   // plugin.json IS the single manifest truth — the runtime module never
   // declares one (a TS literal would only drift from the JSON).
+  // `type`/`parts` are two spellings of the same fact (ADR-0028); everything
+  // downstream — the view, the registry, the lifecycle calls — reads the
+  // normalized list, never the manifest field.
+  const parts = normalizePluginParts(manifest);
+  const gatewayPart = parts.find((p) => p.type === 'client-gateway');
+  const adapterPart = parts.find((p) => p.type === 'client-adapter');
+  const modelPart = parts.find((p) => p.type === 'model-service');
   const view: PluginView = {
     id: manifest.id,
     name: manifest.name,
     version: manifest.version,
-    type: manifest.type,
-    wires: manifest.wires ?? [],
+    type: parts[0]?.type ?? 'model-service',
+    types: parts.map((p) => p.type),
+    wires: modelPart?.wires ?? manifest.wires ?? [],
     description: manifest.description,
     presets: manifest.presets,
     logo: manifest.logo,
@@ -325,32 +445,104 @@ async function importPlugin(
     path: dir,
     loaded: true,
   };
-  if (manifest.type === 'client-gateway') {
-    const gateway = mod.createPlugin(buildGatewayHostSdk(manifest, dir)) as ClientGatewayPlugin;
-    if (!gateway || !Array.isArray(gateway.hosts) || gateway.hosts.length === 0 || typeof gateway.match !== 'function' || typeof gateway.handle !== 'function') {
-      throw new Error('createPlugin returned no usable gateway (need hosts[], match(), handle())');
-    }
-    // Loaded packages only — a broken plugin must not expose a schema the
-    // console could edit against, so the map is filled AFTER validation.
-    manifestsById.set(manifest.id, manifest);
-    return { gateway, view };
+
+  // ONE createPlugin call per package, whatever its part count: a multi-part
+  // package shares state between its halves, so per-part calls would give it
+  // two closures over one config artifact.
+  const single = parts.length === 1 ? parts[0] : undefined;
+  let returned: PluginEntryResult | ModelServicePlugin | ClientGatewayPlugin | ClientAdapter;
+  if (single?.type === 'client-gateway') {
+    returned = (await mod.createPlugin(buildGatewayHostSdk(manifest, dir))) as ClientGatewayPlugin;
+  } else if (single?.type === 'client-adapter') {
+    returned = (await mod.createPlugin(await buildClientAdapterHostSdk(manifest, dir))) as ClientAdapter;
+  } else if (single?.type === 'model-service') {
+    returned = (await mod.createPlugin({
+      ...buildHostSdk(manifest, dir),
+      pull: await pluginPullServices(),
+    })) as ModelServicePlugin;
+  } else {
+    returned = (await mod.createPlugin(await buildMultiPartHostSdk(manifest, dir))) as PluginEntryResult;
   }
-  const plugin = mod.createPlugin({ ...buildHostSdk(manifest, dir), pull: await pluginPullServices() }) as ModelServicePlugin;
-  if (!plugin || typeof plugin.createProvider !== 'function') throw new Error('createPlugin returned no createProvider()');
+  const loaded = asEntryResult(returned);
+
+  // Every declared part must be PRESENT. A half-filled package is rejected
+  // outright: registering the half that loaded would leave a console row that
+  // looks installed while the other half (the reason it was installed) silently
+  // answers nothing.
+  if (gatewayPart) {
+    const gateway = loaded.gateway;
+    if (
+      !gateway ||
+      !Array.isArray(gateway.hosts) ||
+      gateway.hosts.length === 0 ||
+      typeof gateway.match !== 'function' ||
+      typeof gateway.handle !== 'function'
+    ) {
+      throw new Error("part 'client-gateway' declared but createPlugin returned no usable gateway (need hosts[], match(), handle())");
+    }
+    // A wildcard answers for EVERY host, so an exact claim beside it is
+    // unreachable — reject the mix here (runtime truth), not only in the
+    // manifest that a package is free not to restate exactly.
+    if (gateway.hosts.length > 1 && gateway.hosts.some((h) => String(h) === WILDCARD_HOST_CLAIM)) {
+      throw new Error("client-gateway hosts mix '*' with exact hosts — the wildcard answers for every host, so its own claims can never be reached");
+    }
+  }
+  if (adapterPart) {
+    const adapter = loaded.clientAdapter;
+    if (
+      !adapter ||
+      typeof adapter.name !== 'string' ||
+      typeof adapter.getStatus !== 'function' ||
+      typeof adapter.setup !== 'function' ||
+      typeof adapter.teardown !== 'function'
+    ) {
+      throw new Error(
+        "part 'client-adapter' declared but createPlugin returned no usable client adapter (need name, getStatus(), setup(), teardown())"
+      );
+    }
+  }
+  if (modelPart) {
+    if (!loaded.provider || typeof loaded.provider.createProvider !== 'function') {
+      throw new Error("part 'model-service' declared but createPlugin returned no createProvider()");
+    }
+  }
+
+  // Loaded packages only — a broken plugin must not expose a schema the console
+  // could edit against, so the map is filled AFTER validation. Registration is
+  // also where a client-id collision with a built-in hook or another package is
+  // refused: it throws, so the failure lands on THIS plugin's console row
+  // instead of silently overriding a core hook.
+  // The ADAPTER is registered FIRST because it is the half that can REFUSE
+  // the package (a built-in/retired/duplicate client id throws). Staging the
+  // gateway before it would leave a package that failed to load still owning
+  // its hosts — "broken row, traffic still intercepted", the worst of both.
+  if (loaded.clientAdapter) registerPluginClientAdapter(manifest.id, loaded.clientAdapter);
+  if (loaded.gateway) stageGateway(manifest.id, loaded.gateway);
   manifestsById.set(manifest.id, manifest);
-  return { plugin, view };
+  return { ...loaded, view };
 }
 
 function viewWireKey(view: PluginView): string {
   return view.wires[0] ?? view.id;
 }
 
-function failedView(id: string, source: PluginView['source'], path: string, err: unknown): PluginView {
+function failedView(
+  id: string,
+  source: PluginView['source'],
+  path: string,
+  err: unknown,
+  declared?: PluginManifest
+): PluginView {
+  // The AXES still come from the manifest when it was readable: a package that
+  // failed to LOAD is exactly the row an operator needs to identify, and "which
+  // kinds of plugin is this" is the first thing they look for.
+  const parts = declared ? normalizePluginParts(declared) : [];
   return {
     id,
-    name: id,
-    version: '?',
-    type: 'model-service',
+    name: declared?.name ?? id,
+    version: declared?.version ?? '?',
+    type: parts[0]?.type ?? 'model-service',
+    types: parts.map((p) => p.type),
     wires: [],
     source,
     path,
@@ -369,8 +561,22 @@ export async function loadInstalledPlugins(): Promise<PluginView[]> {
 }
 
 async function doLoadInstalledPlugins(): Promise<PluginView[]> {
+  // The app-owned tier is (re)seeded from the build artifacts BEFORE discovery,
+  // so a shipped package exists on the first boot of a fresh install and an app
+  // upgrade replaces it in place. Idempotent (byte compare) and a no-op under a
+  // dev tree, where the source being edited must win.
+  const seeded = seedBundledPlugins(bundledPluginsDir());
+  if (seeded.seeded.length > 0) {
+    console.log(`[OCR] Plugins: seeded bundled packages: ${seeded.seeded.join(', ')} (from ${seeded.source})`);
+  }
   nextRegistry.clear();
   manifestsById.clear();
+  // Plugin-contributed client adapters are rebuilt with everything else, but
+  // TRANSACTIONALLY: registrations below land in a staging map and only the
+  // commit at the tail swaps them in, so a scan that throws keeps the previous
+  // adapter set live instead of leaving the Client Hub blind (ADR-0027). Core
+  // adapters live in the other registry and are never touched.
+  beginPluginClientAdapterRebuild();
   invalidatePluginConfigCache();
   const views: PluginView[] = [];
   const devRoot = devSourceRoot();
@@ -391,11 +597,18 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       try {
         const loaded = await importPlugin(dir, 'dev');
         loaded.view.loadedAt = Date.now();
-        if (loaded.gateway) stageGateway(loaded.view.id, loaded.gateway);
-        if (loaded.plugin) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.plugin, view: loaded.view });
+        // The gateway is staged inside importPlugin (after the adapter half
+        // registered); only the model-service registry is committed here.
+        if (loaded.provider) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.provider, view: loaded.view });
         views.push(loaded.view);
       } catch (err) {
-        views.push(failedView(name, 'dev', dir, err));
+        let declared: PluginManifest | undefined;
+        try {
+          declared = readManifest(dir);
+        } catch {
+          // unreadable manifest: the id-only row is the honest view
+        }
+        views.push(failedView(name, 'dev', dir, err, declared));
       }
     }
   }
@@ -451,8 +664,7 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
         const dir = ensureUnpacked(packagedPath, id);
         const loaded = await importPlugin(dir, 'packaged');
         loaded.view.loadedAt = Date.now();
-        if (loaded.gateway) stageGateway(loaded.view.id, loaded.gateway);
-        if (loaded.plugin) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.plugin, view: loaded.view });
+        if (loaded.provider) nextRegistry.set(viewWireKey(loaded.view), { plugin: loaded.provider, view: loaded.view });
         seenIds.add(id);
         views.push(loaded.view);
       } catch (err) {
@@ -460,18 +672,32 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
         // copy must not let a lower-precedence package of the same id load
         // beside it (two console rows, ambiguous disable/uninstall).
         seenIds.add(id);
-        views.push(failedView(id, 'packaged', packagedPath, err));
+        views.push(failedView(id, 'packaged', packagedPath, err, packagedManifest));
       }
     }
   }
+  // A gateway is committed ONLY for a package that produced a LOADED row.
+  // Anything else staged is a half-registration from a load that threw after
+  // staging (or a future path that forgets to unstage) — a gateway that
+  // answers with no row to disable is unreachable state, so it is dropped.
+  retainStagedGateways(new Set(views.filter((v) => v.loaded).map((v) => v.id)));
   // Atomic swap: in-flight dispatch/probe never observe an empty registry —
   // and the gateway registry rides the same commit point.
   registry.clear();
   for (const [k, v] of nextRegistry) registry.set(k, v);
   nextRegistry.clear();
   commitGateways();
+  commitPluginClientAdapterRebuild();
   lastViews = views;
+  hostInitialized = true;
   return views;
+}
+
+/** True once a full load has completed in this process. Callers that may run
+ *  BEFORE the boot load (the standalone `ocr` CLI, which never boots the
+ *  server) use it to avoid a redundant rebuild on every Client Hub request. */
+export function isPluginHostInitialized(): boolean {
+  return hostInitialized;
 }
 
 /** Disabled plugin ids — an operator-maintained list beside the packages
@@ -525,12 +751,14 @@ function stubDisabledView(
 ): PluginView {
   try {
     const m = packaged ?? readManifest(dir);
+    const parts = normalizePluginParts(m);
     return {
       id: m.id,
       name: m.name,
       version: m.version,
-      type: m.type,
-      wires: m.wires ?? [],
+      type: parts[0]?.type ?? 'model-service',
+      types: parts.map((p) => p.type),
+      wires: parts.find((p) => p.type === 'model-service')?.wires ?? m.wires ?? [],
       description: m.description,
       presets: m.presets,
       logo: m.logo,
@@ -540,7 +768,18 @@ function stubDisabledView(
       loaded: false,
     };
   } catch {
-    return { id, name: id, version: '?', type: 'model-service', wires: [], source, path: dir, disabled: true, loaded: false };
+    return {
+      id,
+      name: id,
+      version: '?',
+      type: 'model-service',
+      types: [],
+      wires: [],
+      source,
+      path: dir,
+      disabled: true,
+      loaded: false,
+    };
   }
 }
 
@@ -590,10 +829,26 @@ export function packageIdOf(bytes: Uint8Array): string {
   return readManifestFromBytes(manifestRaw).id;
 }
 
-/** Install an uploaded package: validate the zip carries a valid plugin.json,
- *  then store it canonically as `<manifest-id>.zip` — the uploaded file
- *  name is free-form and never becomes the id. Returns the manifest id. */
-export function installPluginPackage(bytes: Uint8Array): { id: string } {
+/**
+ * Install an uploaded package: validate the zip carries a valid plugin.json,
+ * then store it canonically as `<manifest-id>.zip` — the uploaded file name is
+ * free-form and never becomes the id.
+ *
+ * UPGRADE is the same call with a higher `version`: the package is replaced,
+ * the operator's settings artifact (`plugins/config/<id>.json`) is left alone,
+ * and the unpacked tree is re-extracted because `ensureUnpacked` keys on the
+ * package mtime. DOWNGRADE is refused unless the caller says it is a rollback
+ * (`allowDowngrade`) — replacing a newer install with an older one is either a
+ * mistake or a deliberate rollback, and the console's upload button cannot tell
+ * the two apart. "Uninstall first" is the explicit path.
+ *
+ * Returns the id plus the version it replaced, so the route can report what it
+ * actually did.
+ */
+export function installPluginPackage(
+  bytes: Uint8Array,
+  opts: { allowDowngrade?: boolean } = {}
+): { id: string; version: string; replacedVersion?: string } {
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(bytes);
@@ -621,6 +876,23 @@ export function installPluginPackage(bytes: Uint8Array): { id: string } {
   if (manifest.id.startsWith('ocr-')) {
     throw new Error(`plugin id 'ocr-*' is reserved for packages shipped with the gateway`);
   }
+  // Version gate BEFORE anything lands on disk. A same-version upload is a
+  // rebuild (allowed — that is how a broken build gets replaced), a higher one
+  // is an upgrade, a lower one is refused so a stale download cannot silently
+  // roll a fixed install back.
+  let replacedVersion: string | undefined;
+  const existingManifest = (() => {
+    const packaged = packagePathIn(pluginsRoot(), manifest.id);
+    return packaged ? readPackagedManifest(packaged) : undefined;
+  })();
+  if (existingManifest) {
+    replacedVersion = existingManifest.version;
+    if (!opts.allowDowngrade && compareVersions(manifest.version, existingManifest.version) < 0) {
+      throw new Error(
+        `'${manifest.id}' ${manifest.version} is OLDER than the installed ${existingManifest.version} — uninstall it first if a downgrade is really intended`
+      );
+    }
+  }
   mkdirSync(pluginsRoot(), { recursive: true });
   // The id is a validated slug (manifest.ts), so it is safe as a path
   // component here and in every other lifecycle path below.
@@ -639,7 +911,7 @@ export function installPluginPackage(bytes: Uint8Array): { id: string } {
   // a failed write must not leave the plugin enabled-but-absent.
   const disabled = readDisabled();
   if (disabled.delete(manifest.id)) writeDisabled(disabled);
-  return { id: manifest.id };
+  return { id: manifest.id, version: manifest.version, replacedVersion };
 }
 
 function readManifestFromBytes(raw: Uint8Array): PluginManifest {
@@ -763,6 +1035,16 @@ export async function uninstallPlugin(
     // Dev-tree plugin: its source directory is operator-owned, but any preset
     // providers it had registered are cleanly unregistered.
     if (providersRemoved.length > 0) return { removed, providersRemoved, devOnly: true };
+    // A row the host is CURRENTLY SHOWING that owns no artifact on disk: its
+    // package was removed out from under us (an operator cleanup of
+    // `plugins/`, a package the install route already discarded on load
+    // failure). DELETE stays idempotent there — nothing to remove, and the
+    // caller's reload is what drops the row — instead of claiming the id is
+    // unknown while the operator is looking at it. Only an id the host has
+    // NEVER seen is a real error: a typo, or a dev-tree plugin whose source
+    // directory the operator owns and must delete themselves.
+    const shown = lastViews.find((v) => v.id === id);
+    if (shown && shown.source !== 'dev') return { removed, providersRemoved };
     throw new Error(
       `no installed package for '${id}' — unknown id, or a dev-tree plugin (delete its directory to remove it)`
     );

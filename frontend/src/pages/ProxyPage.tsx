@@ -114,9 +114,14 @@ export const ProxyPage: React.FC = () => {
           {t('proxy.hint')}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '720px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
-            <span>{t('proxy.enable')}</span>
-            <Switch checked={proxy.enabled ?? false} onChange={v => patch({ enabled: v })} />
+          <label className={`toggle-row${proxy.enabled ? ' on' : ''}`}>
+            <span style={{ fontSize: 'var(--text-md)' }}>{t('proxy.enable')}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px' }}>
+              <span aria-hidden="true" className={`switch-state${proxy.enabled ? ' on' : ''}`}>
+                {t(proxy.enabled ? 'proxy.stateOn' : 'proxy.stateOff')}
+              </span>
+              <Switch checked={proxy.enabled ?? false} onChange={v => patch({ enabled: v })} />
+            </span>
           </label>
           <div>
             <label style={fieldLabel}>{t('proxy.mode')}</label>

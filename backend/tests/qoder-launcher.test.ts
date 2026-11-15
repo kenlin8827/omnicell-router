@@ -3,15 +3,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  QODER_NO_PROXY,
-  buildQoderCliLauncher,
-  buildQoderLauncher,
-  countFreshCatalogs,
-  detectQoderCliBin,
-  launcherPath,
-  staleModelCatalog,
-} from '../src/cli/clients/qoder-proxy.js';
+import { getOcrHomeDir } from '../src/cli/paths.js';
+
+// The plugin sources live in a gitignored dev tree (a separate repository), so a
+// fresh checkout has no `plugins/qoder-gateway`. A static import cannot be
+// conditional — the file would fail at module load — so the package is loaded
+// only when its directory exists. Bun's `node:test` compat layer ignores a
+// `skip` option, so every block below registers only through `d`; `src!` is
+// therefore never evaluated without the package.
+const pluginDir = path.resolve(import.meta.dirname, '../../plugins/qoder-gateway');
+const src = fs.existsSync(pluginDir) ? await import('../../plugins/qoder-gateway/adapter.js') : null;
+/** Register a plugin-dependent block only when the package is present. */
+const d = src ? describe : null;
 
 /**
  * Qoder's hook has THREE proxy surfaces: Chromium's `--proxy-server`, the
@@ -61,7 +64,8 @@ function assignments(lines: string[], platform: NodeJS.Platform): Map<string, st
   return out;
 }
 
-describe('qoder launcher — Windows', () => {
+d?.('qoder launcher — Windows', () => {
+  const { buildQoderLauncher, QODER_NO_PROXY } = src!;
   const script = buildQoderLauncher({ platform: 'win32', ...base });
   const lines = statements(script, 'win32');
 
@@ -89,7 +93,8 @@ describe('qoder launcher — Windows', () => {
   });
 });
 
-describe('qoder launcher — strict credentials', () => {
+d?.('qoder launcher — strict credentials', () => {
+  const { buildQoderLauncher, buildQoderCliLauncher } = src!;
   it('carries the key in Chromium and Node/gRPC proxy URLs', () => {
     const script = buildQoderLauncher({
       platform: 'win32',
@@ -113,7 +118,8 @@ describe('qoder launcher — strict credentials', () => {
   });
 });
 
-describe('qoder launcher — POSIX', () => {
+d?.('qoder launcher — POSIX', () => {
+  const { buildQoderLauncher, QODER_NO_PROXY } = src!;
   it('exports grpc_proxy, both http(s)_proxy spellings and both no_proxy spellings', () => {
     for (const platform of ['darwin', 'linux'] as const) {
       const script = buildQoderLauncher({ platform, binary: '/opt/Qoder/qoder', ...base, caPath: undefined });
@@ -138,9 +144,10 @@ describe('qoder launcher — POSIX', () => {
   });
 });
 
-describe('qoder launcher path', () => {
+d?.('qoder launcher path', () => {
+  const { launcherPath } = src!;
   it('lives under the OCR home clients directory', () => {
-    const file = launcherPath().split(/[\\/]/).pop() ?? '';
+    const file = launcherPath(getOcrHomeDir()).split(/[\\/]/).pop() ?? '';
     assert.match(file, /^qoder-launcher\.(cmd|sh|command)$/);
   });
 });
@@ -150,7 +157,8 @@ describe('qoder launcher path', () => {
  * makes `get_models` return an empty list forever. Setup must therefore
  * backdate, never rename, and must undo renames left by older builds.
  */
-describe('qoder model catalog freshness', () => {
+d?.('qoder model catalog freshness', () => {
+  const { countFreshCatalogs, staleModelCatalog } = src!;
   it('backdates catalog-v<N> in place and leaves everything else alone', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'qoder-home-'));
     const uid = path.join(home, '.models', 'uid-1');
@@ -184,7 +192,8 @@ describe('qoder model catalog freshness', () => {
  * verification for that process; qodercli is plain Node and can use the clean
  * system-root switch.
  */
-describe('qoder CLI launcher', () => {
+d?.('qoder CLI launcher', () => {
+  const { buildQoderCliLauncher, QODER_NO_PROXY, buildQoderLauncher, detectQoderCliBin } = src!;
   it('runs qodercli with argv passthrough and the clean system-CA switch', () => {
     const text = buildQoderCliLauncher({
       platform: 'win32',

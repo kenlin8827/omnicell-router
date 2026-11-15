@@ -22,7 +22,10 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
-    "resources": { "../../frontend/dist/": "frontend/dist/" },
+    "resources": {
+      "../../frontend/dist/": "frontend/dist/",
+      "../../.plugin-dist/": "plugins/"
+    },
     "externalBin": ["bin/ocr-backend"],
     "windows": {
       "webviewInstallMode": {

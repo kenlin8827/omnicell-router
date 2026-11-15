@@ -1,6 +1,5 @@
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { buildOcrSummaryFrame } from '../utils/chat-sse.js';
-import { relayDirectForward } from './direct-forward.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { buildChatOcrCompletionFacts, buildChatOcrHeaders, buildChatOcrRoutingHeaders } from './ocr-headers.js';
 import type { ChatSurface, SurfacePathContext, TransportContext } from './types.js';
@@ -105,14 +104,6 @@ export async function runChatSurface(
       },
       relay
     );
-
-    // `direct` unresolved-model turn (ADR-0003 §7a): the transport relays the
-    // origin response verbatim — no OCR header staging, no encode/send, no
-    // summary frame (the origin's own bytes ARE the answer).
-    if (result.directForward) {
-      await relayDirectForward(t, result.directForward);
-      return;
-    }
 
     if (streamed) {
       // Close with the completion-time facts, then [DONE] — the summary MUST

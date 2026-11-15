@@ -5,7 +5,7 @@ import { NPM_VOCABULARY, vocabularyAliasFor } from '../src/providers/vocabulary.
 
 // The qoder protocol implementation lives in the USER-INSTALLED plugin tree
 // (untracked; each plugin is its own repository — root .gitignore). The tests
-// for that implementation live beside it in plugins/qoder/tests/; this file
+// for that implementation live beside it in plugins/qoder-models/tests/; this file
 // covers only the OCR-side wire resolution surface.
 describe('qoder wire resolution', () => {
   it('resolves the opencode v2 qoder segment to the qoder wire', () => {

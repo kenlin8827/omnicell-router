@@ -63,7 +63,6 @@ describe('config schema evolution (ADR-0016)', () => {
     assert.deepEqual(flat.webAuth, { enabled: true, username: 'admin', passwordHash: 'scrypt$aa$bb' });
     assert.equal(flat.apiKeys?.[0].key, 'sk-ocr-key-1');
     assert.equal(flat.rateLimit?.inboundGraceMs, 1200);
-    assert.equal(flat.forwardProxy?.unresolvedModel?.onMiss, 'direct');
     assert.equal(flat.routing?.mode, 'cost');
     assert.deepEqual(flat.tiers?.exclude, ['blocked/*']);
     assert.equal(flat.classifier?.layer2?.enabled, true);

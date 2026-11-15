@@ -7,9 +7,8 @@ import { renameWithRetry } from '../../utils/atomic-write.js';
 import { caCertPath } from '../../forward-proxy/ca.js';
 import type { RouterConfig } from '../../config/types.js';
 import { runCommand } from '../../utils/run-command.js';
-import { getForwardProxyStatus } from '../../forward-proxy/status.js';
-import { probeCaTrustedCached } from '../../forward-proxy/ca-trust.js';
 import { getOcrHomeDir } from '../paths.js';
+import type { ClientLaunchVerb } from './launcher.js';
 /** Last-resort fallback URL when config is unreadable; mirrors the config default. */
 export const OCR_DEFAULT_PORT = DEFAULT_GATEWAY_PORT;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
@@ -199,6 +198,20 @@ export interface ClientAdapter {
   /** Where the hook lands; the registry stamps it into every status row. */
   hookKind: ClientHookKind;
   /**
+   * Brand asset key the console draws for this hook (`assets/brands/<icon>.svg`
+   * or `<icon>.color.svg`). Defaults to `name`, which is right for a hook whose
+   * id IS the product (`opencode`, `claude`, …); a hook whose id describes a
+   * MECHANISM (`cursor-proxy`, `opencode-gateway`) declares the product it
+   * drives. Declared here so the console never carries a client→logo table.
+   */
+  icon?: string;
+  /**
+   * Bare product name, for a surface whose context already implies the variant
+   * (the Clients tab header shows `OpenCode`, the flat overview list shows
+   * `OpenCode (Proxy Mode)`). Absent = `displayName` everywhere.
+   */
+  shortName?: string;
+  /**
    * Oldest CLI release whose config contract this adapter's writes still
    * honor — the compatibility floor, NOT the newest verified version. Set
    * together with `versionCmd`; absent = no version gate for this client.
@@ -225,6 +238,21 @@ export interface ClientAdapter {
   /** Family adapters take the same optional `product` selector — teardown ONE
    *  product (the other, still-hooked one keeps its hook) or all of them. */
   teardown(options?: { product?: string }): Promise<ClientActionResult>;
+  /**
+   * Passthrough launch verbs this hook publishes (`ocr cursor`,
+   * `ocr cursor-agent`) — see `launcher.ts`. Declared here, not in the CLI: a
+   * packaged adapter must be able to add a launch command, and the console's
+   * copy hint plus the generated help text both read THIS list.
+   * Absent = this hook publishes no runnable script.
+   */
+  launchVerbs?(): ClientLaunchVerb[];
+  /**
+   * Plugin id that owns this client's MODEL SURFACE, when that surface is not
+   * the hook's own config (a `client-gateway` package's catalog editor).
+   * Declared by the adapter, so the console never carries a client→plugin
+   * table of its own. Absent = the client has no gateway-owned catalog.
+   */
+  catalogPlugin?: string;
 }
 
 /** Version-probe cache: one entry per command, 10-minute TTL — status polls
@@ -282,27 +310,4 @@ export function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
   };
 }
 
-/**
- * Post-setup advisories for a launcher hook: the launcher is written, but the
- * hooked client still fails at USE time until the listener runs and the platform
- * store trusts the MITM root. Shared by the launcher adapters so the code set and
- * the force semantics cannot drift adapter by adapter. (A `service-env` hook
- * writes NODE_EXTRA_CA_CERTS and needs none of this.)
- *
- * The CA verdict is FORCED: a cached pre-install "trusted" must never silence
- * the warning (the TTL cache still absorbs repeated status polls).
- */
-export async function collectHookWarnings(fp: ForwardProxyEndpoint, port: number): Promise<ClientActionWarning[]> {
-  const warnings: ClientActionWarning[] = [];
-  if (!getForwardProxyStatus().running) {
-    warnings.push({ code: 'proxy_not_running', params: { port: String(port) } });
-  }
-  const { trusted } = await probeCaTrustedCached(fp.caPath, { force: true });
-  if (trusted === false) {
-    warnings.push({ code: 'ca_not_trusted', params: { path: fp.caPath } });
-  } else if (trusted === 'unknown') {
-    warnings.push({ code: 'ca_trust_unknown' });
-  }
-  return warnings;
-}
 

@@ -3,20 +3,25 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  JETBRAINS_CA_ALIAS,
-  JETBRAINS_NO_PROXY,
-  JETBRAINS_PRODUCTS,
-  configVersionOf,
-  detectProduct,
-  patchProxySettingsXml,
-  pickInstall,
-  productConfigDir,
-  readProductVersion,
-  readProxySettings,
-  staleLauncherPath,
-  stripManagedProxyBlock,
-} from '../src/cli/clients/jetbrains-proxy.js';
+
+import { getOcrHomeDir } from '../src/cli/paths.js';
+
+// The plugin sources live in a gitignored dev tree (a separate repository), so a
+// fresh checkout has no `plugins/jetbrains-gateway`. A static import cannot be
+// conditional — the file would fail at module load — so the package is loaded
+// only when its directory exists. Bun's `node:test` compat layer ignores a
+// `skip` option, so every block below registers only through `d`; `src!` is
+// therefore never evaluated without the package.
+const pluginDir = path.resolve(import.meta.dirname, '../../plugins/jetbrains-gateway');
+const src = fs.existsSync(pluginDir) ? await import('../../plugins/jetbrains-gateway/adapter.js') : null;
+/** Register a plugin-dependent block only when the package is present. */
+const d = src ? describe : null;
+
+// The hook ships as a package: its module-level path helpers resolve the OCR
+// home through the host, which `createJetBrainsAdapter` installs. These tests
+// drive the pure builders, so the resolver is installed here instead — and only
+// when the package is present.
+if (src) src.setAdapterHome(() => getOcrHomeDir());
 
 /**
  * The JetBrains hook is a REVERSIBLE file surgery that must behave the same for
@@ -48,7 +53,8 @@ const SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
 </application>
 `;
 
-describe('jetbrains-proxy proxy.settings.xml surgery', () => {
+d?.('jetbrains-proxy proxy.settings.xml surgery', () => {
+  const { patchProxySettingsXml, readProxySettings, JETBRAINS_NO_PROXY } = src!;
   it('switches the IDE from a dead PAC to the OCR manual proxy, keeping every other option', () => {
     const patched = patchProxySettingsXml(SAMPLE, { host: '127.0.0.1', port: 4555 });
     const state = readProxySettings(patched);
@@ -90,7 +96,8 @@ describe('jetbrains-proxy proxy.settings.xml surgery', () => {
   });
 });
 
-describe('jetbrains-proxy teardown without a backup', () => {
+d?.('jetbrains-proxy teardown without a backup', () => {
+  const { patchProxySettingsXml, stripManagedProxyBlock } = src!;
   it('strips the block it wrote when the backup is gone', () => {
     const patched = patchProxySettingsXml(SAMPLE, { host: '127.0.0.1', port: 4555 });
     const stripped = stripManagedProxyBlock(patched);
@@ -112,7 +119,8 @@ describe('jetbrains-proxy teardown without a backup', () => {
   });
 });
 
-describe('jetbrains-proxy config discovery', () => {
+d?.('jetbrains-proxy config discovery', () => {
+  const { staleLauncherPath, productConfigDir, JETBRAINS_PRODUCTS, configVersionOf, detectProduct, JETBRAINS_CA_ALIAS } = src!;
   it('publishes no launch script — the hook is the proxy-settings takeover', () => {
     // The hook is a persistent rewrite of the IDE's own proxy settings, so any
     // desktop/Start-menu shortcut applies it. The only launcher-shaped path
@@ -198,13 +206,91 @@ describe('jetbrains-proxy config discovery', () => {
 });
 
 /**
+ * The family scope rule: JETBRAINS_PRODUCTS covers every IntelliJ-platform
+ * product Junie's IDE plugin loads in — a product the agent cannot run in would
+ * be a row that hooks the proxy and then silently provides no agent. Order is
+ * contract too: default parameters (`JETBRAINS_PRODUCTS[0]`) and the fixtures
+ * above read IDEA and GoLand by index, so new rows are appended, never sorted.
+ */
+d?.('jetbrains-proxy product table scope', () => {
+  const { JETBRAINS_PRODUCTS, jetbrainsProduct, productConfigDir, configVersionOf, productConfigPlaceholder } = src!;
+  it('covers exactly the Junie-capable family, appended after IDEA and GoLand', () => {
+    assert.deepEqual(
+      JETBRAINS_PRODUCTS.map((product) => product.id),
+      [
+        'intellij-idea',
+        'goland',
+        'pycharm',
+        'webstorm',
+        'phpstorm',
+        'clion',
+        'rider',
+        'rubymine',
+        'rustrover',
+        'datagrip',
+        'android-studio',
+      ],
+    );
+    assert.equal(jetbrainsProduct('goland')?.id, 'goland');
+    assert.equal(jetbrainsProduct(' pycharm ')?.id, 'pycharm');
+    assert.equal(jetbrainsProduct('idea'), null);
+  });
+
+  it('carries the documented Junie floor only where JetBrains publishes one', () => {
+    // Advisory-only field: present for the products with a documented floor,
+    // omitted (not zero, not guessed) where none is published.
+    for (const id of ['intellij-idea', 'goland', 'pycharm', 'webstorm', 'phpstorm', 'clion', 'rider', 'rubymine', 'rustrover']) {
+      assert.ok(jetbrainsProduct(id)?.junieMin, `${id} must declare a Junie floor`);
+    }
+    assert.equal(jetbrainsProduct('datagrip')?.junieMin, undefined);
+    assert.equal(jetbrainsProduct('android-studio')?.junieMin, undefined);
+  });
+
+  it('resolves Android Studio config roots under the Google data root', () => {
+    const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-jb-appdata-'));
+    const previous = process.env.APPDATA;
+    process.env.APPDATA = appData;
+    try {
+      const studio = jetbrainsProduct('android-studio')!;
+      const configDir = path.join(appData, 'Google', 'AndroidStudio2026.1');
+      // A newer GoLand root under the JetBrains tree must not answer for
+      // Android Studio — the vendor root is part of the product's scope.
+      const decoy = path.join(appData, 'JetBrains', 'GoLand2026.3');
+      for (const dir of [configDir, decoy]) fs.mkdirSync(dir, { recursive: true });
+      fs.utimesSync(configDir, new Date(2026, 1, 1), new Date(2026, 1, 1));
+      fs.utimesSync(decoy, new Date(2027, 1, 1), new Date(2027, 1, 1));
+
+      assert.equal(productConfigDir(studio), configDir);
+      assert.equal(configVersionOf(configDir, studio), '2026.1');
+      assert.match(productConfigPlaceholder(studio), /[\\/]Google[\\/]AndroidStudio\*[\\/]options[\\/]proxy\.settings\.xml$/);
+      assert.doesNotMatch(productConfigPlaceholder(studio), /JetBrains/);
+    } finally {
+      if (previous === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = previous;
+      fs.rmSync(appData, { recursive: true, force: true });
+    }
+  });
+
+  it("parses the CE edition name with PyCharm's own pattern, never IDEA's", () => {
+    const pycharm = jetbrainsProduct('pycharm')!;
+    const community = path.join('C:', 'x', 'JetBrains', 'PyCharmCE2025.1');
+    const professional = path.join('C:', 'x', 'JetBrains', 'PyCharm2024.3.2');
+    assert.equal(configVersionOf(community, pycharm), '2025.1');
+    assert.equal(configVersionOf(professional, pycharm), '2024.3.2');
+    // IDEA's pattern never answers for a PyCharm root, and vice versa.
+    assert.equal(configVersionOf(community), null);
+  });
+});
+
+/**
  * Install selection is a correctness issue, not cosmetics: an in-place upgrade
  * leaves `Programs\IntelliJ IDEA 2026.1` holding a 2026.3 build while a fresh
  * 2026.3 install also exists under `C:\Program Files\JetBrains`. Picking by
  * folder order imported the CA into the copy nothing reads — and reported
  * success. These pin the rule: the build the config root names wins.
  */
-describe('jetbrains install selection', () => {
+d?.('jetbrains install selection', () => {
+  const { pickInstall, readProductVersion, JETBRAINS_PRODUCTS } = src!;
   const candidate = (home: string, version: string | null) => ({
     home,
     binary: path.join(home, 'bin', 'idea64.exe'),

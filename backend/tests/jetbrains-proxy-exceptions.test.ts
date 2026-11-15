@@ -3,12 +3,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import {
-  JETBRAINS_PROXY_EXCEPTIONS,
-  ideSslTrustPath,
-  mergeProxyExceptions,
-  purgePinnedMitmCerts,
-} from '../src/cli/clients/jetbrains-proxy.js';
+
+// The plugin sources live in a gitignored dev tree (a separate repository), so a
+// fresh checkout has no `plugins/jetbrains-gateway`. A static import cannot be
+// conditional — the file would fail at module load — so the package is loaded
+// only when its directory exists. Bun's `node:test` compat layer ignores a
+// `skip` option, so every block below registers only through `d`; `src!` is
+// therefore never evaluated without the package.
+const pluginDir = path.resolve(import.meta.dirname, '../../plugins/jetbrains-gateway');
+const src = fs.existsSync(pluginDir) ? await import('../../plugins/jetbrains-gateway/adapter.js') : null;
+/** Register a plugin-dependent block only when the package is present. */
+const d = src ? describe : null;
+
+/**
+ * The Common Name a real host supplies (`host.caCommonName()`); the package
+ * carries no CA constant of its own, so the test names the value it wants the
+ * issuer check to match.
+ */
+const CA_COMMON_NAME = 'OmniCellRouter Forward Proxy CA';
 
 /**
  * The proxy hook has TWO failure modes that only show up on a real machine and
@@ -32,7 +44,8 @@ const MOCKED_HOSTS = [
   'ai-api.jetbrains.com',
 ];
 
-describe('JetBrains proxy exceptions', () => {
+d?.('JetBrains proxy exceptions', () => {
+  const { JETBRAINS_PROXY_EXCEPTIONS } = src!;
   it('never lists a host the gateway mocks', () => {
     for (const host of MOCKED_HOSTS) {
       assert.equal(
@@ -74,7 +87,8 @@ describe('JetBrains proxy exceptions', () => {
   });
 });
 
-describe('mergeProxyExceptions', () => {
+d?.('mergeProxyExceptions', () => {
+  const { mergeProxyExceptions } = src!;
   it('keeps the operator list first and appends ours', () => {
     const merged = mergeProxyExceptions('corp.example.com, *.internal.example');
     const parts = merged.split(',');
@@ -101,7 +115,8 @@ describe('mergeProxyExceptions', () => {
   });
 });
 
-describe('purgePinnedMitmCerts', () => {
+d?.('purgePinnedMitmCerts', () => {
+  const { ideSslTrustPath, purgePinnedMitmCerts, JETBRAINS_PROXY_EXCEPTIONS } = src!;
   const dirs: string[] = [];
   after(() => {
     for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
@@ -161,7 +176,7 @@ describe('purgePinnedMitmCerts', () => {
       'account.jetbrains.com.cn',
       '*.google.com',
       'localhost',
-    ]);
+    ], CA_COMMON_NAME);
 
     assert.deepEqual(purged, ['analytics.services.jetbrains.com.cn']);
     const lines = fs.readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean);
@@ -180,9 +195,9 @@ describe('purgePinnedMitmCerts', () => {
     const { tool } = fakeKeytool(cwd);
     const store = ideSslTrustPath(path.join(cwd, 'config'));
 
-    assert.deepEqual(await purgePinnedMitmCerts(store, tool), []);
+    assert.deepEqual(await purgePinnedMitmCerts(store, tool, JETBRAINS_PROXY_EXCEPTIONS, CA_COMMON_NAME), []);
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, 'x');
-    assert.deepEqual(await purgePinnedMitmCerts(store, path.join(cwd, 'nope')), []);
+    assert.deepEqual(await purgePinnedMitmCerts(store, path.join(cwd, 'nope'), JETBRAINS_PROXY_EXCEPTIONS, CA_COMMON_NAME), []);
   });
 });

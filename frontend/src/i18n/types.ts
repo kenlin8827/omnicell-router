@@ -76,6 +76,7 @@ export interface TranslationDict {
     close: string;
     copy: string;
     copied: string;
+    copyFailed: string;
     dismissToast: string;
     requiredFields: string;
   };
@@ -237,7 +238,6 @@ export interface TranslationDict {
     proxy: string;
     /** Nav label: the Upstream group's model-scoped proxy pattern page. */
     proxyPatterns: string;
-    modelFallback: string;
     /** Nav label: the built-in Clash panel under Proxy Management. */
     proxyMihomo: string;
     tokenSaver: string;
@@ -2339,8 +2339,6 @@ hiddenBadge: string;
     smartScopeNone: string;
     smartScopeEmpty: string;
     proxyHint: string;
-    nameOpencodeProxy: string;
-    nameOpencode: string;
     /** Hook-tab roster filter placeholder */
     filterPh: string;
     /** Proxy-tab prerequisite banners (inbound forward proxy off / not running) */
@@ -2545,20 +2543,9 @@ hiddenBadge: string;
     disabled: string;
     saveHint: string;
   };
-  /** Model-side policy for names the gateway cannot resolve
-   *  (`forwardProxy.unresolvedModel`, ADR-0003 §7a). Scope is the MITM leg. */
-  modelFallback: {
-    title: string;
-    hint: string;
-    onMiss: string;
-    hosts: string;
-    hostPlaceholder: string;
-    modeFail: string;
-    modeDirect: string;
-    addHost: string;
-    unsaved: string;
-    savedNotice: string;
-  };
+  /** The inbound forward-proxy ACCESS page (ProxyAccessPage): CA trust, the
+   *  setup wizard and the OS-proxy controls. Rule-table keys live under
+   *  `forwardProxy`. */
   proxy: {
     title: string;
     saveBtn: string;
@@ -2567,6 +2554,8 @@ hiddenBadge: string;
     saveHintMode: string;
     saveHintCore: string;
     enable: string;
+    stateOn: string;
+    stateOff: string;
     hint: string;
     url: string;
     includes: string;
@@ -2817,6 +2806,8 @@ hiddenBadge: string;
     savedHotNotice: string;
     enable: string;
     requireCredential: string;
+    stateOn: string;
+    stateOff: string;
     requireCredentialHint: string;
     hint: string;
     port: string;
@@ -2879,14 +2870,19 @@ hiddenBadge: string;
     caTrustOpenWizard: string;
     caHint: string;
     hostNote: string;
-    /** Index line: the unresolved-model-name policy now lives on the model side. */
-    unresolvedMovedTo: string;
+    /** Wizard heading (trust the CA → configure clients → verify). */
     helpTitle: string;
     wizardPrev: string;
     wizardNext: string;
     wizardDisabledHint: string;
     helpStep2: string;
     helpStep2Code: string;
+    /** Trust-route sub-tab labels (step 1): store install for shell clients
+     *  vs process-env injection for code clients. */
+    trustTabShell: string;
+    trustTabCode: string;
+    /** One-line note under the code tab: what the env route does. */
+    trustTabCodeHint: string;
     sysInstallTitle: string;
     sysInstallWinCmd: string;
     sysInstallWinHint: string;
@@ -2899,6 +2895,9 @@ hiddenBadge: string;
     sysRemoveMacHint: string;
     sysRemoveLinuxCmd: string;
     sysRemoveNote: string;
+    /** Wizard step 2 client-routing sub-tabs: env vars (default) / OS proxy (optional). */
+    clientTabEnv: string;
+    clientTabOs: string;
     helpStep3: string;
     helpStep3Code: string;
     helpStep4: string;
@@ -2980,14 +2979,16 @@ hiddenBadge: string;
     sysStateStale: string;
     sysStateUnsupported: string;
     sysStaleHint: string;
+    /** Config-tab warning when the forward proxy is off but the OS proxy still
+     *  points at OCR (or a snapshot is pending): badge / hint / direct restore. */
+    sysRestoreBarTitle: string;
+    sysRestoreBarHint: string;
+    sysRestoreBarBtn: string;
     sysEnableBtn: string;
     sysDisableBtn: string;
     sysRestoreBtn: string;
     sysOverrideLabel: string;
     sysEnvBtn: string;
-    sysCopyBtn: string;
-    sysCopied: string;
-    sysCopyFailed: string;
     sysUnsupportedNote: string;
     autoHint: string;
     refresh: string;
@@ -3157,6 +3158,7 @@ hiddenBadge: string;
     enableFail: string;
     typeModelService: string;
     typeClientGateway: string;
+    typeClientAdapter: string;
     settings: string;
     configTitle: string;
     configSave: string;

@@ -244,7 +244,7 @@ export function shellCommand(command: string, args: string[]): string {
  * Windows: a runtime CLI is usually an npm `.cmd` shim, which libuv cannot exec without a shell
  * (`spawn('pi', …, {shell:false})` → ENOENT even though `where pi` resolves it). The line goes
  * through cmd.exe and args carrying cmd metacharacters are pre-quoted for it — the same rule as
- * `cli/clients/opencode-proxy.ts:runOpenCode`, and safe here because `safeSpec` already rejects
+ * the packaged `plugins/opencode-gateway` runner, and safe here because `safeSpec` already rejects
  * anything shell-shaped. Other platforms spawn directly with an argv array.
  */
 export function defaultExec(

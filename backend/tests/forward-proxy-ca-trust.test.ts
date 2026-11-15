@@ -7,10 +7,22 @@ import crypto from 'node:crypto';
 import { loadConfig, registerRuntimeConfigRef } from '../src/config/index.js';
 import type { RouterConfig } from '../src/config/types.js';
 import { createServer } from '../src/server.js';
-import { CursorProxyClientAdapter } from '../src/cli/clients/cursor-proxy.js';
-import { QoderProxyClientAdapter } from '../src/cli/clients/qoder-proxy.js';
+import { testAdapterHost } from './helpers/adapter-host.js';
 import { ensureCa, resolveCaDir } from '../src/forward-proxy/ca.js';
 import { probeCaTrusted, probeCaTrustedCached, setCaTrustCommandRunner } from '../src/forward-proxy/ca-trust.js';
+
+// The plugin sources live in a gitignored dev tree (separate repositories), so a
+// fresh checkout has neither `plugins/cursor-gateway` nor `plugins/qoder-gateway`.
+// A static import cannot be conditional — the file would fail at module load — so
+// each package is loaded only when its directory exists, and the two advisory
+// blocks register only then (bun's `node:test` compat layer ignores `skip`).
+const cursorDir = path.resolve(import.meta.dirname, '../../plugins/cursor-gateway');
+const cursorSrc = fs.existsSync(cursorDir) ? await import('../../plugins/cursor-gateway/adapter.js') : null;
+const qoderDir = path.resolve(import.meta.dirname, '../../plugins/qoder-gateway');
+const qoderSrc = fs.existsSync(qoderDir) ? await import('../../plugins/qoder-gateway/adapter.js') : null;
+/** Register a plugin-dependent block only when its package is present. */
+const dCursor = cursorSrc ? describe : null;
+const dQoder = qoderSrc ? describe : null;
 
 /**
  * The console's CA-trust chip is only useful if its verdict is honest:
@@ -224,7 +236,8 @@ describe('GET /api/admin/proxy/ca/trust', () => {
  * operator imports it right after setup), but the result must carry the
  * advisories so the console can warn instead of pretending the client works.
  */
-describe('Cursor setup advisories', () => {
+dCursor?.('Cursor setup advisories', () => {
+  const { CursorProxyClientAdapter } = cursorSrc!;
   const originalBin = process.env.CURSOR_BIN;
   const originalHome = process.env.OCR_HOME;
 
@@ -251,7 +264,7 @@ describe('Cursor setup advisories', () => {
     process.env.CURSOR_BIN = process.execPath;
     setCaTrustCommandRunner(async () => ({ ok: false, stdout: '', stderr: 'NTE_NOT_FOUND' }));
 
-    const result = await new CursorProxyClientAdapter().setup();
+    const result = await new CursorProxyClientAdapter(testAdapterHost()).setup();
 
     assert.equal(result.success, true, 'the launcher is written regardless of trust state');
     const codes = (result.warnings ?? []).map((w) => w.code);
@@ -268,7 +281,8 @@ describe('Cursor setup advisories', () => {
  * Chromium legs still read the OS store. The hook must therefore carry the
  * same advisories as Cursor instead of silently pretending it is ready.
  */
-describe('Qoder setup advisories', () => {
+dQoder?.('Qoder setup advisories', () => {
+  const { QoderProxyClientAdapter } = qoderSrc!;
   const originalBin = process.env.QODER_BIN;
   const originalHome = process.env.OCR_HOME;
 
@@ -292,7 +306,7 @@ describe('Qoder setup advisories', () => {
     process.env.QODER_BIN = process.execPath;
     setCaTrustCommandRunner(async () => ({ ok: false, stdout: '', stderr: 'NTE_NOT_FOUND' }));
 
-    const result = await new QoderProxyClientAdapter().setup();
+    const result = await new QoderProxyClientAdapter(testAdapterHost()).setup();
 
     assert.equal(result.success, true, 'the launcher is written regardless of trust state');
     const codes = (result.warnings ?? []).map((w) => w.code);

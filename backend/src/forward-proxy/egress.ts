@@ -10,8 +10,7 @@ import { outboundProxyUrl } from '../utils/proxy.js';
 /**
  * Shared egress plumbing for everything that forwards bytes to an ORIGINAL
  * dial target: the forward-proxy's forwarders and tunnels (server.ts,
- * h2-forward.ts) and the pipeline's direct-forward relay
- * (surfaces/direct-forward.ts).
+ * h2-forward.ts) and the client-gateway relay (`relayUpstream`).
  *
  * `transitProxyFor` turns a rule decision into the outbound proxy URL. The table
  * itself (ADR-0018) is read through `transitEgressFor`, which consults the LIVE

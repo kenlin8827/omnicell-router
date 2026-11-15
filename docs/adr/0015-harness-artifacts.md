@@ -83,7 +83,7 @@
 ## Context
 
 The gateway already owns a **client** relationship with thirteen runtimes (`SupportedClient`: `opencode`,
-`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `workbuddy`, `cursor-proxy`,
+`opencode-gateway`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `workbuddy`, `cursor-proxy`,
 `qoder-proxy`). That relationship is about **traffic**: an adapter makes the runtime's requests flow
 through the gateway (config rewrite, service env, or a proxy launcher), and stops there.
 
@@ -112,7 +112,7 @@ deliberately does not.
 | harness | that client considered as an **artifact host** (skills / MCP / plugins) | `<ocrHome>/harness/` |
 | artifact | one installable unit of a given kind | manifest record + materialized copies |
 
-`opencode-proxy` is a **hook mode of the same runtime**, not a second artifact host: the harness domain
+`opencode-gateway` is a **hook mode of the same runtime**, not a second artifact host: the harness domain
 exposes exactly one `opencode` target. The same shape holds for `cursor-proxy` (host `cursor`) and
 `qoder-proxy` (no host yet). Harness state never enters the routing truth chain, never touches
 credentials (ADR-0006), and never reads provider definitions (ADR-0010).

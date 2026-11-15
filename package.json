@@ -12,6 +12,7 @@
   "files": [
     "bin",
     "backend/dist",
+    ".plugin-dist",
     "frontend/dist",
     "README.md",
     "README.zh-CN.md",

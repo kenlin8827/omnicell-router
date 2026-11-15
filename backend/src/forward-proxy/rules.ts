@@ -167,7 +167,7 @@ export function normalizeRules(raw: unknown): ForwardProxyRule[] {
 
 /**
  * Resolve one host. Every leg (CONNECT admission, the MITM inner leg, the plain
- * absolute-URI leg, the tunnels, h2-forward, the direct-forward relay) and the
+ * absolute-URI leg, the tunnels, h2-forward, the client-gateway relay) and the
  * console preview call this, so they can never disagree.
  *
  * Order (ADR-0018 Revision 4):

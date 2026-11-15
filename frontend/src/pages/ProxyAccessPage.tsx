@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Link } from 'react-router-dom';
-import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, ArrowRight, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta, type CaTrustResponse, type ClaimSource } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -56,7 +55,6 @@ interface ForwardProxyShape {
   intercept?: InterceptPosture;
   /** Concurrent inbound socket cap (default 512). Raw-YAML page only. */
   maxConnections?: number;
-  unresolvedModel?: { onMiss?: string; hosts?: Record<string, string> };
   accessLog?: { enabled?: boolean; bodyBytes?: number; persist?: boolean; persistDays?: number };
 }
 
@@ -64,7 +62,10 @@ const preStyle: React.CSSProperties = {
   margin: '6px 0 0 0',
   padding: '10px 12px',
   borderRadius: '8px',
-  background: 'var(--well-bg)',
+  // Terminal well (--term-bg): one step deeper than the card in dark, a
+  // clear paper tint in light — the background is what makes the block read
+  // as a terminal pane instead of floating mono text.
+  background: 'var(--term-bg)',
   border: '1px solid var(--card-border)',
   fontFamily: FONT_MONO,
   fontSize: 'var(--text-xs)',
@@ -72,6 +73,89 @@ const preStyle: React.CSSProperties = {
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
   color: 'var(--text-muted)',
+};
+
+/**
+ * Copyable command well shared by EVERY command/snippet in the wizard.
+ *
+ * The visual baseline is the CA install row's original look: a terminal
+ * well with bright (`--text-main`) command text and the copy glyph sitting
+ * ON the command line as a flex sibling at the right edge. All other steps
+ * — verify, env snippets, client routing — inherit that look, so no step
+ * grows a second species of code block.
+ *
+ * `prompt` is the shell-glyph decoration (`$` / `PS>`): it marks the lines
+ * that can be pasted at a terminal AS-IS, and it is DISPLAY-ONLY — the copy
+ * payload is always the raw `text`, glyph never included. Comment (`#`) and
+ * blank lines carry no glyph; blocks of plain config values (env settings
+ * that are written into a profile, not typed) take no `prompt` at all —
+ * the glyph means "this line runs". The toast is the feedback: the icon
+ * alone cannot confirm a hit while the command is being pasted.
+ *
+ * `flush` removes the 6px stand-off when a parent row already owns the
+ * spacing (TrustCmdRow), keeping the badge and the well on one top edge.
+ */
+const CodePre: React.FC<{ text: string; prompt?: string; flush?: boolean }> = ({ text, prompt, flush = false }) => {
+  const { t } = useI18n();
+  const toast = useToast();
+  /** Promptable = a typed command: comments and blank separators are not. */
+  const isCommand = (line: string): boolean => line.trim() !== '' && !line.trimStart().startsWith('#');
+  return (
+    <div
+      style={{
+        ...preStyle,
+        margin: flush ? 0 : '6px 0 0 0',
+        padding: '8px 10px',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: '6px',
+        whiteSpace: 'normal',
+      }}
+    >
+      <pre
+        style={{
+          flex: 1,
+          minWidth: 0,
+          margin: 0,
+          fontFamily: FONT_MONO,
+          fontSize: 'var(--text-xs)',
+          lineHeight: 'var(--leading-normal)',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+          color: 'var(--text-main)',
+        }}
+      >
+        {prompt
+          ? text.split('\n').map((line, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && '\n'}
+                {isCommand(line) ? (
+                  <>
+                    <span style={{ color: 'var(--text-dim)' }}>{prompt} </span>
+                    {line}
+                  </>
+                ) : (
+                  line
+                )}
+              </React.Fragment>
+            ))
+          : text}
+      </pre>
+      <button
+        type="button"
+        className="btn btn-sm btn-icon"
+        title={t('common.copy')}
+        style={{ flexShrink: 0 }}
+        onClick={() =>
+          void copyToClipboard(text).then(ok =>
+            ok ? toast.success(t('common.copied')) : toast.error(t('common.copyFailed')),
+          )
+        }
+      >
+        <Copy size={12} />
+      </button>
+    </div>
+  );
 };
 
 const FONT_MONO_COLOR: React.CSSProperties = { fontFamily: FONT_MONO, whiteSpace: 'nowrap' };
@@ -1443,33 +1527,66 @@ const ENV_SNIPPETS = (server: string, caPath: string): Record<string, string> =>
   sh: `export HTTP_PROXY=${server}\nexport HTTPS_PROXY=${server}\nexport NO_PROXY=localhost,127.0.0.1\nexport NODE_EXTRA_CA_CERTS='${caPath}'`,
 });
 
-/** One OS-tagged command row of the CA trust wizard (install AND uninstall). */
-const TrustCmdRow: React.FC<{ os: string; cmd: string; hint?: string }> = ({ os, cmd, hint }) => (
-  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
-    <span
-      className="badge"
-      style={{
-        flexShrink: 0, minWidth: '60px', justifyContent: 'center',
-        textTransform: 'none', letterSpacing: 0,
-        color: 'var(--text-muted)', border: '1px solid var(--card-border)',
-      }}
-    >
-      {os}
-    </span>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
-      <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{cmd}</code>
-      {hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}>{hint}</div>}
+/** One OS-tagged command row of the CA trust wizard (install AND uninstall).
+ *  This component owns only the OS attribution (badge) and the prose around
+ *  the command (hint). The command well is the wizard's SHARED `CodePre`,
+ *  whose visual baseline is THIS row's original look: terminal well, bright
+ *  command text, copy glyph on the command line. Install, uninstall, the env
+ *  snippets and the verify step therefore all read as one surface — same
+ *  prompt rules, same copy glyph, same toast. `flush` drops the standalone
+ *  stand-off so the well lines up with the badge's top edge. */
+const TrustCmdRow: React.FC<{ os: string; cmd: string; hint?: string }> = ({ os, cmd, hint }) => {
+  const prompt = os === 'Windows' ? 'PS>' : '$';
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+      <span
+        className="badge"
+        style={{
+          flexShrink: 0, minWidth: '60px', justifyContent: 'center',
+          textTransform: 'none', letterSpacing: 0, whiteSpace: 'nowrap',
+          color: 'var(--text-muted)', border: '1px solid var(--card-border)',
+        }}
+      >
+        {os}
+      </span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, flex: 1 }}>
+        <CodePre text={cmd} prompt={prompt} flush />
+        {hint && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}>{hint}</div>}
+      </div>
     </div>
-  </div>
-);
+  );
+};
+
+/** The verify snippet is platform-mixed: a blank line separates the
+ *  macOS/Linux half from the Windows half, and each half opens with a `#`
+ *  comment. That comment is a bare platform label on the first half (the
+ *  badge owns that job now) and the --ssl-no-revoke rationale on the second,
+ *  which becomes the row's prose hint. Only the command stays in the well —
+ *  and therefore in the clipboard payload: a pasted `#` line is dead weight
+ *  in a shell. All eight locales share this shape. */
+const verifyRows = (snippet: string): { os: string; cmd: string; hint?: string }[] =>
+  snippet.split('\n\n').map(seg => {
+    const lines = seg.split('\n');
+    const comment = lines.find(l => l.trimStart().startsWith('#'))?.replace(/^\s*#\s*/, '').trim() ?? '';
+    const cmd = lines.filter(l => l.trim() !== '' && !l.trimStart().startsWith('#')).join('\n');
+    return {
+      os: comment.startsWith('Windows') ? 'Windows' : 'macOS / Linux',
+      cmd,
+      hint: comment && comment !== 'macOS / Linux' ? comment : undefined,
+    };
+  });
 
 /**
  * OS system-proxy ownership card: snapshot → point the OS at the inbound
  * forward proxy → one-click restore. WinINET / networksetup / gsettings per
  * platform (backend forward-proxy/system-proxy.ts); unsupported platforms
  * render an explanatory note only. Env snippets stay clipboard-only.
+ * Embedded form drops the outer card frame — it is one route of the wizard's
+ * client-routing step, not a card nested inside another card. `readOnly` keeps
+ * the restore half alive while the forward proxy is off: pointing the OS at a
+ * port nobody listens on must never be one click away in that state.
  */
-const SystemProxyCard: React.FC = () => {
+const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({ embedded = false, readOnly = false }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [st, setSt] = useState<SystemProxyStatus | null>(null);
@@ -1516,7 +1633,7 @@ const SystemProxyCard: React.FC = () => {
   const stateColor = st?.state === 'on' ? 'var(--accent-emerald)' : st?.state === 'stale' || st?.state === 'external' ? 'var(--accent-amber)' : 'var(--text-dim)';
 
   return (
-    <div className="card">
+    <div className={embedded ? 'sub-card' : 'card'}>
       <div className="card-header">
         <div className="card-title">
           <MonitorCog size={18} color="var(--accent)" />
@@ -1530,10 +1647,12 @@ const SystemProxyCard: React.FC = () => {
         {st?.supported && (
           <div style={{ display: 'flex', gap: '8px' }}>
             {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t('proxyLog.sysStaleHint')}</span>}
-            <button className="btn btn-primary btn-sm" disabled={busy || st.state === 'on'} onClick={() => act('enable')}>
-              <MonitorCog size={12} />
-              <span>{t('proxyLog.sysEnableBtn')}</span>
-            </button>
+            {!readOnly && (
+              <button className="btn btn-primary btn-sm" disabled={busy || st.state === 'on'} onClick={() => act('enable')}>
+                <MonitorCog size={12} />
+                <span>{t('proxyLog.sysEnableBtn')}</span>
+              </button>
+            )}
             <button className="btn btn-sm" disabled={busy || st.state === 'off'} onClick={() => act('disable')}>
               <Undo2 size={12} />
               <span>{st.state === 'stale' ? t('proxyLog.sysRestoreBtn') : t('proxyLog.sysDisableBtn')}</span>
@@ -1562,21 +1681,10 @@ const SystemProxyCard: React.FC = () => {
           {showEnv && (
             <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '720px' }}>
               <Combobox value={shell} onChange={setShell} options={['PowerShell', 'cmd', 'sh'].map(s => ({ value: s, label: s }))} style={{ width: '160px' }} />
-              <pre style={{ ...preStyle, margin: 0 }}>{ENV_SNIPPETS(st.targetServer || `http://127.0.0.1:${DEFAULT_FORWARD_PROXY_PORT}`, st.caPath)[shell]}</pre>
-              <button
-                className="btn btn-sm"
-                style={{ alignSelf: 'flex-start', gap: '6px' }}
-                onClick={() => {
-                  void copyToClipboard(
-                    ENV_SNIPPETS(st.targetServer || `http://127.0.0.1:${DEFAULT_FORWARD_PROXY_PORT}`, st.caPath)[shell],
-                  ).then((ok) =>
-                    ok ? toast.success(t('proxyLog.sysCopied')) : toast.error(t('proxyLog.sysCopyFailed')),
-                  );
-                }}
-              >
-                <Copy size={12} />
-                <span>{t('proxyLog.sysCopyBtn')}</span>
-              </button>
+              {/* The shell picker above owns the variant; the command well
+                  owns the copy. Same shared surface as the rest of the
+                  wizard, so this optional block is not a third code style. */}
+              <CodePre flush text={ENV_SNIPPETS(st.targetServer || `http://127.0.0.1:${DEFAULT_FORWARD_PROXY_PORT}`, st.caPath)[shell]} />
             </div>
           )}
         </div>
@@ -1619,21 +1727,61 @@ export const ProxyAccessPage: React.FC = () => {
    *  mount and on demand, NEVER polled: the backend probe spawns OS tools. */
   const [caTrust, setCaTrust] = useState<CaTrustResponse | null>(null);
   const [caTrustBusy, setCaTrustBusy] = useState(false);
-  const [caDetailsOpen, setCaDetailsOpen] = useState(false);
+  /** CA details (fingerprint / validity) — expanded by default: the
+   *  fingerprint is what the operator checks against the OS trust prompt at
+   *  install time, so hiding it behind a fold costs the exact click the
+   *  verification moment needs. */
+  const [caDetailsOpen, setCaDetailsOpen] = useState(true);
+  /** Trust-route sub-tab of the trust step (step 1): `shell` = trust-store
+   *  install/uninstall commands (system CA store — the default, every
+   *  browser/CLI/tool), `code` = env-var injection (Node / Python CLIs,
+   *  process-level, never touches the system store). The two routes never
+   *  mix: uninstall is a store operation, so it lives in `shell` only. */
+  const [trustRoute, setTrustRoute] = useState<'shell' | 'code'>('shell');
   /** Uninstall commands are a rare, destructive follow-up — collapsed by
    *  default so the trust step stays install-only until asked. */
   const [removeOpen, setRemoveOpen] = useState(false);
+  /** Deep link from the Clients proxy tab: `/proxy-access?view=wizard` opens
+   *  the trust step directly, so the CA warning is one click from its fix.
+   *  `view=sys` was the retired standalone tab — it now lands on the wizard's
+   *  client-routing step with the OS route preselected. */
+  const deepView = new URLSearchParams(window.location.search).get('view');
   /** Current wizard step id */
-  const [step, setStep] = useState('1');
-  /** Page view tab: access configuration / system proxy / setup wizard / traffic log. */
-  const [view, setView] = useState<'config' | 'sys' | 'wizard' | 'log'>(() => {
-    // Deep link from the Clients proxy tab: `/proxy-access?view=wizard` opens
-    // the trust step directly, so the CA warning is one click from its fix.
-    const v = new URLSearchParams(window.location.search).get('view');
-    return v === 'sys' || v === 'wizard' || v === 'log' ? v : 'config';
-  });
-  /** Config-tab fold state: the traffic-log and miss-policy groups (advanced) default collapsed. */
-  const [fold, setFold] = useState({ log: false });
+  const [step, setStep] = useState(deepView === 'sys' ? '2' : '1');
+  /** Client-routing sub-tab of wizard step 2: `env` = per-process proxy vars
+   *  (the default path for CLI clients), `os` = machine-wide OS proxy (the
+   *  optional route for clients that ignore env vars). */
+  const [clientRoute, setClientRoute] = useState<'env' | 'os'>(deepView === 'sys' ? 'os' : 'env');
+  /** Page view tab: access configuration / setup wizard / traffic log. The OS
+   *  system-proxy switch is one route inside the wizard, not a peer tab. */
+  const [view, setView] = useState<'config' | 'wizard' | 'log'>(() =>
+    deepView === 'wizard' || deepView === 'sys' ? 'wizard' : deepView === 'log' ? 'log' : 'config',
+  );
+  /** OS-proxy recovery is a machine-level fault, so it has to be visible from
+   *  the DEFAULT tab — the wizard's sub-route is three clicks away. Probed on
+   *  mount and on every tab change, never on a 5s poll: the win32 probe spawns
+   *  `reg`, and the wizard card polls on its own while it is mounted. */
+  const [sysStatus, setSysStatus] = useState<SystemProxyStatus | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void api.getSystemProxy().then(s => { if (alive) setSysStatus(s); }).catch(() => {});
+    return () => { alive = false; };
+  }, [view]);
+  const restoreOsProxy = async () => {
+    setRestoring(true);
+    try {
+      setSysStatus(await api.disableSystemProxy());
+    } catch (err: any) {
+      toast.error(t('proxyLog.sysRestoreBarBtn') + ': ' + (err?.message || err));
+    } finally {
+      setRestoring(false);
+    }
+  };
+  /** Config-tab fold state. Traffic logging is ON by default and writes
+   *  request/response bodies to disk, so the group starts open — a default
+   *  that carries a privacy cost must not sit behind a disclosure. */
+  const [fold, setFold] = useState({ log: true });
   /** The rule table (ADR-0018). Order is the semantics — the ↑↓ buttons are the
    *  ONLY thing keeping it readable, not a convenience. */
   const [ruleRows, setRuleRows] = useState<ForwardProxyRule[]>([]);
@@ -1746,15 +1894,16 @@ export const ProxyAccessPage: React.FC = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // `unresolvedModel` now belongs to the Model Fallback page. This page
-      // writes the WHOLE forwardProxy section (the server shallow-merges at the
-      // top level), so a stale copy in `fp` must be dropped and the on-disk
-      // value carried through — otherwise every save here would delete the
-      // policy the other page just wrote.
+      // This page writes the WHOLE forwardProxy section (the server
+      // shallow-merges at the top level), so it re-reads the document first and
+      // spreads the on-disk value UNDER its own keys. The guarantee is
+      // top-level only: keys this page does not touch (`proxy`, `upstreamTls`,
+      // …) survive a save here; a key this page holds but does not render is
+      // replaced by its own state, which is why the render set must stay the
+      // whole editable section.
       const fresh = await api.getConfig();
       const diskFp = (fresh.forwardProxy || {}) as Record<string, unknown>;
-      const fpRest = { ...(fp || {}) } as Record<string, unknown>;
-      delete fpRest.unresolvedModel;
+      const fpRest = { ...(diskFp || {}), ...(fp || {}) } as Record<string, unknown>;
       const next = {
         forwardProxy: {
           ...fpRest,
@@ -1765,7 +1914,6 @@ export const ProxyAccessPage: React.FC = () => {
           rules: ruleRows
             .filter(r => r.match.trim())
             .map(r => ({ match: r.match.trim(), ingress: r.ingress, egress: r.egress })),
-          ...(diskFp.unresolvedModel !== undefined ? { unresolvedModel: diskFp.unresolvedModel } : {}),
         },
       } as { forwardProxy: Record<string, unknown> };
       await api.saveConfig(next);
@@ -1925,6 +2073,23 @@ export const ProxyAccessPage: React.FC = () => {
     </div>
   ) : null;
 
+  /** A disabled forward proxy can leave the machine pointed at a dead port
+   *  (`on`) or leave an un-restored snapshot (`stale`). Both are visible here
+   *  with a direct restore, so recovery never depends on finding the wizard
+   *  sub-route. `proxyEnabled` is the RUNTIME flag, not the form draft. */
+  const sysRestoreRow = sysStatus && sysStatus.proxyEnabled === false && (sysStatus.state === 'on' || sysStatus.state === 'stale') ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: 'var(--text-sm)' }}>
+      <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: 'var(--accent-amber)', background: 'var(--chip-bg)' }}>
+        {t('proxyLog.sysRestoreBarTitle')}
+      </span>
+      <span style={{ color: 'var(--text-dim)' }}>{t('proxyLog.sysRestoreBarHint')}</span>
+      <button className="btn btn-sm" style={{ gap: '6px' }} disabled={restoring} onClick={() => void restoreOsProxy()}>
+        <Undo2 size={12} />
+        <span>{t('proxyLog.sysRestoreBarBtn')}</span>
+      </button>
+    </div>
+  ) : null;
+
   const steps: { id: string; title: string; body: React.ReactNode }[] = [
     {
       id: '1',
@@ -1932,29 +2097,49 @@ export const ProxyAccessPage: React.FC = () => {
       body: (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep2')}</div>
-          <pre style={preStyle}>{caPath ? t('forwardProxy.helpStep2Code', { caPath }) : t('common.loading')}</pre>
           {caTrustRow}
           {caPath ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.sysInstallTitle')}</div>
-              {sysInstallRows.map(row => <TrustCmdRow key={row.os} {...row} />)}
-              <details
-                open={removeOpen}
-                onToggle={e => setRemoveOpen((e.target as HTMLDetailsElement).open)}
-                style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}
-              >
-                <summary style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', listStyle: 'none' }}>
-                  <ChevronDown
-                    size={12}
-                    style={{ flexShrink: 0, transform: removeOpen ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
-                  />
-                  <span>{t('forwardProxy.sysRemoveTitle')}</span>
-                </summary>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '10px' }}>
-                  {sysRemoveRows.map(row => <TrustCmdRow key={`remove-${row.os}`} {...row} />)}
-                  <div style={{ color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{t('forwardProxy.sysRemoveNote')}</div>
-                </div>
-              </details>
+              {/* Trust-route sub-tab: shell (store install) vs code (env vars).
+                  Two audiences, two routes — never one linear flow where the
+                  code snippet reads as a mandatory step for everyone. */}
+              <SegGroup
+                size="sm"
+                value={trustRoute}
+                onChange={v => setTrustRoute(v as 'shell' | 'code')}
+                options={[
+                  { value: 'shell', label: t('forwardProxy.trustTabShell') },
+                  { value: 'code', label: t('forwardProxy.trustTabCode') },
+                ]}
+              />
+              {trustRoute === 'shell' ? (
+                <>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.sysInstallTitle')}</div>
+                  {sysInstallRows.map(row => <TrustCmdRow key={row.os} {...row} />)}
+                  <details
+                    open={removeOpen}
+                    onToggle={e => setRemoveOpen((e.target as HTMLDetailsElement).open)}
+                    style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}
+                  >
+                    <summary style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', listStyle: 'none' }}>
+                      <ChevronDown
+                        size={12}
+                        style={{ flexShrink: 0, transform: removeOpen ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
+                      />
+                      <span>{t('forwardProxy.sysRemoveTitle')}</span>
+                    </summary>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '10px' }}>
+                      {sysRemoveRows.map(row => <TrustCmdRow key={`remove-${row.os}`} {...row} />)}
+                      <div style={{ color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{t('forwardProxy.sysRemoveNote')}</div>
+                    </div>
+                  </details>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.trustTabCodeHint')}</div>
+                  <CodePre text={t('forwardProxy.helpStep2Code', { caPath })} />
+                </>
+              )}
             </div>
           ) : (
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
@@ -2000,14 +2185,33 @@ export const ProxyAccessPage: React.FC = () => {
       title: t('forwardProxy.step3Title'),
       body: (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div>{t('forwardProxy.helpStep3')}</div>
-          <pre style={preStyle}>{t('forwardProxy.helpStep3Code', { port })}</pre>
-          {/* Only while the credential requirement is on: the env vars above
-              alone leave Chromium-based clients stuck at the auth prompt. */}
-          {fp.requireCredential === true && (
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-              {t('forwardProxy.helpStep3Auth')}
-            </div>
+          {/* Two routes, same shape as the trust step's shell/code split.
+              Per-process env vars are the default; taking ownership of the OS
+              proxy is the optional machine-wide route for clients that do not
+              read those vars. */}
+          <SegGroup
+            size="sm"
+            value={clientRoute}
+            onChange={v => setClientRoute(v as 'env' | 'os')}
+            options={[
+              { value: 'env', label: t('forwardProxy.clientTabEnv') },
+              { value: 'os', label: t('forwardProxy.clientTabOs') },
+            ]}
+          />
+          {clientRoute === 'env' ? (
+            <>
+              <div>{t('forwardProxy.helpStep3')}</div>
+              <CodePre text={t('forwardProxy.helpStep3Code', { port })} />
+              {/* Only while the credential requirement is on: the env vars above
+                  alone leave Chromium-based clients stuck at the auth prompt. */}
+              {fp.requireCredential === true && (
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                  {t('forwardProxy.helpStep3Auth')}
+                </div>
+              )}
+            </>
+          ) : (
+            <SystemProxyCard embedded />
           )}
         </div>
       ),
@@ -2018,7 +2222,18 @@ export const ProxyAccessPage: React.FC = () => {
       body: (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep4')}</div>
-          <pre style={preStyle}>{caPath ? t('forwardProxy.helpStep4Code', { port, caPath }) : t('common.loading')}</pre>
+          {caPath ? (
+            /* Same OS-tagged row shape as the CA trust step: badge, command
+               well with its platform prompt, prose hint. The Windows hint
+               keeps the --ssl-no-revoke rationale out of the clipboard. */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {verifyRows(t('forwardProxy.helpStep4Code', { port, caPath })).map(row => (
+                <TrustCmdRow key={row.os} {...row} />
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
+          )}
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.helpNotes')}</div>
         </div>
       ),
@@ -2029,16 +2244,15 @@ export const ProxyAccessPage: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
-      {/* View tab bar — configuration vs traffic log (the log card unmounts
-          when hidden, which also pauses its 4s poll) */}
+      {/* View tab bar — configuration / setup wizard / traffic log (the log
+          card unmounts when hidden, which also pauses its 4s poll) */}
       <div style={{ flexShrink: 0 }}>
         <SegGroup
           value={view}
-          onChange={v => setView(v as 'config' | 'sys' | 'wizard' | 'log')}
+          onChange={v => setView(v as 'config' | 'wizard' | 'log')}
           size="lg"
           options={[
             { value: 'config', label: t('proxyLog.tabConfig') },
-            { value: 'sys', label: t('proxyLog.sysTitle') },
             { value: 'wizard', label: t('forwardProxy.helpTitle') },
             { value: 'log', label: t('proxyLog.tabLog') },
           ]}
@@ -2085,15 +2299,21 @@ export const ProxyAccessPage: React.FC = () => {
           <span>{statusText}</span>
         </div>
         {caTrustRow && <div style={{ marginBottom: '16px' }}>{caTrustRow}</div>}
+        {sysRestoreRow && <div style={{ marginBottom: '16px' }}>{sysRestoreRow}</div>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '720px' }}>
           {/* ── Section 1: listener & enable ── */}
           <div className="sub-card">
             <div style={SEC_TITLE}>{t('forwardProxy.secListener')}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
-                <span>{t('forwardProxy.enable')}</span>
-                <Switch checked={fp.enabled ?? false} onChange={v => setFp({ ...fp, enabled: v })} />
+              <label className={`toggle-row${fp.enabled ? ' on' : ''}`}>
+                <span style={{ fontSize: 'var(--text-md)' }}>{t('forwardProxy.enable')}</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px' }}>
+                  <span aria-hidden="true" className={`switch-state${fp.enabled ? ' on' : ''}`}>
+                    {t(fp.enabled ? 'forwardProxy.stateOn' : 'forwardProxy.stateOff')}
+                  </span>
+                  <Switch checked={fp.enabled ?? false} onChange={v => setFp({ ...fp, enabled: v })} />
+                </span>
               </label>
               <div>
                 <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('forwardProxy.port')}</label>
@@ -2128,17 +2348,22 @@ export const ProxyAccessPage: React.FC = () => {
                   {t('forwardProxy.maxConnectionsHint')}
                 </div>
               </div>
-              <label style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
-                <span style={{ display: 'block' }}>
+              <label className={`toggle-row${fp.requireCredential ? ' on' : ''}`} style={{ alignItems: 'flex-start' }}>
+                <span style={{ display: 'block', paddingTop: '2px', fontSize: 'var(--text-md)' }}>
                   {t('forwardProxy.requireCredential')}
                   <span style={{ display: 'block', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px', lineHeight: 'var(--leading-normal)' }}>
                     {t('forwardProxy.requireCredentialHint')}
                   </span>
                 </span>
-                <Switch
-                  checked={fp.requireCredential ?? false}
-                  onChange={v => setFp({ ...fp, requireCredential: v })}
-                />
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', paddingTop: '2px' }}>
+                  <span aria-hidden="true" className={`switch-state${fp.requireCredential ? ' on' : ''}`}>
+                    {t(fp.requireCredential ? 'forwardProxy.stateOn' : 'forwardProxy.stateOff')}
+                  </span>
+                  <Switch
+                    checked={fp.requireCredential ?? false}
+                    onChange={v => setFp({ ...fp, requireCredential: v })}
+                  />
+                </span>
               </label>
             </div>
           </div>
@@ -2416,28 +2641,6 @@ export const ProxyAccessPage: React.FC = () => {
             </div>
           </details>
 
-          {/* The unresolved-model-name policy moved to the model side
-              (ModelFallbackPage). Its action values are modelRefs — `fail`,
-              `direct`, or any addressable model id/combo — so this page had to
-              fetch the entire gateway catalogue just to fill one picker. One
-              pointer instead, same shape as the outbound page's index line. */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px 14px',
-              flexWrap: 'wrap',
-              fontSize: 'var(--text-xs)',
-              color: 'var(--text-dim)',
-            }}
-          >
-            <span>{t('forwardProxy.unresolvedMovedTo')}</span>
-            <Link to="/model-fallback" className="link-quiet">
-              <span>{t('nav.modelFallback')}</span>
-              <ArrowRight size={12} />
-            </Link>
-          </div>
-
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
             {t('forwardProxy.caHint')} · {t('forwardProxy.hostNote')}
           </div>
@@ -2445,10 +2648,6 @@ export const ProxyAccessPage: React.FC = () => {
         </div>
       </div>
       </>
-      ) : view === 'sys' ? (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <SystemProxyCard />
-        </div>
       ) : view === 'wizard' ? (
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
@@ -2468,8 +2667,16 @@ export const ProxyAccessPage: React.FC = () => {
         </div>
 
         {!(fp.enabled ?? false) ? (
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-relaxed)', maxWidth: '640px' }}>
-            {t('forwardProxy.wizardDisabledHint')}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-relaxed)', maxWidth: '640px' }}>
+              {t('forwardProxy.wizardDisabledHint')}
+            </div>
+            {/* The wizard has no steps to show, but the OS-proxy snapshot may
+                still outlive a disabled or crashed forward proxy. Only draw the
+                restore panel when OCR actually owns (or owned) the OS proxy —
+                a fresh install should not see an empty system-proxy card.
+                Read-only so the OS cannot be pointed at a dead port. */}
+            {(sysStatus?.state === 'on' || sysStatus?.state === 'stale') && <SystemProxyCard embedded readOnly />}
           </div>
         ) : (
           <>

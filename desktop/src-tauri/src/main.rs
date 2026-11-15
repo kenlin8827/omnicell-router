@@ -1298,6 +1298,15 @@ fn boot(app: &tauri::App) -> Result<(), String> {
             .env("OCR_HOME", &home)
             .env("PORT", PORT.to_string())
             .env("HOST", "127.0.0.1");
+        // Packages this release SHIPS: the bundler copies `.plugin-dist/` here
+        // (tauri.conf.json `resources`), and the gateway seeds them into
+        // `<OCR_HOME>/plugins/bundled` on boot. Pointed at explicitly instead of
+        // relying on `cwd/plugins`, so a stray directory next to the resources
+        // can never be promoted to app-owned plugin state.
+        let bundled_plugins = resource_dir.join("plugins");
+        if bundled_plugins.is_dir() {
+            cmd.env("OCR_BUNDLED_PLUGIN_SRC", &bundled_plugins);
+        }
         // GUI-parented chains freeze PATH at logon; merge the platform's
         // canonical tool dirs so the opencode CLI resolves (credential-store
         // write capability depends on it).

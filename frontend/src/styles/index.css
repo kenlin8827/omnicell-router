@@ -11,6 +11,12 @@
   --card-border-hover: rgba(45, 212, 191, 0.35);
   --divider: rgba(169, 190, 204, 0.09);
   --input-bg: #0f151b;
+  /* Terminal well — the surface every typed command sits on (wizard
+     snippets, trust-store commands, env-var rows). Sits at the theme's
+     inset-surface level (same family as --input-bg / --sidebar-bg): one
+     step deeper than the card so it reads inset, but never so dark that
+     it merges into the page background. */
+  --term-bg: #10161c;
   --accent: #2dd4bf;
   --accent-glow: rgba(45, 212, 191, 0.2);
   --accent-star: #fbbf24;
@@ -56,6 +62,10 @@
   --card-border-hover: rgba(15, 118, 110, 0.38);
   --divider: rgba(34, 64, 73, 0.1);
   --input-bg: #fbfdfd;
+  /* Terminal well — light scheme keeps the panel a PAPER tint (dark text on
+     a light ground): the block reads as inset code without punching a dark
+     slab into a paper console. */
+  --term-bg: #eef1f3;
   --accent: #0f766e;
   --accent-glow: rgba(15, 118, 110, 0.18);
   --accent-star: #b45309;
@@ -1363,6 +1373,58 @@ input[type='number'] {
 }
 .switch-sm:checked::before {
   transform: translateX(12px);
+}
+
+/* Toggle setting row: label + switch framed as one obvious control. A bare
+   text label with a small pill at the far edge reads as plain copy — users
+   miss both the affordance and the current state. The row frame gives the
+   switch a visible hit area; the tinted "on" variant + state chip (dot +
+   on/off text) make the state readable without parsing the pill. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--well-bg);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.toggle-row:hover {
+  border-color: var(--card-border-hover);
+  background: var(--surface-hover);
+}
+.toggle-row.on {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+.switch-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.switch-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.5;
+}
+.switch-state.on {
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+.switch-state.on::before {
+  background: var(--accent);
+  opacity: 1;
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 /* Native checkboxes (bulk-select rows, proxy bypass, modality picker) — the

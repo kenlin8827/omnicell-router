@@ -4,28 +4,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { zipSync } from 'fflate';
-import {
-  acpAgentsDir,
-  acpBinaryPath,
-  acpDownloadPath,
-  acpInstallRoot,
-  buildJunieProfiles,
-  detectAcpInstalls,
-  downloadFile,
-  extractZip,
-  isWritable,
-  JUNIE_TIERS,
-  junieModelsPresent,
-  looksLikeZip,
-  mergeJunieConfig,
-  patchVmOptions,
-  pickAcpBinaryAsset,
-  platformAssetKey,
-  removeJunieModels,
-  stripVmOptions,
-  vmOptionsTrustLines,
-  writeJunieModels,
-} from '../src/cli/clients/jetbrains-junie.js';
+
+// The plugin sources live in a gitignored dev tree (a separate repository), so a
+// fresh checkout has no `plugins/jetbrains-gateway`. A static import cannot be
+// conditional — the file would fail at module load — so the package is loaded
+// only when its directory exists. Bun's `node:test` compat layer ignores a
+// `skip` option, so every block below registers only through `d`; `src!` is
+// therefore never evaluated without the package.
+const pluginDir = path.resolve(import.meta.dirname, '../../plugins/jetbrains-gateway');
+const src = fs.existsSync(pluginDir) ? await import('../../plugins/jetbrains-gateway/junie.js') : null;
+/** Register a plugin-dependent block only when the package is present. */
+const d = src ? describe : null;
 
 /**
  * The one-click JetBrains integration is mostly FILE SURGERY on a machine nobody has
@@ -72,7 +61,8 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-describe('ACP registry resolution', () => {
+d?.('ACP registry resolution', () => {
+  const { platformAssetKey, pickAcpBinaryAsset } = src!;
   it('maps platform/arch to the registry asset keys', () => {
     assert.equal(platformAssetKey('win32', 'x64'), 'windows-x86_64');
     assert.equal(platformAssetKey('win32', 'arm64'), 'windows-aarch64');
@@ -104,7 +94,8 @@ describe('ACP registry resolution', () => {
   });
 });
 
-describe('ACP install layout', () => {
+d?.('ACP install layout', () => {
+  const { acpAgentsDir, acpInstallRoot, acpBinaryPath, acpDownloadPath, detectAcpInstalls } = src!;
   it('puts the agents dir beside the IDE config NAME, not in the roaming root', () => {
     const dir = acpAgentsDir(path.join('C:', 'Users', 'k', 'AppData', 'Roaming', 'JetBrains', 'IntelliJIdea2026.3'));
     assert.match(dir, /JetBrains[\\/]IntelliJIdea2026\.3[\\/]acp-agents$/);
@@ -134,7 +125,8 @@ describe('ACP install layout', () => {
   });
 });
 
-describe('download validation', () => {
+d?.('download validation', () => {
+  const { looksLikeZip, downloadFile } = src!;
   it('recognises a real zip and rejects a truncated one', () => {
     const dir = tmpDir('zip-');
     const archive = path.join(dir, 'a.zip');
@@ -200,7 +192,8 @@ describe('download validation', () => {
   });
 });
 
-describe('archive extraction', () => {
+d?.('archive extraction', () => {
+  const { extractZip } = src!;
   it('extracts with whatever archiver this machine has', async () => {
     const dir = tmpDir('unzip-');
     const archive = path.join(dir, 'a.zip');
@@ -212,7 +205,8 @@ describe('archive extraction', () => {
   });
 });
 
-describe('Junie model profiles', () => {
+d?.('Junie model profiles', () => {
+  const { buildJunieProfiles, JUNIE_TIERS, mergeJunieConfig, writeJunieModels, junieModelsPresent, removeJunieModels } = src!;
   it('uses the verbatim completions URL — Junie appends nothing', () => {
     const base = buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test');
     assert.equal(base[0].body.baseUrl, 'http://127.0.0.1:4000/v1/chat/completions');
@@ -289,7 +283,8 @@ describe('Junie model profiles', () => {
   });
 });
 
-describe('vmoptions trust block', () => {
+d?.('vmoptions trust block', () => {
+  const { patchVmOptions, vmOptionsTrustLines, stripVmOptions } = src!;
   const STORE = path.join('C:', 'Users', 'k', '.omnicell-router', 'jbr', 'cacerts');
 
   it('appends a marker-scoped block and keeps operator flags', () => {
@@ -350,7 +345,8 @@ describe('vmoptions trust block', () => {
   });
 });
 
-describe('writability probe', () => {
+d?.('writability probe', () => {
+  const { isWritable } = src!;
   it('accepts a writable file and rejects a missing one', () => {
     const dir = tmpDir('w-');
     const file = path.join(dir, 'f');

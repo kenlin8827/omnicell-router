@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
 import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig } from './types.js';
-import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
 import { INTERCEPT_POSTURES, lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
@@ -396,7 +395,6 @@ function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
      *  SAFE direction, never to machine-wide decryption. */
     intercept: normalizeInterceptPosture(rawFp.intercept),
     upstreamTls: fp.upstreamTls,
-    unresolvedModel: fp.unresolvedModel,
   };
   // An EXPLICIT `rules` array in the user's file wins (even empty — an empty
   // table is a decision); otherwise the shipped default table applies.
@@ -405,7 +403,6 @@ function resolveForwardProxyConfig(raw: unknown): RouterConfig['forwardProxy'] {
     ...declared,
     rules,
     maxConnections: normalizeMaxConnections(fp.maxConnections),
-    unresolvedModel: normalizeUnresolvedModelConfig(fp.unresolvedModel as never),
     accessLog: normalizeAccessLogConfig(fp.accessLog),
     upstreamTls: normalizeUpstreamTlsConfig(fp.upstreamTls),
   } as RouterConfig['forwardProxy'];
@@ -1326,11 +1323,10 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     live.classifier = fresh.classifier;
     live.routing = fresh.routing;
     live.systemone = fresh.systemone;
-    // forwardProxy too — the MITM interceptor and the orchestrator's
-    // unresolved-model policy read the live boot snapshot per request
-    // (rules, unresolvedModel.onMiss/hosts), so a save must land here or the
-    // console's "takes effect immediately" promise is false. Strict credential
-    // mode is read from the same object by the gateway plugin host.
+    // forwardProxy too — the MITM rule table and admission gate read the live
+    // boot snapshot per request, so a save must land here or the console's
+    // "takes effect immediately" promise is false. Strict credential mode is
+    // read from the same object by the gateway plugin host.
     live.forwardProxy = fresh.forwardProxy;
     // proxy policy is hot-applied (initProxyConfig on the save path). Keep
     // the boot snapshot on the same object so a later reader of the live

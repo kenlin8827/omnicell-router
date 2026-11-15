@@ -297,6 +297,31 @@ describe('manifest: apiVersion contract', () => {
   });
 });
 
+describe('manifest: wildcard host claims', () => {
+  const gw = { id: 'p', name: 'P', version: '1.0.0', apiVersion: 1, type: 'client-gateway' };
+
+  it("rejects '*' beside exact hosts (the wildcard would shadow them)", () => {
+    // The registry asks a wildcard for EVERY host once its match() accepts, so
+    // an exact claim in the same list is unreachable — a claim the author
+    // cannot mean, and one the runtime check also refuses.
+    const mixed = /mixes '\*' with exact hosts/;
+    assert.throws(() => validatePluginManifest({ ...gw, hosts: ['*', 'api.example'] }, 'plugin'), mixed);
+    assert.throws(
+      () =>
+        validatePluginManifest(
+          { id: 'p', name: 'P', version: '1.0.0', apiVersion: 1, parts: [{ type: 'client-gateway', hosts: ['api.example', '*'] }] },
+          'plugin'
+        ),
+      mixed
+    );
+  });
+
+  it("accepts a lone '*' (the universal gateway) and exact-only lists", () => {
+    assert.doesNotThrow(() => validatePluginManifest({ ...gw, hosts: ['*'] }, 'plugin'));
+    assert.doesNotThrow(() => validatePluginManifest({ ...gw, hosts: ['api.example'] }, 'plugin'));
+  });
+});
+
 // The `cursor-gateway` plugin lives in the gitignored dev tree (/plugins/ is
 // in .gitignore) and is absent on a fresh clone / CI — registration stays
 // conditional (bun's node:test compat layer ignores a `skip` option).

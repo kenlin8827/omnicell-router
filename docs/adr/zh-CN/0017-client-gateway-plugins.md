@@ -100,3 +100,5 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 - Bun http2 服务端的怪癖（terminator 回调时刻 `alpnProtocol` 不可靠）已固化为 preface 嗅探规则 —— 不要"简化"回纯 ALPN 路由。同一族的怪癖、同一条规矩：ALPN **顺序**是服务端偏好决策（实测，不靠假定），且 h2 兼容 IncomingMessage 会丢弃无人监听时发出的块 —— 所以 h2 请求体头部必须在第一个 await 之前同步捕获。
 - 边界：Tab 补全、代码库索引与登录流量不被拦截（未接管主机/中继路径 —— Cursor 对这些继续打真实后端）；网关不承担 `x-cursor-checksum` 义务（它是服务端不是客户端）；个人使用，自己的机器，自己的账号。
 - 不新增 config.yaml 节：网关生命周期状态随插件工件存放（disabled.json / registrations.json 先例，ADR-0016 姿态不动）；operator 设置的插件值存在 `<pluginsRoot()>/config/<id>.json`，永不进入 schema。
+
+> **修订 —— 家族范围＝Junie 的 IDE 插件能装载的全部产品。** `JETBRAINS_PRODUCTS` 从本记录落地时的 IDEA + GoLand 两行，扩为 Junie 的 IDE 插件支持的每一个 IntelliJ 平台产品：PyCharm、WebStorm、PhpStorm、CLion、Rider、RubyMine、RustRover、DataGrip 与 Android Studio。范围判据是 Junie 的官方支持列表而不是厂商目录，因为一个跑不了智能体的产品等于「发了代理、却静默没有 agent」的一行。两个逐产品字段让 Android Studio 仍是**一行**而不是第二个适配器：`dataRoot`（它的 config 根在 `%APPDATA%\Google` 而非 `JetBrains`）与 `winRoots`（它的安装在 `%ProgramFiles%\Android`，JetBrains 默认根之外）；产品内部仍是共享的 IntelliJ 平台布局，表外不存在任何产品形状的分支。`junieMin` 记录各产品的 agent 版本下限——仅是提示，出现在状态详情行，绝不构成接管拒绝，因为代理接管本身与版本无关。表的顺序是契约：`intellij-idea` 与 `goland` 留在索引 0 和 1（默认参数与测试夹具按槽位读取），新行只追加、永不重排。

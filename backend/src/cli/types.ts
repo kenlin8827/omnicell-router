@@ -12,18 +12,16 @@ export type CliAction =
   | 'uninstall-shims'
   /** Machine-readable shim state for the desktop tray toggle (JSON + exit code). */
   | 'shims-status'
-  /** Passthrough launch verbs — the argument after `ocr` names the TARGET
-   *  tool, not a hook id. Never fold these into `SupportedClient`: the hooks
-   *  are `cursor-proxy` / `qoder-proxy`. */
-  | 'cursor'
-  | 'cursor-agent'
-  | 'qoder'
-  | 'qoder-cli'
   | 'env'
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy' | 'jetbrains-proxy';
+/** Every client id the console and CLI can ADDRESS: the hooks this build ships
+ *  plus the documented package hooks (`cursor-proxy`, `qoder-proxy`,
+ *  `jetbrains-proxy`, `opencode-gateway` — their adapters arrive with the
+ *  package, see ADR-0030). Listing an id here claims nothing about where it
+ *  lives; `CORE_ADAPTERS` is the build's own set. */
+export type SupportedClient = 'opencode' | 'opencode-gateway' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy' | 'jetbrains-proxy';
 
 export interface CliOptions {
   action: CliAction;
@@ -61,6 +59,25 @@ export interface ClientHookStatus {
   /** Where the hook lands, stamped by the registry from `ClientAdapter.hookKind`
    *  (`getStatus` does not produce it). */
   hookKind: ClientHookKind;
+  /** Brand asset key for the console's logo (`ClientAdapter.icon`); absent =
+   *  the client id is the asset name. */
+  icon?: string;
+  /** Bare product name for a context that implies the variant
+   *  (`ClientAdapter.shortName`); absent = `displayName`. */
+  shortName?: string;
+  /**
+   * The package that PROVIDES this hook — absent for a hook this build ships.
+   * Stamped by the registry, never by the adapter: only the registry knows
+   * which install the row came from, and the console needs the id to point at
+   * that package (enable it, open its settings, explain why it is missing).
+   */
+  pluginId?: string;
+  /** Package id that owns this client's model surface (`client-gateway`
+   *  catalog editor); absent = the client has no gateway-owned catalog. */
+  catalogPlugin?: string;
+  /** Passthrough launch verbs this hook publishes (`['cursor','cursor-agent']`)
+   *  — the console renders `ocr <verb>`; absent = nothing to launch. */
+  launch?: string[];
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -109,6 +126,9 @@ export interface ClientProductStatus {
   /** Stable product key (`intellij-idea`, `goland`) — the console's row key and the `--product`/`product` action target. */
   id: string;
   displayName: string;
+  /** Brand asset key for the product row (`idea`, `goland`); absent = the id is
+   *  the asset name. Declared by the hook, never derived by the console. */
+  icon?: string;
   /** Build version the install reports (`product-info.json`), when one was found. */
   version: string | null;
   /** The file this product's takeover lands in. */

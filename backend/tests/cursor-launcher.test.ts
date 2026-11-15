@@ -3,9 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CursorProxyClientAdapter, CURSOR_NO_PROXY, agentLauncherPath, buildCursorLaunchers, launcherPath, runCursorLauncher } from '../src/cli/clients/cursor-proxy.js';
+import { runLauncherScript, type LauncherRunResult } from '../src/cli/clients/launcher.js';
+import { testAdapterHost } from './helpers/adapter-host.js';
+import { getOcrHomeDir } from '../src/cli/paths.js';
 import { pemBundleContainsCa } from '../src/forward-proxy/ca-trust.js';
 import { getEnvPaths } from '../src/config/env.js';
+
+// The plugin sources live in a gitignored dev tree (a separate repository), so a
+// fresh checkout has no `plugins/cursor-gateway`. A static import cannot be
+// conditional — the file would fail at module load — so the package is loaded
+// only when its directory exists. Bun's `node:test` compat layer ignores a
+// `skip` option, so the plugin-dependent blocks are not registered at all when
+// it is missing; `src!` below is therefore only ever reached through `d`.
+const pluginDir = path.resolve(import.meta.dirname, '../../plugins/cursor-gateway');
+const src = fs.existsSync(pluginDir) ? await import('../../plugins/cursor-gateway/adapter.js') : null;
+/** Register a plugin-dependent block only when the package is present. */
+const d = src ? describe : null;
 
 /**
  * Cursor's per-app hook has TWO proxy surfaces: Chromium's `--proxy-server`
@@ -24,6 +37,26 @@ const base = {
 };
 
 const PROXY_URL = `http://127.0.0.1:${base.port}`;
+
+/** The package's adapter, wired to the real host seams (sandboxed OCR_HOME). */
+const adapter = () => {
+  const { CursorProxyClientAdapter } = src!;
+  return new CursorProxyClientAdapter(testAdapterHost());
+};
+
+/** Launcher path in the CURRENT sandbox (the hook derives it from the host). */
+const launcher = (): string => src!.launcherPath(getOcrHomeDir());
+const agentLauncher = (): string => src!.agentLauncherPath(getOcrHomeDir());
+
+/**
+ * Run one DECLARED launch verb — the same resolution `ocr cursor` does, so a
+ * verb that is missing/mis-scripted fails here instead of in a user's shell.
+ */
+async function runVerb(verb: string, argv: string[] = []): Promise<LauncherRunResult> {
+  const hit = adapter().launchVerbs().find((v) => v.verb === verb);
+  assert.ok(hit, `no '${verb}' launch verb declared`);
+  return runLauncherScript(hit.script, argv, hit.detached, hit.missingHint);
+}
 
 type ScriptLineKind = 'preamble' | 'comment' | 'env' | 'launch' | 'exit' | 'stray';
 
@@ -128,16 +161,20 @@ function assertLaunchShape(line: string, platform: NodeJS.Platform, binary: stri
 
 /** The exact win32 env contract, in order: the CA, both proxy spellings, and
  *  ONE case-insensitive `NO_PROXY`. */
-const WIN32_ENV = [
-  { name: 'NODE_EXTRA_CA_CERTS', value: base.caPath },
-  { name: 'https_proxy', value: PROXY_URL },
-  { name: 'http_proxy', value: PROXY_URL },
-  { name: 'NO_PROXY', value: CURSOR_NO_PROXY },
-];
+function win32Env(): { name: string; value: string }[] {
+  const { CURSOR_NO_PROXY } = src!;
+  return [
+    { name: 'NODE_EXTRA_CA_CERTS', value: base.caPath },
+    { name: 'https_proxy', value: PROXY_URL },
+    { name: 'http_proxy', value: PROXY_URL },
+    { name: 'NO_PROXY', value: CURSOR_NO_PROXY },
+  ];
+}
 
 /** The POSIX env contract: the same lines plus the lowercase `no_proxy`, which
  *  a case-sensitive shell needs alongside the uppercase one. */
 function posixEnv(caPath: string): { name: string; value: string }[] {
+  const { CURSOR_NO_PROXY } = src!;
   return [
     { name: 'NODE_EXTRA_CA_CERTS', value: caPath },
     { name: 'https_proxy', value: PROXY_URL },
@@ -147,19 +184,20 @@ function posixEnv(caPath: string): { name: string; value: string }[] {
   ];
 }
 
-describe('Cursor launcher scripts', () => {
+d?.('Cursor launcher scripts', () => {
+  const { buildCursorLaunchers, CURSOR_NO_PROXY } = src!;
   it('win32 carries the Chromium flag, the Node env and the loopback bypass', () => {
     const { main, agent } = buildCursorLaunchers({ platform: 'win32', ...base });
 
     assertStatementSequence(main, 'win32', WIN32_SEQUENCE);
-    assert.deepEqual(envAssignments(main, 'win32'), WIN32_ENV);
+    assert.deepEqual(envAssignments(main, 'win32'), win32Env());
     assertUniqueEnvNames(main, 'win32');
     assertLaunchShape(launchStatement(main, 'win32'), 'win32', base.binary);
     assert.ok(!main.includes('export '), 'a win32 script must not carry POSIX exports');
 
     assert.ok(agent);
     assertStatementSequence(agent, 'win32', WIN32_AGENT_SEQUENCE);
-    assert.deepEqual(envAssignments(agent, 'win32'), WIN32_ENV);
+    assert.deepEqual(envAssignments(agent, 'win32'), win32Env());
     assertUniqueEnvNames(agent, 'win32');
     // The CLI launcher forwards the caller's args but never carries the
     // Chromium flag — that one belongs to the IDE.
@@ -261,7 +299,7 @@ describe('Cursor launcher scripts', () => {
   });
 });
 
-describe('Cursor adapter teardown', () => {
+d?.('Cursor adapter teardown', () => {
   it('removes BOTH launchers, not only the IDE one', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cursor-launcher-'));
     const previous = process.env.OCR_HOME;
@@ -269,13 +307,13 @@ describe('Cursor adapter teardown', () => {
     try {
       // Fixture derived from the exported helpers, never re-spelled here: the
       // filename and platform extension are the adapter's contract.
-      const files = [launcherPath(), agentLauncherPath()];
+      const files = [launcher(), agentLauncher()];
       for (const file of files) {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, 'managed');
       }
 
-      const result = await new CursorProxyClientAdapter().teardown();
+      const result = await adapter().teardown();
 
       assert.equal(result.success, true);
       for (const file of files) assert.equal(fs.existsSync(file), false);
@@ -287,7 +325,7 @@ describe('Cursor adapter teardown', () => {
   });
 });
 
-describe('Cursor adapter status', () => {
+d?.('Cursor adapter status', () => {
   it('echoes the CLI launcher as a secondary artifact, not only the IDE one', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cursor-status-'));
     const previous = {
@@ -303,14 +341,14 @@ describe('Cursor adapter status', () => {
     process.env.CURSOR_BIN = binary;
     process.env.CURSOR_AGENT_BIN = agent;
     try {
-      fs.mkdirSync(path.dirname(agentLauncherPath()), { recursive: true });
-      fs.writeFileSync(agentLauncherPath(), 'managed');
+      fs.mkdirSync(path.dirname(agentLauncher()), { recursive: true });
+      fs.writeFileSync(agentLauncher(), 'managed');
 
-      const status = await new CursorProxyClientAdapter().getStatus();
+      const status = await adapter().getStatus();
 
       // The card must be able to render every owned path (the hint promises
       // two launchers) — a single `configPath` would hide the CLI one.
-      assert.deepEqual(status.artifacts, [{ path: agentLauncherPath(), exists: true }]);
+      assert.deepEqual(status.artifacts, [{ path: agentLauncher(), exists: true }]);
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key];
@@ -328,7 +366,7 @@ describe('Cursor adapter status', () => {
  * POSIX only — Windows has no exec bit.
  */
 if (process.platform !== 'win32') {
-  describe('Cursor adapter setup (POSIX)', () => {
+  d?.('Cursor adapter setup (POSIX)', () => {
     /** Point the adapter at a sandboxed forward proxy; returns the restore fn. */
     const armSandbox = (): (() => void) => {
       const configPath = getEnvPaths().configPath;
@@ -375,7 +413,7 @@ if (process.platform !== 'win32') {
     it('re-arms the exec bit on pre-existing launchers', async () => {
       const restore = armSandbox();
       try {
-        const targets = [launcherPath(), agentLauncherPath()];
+        const targets = [launcher(), agentLauncher()];
         for (const p of targets) {
           fs.mkdirSync(path.dirname(p), { recursive: true });
           // 0644: what a restored backup / a copy / an older build leaves behind.
@@ -384,7 +422,7 @@ if (process.platform !== 'win32') {
           assert.equal(fs.statSync(p).mode & 0o111, 0, `precondition: ${path.basename(p)} is not executable`);
         }
 
-        const result = await new CursorProxyClientAdapter().setup();
+        const result = await adapter().setup();
 
         assert.equal(result.success, true);
         for (const p of targets) {
@@ -413,7 +451,7 @@ describe('CA bundle probe', () => {
   });
 });
 
-describe('ocr cursor passthrough', () => {
+d?.('ocr cursor passthrough', () => {
   /** Sandboxed OCR_HOME with the restore fn, mirroring the teardown fixture. */
   const withSandbox = async (fn: () => Promise<void>): Promise<void> => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cursor-run-'));
@@ -430,11 +468,11 @@ describe('ocr cursor passthrough', () => {
 
   it('refuses to launch before setup wrote the launcher', async () => {
     await withSandbox(async () => {
-      const ide = await runCursorLauncher('ide', []);
+      const ide = await runVerb('cursor');
       assert.equal(ide.ok, false);
       assert.match(ide.message ?? '', /ocr setup cursor-proxy/);
 
-      const agent = await runCursorLauncher('agent', []);
+      const agent = await runVerb('cursor-agent');
       assert.equal(agent.ok, false);
       assert.match(agent.message ?? '', /cursor-agent CLI installed/);
     });
@@ -442,7 +480,7 @@ describe('ocr cursor passthrough', () => {
 
   it('forwards the launcher exit code', async () => {
     await withSandbox(async () => {
-      const p = launcherPath();
+      const p = launcher();
       fs.mkdirSync(path.dirname(p), { recursive: true });
       if (process.platform === 'win32') {
         fs.writeFileSync(p, '@echo off\r\nexit /b 7\r\n');
@@ -451,7 +489,7 @@ describe('ocr cursor passthrough', () => {
         fs.chmodSync(p, 0o755);
       }
 
-      const res = await runCursorLauncher('ide', []);
+      const res = await runVerb('cursor');
 
       assert.equal(res.ok, false);
       assert.equal(res.code, 7);

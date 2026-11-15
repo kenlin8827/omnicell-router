@@ -157,7 +157,7 @@ function shouldRecordPreAdmission(key: string): boolean {
 }
 
 // (hop-by-hop header filtering and the proxy egress policy live in
-//  egress.ts, shared with the pipeline's direct-forward relay.)
+//  egress.ts, shared with the client-gateway relay.)
 
 export interface ForwardProxyDeps {
   port: number;

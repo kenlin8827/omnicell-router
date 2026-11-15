@@ -190,7 +190,7 @@ location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 12 with a p
 | grok | √ | √ (CLI) | √ | `grok mcp add … [-s user\|project]` → `~/.grok/config.toml` / project `.grok/config.toml` (TOML, read-only); `grok plugin install {url} --trust` |
 | openclaw | √ | √ (CLI) | √ | `openclaw mcp add …` → `~/.openclaw/openclaw.json` (JSON5, read-only, global-only); `openclaw plugins install <spec> --force` |
 
-`opencode-proxy` never appears: it is a hook mode of `opencode`, not a separate host. The same
+`opencode-gateway` never appears: proxy mode is a hook mode of `opencode`, not a separate host. The same
 holds for `cursor-proxy` — its harness host is `cursor`, the artifact landing, not the traffic hook
 (Qoder has no harness host yet). Hosts are **not** `SupportedClient`: VS Code/Zed/Windsurf remain
 artifact hosts only, and welding the two vocabularies would pollute the traffic domain (ADR-0015 §D2).

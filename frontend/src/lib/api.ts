@@ -50,6 +50,22 @@ export interface ClientStatus {
   displayName: string;
   /** Where the hook lands (backend `ClientAdapter.hookKind`). */
   hookKind: ClientHookKind;
+  /** Package that PROVIDES this hook — absent for a hook the build ships.
+   *  Stamped by the registry, so the console can point at the owning package
+   *  (enable it, explain why it is missing) without a client→plugin table. */
+  pluginId?: string;
+  /** Package that owns this client's MODEL SURFACE (its `client-gateway`
+   *  catalog). Declared by the hook itself; absent = no gateway-owned catalog. */
+  catalogPlugin?: string;
+  /** Passthrough launch verbs the hook publishes (`['cursor','cursor-agent']`)
+   *  — the console renders `ocr <verb>` from here. */
+  launch?: string[];
+  /** Brand asset key for this row's logo; absent = the client id is the asset
+   *  name. Declared by the hook, so no client→logo table lives here. */
+  icon?: string;
+  /** Bare product name where the surface implies the variant; absent =
+   *  `displayName`. */
+  shortName?: string;
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -81,9 +97,11 @@ export interface ClientArtifact {
 
 /** One product instance inside a family adapter (mirrors backend ClientProductStatus). */
 export interface ClientProductStatus {
-  /** Stable product key — also the `product` action target (`intellij-idea`, `goland`). */
+  /** Stable product key — also the `product` action target (`intellij-idea`, `goland`, …). */
   id: string;
   displayName: string;
+  /** Brand asset key for the row's logo; absent = the id is the asset name. */
+  icon?: string;
   version: string | null;
   configPath: string;
   exists: boolean;
@@ -3074,7 +3092,7 @@ export const api = {
       agentModels?: Record<string, string>;
       /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
       profile?: { id: string; bindings: Record<string, string> };
-      /** Family adapters (JetBrains): act on ONE product (`intellij-idea`, `goland`); absent = all. */
+      /** Family adapters (JetBrains): act on ONE product (`intellij-idea`, `goland`, …); absent = all. */
       product?: string;
     }
   ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
@@ -4830,7 +4848,11 @@ export interface PluginViewInfo {
   id: string;
   name: string;
   version: string;
+  /** Primary part type (`types[0]`) — keep reading this for a single label. */
   type: string;
+  /** Every extension axis this package occupies, manifest order (ADR-0028).
+   *  A multi-part package renders one label per entry. */
+  types?: string[];
   wires: string[];
   description?: string | Record<string, string>;
   presets?: PluginProviderPresetInfo[];

@@ -1753,18 +1753,26 @@ export const MihomoPage: React.FC = () => {
                       below: the core is a capability of its own. Turning this off
                       does not point traffic elsewhere — it only stops keeping the
                       process alive. Absent in the file = follow the mode. */}
-                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', fontSize: 'var(--text-sm)' }}>
-                    <span style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <label
+                    className={`toggle-row${(mihomo.autoStart ?? mode === 'mihomo') ? ' on' : ''}`}
+                    style={{ alignItems: 'flex-start' }}
+                  >
+                    <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', paddingTop: '2px', fontSize: 'var(--text-sm)' }}>
                       <span>{t('proxy.mihomoAutoStart')}</span>
                       <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
                         {t('proxy.mihomoAutoStartHint')}
                       </span>
                     </span>
-                    <Switch
-                      checked={mihomo.autoStart ?? mode === 'mihomo'}
-                      disabled={busy !== null}
-                      onChange={v => void setAutoStart(v)}
-                    />
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', paddingTop: '2px' }}>
+                      <span aria-hidden="true" className={`switch-state${(mihomo.autoStart ?? mode === 'mihomo') ? ' on' : ''}`}>
+                        {t((mihomo.autoStart ?? mode === 'mihomo') ? 'proxy.stateOn' : 'proxy.stateOff')}
+                      </span>
+                      <Switch
+                        checked={mihomo.autoStart ?? mode === 'mihomo'}
+                        disabled={busy !== null}
+                        onChange={v => void setAutoStart(v)}
+                      />
+                    </span>
                   </label>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-primary" disabled={busy !== null || coreReady} title={coreReady ? t('proxy.alreadyRunning') : undefined} onClick={() => void runCore('start')}><Play size={13} /><span>{t('proxy.start')}</span></button>

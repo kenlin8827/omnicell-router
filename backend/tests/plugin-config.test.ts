@@ -140,8 +140,11 @@ if (fs.existsSync(cursorGatewayPluginJson)) {
       const { loadInstalledPlugins, applyPluginConfig } = await import('../src/plugins/host.js');
       await loadInstalledPlugins();
       await assert.rejects(() => applyPluginConfig('no-such-plugin', {}), /unknown or unloaded/);
-      // qoder ships no configSchema → nothing to configure, writes rejected.
-      await assert.rejects(() => applyPluginConfig('qoder', { x: 1 }), /no configurable fields/);
+      // The model-service half of the Qoder plugin ships no configSchema →
+      // nothing to configure, writes rejected. The id must track the dev tree
+      // (`qoder-models`, not the retired `qoder`): a rename here turns this
+      // into an "unknown or unloaded plugin" failure.
+      await assert.rejects(() => applyPluginConfig('qoder-models', { x: 1 }), /no configurable fields/);
     });
   });
 }

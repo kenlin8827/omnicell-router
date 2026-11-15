@@ -263,29 +263,6 @@ export interface RoutingConfig {
   mode: RoutingMode; // smart = rules/Layer2 decision layer cascade (default); cost = always lite; quality = always pro
 }
 
-/**
- * Behavior on the MITM forward-proxy leg when the client's `model` name
- * matches no registered model, combo, variant or tier alias (after the full
- * bare-name resolution chain missed). Forward-proxy-leg ONLY — the native
- * /v1 leg never consults this (a client dialing the gateway directly gets
- * the historical classifier behavior unconditionally). `onMiss` accepts the
- * verbs `fail` / `direct` or ANY gateway-visible modelRef (`auto` =
- * the default cascade). See pipeline/unresolved-model.ts.
- */
-export interface UnresolvedModelConfig {
-  /** `fail` | `direct` | any modelRef; default `auto` (classifier).
-   *  `direct` runs the turn THROUGH the pipeline (normalization, session id,
-   *  capture, compression: rtk + headroom + caveman, fail-open) but skips
-   *  every model-bound stage — the turn ends as a `DirectForwardPlan` and the
-   *  transport relays the response from the ORIGINAL destination the client
-   *  dialed, original model id and the client's own Authorization header
-   *  riding along (surfaces/direct-forward.ts). Loopback targets never pass
-   *  through (recursion guard — they degrade to `auto`). */
-  onMiss?: string;
-  /** original-dial host (lowercase) → onMiss override. */
-  hosts?: Record<string, string>;
-}
-
 export interface OpenCodeConfig {
   url?: string;
   password?: string;
@@ -702,9 +679,6 @@ export interface ForwardProxyConfig {
      *  broken chain; default false. Warned at boot and on the console. */
     insecure?: boolean;
   };
-  /** Unresolved-model-name policy — MITM forward-proxy leg only
-   *  (see UnresolvedModelConfig). */
-  unresolvedModel?: UnresolvedModelConfig;
 }
 
 /**

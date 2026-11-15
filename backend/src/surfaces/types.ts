@@ -69,9 +69,9 @@ export interface TransportContext {
   >;
   sendJson(status: number, payload: unknown, headers?: Record<string, string>): void;
   /**
-   * Raw upstream relay (the `direct` unresolved-model executor, ADR-0003
-   * §7a): ONE terminal send that pipes an origin response to the client
-   * verbatim — status line, headers and body bytes (JSON or SSE alike).
+   * Raw upstream relay for a gateway plugin: ONE terminal send that pipes an
+   * origin response to the client verbatim — status line, headers and body
+   * bytes (JSON or SSE alike).
    * Callers pass hop-by-hop-stripped headers; the implementation owns the
    * capture side (per-chunk gateway-response stash + finalize), matching
    * sendJson/beginSse discipline.
