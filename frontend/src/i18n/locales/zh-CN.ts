@@ -299,7 +299,7 @@ export const zhCN: TranslationDict = {
     models: '模型列表',
     apiKeys: 'API密钥',
     playground: '接口测试',
-    clients: '一键接管',
+    clients: '客户端接入',
     proxyAccess: '入站代理',
     guardrails: '熔断管理',
     breakerRules: '熔断规则',
@@ -2089,7 +2089,7 @@ export const zhCN: TranslationDict = {
     },
   },
   clients: {
-    title: '客户端一键接管与拆装',
+    title: '客户端接入与拆装',
     desc: '接管会把客户端的 API 端点改写指向 {base}，并在旁边生成原子 .bak.ocr 备份；拆装 100% 干净恢复原始配置。',
     refresh: '刷新状态',
     configPath: '配置文件定位：',
