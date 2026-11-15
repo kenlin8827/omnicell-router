@@ -71,7 +71,9 @@ describe('config schema evolution (ADR-0016)', () => {
     assert.equal(flat.systemone?.defaultModel, 'openai/gpt-4o-mini');
     assert.equal(flat.responses?.persist, true);
     assert.equal(flat.combos?.[0].id, 'daily-driver');
-    assert.deepEqual(flat.clientProfileMemory, { Cursor: { profile: 'fast' } });
+    // The model-profile bookkeeping (`profile`/`bindings`) is stripped by the
+    // v1→v2 step — the entry keeps only the live form-memory fields.
+    assert.deepEqual(flat.clientProfileMemory, { Cursor: {} });
     assert.deepEqual(flat.fallback, { enabled: true, maxRetries: 2, escalateTier: 'pro', injectErrorContext: false });
     assert.equal(flat.proxy?.url, 'http://127.0.0.1:7890');
     assert.deepEqual(flat.credentials?.anthropic, [{ keyHashPrefix: 'abcdef123456' }]);
@@ -122,5 +124,31 @@ describe('config schema evolution (ADR-0016)', () => {
     assert.equal(toRuntimePath('resilience.circuitBreaker.shadow'), 'circuitBreaker.shadow');
     assert.equal(toRuntimePath('ops.catalog.autoPullPatterns.openai'), 'catalog.autoPullPatterns.openai');
     assert.equal(toRuntimePath('schemaVersion'), '');
+  });
+
+  it('v1 → v2: the model-profile section and its bookkeeping vanish (ADR-0031)', () => {
+    const v1 = {
+      schemaVersion: 1,
+      routing: {
+        strategy: 'cost',
+        modelProfiles: [{ id: 'deep', slots: { flash: 'lite' } }],
+        profileMemory: {
+          pi: { profile: 'deep', bindings: { runner: 'flash' }, agentModels: { runner: 'lite' }, apiKeyId: 'key-1' },
+          omp: { profile: '', bindings: {}, models: { main: 'auto' } },
+        },
+      },
+    };
+    const { disk, fromVersion, warnings } = migrateConfig(v1);
+    assert.equal(fromVersion, 1);
+    assert.equal(disk.schemaVersion, SCHEMA_VERSION);
+    const routing = (disk as Record<string, Record<string, unknown>>).routing;
+    assert.equal('modelProfiles' in routing, false, 'the retired section must not survive on disk');
+    assert.deepEqual(routing.profileMemory, {
+      pi: { agentModels: { runner: 'lite' }, apiKeyId: 'key-1' },
+      omp: { models: { main: 'auto' } },
+    });
+    // The layout drops the move row, so the key can never re-persist.
+    assert.equal(toRuntimePath('routing.modelProfiles'), 'routing.modelProfiles');
+    assert.ok(warnings.some((w) => w.includes('model-profile')));
   });
 });

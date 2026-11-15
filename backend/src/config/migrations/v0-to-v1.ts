@@ -33,7 +33,6 @@ import type {
   ForwardProxyConfig,
   FallbackConfig,
   LoggingConfig,
-  ModelProfileConfig,
   OpenCodeConfig,
   ProxyConfig,
   QuotaConfig,
@@ -55,6 +54,18 @@ import type { Migration } from '../schema.js';
 import { toDiskConfigWith, type SectionMove } from '../layout.js';
 /** Disk `resilience.retry` = the runtime retry tree + the escalation fallback. */
 export type DiskRetryConfigV1 = RetryConfig & { escalation?: FallbackConfig };
+
+/**
+ * Legacy v1-only shape, frozen with this file: the model-profile mechanism
+ * was retired in v2 (ADR-0031) — this local declaration keeps the frozen
+ * disk type truthful without resurrecting the removed config type.
+ */
+interface LegacyModelProfileConfig {
+  id: string;
+  name?: string;
+  slots: Record<string, string>;
+  note?: string;
+}
 
 /** Disk format of schemaVersion 1: six semantic groups, no legacy flat keys. */
 export interface DiskConfigV1 {
@@ -80,7 +91,7 @@ export interface DiskConfigV1 {
     directives?: DirectivesConfig;
     routeEntries?: RouteEntriesConfig;
     combos?: ComboConfig[];
-    modelProfiles?: ModelProfileConfig[];
+    modelProfiles?: LegacyModelProfileConfig[];
     profileMemory?: Record<string, ClientProfileMemoryEntry>;
   };
   upstream?: {

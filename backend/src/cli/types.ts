@@ -97,13 +97,6 @@ export interface ClientHookStatus {
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
 
-  /** Last-linked model profile (opencode, pi), echoed from the OCR sidecar
-   * meta: profile id + the agent-name → modelRef map actually written into the
-   * config ('' id = no profile; the bindings are informational echo — the
-   * config's agent node is the live truth).
-   */
-  profile?: ModelProfileBinding;
-
   /** Additional files this adapter owns beyond `configPath` — Cursor publishes
    *  a second launcher for the `cursor-agent` CLI. `exists` is probed at status
    *  time so the console can list every artifact without a second round-trip.
@@ -150,12 +143,6 @@ export interface ClientProductStatus {
 export interface ClientArtifact {
   path: string;
   exists: boolean;
-}
-
-/** Sidecar echo of the last-applied model profile: which profile filled which agent with which modelRef. */
-export interface ModelProfileBinding {
-  id: string;
-  bindings: Record<string, string>;
 }
 
 /** Installed-version probe result: current CLI version vs the adapter's minimum-compatible floor. */

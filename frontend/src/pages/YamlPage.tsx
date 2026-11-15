@@ -99,7 +99,6 @@ const translateDiskPath = (diskPath: string): string => {
   let key = segs.join('.');
   if (segs[0] === 'tiers' && segs.length >= 2) key = 'tiers.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
   if (segs[0] === 'combos' && segs.length >= 2) key = 'combos.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
-  if (segs[0] === 'modelProfiles' && segs.length >= 2) key = 'modelProfiles.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
   if (segs[0] === 'credentials' && segs.length >= 2) key = 'credentials.*';
   if (segs[0] === 'catalog' && segs[1] === 'autoPullPatterns' && segs.length >= 3) key = 'catalog.autoPullPatterns.*';
   return key;

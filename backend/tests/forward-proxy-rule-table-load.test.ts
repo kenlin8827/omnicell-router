@@ -21,7 +21,7 @@ function writeConfig(body: Record<string, unknown>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-rules-'));
   const file = path.join(dir, 'config.yaml');
   // v1 disk shape (ADR-0016): the forward-proxy section lives under `client`.
-  const lines = ['schemaVersion: 1', 'client:', '  forwardProxy:', '    enabled: false'];
+  const lines = ['schemaVersion: 2', 'client:', '  forwardProxy:', '    enabled: false'];
   for (const [k, v] of Object.entries(body)) lines.push(`    ${k}: ${JSON.stringify(v)}`);
   fs.writeFileSync(file, lines.join('\n') + '\n');
   return file;

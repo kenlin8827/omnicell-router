@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowLeftRight,
-  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, ClipboardList, CloudDownload, Cpu,
+  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, CloudDownload, Cpu,
   DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
@@ -76,8 +76,8 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   ] },
   /** The name-resolution chain, in the order the pipeline walks it (ADR-0003):
    *  combos and tiers are the exact-match stages, auto is the smart cascade,
-   *  route-entries the explicit overrides, model-profiles the per-model slots,
-   *  each an exact-match or override stage of the name-resolution chain.
+   *  route-entries the explicit overrides, each an exact-match or override
+   *  stage of the name-resolution chain.
    *  There is deliberately NO terminal "unresolved name" page any more: the
    *  fallback mechanism was deleted outright (ADR-0026), and a name that
    *  survives none of these stages moves that answer to whoever owns the
@@ -87,7 +87,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/tiers', labelKey: 'nav.rules', icon: Network },
     { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
-    { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
     { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
@@ -121,7 +120,6 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/route-entries': { groupKey: 'nav.grpTraffic', titleKey: 'nav.routeEntries' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
-  '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/playground': { groupKey: 'nav.grpAccess', titleKey: 'nav.playground' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },

@@ -80,8 +80,8 @@ export class OpenCodeConnector {
 
   /**
    * Effective agent roster from the running v2 service (`GET /api/agent`).
-   * This is the runtime source of truth the model-profile binding UI prefers
-   * over static file scanning: config nodes, `agent(s)/*.md` files, built-ins
+   * This is the runtime source of truth the clients page's agent-binding table
+   * prefers over static file scanning: config nodes, `agent(s)/*.md` files,
    * and plugin-registered agents all arrive already merged by opencode itself.
    * Raw shape: `{ location, data: [{ id, name, mode, hidden, model: { providerID, id }, … }] }`.
    */

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { parse, parseDocument, isMap, isSeq, Document, YAMLMap } from 'yaml';
+import { parse, parseDocument, isMap, Document, YAMLMap } from 'yaml';
 import {
   ClientAdapter,
   createBackup,
@@ -9,7 +9,7 @@ import {
   restoreBackup,
   defaultGatewayPort,
 } from './base.js';
-import { ClientHookStatus, ClientModelSlot, ModelProfileBinding, VIRTUAL_AUTO_IDS } from '../types.js';
+import { ClientHookStatus, ClientModelSlot, VIRTUAL_AUTO_IDS } from '../types.js';
 import { resolveClientModelMeta, type ClientModelMeta } from './model-meta.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
 
@@ -86,31 +86,13 @@ const routerModelBareId = (v: unknown): string | undefined => {
 };
 
 /**
- * Sidecar next to models.yml (`models.yml.ocr-meta.json`) holding the
- * profile-link echo — omp validates both YAML files strictly and rewrites
- * them from its own UI, so the echo must never live inside them. The sidecar
- * is OCR-owned and never read by omp.
+ * Legacy OCR sidecar next to models.yml (`models.yml.ocr-meta.json`).
+ * Older builds wrote a profile-link echo here; the model-profile mechanism is
+ * gone (ADR-0031) — the sidecar is now only DELETED (teardown), never read
+ * or written.
  */
 function metaPathFor(configPath: string): string {
   return `${configPath}.ocr-meta.json`;
-}
-
-function readMeta(configPath: string): { profile?: ModelProfileBinding } {
-  try {
-    const p = metaPathFor(configPath);
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch {
-    // ignore
-  }
-  return {};
-}
-
-function writeMeta(configPath: string, meta: { profile?: ModelProfileBinding }): void {
-  try {
-    fs.writeFileSync(metaPathFor(configPath), JSON.stringify(meta, null, 2), 'utf8');
-  } catch {
-    // best effort
-  }
 }
 
 function removeMeta(configPath: string): void {
@@ -339,12 +321,10 @@ export class OmpClientAdapter implements ClientAdapter {
       // The fixed auto* alias block (see setup) is router-owned, not a user choice —
       // never echo it back as extra entries.
       extraModels: models.slice(1).map((m: any) => String(m.id)).filter(id => id && !VIRTUAL_AUTO_IDS.has(id)),
-      // Profile-link echo from the OCR sidecar — live only while hooked.
-      profile: url ? readMeta(configPath).profile : undefined,
     };
   }
 
-  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[]; /** Follow mode: the virtual tier subset the selected key's policy admits. */ virtualModels?: string[]; /** Effective role bindings (manual + profile-linked, merged by the console route): role → modelRef. */ agentModels?: Record<string, string>; /** Profile-link echo for the OCR sidecar meta: role → profile-slot key ('' id = un-link). */ profile?: ModelProfileBinding }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[]; /** Follow mode: the virtual tier subset the selected key's policy admits. */ virtualModels?: string[]; /** Effective role bindings (manual picks): role → modelRef. */ agentModels?: Record<string, string>; }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
     const dir = path.dirname(configPath);
 
@@ -443,17 +423,6 @@ export class OmpClientAdapter implements ClientAdapter {
       if (rolesOnDisk) createBackup(rolesPath);
       const modelRoles = ensureTopMap(rolesDoc, 'modelRoles');
 
-      // Profile un-link ('' id): strip the roles the sidecar says were
-      // profile-linked — they fall back to the tier preset below. Manual and
-      // foreign pins are never touched.
-      const profileIn = options?.profile;
-      const meta = readMeta(configPath);
-      if (profileIn !== undefined && !profileIn.id && meta.profile?.bindings) {
-        for (const role of Object.keys(meta.profile.bindings)) {
-          if (isRouterModelRef(modelRoles.get(role))) modelRoles.delete(role);
-        }
-      }
-
       // Explicit role map: bare ids are written qualified as
       // `omnicell-router/<id>`; values already carrying a provider prefix are
       // written verbatim (foreign pins keep their provider).
@@ -485,14 +454,6 @@ export class OmpClientAdapter implements ClientAdapter {
       // through it.)
       modelRoles.set('default', `${OMP_PROVIDER_KEY}/${main}`);
       writeYamlDocument(rolesPath, rolesDoc);
-      // Profile-link echo: recorded AFTER the writes so the sidecar reflects
-      // what this setup just applied ('' id clears it — the un-link sweep
-      // above already removed the linked roles).
-      if (profileIn !== undefined) {
-        if (profileIn.id) meta.profile = { id: profileIn.id, bindings: profileIn.bindings || {} };
-        else delete meta.profile;
-        writeMeta(configPath, meta);
-      }
       roleNote = `; ${modelRoles.items.length} model role(s) configured in ${rolesPath}`;
     }
 
@@ -502,114 +463,12 @@ export class OmpClientAdapter implements ClientAdapter {
     };
   }
 
-  /**
-   * Profile-change write-through: re-resolve the linked roles' slot keys
-   * against the JUST-SAVED profile slots and rewrite the linked modelRoles
-   * entries WITHOUT a full setup. Only LINKED roles are touched: manual picks
-   * and foreign pins stay byte-identical. A slot ref of 'auto' — or a slot
-   * the profile no longer defines — strips the role's router-owned entry
-   * (inherit the tier preset). A no-diff save writes nothing.
-   */
-  async refreshProfileBindings(
-    profileId: string,
-    tags: Record<string, string>,
-    slots: Record<string, string>
-  ): Promise<{ success: boolean; message: string }> {
-    const configPath = this.getConfigPath();
-    if (!fs.existsSync(configPath)) {
-      return { success: false, message: `Configuration file not found at ${configPath}` };
-    }
-    const data = readYamlJs(configPath);
-    if (!hookBaseUrl(data?.providers?.[OMP_PROVIDER_KEY])) {
-      return { success: false, message: 'omp is not hooked — nothing to refresh' };
-    }
-    const rolesPath = this.getRolesPath();
-    const rolesDoc = readYamlDocument(rolesPath);
-    if (rolesDoc === null) {
-      return { success: false, message: `Could not parse omp config at ${rolesPath} — fix it manually, then retry` };
-    }
-    const modelRoles = ensureTopMap(rolesDoc, 'modelRoles');
-
-    // Desired end-state per LINKED role: resolved ref, or null = strip the
-    // entry (slot missing / 'auto' inherit). Untagged roles never appear
-    // here — write-through cannot see or touch them.
-    const desired: Record<string, string | null> = {};
-    let skipped = 0;
-    for (const [role, slotKey] of Object.entries(tags || {})) {
-      const ref = (slots || {})[slotKey];
-      if (!ref || ref === 'auto') {
-        desired[role] = null;
-        skipped++;
-        continue;
-      }
-      desired[role] = ref;
-    }
-
-    // Diff guard against the live roles — an unrelated config save must not
-    // rewrite this file.
-    const changed = Object.entries(desired).some(([role, ref]) => {
-      const current = modelRoles.get(role);
-      const currentBare = routerModelBareId(current) ?? (typeof current === 'string' ? current : undefined);
-      return (ref || '') !== (currentBare || '');
-    });
-    const meta = readMeta(configPath);
-    const stableEcho = (o: Record<string, string>) =>
-      JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
-    const echoSame =
-      meta.profile?.id === profileId && stableEcho(meta.profile?.bindings || {}) === stableEcho(tags || {});
-    if (!changed && echoSame) {
-      return { success: true, message: 'omp profile links already up to date' };
-    }
-
-    createBackup(rolesPath);
-    let applied = 0;
-    for (const [role, ref] of Object.entries(desired)) {
-      if (ref === null) {
-        if (isRouterModelRef(modelRoles.get(role))) modelRoles.delete(role);
-        continue;
-      }
-      modelRoles.set(role, ref.includes('/') ? ref : `${OMP_PROVIDER_KEY}/${ref}`);
-      applied++;
-    }
-    // Prune emptied nodes (mirrors stripModelRoles).
-    if (modelRoles.items.length === 0) rolesDoc.delete('modelRoles');
-    writeYamlDocument(rolesPath, rolesDoc);
-
-    // Expose the linked refs in the omp provider models list (idempotent
-    // add — omp resolves a modelRoles selector against the provider's
-    // declared ids). Only MISSING ids are added; existing entries are never
-    // rewritten — a profile save must not stomp hand-edited records.
-    const refs = [...new Set(Object.values(desired).filter((v): v is string => !!v))];
-    if (refs.length > 0) {
-      const doc = readYamlDocument(configPath);
-      const providers = doc !== null ? (doc.get('providers') as unknown) : undefined;
-      const entry = isMap(providers) ? (providers.get(OMP_PROVIDER_KEY) as unknown) : undefined;
-      if (doc !== null && entry && isMap(entry)) {
-        const modelsSeq = entry.get('models') as unknown;
-        const listed: any[] = isSeq(modelsSeq) ? modelsSeq.toJSON() : [];
-        const known = new Set(listed.map((m: any) => String(m?.id ?? '')).filter(Boolean));
-        const missing = await buildOmpModelEntries(refs.filter(ref => !known.has(ref)));
-        if (missing.length > 0) {
-          entry.set('models', [...listed, ...missing]);
-          writeYamlDocument(configPath, doc);
-        }
-      }
-    }
-
-    meta.profile = { id: profileId, bindings: tags || {} };
-    writeMeta(configPath, meta);
-    return {
-      success: true,
-      message: `omp profile links refreshed (${applied} role(s)${skipped > 0 ? `, ${skipped} inherit` : ''})`,
-    };
-  }
-
   async teardown(): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
     // Model roles live in config.yml — cleaned on every teardown path (even
     // when models.yml is already gone) so no router residue survives.
     const roleNote = this.stripModelRoles();
-    // The profile-link sidecar is OCR-owned: it dies with the hook.
+    // The legacy OCR sidecar (a pre-ADR-0031 profile-link echo) dies with the hook.
     removeMeta(configPath);
 
     if (!fs.existsSync(configPath)) {

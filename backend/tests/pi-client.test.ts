@@ -8,12 +8,12 @@ import type { ProviderRegistry } from '../src/providers/registry.js';
 import type { CatalogProviderRecord } from '../src/opencode/catalog/types.js';
 
 /**
- * Pi adapter: profile-link layer (sidecar echo, write-through, unlink,
- * teardown sidecar cleanup). Each test gets a sandboxed config dir — the
- * adapter's settings path derives from getConfigPath, so overriding it
- * isolates both models.json and settings.json.
+ * Pi adapter: the subagent override layer (explicit agentModels picks, tier
+ * presets, teardown restore-then-strip). Each test gets a sandboxed config
+ * dir — the adapter's settings path derives from getConfigPath, so overriding
+ * it isolates both models.json and settings.json.
  */
-describe('Pi client adapter — profile links', () => {
+describe('Pi client adapter — subagent overrides', () => {
   let tmpDir: string;
   let configPath: string;
   let adapter: PiClientAdapter;
@@ -35,22 +35,21 @@ describe('Pi client adapter — profile links', () => {
 
   const readJson = (p: string): any => JSON.parse(fs.readFileSync(p, 'utf8'));
 
-  it('setup applies linked + manual role bindings, records the sidecar echo, and presets never steal explicit roles', async () => {
+  it('setup applies explicit agentModels picks, and presets never steal explicit roles', async () => {
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto', worker: 'anthropic/claude-x' }, // worker: manual foreign pin
-      agentModels: { scout: 'lite' }, // scout: profile-linked (resolved)
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
+      agentModels: { scout: 'lite' }, // scout: explicit pick
     });
     expect(res.success).toBe(true);
 
-    // The hook lands in models.json; the linked ref is exposed so pi can
+    // The hook lands in models.json; the picked ref is exposed so pi can
     // resolve the override against the provider's declared ids.
     const cfg = readJson(configPath);
     expect(cfg.providers['omnicell-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
     expect(cfg.providers['omnicell-router'].models.some((m: any) => m.id === 'lite')).toBe(true);
 
-    // settings.json: the linked role is qualified, the manual foreign pin is
+    // settings.json: the explicit role is qualified, the manual foreign pin is
     // verbatim, and a preset role (researcher — discoverable roster is empty in
     // the sandbox, so the preset table applies) got its tier default.
     const settings = readJson(path.join(tmpDir, 'settings.json'));
@@ -58,95 +57,42 @@ describe('Pi client adapter — profile links', () => {
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
     expect(settings.subagents.agentOverrides.researcher.model).toBe('omnicell-router/lite');
 
-    // Sidecar echo (never settings.json — a running pi wipes foreign keys there).
-    const meta = readJson(`${configPath}.ocr-meta.json`);
-    expect(meta.profile).toEqual({ id: 'p1', bindings: { scout: 'flash' } });
-
     const status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
-    expect(status.profile?.id).toBe('p1');
-    expect(status.profile?.bindings.scout).toBe('flash');
   });
 
-  it('refreshProfileBindings re-points linked roles only and is a no-op when nothing changed', async () => {
+  it('re-setup without agentModels: router-owned alias picks normalize, manual foreign pins survive', async () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto', worker: 'anthropic/claude-x' },
       agentModels: { scout: 'lite' },
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
-    });
-
-    const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
-    expect(res.success).toBe(true);
-    const settings = readJson(path.join(tmpDir, 'settings.json'));
-    expect(settings.subagents.agentOverrides.scout.model).toBe('omnicell-router/qwen-max');
-    // Manual foreign pin untouched by the write-through.
-    expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
-    // The new ref joined the provider models list.
-    const cfg = readJson(configPath);
-    expect(cfg.providers['omnicell-router'].models.some((m: any) => m.id === 'qwen-max')).toBe(true);
-
-    // No-diff save → explicit no-op (no settings rewrite).
-    const again = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
-    expect(again.message).toContain('already up to date');
-  });
-
-  it("refreshProfileBindings treats an 'auto' slot ref as inherit and strips the override", async () => {
-    await adapter.setup({
-      port: 4000,
-      models: { main: 'auto' },
-      agentModels: { scout: 'lite' },
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
-    });
-
-    const res = await adapter.refreshProfileBindings('p1', { scout: 'autoSlot' }, { autoSlot: 'auto' });
-    expect(res.success).toBe(true);
-    const settings = readJson(path.join(tmpDir, 'settings.json'));
-    // The role had only the model field — the whole entry is pruned; no
-    // literal omnicell-router/auto pin is ever written.
-    expect(settings.subagents.agentOverrides.scout).toBeUndefined();
-    expect(JSON.stringify(settings)).not.toContain('omnicell-router/auto"');
-  });
-
-  it("setup with profile id '' un-links: tagged roles fall back to presets, manual pins survive, echo clears", async () => {
-    await adapter.setup({
-      port: 4000,
-      models: { main: 'auto', worker: 'anthropic/claude-x' },
-      agentModels: { scout: 'lite' },
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
 
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto', worker: 'anthropic/claude-x' },
-      profile: { id: '', bindings: {} },
     });
     expect(res.success).toBe(true);
 
     const settings = readJson(path.join(tmpDir, 'settings.json'));
-    // The linked role's override was stripped and the tier preset refilled it.
+    // The router-owned alias pick normalizes to the current tier preset.
     expect(settings.subagents.agentOverrides.scout.model).toBe('omnicell-router/lite');
-    // The manual foreign pin survived the un-link.
+    // The manual foreign pin survived the re-setup.
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
-
-    const meta = readJson(`${configPath}.ocr-meta.json`);
-    expect(meta.profile).toBeUndefined();
-    expect((await adapter.getStatus()).profile).toBeUndefined();
   });
 
-  it('teardown removes the sidecar along with the hook', async () => {
+  it('teardown removes a legacy sidecar along with the hook', async () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
       agentModels: { scout: 'lite' },
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
-    expect(fs.existsSync(`${configPath}.ocr-meta.json`)).toBe(true);
+    // A pre-ADR-0031 build wrote a profile-link echo sidecar here.
+    fs.writeFileSync(`${configPath}.ocr-meta.json`, JSON.stringify({ profile: { id: 'p1', bindings: { scout: 'flash' } } }), 'utf8');
 
     const res = await adapter.teardown();
     expect(res.success).toBe(true);
     expect(fs.existsSync(`${configPath}.ocr-meta.json`)).toBe(false);
-    expect((await adapter.getStatus()).profile).toBeUndefined();
   });
 });
 
@@ -356,33 +302,5 @@ describe('Pi client adapter — model metadata', () => {
     await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['obscure/model-x'], contextWindow: 262144 });
     const e = entryOf(readJson(configPath), 'obscure/model-x');
     expect(e).toEqual({ id: 'obscure/model-x', contextWindow: 262144 });
-  });
-
-  it('refreshProfileBindings adds missing refs with metadata and never rewrites existing entries', async () => {
-    injectDeps({
-      models: {
-        'prov/thinker': {
-          id: 'prov/thinker', provider: 'prov', upstreamModel: 'thinker', tier: 'pro',
-          pricing: { input: 2, output: 8, cacheRead: 0.5 },
-          supportedReasoningEfforts: ['low', 'medium', 'high'],
-        },
-      },
-    });
-    await adapter.setup({ port: 4000, models: { main: 'auto' } });
-    // Hand-edited existing record must survive the write-through untouched.
-    const handEdited = { id: 'legacy', contextWindow: 999, maxTokens: 123 };
-    const cfg0 = readJson(configPath);
-    cfg0.providers['omnicell-router'].models.push(handEdited);
-    fs.writeFileSync(configPath, JSON.stringify(cfg0));
-
-    const res = await adapter.refreshProfileBindings('p1', { scout: 'slot' }, { slot: 'prov/thinker' });
-    expect(res.success).toBe(true);
-    const cfg = readJson(configPath);
-    const added = entryOf(cfg, 'prov/thinker');
-    expect(added.reasoning).toBe(true);
-    expect(added.thinkingLevelMap.high).toBe('high');
-    expect(added.thinkingLevelMap.xhigh).toBeNull();
-    // existing entries — including the hand-edited one — untouched
-    expect(cfg.providers['omnicell-router'].models.find((m: any) => m.id === 'legacy')).toEqual(handEdited);
   });
 });

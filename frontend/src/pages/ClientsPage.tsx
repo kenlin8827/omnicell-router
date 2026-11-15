@@ -5,10 +5,10 @@ import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
-import { ProfileLinkTable } from '../components/ProfileLinkTable';
-import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
+import { AgentRowsTable } from '../components/AgentRowsTable';
+import { SmartAssignDialog, type SmartAssignTarget } from '../components/SmartAssignDialog';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
-import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, type GatewayCfgDraft } from '../lib/plugin-config';
@@ -65,7 +65,7 @@ const clientActionErrorText = (err: unknown, t: TFn): string => {
 /**
  * Clients whose non-main slots are ROLE rows (pi's subagent roles, omp's
  * modelRoles): main lives in modelSel, roles in the link-table draft
- * (bindSel) with `slot:<key>` profile tags — see piLinkPayload/applySmartAssignments.
+ * (bindSel) — see piLinkPayload/applySmartAssignments.
  */
 const isRoleTableClient = (name: string): boolean => name === 'pi' || name === 'omp';
 
@@ -182,11 +182,6 @@ export const ClientsPage: React.FC = () => {
   const [modeSel, setModeSel] = useState<Record<string, 'none' | 'custom' | 'follow'>>({});
   /** keyId → effective-model view cache (follow mode, lazy-loaded) */
   const [keyModels, setKeyModels] = useState<Record<string, Awaited<ReturnType<typeof api.getKeyModels>>>>({});
-  /** Model profiles (config.yaml `modelProfiles`) for the opencode agent binding UI */
-  const [profiles, setProfiles] = useState<ModelProfileView[]>([]);
-  /** Profiles fetch settled — the seed effect must not compare memory against a
-   *  list that is merely still loading (empty ≠ none). */
-  const [profilesReady, setProfilesReady] = useState(false);
   /** OpenCode agent inventory (lazy: loaded when the opencode form expands) */
   const [agents, setAgents] = useState<OpenCodeAgentView[] | null>(null);
   /** Inventory fetch failed. `agents` deliberately STAYS null: the setup
@@ -194,9 +189,7 @@ export const ClientsPage: React.FC = () => {
    *  an empty-list fallback here would let a plain Apply sweep every binding
    *  off the config. Retry re-arms the lazy-load effect. */
   const [agentsError, setAgentsError] = useState(false);
-  /** Selected profile id per client ('' = no profile / un-apply) */
-  const [profileSel, setProfileSel] = useState<Record<string, string>>({});
-  /** Per-client agent-name → slot-key bindings (model profile application) */
+  /** Per-client agent/role draft: name → gateway model ref ('' = inherit). */
   const [bindSel, setBindSel] = useState<Record<string, Record<string, string>>>({});
   /** Agent/role link table visibility (opencode, pi). OFF = the form declares
    *  "not configuring subagents": the table hides and the setup payload omits
@@ -213,16 +206,12 @@ export const ClientsPage: React.FC = () => {
    *  hydration must happen exactly once, never on late effect re-runs. */
   const extrasSeeded = useRef<Set<string>>(new Set());
   /** Smart-assign dialog target: client name + the sub-agent rows built from
-   *  the CURRENT draft state, the candidate list, and whether assignments are
-   *  profile slot links (follows the page's current profile selection). */
+   *  the CURRENT draft state, plus the gateway-model candidate basis. */
   const [smartFor, setSmartFor] = useState<{
     name: string;
     targets: SmartAssignTarget[];
-    /** Profile-mode only: the linked profile's slot keys (+ model note). */
-    candidates?: SmartAssignCandidate[];
-    profileMode: boolean;
-    /** No-profile candidate basis: gateway models, permission-scoped to the
-     *  client's selected API key when one is picked. */
+    /** Candidate basis: gateway models, permission-scoped to the client's
+     *  selected API key when one is picked. */
     basis: { id: string; kind?: string; members?: number; wire?: string }[];
     scopeHint: string;
   } | null>(null);
@@ -280,11 +269,8 @@ export const ClientsPage: React.FC = () => {
         for (const c of data.clients || []) {
           if (next[c.name] === undefined) {
             const slots: Record<string, string> = {};
-            // Profile-link echo re-tags non-main slots as `slot:<key>` drafts —
-            // the picker shows the link entry instead of the resolved ref.
-            const tags = c.profile?.bindings || {};
             for (const s of clientSlots(c)) {
-              slots[s.key] = s.key !== 'main' && tags[s.key] ? `slot:${tags[s.key]}` : (s.value || s.default || 'auto');
+              slots[s.key] = s.value || s.default || 'auto';
             }
             next[c.name] = slots;
           }
@@ -316,17 +302,15 @@ export const ClientsPage: React.FC = () => {
         })
         .catch(err => console.error('gateway plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
-      // seeded from the slot echo (bare ref / native pin verbatim), then the
-      // profile-link echo re-tags linked roles to `slot:<key>`.
+      // seeded from the slot echo (bare ref / native pin verbatim).
       setBindSel(prev => {
         const next = { ...prev };
         for (const c of data.clients || []) {
           if (!isRoleTableClient(c.name) || next[c.name] !== undefined) continue;
-          const tags = c.profile?.bindings || {};
           const rows: Record<string, string> = {};
           for (const s of clientSlots(c)) {
             if (s.key === 'main') continue;
-            rows[s.key] = tags[s.key] ? `slot:${tags[s.key]}` : (s.value || '');
+            rows[s.key] = s.value || '';
           }
           next[c.name] = rows;
         }
@@ -339,8 +323,6 @@ export const ClientsPage: React.FC = () => {
         }
         return next;
       });
-      // Profile selections seed from a dedicated effect (applied echo wins,
-      // then the environment memory) — both sources must be loaded first.
     } catch (err) {
       console.error(err);
     }
@@ -350,7 +332,6 @@ export const ClientsPage: React.FC = () => {
     loadClients();
     api.listGatewayModels().then(setModels).catch(() => {});
     api.getApiKeys().then(r => setApiKeys((r.keys || []).filter(k => k.enabled))).catch(() => {});
-    api.getModelProfiles().then(p => { setProfiles(p); setProfilesReady(true); }).catch(() => setProfilesReady(true));
     api.getClientProfileMemory().then(m => { memRef.current = m; setMem(m); }).catch(() => { memRef.current = {}; setMem({}); });
     api.getProxyCaMeta().then(m => setCaPath(m.path)).catch(() => {});
     api.getProxyCaTrust().then(setCaTrust).catch(() => {});
@@ -516,14 +497,12 @@ export const ClientsPage: React.FC = () => {
     );
   };
 
-  /** Seed selections once BOTH sources are in: the committed form memory
-   *  (the full snapshot the last setup applied — see rememberDraft) wins —
-   *  the form restores what the user last hooked, not external drift — and
-   *  the live echo fills what memory cannot express (foreign pins, installs
-   *  made outside this console).
+  /** Seed selections once the committed form memory is in: the full snapshot
+   *  the last setup applied (see rememberDraft) wins — the form restores what
+   *  the user last hooked, not external drift.
    *  Per-client undefined guard never clobbers in-page edits. */
   useEffect(() => {
-    if (mem === null || !profilesReady) return;
+    if (mem === null) return;
     // API-key form memory: the last-written key re-seeds the picker (resolved
     // by stable id, never the raw token). A stale id (deleted/disabled key)
     // seeds nothing — setup then demands a fresh pick. Gateway clients are
@@ -540,43 +519,20 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
-    setProfileSel(prev => {
-      const next = { ...prev };
-      for (const c of clients) {
-        if (next[c.name] !== undefined) continue;
-        // Stale-memory defense: an id pointing at a DELETED profile restores as
-        // "no profile" — the combobox must never seed a non-existent option.
-        const candidate = mem[c.name]?.profile || c.profile?.id || '';
-        next[c.name] = candidate && profiles.some(p => p.id === candidate) ? candidate : '';
-      }
-      return next;
-    });
     setLinksOn(prev => {
       const next = { ...prev };
       for (const c of clients) {
         if (c.name !== 'opencode' && !isRoleTableClient(c.name)) continue;
         if (next[c.name] !== undefined) continue;
-        // Persisted choice wins; absent → ON iff links already exist (echo or
-        // memory) — a linked client must not wake up looking unconfigured,
+        // Persisted choice wins; absent → ON iff agent picks already exist in
+        // memory — a configured client must not wake up looking unconfigured,
         // a fresh one stays collapsed.
         const memEntry = mem[c.name];
         if (memEntry?.linksOn !== undefined) {
           next[c.name] = memEntry.linksOn;
           continue;
         }
-        const tagCount = Object.keys(c.profile?.bindings || memEntry?.bindings || {}).length;
-        next[c.name] = tagCount > 0;
-      }
-      return next;
-    });
-    setBindSel(prev => {
-      const next = { ...prev };
-      for (const c of clients) {
-        // opencode seeds from the live agent inventory; pi/omp seed from their
-        // role slots (see loadClients) — their draft values carry slot links,
-        // not just refs.
-        if (c.name === 'opencode' || isRoleTableClient(c.name)) continue;
-        if (next[c.name] === undefined) next[c.name] = mem[c.name]?.bindings || c.profile?.bindings || {};
+        next[c.name] = Object.keys(memEntry?.agentModels || {}).length > 0;
       }
       return next;
     });
@@ -607,7 +563,7 @@ export const ClientsPage: React.FC = () => {
     // Extras: the committed snapshot wins over the echo seed on first
     // hydration (loadClients already claimed the slot from the config echo).
     // A ref marks each client hydrated so late effect re-runs (apiKeys or
-    // profiles arriving) never clobber in-page edits.
+    // memory arriving) never clobber in-page edits.
     const freshExtras = clients.filter(c => !extrasSeeded.current.has(c.name));
     for (const c of freshExtras) extrasSeeded.current.add(c.name);
     setExtraSel(prev => {
@@ -618,40 +574,26 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
-  }, [clients, mem, profilesReady, profiles, apiKeys]);
-
-  /** Slot-key tags behind a client's drafts — the `slot:<key>` values only.
-   *  opencode keeps them in the agent-table draft (bindSel); pi/omp keep them
-   *  in the role-link table draft (bindSel — loadClients seeds it, the table
-   *  renders it). Memory persists tags so links survive reloads. */
-  const linkTagsOf = (draft: Record<string, string> | undefined): Record<string, string> =>
-    Object.fromEntries(
-      Object.entries(draft || {})
-        .filter(([k, v]) => k !== 'main' && typeof v === 'string' && v.startsWith('slot:'))
-        .map(([a, v]) => [a, v.slice(5)])
-    );
+  }, [clients, mem, apiKeys]);
 
   /** COMMIT-POINT form memory: called ONLY when a setup APPLIED something —
    *  never on mid-form edits (draft fiddling must not overwrite the memory of
    *  the last applied configuration; it would also storm the config-write
    *  path with whole-config POSTs per pick). Snapshots the FULL form state
-   *  the setup applied: link tags, manual role/agent refs (native pins
-   *  included), pi/omp main pick, slot drafts, the custom model-list draft,
-   *  mode, key id and the link-table toggle. Written into the ACTIVE
-   *  environment's config.yaml (book-set scoped — switching envs switches
-   *  the memory too). memRef keeps two rapid commits from clobbering each
-   *  other via a stale snapshot. */
+   *  the setup applied: manual role/agent refs (native pins included), pi/omp
+   *  main pick, slot drafts, the custom model-list draft, mode, key id and
+   *  the link-table toggle. Written into the ACTIVE environment's config.yaml
+   *  (book-set scoped — switching envs switches the memory too). memRef keeps
+   *  two rapid commits from clobbering each other via a stale snapshot. */
   const rememberDraft = (clientName: string) => {
     const ms = modelSel[clientName] || {};
     const ds = bindSel[clientName] || {};
     const roleRows = isRoleTableClient(clientName) || clientName === 'opencode';
     const entry: ClientProfileMemoryEntry = {
-      profile: profileSel[clientName] || '',
-      // Link tags plus the raw manual refs verbatim (native pins included) —
-      // the snapshot must reproduce the rows exactly as the form showed them.
-      bindings: linkTagsOf(ds),
+      // The raw manual refs verbatim (native pins included) — the snapshot
+      // must reproduce the rows exactly as the form showed them.
       agentModels: roleRows
-        ? Object.fromEntries(Object.entries(ds).filter(([, v]) => v && v !== 'auto' && !v.startsWith('slot:')))
+        ? Object.fromEntries(Object.entries(ds).filter(([, v]) => v && v !== 'auto'))
         : undefined,
       models: clientName === 'opencode'
         ? undefined
@@ -712,27 +654,19 @@ export const ClientsPage: React.FC = () => {
 
   /** Seed opencode's agent-link draft once the inventory loads: each row
    *  mirrors the config's current agent model (router-owned values arrive
-   *  stripped to the bare ref; native pins verbatim), then the profile-link
-   *  echo/memory re-tags linked rows to `slot:<key>` so they keep following
-   *  the profile. One draft per inventory load — after an apply the cache is
-   *  dropped (setAgents(null)) and the draft entry is cleared so the fresh
-   *  committed truth re-seeds; the guard keeps in-page edits alive across
-   *  unrelated clients-load refreshes. */
+   *  stripped to the bare ref; native pins verbatim). One draft per inventory
+   *  load — after an apply the cache is dropped (setAgents(null)) and the
+   *  draft entry is cleared so the fresh committed truth re-seeds; the guard
+   *  keeps in-page edits alive across unrelated clients-load refreshes. */
   useEffect(() => {
     if (agents === null) return;
-    const c = clients.find(x => x.name === 'opencode');
-    if (!c) return;
     setBindSel(prev => {
       if (prev['opencode'] !== undefined) return prev; // in-page edits win until the next apply commit
-      const tags = c.profile?.bindings || mem?.['opencode']?.bindings || {};
       const next: Record<string, string> = {};
       for (const a of agents) next[a.name] = a.model || '';
-      for (const [agent, slotKey] of Object.entries(tags)) {
-        if (typeof slotKey === 'string' && slotKey && agent in next) next[agent] = `slot:${slotKey}`;
-      }
       return { ...prev, opencode: next };
     });
-  }, [agents, clients, mem]);
+  }, [agents]);
 
   /** `product` narrows a family card's action to ONE product (JetBrains IDEs). */
   const handleToggle = async (clientName: string, action: 'setup' | 'teardown', product?: string) => {
@@ -831,7 +765,6 @@ export const ClientsPage: React.FC = () => {
         extraModels: extras,
         ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
-        profile: piPayload.profile,
         ...agentPayload,
         ...(product ? { product } : {}),
       } : product ? { product } : undefined);
@@ -895,8 +828,6 @@ export const ClientsPage: React.FC = () => {
   /**
    * Agent-binding payload for the opencode setup call. Draft row values:
    *  - '' / 'auto'         → omitted (inherit the default model);
-   *  - `slot:<key>`        → profile-linked row: tag travels via `profile.bindings`
-   *                          and resolves server-side against the profile's slots;
    *  - a gateway-known ref → manual row, sent via `agentModels`;
    *  - anything else       → a native (non-router) pin echoed from the config —
    *                          never re-sent (re-sending would re-route it through
@@ -904,26 +835,20 @@ export const ClientsPage: React.FC = () => {
    * Omitted entirely until the agent inventory has loaded: a stale/absent draft
    * must never touch the agent node.
    */
-  const opencodeAgentPayload = (clientName: string): { agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+  const opencodeAgentPayload = (clientName: string): { agentModels?: Record<string, string> } => {
     // agents === null: inventory not loaded — a stale/absent draft must never
     // touch the agent node. Switch OFF: the form declares "not configuring" —
     // the payload is omitted entirely (no sweep; existing overrides survive).
     if (clientName !== 'opencode' || agents === null || linksOn[clientName] === false) return {};
     const known = new Set(models.map(m => m.id));
     const manual: Record<string, string> = {};
-    const tags: Record<string, string> = {};
     for (const [agent, raw] of Object.entries(bindSel[clientName] || {})) {
       const v = (raw || '').trim();
       if (!v || v === 'auto') continue;
-      if (v.startsWith('slot:')) {
-        const k = v.slice(5);
-        if (k) tags[agent] = k;
-        continue;
-      }
       if (!known.has(v)) continue;
       manual[agent] = v;
     }
-    return { agentModels: manual, profile: { id: profileSel[clientName] || '', bindings: tags } };
+    return { agentModels: manual };
   };
 
   /** Restore the form drafts to the remembered form state (the write-through
@@ -937,45 +862,39 @@ export const ClientsPage: React.FC = () => {
   const handleResetModel = (clientName: string) => {
     const c = clients.find(x => x.name === clientName);
     const m = mem?.[clientName];
-    const memTags = m?.bindings || {};
     const memModels = m?.models || {};
     const memAgent = m?.agentModels || {};
-    // Slot drafts: memory link tags re-tag linked slots; the committed ref
-    // snapshot restores manual picks; the slot's role default is the last
-    // resort — the live echo is deliberately NOT consulted.
+    // Slot drafts: the committed ref snapshot restores manual picks; the
+    // slot's role default is the last resort — the live echo is deliberately
+    // NOT consulted.
     const slots: Record<string, string> = {};
     for (const s of clientSlots(c)) {
-      const tag = memTags[s.key];
-      slots[s.key] = s.key !== 'main' && tag ? `slot:${tag}` : (memModels[s.key] || s.default || 'auto');
+      slots[s.key] = memModels[s.key] || s.default || 'auto';
     }
     setModelSel(prev => ({ ...prev, [clientName]: slots }));
     setExtraSel(prev => ({ ...prev, [clientName]: m?.extraModels ? [...m.extraModels] : [] }));
     setVirtualSel(prev => ({ ...prev, [clientName]: m?.virtualModels }));
-    const candidate = m?.profile || '';
-    setProfileSel(prev => ({ ...prev, [clientName]: candidate && profiles.some(p => p.id === candidate) ? candidate : '' }));
     if (isRoleTableClient(clientName)) {
       // pi/omp role drafts live in bindSel (loadClients seeds them there and
-      // the link table renders from it): memory link tags re-link the role,
-      // the committed agentModels restore manual refs, everything else blanks.
+      // the link table renders from it): the committed agentModels restore
+      // manual refs, everything else blanks.
       setBindSel(prev => {
         const draft: Record<string, string> = {};
         for (const s of clientSlots(c)) {
           if (s.key === 'main') continue;
-          draft[s.key] = memTags[s.key] ? `slot:${memTags[s.key]}` : (memAgent[s.key] || '');
+          draft[s.key] = memAgent[s.key] || '';
         }
         return { ...prev, [clientName]: draft };
       });
     } else if (clientName === 'opencode') {
-      // Memory tags re-link agents, remembered agentModels restore manual refs
-      // verbatim; agents the user never picked stay unselected (blank — the
-      // mirror records what the form showed, it never invents an 'auto' pick).
+      // Remembered agentModels restore manual refs verbatim; agents the user
+      // never picked stay unselected (blank — the mirror records what the form
+      // showed, it never invents an 'auto' pick).
       setBindSel(prev => {
         const draft: Record<string, string> = {};
-        for (const a of agents || []) draft[a.name] = memTags[a.name] ? `slot:${memTags[a.name]}` : (memAgent[a.name] || '');
+        for (const a of agents || []) draft[a.name] = memAgent[a.name] || '';
         return { ...prev, [clientName]: draft };
       });
-    } else {
-      setBindSel(prev => ({ ...prev, [clientName]: { ...memTags } }));
     }
     setModeSel(prev => ({ ...prev, [clientName]: m?.modelMode || 'none' }));
     setApiKeySel(prev => {
@@ -985,7 +904,7 @@ export const ClientsPage: React.FC = () => {
       return next;
     });
     if (clientName === 'opencode' || isRoleTableClient(clientName)) {
-      setLinksOn(prev => ({ ...prev, [clientName]: m?.linksOn ?? Object.keys(memTags).length > 0 }));
+      setLinksOn(prev => ({ ...prev, [clientName]: m?.linksOn ?? Object.keys(memAgent).length > 0 }));
     }
   };
 
@@ -1021,54 +940,34 @@ export const ClientsPage: React.FC = () => {
   };
 
   /** pi/omp payload: main stays a plain model pick; the role-link table's
-   *  drafts split into manual refs (agentModels) and profile-link tags
-   *  (`slot:<key>`, resolved server-side). Native pins echoed verbatim are
+   *  drafts become manual refs (agentModels). Native pins echoed verbatim are
    *  never re-sent. Other clients pass their slot map through unchanged. */
-  const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+  const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string> } => {
     if (!isRoleTableClient(clientName)) return { models: modelSel[clientName] || {} };
     // Switch OFF = "not configuring roles": main still applies, the role
     // payload is omitted entirely (no sweep; existing overrides survive).
     if (linksOn[clientName] === false) return { models: { main: modelSel[clientName]?.main || 'auto' } };
     const known = new Set(models.map(m => m.id));
     const manual: Record<string, string> = {};
-    const tags: Record<string, string> = {};
     for (const [role, raw] of Object.entries(bindSel[clientName] || {})) {
       const v = (raw || '').trim();
       if (!v || v === 'auto') continue;
-      if (v.startsWith('slot:')) {
-        const k = v.slice(5);
-        if (k) tags[role] = k;
-        continue;
-      }
       if (!known.has(v)) continue;
       manual[role] = v;
     }
     return {
       models: { main: modelSel[clientName]?.main || 'auto' },
       agentModels: manual,
-      profile: { id: profileSel[clientName] || '', bindings: tags },
     };
   };
 
   /** Slot/agent rows the smart-assign decider fills — built from the CURRENT
-   *  draft state (never the saved config). Main/primary rows are included in
-   *  plain mode (the decider assigns a direct model ref verbatim). In profile
-   *  mode pi's `main` is EXCLUDED: main is never a profile link (see
-   *  `linkTagsOf`/`piLinkPayload`), and a `slot:<key>` wrap would write an
-   *  illegal draft into pi's main model pick. Candidate semantics follow the
-   *  page's CURRENT profile selection: a picked profile means assignments are
-   *  its SLOT KEYS (linked as `slot:<key>` drafts, candidates annotated with
-   *  the slot's model); no profile means direct gateway model refs. */
+   *  draft state (never the saved config). Assignments are direct gateway
+   *  model refs written into the drafts verbatim. */
   const openSmartAssign = async (c: ClientStatus) => {
-    const profileId = profileSel[c.name] || '';
-    const profile = profiles.find(p => p.id === profileId);
-    const profileMode = !!profile;
     let targets: SmartAssignTarget[];
     if (isRoleTableClient(c.name)) {
       targets = clientSlots(c)
-        // Profile mode: skip `main` — it stays a plain model pick, never a
-        // profile-link tag (`slot:<key>` would corrupt the primary model).
-        .filter(s => !profileMode || s.key !== 'main')
         .map(s => ({
           key: s.key,
           label: slotLabels[s.key] || s.key,
@@ -1083,11 +982,10 @@ export const ClientsPage: React.FC = () => {
       targets = clientSlots(c).map(s => ({ key: s.key, label: slotLabels[s.key] || s.key, role: s.description, current: modelSel[c.name]?.[s.key] }));
     }
     if (targets.length === 0) return;
-    if (profileMode && Object.keys(profile!.slots || {}).length === 0) return;
 
     // Permission scoping: the client's traffic will carry its selected API
-    // key, so plain-mode candidates only make sense within that key's model
-    // access. No key picked yet = show everything but say so (the setup will
+    // key, so candidates only make sense within that key's model access.
+    // No key picked yet = show everything but say so (the setup will
     // demand a key before anything is written).
     let basis = models;
     let scopeHint = t('clients.smartScopeNone');
@@ -1101,15 +999,13 @@ export const ClientsPage: React.FC = () => {
         scopeHint = t('clients.smartScopeKey');
       }
     }
-    if (!profileMode && basis.length === 0) {
+    if (basis.length === 0) {
       toast.error(t('clients.smartScopeEmpty'));
       return;
     }
     setSmartFor({
       name: c.name,
       targets,
-      candidates: profileMode ? Object.entries(profile!.slots || {}).map(([k, ref]) => ({ id: k, note: ref })) : undefined,
-      profileMode,
       basis,
       scopeHint,
     });
@@ -1117,29 +1013,24 @@ export const ClientsPage: React.FC = () => {
 
   /** Write decider assignments back into the page's DRAFT state (never
    *  config). pi's `main` is a slot pick (modelSel), not a link-table row —
-   *  split it off; everything else goes to the link-table draft. Profile mode
-   *  wraps each value as a `slot:<key>` link tag; plain mode writes the model
-   *  ref verbatim. `main` never arrives wrapped: profile mode excludes it
-   *  from the targets, and plain mode assigns a bare model ref. */
-  const applySmartAssignments = (clientName: string, assignments: Record<string, string>, profileMode: boolean) => {
-    const wrap = (v: string) => (profileMode ? `slot:${v}` : v);
-    const apply = (draft: Record<string, string>) =>
-      Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, wrap(v)]));
+   *  split it off; everything else goes to the link-table draft. Values are
+   *  model refs written verbatim. */
+  const applySmartAssignments = (clientName: string, assignments: Record<string, string>) => {
     if (isRoleTableClient(clientName)) {
       const { main, ...roles } = assignments;
-      if (main) setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), main: wrap(main) } }));
+      if (main) setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), main } }));
       if (Object.keys(roles).length > 0) {
-        setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(roles) } }));
+        setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...roles } }));
         setLinksOn(prev => ({ ...prev, [clientName]: true }));
       }
       return;
     }
     if (clientName === 'opencode') {
-      setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
+      setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...assignments } }));
       setLinksOn(prev => ({ ...prev, [clientName]: true }));
       return;
     }
-    setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
+    setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...assignments } }));
   };
 
   /** Multi-select toggle → route the next set into the two drafts: virtual
@@ -2133,12 +2024,9 @@ export const ClientsPage: React.FC = () => {
 
                 {isRoleTableClient(c.name) && (
                   <div style={{ gridColumn: '1 / -1' }}>
-                    <ProfileLinkTable
+                    <AgentRowsTable
                       rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
-                      emptyText={t('clients.profileAgentsEmpty')}
-                      profileId={profileSel[c.name] || ''}
-                      profiles={profiles}
-                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      emptyText={t('clients.rowsEmpty')}
                       headerAction={
                         <button
                           type="button"
@@ -2154,15 +2042,14 @@ export const ClientsPage: React.FC = () => {
                       }
                       gatewayOptions={modelOptions}
                       drafts={bindSel[c.name] || {}}
-                      appliedTags={c.profile?.bindings || {}}
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                      hint={t(c.name === 'pi' ? 'clients.profileApplyHintPi' : 'clients.profileApplyHintOmp')}
-                      label={t('clients.profileRowsLabel')}
+                      hint={t(c.name === 'pi' ? 'clients.rowsHintPi' : 'clients.rowsHintOmp')}
+                      label={t('clients.rowsLabel')}
                       on={linksOn[c.name]}
                       // Toggle is draft-only — the setup commit persists linksOn.
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
-                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
+                      linkedCount={Object.values(bindSel[c.name] || {}).filter(Boolean).length}
                     />
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '8px' }}>
                       {t(c.name === 'pi' ? 'clients.piMetaHint' : 'clients.ompMetaHint')}
@@ -2173,15 +2060,12 @@ export const ClientsPage: React.FC = () => {
 
                 {c.name === 'opencode' && (
                   <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>
-                    <ProfileLinkTable
+                    <AgentRowsTable
                       rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model || a.effective }))}
                       loading={agents === null}
                       error={agentsError}
                       onRetry={() => setAgentsError(false)}
-                      emptyText={t('clients.profileAgentsEmpty')}
-                      profileId={profileSel[c.name] || ''}
-                      profiles={profiles}
-                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      emptyText={t('clients.rowsEmpty')}
                       headerAction={
                         <button
                           type="button"
@@ -2197,15 +2081,14 @@ export const ClientsPage: React.FC = () => {
                       }
                       gatewayOptions={modelOptions}
                       drafts={bindSel[c.name] || {}}
-                      appliedTags={c.profile?.bindings || {}}
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                      hint={t('clients.profileApplyHint')}
-                      label={t('clients.profileRowsLabel')}
+                      hint={t('clients.rowsHint')}
+                      label={t('clients.rowsLabel')}
                       on={linksOn[c.name]}
                       // Toggle is draft-only — the setup commit persists linksOn.
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
-                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
+                      linkedCount={Object.values(bindSel[c.name] || {}).filter(Boolean).length}
                       showSort
                     />
                   </div>
@@ -2232,12 +2115,10 @@ export const ClientsPage: React.FC = () => {
             <SmartAssignDialog
               clientName={smartFor.name}
               targets={smartFor.targets}
-              candidates={smartFor.candidates}
-              profileMode={smartFor.profileMode}
               models={smartFor.basis}
               scopeHint={smartFor.scopeHint}
               onClose={() => setSmartFor(null)}
-              onApply={a => applySmartAssignments(smartFor.name, a, smartFor.profileMode)}
+              onApply={a => applySmartAssignments(smartFor.name, a)}
             />
           )}
 

@@ -234,7 +234,6 @@ export interface TranslationDict {
     yaml: string;
     auto: string;
     combos: string;
-    modelProfiles: string;
     proxy: string;
     /** Nav label: the Upstream group's model-scoped proxy pattern page. */
     proxyPatterns: string;
@@ -2344,48 +2343,39 @@ hiddenBadge: string;
     /** Proxy-tab prerequisite banners (inbound forward proxy off / not running) */
     fpPrereqOff: string;
     fpPrereqDown: string;
-    profileNone: string;
-    profileEmpty: string;
-    profileManage: string;
-    /** Shown while a profile is linked: save-time write-through notice. */
-    profileLinkedHint: string;
-    profileAgentsLoading: string;
+    /** Agent inventory fetch in flight (opencode). */
+    rowsLoading: string;
     /** Inventory fetch failed: explanatory line + retry button. */
-    profileAgentsError: string;
-    profileAgentsRetry: string;
-    profileAgentsEmpty: string;
-    profileBindNone: string;
-    /** Row picker far-right chip marking a profile-slot link entry. */
-    profileSlotBadge: string;
-    /** Profile switch carry-over: slot missing on the row + summary line. */
-    profileSlotMissing: string;
-    profileSlotCarry: string;
+    rowsError: string;
+    rowsRetry: string;
+    rowsEmpty: string;
+    rowsNone: string;
     /** Binding table ergonomics (25+ agents): filter box + mode groups. */
-    profileFilter: string;
-    profileClearBindings: string;
-    profileClearBindingsHint: string;
-    profileGroupPrimary: string;
-    profileGroupSubagent: string;
-    profileGroupAll: string;
-    profileAgentsNoMatch: string;
+    rowsFilter: string;
+    rowsClear: string;
+    rowsClearHint: string;
+    rowsGroupPrimary: string;
+    rowsGroupSubagent: string;
+    rowsGroupAll: string;
+    rowsNoMatch: string;
     /** Row-order button group: by agent name, or cluster rows by the name's last / first hyphen segment. */
-    profileSortLabel: string;
-    profileSortName: string;
-    profileSortSuffix: string;
-    profileSortPrefix: string;
-    profileSortHint: string;
-    profileCurrentModel: string;
-    profileApplyHint: string;
-    /** pi variant: write-through lands in settings.json agentOverrides; presets are the default. */
-    profileApplyHintPi: string;
-    profileApplyHintOmp: string;
+    rowsSortLabel: string;
+    rowsSortName: string;
+    rowsSortSuffix: string;
+    rowsSortPrefix: string;
+    rowsSortHint: string;
+    rowsCurrentModel: string;
+    rowsHint: string;
+    /** pi variant: picks land in settings.json agentOverrides; presets are the default. */
+    rowsHintPi: string;
+    rowsHintOmp: string;
     /** pi form hint: models.json entries are written with full model metadata. */
     piMetaHint: string;
     ompMetaHint: string;
     /** Short header-row label naming what the table binds (Subagent). */
-    profileRowsLabel: string;
+    rowsLabel: string;
     /** Switch-OFF explanatory line. */
-    profileRowsOffHint: string;
+    rowsOffHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
     tabHook: string;
     tabProxy: string;
@@ -3085,37 +3075,6 @@ hiddenBadge: string;
     testOkFailover: string;
     testFailed: string;
     testInactive: string;
-  };
-  modelProfiles: {
-    title: string;
-    hint: string;
-    empty: string;
-    newProfile: string;
-    edit: string;
-    delete: string;
-    deleteTitle: string;
-    saveBtn: string;
-    cancel: string;
-    savedNotice: string;
-    profileName: string;
-    nameFieldPlaceholder: string;
-    slots: string;
-    slotKeyPlaceholder: string;
-    slotRefPlaceholder: string;
-    addSlot: string;
-    deleteSlot: string;
-    moveUp: string;
-    moveDown: string;
-    noteLabel: string;
-    notePlaceholder: string;
-    warnBadId: string;
-    warnDupId: string;
-    warnEmptyName: string;
-    warnDupName: string;
-    warnNoSlots: string;
-    warnEmptySlot: string;
-    warnDupSlot: string;
-    warnEmptyRef: string;
   };
   pluginPage: {
     title: string;

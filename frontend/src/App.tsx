@@ -28,7 +28,6 @@ import { SettingsPage } from './pages/SettingsPage';
 import { PluginsManagePage } from './pages/PluginsManagePage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
-import { ModelProfilesPage } from './pages/ModelProfilesPage';
 import { RouteEntriesPage } from './pages/RouteEntriesPage';
 import { YamlPage } from './pages/YamlPage';
 import { HarnessPage } from './pages/HarnessPage';
@@ -80,7 +79,6 @@ export const App: React.FC = () => {
         <Route path="route-entries" element={<RouteEntriesPage />} />
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
-        <Route path="model-profiles" element={<ModelProfilesPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="providers" element={<KeysPage />} />

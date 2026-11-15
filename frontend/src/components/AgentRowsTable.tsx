@@ -1,16 +1,14 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Eraser } from 'lucide-react';
 import { Combobox, type ComboboxOption } from './Combobox';
 import { InfoTip } from './InfoTip';
 import { Switch } from './Switch';
-import type { ModelProfileView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 
 import { FONT_MONO } from '../lib/fonts';
 /** One linkable row: opencode passes agents (with an optional mode group),
  *  pi passes discovered subagent roles (mode omitted — single flat group). */
-export interface ProfileLinkRow {
+interface AgentRow {
   name: string;
   mode?: 'primary' | 'subagent' | 'all';
   /** Current model in the client config (bare ref or native pin), echoed verbatim. */
@@ -18,27 +16,20 @@ export interface ProfileLinkRow {
 }
 
 interface Props {
-  rows: ProfileLinkRow[];
+  rows: AgentRow[];
   /** Rows not loaded yet (opencode inventory fetch in flight). */
   loading?: boolean;
   /** Rows failed to load — retry affordance; drafts stay omitted from setup. */
   error?: boolean;
   onRetry?: () => void;
   emptyText: string;
-  /** Selected profile id ('' = none) + the profile inventory — the header
-   *  hosts the selector, the rows derive their Slot: shortcuts from it. */
-  profileId: string;
-  profiles: ModelProfileView[];
-  onProfileChange: (v: string) => void;
-  /** Optional control rendered right after the profile selector (e.g. the
-   *  smart-assign button — its candidate semantics follow that selector). */
+  /** Optional control rendered at the header row start (e.g. the
+   *  smart-assign button). */
   headerAction?: React.ReactNode;
   /** Gateway-addressable options (auto aliases + registered ids + combos). */
   gatewayOptions: ComboboxOption[];
-  /** name → draft value: '' | gateway ref | `slot:<key>`. */
+  /** name → draft value: '' | gateway ref. */
   drafts: Record<string, string>;
-  /** Applied link tags from the server echo — row ordering only. */
-  appliedTags: Record<string, string>;
   onDraft: (name: string, value: string) => void;
   onClear: () => void;
   /** Per-client apply hint line. */
@@ -50,33 +41,26 @@ interface Props {
    *  undefined the table always shows (no switch). */
   on?: boolean;
   onToggle?: (v: boolean) => void;
-  /** Linked-row count while OFF — keeps existing links visible at a glance. */
+  /** Bound-row count while OFF — keeps existing picks visible at a glance. */
   linkedCount?: number;
   showSort?: boolean;
 }
 
 /**
  * The agent/role link table shared by opencode and pi on the clients page.
- * Self-contained: the header row hosts the profile selector (slots drive the
- * row shortcuts), the filter box, sort and clear controls; each row links
- * either a profile slot (`slot:<key>` draft → follows the profile), a
- * concrete gateway model (manual), or nothing (inherit). Row options:
- * operations first (inherit / Slot: shortcuts with the emerald profile chip),
- * then gateway models, then an echoed native pin kept visible.
+ * Self-contained: the header row hosts the filter box, sort and clear
+ * controls; each row picks either a concrete gateway model or nothing
+ * (inherit the client's default model).
  */
-export const ProfileLinkTable: React.FC<Props> = ({
+export const AgentRowsTable: React.FC<Props> = ({
   rows,
   loading,
   error,
   onRetry,
   emptyText,
-  profileId,
-  profiles,
-  onProfileChange,
   headerAction,
   gatewayOptions,
   drafts,
-  appliedTags,
   onDraft,
   onClear,
   hint,
@@ -89,35 +73,17 @@ export const ProfileLinkTable: React.FC<Props> = ({
   const { t } = useI18n();
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState<'name' | 'suffix' | 'prefix'>('name');
-  const profile = profiles.find(p => p.id === profileId);
 
   const rowOptions = (current: string): ComboboxOption[] => {
-    const opts: ComboboxOption[] = [{ value: '', label: t('clients.profileBindNone') }];
-    if (profile) {
-      for (const [k, ref] of Object.entries(profile.slots || {})) {
-        opts.push({
-          value: `slot:${k}`,
-          label: k,
-          badge: t('clients.profileSlotBadge'),
-          badgeColor: 'var(--accent-emerald)',
-          meta: ref,
-        });
-      }
-    }
+    const opts: ComboboxOption[] = [{ value: '', label: t('clients.rowsNone') }];
     opts.push(...gatewayOptions);
     if (current && !opts.some(o => o.value === current)) opts.splice(1, 0, { value: current, label: current });
     return opts;
   };
 
-  const linkedEntries = Object.entries(drafts).filter(
-    ([, v]) => typeof v === 'string' && v.startsWith('slot:')
-  );
-  const keptCount = profile ? linkedEntries.filter(([, v]) => !!(profile.slots || {})[v.slice(5)]).length : 0;
-  const missingCount = linkedEntries.length - keptCount;
-
   // Name clustering key: 'suffix' = segment after the last '-', 'prefix' =
   // segment before the first '-'. Names without a hyphen use the full name.
-  const nameKey = (a: ProfileLinkRow): string => {
+  const nameKey = (a: AgentRow): string => {
     const n = a.name;
     if (sort === 'prefix') {
       const i = n.indexOf('-');
@@ -128,11 +94,11 @@ export const ProfileLinkTable: React.FC<Props> = ({
   };
 
   const hasModeGroups = rows.some(r => !!r.mode);
-  const groups: [ProfileLinkRow['mode'] | undefined, string | null][] = hasModeGroups
+  const groups: [AgentRow['mode'] | undefined, string | null][] = hasModeGroups
     ? [
-        ['primary', t('clients.profileGroupPrimary')],
-        ['subagent', t('clients.profileGroupSubagent')],
-        ['all', t('clients.profileGroupAll')],
+        ['primary', t('clients.rowsGroupPrimary')],
+        ['subagent', t('clients.rowsGroupSubagent')],
+        ['all', t('clients.rowsGroupAll')],
       ]
     : [[undefined, null]];
 
@@ -141,7 +107,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
 
   // Switch OFF: the whole table collapses to one switch row — the form
   // declares "not configuring subagents" (setup omits the agent payload).
-  // The linked count stays visible so existing links never go dark; the
+  // The bound count stays visible so existing picks never go dark; the
   // semantics ride an InfoTip instead of a text line.
   if (on === false) {
     return (
@@ -154,7 +120,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
               {(linkedCount || 0) > 0 ? ` · ${linkedCount}` : ''}
             </span>
           </label>
-          <InfoTip text={t('clients.profileRowsOffHint')} />
+          <InfoTip text={t('clients.rowsOffHint')} />
           <span style={{ flex: 1 }} />
         </div>
       </div>
@@ -178,42 +144,31 @@ export const ProfileLinkTable: React.FC<Props> = ({
             className="input"
             value={filter}
             onChange={e => setFilter(e.target.value)}
-            placeholder={t('clients.profileFilter')}
+            placeholder={t('clients.rowsFilter')}
             style={{ flex: 1, maxWidth: '260px', fontSize: 'var(--text-sm)', padding: '5px 10px' }}
           />
         )}
-        <div style={{ width: '280px', flexShrink: 0 }}>
-          <Combobox
-            value={profileId}
-            onChange={onProfileChange}
-            style={{ fontSize: 'var(--text-sm)', padding: '5px 10px' }}
-            options={[
-              { value: '', label: t('clients.profileNone') },
-              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
-            ]}
-          />
-        </div>
         {headerAction}
         {Object.values(drafts).some(Boolean) && (
           <button
             type="button"
             className="btn btn-sm"
             style={{ flexShrink: 0, fontSize: 'var(--text-xs)', marginRight: 4 }}
-            title={t('clients.profileClearBindingsHint')}
+            title={t('clients.rowsClearHint')}
             onClick={onClear}
           >
             <Eraser size={11} />
-            <span>{t('clients.profileClearBindings')}</span>
+            <span>{t('clients.rowsClear')}</span>
           </button>
         )}
         <span style={{ flex: 1 }} />
         {showSort && rows.length > 8 && (
-          <div style={{ display: 'flex', alignItems: 'stretch', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginRight: '2px', alignSelf: 'center' }}>{t('clients.profileSortLabel')}</span>
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: '4px', flexShrink: 0 }} title={t('clients.rowsSortHint')}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginRight: '2px', alignSelf: 'center' }}>{t('clients.rowsSortLabel')}</span>
             {([
-              ['name', t('clients.profileSortName')],
-              ['suffix', t('clients.profileSortSuffix')],
-              ['prefix', t('clients.profileSortPrefix')],
+              ['name', t('clients.rowsSortName')],
+              ['suffix', t('clients.rowsSortSuffix')],
+              ['prefix', t('clients.rowsSortPrefix')],
             ] as const).map(([k, label]) => (
               <button
                 key={k}
@@ -227,45 +182,29 @@ export const ProfileLinkTable: React.FC<Props> = ({
             ))}
           </div>
         )}
-        <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>{t('clients.profileManage')}</Link>
       </div>
-      {profiles.length === 0 && (
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-          {t('clients.profileEmpty')}{' '}
-          <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
-        </div>
-      )}
-      {profileId && profile && (
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-          {t('clients.profileLinkedHint', { name: profile.name || profileId })}
-        </div>
-      )}
       {loading ? (
         error ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: 'var(--text-sm)', color: 'var(--accent-amber)' }}>
-            <span>{t('clients.profileAgentsError')}</span>
+            <span>{t('clients.rowsError')}</span>
             <button type="button" className="btn btn-sm" style={{ fontSize: 'var(--text-xs)' }} onClick={onRetry}>
-              {t('clients.profileAgentsRetry')}
+              {t('clients.rowsRetry')}
             </button>
           </div>
         ) : (
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('clients.profileAgentsLoading')}</div>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('clients.rowsLoading')}</div>
         )
       ) : rows.length === 0 ? (
         <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{emptyText}</div>
       ) : visible.length === 0 ? (
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('clients.profileAgentsNoMatch')}</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('clients.rowsNoMatch')}</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {groups.map(([mode, label]) => {
             const groupRows = rows.filter(r => !mode || r.mode === mode);
-            // Applied-first: echo-tagged rows lead under the default 'name'
-            // sort so the eye lands on decisions already made; cluster sorts
-            // take over as the primary key instead.
             const sorted = groupRows
               .filter(r => !q || r.name.toLowerCase().includes(q))
               .sort((x, y) => (sort !== 'name' && showSort ? nameKey(x).localeCompare(nameKey(y)) : 0)
-                || (appliedTags[y.name] ? 1 : 0) - (appliedTags[x.name] ? 1 : 0)
                 || x.name.localeCompare(y.name));
             if (sorted.length === 0) return null;
             const boundN = sorted.filter(r => !!drafts[r.name]).length;
@@ -279,13 +218,11 @@ export const ProfileLinkTable: React.FC<Props> = ({
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: '6px 18px' }}>
                   {sorted.map(r => {
                     const bound = drafts[r.name] || '';
-                    const linked = bound.startsWith('slot:');
-                    const missing = linked && !(profile?.slots || {})[bound.slice(5)];
                     return (
                       <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         <span style={{ width: '140px', flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' }}>{r.name}</span>
                         {r.current && (
-                          <InfoTip text={`${t('clients.profileCurrentModel')}: ${r.current}`} />
+                          <InfoTip text={`${t('clients.rowsCurrentModel')}: ${r.current}`} />
                         )}
                         {/* The picker takes the row's remaining width instead of a
                             fixed 230px: model ids are long (vendor/model-suffix),
@@ -298,11 +235,6 @@ export const ProfileLinkTable: React.FC<Props> = ({
                             panelMinWidth={360}
                           />
                         </div>
-                        {missing && (
-                          <span style={{ flexShrink: 0, fontSize: 'var(--text-2xs)', color: 'var(--accent-amber)' }}>
-                            {t('clients.profileSlotMissing', { slot: bound.slice(5) })}
-                          </span>
-                        )}
                       </div>
                     );
                   })}
@@ -310,11 +242,6 @@ export const ProfileLinkTable: React.FC<Props> = ({
               </div>
             );
           })}
-          {(keptCount > 0 || missingCount > 0) && (
-            <div style={{ fontSize: 'var(--text-xs)', color: missingCount > 0 ? 'var(--accent-amber)' : 'var(--text-dim)' }}>
-              {t('clients.profileSlotCarry', { kept: keptCount, missing: missingCount })}
-            </div>
-          )}
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{hint}</div>
         </div>
       )}

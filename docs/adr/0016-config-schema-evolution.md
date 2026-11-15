@@ -32,6 +32,10 @@ home, no misc drawer:
 | `resilience` | Failure-recovery surface — what happens when a call fails | `circuitBreaker`, `retry` (`inplace` / `failover` / `escalation`) |
 | `ops` | Operations surface — observability, data sources, internal facilities | `requestCapture`, `tracePersist`, `logging`, `catalog`, `quota`, `quotaProbes`, `opencode`, `defaultModels` |
 
+The table above is the v1 grouping as decided here. Schema v2 (ADR-0031) dropped
+`routing.modelProfiles`; the current layout is `SECTION_MOVES_V2` in
+`migrations/v1-to-v2.ts`.
+
 The runtime `RouterConfig` object is UNCHANGED and stays flat: consumers
 keep reading `config.tiers`, `config.retry`, `config.fallback`. Grouping
 exists only between disk and runtime through ONE declarative mapping table

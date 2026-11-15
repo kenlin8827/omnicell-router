@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ClientHookKind, ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
+import { ClientHookKind, ClientHookStatus, SupportedClient } from '../types.js';
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_GATEWAY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
@@ -228,13 +228,7 @@ export interface ClientAdapter {
    * (the plain `ocr setup` CLI command passes no models). apiKey (optional):
    * gateway-issued key to write into the client's auth field.
    */
-  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: CLAUDE_CODE_MAX_CONTEXT_TOKENS + CLAUDE_CODE_AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings: agent/role name → resolved modelRef ('auto' = inherit the default model), written by the adapters that carry agent bindings. */ agentModels?: Record<string, string>; /** Profile-link echo written to the OCR sidecar meta when defined: agent → profile-slot key; id '' un-links. */ profile?: ModelProfileBinding; /** Family adapters: hook ONLY this product (an id from `getStatus().products`); absent = every detected product. Single-product adapters ignore it. */ product?: string }): Promise<ClientActionResult>;
-  /**
-   * Profile-change write-through: re-resolve the linked agents' slot keys
-   * against the just-saved profile slots and rewrite the client config
-   * without a full setup. Absent on adapters without profile links.
-   */
-  refreshProfileBindings?(profileId: string, tags: Record<string, string>, slots: Record<string, string>): Promise<ClientActionResult>;
+  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: CLAUDE_CODE_MAX_CONTEXT_TOKENS + CLAUDE_CODE_AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings: agent/role name → resolved modelRef ('auto' = inherit the default model), written by the adapters that carry agent bindings. */ agentModels?: Record<string, string>; /** Family adapters: hook ONLY this product (an id from `getStatus().products`); absent = every detected product. Single-product adapters ignore it. */ product?: string }): Promise<ClientActionResult>;
   /** Family adapters take the same optional `product` selector — teardown ONE
    *  product (the other, still-hooked one keeps its hook) or all of them. */
   teardown(options?: { product?: string }): Promise<ClientActionResult>;

@@ -178,35 +178,3 @@ export async function teardownClient(
   }
   return adapter.teardown(options);
 }
-
-/**
- * Profile-change write-through: called after every config save — every
- * adapter that supports profile links (opencode, pi) re-resolves its linked
- * rows against the NEW slots. Each adapter's diff guard makes unrelated saves
- * no-op, so this is cheap to run unconditionally. Returns notes for the save
- * response ('' = nothing to report).
- */
-export async function refreshClientProfileBindings(
-  profiles: { id: string; slots?: Record<string, string> }[]
-): Promise<string> {
-  const notes: string[] = [];
-  for (const adapter of getAllClientAdapters()) {
-    if (!adapter.refreshProfileBindings) continue;
-    const linked = (await adapter.getStatus()).profile;
-    if (!linked?.id) continue;
-    const profile = profiles.find(p => p.id === linked.id);
-    if (!profile) {
-      notes.push(`; note: ${adapter.name} profile '${linked.id}' no longer exists — its links were left as-is`);
-      continue;
-    }
-    const r = await adapter.refreshProfileBindings(linked.id, linked.bindings, profile.slots || {}).catch((err: unknown) => ({
-      success: false,
-      message: err instanceof Error ? err.message : String(err),
-    }));
-    // Failures surface in the save response (cp-failfast) — a silently dropped
-    // write-through would leave the client config stale with no signal.
-    if (!r.success) notes.push(`; warning: ${adapter.name} profile refresh FAILED: ${r.message}`);
-    else if (!r.message.includes('already up to date')) notes.push(`; ${r.message}`);
-  }
-  return notes.join('');
-}

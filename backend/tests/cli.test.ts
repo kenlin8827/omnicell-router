@@ -141,7 +141,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(parsed.provider['omnicell-router']).toBeUndefined();
   });
 
-  it('OpenCode adapter applies a model profile: per-agent overrides, exposed refs, sidecar echo, un-apply sweep', async () => {
+  it('OpenCode adapter applies per-agent overrides: exposed refs, and the un-apply sweep', async () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(
       configPath,
@@ -155,10 +155,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       port: 4000,
       models: { main: 'auto' },
       agentModels: { general: 'lite', explore: 'deepseek-v4-flash', build: 'auto', 'bad name': 'lite' },
-      profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max', build: 'flash' } },
     });
     expect(setupRes.success).toBe(true);
-    expect(setupRes.message).toContain('profile: prof1');
 
     // Fresh file (no agent node) → v2-native PLURAL `agents` home.
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -167,20 +165,15 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // 'auto' refs inherit the default model (no override); invalid names are skipped.
     expect(cfg.agents.build?.model).toBeUndefined();
     expect(cfg.agents['bad name']).toBeUndefined();
-    // Profile refs must be exposed in the provider model map — opencode validates
+    // Agent refs must be exposed in the provider model map — opencode validates
     // agent.<name>.model against it.
     expect(cfg.providers['omnicell-router'].models['deepseek-v4-flash']).toBeDefined();
 
-    let status = await adapter.getStatus();
-    expect(status.profile?.id).toBe('prof1');
-    expect(status.profile?.bindings.explore).toBe('max');
-
-    // Un-apply (id ''): sweep router-owned overrides + clear the sidecar echo.
+    // Un-apply ({}): sweep router-owned overrides.
     const unapplyRes = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
       agentModels: {},
-      profile: { id: '', bindings: {} },
     });
     expect(unapplyRes.success).toBe(true);
 
@@ -188,9 +181,6 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(after.agents.general.model).toBeUndefined();
     expect(after.agents.explore.model).toBeUndefined();
     expect(after.providers['omnicell-router']).toBeDefined(); // still hooked
-
-    status = await adapter.getStatus();
-    expect(status.profile).toBeUndefined();
   });
 
   it('OpenCode agent writes always land in the v2 agents home; the singular ghost node is swept', async () => {
@@ -221,7 +211,6 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       port: 4000,
       models: { main: 'auto' },
       agentModels: { scout: 'lite' },
-      profile: { id: 'p', bindings: { scout: 'flash' } },
     });
     expect(res.success).toBe(true);
 
@@ -258,7 +247,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
   });
 
-  it('OpenCode teardown sweeps every profile binding (no-backup surgical path) and clears the sidecar', async () => {
+  it('OpenCode teardown sweeps every agent binding (no-backup surgical path)', async () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(
       configPath,
@@ -272,7 +261,6 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       port: 4000,
       models: { main: 'auto' },
       agentModels: { general: 'lite', explore: 'glm-5.3' },
-      profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max' } },
     });
     // Force the surgical fallback path: drop the snapshot.
     fs.rmSync(`${configPath}.bak.ocr`, { force: true });
@@ -285,9 +273,6 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(restored.agents?.general?.model).toBeUndefined();
     expect(restored.agents?.explore?.model).toBeUndefined();
     expect(restored.model).toBe('anthropic/claude-sonnet-4');
-
-    const status = await adapter.getStatus();
-    expect(status.profile).toBeUndefined();
   });
 
   it('OpenCode agent bindings apply standalone (no profile payload); the retired subagent slot is ignored', async () => {
@@ -319,84 +304,6 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     await adapter.setup({ port: 4000, models: { main: 'auto' } });
     cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(cfg.agents.keeper.model).toBe('omnicell-router/plus');
-  });
-
-  it('refreshProfileBindings rewrites linked agents on profile change without a full setup', async () => {
-    const configPath = path.join(tmpDir, 'opencode.json');
-    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
-    const adapter = new OpenCodeClientAdapter();
-    adapter.getConfigPath = () => configPath;
-
-    // Hook + link via a normal setup (sidecar echo records the slot tags).
-    await adapter.setup({
-      port: 4000,
-      models: { main: 'auto' },
-      agentModels: { scout: 'lite' },
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
-    });
-
-    // The profile's 'flash' slot re-points → write-through updates the agent node.
-    const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
-    expect(res.success).toBe(true);
-    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.scout.model).toBe('omnicell-router/glm-5.3');
-    // The new ref is exposed in the provider models map — opencode validates
-    // agent.<name>.model against it.
-    expect(cfg.providers['omnicell-router'].models['glm-5.3']).toBeDefined();
-    expect((await adapter.getStatus()).profile?.bindings).toEqual({ scout: 'flash' });
-
-    // A no-diff refresh writes nothing new (still hooked, values identical).
-    const again = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
-    expect(again.message).toContain('already up to date');
-
-    // Slot removed from the profile → override swept (inherit the default model).
-    const dropped = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, {});
-    expect(dropped.success).toBe(true);
-    const after = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(after.agents.scout.model).toBeUndefined();
-
-    // Un-hooked config → refused, nothing written.
-    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
-    const unhooked = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
-    expect(unhooked.success).toBe(false);
-  });
-
-  it('refreshProfileBindings preserves manual rows, treats auto slots as inherit, and no-ops on mixed-state saves', async () => {
-    const configPath = path.join(tmpDir, 'opencode.json');
-    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
-    const adapter = new OpenCodeClientAdapter();
-    adapter.getConfigPath = () => configPath;
-
-    // Mixed state: 'scout' is profile-linked (tag flash), 'explore' is a
-    // manual row (agentModels only — absent from the link tags).
-    await adapter.setup({
-      port: 4000,
-      models: { main: 'auto' },
-      agentModels: { scout: 'lite', explore: 'glm-5.3' },
-      profile: { id: 'p1', bindings: { scout: 'flash' } },
-    });
-
-    // Profile save re-points 'flash': the linked row follows, the manual row
-    // keeps its binding byte-identical.
-    const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
-    expect(res.success).toBe(true);
-    let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.scout.model).toBe('omnicell-router/qwen-max');
-    expect(cfg.agents.explore.model).toBe('omnicell-router/glm-5.3');
-
-    // An unchanged save on the mixed state is a no-op (the manual row in the
-    // diff guard must not count as a change).
-    const again = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
-    expect(again.message).toContain('already up to date');
-
-    // A slot ref of 'auto' means inherit-the-default: the override is swept,
-    // and no literal `omnicell-router/auto` pin is ever written.
-    const inherit = await adapter.refreshProfileBindings('p1', { scout: 'autoSlot' }, { autoSlot: 'auto' });
-    expect(inherit.success).toBe(true);
-    cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.scout?.model).toBeUndefined();
-    expect(JSON.stringify(cfg.agents)).not.toContain('"omnicell-router/auto"');
-    expect(cfg.agents.explore.model).toBe('omnicell-router/glm-5.3');
   });
 
   it('teardown restores the ORIGINAL model even after re-setup with a different main', async () => {

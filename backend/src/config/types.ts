@@ -151,28 +151,6 @@ export interface ComboConfig {
   note?: string; // free-form remark, console-display only (never routed)
 }
 
-/**
- * Model Profile — a named slot table (slot → modelRef) used to mass-assign
- * models to a hooked client's agents (agents AND subagents) in one apply.
- * The profile itself is client-agnostic — a client adapter decides whether and
- * how to consume it (OpenCode writes `agent.<name>.model`).
- * A profile is NEVER a routing target: the gateway never resolves a profile id
- * at request time. It is consumed when a client hook applies — the resolved
- * modelRef is written into the client's own config. `modelRef` is a
- * gateway-visible id: registered model, combo id, or an auto virtual id
- * ('auto' | 'lite' | 'plus' | 'pro' | 'ultra').
- * Slot keys are free-form per profile (role names like 'flash' / 'pro' /
- * 'max' / 'vision'); an agent bound to a slot the selected profile does not
- * define stays unbound.
- */
-export interface ModelProfileConfig {
-  id: string; // unique profile id
-  name?: string; // display name
-  /** slot key → modelRef (model id | combo id | auto*) */
-  slots: Record<string, string>;
-  note?: string; // free-form remark, console-display only
-}
-
 export interface FallbackConfig {
   enabled: boolean;
   maxRetries: number;
@@ -1067,15 +1045,12 @@ export interface SystemoneSurfaceConfig {
 
 /**
  * Console-only memory (per environment): a write-through mirror of the
- * client-hook form's selections — the last profile id + agent→slot mapping,
- * the picked model refs, and the model-list draft. Never consulted by
- * routing or by the hook itself — restoring the UI selection across page
- * reloads, gateway restarts and teardown is its single job. Keyed by client
- * name (reserved for future clients' forms).
+ * client-hook form's selections — the picked model refs and the model-list
+ * draft. Never consulted by routing or by the hook itself — restoring the UI
+ * selection across page reloads, gateway restarts and teardown is its single
+ * job. Keyed by client name (reserved for future clients' forms).
  */
 export interface ClientProfileMemoryEntry {
-  profile: string; // profile id ('' = none)
-  bindings: Record<string, string>; // agent name → slot key
   /** Write-through mirror of the form drafts (the console saves on every
    *  pick, see ClientsPage rememberDraft): models = slot → model-ref draft
    *  (pi/omp main pick, plain slot clients); agentModels = role/agent → raw
@@ -1204,8 +1179,6 @@ export interface RouterConfig {
   rateLimit?: RateLimitConfig;
   models?: ModelRegistration[];
   combos?: ComboConfig[];
-  /** Named slot→modelRef tables for mass-assigning client agent models (see ModelProfileConfig). */
-  modelProfiles?: ModelProfileConfig[];
   /**
    * Outbound rate-limit overlay for upstream credentials: provider id → list
    * of per-credential rules keyed by the credential identity

@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
+import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
@@ -1914,14 +1914,13 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, profile, product } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, product } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
       virtualModels?: string[];
       agentModels?: Record<string, string>;
-      profile?: { id?: string; bindings?: Record<string, string> };
       /** Family adapters: act on ONE product (`intellij-idea`, `goland`, …) instead of all. */
       product?: string;
     };
@@ -1939,13 +1938,9 @@ export function registerConsoleRoutes(
       : undefined;
     const cw = Number(contextWindow);
 
-    // Agent-binding payloads (opencode hook):
-    //  - agentModels: manual rows, agent name → modelRef (''/'auto' dropped);
-    //  - profile: profile-linked rows — bindings are agent → profile-slot key,
-    //    resolved here against the saved profile's slots; slots the profile
-    //    no longer defines drop out (the row falls back to inherit).
-    //    A wrong write to opencode.jsonc is harder to undo than a refused
-    //    setup, so every merged ref must be routable (fail-fast).
+    // Agent-binding payload (opencode hook): manual rows — agent name →
+    // modelRef (''/'auto' dropped). A wrong write to opencode.jsonc is harder
+    // to undo than a refused setup, so every ref must be routable (fail-fast).
     const allowedRefs = new Set<string>([
       // 'auto' is a legal slot ref (inherit-the-default): the adapter skips it.
       'auto', 'lite', 'plus', 'pro', 'ultra',
@@ -1970,49 +1965,15 @@ export function registerConsoleRoutes(
         manual[agentName] = ref;
       }
     }
-    const resolvedRefs: Record<string, string> = {};
-    const resolvedTags: Record<string, string> = {};
-    let profileEcho: { id: string; bindings: Record<string, string> } | undefined;
-    if (profile !== undefined) {
-      const profileId = (profile.id || '').trim();
-      if (!profileId) {
-        // Empty id = explicit un-link: sweep router-owned agent overrides + clear echo
-        profileEcho = { id: '', bindings: {} };
-      } else {
-        const p = (loadConfig().modelProfiles || []).find(x => x.id === profileId);
-        if (!p) {
-          return reply.status(400).send({ success: false, message: `Model profile '${profileId}' not found in config` });
-        }
-        const bindingsIn = profile.bindings;
-        if (bindingsIn && (typeof bindingsIn !== 'object' || Array.isArray(bindingsIn))) {
-          return reply.status(400).send({ success: false, message: 'profile.bindings must be an object of agent name → slot key' });
-        }
-        const bindingEntries = Object.entries(bindingsIn || {});
-        if (bindingEntries.length > 100) {
-          return reply.status(400).send({ success: false, message: 'profile.bindings exceeds 100 entries' });
-        }
-        for (const [agentName, slotRaw] of bindingEntries) {
-          const slotKey = String(slotRaw || '').trim();
-          if (!slotKey) continue; // unlinked
-          const ref = (p.slots || {})[slotKey];
-          if (!ref) continue; // slot gone from the profile — row falls back to inherit
-          resolvedTags[agentName] = slotKey;
-          resolvedRefs[agentName] = ref;
-        }
-        profileEcho = { id: profileId, bindings: resolvedTags };
-      }
-    }
-    // Merge both sources (disjoint per row; manual wins defensively) and
-    // fail-fast on any ref the gateway cannot resolve.
-    const merged: Record<string, string> = { ...resolvedRefs, ...manual };
-    const invalid = Object.entries(merged).filter(([, ref]) => !allowedRefs.has(ref)).map(([name, ref]) => `${name}→${ref}`);
+    // Fail-fast on any ref the gateway cannot resolve.
+    const invalid = Object.entries(manual).filter(([, ref]) => !allowedRefs.has(ref)).map(([name, ref]) => `${name}→${ref}`);
     if (invalid.length > 0) {
       return reply.status(400).send({
         success: false,
         message: `Agent model refs not routable: ${invalid.join(', ')} — register the model / combo first`,
       });
     }
-    const agentModelsPayload = agentModels !== undefined || profileEcho !== undefined ? merged : undefined;
+    const agentModelsPayload = agentModels !== undefined ? manual : undefined;
 
     const result = await setupClient(client, {
       ...(cleaned ? { models: cleaned } : {}),
@@ -2021,7 +1982,6 @@ export function registerConsoleRoutes(
       ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
       ...(cleanedVirtual !== undefined ? { virtualModels: cleanedVirtual } : {}),
       ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
-      ...(profileEcho ? { profile: profileEcho } : {}),
       ...(typeof product === 'string' && product.trim() ? { product: product.trim() } : {}),
     });
     if (!result.success) return reply.status(400).send(result);
@@ -2073,7 +2033,7 @@ export function registerConsoleRoutes(
    * questions document is serialized verbatim by convert.ts
    * buildDecisionChatRequest). Registry data is the objective half (tier
    * membership, price, reasoning support, wire); the frontend-supplied note
-   * carries what the registry cannot know (a profile slot link). Virtual ids
+   * carries what the registry cannot know (caller context). Virtual ids
    * resolve to no entity and are described by what they MEAN, since "assign
    * `lite`" is a legitimate pick. Deliberately NO tier ladder here: writing
    * "ultra = broadest" made every role land on `ultra`.
@@ -2140,8 +2100,8 @@ export function registerConsoleRoutes(
     };
     const decider = (body.deciderModel || '').trim();
     const targets = Array.isArray(body.targets) ? body.targets.filter((t) => t && t.key) : [];
-    // Candidates are plain ids or { id, note } — the note (e.g. the model a
-    // profile slot resolves to) contextualizes the choice but only `id` is a
+    // Candidates are plain ids or { id, note } — the note (caller-supplied
+    // context) contextualizes the choice but only `id` is a
     // legal assignment value.
     const rawCandidates = Array.isArray(body.candidates) ? body.candidates : [];
     const candidates = rawCandidates
@@ -2269,7 +2229,7 @@ export function registerConsoleRoutes(
     return { success: true, model: raw, resolved: model.id };
   });
 
-  // 4a. OpenCode agent inventory (model-profile binding UI): live v2 service
+  // 4a. OpenCode agent inventory (agent model-binding UI): live v2 service
   //     roster (`GET /api/agent`, plugins included) with the file scan
   //     (built-ins + agent(s)/*.md + config nodes) as offline fallback.
   app.get('/api/admin/opencode/agents', async () => ({ status: 'ok', agents: await listOpenCodeAgentsLive() }));
@@ -2426,10 +2386,6 @@ export function registerConsoleRoutes(
       .getRegistry()
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // breaker rules hot-apply (next-decision-point semantics)
-    // Profile-link write-through: an edited profile re-resolves into every
-    // hooked client linked to it (diff-guarded — no-op when unchanged).
-    const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
-    if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
   };
   app.post('/api/admin/config', handleSaveConfig);
@@ -2460,15 +2416,12 @@ export function registerConsoleRoutes(
       .getRegistry()
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // hot-apply breaker rules too (see handleSaveConfig)
-    // Profile-link write-through on the raw path too (same diff guard).
     try {
       await refreshDirectPool(orchestrator.getRegistry()); // provider-def sync on the raw path too (no restart)
     } catch (err) {
       // Fail-open, but never silent: the registry keeps serving and may drift.
       console.warn(`[console] pool resync after config save failed (registry may drift): ${(err as Error).message}`);
     }
-    const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
-    if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);

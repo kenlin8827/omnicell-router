@@ -43,7 +43,7 @@ describe('combo lazy refresh (hand-edited-YAML safety net)', () => {
     // config on disk, bypassing every console save route.
     fs.writeFileSync(
       getConfigPath(),
-      'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  combos:\n    - id: lazy-combo\n      models:\n        - p/a\n'
+      'schemaVersion: 2\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  combos:\n    - id: lazy-combo\n      models:\n        - p/a\n'
     );
 
     const registry = new ProviderRegistry(makeConfig(), false); // constructor saw NO combos

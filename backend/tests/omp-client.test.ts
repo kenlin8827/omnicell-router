@@ -7,7 +7,7 @@ import { OmpClientAdapter, resolveOmpModelsPath } from '../src/cli/clients/omp.j
 
 /**
  * omp adapter: the models.yml provider hook + config.yml modelRoles layer
- * (tier presets, explicit picks, profile links, teardown restore-then-strip)
+ * (tier presets, explicit picks, teardown restore-then-strip)
  * and the YAML round-trip contract (user comments survive every OCR write).
  * Each test gets a sandboxed config dir — the roles path derives from
  * getConfigPath, so overriding it isolates both models.yml and config.yml.
@@ -36,13 +36,12 @@ describe('omp client adapter — hook, roles, teardown', () => {
 
   const readYml = (p: string): any => parse(fs.readFileSync(p, 'utf8'));
 
-  it('setup writes the provider hook, tier presets, the default role claim, and the sidecar echo', async () => {
+  it('setup writes the provider hook, tier presets, and the default role claim', async () => {
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
       apiKey: 'ocr-key-1',
       agentModels: { smol: 'qwen-max' }, // explicit manual pick (bare ref → qualified)
-      profile: { id: 'p1', bindings: { slow: 'flash' } },
     });
     expect(res.success).toBe(true);
 
@@ -67,18 +66,13 @@ describe('omp client adapter — hook, roles, teardown', () => {
     // vision is deliberately not preset (omp auto-resolves image capability).
     expect(roles.vision).toBeUndefined();
 
-    // Sidecar echo lives OUTSIDE the omp-owned YAML files.
-    const meta = JSON.parse(fs.readFileSync(`${modelsPath}.ocr-meta.json`, 'utf8'));
-    expect(meta.profile).toEqual({ id: 'p1', bindings: { slow: 'flash' } });
-
     const status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
-    expect(status.profile?.id).toBe('p1');
     expect(status.modelSlots.find(s => s.key === 'smol')?.value).toBe('qwen-max');
     expect(status.modelSlots.find(s => s.key === 'main')?.value).toBe('auto');
   });
 
-  it('follow-mode setup scopes the provider models list via virtualModels; the echo stays concrete-only', async () => {
+  it('follow-mode setup scopes the provider models list via virtualModels', async () => {
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
@@ -149,63 +143,23 @@ describe('omp client adapter — hook, roles, teardown', () => {
     expect(res.message).toContain('models.json');
   });
 
-  it("setup with profile id '' un-links: tagged roles fall back to presets, foreign pins survive, echo clears", async () => {
+  it('re-setup with explicit agentModels re-applies the picks; foreign pins survive', async () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
       agentModels: { slow: 'anthropic/claude-x' },
-      profile: { id: 'p1', bindings: { smol: 'flash' } },
     });
 
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
       agentModels: { slow: 'anthropic/claude-x' },
-      profile: { id: '', bindings: {} },
     });
     expect(res.success).toBe(true);
 
     const roles = readYml(rolesPath).modelRoles;
-    // The linked role's entry was stripped and the tier preset refilled it.
-    expect(roles.smol).toBe('omnicell-router/lite');
-    // The manual foreign pin survived the un-link.
+    // The manual foreign pin survived the re-setup byte-identical.
     expect(roles.slow).toBe('anthropic/claude-x');
-    expect(JSON.parse(fs.readFileSync(`${modelsPath}.ocr-meta.json`, 'utf8')).profile).toBeUndefined();
-  });
-
-  it('refreshProfileBindings re-points linked roles only and is a no-op when nothing changed', async () => {
-    await adapter.setup({
-      port: 4000,
-      models: { main: 'auto' },
-      agentModels: { smol: 'lite' },
-      profile: { id: 'p1', bindings: { smol: 'flash' } },
-    });
-
-    const res = await adapter.refreshProfileBindings('p1', { smol: 'flash' }, { flash: 'qwen-max' });
-    expect(res.success).toBe(true);
-    expect(readYml(rolesPath).modelRoles.smol).toBe('omnicell-router/qwen-max');
-    // The new ref joined the provider models list.
-    expect(readYml(modelsPath).providers['omnicell-router'].models.some((m: any) => m.id === 'qwen-max')).toBe(true);
-
-    // No-diff save → explicit no-op.
-    const again = await adapter.refreshProfileBindings('p1', { smol: 'flash' }, { flash: 'qwen-max' });
-    expect(again.message).toContain('already up to date');
-  });
-
-  it("refreshProfileBindings treats an 'auto' slot ref as inherit and strips the entry", async () => {
-    await adapter.setup({
-      port: 4000,
-      models: { main: 'auto' },
-      agentModels: { smol: 'lite' },
-      profile: { id: 'p1', bindings: { smol: 'flash' } },
-    });
-
-    const res = await adapter.refreshProfileBindings('p1', { smol: 'autoSlot' }, { autoSlot: 'auto' });
-    expect(res.success).toBe(true);
-    const roles = readYml(rolesPath).modelRoles;
-    // The role had only the router pin — the whole entry is pruned; the tier
-    // preset is NOT re-applied by write-through (the next full setup refills it).
-    expect(roles.smol).toBeUndefined();
   });
 
   it('setup handles pre-existing files that carry other keys but no modelRoles/providers node', async () => {
@@ -240,20 +194,20 @@ describe('omp client adapter — hook, roles, teardown', () => {
     expect(readYml(rolesPath).modelRoles.default).toBe('router/default');
   });
 
-  it('teardown removes the hook, the router-owned roles, and the sidecar (backup-contamination safe)', async () => {
+  it('teardown removes the hook, the router-owned roles, and the legacy sidecar (backup-contamination safe)', async () => {
     fs.writeFileSync(modelsPath, 'providers:\n  ollama:\n    baseUrl: http://127.0.0.1:11434\n', 'utf8');
     fs.writeFileSync(rolesPath, 'modelRoles:\n  vision: google/gemini-3-pro\n', 'utf8');
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
       agentModels: { slow: 'anthropic/claude-x' },
-      profile: { id: 'p1', bindings: { smol: 'flash' } },
     });
+    // A legacy sidecar from a pre-ADR-0031 build must die with the hook.
+    fs.writeFileSync(`${modelsPath}.ocr-meta.json`, JSON.stringify({ profile: { id: 'p1', bindings: { smol: 'flash' } } }), 'utf8');
     // A second setup must NOT replace the snapshot: the backup keeps the
     // pre-takeover file, so teardown restores the original roles instead of
     // the first setup's OCR-written ones (restore-then-strip still runs).
     await adapter.setup({ port: 4001, models: { main: 'auto' } });
-    expect(fs.existsSync(`${modelsPath}.ocr-meta.json`)).toBe(true);
 
     const res = await adapter.teardown();
     expect(res.success).toBe(true);

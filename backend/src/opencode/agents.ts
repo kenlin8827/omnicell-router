@@ -9,8 +9,9 @@ import {
 import { OpenCodeConnector } from './connector.js';
 
 /**
- * OpenCode agent inventory — the model-profile feature needs EVERY agent a hooked
- * OpenCode instance can spawn (primaries AND subagents). TWO sources, in order:
+ * OpenCode agent inventory — the clients page's per-agent model assignment
+ * needs EVERY agent a hooked OpenCode instance can spawn (primaries AND
+ * subagents). TWO sources, in order:
  *  1. LIVE (preferred): the running opencode v2 service `GET /api/agent` — the
  *     runtime source of truth. Config nodes, `agent(s)/*.md` files, built-ins
  *     AND plugin-registered agents arrive already merged by opencode itself, so

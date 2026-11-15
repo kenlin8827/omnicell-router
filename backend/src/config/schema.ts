@@ -28,7 +28,8 @@
  *     (fail-safe: defaults + one warn — the same "upgrade OCR" contract as the
  *     env-container import gate).
  */
-import { legacySurfaceWarnings, migrationV0ToV1, SECTION_MOVES_V1, type DiskConfigV1 } from './migrations/v0-to-v1.js';
+import { legacySurfaceWarnings, migrationV0ToV1 } from './migrations/v0-to-v1.js';
+import { migrationV1ToV2, SECTION_MOVES_V2, type DiskConfigV2 } from './migrations/v1-to-v2.js';
 import {
   toDiskConfigWith,
   toRuntimeConfigWith,
@@ -37,16 +38,16 @@ import {
 } from './layout.js';
 import type { RouterConfig } from './types.js';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** The current disk type — re-exported from the LATEST version's file. */
-export type DiskConfig = DiskConfigV1;
+export type DiskConfig = DiskConfigV2;
 
 /**
- * The CURRENT layout pointer. Bump to `SECTION_MOVES_V2` (etc.) when the
+ * The CURRENT layout pointer. Bump to `SECTION_MOVES_V3` (etc.) when the
  * newest migration file ships — the single edit a new version makes here.
  */
-const LATEST_LAYOUT: ReadonlyArray<SectionMove> = SECTION_MOVES_V1;
+const LATEST_LAYOUT: ReadonlyArray<SectionMove> = SECTION_MOVES_V2;
 
 export interface Migration {
   from: number;
@@ -62,7 +63,7 @@ export interface Migration {
  * v0 = a config.yaml without `schemaVersion` (every file authored before
  * ADR-0016 — the legacy FLAT runtime-shaped layout).
  */
-const MIGRATIONS: ReadonlyArray<Migration> = [migrationV0ToV1];
+const MIGRATIONS: ReadonlyArray<Migration> = [migrationV0ToV1, migrationV1ToV2];
 
 /** Runtime flat config → current-version disk shape. */
 export function toDiskConfig(flat: Partial<RouterConfig> & Record<string, unknown>): Omit<DiskConfig, 'schemaVersion'> {

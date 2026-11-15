@@ -1125,7 +1125,6 @@ export function loadConfig(configPath?: string): RouterConfig {
         // assigns boot.models over this before registry construction.
         models: DEFAULT_CONFIG.models,
         combos: flat.combos || [],
-        modelProfiles: flat.modelProfiles || [],
         clientProfileMemory: flat.clientProfileMemory || {},
         catalog: flat.catalog,
       };

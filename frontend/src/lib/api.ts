@@ -76,9 +76,6 @@ export interface ClientStatus {
   version?: { current: string; min?: string; meetsMin: boolean };
   /** This client's model slots; value undefined = auto (intelligent routing). */
   modelSlots: { key: string; value?: string; default?: string; description?: string }[];
-  /** Last-linked model profile (opencode): profile id + agent→slot-key tags
-   *  (the linked rows — their effective models resolve from the profile). */
-  profile?: ModelProfileBinding;
   /** A file an adapter owns besides its primary `configPath` (Cursor's CLI
    *  launcher); `exists` probed at status time. Mirrors backend ClientArtifact. */
   artifacts?: ClientArtifact[];
@@ -135,22 +132,7 @@ export interface ClientActionWarning {
   params?: Record<string, string>;
 }
 
-/** Mirrors backend ModelProfileBinding (profile-link echo from the OCR sidecar meta). */
-export interface ModelProfileBinding {
-  id: string;
-  bindings: Record<string, string>;
-}
-
-/** Mirrors backend ModelProfileConfig (config.yaml `modelProfiles` entry). */
-export interface ModelProfileView {
-  id: string;
-  name?: string;
-  /** slot key → modelRef (model id | combo id | auto*) */
-  slots: Record<string, string>;
-  note?: string;
-}
-
-/** Mirrors backend OpenCodeAgentView (agent inventory for model-profile binding). */
+/** Mirrors backend OpenCodeAgentView (agent inventory for model binding). */
 export interface OpenCodeAgentView {
   name: string;
   mode: 'primary' | 'subagent' | 'all';
@@ -170,8 +152,6 @@ export interface OpenCodeAgentView {
  *  selections (saved on every pick). UI-only: never consulted by routing or
  *  by the hook itself. */
 export interface ClientProfileMemoryEntry {
-  profile: string;
-  bindings: Record<string, string>;
   /** models = slot → model-ref draft (pi/omp main, plain slot clients);
    *  agentModels = role/agent → raw draft ref (native pins included);
    *  extraModels = the custom model-list draft. Mirrors backend. */
@@ -3017,17 +2997,6 @@ export const api = {
     return res.json();
   },
 
-  /** Model profiles (config.yaml `modelProfiles`) — raw section round-trip, no
-   *  resolution view needed (refs are resolved by the client hook at apply). */
-  async getModelProfiles(): Promise<ModelProfileView[]> {
-    const cfg = await this.getConfig();
-    return cfg.modelProfiles || [];
-  },
-
-  async saveModelProfiles(profiles: ModelProfileView[]): Promise<{ status: string; message: string }> {
-    return this.saveConfig({ modelProfiles: profiles });
-  },
-
   /** OpenCode agent inventory (built-ins + agent/*.md + global config node). */
   async listOpencodeAgents(): Promise<OpenCodeAgentView[]> {
     const res = await fetch('/api/admin/opencode/agents');
@@ -3036,8 +3005,8 @@ export const api = {
     return json.agents || [];
   },
 
-  /** Per-client form memory (profile + slot mapping) saved in the ACTIVE
-   *  environment's config — survives reloads, restarts and teardown. */
+  /** Per-client form memory saved in the ACTIVE environment's config —
+   *  survives reloads, restarts and teardown. */
   async getClientProfileMemory(): Promise<Record<string, ClientProfileMemoryEntry>> {
     const cfg = await this.getConfig();
     return cfg.clientProfileMemory || {};
@@ -3090,8 +3059,6 @@ export const api = {
       virtualModels?: string[];
       /** Manual agent bindings (opencode): agent name → modelRef. */
       agentModels?: Record<string, string>;
-      /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
-      profile?: { id: string; bindings: Record<string, string> };
       /** Family adapters (JetBrains): act on ONE product (`intellij-idea`, `goland`, …); absent = all. */
       product?: string;
     }
@@ -3123,7 +3090,7 @@ export const api = {
       deciderModel: string;
       targets: { key: string; label?: string; role?: string; current?: string }[];
       /** Plain ids, or `{ id, note }` — the note contextualizes (e.g. the model
-       *  a profile slot resolves to) but only `id` is a legal assignment. */
+       *  caller-supplied context) but only `id` is a legal assignment. */
       candidates: (string | { id: string; note?: string })[];
     }
   ): Promise<{ status: string; resolved?: string; assignments: Record<string, string> }> {
