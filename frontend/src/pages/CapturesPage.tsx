@@ -2462,7 +2462,7 @@ export const CapturesPage: React.FC = () => {
                               }}
                             >
                               {/* Name capped, never width-fixed: short names
-                                  ("默认") stay compact, long ones ellipsize at
+                                  (e.g. the default label) stay compact, long ones ellipsize at
                                   120px — the +N count and the full name (tooltip)
                                   always survive. */}
                               <span
@@ -2692,7 +2692,7 @@ export const CapturesPage: React.FC = () => {
                             request it drove. Options come from the WHOLE
                             archive index, so page 1 lists all turns; picking
                             one loads the page holding its newest request and
-                            narrows the rows, "全部轮次" restores them. */}
+                            narrows the rows, the all-turns option restores them. */}
                         <Combobox
                           value={focusTurn === null ? '' : String(focusTurn)}
                           onChange={selectTurn}

@@ -778,7 +778,7 @@ details.sub-card > summary::-webkit-details-marker {
    beneath them. Accent text is the house link colour (see ClientsPage), so this
    needs no chrome to read as clickable.
    The glyph is an ARROW, not a chevron: two chevrons side by side
-   ("Clash 核心 › 代理分流 ›") parse as one breadcrumb trail, i.e. as a path the
+   ("Clash面板 › 代理分流 ›") parse as one breadcrumb trail, i.e. as a path the
    reader is already on, while an arrow terminates and says "goes there". */
 .link-quiet {
   display: inline-flex;

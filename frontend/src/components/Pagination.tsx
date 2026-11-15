@@ -16,11 +16,12 @@ interface PaginationProps {
   /** Show "from–to of total" summary on the left */
   showSummary?: boolean;
   /**
-   * Unit word for the summary ("requests", "条" …). Omitted = the generic
-   * item wording (条 / items). The pager counts whatever `total` counts, so a
-   * caller whose items are not plain records (capture pages count REQUESTS)
-   * must say so here — the summary then speaks the caller's unit instead of
-   * silently relabeling rows as "items".
+   * Unit word for the summary (e.g. "requests"; zh-CN passes its own counter
+   * word). Omitted = the generic item wording (counter word / items). The
+   * pager counts whatever `total` counts, so a caller whose items are not
+   * plain records (capture pages count REQUESTS) must say so here — the
+   * summary then speaks the caller's unit instead of silently relabeling
+   * rows as "items".
    */
   summaryUnit?: string;
   /**

@@ -67,7 +67,7 @@ export interface MatrixLabels {
 /**
  * The card's own truth is ITS tuple breaker — pure breaker state. Operator
  * takedowns (DISABLED/SUSPECT) are a SEPARATE dimension (a management action,
- * not a breaker transition): they surface as the 已停用 badge + the dedicated
+ * not a breaker transition): they surface as the takedown badge + the dedicated
  * filter tab, never folded into the trip state. The derived model fold never
  * paints onto the card: a model-scope trip already lands on every tuple, so
  * a tripped card IS tripped, and a healthy card stays healthy even when a
