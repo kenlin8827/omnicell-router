@@ -5,7 +5,7 @@ import {
   BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, ClipboardList, CloudDownload, Cpu,
   DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
-  Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
+  Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert, ShieldQuestion,
   ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../lib/api';
@@ -74,12 +74,19 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
     { to: '/proxy-clash', labelKey: 'nav.proxyMihomo', icon: Cpu },
   ] },
+  /** The name-resolution chain, in the order the pipeline walks it (ADR-0003):
+   *  combos and tiers are the exact-match stages, auto is the smart cascade,
+   *  route-entries the explicit overrides, model-profiles the per-model slots,
+   *  and model-fallback the terminal step (§7a) — what to do when the name
+   *  survives none of them. It sits last here because it is the last hop, not
+   *  because it is the least important. */
   { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
     { to: '/combos', labelKey: 'nav.combos', icon: Layers },
     { to: '/tiers', labelKey: 'nav.rules', icon: Network },
     { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
     { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
+    { to: '/model-fallback', labelKey: 'nav.modelFallback', icon: ShieldQuestion },
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
     { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
@@ -125,6 +132,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/proxy-upstream': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxy' },
   '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
   '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },
+  '/model-fallback': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelFallback' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/proxy-access': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyAccess' },

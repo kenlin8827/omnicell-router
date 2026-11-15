@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 /**
  * The "tighten to allowlist" affordance is a ONE-SHOT migration entry
@@ -59,6 +60,9 @@ const CONFIG = {
     host: '127.0.0.1',
     intercept: 'claims',
     rules: [{ match: '*', ingress: 'intercept', egress: 'proxy' }],
+    // Owned by the Model Fallback page since the split — this page must carry
+    // it through its own writes instead of dropping it.
+    unresolvedModel: { onMiss: 'direct', hosts: { 'api.example.com': 'fail' } },
   },
 };
 
@@ -75,14 +79,18 @@ const resolveWith = (warnings: { code: string; ruleIndex?: number; detail?: stri
   });
 
 const renderPage = () =>
+  // The page carries one router <Link> (the pointer to the Model Fallback
+  // page), so it needs a router in the tree like every other console page.
   render(
-    <I18nProvider>
-      <ToastProvider>
-        <ConfirmProvider>
-          <ProxyAccessPage />
-        </ConfirmProvider>
-      </ToastProvider>
-    </I18nProvider>,
+    <MemoryRouter initialEntries={['/proxy-access']}>
+      <I18nProvider>
+        <ToastProvider>
+          <ConfirmProvider>
+            <ProxyAccessPage />
+          </ConfirmProvider>
+        </ToastProvider>
+      </I18nProvider>
+    </MemoryRouter>,
   );
 
 describe('ProxyAccessPage — tighten is a one-shot migration entry', () => {
@@ -114,5 +122,24 @@ describe('ProxyAccessPage — tighten is a one-shot migration entry', () => {
     renderPage();
 
     expect(await screen.findByRole('button', { name: /2 host name\(s\) decrypted without a rule/i })).toBeTruthy();
+  });
+
+  it('carries the Model Fallback policy through a save instead of deleting it', async () => {
+    resolveForwardProxyRules.mockImplementation(resolveWith([], ['a.test']));
+    renderPage();
+
+    await screen.findByRole('button', { name: /Save Forward Proxy/i });
+    fireEvent.click(screen.getByRole('button', { name: /Save Forward Proxy/i }));
+
+    const saveConfig = (await import('../lib/api')).api.saveConfig as unknown as {
+      mock: { calls: [{ forwardProxy: Record<string, unknown> }][] };
+    };
+    await waitFor(() => expect(saveConfig.mock.calls.length).toBeGreaterThan(0));
+    const payload = saveConfig.mock.calls[0][0];
+    expect(payload.forwardProxy.unresolvedModel).toEqual({
+      onMiss: 'direct',
+      hosts: { 'api.example.com': 'fail' },
+    });
+    expect(payload.forwardProxy.rules).toEqual([{ match: '*', ingress: 'intercept', egress: 'proxy' }]);
   });
 });

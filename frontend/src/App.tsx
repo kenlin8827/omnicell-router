@@ -9,6 +9,7 @@ import { CatalogSourcesPage } from './pages/CatalogSourcesPage';
 import { ProxyPage } from './pages/ProxyPage';
 import { MihomoPage } from './pages/MihomoPage';
 import { ProxyPatternsPage } from './pages/ProxyPatternsPage';
+import { ModelFallbackPage } from './pages/ModelFallbackPage';
 import { ProxyAccessPage } from './pages/ProxyAccessPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
@@ -91,6 +92,7 @@ export const App: React.FC = () => {
         {/* 旧地址（拆页前的 /proxy-mihomo）保留重定向，避免收藏夹失效 */}
         <Route path="proxy-mihomo" element={<Navigate to="/proxy-clash" replace />} />
         <Route path="proxy-patterns" element={<ProxyPatternsPage />} />
+        <Route path="model-fallback" element={<ModelFallbackPage />} />
         <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />

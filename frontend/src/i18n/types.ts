@@ -237,7 +237,8 @@ export interface TranslationDict {
     proxy: string;
     /** Nav label: the Upstream group's model-scoped proxy pattern page. */
     proxyPatterns: string;
-    /** Nav label: the built-in Mihomo/Clash core page under Proxy Management. */
+    modelFallback: string;
+    /** Nav label: the built-in Clash panel under Proxy Management. */
     proxyMihomo: string;
     tokenSaver: string;
     catalogSources: string;
@@ -2544,6 +2545,20 @@ hiddenBadge: string;
     disabled: string;
     saveHint: string;
   };
+  /** Model-side policy for names the gateway cannot resolve
+   *  (`forwardProxy.unresolvedModel`, ADR-0003 §7a). Scope is the MITM leg. */
+  modelFallback: {
+    title: string;
+    hint: string;
+    onMiss: string;
+    hosts: string;
+    hostPlaceholder: string;
+    modeFail: string;
+    modeDirect: string;
+    addHost: string;
+    unsaved: string;
+    savedNotice: string;
+  };
   proxy: {
     title: string;
     saveBtn: string;
@@ -2864,14 +2879,8 @@ hiddenBadge: string;
     caTrustOpenWizard: string;
     caHint: string;
     hostNote: string;
-    unresolvedTitle: string;
-    unresolvedHint: string;
-    unresolvedOnMiss: string;
-    unresolvedHosts: string;
-    unresolvedHostPlaceholder: string;
-    unresolvedModeFail: string;
-    unresolvedModeDirect: string;
-    addHost: string;
+    /** Index line: the unresolved-model-name policy now lives on the model side. */
+    unresolvedMovedTo: string;
     helpTitle: string;
     wizardPrev: string;
     wizardNext: string;

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, Activity, Eraser, RefreshCw, Inbox, MonitorCog, Undo2, Terminal, Copy, Download, FileDown, Maximize2, Minimize2, ArrowUp, ArrowDown, ArrowRight, AlertTriangle } from 'lucide-react';
 import { api, type GatewayStatusResponse, type ProxyAccessEvent, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type PluginTrafficEvent, type CaMeta, type CaTrustResponse, type ClaimSource } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -12,10 +13,8 @@ import { Pagination } from '../components/Pagination';
 import { Drawer } from '../components/Drawer';
 import { Prose, proseIsLong } from '../components/Prose';
 import { applicableDecoders, decoderLabel, hexDumpToBytes, type DecoderContext, type SideDecoder } from '../lib/sideDecoders';
-import { modelRefBadge } from '../lib/modelRefBadge';
 import { copyToClipboard } from '../lib/clipboard';
 import { saveBlobAs, startDownload } from '../lib/download-manager';
-import { sortModelOptions } from '../lib/model-options';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST, DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS, DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS, PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, PROXY_ACCESS_LOG_PERSIST_DAYS_MAX } from '../lib/defaults';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -1624,7 +1623,6 @@ export const ProxyAccessPage: React.FC = () => {
   /** Uninstall commands are a rare, destructive follow-up — collapsed by
    *  default so the trust step stays install-only until asked. */
   const [removeOpen, setRemoveOpen] = useState(false);
-  const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; members?: number; wire?: string }[]>([]);
   /** Current wizard step id */
   const [step, setStep] = useState('1');
   /** Page view tab: access configuration / system proxy / setup wizard / traffic log. */
@@ -1635,7 +1633,7 @@ export const ProxyAccessPage: React.FC = () => {
     return v === 'sys' || v === 'wizard' || v === 'log' ? v : 'config';
   });
   /** Config-tab fold state: the traffic-log and miss-policy groups (advanced) default collapsed. */
-  const [fold, setFold] = useState({ log: false, miss: false });
+  const [fold, setFold] = useState({ log: false });
   /** The rule table (ADR-0018). Order is the semantics — the ↑↓ buttons are the
    *  ONLY thing keeping it readable, not a convenience. */
   const [ruleRows, setRuleRows] = useState<ForwardProxyRule[]>([]);
@@ -1650,35 +1648,6 @@ export const ProxyAccessPage: React.FC = () => {
   const [claimSources, setClaimSources] = useState<ClaimSource[]>([]);
   const [claimsOpen, setClaimsOpen] = useState(false);
   const [tightening, setTightening] = useState(false);
-  /** unresolvedModel host-override rows — per-row onMiss value. */
-  const [missRows, setMissRows] = useState<{ host: string; onMiss: string }[]>([]);
-  /** onMiss is ONE flat picker: the two verbs first, then the modelRef pool
-   *  (including the `auto` alias = the default classifier cascade — unset
-   *  and `auto` are equivalent, ADR-0003 §7a). Decision-wire models are
-   *  dropped — no chat surface can address them, so an onMiss hit would
-   *  always fail. A saved value outside the list is echoed first so the
-   *  trigger never renders empty. MUST stay above the loading early-return:
-   *  the mount effect below closes over these, and a const declared after a
-   *  `return` never initializes in that render's closure (TDZ when touched). */
-  const onMissOptions = (current: string): ComboboxOption[] => {
-    const refs = sortModelOptions(
-      gatewayModels
-        .filter(m => m.wire !== 'systemone')
-        .map(m => ({
-          kind: m.kind,
-          value: m.id,
-          label: m.id,
-          meta: m.kind === 'combo' && m.members !== undefined ? t('models.memberCount', { n: m.members }) : undefined,
-          ...modelRefBadge(m.kind, t),
-        }))
-    );
-    const all: ComboboxOption[] = [
-      { value: 'fail', label: t('forwardProxy.unresolvedModeFail') },
-      { value: 'direct', label: t('forwardProxy.unresolvedModeDirect') },
-      ...refs,
-    ];
-    return current && !all.some(o => o.value === current) ? [{ value: current, label: current }, ...all] : all;
-  };
 
   /** The config AS LOADED — the diff baseline for boot-frozen fields. The live
    *  `fp` state already contains the operator's edits, so the restart-warning
@@ -1690,17 +1659,8 @@ export const ProxyAccessPage: React.FC = () => {
       bootSnapshot.current = fpCfg;
       setFp(fpCfg);
       setRuleRows(fpCfg.rules || []);
-      setMissRows(
-        Object.entries(fpCfg.unresolvedModel?.hosts || {}).map(([host, onMiss]) => ({
-          host,
-          onMiss,
-        }))
-      );
       setLoading(false);
     }).catch(() => setLoading(false));
-    api.listGatewayModels()
-      .then(setGatewayModels)
-      .catch(() => setGatewayModels([]));
   }, []);
 
   useEffect(() => {
@@ -1786,9 +1746,18 @@ export const ProxyAccessPage: React.FC = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
+      // `unresolvedModel` now belongs to the Model Fallback page. This page
+      // writes the WHOLE forwardProxy section (the server shallow-merges at the
+      // top level), so a stale copy in `fp` must be dropped and the on-disk
+      // value carried through — otherwise every save here would delete the
+      // policy the other page just wrote.
+      const fresh = await api.getConfig();
+      const diskFp = (fresh.forwardProxy || {}) as Record<string, unknown>;
+      const fpRest = { ...(fp || {}) } as Record<string, unknown>;
+      delete fpRest.unresolvedModel;
       const next = {
         forwardProxy: {
-          ...(fp || {}),
+          ...fpRest,
           // Blank rows never persist (an empty glob
           // would match nothing but still round-trip as noise); trimming matches
           // the backend normalizer, and rows already carry the full two-field
@@ -1796,21 +1765,14 @@ export const ProxyAccessPage: React.FC = () => {
           rules: ruleRows
             .filter(r => r.match.trim())
             .map(r => ({ match: r.match.trim(), ingress: r.ingress, egress: r.egress })),
-          unresolvedModel: {
-            onMiss: fp?.unresolvedModel?.onMiss || 'auto',
-            hosts: Object.fromEntries(
-              missRows
-                .filter(r => r.host.trim() && r.onMiss.trim())
-                .map(r => [r.host.trim().toLowerCase(), r.onMiss.trim()])
-            ),
-          },
+          ...(diskFp.unresolvedModel !== undefined ? { unresolvedModel: diskFp.unresolvedModel } : {}),
         },
-      };
+      } as { forwardProxy: Record<string, unknown> };
       await api.saveConfig(next);
       // Only enabled / port / host / caDir shape the listening socket and CA
       // material — boot-frozen. Everything else on this page hot-applies
-      // (rules / unresolvedModel re-read the runtime ref per request), so the
-      // restart warning fires ONLY when a boot-frozen field actually changed.
+      // (rules re-read the runtime ref per request), so the restart warning
+      // fires ONLY when a boot-frozen field actually changed.
       const boot = bootSnapshot.current;
       const saved = next.forwardProxy;
       const frozen = (v: unknown, fallback: unknown): unknown => (v === undefined || v === '' ? fallback : v);
@@ -2454,90 +2416,27 @@ export const ProxyAccessPage: React.FC = () => {
             </div>
           </details>
 
-          {/* ── Section 4: unresolved model-name policy — MITM leg only (ADR-0003 §7a) — collapsible ── */}
-          <details
-            className="sub-card"
-            open={fold.miss}
-            onToggle={e => setFold(f => ({ ...f, miss: (e.target as HTMLDetailsElement).open }))}
+          {/* The unresolved-model-name policy moved to the model side
+              (ModelFallbackPage). Its action values are modelRefs — `fail`,
+              `direct`, or any addressable model id/combo — so this page had to
+              fetch the entire gateway catalogue just to fill one picker. One
+              pointer instead, same shape as the outbound page's index line. */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px 14px',
+              flexWrap: 'wrap',
+              fontSize: 'var(--text-xs)',
+              color: 'var(--text-dim)',
+            }}
           >
-            <summary style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <ChevronDown
-                size={14}
-                color="var(--text-dim)"
-                style={{ flexShrink: 0, transform: fold.miss ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
-              />
-              <span style={{ ...SEC_TITLE, marginBottom: 0 }}>{t('forwardProxy.unresolvedTitle')}</span>
-            </summary>
-            <div style={{ marginTop: '12px' }}>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '10px', whiteSpace: 'pre-line' }}>
-              {t('forwardProxy.unresolvedHint')}
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '520px' }}>
-              <div>
-                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-                  {t('forwardProxy.unresolvedOnMiss')}
-                </label>
-                <Combobox
-                  value={fp.unresolvedModel?.onMiss ?? 'auto'}
-                  onChange={v =>
-                    setFp({ ...fp, unresolvedModel: { ...fp.unresolvedModel, onMiss: v } })
-                  }
-                  options={onMissOptions(fp.unresolvedModel?.onMiss ?? 'auto')}
-                  style={{ fontFamily: FONT_MONO }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-                  {t('forwardProxy.unresolvedHosts')}
-                </label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {missRows.map((row, idx) => (
-                    <div key={idx} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <input
-                        type="text"
-                        spellCheck={false}
-                        placeholder={t('forwardProxy.unresolvedHostPlaceholder')}
-                        value={row.host}
-                        onChange={e => {
-                          const next = [...missRows];
-                          next[idx] = { ...next[idx], host: e.target.value };
-                          setMissRows(next);
-                        }}
-                        className="input"
-                        style={{ flex: 1, minWidth: 0 }}
-                      />
-                      <Combobox
-                        value={row.onMiss}
-                        onChange={v => {
-                          const next = [...missRows];
-                          next[idx] = { ...next[idx], onMiss: v };
-                          setMissRows(next);
-                        }}
-                        options={onMissOptions(row.onMiss)}
-                        style={{ flex: 1, minWidth: 0, fontFamily: FONT_MONO }}
-                      />
-                      <button
-                        className="btn btn-danger btn-sm"
-                        style={{ padding: '4px 8px' }}
-                        onClick={() => setMissRows(missRows.filter((_, i) => i !== idx))}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    className="btn btn-sm"
-                    style={{ alignSelf: 'flex-start', gap: '6px' }}
-                    onClick={() => setMissRows([...missRows, { host: '', onMiss: 'auto' }])}
-                  >
-                    <Plus size={14} />
-                    <span>{t('forwardProxy.addHost')}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-            </div>
-          </details>
+            <span>{t('forwardProxy.unresolvedMovedTo')}</span>
+            <Link to="/model-fallback" className="link-quiet">
+              <span>{t('nav.modelFallback')}</span>
+              <ArrowRight size={12} />
+            </Link>
+          </div>
 
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
             {t('forwardProxy.caHint')} · {t('forwardProxy.hostNote')}
