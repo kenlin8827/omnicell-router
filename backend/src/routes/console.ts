@@ -52,6 +52,7 @@ import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type 
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
+import type { CatalogModel } from '../opencode/catalog/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import { CLASSIFIER_TAXONOMY } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
@@ -2027,18 +2028,45 @@ export function registerConsoleRoutes(
     return undefined;
   };
 
+  /** Compact context window: 200000 → '200k', 1_048_576 → '1M'. */
+  const fmtContext = (n: number): string =>
+    n >= 1_000_000 ? `${+((n / 1_000_000).toFixed(1))}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+
+  /**
+   * Catalog enrichment tokens — decision-relevant facts the registry
+   * registration does not carry, appended to a registered model's (or
+   * variant's) description. Conditional by design: majority-true facts
+   * (tool_call=yes, no image support on a text-only fleet) stay SILENT so the
+   * per-question criteria repetition does not bloat the prompt — a token
+   * appears only when it distinguishes the candidate or warns about it.
+   */
+  const catalogTokens = (cat: CatalogModel | undefined): string[] => {
+    if (!cat) return [];
+    const tokens: string[] = [];
+    const ctx = cat.limit?.context;
+    if (typeof ctx === 'number' && Number.isFinite(ctx) && ctx > 0) tokens.push(`context=${fmtContext(ctx)}`);
+    const inMods = cat.modalities?.input;
+    if (Array.isArray(inMods) && inMods.includes('image')) tokens.push('vision=yes (accepts image input)');
+    if (cat.tool_call === false) tokens.push('tools=NO — cannot call tools, unsuitable for agent roles');
+    if (cat.status === 'deprecated') tokens.push('status=deprecated — avoid unless no alternative');
+    return tokens;
+  };
+
   /**
    * One-line, model-readable description of a candidate — `criteria` values are
    * the ONLY per-option context the decision prompt carries (the whole
    * questions document is serialized verbatim by convert.ts
    * buildDecisionChatRequest). Registry data is the objective half (tier
-   * membership, price, reasoning support, wire); the frontend-supplied note
-   * carries what the registry cannot know (caller context). Virtual ids
-   * resolve to no entity and are described by what they MEAN, since "assign
-   * `lite`" is a legitimate pick. Deliberately NO tier ladder here: writing
-   * "ultra = broadest" made every role land on `ultra`.
+   * membership, price, reasoning support, wire); catalog enrichment adds the
+   * capability/context/lifecycle facts the registration does not carry
+   * (context window, vision, tool calling, deprecated status) — see
+   * catalogTokens. The frontend-supplied note carries what neither source can
+   * know (caller context). Virtual ids resolve to no entity and are described
+   * by what they MEAN, since "assign `lite`" is a legitimate pick. Deliberately
+   * NO tier ladder here: writing "ultra = broadest" made every role land on
+   * `ultra`.
    */
-  const describeCandidate = (rawId: string, note?: string): string => {
+  const describeCandidate = (rawId: string, note?: string, cat?: CatalogModel): string => {
     const m = registry.getModel(rawId);
     let body: string;
     if (m) {
@@ -2046,6 +2074,7 @@ export function registerConsoleRoutes(
       const parts = [
         `registered model; tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}`,
         `price $${m.pricing?.input ?? 0}/$${m.pricing?.output ?? 0} per 1M tokens in/out`,
+        ...catalogTokens(cat),
       ];
       if (m.wire === 'systemone') {
         parts.push('wire=systemone — decision protocol ONLY, cannot serve chat, never assign it to a chat role');
@@ -2060,14 +2089,17 @@ export function registerConsoleRoutes(
       // Variant sibling id (`<baseId>-<variantId>`): not a registry entry of its
       // own — the base model plus a pinned reasoning level (orchestrator
       // resolves it the same way). Calling it unregistered would steer the
-      // decider away from a perfectly legal pick.
+      // decider away from a perfectly legal pick. The caller looks the catalog
+      // record up by the BASE id and passes it in.
       const { base, variant } = registry.resolveVariantRef(rawId)!;
       const tiers = registry.tiersOf(base);
+      const catTokens = catalogTokens(cat);
       body =
         `variant of ${base.id} (pins reasoning_effort '${variant.reasoningEffort}'); ` +
         `tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}; ` +
-        `price $${base.pricing?.input ?? 0}/$${base.pricing?.output ?? 0} per 1M tokens in/out; ` +
-        `wire=${base.wire ?? 'unknown'}`;
+        `price $${base.pricing?.input ?? 0}/$${base.pricing?.output ?? 0} per 1M tokens in/out` +
+        (catTokens.length > 0 ? `; ${catTokens.join('; ')}` : '') +
+        `; wire=${base.wire ?? 'unknown'}`;
     } else if (registry.isCombo(rawId)) {
       body = `combo; members=${registry.resolveCombo(rawId).length} (the router picks a healthy member per request)`;
     } else if (rawId === 'auto') {
@@ -2126,7 +2158,7 @@ export function registerConsoleRoutes(
       // Tier PURPOSE (what each rung is for), never a ranking: a ladder reads
       // as "ultra is the most/broadest" and then every role lands on it.
       tierPurpose: TIER_PURPOSE,
-      task: 'Assign each role/slot the MOST suitable candidate id. Every candidate is described with its objective profile (tier membership, price per 1M tokens, reasoning support, wire); use that — never guess from the model name alone.',
+      task: 'Assign each role/slot the MOST suitable candidate id. Every candidate is described with its objective profile (tier membership, price per 1M tokens, context window, capability flags such as vision and tool calling where they distinguish the candidate, reasoning support, wire, lifecycle warnings); use that — never guess from the model name alone.',
       roles: targets.map((t) => ({
         key: t.key,
         name: t.label || t.key,
@@ -2138,13 +2170,35 @@ export function registerConsoleRoutes(
         ...(t.current ? { current: t.current } : {}),
       })),
     };
+    // Catalog enrichment, loaded ONCE per request: capability/context/lifecycle
+    // facts the registry registration does not carry (see catalogTokens).
+    // Lookup key is the provider-qualified registration id (`<provider>/<model>`
+    // — exactly how boot-direct names registrations), so a plain Map.get per
+    // candidate; variants resolve through their BASE id. Failure degrades
+    // gracefully: candidates fall back to the registry-only description.
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    const catalogModels = new Map<string, CatalogModel>();
+    try {
+      for (const rec of await catalogRepository.list()) {
+        for (const cm of rec.models) catalogModels.set(`${rec.id}/${cm.id}`, cm);
+      }
+    } catch {
+      // catalog unavailable — describeCandidate simply receives undefined
+    }
+    const catalogOf = (rawId: string): CatalogModel | undefined => {
+      const m = registry.getModel(rawId);
+      if (m) return catalogModels.get(m.id);
+      const v = registry.resolveVariantRef(rawId);
+      return v ? catalogModels.get(v.base.id) : undefined;
+    };
+
     const rubric = 'Pick exactly one candidate id per question. Match the role\'s WORK to the tier whose PURPOSE describes it (see tierPurpose), then weigh that candidate\'s described profile (capability needs, cost, latency). Do not default every role to one "best" model — the four tiers exist to separate that work. A candidate marked unable to serve chat is never a valid answer.';
     const questions: Record<string, { type: 'choice'; instructions: string; criteria: Record<string, string> }> = {};
     for (const t of targets) {
       questions[t.key] = {
         type: 'choice',
         instructions: rubric,
-        criteria: Object.fromEntries(candidates.map((c) => [c.id, describeCandidate(c.id, c.note)])),
+        criteria: Object.fromEntries(candidates.map((c) => [c.id, describeCandidate(c.id, c.note, catalogOf(c.id))])),
       };
     }
 
@@ -2186,7 +2240,7 @@ export function registerConsoleRoutes(
       targets: targets.length,
       candidates: candidates.length,
       criteriaChars: JSON.stringify(questions).length,
-      criteriaSample: candidates[0] ? describeCandidate(candidates[0].id, candidates[0].note) : '',
+      criteriaSample: candidates[0] ? describeCandidate(candidates[0].id, candidates[0].note, catalogOf(candidates[0].id)) : '',
       state,
       answers: Object.fromEntries(
         Object.entries((response?.answers || {}) as Record<string, { choice?: unknown }>).map(([k, v]) => [k, v?.choice])

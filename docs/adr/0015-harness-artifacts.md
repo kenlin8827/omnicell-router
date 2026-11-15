@@ -645,7 +645,14 @@ plugin table.
   Which model spends that quota is operator config: `defaultModels.translation` (any gateway-visible
   modelRef) names the primary and the `lite` alias is the tail; `auto` never appears unsolicited —
   an internal, non-critical call must not have unbounded spend, so a failing chain errors honestly
-  instead of escalating (an operator who explicitly writes `auto` accepts that cost). The console's
+  instead of escalating (an operator who explicitly writes `auto` accepts that cost). Every
+  round-trip also carries a `reasoning_effort: 'low'` pin: a translation is mechanical work, and a
+  thinking model left at the vendor default spends reasoning tokens before every two-sentence
+  answer (the reported slowness).
+  The pin is an optimization ONLY — when an upstream refuses the field (an enum without `low`, or a
+  non-thinking model clamped to `none` that a strict OpenAI-compatible vendor 400s on), the same
+  model is re-asked ONCE without it and the refusal is memoized per model ref, so a refused pin can
+  never cost the lite fallback. The console's
   default-model picker carries a chain probe (`POST /api/admin/harness/translations/probe`): it
   fires this real chain over a one-line payload — the PICKER'S PENDING value, so the operator
   tests BEFORE saving (an empty selection tests the plain `lite` tail) — reports which model

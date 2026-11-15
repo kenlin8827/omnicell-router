@@ -77,10 +77,12 @@ describe('translateDescription model chain', () => {
   it('spends the configured model first and records what served', async () => {
     writeDefaultsConfig('my-cheap-model');
     const askedModels: string[] = [];
+    const effortPins: (string | undefined)[] = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (_url, init) => {
-      const body = JSON.parse(String(init?.body)) as { model: string };
+      const body = JSON.parse(String(init?.body)) as { model: string; reasoning_effort?: string };
       askedModels.push(body.model);
+      effortPins.push(body.reasoning_effort);
       return new Response(
         JSON.stringify({ choices: [{ message: { content: '译文' } }], model: body.model }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -93,6 +95,10 @@ describe('translateDescription model chain', () => {
       expect(askedModels).toEqual(['my-cheap-model']);
       expect(result.model).toBe('my-cheap-model');
       expect(result.cached).toBe(false);
+      // The thinking pin rides on EVERY translation call: a thinking model
+      // configured as the translator must serve at its lowest effort, never
+      // the vendor's (often high) default.
+      expect(effortPins).toEqual(['low']);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -111,6 +117,45 @@ describe('translateDescription model chain', () => {
       const result = await translateDescription('another never-translated description', 'zh');
       expect('code' in result && result.code).toBe('upstream');
       expect(askedModels).toEqual(['my-cheap-model', 'lite']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('drops the thinking pin when the upstream rejects it, then remembers the refusal', async () => {
+    writeDefaultsConfig('picky-model');
+    const askedModels: string[] = [];
+    const effortPins: (string | undefined)[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string; reasoning_effort?: string };
+      askedModels.push(body.model);
+      effortPins.push(body.reasoning_effort);
+      if (body.reasoning_effort !== undefined) {
+        return new Response(
+          JSON.stringify({
+            error: { message: 'Unrecognized request argument supplied: reasoning_effort', type: 'invalid_request_error' },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: '译文' } }], model: body.model }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+    try {
+      const first = await translateDescription('a picky vendor never accepts the pin', 'zh');
+      expect('code' in first).toBe(false);
+      // Pinned once, rejected, then rescued WITHOUT the pin on the SAME model —
+      // a refused optimization must never cost the lite fallback.
+      expect(askedModels).toEqual(['picky-model', 'picky-model']);
+      expect(effortPins).toEqual(['low', undefined]);
+      // Learned per model ref: the next translation never re-probes the pin.
+      const second = await translateDescription('a second description that also needs translation', 'zh');
+      expect('code' in second).toBe(false);
+      expect(askedModels).toEqual(['picky-model', 'picky-model', 'picky-model']);
+      expect(effortPins).toEqual(['low', undefined, undefined]);
     } finally {
       globalThis.fetch = originalFetch;
     }

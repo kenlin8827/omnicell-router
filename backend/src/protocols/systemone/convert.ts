@@ -161,7 +161,9 @@ export function buildDecisionChatRequest(
     temperature: 0,
     stream: false,
     response_format: { type: 'json_object' },
-    max_tokens: 4096,
+    // No max_tokens here: the pin is the DECIDER's job (decide.ts), same as
+    // reasoning_effort — it owns the initial value and the vendor-rejection
+    // fallback, memoized per model.
   };
 }
 
@@ -300,6 +302,42 @@ function buildScoreAnswer(raw: Record<string, any>, q: SystemoneQuestion): Syste
 }
 
 /**
+ * Every text surface a chat completion may carry the answer on, in trust
+ * order: `content` first (the contract), then the thinking surfaces some
+ * vendors populate when content comes back empty or truncated — DeepSeek /
+ * Alibaba style `reasoning_content`, OpenRouter style `reasoning`. Thinking
+ * models burning their completion budget on reasoning is THE classic way a
+ * decision call returns an unusable empty body; the answer JSON often sits
+ * intact in the reasoning field.
+ */
+function completionTextCandidates(chat: ChatCompletionResponse): string[] {
+  const message = chat.choices?.[0]?.message as any;
+  const content = message?.content;
+  const surfaces: unknown[] = [
+    // `content` is a string in the chat contract; a non-string is a rendered
+    // block list, stringified so its JSON text stays readable. null /
+    // undefined means "no content surface at all" — never JSON.stringify it,
+    // or the literal '""' would be the first candidate and shadow the
+    // thinking fields (DeepSeek reasoners routinely answer with content:null).
+    typeof content === 'string' ? content : content == null ? undefined : JSON.stringify(content),
+    message?.reasoning_content,
+    message?.reasoning,
+  ];
+  return surfaces.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+}
+
+/**
+ * The best text surface a completion carried — content first, thinking
+ * fields as fallback. The repair-retry uses this for its "your previous
+ * output could not be used" message: showing the model the text it ACTUALLY
+ * produced (even when content came back empty) turns a blind guess into a
+ * targeted correction.
+ */
+export function chatOutputText(chat: ChatCompletionResponse): string {
+  return completionTextCandidates(chat)[0] ?? '';
+}
+
+/**
  * Convert a chat completion into a conforming System One response. Any
  * question the model failed to answer validly is reported in `reason` —
  * deliberately no fabricated answers (the caller may repair-retry once).
@@ -309,11 +347,28 @@ export function synthesizeSystemoneResponse(
   req: SystemoneRequest,
   modelId: string
 ): SystemoneSynthesis {
-  const content = chat.choices?.[0]?.message?.content ?? '';
-  const parsed = extractJsonObject(typeof content === 'string' ? content : JSON.stringify(content));
-  if (!isPlainObject(parsed)) return { ok: false, reason: 'model output is not a single valid JSON object' };
-  const answersRaw = (parsed as any).answers;
-  if (!isPlainObject(answersRaw)) return { ok: false, reason: 'model output has no "answers" object' };
+  const texts = completionTextCandidates(chat);
+  // First surface carrying a usable ANSWER ENVELOPE wins — `content` in trust
+  // order, thinking fields only when it yields nothing usable. A surface that
+  // parses to some OTHER JSON object (a stats blob, the echoed questions) must
+  // not shadow a later surface that does carry `answers`.
+  let answersRaw: Record<string, unknown> | undefined;
+  let sawObject = false;
+  for (const text of texts) {
+    const candidate = extractJsonObject(text);
+    if (!isPlainObject(candidate)) continue;
+    sawObject = true;
+    if (isPlainObject(candidate.answers)) {
+      answersRaw = candidate.answers;
+      break;
+    }
+  }
+  if (!answersRaw) {
+    return {
+      ok: false,
+      reason: sawObject ? 'model output has no "answers" object' : 'model output is not a single valid JSON object',
+    };
+  }
 
   const questions = req.questions as Record<string, SystemoneQuestion>;
   const answers: Record<string, SystemoneAnswer> = {};

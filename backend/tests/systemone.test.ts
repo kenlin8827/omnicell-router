@@ -8,6 +8,7 @@ import { __resetEnvResolutionForTests } from '../src/config/env.js';
 import { RouterConfig } from '../src/config/types.js';
 import {
   buildDecisionChatRequest,
+  chatOutputText,
   decisionReasoningEffort,
   synthesizeSystemoneResponse,
   validateSystemoneRequest,
@@ -109,6 +110,9 @@ describe('System One: chat request synthesis', () => {
     expect(user).toContain('severity');
     expect(user).toContain('T-1001');
     expect(String((chat.messages[0] as any).content)).toContain('System One');
+    // No max_tokens here: the pin (initial value + rejection fallback) is
+    // owned by the decider, same as reasoning_effort.
+    expect(chat.max_tokens).toBeUndefined();
   });
 
   test('repair mode appends the bad output and the reason', () => {
@@ -196,6 +200,81 @@ describe('System One: answer synthesis', () => {
     expect(r2.reason).toContain('department');
     expect(r2.reason).toContain('escalate');
     expect(r2.reason).toContain('severity');
+  });
+
+  test('empty content falls back to the reasoning surfaces (thinking models)', () => {
+    const answers = JSON.stringify({
+      answers: { department: { choice: 'billing' }, escalate: { noul: 0.9 }, severity: { score: 1 } },
+    });
+    // DeepSeek / Alibaba style reasoning_content.
+    const withReasoningContent = fakeChat('');
+    (withReasoningContent.choices[0].message as any).reasoning_content = `Let me think... ${answers}`;
+    const r = synthesizeSystemoneResponse(withReasoningContent, REQ, 'test/chat');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.response.answers.department).toMatchObject({ type: 'choice', choice: 'billing' });
+
+    // OpenRouter style reasoning.
+    const withReasoning = fakeChat('');
+    (withReasoning.choices[0].message as any).reasoning = answers;
+    const r2 = synthesizeSystemoneResponse(withReasoning, REQ, 'test/chat');
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.response.answers.severity).toMatchObject({ type: 'score', score: 1 });
+
+    // chatOutputText (the repair prompt's previous-output surface) picks the
+    // first non-empty surface: the thinking text, never "(empty output)".
+    expect(chatOutputText(withReasoningContent)).toContain('department');
+    expect(chatOutputText(fakeChat('{"answers":{}}'))).toBe('{"answers":{}}');
+  });
+
+  test('unparsable content falls back to reasoning surfaces; a valid content still wins', () => {
+    const answers = JSON.stringify({
+      answers: { department: { choice: 'technical' }, escalate: { noul: 0.2 }, severity: { score: 2 } },
+    });
+    // Content is prose without a usable JSON object, reasoning carries it.
+    const chat = fakeChat('Hmm, let me decide.');
+    (chat.choices[0].message as any).reasoning_content = answers;
+    const r = synthesizeSystemoneResponse(chat, REQ, 'test/chat');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.response.answers.department).toMatchObject({ type: 'choice', choice: 'technical' });
+
+    // When content itself parses, it is preferred over the reasoning fields.
+    const contentWins = fakeChat(JSON.stringify({ answers: { department: { choice: 'billing' }, escalate: { noul: 0.5 }, severity: { score: 0 } } }));
+    (contentWins.choices[0].message as any).reasoning_content = JSON.stringify({
+      answers: { department: { choice: 'technical' }, escalate: { noul: 0.5 }, severity: { score: 2 } },
+    });
+    const r2 = synthesizeSystemoneResponse(contentWins, REQ, 'test/chat');
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.response.answers.department).toMatchObject({ type: 'choice', choice: 'billing' });
+  });
+
+  test('content:null is no text surface; a JSON object without answers does not shadow the reasoning field', () => {
+    const answers = JSON.stringify({
+      answers: { department: { choice: 'billing' }, escalate: { noul: 0.6 }, severity: { score: 2 } },
+    });
+    // DeepSeek reasoners answer with content:null while the JSON sits in
+    // reasoning_content. The null is a type violation of the chat contract but
+    // a real vendor shape, so the test seam casts deliberately.
+    const nullContent = fakeChat(null as unknown as string);
+    (nullContent.choices[0].message as any).reasoning_content = answers;
+    // The repair prompt must show the model's actual text, never the literal '""'.
+    expect(chatOutputText(nullContent)).toBe(answers);
+    const r = synthesizeSystemoneResponse(nullContent, REQ, 'test/chat');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.response.answers.department).toMatchObject({ type: 'choice', choice: 'billing' });
+
+    // Content parses to an object WITHOUT an answers envelope — the reasoning
+    // surface that carries one still wins instead of failing on the decoy.
+    const decoy = fakeChat(JSON.stringify({ note: 'deciding' }));
+    (decoy.choices[0].message as any).reasoning_content = answers;
+    const r2 = synthesizeSystemoneResponse(decoy, REQ, 'test/chat');
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.response.answers.severity).toMatchObject({ type: 'score', score: 2 });
   });
 });
 
@@ -335,6 +414,77 @@ describe('POST /v1/systemone end-to-end', () => {
       expect(res2.statusCode).toBe(200);
       expect(seen.length).toBe(3);
       expect(seen[2].reasoning_effort).toBe('low');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('upstream rejecting the max_tokens pin → retried without the field, then memoized', async () => {
+    useSandbox('plain');
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        const payload = await req.json();
+        seen.push(payload);
+        if (payload.max_tokens !== undefined) {
+          return Response.json(
+            {
+              error: {
+                code: 'invalid_parameter_error',
+                message: "'max_tokens' is too large: 16384. This model supports at most 8192 completion tokens",
+                type: 'invalid_request_error',
+              },
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: {
+                department: { choice: 'billing' },
+                escalate: { noul: 0.5 },
+                severity: { score: 1 },
+              },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'reject-max-tokens',
+            type: 'openai-compatible',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/reject-max-tokens',
+            provider: 'reject-max-tokens',
+            upstreamModel: 'reject-max-tokens',
+            tier: 'plus',
+            supportedReasoningEfforts: ['none', 'low'],
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { app } = bootServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-max-tokens' } });
+      expect(res.statusCode).toBe(200);
+      expect(seen.length).toBe(2);
+      expect(seen[0].max_tokens).toBe(16384);
+      expect(seen[1].max_tokens).toBeUndefined();
+      // Memoized: the next request never sends the pin again.
+      const res2 = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-max-tokens' } });
+      expect(res2.statusCode).toBe(200);
+      expect(seen.length).toBe(3);
+      expect(seen[2].max_tokens).toBeUndefined();
     } finally {
       upstream.stop(true);
     }
@@ -482,6 +632,76 @@ describe('POST /v1/systemone end-to-end', () => {
       expect(res2.statusCode).toBe(200);
       expect(seen.length).toBe(3);
       expect(seen[2].reasoning_effort).toBe('medium');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('upstream rejecting response_format (JSON mode) → retried without the field, then memoized', async () => {
+    useSandbox('plain');
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        const payload = await req.json();
+        seen.push(payload);
+        if (payload.response_format !== undefined) {
+          return Response.json(
+            {
+              error: {
+                code: 'invalid_parameter_error',
+                message: "'response_format' is not supported by this model",
+                type: 'invalid_request_error',
+              },
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: {
+                department: { choice: 'billing' },
+                escalate: { noul: 0.5 },
+                severity: { score: 1 },
+              },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'reject-json',
+            type: 'openai-compatible',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/reject-json',
+            provider: 'reject-json',
+            upstreamModel: 'reject-json',
+            tier: 'plus',
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { app } = bootServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-json' } });
+      expect(res.statusCode).toBe(200);
+      expect(seen.length).toBe(2);
+      expect(seen[0].response_format).toEqual({ type: 'json_object' });
+      expect(seen[1].response_format).toBeUndefined();
+      // Memoized: the next request never sends response_format again.
+      const res2 = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-json' } });
+      expect(res2.statusCode).toBe(200);
+      expect(seen.length).toBe(3);
+      expect(seen[2].response_format).toBeUndefined();
     } finally {
       upstream.stop(true);
     }

@@ -451,6 +451,24 @@ export function translationChain(): string[] {
   return chainFor(configured);
 }
 
+/**
+ * Model refs whose upstream refused the thinking pin. Keyed by the ref the
+ * operator configured (a physical id is exact; a tier alias is a safe
+ * over-approximation — one member rejecting it costs the pool a latency
+ * optimization, never a translation). The first call pays one 400 and
+ * learns; later calls never send the pin again.
+ */
+const effortPinRejectedModels = new Set<string>();
+
+/** Short, whitespace-collapsed body snippet — actionable, never a full dump. */
+async function errorSnippet(response: Response): Promise<string> {
+  try {
+    return (await response.text()).replace(/\s+/g, ' ').trim().slice(0, 200);
+  } catch {
+    return ''; // body unreadable — the status code is the whole message
+  }
+}
+
 /** One gateway round-trip for a fixed model ref. Errors are values, so the caller can retry. */
 async function callGateway(
   key: string,
@@ -462,14 +480,24 @@ async function callGateway(
   /** Per-round-trip ceiling; the document deadline hands a shorter one to the last attempts. */
   timeoutMs: number = MD_CALL_TIMEOUT_MS
 ): Promise<{ text: string; model: string } | { error: string }> {
-  let response: Response;
-  try {
-    response = await fetch(`http://127.0.0.1:${defaultGatewayPort()}/v1/chat/completions`, {
+  // Thinking pin. Translation is a mechanical internal call — a thinking model
+  // must not burn reasoning tokens on a two-sentence answer, and this WAS the
+  // reported slowness: the configured translator (deepseek-v4-flash) thought by
+  // default because the request sent no effort at all, so the vendor's default
+  // (high-ish) ran before every answer. 'low' rather than 'none': the chain may
+  // name a model whose effort enum lacks 'none' (e.g. low|high|max) and an
+  // invalid level would 400 into the lite fallback — slower than thinking
+  // briefly. The gateway's own machinery (effortMap, capability clamp) still
+  // applies, and a vendor that refuses the field outright is handled below:
+  // the pin is an optimization, never a reason to lose the translation.
+  const post = (pinEffort: boolean): Promise<Response> =>
+    fetch(`http://127.0.0.1:${defaultGatewayPort()}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model,
         temperature: 0,
+        ...(pinEffort ? { reasoning_effort: 'low' } : {}),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Target language: ${LANG_LABEL[lang as TranslationLang]}\n\n${text}` },
@@ -481,6 +509,10 @@ async function callGateway(
       }),
       signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
     });
+
+  let response: Response;
+  try {
+    response = await post(!effortPinRejectedModels.has(model));
   } catch (e) {
     return { error: `${model}: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -488,13 +520,26 @@ async function callGateway(
   if (!response.ok) {
     // The upstream body often names the real cause (unknown modelRef, empty tier pool, auth) —
     // carry a short snippet so a failing leg stays actionable instead of a bare status code.
-    let detail = '';
+    const detail = await errorSnippet(response);
+    // A vendor may refuse the pin itself: its enum can lack 'low', and a model
+    // with no thinking axis is clamped to 'none' by the gateway — which the
+    // openai wire forwards verbatim, and strict vendors 400 on that. Re-ask
+    // ONCE without the pin and remember the refusal for this ref.
+    const pinRejected = (response.status === 400 || response.status === 422) && /reasoning_effort/i.test(detail);
+    if (!pinRejected) {
+      return { error: `${model}: gateway returned HTTP ${response.status}${detail ? ` — ${detail}` : ''}` };
+    }
+    effortPinRejectedModels.add(model);
     try {
-      detail = (await response.text()).replace(/\s+/g, ' ').trim().slice(0, 200);
-    } catch { /* body unreadable — the status code is the whole message */ }
-    return { error: `${model}: gateway returned HTTP ${response.status}${detail ? ` — ${detail}` : ''}` };
+      response = await post(false);
+    } catch (e) {
+      return { error: `${model}: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (!response.ok) {
+      const retryDetail = await errorSnippet(response);
+      return { error: `${model}: gateway returned HTTP ${response.status}${retryDetail ? ` — ${retryDetail}` : ''}` };
+    }
   }
-
   const payload = (await response.json()) as {
     choices?: { message?: { content?: string }; finish_reason?: string }[];
     model?: string;
