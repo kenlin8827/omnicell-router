@@ -1287,6 +1287,10 @@ export const zhCN: TranslationDict = {
     apiKeyAll: '全部应用',
     hideInternal: '隐藏内部会话',
     hideInternalTip: '隐藏网关内部会话（控制台翻译/探测回环调用，保留 ocr-internal: 会话 ID）。取消勾选即可查看。',
+    hideOneShot: '隐藏单轮会话',
+    hideOneShotTip:
+      '隐藏只含 1 次请求的会话：客户端自带的辅助调用（生成标题 / 步骤摘要 / 分类）不带任何会话标识，网关只能为每次调用各铸一个会话，一个 agent 回合就能发出几十个。取消勾选即可查看。',
+    emptyOneShotHidden: '这里只有单轮会话——取消勾选「隐藏单轮会话」即可列出。',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "网关",
     idSourceClient: "客户端",

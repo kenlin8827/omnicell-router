@@ -1300,6 +1300,10 @@ export const deDE: TranslationDict = {
     apiKeyAll: 'Alle Apps',
     hideInternal: 'Interne ausblenden',
     hideInternalTip: 'Blendet Gateway-interne Sessions aus (Übersetzungs-/Probe-Aufrufe der Konsole mit reservierten „ocr-internal:“-Session-IDs). Abwählen zum Anzeigen.',
+    hideOneShot: 'Einmal-Sessions ausblenden',
+    hideOneShotTip:
+      'Blendet Sessions mit genau einer Anfrage aus: Die Hilfsaufrufe eines Clients (Titel / Schritt-Zusammenfassung / Klassifizierung) tragen keine Session-Identität, daher legt das Gateway pro Aufruf eine Session an — ein einzelner Agent-Turn erzeugt davon Dutzende. Abwählen zum Anzeigen.',
+    emptyOneShotHidden: 'Hier gibt es nur Einmal-Sessions — „Einmal-Sessions ausblenden“ abwählen, um sie aufzulisten.',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "Gateway",
     idSourceClient: "Client",

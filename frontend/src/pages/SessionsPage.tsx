@@ -795,6 +795,12 @@ export const SessionsPage: React.FC = () => {
   // The checkbox lives on the description line below, not in the action
   // toolbar (see the description block).
   const [hideInternal, setHideInternal] = useState(true);
+  // Single-request rows — a client's own helper calls (title / step summary /
+  // classification) carry no session identity, so ADR-0002 §1 mints one
+  // session per call and one agent turn can emit dozens. Server-side filter
+  // (?hideOneShot=1), ON by default: those rows are noise for reading real
+  // conversations and stay one checkbox away.
+  const [hideOneShot, setHideOneShot] = useState(true);
 
   // Combobox options: the configured client keys (id + application name).
   // Best-effort — a console session without /api-keys visibility just shows
@@ -827,7 +833,14 @@ export const SessionsPage: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getSessions(pageSize, (page - 1) * pageSize, filter || undefined, apiKeyFilter || undefined, hideInternal);
+      const res = await api.getSessions(
+        pageSize,
+        (page - 1) * pageSize,
+        filter || undefined,
+        apiKeyFilter || undefined,
+        hideInternal,
+        hideOneShot
+      );
       setSessions(res.sessions);
       setTotal(res.total);
     } catch (err) {
@@ -835,7 +848,7 @@ export const SessionsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, filter, apiKeyFilter, hideInternal]);
+  }, [page, pageSize, filter, apiKeyFilter, hideInternal, hideOneShot]);
 
   useEffect(() => {
     loadData();
@@ -1039,33 +1052,53 @@ export const SessionsPage: React.FC = () => {
           </button>
         </div>
       </div>
-      {/* The row filter for gateway-internal sessions sits HERE, next to the
-          copy it explains, instead of in the action toolbar — the toolbar
-          keeps the list-wide controls (app filter, search, clear, refresh).
-          Server-side filter, ON by default (ADR-0015 D6b).
-          flexWrap + `marginLeft: 'auto'` on the label: the paragraph shrinks
-          first (it reflows), and only when even that is too narrow does the
-          checkbox drop to its own right-aligned row instead of squeezing the
-          copy to a column of single words. */}
+      {/* The row filters sit HERE, next to the copy they explain, instead of in
+          the action toolbar — the toolbar keeps the list-wide controls (app
+          filter, search, clear, refresh).
+          `Hide internal` is a server-side filter, ON by default (ADR-0015 D6b);
+          `Hide one-shot` is the console's own default for the single-request
+          helper rows (ADR-0002 §1 — the gateway keeps minting them, the console
+          stops showing them by default).
+          flexWrap + `marginLeft: 'auto'` on the label group: the paragraph
+          shrinks first (it reflows), and only when even that is too narrow do
+          the checkboxes drop to their own right-aligned row instead of squeezing
+          the copy to a column of single words. */}
       <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16, margin: '0 0 12px 0' }}>
         <p style={{ flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: 0 }}>
           {t('sessions.sessionsDesc')}
         </p>
-        <label
-          style={{ display: 'flex', alignItems: 'center', gap: 5, paddingTop: 2, flexShrink: 0, marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
-          title={t('sessions.hideInternalTip')}
-        >
-          <input
-            type="checkbox"
-            checked={hideInternal}
-            onChange={(e) => {
-              setHideInternal(e.target.checked);
-              setPage(1);
-            }}
-            style={{ accentColor: 'var(--accent)' }}
-          />
-          {t('sessions.hideInternal')}
-        </label>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2, flexShrink: 0, marginLeft: 'auto' }}>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            title={t('sessions.hideInternalTip')}
+          >
+            <input
+              type="checkbox"
+              checked={hideInternal}
+              onChange={(e) => {
+                setHideInternal(e.target.checked);
+                setPage(1);
+              }}
+              style={{ accentColor: 'var(--accent)' }}
+            />
+            {t('sessions.hideInternal')}
+          </label>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            title={t('sessions.hideOneShotTip')}
+          >
+            <input
+              type="checkbox"
+              checked={hideOneShot}
+              onChange={(e) => {
+                setHideOneShot(e.target.checked);
+                setPage(1);
+              }}
+              style={{ accentColor: 'var(--accent)' }}
+            />
+            {t('sessions.hideOneShot')}
+          </label>
+        </div>
       </div>
 
       {/* ScrollTable (repo standard for a scrolling table): the head is a
@@ -1106,7 +1139,13 @@ export const SessionsPage: React.FC = () => {
         ]}
         minWidth={colMinWidth}
         headCellStyle={{ padding: '10px 12px' }}
-        empty={filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
+        empty={
+          filter
+            ? t('sessions.filterEmpty')
+            : hideOneShot
+              ? t('sessions.emptyOneShotHidden')
+              : t('sessions.emptySessions')
+        }
       >
             {sessions.map(s => (
                 <tr key={s.id} style={{ borderBottom: '1px solid var(--divider)' }}>

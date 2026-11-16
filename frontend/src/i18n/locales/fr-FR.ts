@@ -1310,6 +1310,10 @@ export const frFR: TranslationDict = {
     apiKeyAll: 'Toutes les apps',
     hideInternal: 'Masquer l’interne',
     hideInternalTip: 'Masque les sessions internes de la passerelle (appels de traduction/test de la console avec des ids de session réservés « ocr-internal: »). Décochez pour les inspecter.',
+    hideOneShot: 'Masquer les sessions à une requête',
+    hideOneShotTip:
+      'Masque les sessions à une seule requête : les appels auxiliaires d’un client (titre / résumé d’étape / classification) ne portent aucune identité de session, la passerelle en crée donc une par appel et un seul tour d’agent peut en émettre des dizaines. Décochez pour les inspecter.',
+    emptyOneShotHidden: 'Il n’y a ici que des sessions à une seule requête — décochez « Masquer les sessions à une requête » pour les lister.',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "passerelle",
     idSourceClient: "client",

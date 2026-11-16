@@ -1300,6 +1300,10 @@ export const koKR: TranslationDict = {
     apiKeyAll: '모든 앱',
     hideInternal: '내부 세션 숨기기',
     hideInternalTip: '게이트웨이 내부 세션(콘솔 번역/프로브 호출의 예약된 ocr-internal: 세션 ID)을 숨깁니다. 해제하면 확인할 수 있습니다.',
+    hideOneShot: '단발 세션 숨기기',
+    hideOneShotTip:
+      '요청이 1건뿐인 세션을 숨깁니다. 클라이언트 자체의 보조 호출(제목 / 단계 요약 / 분류)은 세션 식별자를 싣지 않으므로 게이트웨이가 호출마다 세션을 만들고, 에이전트 턴 한 번에 수십 개가 생깁니다. 해제하면 확인할 수 있습니다.',
+    emptyOneShotHidden: '여기에는 단발 세션만 있습니다. “단발 세션 숨기기”를 해제하면 목록에 표시됩니다.',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "게이트웨이",
     idSourceClient: "클라이언트",

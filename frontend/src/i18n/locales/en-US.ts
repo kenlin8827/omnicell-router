@@ -1312,6 +1312,10 @@ export const enUS: TranslationDict = {
     apiKeyAll: 'All apps',
     hideInternal: 'Hide internal',
     hideInternalTip: 'Hides gateway-internal sessions (console translation/probe loopback calls with reserved ocr-internal: session ids). Uncheck to inspect them.',
+    hideOneShot: 'Hide one-shot',
+    hideOneShotTip:
+      'Hides single-request sessions: a client’s own helper calls (title / step summary / classification) carry no session identity, so the gateway mints one session per call and a single agent turn can emit dozens. Uncheck to inspect them.',
+    emptyOneShotHidden: 'Only single-request sessions exist here — uncheck “Hide one-shot” to list them.',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "gateway",
     idSourceClient: "client",

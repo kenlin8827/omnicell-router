@@ -1300,6 +1300,10 @@ export const jaJP: TranslationDict = {
     apiKeyAll: 'すべてのアプリ',
     hideInternal: '内部セッションを隠す',
     hideInternalTip: 'ゲートウェイ内部セッション（コンソールの翻訳・プローブ呼び出し、予約済み ocr-internal: セッション ID）を非表示にします。表示するにはチェックを外してください。',
+    hideOneShot: '単発セッションを隠す',
+    hideOneShotTip:
+      'リクエストが 1 件だけのセッションを非表示にします。クライアント自身の補助呼び出し（タイトル / ステップ要約 / 分類）はセッション識別子を持たないため、ゲートウェイは呼び出しごとにセッションを作成し、1 回のエージェントターンで数十件に達します。表示するにはチェックを外してください。',
+    emptyOneShotHidden: 'ここには単発セッションしかありません。「単発セッションを隠す」を外すと一覧に表示されます。',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "ゲートウェイ",
     idSourceClient: "クライアント",

@@ -1220,7 +1220,14 @@ export function createServer(
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
   app.get('/api/admin/sessions', async (req) => {
-    const query = req.query as { limit?: string; offset?: string; q?: string; apiKey?: string; hideInternal?: string };
+    const query = req.query as {
+      limit?: string;
+      offset?: string;
+      q?: string;
+      apiKey?: string;
+      hideInternal?: string;
+      hideOneShot?: string;
+    };
     const limit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
     // Duplicate params (?q=a&?q=b / ?apiKey=a&apiKey=b) parse to an ARRAY
@@ -1235,6 +1242,16 @@ export function createServer(
     // Internal (gateway-loopback) rows: hidden unless the caller asks for
     // them. Filtered BEFORE pagination so `total` stays truthful.
     const hideInternal = firstStr(query.hideInternal) !== '0';
+    // Single-exchange rows: hidden only when asked. A client helper call
+    // (title / step summary / classification: system + one user message, no
+    // tools, no session claim) is a genuine conversation under ADR-0002 §1
+    // layer 8, so each one mints its own session — one agent turn can emit
+    // dozens and flood the list. The gateway never merges them (that would
+    // weld unrelated conversations); the console opts out of DISPLAYING them.
+    // Off by default here so the API keeps reporting every session it has;
+    // the console sends `hideOneShot=1` (its own default). Filtered BEFORE
+    // pagination so `total` stays truthful.
+    const hideOneShot = firstStr(query.hideOneShot) === '1';
 
     const traceTracker = orchestrator.getTraceTracker();
     // Live sessions (entity + traces) and sessions that exist only in the
@@ -1302,6 +1319,10 @@ export function createServer(
     const all = [...live, ...reconstructed]
       .filter(s => {
         if (hideInternal && (s as { internal?: boolean }).internal) return false;
+        // `traceCount` is the row's own request count (session aggregates for
+        // live rows, recorded traces for reconstructed ones) — never the
+        // entity's `requestCount`, which the whitelist projection drops.
+        if (hideOneShot && s.traceCount <= 1) return false;
         const keys = s.apiKeys ?? [];
         if (ak && !keys.some(k => k.id === ak || k.name.toLowerCase().includes(ak.toLowerCase()))) return false;
         return (

@@ -3388,7 +3388,8 @@ export const api = {
     offset = 0,
     q?: string,
     apiKey?: string,
-    hideInternal = true
+    hideInternal = true,
+    hideOneShot = false
   ): Promise<{ sessions: SessionRecord[]; total: number }> {
     const qs = new URLSearchParams();
     if (limit !== undefined) qs.set('limit', String(limit));
@@ -3397,6 +3398,10 @@ export const api = {
     if (apiKey) qs.set('apiKey', apiKey);
     // Backend default hides internal rows; send '0' explicitly to include them.
     qs.set('hideInternal', hideInternal ? '1' : '0');
+    // Single-request (client helper) rows: the BACKEND default shows them and
+    // only an explicit '1' filters — this is a console display choice, not an
+    // API-wide hiding rule (ADR-0002 §1), so the flag is never inferred.
+    if (hideOneShot) qs.set('hideOneShot', '1');
     const res = await fetch(`/api/admin/sessions?${qs.toString()}`);
     if (!res.ok) return { sessions: [], total: 0 };
     const json = await res.json();

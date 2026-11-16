@@ -1310,6 +1310,11 @@ hiddenBadge: string;
     apiKeyAll: string;
     hideInternal: string;
     hideInternalTip: string;
+    /** Toggle: hide sessions that carry a single request (client helper calls). */
+    hideOneShot: string;
+    hideOneShotTip: string;
+    /** Table empty state while {@link hideOneShot} hides every visible row. */
+    emptyOneShotHidden: string;
     /** Row badge on an internal session, shown only while the filter is off. */
     internalBadge: string;
     /** Badge tooltip — the reserved `ocr-internal:` prefix explains the classification. */

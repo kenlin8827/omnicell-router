@@ -1298,6 +1298,10 @@ export const esES: TranslationDict = {
     apiKeyAll: 'Todas las apps',
     hideInternal: 'Ocultar internas',
     hideInternalTip: 'Oculta las sesiones internas del gateway (llamadas de traducción/prueba de la consola con ids de sesión reservados «ocr-internal:»). Desmárcalo para verlas.',
+    hideOneShot: 'Ocultar de petición única',
+    hideOneShotTip:
+      'Oculta las sesiones con una única petición: las llamadas auxiliares del cliente (título / resumen del paso / clasificación) no llevan identidad de sesión, así que el gateway crea una sesión por llamada y un solo turno del agente puede generar decenas. Desmárcalo para verlas.',
+    emptyOneShotHidden: 'Aquí solo hay sesiones de petición única: desmarca «Ocultar de petición única» para listarlas.',
     /** Who minted the session id — see SessionIdSource (backend session-row.ts). */
     idSourceGateway: "gateway",
     idSourceClient: "cliente",
