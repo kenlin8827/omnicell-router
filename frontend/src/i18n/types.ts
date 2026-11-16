@@ -239,6 +239,10 @@ export interface TranslationDict {
     proxyPatterns: string;
     /** Nav label: the built-in Clash panel under Proxy Management. */
     proxyMihomo: string;
+    /** Nav label: the inbound proxy's traffic log page (the observation half
+     *  of the inbound capability; the settings page owns the rules). Kept to
+     *  one short word pair — the card header carries the full name. */
+    proxyLog: string;
     tokenSaver: string;
     catalogSources: string;
     grpOverview: string;
@@ -362,6 +366,20 @@ export interface TranslationDict {
     desc: string;
     saveTierBtn: string;
     savedTier: string;
+    /** View-mode → edit-mode entry point (per tier card). */
+    editBtn: string;
+    /** Edit-mode exit without saving. */
+    cancelEdit: string;
+    /** Amber chip on a tier card whose draft differs from the committed policy. */
+    unsavedBadge: string;
+    /** Confirm discarding a dirty draft on cancel-edit. {tier} = tier label. */
+    discardConfirmTitle: string;
+    discardConfirmDesc: string;
+    discardConfirmBtn: string;
+    /** Confirm leaving the page with unsaved drafts (in-app nav guard). */
+    leaveConfirmTitle: string;
+    leaveConfirmDesc: string;
+    leaveConfirmBtn: string;
     testBtn: string;
     testBtnHint: string;
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
@@ -446,9 +464,8 @@ export interface TranslationDict {
     membersCount: string;
     filterPlaceholder: string;
     memberWeightHint: string;
-    saveAllBtn: string;
-    savedAll: string;
     pickModelBtn: string;
+    pickEmptyHint: string;
     comboBadge: string;
     comboMemberCount: string;
     saveCheckDeadCombo: string;
@@ -2522,6 +2539,8 @@ hiddenBadge: string;
     submitting: string;
     failed: string;
     locked: string;
+    /** Shown when the gate re-appears because a live session died (401). */
+    expired: string;
   };
   /** The model-scoped proxy pattern page (Upstream group): proxyPatterns.* */
   proxyPatterns: {
@@ -2955,7 +2974,8 @@ hiddenBadge: string;
     title: string;
     hint: string;
     tabConfig: string;
-    tabLog: string;
+    /** Link label in the settings page's log section: opens the log page. */
+    openLog: string;
     onChip: string;
     switch: string;
     switchHint: string;
@@ -3128,8 +3148,8 @@ hiddenBadge: string;
     configWarnings: string;
     configEmpty: string;
     configAddModel: string;
-    configAdvancedShow: string;
-    configAdvancedHide: string;
+    configModeQuick: string;
+    configModeAdvanced: string;
     configExpand: string;
   };
   downloads: {
