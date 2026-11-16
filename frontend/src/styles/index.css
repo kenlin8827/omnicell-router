@@ -1769,6 +1769,12 @@ tbody tr.is-current,
   from { transform: translateX(48px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
+/* One-shot highlight for a freshly added / duplicate-flagged member row
+   (RulesPage member lists) — fades back to the row's normal transparent bg. */
+@keyframes ocr-flash {
+  from { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); }
+  to { background: transparent; }
+}
 
 /* ---- Loading skeleton rows (CapturesPage TurnsSkeleton) ---- */
 @keyframes ocr-skeleton {
