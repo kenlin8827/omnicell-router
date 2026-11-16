@@ -598,7 +598,7 @@ export const YamlPage: React.FC = () => {
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button className="btn btn-sm" onClick={loadYaml} disabled={loading}>
-              <RefreshCw size={12} />
+              <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
               <span>{t('yaml.reload')}</span>
             </button>
             <button className="btn btn-primary btn-sm" onClick={handleSave}>

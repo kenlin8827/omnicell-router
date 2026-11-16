@@ -1003,7 +1003,7 @@ export const SessionsPage: React.FC = () => {
             <span>{t('sessions.clearAll')}</span>
           </button>
           <button className="btn btn-sm" onClick={loadData} disabled={loading}>
-            <RefreshCw size={12} />
+            <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('sessions.refresh')}</span>
           </button>
         </div>

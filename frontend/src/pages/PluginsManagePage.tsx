@@ -175,7 +175,7 @@ export function PluginsManagePage(): React.ReactElement {
             {installing ? t('pluginPage.installing') : t('pluginPage.install')}
           </button>
           <button className="btn" onClick={() => void reload()} disabled={reloading}>
-            <RefreshCw size={13} aria-hidden className={reloading ? 'spin' : undefined} />
+            <RefreshCw size={13} aria-hidden style={reloading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             {t('pluginPage.reload')}
           </button>
         </div>

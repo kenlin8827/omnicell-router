@@ -838,7 +838,7 @@ export const GuardrailsPage: React.FC = () => {
               <span>{t('guardrails.editRulesLink')}</span>
             </Link>
             <button className="btn btn-primary" onClick={handleResetAll} disabled={isResetting}>
-              <RefreshCw size={13} />
+              <RefreshCw size={13} style={isResetting ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
               <span>{isResetting ? t('guardrails.resetting') : t('guardrails.resetAll')}</span>
             </button>
           </div>

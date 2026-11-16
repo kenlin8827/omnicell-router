@@ -1777,7 +1777,7 @@ export const MihomoPage: React.FC = () => {
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-primary" disabled={busy !== null || coreReady} title={coreReady ? t('proxy.alreadyRunning') : undefined} onClick={() => void runCore('start')}><Play size={13} /><span>{t('proxy.start')}</span></button>
                     <button className="btn btn-sm" disabled={busy !== null || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('stop')}><Square size={13} /><span>{t('proxy.stop')}</span></button>
-                    <button className="btn btn-sm" disabled={busy !== null || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('restart')}><RefreshCw size={13} /><span>{t('proxy.restart')}</span></button>
+                    <button className="btn btn-sm" disabled={busy !== null || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('restart')}><RefreshCw size={13} style={busy === 'restart' ? SPIN : undefined} /><span>{t('proxy.restart')}</span></button>
                     <button className="btn btn-sm" disabled={busy !== null || coreReady} title={coreReady ? t('proxy.stopFirst') : undefined} onClick={() => void runCore('install')}>
                       <span>{installLabel()}</span>
                     </button>
@@ -2106,7 +2106,7 @@ export const MihomoPage: React.FC = () => {
             <div className="card-header">
               <div className="card-title"><span>{t('proxy.tabSubscriptions')}</span></div>
               <button className="btn btn-sm" disabled={busy !== null} onClick={() => void refreshAll()}>
-                <RefreshCw size={13} />
+                <RefreshCw size={13} style={busy === 'refresh-all' ? SPIN : undefined} />
                 <span>{t('proxy.subRefreshAll')}</span>
               </button>
             </div>
@@ -2614,7 +2614,7 @@ export const MihomoPage: React.FC = () => {
                 {rules.length > 0 && <span className="badge">{t('proxy.rulesCount', { n: rules.length })}</span>}
               </div>
               <button className="btn btn-sm" disabled={busy !== null} onClick={() => void refreshRules().catch(toastFailure)}>
-                <RefreshCw size={13} />
+                <RefreshCw size={13} style={busy === 'rules' ? SPIN : undefined} />
                 <span>{t('common.refresh')}</span>
               </button>
             </div>
