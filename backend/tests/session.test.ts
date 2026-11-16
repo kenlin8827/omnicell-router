@@ -279,7 +279,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(headless.lookupType, 'cold_start');
   });
 
-  it('should support OpenAI native request.user field as session identity', () => {
+  it('must NOT adopt a bare OpenAI request.user as the session id (user-scoped, not conversation-scoped)', () => {
     const req: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Anything' }],
@@ -287,8 +287,30 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     const resolve = sessionManager.resolveSessionId(req);
-    assert.strictEqual(resolve.lookupType, 'request_user');
-    assert.strictEqual(resolve.sessionId, 'openai-user-guid-999');
+    assert.strictEqual(resolve.lookupType, 'cold_start');
+    assert.match(resolve.sessionId, /^sess_[0-9a-f]{16}$/);
+    assert.notStrictEqual(resolve.sessionId, 'openai-user-guid-999');
+  });
+
+  it('must NOT collapse distinct conversations that share a constant request.user (Junie `user: primary`)', () => {
+    // Junie sends its agent role as the end-user field. Before the bare-user
+    // layer was removed, every conversation and every turn resolved to the
+    // single session id "primary". A plain user-scoped value must never be an
+    // identity: two opening turns cold-start into distinct conversations.
+    const a = sessionManager.resolveSessionId({
+      model: 'auto',
+      messages: [{ role: 'user', content: 'First task about caching' }],
+      user: 'primary',
+    });
+    const b = sessionManager.resolveSessionId({
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Unrelated second task' }],
+      user: 'primary',
+    });
+    assert.strictEqual(a.lookupType, 'cold_start');
+    assert.strictEqual(b.lookupType, 'cold_start');
+    assert.notStrictEqual(a.sessionId, b.sessionId, 'a shared user value must not merge two conversations');
+    assert.notStrictEqual(a.sessionId, 'primary');
   });
 
   it('must NEVER merge two cold-start conversations that share the same first message', () => {
@@ -340,7 +362,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(resolve.sessionId, 'cc_7c9e6679-7425-40de-944b-e07fc1f90ae7');
   });
 
-  it('must NOT promote JSON user values that carry no session_id (stay user-level)', () => {
+  it('must NOT promote JSON user values that carry no session_id (no embedded UUID → cold start)', () => {
     const raw = '{"device_id":"00afe3c9d2b47f6a8c51e0d9b7a3f25c8e64d1b09c7f3a25e8b4c6d9f0a1b234","account_uuid":""}';
     const req: ChatCompletionRequest = {
       model: 'auto',
@@ -349,8 +371,8 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     const resolve = sessionManager.resolveSessionId(req);
-    assert.strictEqual(resolve.lookupType, 'request_user', 'JSON without session_id stays user-level');
-    assert.strictEqual(resolve.sessionId, raw);
+    assert.strictEqual(resolve.lookupType, 'cold_start', 'JSON without session_id is not an embedded conversation id');
+    assert.notStrictEqual(resolve.sessionId, raw);
   });
 
   it('must NOT promote ordinary user ids that merely contain "_session_" (loose-suffix false merge)', () => {
@@ -361,8 +383,8 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     const resolve = sessionManager.resolveSessionId(req);
-    assert.strictEqual(resolve.lookupType, 'request_user', 'Non-Claude-Code-shaped ids stay user-level');
-    assert.strictEqual(resolve.sessionId, 'corp_alice_session_workstation7');
+    assert.strictEqual(resolve.lookupType, 'cold_start', 'Non-Claude-Code-shaped user values are never an id');
+    assert.notStrictEqual(resolve.sessionId, 'corp_alice_session_workstation7');
   });
 
   it('must distinguish pure tool-call assistant turns in anchor hashes (no headless false merge)', () => {

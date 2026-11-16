@@ -146,9 +146,16 @@ const PERSIST_SAVE_DEBOUNCE_MS = 2_000;
  *      or the 2.x JSON payload {"device_id":...,"account_uuid":...,
  *      "session_id":"<uuid>"}; the inner UUID is a client-minted conversation
  *      id that survives gateway restarts for free. Both shapes share the cc_
- *      prefix (same conversation-uuid namespace).
- *   3. Raw request.user (OpenAI end-user field; NOTE: user-scoped, not
- *      conversation-scoped — kept for backward compatibility).
+ *      prefix (same conversation-uuid namespace). NOTE THE DISTINCTION: this is
+ *      the ONLY user-field shape promoted to an id, and only because the value
+ *      it extracts IS a per-conversation UUID — NOT a user identity. A user
+ *      identifier (OpenAI end-user semantics) must never name a session; it is
+ *      user-scoped while a session is conversation-scoped.
+ *   3. REMOVED — bare request.user is user-scoped, not conversation-scoped.
+ *      A constant value (Junie sends `user: "primary"`, its agent role) merged
+ *      every conversation and every turn into one session. The value is never
+ *      adopted as an id now; all other layers are content- or header-derived.
+ *      `request_user` remains readable in historical traces only.
  *   4. Chain anchors — exact hash of the current history's head prefixes that
  *      end at an assistant message (turn 2+ fast path; also matches branched /
  *      regenerated histories sharing the head). Serialized in CANONICAL form
@@ -376,9 +383,9 @@ export class SessionManager {
    * The whole shape must match: a loose "_session_" suffix match would
    * promote ordinary user-level ids that merely contain that marker to
    * session level, falsely merging every conversation of that user. False
-   * exclusion is the safe direction — such ids fall through to the
-   * user-level layer and the chain anchors re-acquire the conversation from
-   * turn 2 (self-healing false split).
+   * exclusion is the safe direction — such ids fall through to a cold-start
+   * mint, and the chain anchors re-acquire the conversation from turn 2
+   * (self-healing false split). Bare user values are never an id at all now.
    */
   private static extractEmbeddedSessionId(user?: unknown): string | null {
     if (!user || typeof user !== 'string') return null;
@@ -392,7 +399,7 @@ export class SessionManager {
           return `cc_${parsed.session_id}`;
         }
       } catch {
-        /* not JSON — fall through to the user-level layers */
+        /* not a JSON session payload — no embedded id */
       }
     }
     return null;
@@ -509,16 +516,20 @@ export class SessionManager {
       return { sessionId: request.router_options.session_id.trim(), lookupType: 'explicit_header' };
     }
 
-    // 2. Embedded client session UUID (Claude Code metadata.user_id)
+    // 2. Embedded client session UUID (Claude Code metadata.user_id). The ONLY
+    // user-field shape that is an id — the extracted value is a conversation
+    // UUID, not a user identity. Bare user values are never an id (step 3).
     const embedded = SessionManager.extractEmbeddedSessionId(request.user);
     if (embedded) {
       return { sessionId: embedded, lookupType: 'embedded_user_id' };
     }
 
-    // 3. OpenAI Native request.user Probe
-    if (request.user && typeof request.user === 'string' && request.user.trim()) {
-      return { sessionId: request.user.trim(), lookupType: 'request_user' };
-    }
+    // 3. (REMOVED) Bare request.user is deliberately NOT an identity. It is the
+    // OpenAI end-user field — user-scoped, not conversation-scoped — and clients
+    // send constants (Junie: `user: "primary"`), which collapsed every
+    // conversation into one session. Content anchors / conv key below own turn
+    // 2+; an unmatched turn 1 cold-starts. `request_user` survives only as a
+    // readable value in traces written before this layer was removed.
 
     const messages = request.messages || [];
     const priorHistory = messages.slice(0, -1);

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。
+已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。2026-11-16 移除 §1 裸 `request.user` 身份层（用户粒度的取值不得命名会话；Junie 的常量 `user: "primary"` 会塌掉全部会话）；`request_user` 仅作为历史轨迹的只读值保留。
 
 ## 背景
 
@@ -16,7 +16,7 @@
 
 1. 显式 Header `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`，或 `router_options.session_id`。
 2. 客户端内嵌会话 UUID——Claude Code `metadata.user_id` 的两种形态：旧版字符串 `user_{hex}_account_{uuid}_session_{uuid}` 与 2.x JSON 载荷 `{"device_id":...,"account_uuid":...,"session_id":"<uuid>"}`；两者的内层 id 同属一个对话 uuid 命名空间，统一映射到共享的 `cc_` 前缀。仅全形匹配：宽松的 `_session_` 后缀会把普通用户 id 提升为会话级；JSON 探测要求 JSON 对象且 `session_id` 为非空字符串（与控制台的 `formatSessionId` 同一语义）。
-3. 裸 `request.user`（用户粒度；为兼容保留）。
+3. **已移除（2026-11-16）。** 裸 `request.user` 不再是身份来源。它是 OpenAI 的 *end-user* 字段——用户粒度，不是会话粒度——而客户端常发送常量（JetBrains Junie 发 `user: "primary"`，即它的 agent 角色），导致该客户端的所有对话、所有轮次塌进一个名为 `primary` 的会话。用户标识绝不能命名会话：两者是两个正交的轴。仍然被采用的唯一 user 字段值是第 2 层的内层会话 UUID——那是承载在 `user_id` 里的**会话**标识，不是用户标识。第 2 轮起的连续性由内容锚点（4/5）、会话键（6）与客户端引用（7）负责；未命中的第 1 轮冷启动。`request_user` 作为**只读**值保留在 `SessionLookupType` 与 `CLIENT_NAMED_LOOKUP_TYPES` 中，使移除前写入的轨迹仍能反序列化并显示其原始 `idSource`；新的解析永不产生该值。
 4. 链锚——历史头部截至每个 assistant 轮的前缀哈希（探针有界；命中分叉/重生成后仍共头的历史）。按**规范形**序列化（见下）：登记的 assistant 回音保留其 `tool_calls`，故 agent 工具循环能扛住客户端回传时的字节漂移重新锚定。
 5. 尾锚——长度 ≥ 3、终于 assistant 边界的尾部窗口（截旧轮保上下文的客户端靠它回家）。
 6. 会话键——`sha256(apiKey 身份 + 完整首条用户消息)`。仅在字节精确锚点落空后才走到（第 2 轮起，如重生成的 assistant 改写），且仅当该键**只有唯一候选**（无歧义）时才归队：内容派生的身份 outrank 客户端声明，故别名永远无法改道一个其开场白仍被键识别的对话。有歧义的键（两个活会话共享首条消息）交给下面的客户端引用裁决，否则冷启动——假性拆分可自愈，假性合并永不可逆。传输 IP 被刻意排除在输入之外：本地网关对所有人都是 `127.0.0.1`/`::1`（无区分度），且地址在两个环回族之间抖动（正是它破坏了再锚定）。这取代了原先的首条消息根映射：它把 turn-1 形态的重发直接短路到 mint（根本不查键），又把有歧义的根**墓碑化**——同题重问毒化键，再叠加下述 tool-call 漂移，之后每一轮都落到被毒化的键上重新 mint，把一条会话级联成几十个 session id。

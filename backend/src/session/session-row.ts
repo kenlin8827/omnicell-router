@@ -172,7 +172,7 @@ export type SessionIdSource = 'gateway' | 'client';
 const CLIENT_NAMED_LOOKUP_TYPES: ReadonlySet<string> = new Set([
   'explicit_header',   // 1. x-session-id / x-conversation-id / router_options.session_id
   'embedded_user_id',  // 2. Claude Code metadata.user_id → cc_<uuid>
-  'request_user',      // 3. bare OpenAI request.user
+  'request_user',      // 3. RETIRED — bare OpenAI request.user, still read for pre-removal trace rows
   'header_fallback',   // 9. vendor x-<app>-session-id rename of a fresh mint
 ]);
 
