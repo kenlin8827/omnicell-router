@@ -448,8 +448,8 @@ export type GatewayRelayTap = AccessTap;
  */
 /** Routing surface exposed to a client-gateway plugin. */
 export interface GatewayCatalog {
-  /** Virtual tier ids in canonical order (auto/lite/plus/pro/ultra). */
-  tiers: string[];
+  /** Virtual model ids in canonical order (auto/lite/plus/pro/ultra). */
+  virtualModels: string[];
   /** Registered model refs (gateway-visible ids, all kinds). */
   models: { id: string; label?: string }[];
 }

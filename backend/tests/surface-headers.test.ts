@@ -41,7 +41,7 @@ function fakeChat(content: string) {
 }
 
 const TEST_KEY = 'sk-ocr-surface-headers-test';
-const BASE13 = [
+const BASE14 = [
   'x-ocr-tier',
   'x-ocr-layer',
   'x-ocr-model',
@@ -55,13 +55,14 @@ const BASE13 = [
   'x-ocr-session-lookup',
   'x-ocr-request-id',
   'x-ocr-latency-ms',
+  'x-ocr-upstream-stream',
 ];
 const THINKING3 = ['x-ocr-thinking-requested', 'x-ocr-thinking-actual', 'x-ocr-thinking-degraded'];
 // ADR-0012: the real pipeline attributes every effort ask to its author —
 // legs served by a REAL orchestrator (fastify rows) gain the source header;
 // stub-fed harnesses (mitm rows) keep the 3-key set.
 const THINKING4 = [...THINKING3, 'x-ocr-thinking-source'];
-const sortedKeys = (...extra: string[]): string[] => [...BASE13, ...extra].sort();
+const sortedKeys = (...extra: string[]): string[] => [...BASE14, ...extra].sort();
 
 type Leg = 'fastify' | 'mitm';
 interface Row {
@@ -303,7 +304,7 @@ describe('surface-headers: X-OCR key-set golden matrix', () => {
 
   for (const row of HEADER_ROWS) {
     it(`${row.name}: exact x-ocr-* key set`, async () => {
-      currentStub = stubResult(row.expected.length > BASE13.length);
+      currentStub = stubResult(row.expected.length > BASE14.length);
       const keys = row.leg === 'fastify' ? await fastifyKeys(row) : await mitmKeys(row);
       assert.deepEqual(keys, row.expected, `${row.name}: golden key set`);
     });

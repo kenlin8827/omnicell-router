@@ -34,6 +34,12 @@ const GATEWAY_CLIENT_FACING_FIELDS: Record<string, true> = {
   models: true,
   catalogReplace: true,
   catalogPrefix: true,
+  // jetbrains-gateway only: the two Junie MODEL slots live on the client card
+  // next to the catalog editor, so the drawer must not render a second editor.
+  // Protocol / streaming-patch / context-window stay in the drawer — they are
+  // deployment escape hatches, not per-client model choices.
+  juniePrimaryModel: true,
+  junieFasterModel: true,
 };
 
 /** Plugins whose model surface is edited on a Client Hub card. */

@@ -28,8 +28,8 @@ process.env.OCR_HOME = path.join(sandbox, 'home');
 process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
-fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 2\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
-fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 2 }));
+fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
+fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 3 }));
 process.chdir(sandbox);
 
 const DATASET = () => path.join(ENV_DIR, 'data', 'layer2-decisions.jsonl');
@@ -72,7 +72,7 @@ afterAll(() => {
 beforeEach(() => {
   resetDecisionCaptureConfig();
   clearDataset();
-  writeConfig('schemaVersion: 2\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
+  writeConfig('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
 });
 
 describe('dataset gate truth table (single key classifier.layer2.collectEnabled)', () => {
@@ -102,7 +102,7 @@ describe('dataset gate truth table (single key classifier.layer2.collectEnabled)
     // The old three-tier inputs are gone from the gate: a requestCapture
     // section OFF (or absent entirely) must NOT suppress the dataset sink.
     writeConfig(
-      'schemaVersion: 2\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nops:\n  requestCapture:\n    enabled: false\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n'
+      'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nops:\n  requestCapture:\n    enabled: false\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n'
     );
     resetDecisionCaptureConfig();
     captureDecision(sample);
@@ -176,7 +176,7 @@ describe('64MB dataset cap', () => {
 describe('removed config keys are stripped, never round-tripped', () => {
   test('a stray legacy `capture:` section is ignored, the real section keeps its values', () => {
     writeConfig([
-      'schemaVersion: 2',
+      'schemaVersion: 3',
       'client:',
       '  port: 3000',
       '  host: 127.0.0.1',

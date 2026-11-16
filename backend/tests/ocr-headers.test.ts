@@ -22,7 +22,7 @@ function chatResult(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
   };
 }
 
-const BASE_13 = [
+const BASE_14 = [
   'X-OCR-Tier',
   'X-OCR-Layer',
   'X-OCR-Model',
@@ -36,12 +36,13 @@ const BASE_13 = [
   'X-OCR-Session-Lookup',
   'X-OCR-Request-ID',
   'X-OCR-Latency-MS',
+  'X-OCR-Upstream-Stream',
 ];
 
 describe('buildChatOcrHeaders — frozen base set', () => {
-  it('1. plain result emits exactly the 13 base headers, in contract order', () => {
+  it('1. plain result emits exactly the 14 base headers, in contract order', () => {
     const headers = buildChatOcrHeaders(chatResult(), 'auto');
-    assert.deepStrictEqual(Object.keys(headers), BASE_13);
+    assert.deepStrictEqual(Object.keys(headers), BASE_14);
   });
 
   it('2. base values follow the frozen formatting rules', () => {
@@ -107,7 +108,7 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
       chatResult({ requestedEffort: 'low', actualEffort: 'medium', reasoningDegraded: true }),
       'auto'
     );
-    assert.deepStrictEqual(Object.keys(headers).slice(BASE_13.length), [
+    assert.deepStrictEqual(Object.keys(headers).slice(BASE_14.length), [
       'X-OCR-Thinking-Requested',
       'X-OCR-Thinking-Actual',
       'X-OCR-Thinking-Degraded',
@@ -151,12 +152,12 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
     assert.equal('X-OCR-Gen-MS' in buffered, false);
   });
 
-  it('8. thinking + variant combine: 17 keys total', () => {
+  it('8. thinking + variant combine: 18 keys total', () => {
     const headers = buildChatOcrHeaders(
       chatResult({ requestedEffort: 'low', actualEffort: 'low', variantUsed: 'quick' }),
       'auto'
     );
-    assert.equal(Object.keys(headers).length, 17);
+    assert.equal(Object.keys(headers).length, 18);
   });
 });
 
@@ -178,11 +179,12 @@ describe('buildChatOcrHeaders — stub tolerance (frozen ?? / || defaults)', () 
     assert.equal(headers['X-OCR-Session-Lookup'], '');
     assert.equal(headers['X-OCR-Request-ID'], '');
     assert.equal(headers['X-OCR-Latency-MS'], '0');
+    assert.equal(headers['X-OCR-Upstream-Stream'], 'buffered');
   });
 
-  it('10. nearly-empty object still produces the 13 base keys without throwing', () => {
+  it('10. nearly-empty object still produces the 14 base keys without throwing', () => {
     const headers = buildChatOcrHeaders({} as unknown as ExecutionResult, 'gate');
-    assert.deepStrictEqual(Object.keys(headers), BASE_13);
+    assert.deepStrictEqual(Object.keys(headers), BASE_14);
     assert.equal(headers['X-OCR-Model'], 'gate');
   });
 });

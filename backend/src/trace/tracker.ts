@@ -71,6 +71,14 @@ export interface ExecutionTrace {
     hasSystemPrompt: boolean;
     hasToolsOrSchema: boolean;
     /**
+     * INBOUND stream tag: the response shape actually written to the client
+     * (client `stream === true` after the C-3 normalization, or
+     * `streaming.client.mode: always`). Forgiving forward-compat: traces
+     * replayed from disk before this field existed deserialize as
+     * `undefined`, which the console renders as no tag.
+     */
+    clientStream?: boolean;
+    /**
      * Non-sensitive subset of inbound request headers. Three categories:
      *   - userAgent / acceptLanguage: client fingerprint.
      *   - clientRequestId: the CALLER's correlation value (x-request-id /
@@ -141,6 +149,14 @@ export interface ExecutionTrace {
      * alongside ttftMs for non-streamed turns.
      */
     genMs?: number;
+    /**
+     * OUTBOUND stream tag: the provider leg of the served attempt
+     * (`'sse'` = the upstream SSE reader ran, `'buffered'` = one buffered
+     * call). `'sse'` with `clientStream: false` is accumulate mode
+     * (`streaming.upstream.mode: stream` on a JSON client). Absent on traces
+     * written before the tag existed and on mock execution.
+     */
+    upstreamStream?: 'sse' | 'buffered';
     /**
      * Perceived stall time: total time the committed attempt's stream spent in
      * gaps of ≥1 s between two consecutive chunks the client received with

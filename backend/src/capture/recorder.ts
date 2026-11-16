@@ -230,6 +230,15 @@ export interface CaptureEvent {
   /** Error message if THIS phase errored (e.g. upstream request never got a response). */
   error?: string;
   /**
+   * SSE tag for THIS leg (ADR-0008 §1). On a REQUEST event: the body asked
+   * for a streamed answer (client leg: the caller's `stream` flag; upstream
+   * leg: the `stream:true` the gateway actually sent). On a CLIENT RESPONSE
+   * event: the gateway wrote an SSE body (`beginSse` was used). Absent when
+   * the protocol carries no such signal (binary/hex bodies, pre-tag archives)
+   * — never guessed from a content-type string.
+   */
+  stream?: boolean;
+  /**
    * Redacted proxy origin (`scheme://host:port`) when this upstream call was
    * routed through a proxy; absent for direct connections. Only meaningful
    * on `direction='upstream'` events. Userinfo is never persisted.
@@ -300,6 +309,18 @@ export interface CaptureExchange {
   ttftMs?: number;
   /** response.ts - firstByteTs (decode window). */
   genMs?: number;
+  /**
+   * SSE tag of the REQUEST side of this exchange: the client's ask (client
+   * leg) or the transport the gateway actually sent (upstream leg). Absent on
+   * archives written before the tag existed, and on bodies with no flag.
+   */
+  requestStream?: boolean;
+  /**
+   * SSE tag of the RESPONSE side (client legs): true iff the gateway wrote an
+   * SSE body. Undefined for upstream legs (their transport is the request tag)
+   * and for pre-tag archives.
+   */
+  responseStream?: boolean;
 }
 
 /** The last exchange of a leg — the one that served the client. */
@@ -1783,8 +1804,13 @@ export class CaptureRecorder {
         exchangeByKey.set(key, exchange);
         summary.exchanges.push(exchange);
       }
-      if (ev.phase === 'request') exchange.request = ev;
-      else exchange.response = ev;
+      if (ev.phase === 'request') {
+        exchange.request = ev;
+        if (ev.stream !== undefined) exchange.requestStream = ev.stream;
+      } else {
+        exchange.response = ev;
+        if (ev.stream !== undefined) exchange.responseStream = ev.stream;
+      }
     }
 
     const all = [...byRequest.values()];

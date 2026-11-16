@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
-import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig } from './types.js';
+import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingClientMode, StreamingConfig, StreamingUpstreamMode, WebAuthConfig } from './types.js';
 import { INTERCEPT_POSTURES, lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
@@ -237,7 +237,10 @@ const DEFAULT_CONFIG: RouterConfig = {
     inboundGraceMs: DEFAULT_INBOUND_GRACE_MS,
     persist: { enabled: true },
   },
-  streaming: { enabled: true },
+  // Two axes, both at their historical behavior (ADR-0008 §1): `allow`
+  // streams only when the caller asks, `follow` streams the provider leg only
+  // when the caller is being streamed to.
+  streaming: { client: { mode: 'allow' }, upstream: { mode: 'follow' } },
   apiKeys: [],
   models: [],
 };
@@ -364,6 +367,29 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
     dir: pick('dir'),
   };
 }
+
+/**
+ * Resolve the `streaming:` tree (ADR-0008 §1). Only the two registered axes
+ * are picked, so a retired key (`enabled` before schemaVersion 3 — rewritten
+ * by the v2→v3 migration) or junk never round-trips into a saved config. An
+ * unrecognized mode value falls back to the shipping default instead of
+ * silently disabling a capability.
+ */
+function resolveStreamingConfig(raw: unknown): StreamingConfig {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const pickMode = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+  const client = src.client && typeof src.client === 'object' ? (src.client as Record<string, unknown>) : {};
+  const upstream = src.upstream && typeof src.upstream === 'object' ? (src.upstream as Record<string, unknown>) : {};
+  return {
+    client: { mode: pickMode(client.mode, STREAMING_CLIENT_MODES, 'allow') },
+    upstream: { mode: pickMode(upstream.mode, STREAMING_UPSTREAM_MODES, 'follow') },
+  };
+}
+
+/** The two registered mode sets — one declaration, imported by the console contract. */
+const STREAMING_CLIENT_MODES = ['allow', 'deny', 'always'] as const;
+const STREAMING_UPSTREAM_MODES = ['follow', 'stream', 'buffered'] as const;
 
 /**
  * Resolve the whole `forwardProxy` section (ADR-0018).
@@ -1112,6 +1138,7 @@ export function loadConfig(configPath?: string): RouterConfig {
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...flat.compression?.headroom },
           caveman: { ...DEFAULT_CONFIG.compression?.caveman, ...flat.compression?.caveman },
         },
+        streaming: resolveStreamingConfig(flat.streaming),
         requestCapture: resolveRequestCapture(flat),
         tracePersist: { ...DEFAULT_CONFIG.tracePersist, ...flat.tracePersist },
         circuitBreaker: resolveCircuitBreaker(flat),
@@ -1317,11 +1344,16 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // the decision layer resolves model/timeout/effortDecision per evaluate, the mode
     // lever per processInternal, the System One defaultModel per decision):
     // the /auto page's "restart to apply" era is over for everything it edits.
-    // Sections with boot-time consumers (streaming executors, models,
-    // tiers bootstrap) deliberately stay restart-only.
+    // Sections with boot-time consumers (models, tiers bootstrap, plugin
+    // streams) deliberately stay restart-only.
     live.classifier = fresh.classifier;
     live.routing = fresh.routing;
     live.systemone = fresh.systemone;
+    // streaming too: both axes are read PER REQUEST (surfaces/chat-pipeline.ts
+    // for the client shape, the orchestrator for the provider transport), so
+    // only the WIRE capability (which providers implement createStream) is
+    // boot-fixed. The pipeline gate is re-seeded by the save handlers.
+    live.streaming = fresh.streaming;
     // forwardProxy too — the MITM rule table and admission gate read the live
     // boot snapshot per request, so a save must land here or the console's
     // "takes effect immediately" promise is false. Strict credential mode is

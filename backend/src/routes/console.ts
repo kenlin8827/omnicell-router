@@ -22,6 +22,7 @@ import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
 import { applyDirectivesConfig } from '../pipeline/directive-gate.js';
+import { applyStreamingPosture } from '../pipeline/streaming-posture.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
@@ -2427,6 +2428,7 @@ export function registerConsoleRoutes(
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
     applyRouteEntriesConfig(loadConfig().routeEntries); // experience-table gate: hot-applies lookup/writes
     applyDirectivesConfig(loadConfig().directives); // directive gate: hot-applies the reserved namespace + kill switch
+    applyStreamingPosture(loadConfig().streaming); // streaming posture: both axes are read per request, so a save lands immediately
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
     try {
@@ -2463,6 +2465,7 @@ export function registerConsoleRoutes(
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)
     applyRouteEntriesConfig(loadConfig().routeEntries); // hot-apply the experience-table gate too
     applyDirectivesConfig(loadConfig().directives); // hot-apply the directive namespace too
+    applyStreamingPosture(loadConfig().streaming); // hot-apply the streaming posture too (two axes, per-request reads)
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible

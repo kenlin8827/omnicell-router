@@ -77,7 +77,9 @@ describe('config schema evolution (ADR-0016)', () => {
     assert.deepEqual(flat.fallback, { enabled: true, maxRetries: 2, escalateTier: 'pro', injectErrorContext: false });
     assert.equal(flat.proxy?.url, 'http://127.0.0.1:7890');
     assert.deepEqual(flat.credentials?.anthropic, [{ keyHashPrefix: 'abcdef123456' }]);
-    assert.equal(flat.streaming?.enabled, false);
+    // The v1 `enabled:false` flag is rewritten by the v2→v3 step into the
+    // provider-transport axis; the retired key never survives on disk.
+    assert.deepEqual(flat.streaming, { upstream: { mode: 'buffered' } });
     assert.equal(flat.compression?.rtk?.enabled, true);
     assert.equal(flat.circuitBreaker?.failureThreshold, 5);
     assert.equal(flat.retry?.inplace?.maxAttempts, 2);
@@ -150,5 +152,34 @@ describe('config schema evolution (ADR-0016)', () => {
     // The layout drops the move row, so the key can never re-persist.
     assert.equal(toRuntimePath('routing.modelProfiles'), 'routing.modelProfiles');
     assert.ok(warnings.some((w) => w.includes('model-profile')));
+  });
+
+  it('v2 → v3: the single streaming flag becomes two axes, exactly preserving behavior', () => {
+    const { disk, fromVersion, warnings } = migrateConfig({
+      schemaVersion: 2,
+      upstream: { streaming: { enabled: false }, proxy: { url: 'http://127.0.0.1:7890' } },
+    });
+    assert.equal(fromVersion, 2);
+    assert.equal(disk.schemaVersion, SCHEMA_VERSION);
+    const upstream = (disk as Record<string, Record<string, unknown>>).upstream;
+    const streaming = upstream.streaming as Record<string, unknown>;
+    assert.equal('enabled' in streaming, false, 'the retired flag must not survive on disk');
+    assert.deepEqual(streaming.upstream, { mode: 'buffered' });
+    assert.deepEqual(upstream.proxy, { url: 'http://127.0.0.1:7890' });
+
+    // `enabled: true` meant the v3 defaults — nothing is written for it.
+    const enabled = migrateConfig({ schemaVersion: 2, upstream: { streaming: { enabled: true } } }).disk as Record<
+      string,
+      Record<string, unknown>
+    >;
+    assert.deepEqual(enabled.upstream.streaming, {});
+
+    // Newer intent at the new path wins over the legacy flag.
+    const both = migrateConfig({
+      schemaVersion: 2,
+      upstream: { streaming: { enabled: false, upstream: { mode: 'follow' } } },
+    }).disk as Record<string, Record<string, unknown>>;
+    assert.deepEqual((both.upstream.streaming as Record<string, unknown>).upstream, { mode: 'follow' });
+    assert.ok(warnings.some((w) => w.includes('streaming.client.mode')));
   });
 });

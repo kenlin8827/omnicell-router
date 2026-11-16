@@ -74,13 +74,13 @@ const MODEL_CHIP_LIMIT = 12;
 
 /** The gateway's virtual tier namespace (bare alias + tier aliases), canonical order —
  *  mirrors backend VIRTUAL_AUTO_IDS (cli/types.ts). */
-const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
+const VIRTUAL_MODEL_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 
 /** Adapter default virtual block when a custom-mode setup omits `virtualModels`:
  *  opencode/dsh/pi/omp/kimi/workbuddy/openclaw inject the full block, grok
  *  injects none (its own historical default). Keep in sync with the adapters. */
 const virtualDefaultFor = (clientName: string): string[] =>
-  clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
+  clientName === 'grok' ? [] : [...VIRTUAL_MODEL_IDS];
 
 /** A gateway plugin's model surface lives in its plugin config but is edited
  *  HERE (client card), not on the Plugins page: the model list is part of "how
@@ -153,6 +153,11 @@ export const ClientsPage: React.FC = () => {
    *  card. Keyed by PLUGIN id (the config owner). */
   const [gatewayCfg, setGatewayCfg] = useState<Record<string, GatewayCfgDraft>>({});
   const [gatewayCfgBusy, setGatewayCfgBusy] = useState<Record<string, boolean>>({});
+  /** Card-side edits for the Junie model slots (jetbrains-gateway only).
+   *  Holds ONLY the edited keys; display falls back to the committed plugin
+   *  values, so an empty map shows exactly what the plugin holds. Cleared by a
+   *  successful save — the response's values are the new committed baseline. */
+  const [junieEdits, setJunieEdits] = useState<Record<string, Record<string, string>>>({});
   /** Post-save hint per plugin id: the catalog is live in the gateway already,
    *  but the CLIENT caches its own model list — point at an app restart instead
    *  of a hook teardown, which never refreshes that list. */
@@ -173,13 +178,12 @@ export const ClientsPage: React.FC = () => {
   const [virtualSel, setVirtualSel] = useState<Record<string, string[] | undefined>>({});
   /** Expanded/collapsed state of long model-chip walls (follow/custom lists). */
   const [extrasOpen, setExtrasOpen] = useState<Record<string, boolean>>({});
-  /** Family cards: which nested product panel is expanded, keyed `client:product`.
-   *  Nested panels start collapsed — the row above already carries each
-   *  product's status badge, so opening one is a deliberate "show me the files".
-   *  Deliberately NOT exclusive (unlike the card-level accordion): the body is a
-   *  few status lines, and the job is comparing file/CA state across the family's
-   *  IDEs. The card level stays single-open because the forms are tall. */
-  const [openProducts, setOpenProducts] = useState<Record<string, boolean>>({});
+  /** Family cards: which IDE tab is selected, keyed by client name → product id.
+   *  The tab row carries every IDE's hook/CA state, so selecting one is about
+   *  showing ITS files/actions, never about discovering which IDE is broken.
+   *  Falls back to the first product when unset or when a stale id survives a
+   *  status refresh. One selection per family card, unlike the card accordion. */
+  const [activeProduct, setActiveProduct] = useState<Record<string, string>>({});
   /** Per-client model-list source: 'none' (default) exposes no concrete
    *  models, 'follow' mirrors the selected API key's effective access,
    *  'custom' keeps the manual picker. */
@@ -476,6 +480,10 @@ export const ClientsPage: React.FC = () => {
       const model = draft.model;
       const values = {
         ...draft.values,
+        // The Junie rows are card-owned too (jetbrains-gateway): the card keeps
+        // them as an overlay so a takeover-driven save carries them along the
+        // same way the explicit Save button does.
+        ...(junieEdits[pluginId] ?? {}),
         model,
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
@@ -487,6 +495,9 @@ export const ClientsPage: React.FC = () => {
       };
       const res = await opencodeApi.putPluginConfig(pluginId, values);
       setGatewayCfg((prev) => ({ ...prev, [pluginId]: parseGatewayCfg(res.values ?? values, draft) }));
+      // The response values are the new committed baseline; the Junie overlay
+      // has nothing left to shadow. A FAILED save keeps it for retry.
+      setJunieEdits((prev) => (prev[pluginId] ? { ...prev, [pluginId]: {} } : prev));
       // Only a catalog-shaped save needs the client to re-read its list; a
       // dropped value (warning) means the advertised list did NOT change.
       setGatewaySavedNotice((prev) => ({ ...prev, [pluginId]: catalogChanged && res.warnings.length === 0 }));
@@ -519,6 +530,9 @@ export const ClientsPage: React.FC = () => {
     if (!draft) return false;
     const base = parseGatewayCfg(draft.values ?? {}, draft);
     const pickedId = apiKeySel[clientName] ? keyIdOf(apiKeySel[clientName]) : '';
+    // Junie-only edits must dirty the card too: a takeover without this check
+    // would hook the client and leave the operator's Junie rows unsaved.
+    const juniePluginId = clients.find((cl) => cl.name === clientName)?.catalogPlugin ?? '';
     return (
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
@@ -526,7 +540,8 @@ export const ClientsPage: React.FC = () => {
       draft.catalogPrefix !== base.catalogPrefix ||
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
-      draft.boundKeyId !== pickedId
+      draft.boundKeyId !== pickedId ||
+      Object.keys(junieEdits[juniePluginId] ?? {}).length > 0
     );
   };
 
@@ -1071,8 +1086,8 @@ export const ClientsPage: React.FC = () => {
    *  when the set actually changes — an untouched draft keeps the payload
    *  absent), everything else into the concrete extras draft. */
   const applyModelDraft = (clientName: string, next: string[]) => {
-    const virtualNext = next.filter(id => VIRTUAL_TIER_IDS.includes(id));
-    setExtraSel(prev => ({ ...prev, [clientName]: next.filter(id => !VIRTUAL_TIER_IDS.includes(id)) }));
+    const virtualNext = next.filter(id => VIRTUAL_MODEL_IDS.includes(id));
+    setExtraSel(prev => ({ ...prev, [clientName]: next.filter(id => !VIRTUAL_MODEL_IDS.includes(id)) }));
     setVirtualSel(prev => {
       const effective = prev[clientName] ?? virtualDefaultFor(clientName);
       const changed = virtualNext.length !== effective.length || virtualNext.some(id => !effective.includes(id));
@@ -1081,7 +1096,7 @@ export const ClientsPage: React.FC = () => {
   };
 
   const removeExtraModel = (clientName: string, id: string) => {
-    if (VIRTUAL_TIER_IDS.includes(id)) {
+    if (VIRTUAL_MODEL_IDS.includes(id)) {
       // Removing a default-present virtual entry materializes the draft
       // (adapter default minus this id); an already-materialized draft just
       // drops the id. Untouched drafts keep the payload absent.
@@ -1196,7 +1211,7 @@ export const ClientsPage: React.FC = () => {
               // registry, the tier-only spelling advertises auto*.
               ? draft.unsetMode === 'all'
                 ? models.map((model) => model.id)
-                : VIRTUAL_TIER_IDS
+                : VIRTUAL_MODEL_IDS
               : mode === 'custom'
                 ? draft.models
                 : followView
@@ -1360,26 +1375,90 @@ export const ClientsPage: React.FC = () => {
                   )}
                 </div>
 
-                <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
-                <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
-                  <Combobox
-                    style={{ minWidth: 0 }}
-                    value={draft.model}
-                    onChange={(model) => update({ model })}
-                    options={defaultOptions.map((id) => ({ value: id, label: id }))}
-                    placeholder={t('clients.gatewayDefaultModel')}
-                    panelMinWidth={320}
-                  />
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.forceModel}
-                      disabled={busy}
-                      onChange={(e) => update({ forceModel: e.target.checked })}
-                    />
-                    {t('clients.gatewayForceModel')}
-                  </label>
-                </div>
+                {/* The gateway routing default (`model` / `forceModel`) is a
+                    RELAY concept: it fires only when a request names no model,
+                    or force-on. Junie always names the profile's model, so on
+                    the jetbrains card this row is dead config — the Junie block
+                    below owns the primary/faster model slots instead. */}
+                {pluginId !== 'jetbrains-gateway' && (
+                  <>
+                    <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
+                    <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                      <Combobox
+                        style={{ minWidth: 0 }}
+                        value={draft.model}
+                        onChange={(model) => update({ model })}
+                        options={defaultOptions.map((id) => ({ value: id, label: id }))}
+                        placeholder={t('clients.gatewayDefaultModel')}
+                        panelMinWidth={320}
+                      />
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.forceModel}
+                          disabled={busy}
+                          onChange={(e) => update({ forceModel: e.target.checked })}
+                        />
+                        {t('clients.gatewayForceModel')}
+                      </label>
+                    </div>
+                  </>
+                )}
+
+                {pluginId === 'jetbrains-gateway' && (() => {
+                  // Junie model slots — the card owns these two keys (the
+                  // drawer hides them): primaryModel is which profile Junie
+                  // starts on (its stored choice always wins after the
+                  // operator picks in the IDE), fasterModel is what the
+                  // internal helper agents call. Options are the SAME view the
+                  // catalog advertises — in `none` mode that is the tier
+                  // block, which is exactly what Junie's picker will show.
+                  // Values live as an overlay (`junieEdits`) over the
+                  // committed plugin values, so a save never rewrites
+                  // unrelated keys. Protocol/streaming/context-window knobs
+                  // stay in the plugin drawer: they are deployment escape
+                  // hatches, not per-client choices.
+                  const edits = junieEdits[pluginId] ?? {};
+                  const committed = draft.values ?? {};
+                  const junie = (key: string, fallback: string): string => {
+                    if (key in edits) return String(edits[key]);
+                    const raw = committed[key];
+                    return typeof raw === 'string' ? raw : fallback;
+                  };
+                  const setJunie = (key: string, value: string): void => {
+                    setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
+                    setJunieEdits((prev) => ({ ...prev, [pluginId]: { ...(prev[pluginId] ?? {}), [key]: value } }));
+                  };
+                  const listed = [...new Set(visible.map((id) => id.replace(/^ocr\//, '')))];
+                  const primary = junie('juniePrimaryModel', 'auto');
+                  const faster = junie('junieFasterModel', '');
+                  return (
+                    <>
+                      <div style={{ gridColumn: '1 / -1', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
+                        {t('clients.junieSection')} <InfoTip text={t('clients.junieSectionInfo')} />
+                      </div>
+                      <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.juniePrimaryModel')}</span>
+                      <Combobox
+                        style={{ gridColumn: 2, minWidth: 0 }}
+                        value={primary}
+                        clearable
+                        disabled={busy}
+                        onChange={(v) => setJunie('juniePrimaryModel', v ?? '')}
+                        options={[...new Set([primary, ...listed])].map((id) => ({ value: id, label: id }))}
+                      />
+                      <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.junieFasterModel')}</span>
+                      <Combobox
+                        style={{ gridColumn: 2, minWidth: 0 }}
+                        value={faster}
+                        clearable
+                        disabled={busy}
+                        onChange={(v) => setJunie('junieFasterModel', v ?? '')}
+                        options={[...new Set([faster, ...listed])].map((id) => ({ value: id, label: id }))}
+                        placeholder={t('clients.junieFasterModelPlaceholder')}
+                      />
+                    </>
+                  );
+                })()}
 
                 <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {/* The clickable actions own one row; the auto-save note is a
@@ -1751,54 +1830,76 @@ export const ClientsPage: React.FC = () => {
                         only its members carry. */}
                     {renderGatewayCatalog(c)}
 
-                    {/* Family products: NESTED collapsible panels. Every IDE is
-                        taken over (and restored) on its own config root, its own
-                        JBR truststore and its own ACP directory, so its files, its
-                        trust state and its action live together — and the card
-                        itself carries no setup/teardown: "the family" is not a
-                        state that can be taken over, only its members are. */}
-                    {!!c.products?.length && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {c.products.map(p => {
-                          const key = `${c.name}:${p.id}`;
-                          const panelOpen = !!openProducts[key];
-                          const togglePanel = () => setOpenProducts(prev => ({ ...prev, [key]: !panelOpen }));
-                          return (
-                            <div key={p.id} style={{ border: '1px solid var(--card-border)', borderRadius: '10px', background: 'var(--well-bg)' }}>
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                aria-expanded={panelOpen}
-                                onClick={e => { e.stopPropagation(); togglePanel(); }}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    togglePanel();
-                                  }
-                                }}
-                                style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', cursor: 'pointer', userSelect: 'none' }}
+                    {/* Family products: a HORIZONTAL tab strip replaces the old
+                        vertical stack of nested panels. Each IDE is still taken
+                        over (and restored) on its own config root, JBR truststore
+                        and ACP directory, so its files, trust state and action
+                        stay together. Only the selected IDE's detail body mounts
+                        — one clear focus instead of a tall wall of open panels.
+                        Status deliberately lives in the detail, not as a dot on
+                        the tab: an unlabelled 7px dot needs a hover to decode and
+                        reads as noise, while the detail states it in plain text. */}
+                    {!!c.products?.length && (() => {
+                      const chosenId = activeProduct[c.name];
+                      const selected = c.products.find(p => p.id === chosenId) ?? c.products[0];
+                      const tabStyle = (active: boolean): React.CSSProperties => ({
+                        display: 'inline-flex', alignItems: 'center', gap: 7,
+                        padding: '6px 11px', borderRadius: 8,
+                        border: '1px solid ' + (active ? 'var(--accent)' : 'var(--card-border)'),
+                        background: active ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'var(--btn-bg)',
+                        color: active ? 'var(--accent)' : 'var(--text-main)',
+                        fontSize: 'var(--text-xs)', fontWeight: active ? 'var(--font-semibold)' : 'var(--font-medium)',
+                        cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none',
+                      });
+                      const panels = (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {/* Tab strip — names only; hook/CA state is stated in the
+                              detail body. `role=tablist` keeps it keyboard
+                              discoverable; clicking a tab never bubbles to the card. */}
+                          <div role="tablist" aria-label={t('clients.jetbrainsProductCount', { n: c.products.length })} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {c.products.map(p => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={p.id === selected.id}
+                                onClick={e => { e.stopPropagation(); setActiveProduct(prev => ({ ...prev, [c.name]: p.id })); }}
+                                style={tabStyle(p.id === selected.id)}
                               >
-                                <ChevronDown
-                                  size={14}
-                                  color="var(--text-dim)"
-                                  style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: panelOpen ? 'rotate(180deg)' : 'none' }}
-                                />
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)' }}>
-                                  <BrandIcon name={p.icon ?? p.id} size={16} />
-                                  {p.displayName}
-                                </span>
-                                {p.version && (
-                                  <span style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{p.version}</span>
-                                )}
-                                {p.hooked ? (
-                                  <span className="badge badge-success">{t('overview.hooked')}</span>
-                                ) : (
-                                  <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>{t('overview.notHooked')}</span>
-                                )}
-                              </div>
-                              {panelOpen && (
-                                <div style={{ borderTop: '1px solid var(--divider)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <BrandIcon name={p.icon ?? p.id} size={14} />
+                                <span>{p.displayName}</span>
+                              </button>
+                            ))}
+                          </div>
+                          {/* Detail panel for the selected IDE only. */}
+                          <div role="tabpanel" style={{ border: '1px solid var(--card-border)', borderRadius: '10px', background: 'var(--well-bg)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            {(() => {
+                              const p = selected;
+                              return (
+                                <>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)' }}>
+                                      <BrandIcon name={p.icon ?? p.id} size={16} />
+                                      {p.displayName}
+                                    </span>
+                                    {/* Long build numbers (Android Studio's AI-xxx…)
+                                        belong in the detail header, never on the
+                                        tab — one of them blew a tab to ~300px. */}
+                                    {p.version && (
+                                      <span
+                                        title={p.version}
+                                        style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                      >
+                                        {p.version}
+                                      </span>
+                                    )}
+                                    <span style={{ flex: 1 }} />
+                                    {p.hooked ? (
+                                      <span className="badge badge-success">{t('overview.hooked')}</span>
+                                    ) : (
+                                      <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>{t('overview.notHooked')}</span>
+                                    )}
+                                  </div>
                                   <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
                                     {t('clients.configPath')}
                                     {/* The artifacts list already starts with the
@@ -1870,13 +1971,14 @@ export const ClientsPage: React.FC = () => {
                                       <span>{p.hooked ? t('clients.teardownBtn') : t('clients.setupBtn')}</span>
                                     </button>
                                   </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      );
+                      return panels;
+                    })()}
                     {c.hookKind === 'launcher' ? (
                       // Launcher hooks own scripts, not a config file: every
                       // launcher setup writes is listed with its own existence

@@ -350,7 +350,7 @@ describe('config plumbing — credentials:/limits survive the loadConfig round t
     fs.writeFileSync(
       cfgPath,
       [
-        'schemaVersion: 2',
+        'schemaVersion: 3',
         'upstream:',
         '  credentials:',
         '    anthropic:',

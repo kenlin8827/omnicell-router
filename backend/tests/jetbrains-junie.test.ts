@@ -239,8 +239,9 @@ d?.('archive extraction', () => {
 d?.('Junie model profiles', () => {
   const {
     buildJunieProfiles,
-    JUNIE_TIERS,
-    junieTierEntries,
+    junieEndpointUrl,
+    JUNIE_VIRTUAL_MODELS,
+    junieVirtualModelEntries,
     junieModelSlug,
     mergeJunieConfig,
     refreshJunieModels,
@@ -260,9 +261,102 @@ d?.('Junie model profiles', () => {
     assert.equal(buildJunieProfiles('http://h:1/', 'k')[0].body.baseUrl, 'http://h:1/v1/chat/completions');
   });
 
-  it('keeps apiKey a plain string and every tier addressable', () => {
+  it('resolves the Responses endpoint without ever stacking protocol paths', () => {
+    assert.equal(junieEndpointUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000/v1/chat/completions');
+    assert.equal(junieEndpointUrl('http://127.0.0.1:4000', 'responses'), 'http://127.0.0.1:4000/v1/responses');
+    assert.equal(junieEndpointUrl('http://127.0.0.1:4000/v1', 'responses'), 'http://127.0.0.1:4000/v1/responses');
+    // A caller handing a chat endpoint into responses mode must not produce
+    // `/v1/chat/completions/v1/responses`.
+    assert.equal(
+      junieEndpointUrl('http://127.0.0.1:4000/v1/chat/completions', 'responses'),
+      'http://127.0.0.1:4000/v1/responses',
+    );
+    assert.equal(
+      junieEndpointUrl('http://127.0.0.1:4000/v1/responses', 'chat'),
+      'http://127.0.0.1:4000/v1/chat/completions',
+    );
+  });
+
+  it('emits an OpenAIResponses profile in responses mode and keeps chat as the default', () => {
+    const responses = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', undefined, 'responses');
+    assert.equal(responses.length, JUNIE_VIRTUAL_MODELS.length);
+    for (const profile of responses) {
+      assert.equal(profile.body.apiType, 'OpenAIResponses');
+      assert.equal(profile.body.baseUrl, 'http://127.0.0.1:4700/v1/responses');
+      assert.deepEqual(profile.body.extraBody, { store: true });
+      // The streaming gate must NEVER be forced from the generator: doing so on
+      // the chat wire made Junie's batch parser read SSE and throw.
+      assert.equal((profile.body.extraBody as Record<string, unknown>).stream, undefined);
+    }
+    const chat = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test');
+    for (const profile of chat) {
+      assert.equal(profile.body.apiType, 'OpenAICompletion');
+      assert.equal(profile.body.extraBody, undefined);
+    }
+  });
+
+  it('honors an operator-chosen fasterModel and falls back for unlisted ids', () => {
+    const models: { id: string }[] = [
+      { id: 'lite' },
+      { id: 'xiaomi/mimo-v2.6-flash' },
+      { id: 'xiaomi/mimo-v2.6-pro' },
+    ];
+    // Explicit listed id wins over the `lite` ladder default — Junie's
+    // internal helper agents (capability filter, titling) call this model.
+    const overridden = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', models, 'chat', 'xiaomi/mimo-v2.6-pro');
+    for (const profile of overridden) {
+      assert.equal(profile.body.fasterModel.id, 'xiaomi/mimo-v2.6-pro');
+    }
+    // An id the picker does not expose must fall back to the ladder, never
+    // write a profile that routes to nothing.
+    const invalid = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', models, 'chat', 'gpt-9-turbo');
+    for (const profile of invalid) {
+      assert.equal(profile.body.fasterModel.id, 'lite');
+    }
+    // A custom list without `lite`/`auto` falls to the first listed id.
+    const noLadder = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', [{ id: 'a-model' }, { id: 'b-model' }]);
+    for (const profile of noLadder) {
+      assert.equal(profile.body.fasterModel.id, 'a-model');
+    }
+  });
+
+  it('honors an operator-chosen maxContextLength and ignores junk', () => {
+    // Explicit positive integer wins over the 128000 default — a wrong window
+    // is a silent hazard (small truncates sessions early, large overflows).
+    const big = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', undefined, 'chat', undefined, 200000);
+    for (const profile of big) {
+      assert.equal(profile.body.maxContextLength, 200000);
+    }
+    // Non-positive / fractional / NaN values must fall back, never write a
+    // profile that misleads Junie's request assembly.
+    for (const junk of [0, -128000, 1.5, Number.NaN]) {
+      const degraded = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', undefined, 'chat', undefined, junk);
+      for (const profile of degraded) {
+        assert.equal(profile.body.maxContextLength, 128000);
+      }
+    }
+  });
+
+  it('honors a primary-model default naming a listed concrete id', () => {
+    // `juniePrimaryModel` is the primaryModel's standing choice: any model the
+    // picker exposes works, not just the tier aliases — the profile slug chain
+    // must land the operator's model as the initial selection.
+    const models = [{ id: 'auto' }, { id: 'xiaomi/mimo-v2.6-pro' }, { id: 'plus' }];
+    const home = tmpDir('junie-primary-');
+    const written = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', {
+      home,
+      models,
+      primaryModel: 'xiaomi/mimo-v2.6-pro',
+    });
+    assert.equal(written.ok, true);
+    assert.equal(written.model, 'custom:ocr-xiaomi-mimo-v2-6-pro');
+    const config = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+    assert.equal(config.model, 'custom:ocr-xiaomi-mimo-v2-6-pro');
+  });
+
+  it('keeps apiKey a plain string and every virtual model addressable', () => {
     const profiles = buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test');
-    assert.equal(profiles.length, JUNIE_TIERS.length);
+    assert.equal(profiles.length, JUNIE_VIRTUAL_MODELS.length);
     assert.deepEqual(
       profiles.map((p) => p.file),
       ['ocr-auto.json', 'ocr-lite.json', 'ocr-plus.json', 'ocr-pro.json', 'ocr-ultra.json'],
@@ -303,9 +397,9 @@ d?.('Junie model profiles', () => {
     fs.writeFileSync(other, '{"id":"mine"}');
     fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ effort: 'high' }));
 
-    const written = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home, defaultTier: 'pro' });
+    const written = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home, primaryModel: 'pro' });
     assert.equal(written.ok, true);
-    assert.equal(written.files.length, JUNIE_TIERS.length);
+    assert.equal(written.files.length, JUNIE_VIRTUAL_MODELS.length);
     assert.equal(written.model, 'custom:ocr-pro');
     assert.equal(junieModelsPresent({ home }), true);
 
@@ -314,7 +408,7 @@ d?.('Junie model profiles', () => {
     assert.equal(config.effort, 'high');
 
     const removed = removeJunieModels({ home });
-    assert.equal(removed.removed.length, JUNIE_TIERS.length);
+    assert.equal(removed.removed.length, JUNIE_VIRTUAL_MODELS.length);
     assert.equal(fs.existsSync(other), true, "an operator's own profile must survive teardown");
     assert.equal(junieModelsPresent({ home }), false);
     assert.equal('model' in JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')), false);
@@ -335,7 +429,7 @@ d?.('Junie model profiles', () => {
       { id: 'xiaomi/mimo-v2.6-pro', label: 'MiMo v2.6 Pro' },
       { id: 'plus' },
     ];
-    const written = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home, models, defaultTier: 'plus' });
+    const written = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home, models, primaryModel: 'plus' });
     assert.deepEqual(
       written.files.map((file) => path.basename(file)),
       ['ocr-auto.json', 'ocr-xiaomi-mimo-v2-6-pro.json', 'ocr-plus.json'],
@@ -347,9 +441,9 @@ d?.('Junie model profiles', () => {
     assert.equal(concrete.providerName, 'OCR');
     assert.equal(concrete.primaryModel.id, 'xiaomi/mimo-v2.6-pro');
     assert.equal(concrete.id, 'ocr-xiaomi-mimo-v2-6-pro');
-    // `lite` is not in this list, so the faster model falls back to a tier it has.
+    // `lite` is not in this list, so the faster model falls back to a virtual model it has.
     assert.equal(concrete.fasterModel.id, 'auto');
-    // Tier ids keep their established label, so a re-follow does not rename them.
+    // Virtual model ids keep their established label, so a re-follow does not rename them.
     assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'models', 'ocr-auto.json'), 'utf8')).displayName, 'Auto');
   });
 
@@ -364,7 +458,7 @@ d?.('Junie model profiles', () => {
     const shrunk = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', {
       home,
       models: [{ id: 'pro' }],
-      defaultTier: 'ultra',
+      primaryModel: 'ultra',
     });
     assert.deepEqual(shrunk.files.map((file) => path.basename(file)), ['ocr-pro.json']);
     // A default the list no longer carries falls back to its first entry rather
@@ -380,8 +474,8 @@ d?.('Junie model profiles', () => {
     assert.equal(fs.existsSync(path.join(home, 'config.json')), false);
   });
 
-  it('slug + tier block stay the write contract the gateway view feeds', () => {
-    assert.deepEqual(junieTierEntries().map((entry) => entry.id), JUNIE_TIERS.map((entry) => entry.tier));
+  it('slug + virtual-model block stay the write contract the gateway view feeds', () => {
+    assert.deepEqual(junieVirtualModelEntries().map((entry) => entry.id), JUNIE_VIRTUAL_MODELS.map((entry) => entry.model));
     assert.equal(junieModelSlug('xiaomi/mimo-v2.6-pro'), 'xiaomi-mimo-v2-6-pro');
     assert.equal(junieModelSlug('ocr/auto'), 'ocr-auto');
     assert.equal(junieModelSlug('///'), 'model');

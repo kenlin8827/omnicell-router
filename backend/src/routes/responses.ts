@@ -223,7 +223,9 @@ function shortId(prefix: string): string {
 export function chatToResponseObject(
   chatResp: ChatCompletionResponse,
   respId: string,
-  model: string
+  model: string,
+  /** Pre-minted on the relayed leg so `response.created` and `response.completed` share one item id. */
+  messageId: string = shortId('msg_')
 ): Record<string, unknown> {
   const msg = chatResp.choices[0]?.message;
   const output: Record<string, unknown>[] = [];
@@ -235,7 +237,7 @@ export function chatToResponseObject(
   if (text) {
     output.push({
       type: 'message',
-      id: shortId('msg_'),
+      id: messageId,
       status: 'completed',
       role: 'assistant',
       content: [{ type: 'output_text', text, annotations: [] }],
@@ -256,7 +258,7 @@ export function chatToResponseObject(
   if (output.length === 0) {
     output.push({
       type: 'message',
-      id: shortId('msg_'),
+      id: messageId,
       status: 'completed',
       role: 'assistant',
       content: [{ type: 'output_text', text: '', annotations: [] }],
@@ -271,6 +273,12 @@ export function chatToResponseObject(
     status: 'completed',
     model,
     output,
+    // REQUIRED by strict Responses clients. JetBrains Junie declares `tools`
+    // with no default in its `Response` serializer, so an absent field aborts
+    // parsing of `response.created`/`response.completed` entirely — the client
+    // never sees a terminal event and reports a truncated stream. An empty
+    // array is the correct "no tools echoed on this response" value.
+    tools: [],
     usage: {
       input_tokens: u?.prompt_tokens || 0,
       output_tokens: u?.completion_tokens || 0,
@@ -279,42 +287,185 @@ export function chatToResponseObject(
   };
 }
 
-/** Synthesized Responses SSE event sequence for one buffered completion. */
-export function chatToStreamEvents(
+/**
+ * Per-response SSE sequence counter. OpenAI Responses streaming events carry a
+ * monotonically increasing `sequence_number`. Strict consumers declare it
+ * REQUIRED on EVERY event — including their catch-all `Unknown` variant.
+ * JetBrains Junie (4020.10) drops unnumbered events silently, so a missing
+ * number on `response.completed` makes it throw `LlmStreamTruncatedException`
+ * ("streaming response ended before a terminal response.* event") and surface
+ * "A network error interrupted the request to the model provider".
+ *
+ * One counter is shared by the relayed leg's opening prefix, every live
+ * `response.output_text.delta`, and the closing half. The buffered leg owns a
+ * fresh counter and numbers its synthesized sequence the same way.
+ */
+export interface ResponsesStreamSequence {
+  value: number;
+}
+
+export function newResponseStreamSequence(): ResponsesStreamSequence {
+  return { value: 0 };
+}
+
+function sequenced(
+  seq: ResponsesStreamSequence,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return { sequence_number: seq.value++, ...payload };
+}
+
+/** One `event:/data:` frame — the exact shape every Responses SSE consumer reads. */
+export function responsesEventFrame(payload: Record<string, unknown>): string {
+  return `event: ${payload.type}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+/** Id for the assistant message item; minted at parse time on the relayed leg. */
+export function newResponseMessageId(): string {
+  return shortId('msg_');
+}
+
+/**
+ * Frames emitted ONCE before the first upstream chunk of a relayed turn.
+ * `output_item.added` / `content_part.added` pin the item_id that every later
+ * `response.output_text.delta` must carry, so they cannot wait for the result.
+ */
+export function responsesStreamPrefix(
+  respId: string,
+  model: string,
+  messageId: string,
+  seq: ResponsesStreamSequence = newResponseStreamSequence(),
+): string[] {
+  const response = {
+    id: respId,
+    object: 'response',
+    created_at: Math.floor(Date.now() / 1000),
+    status: 'in_progress',
+    model,
+    output: [],
+    // Same required field as the completed response — `response.created` is
+    // parsed into the very same Response schema by strict clients.
+    tools: [],
+    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+  };
+  return [
+    { type: 'response.created', response },
+    { type: 'response.in_progress', response },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { type: 'message', id: messageId, status: 'in_progress', role: 'assistant', content: [] },
+    },
+    {
+      type: 'response.content_part.added',
+      item_id: messageId,
+      output_index: 0,
+      content_index: 0,
+      part: { type: 'output_text', text: '', annotations: [] },
+    },
+  ].map((payload) => responsesEventFrame(sequenced(seq, payload)));
+}
+
+/** ONE upstream chat delta -> ONE Responses text delta frame. */
+export function responsesDeltaFrame(
+  messageId: string,
+  delta: string,
+  seq: ResponsesStreamSequence,
+): string {
+  return responsesEventFrame(sequenced(seq, {
+    type: 'response.output_text.delta',
+    item_id: messageId,
+    output_index: 0,
+    content_index: 0,
+    delta,
+  }));
+}
+
+/**
+ * Full event payload sequence for one completed response.
+ *
+ * `relayed` distinguishes the two terminal legs:
+ * - buffered (`false`): synthesize the whole sequence from the final result
+ *   after generation — created/in_progress, every added/delta/done pair.
+ * - relayed (`true`): the opening `created`/`in_progress` pair, item-0's
+ *   `output_item.added`/`content_part.added`, and all live text deltas were
+ *   ALREADY written during generation. Emit only the closing half.
+ *
+ * Tool-call arguments are NEVER relayed live (chat-completions upstreams carry
+ * tool_calls on the final result), so `output_item.added` +
+ * `function_call_arguments.delta` MUST be emitted here on the relayed leg too:
+ * strict clients reconstruct tool calls from exactly those two event types,
+ * not from the terminal `response.completed` object alone.
+ */
+function responseEventPayloads(
   chatResp: ChatCompletionResponse,
   respId: string,
-  model: string
-): string[] {
-  const response = chatToResponseObject(chatResp, respId, model) as Record<string, any>;
-  const events: string[] = [];
-  const emit = (payload: Record<string, unknown>) =>
-    events.push(`event: ${payload.type}\ndata: ${JSON.stringify(payload)}\n\n`);
-
-  emit({ type: 'response.created', response: { ...response, status: 'in_progress', output: [] } });
-  emit({ type: 'response.in_progress', response: { ...response, status: 'in_progress', output: [] } });
-
+  model: string,
+  messageId: string,
+  relayed = false
+): Record<string, unknown>[] {
+  const response = chatToResponseObject(chatResp, respId, model, messageId) as Record<string, any>;
   const output = response.output as Record<string, any>[];
+
+  // The prefix unconditionally announced item 0 as the parse-minted message
+  // item. A tool-call-only answer has no prose item in `output`, so insert the
+  // (empty) message item at index 0 to keep every output_index in the closing
+  // half aligned with the indexes the client has already seen.
+  if (relayed && output[0]?.id !== messageId) {
+    output.unshift({
+      type: 'message',
+      id: messageId,
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: '', annotations: [] }],
+    });
+  }
+
+  const events: Record<string, unknown>[] = [];
+  const emit = (payload: Record<string, unknown>) => { events.push(payload); };
+
+  if (!relayed) {
+    emit({ type: 'response.created', response: { ...response, status: 'in_progress', output: [] } });
+    emit({ type: 'response.in_progress', response: { ...response, status: 'in_progress', output: [] } });
+  }
+
   for (let i = 0; i < output.length; i++) {
     const item = output[i];
-    emit({ type: 'response.output_item.added', output_index: i, item: { ...item, status: 'in_progress' } });
+    const prefixAlreadySent = relayed && i === 0 && item.id === messageId;
+
+    if (!prefixAlreadySent) {
+      emit({
+        type: 'response.output_item.added',
+        output_index: i,
+        item: item.type === 'function_call'
+          ? { ...item, status: 'in_progress', arguments: '' }
+          : { ...item, status: 'in_progress' },
+      });
+    }
     if (item.type === 'message') {
       const fullText: string = item.content?.[0]?.text || '';
-      emit({
-        type: 'response.content_part.added',
-        item_id: item.id,
-        output_index: i,
-        content_index: 0,
-        part: { type: 'output_text', text: '', annotations: [] },
-      });
-      const chunkSize = 16;
-      for (let j = 0; j < fullText.length; j += chunkSize) {
+      if (!prefixAlreadySent) {
         emit({
-          type: 'response.output_text.delta',
+          type: 'response.content_part.added',
           item_id: item.id,
           output_index: i,
           content_index: 0,
-          delta: fullText.slice(j, j + chunkSize),
+          part: { type: 'output_text', text: '', annotations: [] },
         });
+      }
+      // On the relayed leg the live upstream chunks already carried these
+      // deltas; replaying them here would duplicate every token.
+      if (!relayed) {
+        const chunkSize = 16;
+        for (let j = 0; j < fullText.length; j += chunkSize) {
+          emit({
+            type: 'response.output_text.delta',
+            item_id: item.id,
+            output_index: i,
+            content_index: 0,
+            delta: fullText.slice(j, j + chunkSize),
+          });
+        }
       }
       emit({ type: 'response.output_text.done', item_id: item.id, output_index: i, content_index: 0, text: fullText });
       emit({ type: 'response.content_part.done', item_id: item.id, output_index: i, content_index: 0, part: item.content[0] });
@@ -336,5 +487,33 @@ export function chatToStreamEvents(
 
   emit({ type: 'response.completed', response });
   return events;
+}
+
+/** Synthesized Responses SSE event sequence for one buffered completion. */
+export function chatToStreamEvents(
+  chatResp: ChatCompletionResponse,
+  respId: string,
+  model: string,
+  messageId: string = shortId('msg_'),
+  seq: ResponsesStreamSequence = newResponseStreamSequence()
+): string[] {
+  return responseEventPayloads(chatResp, respId, model, messageId, false)
+    .map((payload) => responsesEventFrame(sequenced(seq, payload)));
+}
+
+/**
+ * Closing half of a relayed turn. Shares the SAME sequence counter as the
+ * prefix and the live deltas so `sequence_number` stays strictly increasing
+ * across the entire connection.
+ */
+export function responsesStreamSuffix(
+  chatResp: ChatCompletionResponse,
+  respId: string,
+  model: string,
+  messageId: string,
+  seq: ResponsesStreamSequence
+): string[] {
+  return responseEventPayloads(chatResp, respId, model, messageId, true)
+    .map((payload) => responsesEventFrame(sequenced(seq, payload)));
 }
 

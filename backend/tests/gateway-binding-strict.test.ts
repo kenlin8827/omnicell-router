@@ -35,7 +35,7 @@ const seen: Array<string | undefined> = [];
 
 function installServices(): void {
   const services: GatewayChatServices = {
-    catalog: () => ({ tiers: [], models: [] }),
+    catalog: () => ({ virtualModels: [], models: [] }),
     run: async (_body, _sink, _signal, opts) => {
       seen.push(opts?.keyId);
     },

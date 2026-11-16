@@ -1249,7 +1249,15 @@ hiddenBadge: string;
     /** Detail-grid thinking-level column: header + cell tooltip. */
     colThink: string;
     colPrompt: string;
+    /** Transport-map column header + its tooltip: client shape → the shape the
+     *  provider leg actually ran on (`JSON→SSE`, `SSE→SSE`, em dash = unknown). */
+    colStream: string;
+    colStreamTip: string;
     promptFallbackTip: string;
+    /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
+    inboundStreamTip: string;
+    /** Stream-tag tooltip (outbound / provider leg): SSE vs buffered call. */
+    outboundStreamTip: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;
@@ -2275,6 +2283,11 @@ hiddenBadge: string;
     gatewayAutoSaveHint: string;
     gatewayCatalogRestartNotice: string;
     gatewayAdvancedSettings: string;
+    junieSection: string;
+    junieSectionInfo: string;
+    juniePrimaryModel: string;
+    junieFasterModel: string;
+    junieFasterModelPlaceholder: string;
     gatewayAppendSummary: string;
     gatewayReplaceSummary: string;
     gatewayConfigureModels: string;

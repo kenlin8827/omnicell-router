@@ -50,7 +50,7 @@ export interface GatewayChatServices {
     opts?: GatewayChatRunOptions
   ): Promise<void>;
   /** Current routing surface for AvailableModels-style fabrication. */
-  catalog(): { tiers: string[]; models: { id: string; label?: string }[] };
+  catalog(): { virtualModels: string[]; models: { id: string; label?: string }[] };
 }
 
 let services: GatewayChatServices | undefined;
@@ -90,7 +90,7 @@ export function buildGatewayChatServices(
   return {
     catalog: () => ({
       // Canonical display order: auto spans the TIER_LADDER escalation rungs.
-      tiers: ['auto', ...TIER_LADDER],
+      virtualModels: ['auto', ...TIER_LADDER],
       models: orchestrator
         .getRegistry()
         .getAllModels()

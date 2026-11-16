@@ -99,17 +99,23 @@ const isKnownMetadata = (name: string): boolean => Object.hasOwn(KNOWN_METADATA,
  * from a human prompt wrapped in markup without knowing the client — naming
  * the wrappers is the safe side of that bet. Measured wrappers: Claude
  * Code's `<user_query>`; WorkBuddy 5.x wraps the whole prompt in
- * `<session>` (2026-11). A new client that wraps differently shows up as an
- * empty summary until its tag is listed here; its TITLE still resolves via
- * the last-resort unwrap below, so nothing is lost from the console.
+ * `<session>` (2026-11); Junie (JetBrains) wraps it in `<user_request>`,
+ * preceded by the harness instruction line "The user's request for which you
+ * need to select the capabilities:" (measured 2026-11-16). Rule 1 keeps only
+ * the wrapper body, so that leading machine line is dropped with the shell —
+ * no per-client prefix vocabulary needed. A new client that wraps differently
+ * shows up as an empty summary until its tag is listed here; its TITLE still
+ * resolves via the last-resort unwrap below, so nothing is lost from the
+ * console.
  */
 const WRAPPER_TAGS: Record<string, true> = {
   user_query: true,
   session: true,
+  user_request: true,
 };
 
 /** Leftover wrapper tags inside a captured body (a nested wrapper, if any). */
-const WRAPPER_TAGS_RE = /<\/?(?:user_query|session)>/gi;
+const WRAPPER_TAGS_RE = /<\/?(?:user_query|session|user_request)>/gi;
 
 /**
  * Display-budget ceiling. Every caller renders at most a 200-char snippet, so

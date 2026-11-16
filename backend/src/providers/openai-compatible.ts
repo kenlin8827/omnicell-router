@@ -3,7 +3,11 @@ import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
-import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
+import {
+  DEFAULT_PROVIDER_TIMEOUT_MS,
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  DEFAULT_STREAM_TIMEOUT_MS,
+} from '../config/defaults.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -253,11 +257,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
     });
 
     const controller = new AbortController();
-    // Wall-clock cap, identical in kind to the non-streaming path. It aborts
-    // MID-STREAM when generation runs long: by then the relay has committed
-    // bytes to the client, so the pipeline closes the SSE without `[DONE]`
-    // rather than failing over (re-issuing upstream would duplicate output).
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || DEFAULT_PROVIDER_TIMEOUT_MS);
+    // Wall-clock cap for the STREAMED leg — its own default (1 h), larger than
+    // the buffered cap, because liveness here is enforced by the idle watchdog
+    // below and this number only has to clear the longest legitimate answer.
+    // It aborts MID-STREAM when generation runs long: by then the relay has
+    // committed bytes to the client, so the pipeline closes the SSE without
+    // `[DONE]` rather than failing over (re-issuing upstream would duplicate
+    // output).
+    const timeout = setTimeout(() => controller.abort(), this.config.streamTimeoutMs || DEFAULT_STREAM_TIMEOUT_MS);
 
     let res: Response;
     try {
@@ -330,6 +337,24 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
+    // IDLE WATCHDOG (the SSE leg's real liveness guard). The wall-clock cap
+    // above is two hours so a long thinking/agentic generation survives; this
+    // timer aborts only when the stream goes COMPLETELY silent — keep-alive
+    // comments and `ping` frames reset it, so steady progress is never killed.
+    const idleMs = this.config.streamIdleTimeoutMs || DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleTripped = false;
+    const armIdle = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleTripped = true;
+        controller.abort();
+      }, idleMs);
+    };
+    const disarmIdle = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    };
     // Captured before the object literal below: inside `*[Symbol.asyncIterator]`
     // `this` is the iterable, not the provider.
     const providerName = this.name;
@@ -378,9 +403,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
         };
 
         try {
+          armIdle();
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            // Any byte is progress: keep-alive comments and ping frames included.
+            armIdle();
             const decoded = decoder.decode(value, { stream: true });
             appendRaw(decoded);
             buffer += decoded;
@@ -415,6 +443,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
             throw new Error(`Upstream ${providerName} stream ended before completion`);
           }
         } catch (err: any) {
+          if (idleTripped) {
+            capture(`Stream idle for ${idleMs}ms — aborted`);
+            throw new Error(`Upstream ${providerName} stream idle for ${idleMs}ms — aborted`);
+          }
           capture(`Stream aborted: ${err?.message ?? err}`);
           throw err;
         } finally {
@@ -424,6 +456,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           // for some compatible-mode upstreams and a failed one must not be
           // mislabelled as such here.
           capture();
+          disarmIdle();
           clearTimeout(timeout);
         }
       },

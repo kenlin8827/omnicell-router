@@ -45,11 +45,11 @@ describe('sanitizeProxyConfig', () => {
     expect(proxy.mihomo?.subscriptions?.[0].url).toContain('token=secret');
   });
 
-  test('schemaVersion stays 2 and a current file without mihomo keys loads the defaults', () => {
-    expect(SCHEMA_VERSION).toBe(2);
+  test('schemaVersion stays 3 and a current file without mihomo keys loads the defaults', () => {
+    expect(SCHEMA_VERSION).toBe(3);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mihomo-cfg-'));
     const file = path.join(dir, 'config.yaml');
-    fs.writeFileSync(file, 'schemaVersion: 2\nclient:\n  port: 3999\n  host: 127.0.0.1\nupstream:\n  proxy:\n    enabled: true\n    url: http://10.0.0.8:8888\n');
+    fs.writeFileSync(file, 'schemaVersion: 3\nclient:\n  port: 3999\n  host: 127.0.0.1\nupstream:\n  proxy:\n    enabled: true\n    url: http://10.0.0.8:8888\n');
     const cfg = loadConfig(file);
     expect(cfg.proxy?.mode).toBe('manual');
     expect(cfg.proxy?.enabled).toBe(true);

@@ -21,7 +21,7 @@ const previousPort = process.env.PORT;
 beforeEach(() => {
   process.env.PORT = String(ENV_PORT);
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(cfgPath, 'schemaVersion: 2\nclient:\n  host: 127.0.0.1\n  apiKeys: []\n', 'utf8');
+  fs.writeFileSync(cfgPath, 'schemaVersion: 3\nclient:\n  host: 127.0.0.1\n  apiKeys: []\n', 'utf8');
 });
 
 afterEach(() => {
@@ -39,7 +39,7 @@ describe('saveConfig — PORT is never persisted as a file value', () => {
   });
 
   it('a port the file itself names survives an env-fed save', () => {
-    fs.writeFileSync(cfgPath, 'schemaVersion: 2\nclient:\n  port: 4321\n  host: 127.0.0.1\n  apiKeys: []\n', 'utf8');
+    fs.writeFileSync(cfgPath, 'schemaVersion: 3\nclient:\n  port: 4321\n  host: 127.0.0.1\n  apiKeys: []\n', 'utf8');
 
     assert.equal(saveConfig({ host: '127.0.0.1' }).success, true);
 

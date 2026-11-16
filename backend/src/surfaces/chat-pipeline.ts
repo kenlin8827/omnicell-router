@@ -1,8 +1,9 @@
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { buildOcrSummaryFrame } from '../utils/chat-sse.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
-import { buildChatOcrCompletionFacts, buildChatOcrHeaders, buildChatOcrRoutingHeaders } from './ocr-headers.js';
+import { buildChatOcrRoutingHeaders, buildChatOcrHeaders, buildChatOcrCompletionFacts } from './ocr-headers.js';
 import type { ChatSurface, SurfacePathContext, TransportContext } from './types.js';
+import { streamingPosture } from '../pipeline/streaming-posture.js';
 
 /**
  * The frozen execution order for every chat-shaped wire (contract §1.3).
@@ -16,12 +17,14 @@ import type { ChatSurface, SurfacePathContext, TransportContext } from './types.
  * sendJson (TransportContext's terminal-send discipline).
  *
  * STREAMED EXCEPTION: on a relayed turn (client `stream:true` on a surface that
- * can frame upstream chunks and has no `afterResult` hook) the headers flush and
- * the frames are written INSIDE `process`, because the whole point is that the
- * client sees bytes before the turn completes. Two consequences are encoded
+ * can frame upstream chunks) the headers flush and the frames are written
+ * INSIDE `process`, because the whole point is that the client sees bytes
+ * before the turn completes. A surface carrying `afterResult` may relay only
+ * when it also supplies `streamStart` — its ids must be minted at parse time,
+ * since the hook itself runs after the turn. Two consequences are encoded
  * rather than accidental:
- *  - the header block carries routing facts only; completion facts ride the
- *    trailing `ocr-summary` comment frame before `[DONE]`;
+ *  - the header block carries routing facts only; on the chat wire completion
+ *    facts ride the trailing `ocr-summary` comment frame before `[DONE]`;
  *  - a failure after the first byte ends the stream WITHOUT `[DONE]` — no JSON
  *    error body, no retry, because the client already holds part of the answer.
  */
@@ -53,19 +56,43 @@ export async function runChatSurface(
     return;
   }
 
-  // 5. Streaming relay — offered when the client asked for a stream AND the
-  //    surface can frame an upstream chunk one-for-one (chat wire). A surface
-  //    with `afterResult` is deliberately excluded: that hook must run strictly
-  //    before the first byte, and a relayed turn flushes bytes DURING
-  //    orchestrator.process. The orchestrator still decides whether to USE the
-  //    relay (wire capability / assertion cascade / mock mode / config) — when
-  //    it does not, no byte is written and the buffered send below runs exactly
-  //    as before.
+  // 5. Client stream mode (streaming.client.mode — ADR-0008 §1). `deny`
+  //    refuses an SSE ask before anything reaches the orchestrator (no
+  //    capture event: this is a pre-process 400, same class as parse/gate);
+  //    `always` answers in SSE even when the client sent `stream: false`,
+  //    which for a surface without a chunk encoder means its buffered SSE
+  //    frame sequence (`encodeStream`) rather than a JSON body.
+  const clientStreamMode = streamingPosture().client;
+  if (request.stream === true && clientStreamMode === 'deny') {
+    t.sendJson(
+      400,
+      surface.errorBody(
+        400,
+        'Streaming is disabled by this gateway (streaming.client.mode: deny). Resend with "stream": false.'
+      )
+    );
+    return;
+  }
+  const wantsStream = clientStreamMode === 'always' ? true : request.stream === true;
+
+  // 5b. Streaming relay — offered when the response is SSE AND the surface
+  //    can frame an upstream chunk one-for-one. A surface with `afterResult`
+  //    is excluded unless it ALSO declares `streamStart`: that hook needs the
+  //    completed result, which does not exist yet at the first byte, so its
+  //    state (response id / message item id) must already be minted by parse.
+  //    The orchestrator still decides whether to USE the relay (wire capability
+  //    / assertion cascade / mock mode / upstream transport mode) — when it
+  //    does not, no byte is written and the buffered send below runs as before.
   const includeUsage = request.stream_options?.include_usage === true;
   let streamed = false;
   let stagedFacts: StreamRoutingFacts | undefined;
   let relay: StreamRelay | undefined;
-  if (request.stream === true && surface.encodeChunk && !surface.afterResult) {
+  const chunkCtx = (): { model: string; includeUsage: boolean; state: unknown } => ({
+    model: stagedFacts?.modelUsed || gateModel,
+    includeUsage,
+    state: parsed.state,
+  });
+  if (wantsStream && surface.encodeChunk && (!surface.afterResult || surface.streamStart)) {
     relay = {
       stageRouting(facts) {
         stagedFacts = facts;
@@ -76,11 +103,14 @@ export async function runChatSurface(
           // Headers flush with the first byte, so only the ROUTING half of the
           // X-OCR set is legal here; completion facts come in the summary frame.
           t.beginSse(buildChatOcrRoutingHeaders(stagedFacts ?? {}, gateModel));
+          // Responses wire: created / in_progress / output_item.added /
+          // content_part.added must precede EVERY delta, and their ids were
+          // minted by parse (afterResult has not run yet).
+          for (const frame of surface.streamStart?.(parsed.state, chunkCtx()) ?? []) {
+            t.writeSseChunk(frame);
+          }
         }
-        const frame = surface.encodeChunk!(chunk, {
-          model: stagedFacts?.modelUsed || gateModel,
-          includeUsage,
-        });
+        const frame = surface.encodeChunk!(chunk, chunkCtx());
         if (frame !== null) t.writeSseChunk(frame);
       },
       get committed() {
@@ -100,16 +130,30 @@ export async function runChatSurface(
         headers: t.headers,
         wire: surface.wire,
         modelAccess: t.access.policy,
+        // Response shape actually written (client ask OR `client.mode: always`):
+        // the orchestrator stamps it on the trace so the console can tag the
+        // inbound leg without re-deriving the posture.
+        clientStream: wantsStream,
         ...t.captureProcessContext(),
       },
       relay
     );
 
     if (streamed) {
-      // Close with the completion-time facts, then [DONE] — the summary MUST
-      // precede [DONE], because most parsers stop reading at [DONE].
-      t.writeSseChunk(buildOcrSummaryFrame(buildChatOcrCompletionFacts(result)));
-      t.writeSseChunk('data: [DONE]\n\n');
+      // The relayed turn still produced an accumulated result. Run the hook
+      // now (before the closing frames) so the id in `response.created` is the
+      // same one the store persists — the buffered leg runs it at step 7c.
+      surface.afterResult?.(result, parsed.state);
+      if (surface.streamEnd) {
+        for (const frame of surface.streamEnd(result, parsed.state, chunkCtx())) {
+          t.writeSseChunk(frame);
+        }
+      } else {
+        // Chat wire: completion-time facts, then [DONE] — the summary MUST
+        // precede [DONE], because most parsers stop reading at [DONE].
+        t.writeSseChunk(buildOcrSummaryFrame(buildChatOcrCompletionFacts(result)));
+        t.writeSseChunk('data: [DONE]\n\n');
+      }
       t.endSse();
       return;
     }
@@ -123,10 +167,11 @@ export async function runChatSurface(
     //    wire: RespStore.append so the id resolves when created fires).
     surface.afterResult?.(result, parsed.state);
 
-    // 8. Terminal send. `=== true`: the frozen normalization (C-3) — non-
-    //    boolean truthy `stream` values take the JSON path, matching the
-    //    MITM leg and the typed contract.
-    if (request.stream === true) {
+    // 8. Terminal send. `wantsStream` = the client's typed `stream` ask OR
+    //    `client.mode: always`. The C-3 normalization still governs the ASK:
+    //    a non-boolean truthy `stream` value takes the JSON path unless the
+    //    operator forced SSE, matching the MITM leg and the typed contract.
+    if (wantsStream) {
       // Encode BEFORE beginSse: if encodeStream ever throws, the catch's
       // JSON error send still owns a clean (header-less) response. Sending
       // SSE headers first would DOUBLE-TERMINATE — a 200 event-stream

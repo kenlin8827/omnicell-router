@@ -181,8 +181,8 @@ export class OpenClawClientAdapter implements ClientAdapter {
       : [...VIRTUAL_AUTO_IDS];
     const rawExtras = (options?.extraModels || []).map(id => (id || '').trim()).filter(Boolean);
     const concreteExtras = [...new Set(rawExtras.filter(id => !VIRTUAL_AUTO_IDS.has(id)))];
-    // List order mirrors the gateway's /v1/models view exactly: tiers first,
-    // then combos + registered rows in the key's effective order. The main
+    // List order mirrors the gateway's /v1/models view exactly: virtual
+    // models first, then combos + registered rows in the key's effective order. The main
     // slot pins `model.primary` and does NOT jump the list — the client's
     // switcher should read like the console's model catalog. Custom mode is
     // the exception: when the user's chip list contains tier entries, their

@@ -316,7 +316,7 @@ main();
 * `X-OCR-Breaker-State`: 执行实例的熔断器状态（`CLOSED`, `HALF_OPEN`）。
 * `X-OCR-Session-ID`: 由网关解析出的会话 ID。
 * `X-OCR-Session-Ratchet`: 本轮是否被单调棘轮锁定（`true` / `false`）。
-* `X-OCR-Session-Lookup`: 会话命名的解析层（`explicit_header`, `embedded_user_id`, `request_user`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`）。
+* `X-OCR-Session-Lookup`: 会话命名的解析层（`explicit_header`, `embedded_user_id`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`；`request_user` 已退役，仅出现在历史行）。
 * `X-OCR-Cost-USD`: 本次请求实际花费金额（美元）。
 * `X-OCR-Saved-USD`: 相较于 plus 基准模型所节约的金额。
 * `X-OCR-Latency-MS`: 网关端到端处理耗时（毫秒）。

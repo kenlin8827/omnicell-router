@@ -1089,6 +1089,9 @@ export class ProviderRegistry {
     relay?: StreamRelay
   ): Promise<ChatCompletionResponse> {
     if (this.mockMode) {
+      // Mock execution never touches a provider wire: the turn is buffered by
+      // construction, and the transport tag says so.
+      relay?.onTransport?.('buffered');
       return this.mockExecute(request, model);
     }
 
@@ -1119,6 +1122,10 @@ export class ProviderRegistry {
           : typeof provider.createStream === 'function';
         if (streams) {
           const accumulate = createChunkAccumulator();
+          // Transport tag first: the attempt IS on the SSE reader from here on,
+          // even if the first chunk never arrives (a dead stream then tags as
+          // 'sse' with no timing, which is the honest reading).
+          relay.onTransport?.('sse');
           const stream = await provider.createStream!(request, model, upstreamEventContext, credential);
           // Drained to the end even when the client has gone away: the turn's
           // usage frame arrives only with the last chunk, and an abort-triggered
@@ -1134,6 +1141,7 @@ export class ProviderRegistry {
         // call. Legal precisely because nothing has been forwarded yet: a relay
         // that has committed bytes can never take this path (createStream would
         // have been reached first, and its failure surfaces as an error).
+        relay.onTransport?.('buffered');
       }
       return await provider.createCompletion(request, model, upstreamEventContext, credential);
     } catch (err) {

@@ -42,7 +42,9 @@ import type {
   RouterConfig,
   RoutingMode,
   SessionConfig,
-  StreamingConfig,
+  // StreamingConfig (runtime) is deliberately not imported: this type
+  // describes the FROZEN schemaVersion-1 disk shape, where the posture was
+  // the single `enabled` flag the v2→v3 step rewrites into the two axes.
   SystemoneSurfaceConfig,
   TiersConfig,
   TracePersistConfig,
@@ -97,7 +99,7 @@ export interface DiskConfigV1 {
   upstream?: {
     proxy?: ProxyConfig;
     credentials?: Record<string, CredentialLimitConfig[]>;
-    streaming?: StreamingConfig;
+    streaming?: { enabled?: boolean };
     compression?: CompressionConfig;
   };
   resilience?: {

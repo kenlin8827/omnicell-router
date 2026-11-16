@@ -383,7 +383,7 @@ if (process.platform !== 'win32') {
       fs.writeFileSync(
         configPath,
         [
-          'schemaVersion: 2',
+          'schemaVersion: 3',
           'client:',
           '  forwardProxy:',
           '    enabled: true',

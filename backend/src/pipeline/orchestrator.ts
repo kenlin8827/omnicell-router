@@ -5,7 +5,7 @@ import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
-import { hasToolsOrSchema } from '../router/request-traits.js';
+import { declaresJsonContract, hasToolsOrSchema } from '../router/request-traits.js';
 import {
   getRouteEntryStore,
   routeEntriesGate,
@@ -15,6 +15,7 @@ import {
 } from '../router/route-entries.js';
 import { scanDirectives, applyTierDirectives, applyEffortDirectives } from './directives.js';
 import { directivesGate } from './directive-gate.js';
+import { streamingPosture } from './streaming-posture.js';
 import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../config/defaults.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
@@ -123,6 +124,14 @@ export interface ProcessContext {
    * sends instead and never provide this callback.
    */
   onClientExchange?: (ctx: ClientExchangeContext) => void;
+  /**
+   * The response SHAPE the surface actually writes (client `stream === true`
+   * after the C-3 normalization, or `streaming.client.mode: always`). The
+   * surface owns that decision — the orchestrator only records it on the
+   * trace's request block, so the console can tag the inbound leg without
+   * re-deriving the posture. Absent on non-chat entry points = not streamed.
+   */
+  clientStream?: boolean;
 }
 
 /** Key attribution: the in-process binding wins, else the request's authInfo. */
@@ -134,6 +143,22 @@ const keyIdentityOf = (ctx?: ProcessContext): CaptureKeyIdentity | undefined =>
  * the screen is visibly frozen. Defines what the stall ratio counts.
  */
 const PERCEIVED_STALL_MS = 1000;
+
+/**
+ * Accumulate-only relay for `streaming.upstream.mode: stream` on a turn whose
+ * client wants JSON. The executor pool drains the upstream SSE body through
+ * it, the registry accumulates the chunks into one `ChatCompletionResponse`,
+ * and the surface then sends that JSON. Nothing reaches the client, so
+ * `committed` is permanently false: in-place retries and failover stay legal
+ * (re-issuing upstream duplicates no output the client has seen).
+ */
+const UPSTREAM_SINK_RELAY: StreamRelay = {
+  stageRouting: () => {},
+  onChunk: () => {},
+  get committed() {
+    return false;
+  },
+};
 
 /**
  * True when a streamed chunk puts something on the user's screen: assistant
@@ -372,7 +397,7 @@ export class PipelineOrchestrator {
           reasonCode: 'entry.hit',
           reasonParams: { tier: entry.tier, source: entry.source, hits: entry.hitCount },
           layerUsed: 'entry',
-          needsSchemaValidation: hasToolsOrSchema(request),
+          needsSchemaValidation: declaresJsonContract(request),
         };
       }
     }
@@ -551,14 +576,35 @@ export class PipelineOrchestrator {
       };
     }
 
+    // Provider-leg transport (streaming.upstream.mode — ADR-0008 §1):
+    //   buffered → never hand a relay to the executor pool (the historical
+    //              `streaming.enabled: false` rollback);
+    //   stream   → hand the wire a relay even when the CLIENT wants JSON, so
+    //              the upstream SSE reader runs and the accumulator builds the
+    //              response. The sink never writes a byte, so `committed` stays
+    //              false and retries/failover remain legal;
+    //   follow   → the client's own relay (or none) — historical behavior.
     return await this.processInternal(
       request,
       context,
       preResolvedSession,
       upstreamEventContext,
       turnIdentity,
-      relay
+      this.resolveUpstreamRelay(relay)
     );
+  }
+
+  /**
+   * Apply `streaming.upstream.mode` to the surface-supplied relay. The sink
+   * relay is a module constant: it carries no per-request state (it forwards
+   * nothing and never commits), so one instance serves every accumulated
+   * turn.
+   */
+  private resolveUpstreamRelay(relay: StreamRelay | undefined): StreamRelay | undefined {
+    const mode = streamingPosture().upstream;
+    if (mode === 'buffered') return undefined;
+    if (relay) return relay;
+    return mode === 'stream' ? UPSTREAM_SINK_RELAY : undefined;
   }
 
   /**
@@ -1450,6 +1496,10 @@ export class PipelineOrchestrator {
     // the final answer (no re-assertion follows), so it streams exactly like
     // the direct path and stamps timing the same way.
     let poolTiming: { firstChunkAt: number; streamEndAt: number; stalledMs?: number } | undefined = undefined;
+    // Upstream transport of the SERVED attempt (registry-reported; ADR-0008
+    // §1). Buffered by construction on the cascade's lite lead (it is never
+    // given a relay) and whenever `streaming.upstream.mode` is `buffered`.
+    let upstreamStream: 'sse' | 'buffered' | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices, combos AND
@@ -1513,6 +1563,7 @@ export class PipelineOrchestrator {
           failoverPath = liteResult.failoverPath;
           inplaceRetries += liteResult.inplaceRetries;
           servedCredentialPrefix = liteResult.servedCredentialPrefix;
+          upstreamStream = liteResult.transport;
         } else {
           assertionError = validation.error || 'Schema validation assertion failed';
         }
@@ -1546,7 +1597,7 @@ export class PipelineOrchestrator {
             sessionId,
             // The escalation response is final (no re-assertion below), so it
             // streams under the same commit-point contract as the direct path.
-            relay: this.config.streaming?.enabled === false ? undefined : relay,
+            relay,
             streamRouting: {
               layerUsed: decision.layerUsed || 'layer0',
               sessionId,
@@ -1586,6 +1637,7 @@ export class PipelineOrchestrator {
         inplaceRetries += plusResult.inplaceRetries;
         servedCredentialPrefix = plusResult.servedCredentialPrefix;
         poolTiming = plusResult.timing;
+        upstreamStream = plusResult.transport;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -1690,7 +1742,7 @@ export class PipelineOrchestrator {
           // the full `message.content` before its verdict, and that verdict can
           // re-ask the whole turn on a bigger tier — relaying it would commit
           // output the cascade is about to throw away.
-          relay: this.config.streaming?.enabled === false ? undefined : relay,
+          relay,
           streamRouting: {
             layerUsed: decision.layerUsed || 'layer0',
             sessionId,
@@ -1734,6 +1786,7 @@ export class PipelineOrchestrator {
       actualModel = execResult.modelUsed!;
       actualTier = execResult.tierUsed!;
       poolTiming = execResult.timing;
+      upstreamStream = execResult.transport;
       // Recompute `actualEffort` against the model that ACTUALLY served the
       // request — failover may have shifted to a different model than the
       // one `pickModelForEffort` originally picked, with a different effort
@@ -1982,7 +2035,10 @@ export class PipelineOrchestrator {
         ...(firstUserSummary ? { firstUserSummary } : {}),
         messageCount: normalizedRequest.messages.length,
         hasSystemPrompt: normalizedRequest.messages.some(m => m.role === 'system'),
-        hasToolsOrSchema: Boolean(decision.needsSchemaValidation),
+        hasToolsOrSchema: hasToolsOrSchema(normalizedRequest),
+        // Response shape actually written to the client (surface-owned: the
+        // C-3-normalized ask, or `client.mode: always` forcing SSE).
+        clientStream: context?.clientStream === true,
         clientHeaders: extractClientHeaders(context?.headers),
         ...(clientRef ? { clientRef } : {}),
       },
@@ -2006,6 +2062,10 @@ export class PipelineOrchestrator {
         genMs,
         stalledMs,
         fallbackOccurred,
+        // Provider-leg transport of the served attempt — the OUTBOUND stream
+        // tag (ADR-0008 §1). 'sse' with clientStream:false is the accumulate
+        // mode: the gateway read a stream and answered in JSON.
+        upstreamStream,
         fallbackReason,
         failoverOccurred,
         failoverAttempts,
@@ -2058,6 +2118,8 @@ export class PipelineOrchestrator {
       ttftMs,
       genMs,
       stalledMs,
+      clientStream: context?.clientStream === true,
+      upstreamStream,
       // Reasoning-effort observability — server.ts reads these to set
       // X-OCR-Thinking-{Requested,Actual,Degraded} headers so the client
       // can see whether they got the level they asked for.
@@ -2201,6 +2263,12 @@ export class PipelineOrchestrator {
      * ttftMs/genMs/stalledMs.
      */
     timing?: { firstChunkAt: number; streamEndAt: number; stalledMs?: number };
+    /**
+     * Transport the SERVED attempt used: `'sse'` = the upstream SSE reader
+     * ran (whether or not frames also reached the client), `'buffered'` = one
+     * buffered provider call. Registry-reported, never inferred from timing.
+     */
+    transport?: 'sse' | 'buffered';
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -2478,9 +2546,16 @@ export class PipelineOrchestrator {
       // long freeze on the same scale (a single maximum cannot).
       let lastVisibleAt: number | undefined;
       let stalledMs: number | undefined;
+      // Transport the served attempt actually used (registry-reported, once
+      // per attempt). Reset per attempt: a retry re-issues with a fresh tag.
+      let transport: 'sse' | 'buffered' | undefined;
       const timingRelay: StreamRelay | undefined = opts.relay
         ? {
             stageRouting: (facts) => opts.relay!.stageRouting(facts),
+            onTransport: (kind) => {
+              transport = kind;
+              opts.relay!.onTransport?.(kind);
+            },
             onChunk: (chunk) => {
               const now = Date.now();
               firstChunkAt ??= now;
@@ -2670,6 +2745,9 @@ export class PipelineOrchestrator {
             firstChunkAt !== undefined && streamEndAt !== undefined
               ? { firstChunkAt, streamEndAt, stalledMs }
               : undefined,
+          // Served-attempt transport tag. `opts.relay` absent = the executor
+          // was never given a relay, so the buffered call is certain.
+          transport: opts.relay ? transport : 'buffered',
         };
       }
     }

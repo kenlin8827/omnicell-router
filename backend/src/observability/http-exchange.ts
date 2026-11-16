@@ -279,6 +279,12 @@ export interface ClientExchangeContext {
      * decode window. Undefined for buffered replies.
      */
     firstByteTs?: number;
+    /**
+     * True when the terminal send wrote an SSE body (`beginSse` ran). Set by
+     * `markClientResponseStreamStart` only — the transport knows the shape,
+     * so it is never inferred from a content-type here.
+     */
+    stream?: boolean;
     /** Set once the response event has been emitted — guards against a
      *  double-emit when both the terminal send and the abort listener try
      *  to finalize. */
@@ -290,6 +296,37 @@ export interface ClientExchangeContext {
 
 /** Cap for the accumulated gateway response body (chars). */
 const CLIENT_RESPONSE_BODY_CAP = 1024 * 1024;
+
+/**
+ * SSE tag of a REQUEST body (ADR-0008 §1). Only a typed boolean counts — a
+ * truthy string is exactly the C-3 case the gateway itself does not treat as
+ * streaming, so tagging it would contradict the response.
+ */
+function requestedStreamOf(body: unknown): boolean | undefined {
+  if (!body || typeof body !== 'object' || !('stream' in body)) return undefined;
+  return typeof body.stream === 'boolean' ? body.stream : undefined;
+}
+
+/**
+ * SSE tag of the request the GATEWAY sent upstream. The payload is built by
+ * the provider adapter, so its own `stream` field is authoritative; the URL
+ * forms cover vendors that signal streaming in the path
+ * (`:streamGenerateContent` / `?alt=sse`). Undefined when neither says
+ * anything — the tag is a fact, never a guess.
+ */
+function upstreamStreamOf(requestBody: string, url: string): boolean | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestBody);
+  } catch {
+    // Non-JSON body (binary/hex class): fall through to the URL forms.
+  }
+  if (parsed && typeof parsed === 'object' && 'stream' in parsed && typeof parsed.stream === 'boolean') {
+    return parsed.stream;
+  }
+  if (/:streamGenerateContent\b|alt=sse\b/.test(url)) return true;
+  return undefined;
+}
 
 /**
  * Append a response-body chunk to the pending gateway response. Used by the
@@ -310,6 +347,10 @@ export function appendClientResponseChunk(ctx: ClientExchangeContext, chunk: str
  */
 export function markClientResponseStreamStart(ctx: ClientExchangeContext): void {
   if (ctx.pending.firstByteTs === undefined) ctx.pending.firstByteTs = Date.now();
+  // The SSE tag lives on the RESPONSE event (an `always`-mode reply is SSE
+  // even though the request body asked for JSON), so the terminal-send
+  // discipline owns it: only the SSE branches call this marker.
+  ctx.pending.stream = true;
 }
 
 /**
@@ -402,6 +443,7 @@ export function emitClientRequest(args: {
     responseHeaders: {},
     responseBody: '',
   };
+  const inboundStream = requestedStreamOf(args.body);
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
     direction: 'client',
@@ -413,6 +455,10 @@ export function emitClientRequest(args: {
     model: args.model,
     status: 'ok',
     wire: requestWire,
+    // INBOUND request tag: what the caller's body asked for. `client.mode:
+    // always` changes the RESPONSE shape, which is tagged on the response
+    // event — the ask is never rewritten here.
+    ...(inboundStream !== undefined ? { stream: inboundStream } : {}),
     ...(args.turn ?? NO_TURN),
     ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(apiKey ? { apiKey } : {}),
@@ -494,6 +540,8 @@ export function emitClientResponse(
     model: ctx.pending.model,
     status: reply.statusCode >= 200 && reply.statusCode < 400 ? 'ok' : 'error',
     wire: responseWire,
+    // Response-shape tag: true iff the terminal send wrote SSE.
+    stream: ctx.pending.stream === true,
     ...ctx.pending.turn,
     ...(ctx.pending.firstByteTs !== undefined ? { firstByteTs: ctx.pending.firstByteTs } : {}),
     ...(ctx.pending.conversationKey ? { conversationKey: ctx.pending.conversationKey } : {}),
@@ -533,6 +581,7 @@ export function emitUpstreamRequest(args: {
   conversationKey?: string;
 }): string {
   const exchangeId = args.exchangeId ?? mintExchangeId();
+  const outboundStream = upstreamStreamOf(args.requestBody, args.url);
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
     direction: 'upstream',
@@ -556,6 +605,10 @@ export function emitUpstreamRequest(args: {
       responseHeaders: {},
       responseBody: '',
     },
+    // OUTBOUND request tag: the `stream` the gateway actually sent (or the
+    // vendor's streaming URL form). This is the provider leg's true transport
+    // ask — the tag a reader needs to answer "was this turn streamed upstream?".
+    ...(outboundStream !== undefined ? { stream: outboundStream } : {}),
     ...(args.proxy ? { proxy: redactProxyUrl(args.proxy) } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
     ...(args.turn ?? NO_TURN),

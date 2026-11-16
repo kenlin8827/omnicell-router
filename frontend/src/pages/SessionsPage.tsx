@@ -236,6 +236,37 @@ const DETAIL_TD_CENTER: React.CSSProperties = {
   fontSize: 'var(--text-xs)',
   whiteSpace: 'nowrap',
 };
+
+/** Compact per-request transport map in its own narrow track: `client shape →
+ *  the shape actually handed to the provider`. One badge per turn, because the
+ *  only fact the row needs is the mapping — two same-looking protocol chips made
+ *  the reader compare them to find out whether the gateway converted anything.
+ *
+ *  The arrow is a MAPPING between the two legs (observation vocabulary is
+ *  `client | upstream`, never a vector, ADR-0024): left is the client leg, right
+ *  is the provider leg. `JSON→JSON` = forwarded verbatim, `JSON→SSE` = the
+ *  gateway streamed a client that asked for one shot. A missing side (pre-tag
+ *  archive, partial record) renders an em dash rather than inventing a shape.
+ *
+ *  No word labels: `sessions.tokenIn` / `tokenOut` are the token-volume column
+ *  labels, and borrowing them made a transport tag read as a token count. Words
+ *  live in the tooltip. */
+const STREAM_TAG_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  background: 'var(--chip-bg)',
+  border: '1px solid var(--divider)',
+  color: 'var(--text-dim)',
+  fontFamily: FONT_MONO,
+  fontSize: 'var(--text-2xs)',
+  whiteSpace: 'nowrap',
+};
+const StreamMap: React.FC<{ client?: boolean; upstream?: boolean; tip: string }> = ({ client, upstream, tip }) => (
+  <span className="badge" title={tip} style={STREAM_TAG_STYLE}>
+    {client === undefined ? '—' : client ? 'SSE' : 'JSON'}
+    <span style={{ margin: '0 3px', color: 'var(--text-dim)', opacity: 0.7 }}>→</span>
+    {upstream === undefined ? '—' : upstream ? 'SSE' : 'JSON'}
+  </span>
+);
 const ModelRefCell: React.FC<{
   model: string | null;
   provider?: string | null;
@@ -2313,6 +2344,17 @@ export const SessionsPage: React.FC = () => {
                     // column — it is what operators actually read).
                     { key: 'model', label: t('sessions.colModel'), width: 210 },
                     { key: 'prompt', label: t('sessions.colPrompt') },
+                    // Its own declared track, not a badge riding the prompt's
+                    // right edge: a header makes the mapping self-describing
+                    // (no hover needed) and puts every turn's transport in one
+                    // scannable vertical, which is how an accidental buffering
+                    // shows up. 86px fits `JSON → JSON` at 11px mono.
+                    {
+                      key: 'stream',
+                      label: <span title={t('sessions.colStreamTip')}>{t('sessions.colStream')}</span>,
+                      width: 86,
+                      align: 'center',
+                    },
                     { key: 'think', label: t('sessions.colThink'), width: 92 },
                     { key: 'in', label: t('sessions.colIn'), width: 62 },
                     { key: 'out', label: t('sessions.colOut'), width: 58 },
@@ -2326,9 +2368,9 @@ export const SessionsPage: React.FC = () => {
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 968 = the 13 declared tracks (34+66+66+210+92+62+58+66+
-                  // 88+52+60+62+52); + 220 for the elastic prompt column.
-                  minWidth={968 + 220}
+                  // 1054 = the 14 declared tracks (34+66+66+210+86+92+62+58+
+                  // 66+88+52+60+62+52); + 220 for the elastic prompt column.
+                  minWidth={1054 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
@@ -2382,6 +2424,20 @@ export const SessionsPage: React.FC = () => {
                       </td>
                       <td style={{ padding: '6px 8px', minWidth: 0 }}>
                         <PromptCell text={tr.request?.userPromptSummary ?? ''} />
+                      </td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Transport map of THIS turn (ADR-0008 §1): client shape
+                            → the shape the provider leg actually ran on. Renders
+                            nothing when the trace carries neither tag (legacy
+                            rows), so the cell stays blank instead of claiming a
+                            shape it does not know. */}
+                        {(tr.request?.clientStream !== undefined || tr.execution.upstreamStream !== undefined) && (
+                          <StreamMap
+                            client={tr.request?.clientStream}
+                            upstream={tr.execution.upstreamStream === undefined ? undefined : tr.execution.upstreamStream === 'sse'}
+                            tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
+                          />
+                        )}
                       </td>
                       <td style={DETAIL_TD_CENTER}><EffortCell tr={tr} /></td>
                       <td style={DETAIL_TD_CENTER}>{tr.finops.inputTokens.toLocaleString()}</td>

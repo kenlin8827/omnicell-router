@@ -154,7 +154,7 @@ export interface TierModelConfig {
 export type SessionLookupType =
   | 'explicit_header'   // client-supplied header / router_options
   | 'embedded_user_id'  // session UUID embedded in metadata.user_id (Claude Code)
-  | 'request_user'      // raw OpenAI request.user field
+  | 'request_user'      // RETIRED: raw OpenAI request.user — no longer emitted (user-scoped, not conversation-scoped); readable in historical traces only
   | 'prefix_chain'      // exact head-prefix anchor of a completed chain
   | 'tail_anchor'       // trailing-window anchor (survives history truncation)
   | 'client_ref'        // client-minted conversation id alias via router_options.client_ref (Cursor conversation_id)
@@ -178,6 +178,12 @@ export interface RoutingDecision {
   reasonCode?: string;
   reasonParams?: ReasonParams;
   layerUsed?: 'layer0' | 'entry' | 'layer2';
+  /**
+   * The request declares a machine-checkable JSON output contract
+   * (`response_format` json_object / json_schema). Arms the orchestrator's
+   * lite-first schema-assertion cascade (ADR-0001 §2); a `tools` list alone
+   * does NOT set it — there is no JSON contract for the assertion to check.
+   */
   needsSchemaValidation: boolean;
   sessionId?: string;
   sessionRatchetApplied?: boolean;
@@ -223,6 +229,20 @@ export interface ExecutionResult {
    */
   ttftMs?: number;
   genMs?: number;
+  /**
+   * Inbound stream tag: the response SHAPE actually written to this client
+   * (client `stream === true` after C-3, or `streaming.client.mode: always`).
+   * Owned by the surface pipeline; the orchestrator only carries it.
+   */
+  clientStream?: boolean;
+  /**
+   * Outbound stream tag: the provider leg of the SERVED attempt.
+   * `'sse'` = the upstream SSE reader ran; `'buffered'` = one buffered
+   * provider call. `'sse'` with `clientStream: false` is the accumulate mode
+   * (`streaming.upstream.mode: stream` on a JSON client) — a stream the
+   * gateway drained and answered as JSON (ADR-0008 §1).
+   */
+  upstreamStream?: 'sse' | 'buffered';
   /**
    * The perceived-experience companion to the TTFT/decode pair: total time the
    * committed attempt's stream spent in gaps of ≥1 s between two consecutive

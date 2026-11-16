@@ -11,6 +11,7 @@ import type { TransportContext } from '../src/surfaces/types.js';
 import type { ModelAccessConfig } from '../src/config/types.js';
 import type { ChatCompletionRequest } from '../src/types/openai.js';
 import type { ExecutionResult } from '../src/types/router.js';
+import { applyStreamingPosture, resetStreamingPostureForTests } from '../src/pipeline/streaming-posture.js';
 
 /**
  * Frozen-order unit tests for the chat surface pipeline (contract step 2):
@@ -267,5 +268,63 @@ describe('surface table (step 4 contents)', () => {
     assert.equal(chatSurface.capture, true);
     assert.equal(chatSurface.routePath, '/v1/chat/completions');
     assert.equal(chatSurface.detectSuffix, '/v1/chat/completions');
+  });
+});
+
+describe('client stream mode (streaming.client.mode — ADR-0008 §1)', () => {
+  it('deny: a stream:true ask is a pre-process 400 with zero capture events', async () => {
+    const { t, calls, ops } = makeFakeTransport();
+    const { orchestrator, processed } = makeStubOrchestrator();
+    applyStreamingPosture({ client: { mode: 'deny' } });
+    try {
+      await runChatSurface(t, chatSurface, orchestrator, chatBody({ stream: true }));
+    } finally {
+      resetStreamingPostureForTests();
+    }
+    assert.equal(ops().includes('captureProcessContext'), false, 'the 400 lands before any capture context');
+    assert.equal(processed.length, 0, 'process must never run for a denied stream');
+    const sent = calls.filter((c) => c.op === 'sendJson');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]!.args[0], 400);
+    assert.match(JSON.stringify(sent[0]!.args[1]), /streaming\.client\.mode: deny/);
+  });
+
+  it('deny: a JSON ask still runs normally and is tagged as not streamed', async () => {
+    const { t, calls } = makeFakeTransport();
+    const { orchestrator, processed } = makeStubOrchestrator();
+    applyStreamingPosture({ client: { mode: 'deny' } });
+    try {
+      await runChatSurface(t, chatSurface, orchestrator, chatBody({ stream: false }));
+    } finally {
+      resetStreamingPostureForTests();
+    }
+    assert.equal(processed.length, 1);
+    assert.equal(processed[0]!.ctx.clientStream, false);
+    assert.equal(calls.filter((c) => c.op === 'sendJson').length, 1);
+  });
+
+  it('always: a JSON ask is answered in SSE and the trace tag says so', async () => {
+    const { t, calls, ops } = makeFakeTransport();
+    const { orchestrator, processed } = makeStubOrchestrator();
+    applyStreamingPosture({ client: { mode: 'always' } });
+    try {
+      await runChatSurface(t, chatSurface, orchestrator, chatBody({ stream: false }));
+    } finally {
+      resetStreamingPostureForTests();
+    }
+    assert.equal(processed[0]!.ctx.clientStream, true, 'the shape written, not the ask');
+    assert.equal(ops().includes('sendJson'), false, 'no JSON body under always');
+    assert.equal(ops()[ops().indexOf('beginSse')], 'beginSse');
+    assert.equal(ops()[ops().length - 1], 'endSse');
+    const chunks = calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
+    assert.equal(chunks[chunks.length - 1], 'data: [DONE]\n\n');
+  });
+
+  it('allow (default): the client ask decides and is echoed into the context', async () => {
+    const { t } = makeFakeTransport();
+    const { orchestrator, processed } = makeStubOrchestrator();
+    resetStreamingPostureForTests();
+    await runChatSurface(t, chatSurface, orchestrator, chatBody({ stream: false }));
+    assert.equal(processed[0]!.ctx.clientStream, false);
   });
 });

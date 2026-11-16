@@ -49,7 +49,7 @@ interface ChatCall {
 
 interface FakeHostOptions {
   config?: Record<string, unknown>;
-  tiers?: string[];
+  virtualModels?: string[];
   models?: string[];
   /** Non-stream terminal instead of chunks. */
   json?: { status: number; payload: unknown };
@@ -74,7 +74,7 @@ function fakeHost(opts: FakeHostOptions = {}): {
     caCertPath: () => '/tmp/ca.pem',
     config: () => opts.config ?? {},
     catalog: () => ({
-      tiers: opts.tiers ?? ['auto', 'lite', 'plus', 'pro', 'ultra'],
+      virtualModels: opts.virtualModels ?? ['auto', 'lite', 'plus', 'pro', 'ultra'],
       models: (opts.models ?? []).map((id) => ({ id })),
     }),
     chat: async (body: Record<string, unknown>, sink: GatewayChatSink, signal?: AbortSignal) => {

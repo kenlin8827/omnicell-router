@@ -17,6 +17,23 @@ describe('displayPromptText — client envelope normalizer', () => {
     assert.equal(displayPromptText('a < b and 1 < 2'), 'a < b and 1 < 2');
   });
 
+  it('unwraps the Junie <user_request> wrapper, dropping the harness instruction prefix', () => {
+    // Measured 2026-11-16: Junie (JetBrains) sends the human turn wrapped in
+    // <user_request>, preceded by a harness instruction line. Before
+    // user_request was listed as a transport wrapper, the whole message —
+    // instruction prefix, tags and all — became the session title.
+    const junie =
+      "The user's request for which you need to select the capabilities: " +
+      '<user_request>你是谁</user_request>';
+    assert.equal(displayPromptText(junie), '你是谁');
+    assert.equal(firstDisplayText([junie], 200), '你是谁');
+    // A wrapper quoted inside known client metadata is an example, not the turn.
+    assert.equal(
+      displayPromptText('<hooks_context><user_request>你是谁</user_request></hooks_context>'),
+      ''
+    );
+  });
+
   it('drops known metadata blocks, keeping human text around them', () => {
     assert.equal(displayPromptText('<timestamp>11/8/2026, 9:01:10 PM GMT+8</timestamp>'), '');
     assert.equal(displayPromptText('<user_info>OS: win32</user_info>\n你是谁'), '你是谁');

@@ -228,7 +228,7 @@ export function buildGatewayHostSdk(manifest: PluginManifest, dir: string): Clie
       const keyId = caller?.keyId ?? (strict ? '' : (typeof bound === 'string' ? bound : ''));
       return svc.run(body, sink, signal, { keyId });
     },
-    catalog: () => getGatewayChatServices()?.catalog() ?? { tiers: [], models: [] },
+    catalog: () => getGatewayChatServices()?.catalog() ?? { virtualModels: [], models: [] },
     relayUpstream: async (req, res, opts) => {
       // Transport policy lives in core: the claimed host's rule-table egress
       // (`direct` / `proxy.url`) and upstream TLS trust (ADR-0019) are applied

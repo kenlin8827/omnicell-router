@@ -17,7 +17,17 @@ export interface ProviderConfig {
   apiKey: string;
   organization?: string;
   headers?: Record<string, string>;
+  /** Wall-clock cap for a BUFFERED provider call. Default 30 min. */
   timeoutMs?: number;
+  /** Wall-clock cap for the STREAMED provider leg. Default 60 min. */
+  streamTimeoutMs?: number;
+  /**
+   * SSE idle watchdog for the streamed leg: abort after this long with no
+   * bytes at all. Default 5 min (`DEFAULT_STREAM_IDLE_TIMEOUT_MS`); keep-alive
+   * comments / `ping` frames count as progress, so long thinking survives.
+   * Ignored by buffered calls (they have no progress signal).
+   */
+  streamIdleTimeoutMs?: number;
 }
 
 export interface ModelRegistration {
@@ -765,21 +775,57 @@ export interface ResponsesSurfaceConfig {
 }
 
 /**
- * Inference streaming posture.
+ * Client-facing stream mode — the SHAPE written back to the caller.
+ * - `allow` (default): the client's own `stream` flag decides; a non-boolean
+ *   truthy value keeps the C-3 normalization (only `=== true` streams).
+ * - `deny`: a `stream: true` request is refused with a 400. For clients that
+ *   cannot consume SSE, or an operator who wants one response shape.
+ * - `always`: the gateway answers in SSE even when the client asked for JSON.
+ *   Surfaces without a chunk encoder (anthropic / responses) emit their
+ *   buffered SSE frame sequence instead, so "always" never degrades to JSON.
+ */
+export type StreamingClientMode = 'allow' | 'deny' | 'always';
+
+/**
+ * Upstream transport mode — how the PROVIDER leg is called, independent of
+ * the client. The two axes exist separately because "the client wants JSON"
+ * and "the gateway wants SSE from the provider" are different questions
+ * (Kong's `response_streaming` is the same split; ADR-0008 §1).
+ * - `follow` (default): upstream SSE iff the client is being streamed to and
+ *   the serving wire has a streaming executor — the historical behavior.
+ * - `stream`: use the upstream SSE reader wherever the wire has one, and
+ *   ACCUMULATE when the client wants JSON. Buys gateway-side TTFT / stall
+ *   measurement and a uniform transport on wires that treat non-stream
+ *   requests differently; it does NOT make a JSON client's response arrive
+ *   earlier (the body still needs the whole generation).
+ * - `buffered`: never use upstream SSE (the pre-streaming rollback lever,
+ *   formerly `streaming.enabled: false`).
+ *
+ * Capability still bounds every mode: a wire without a chunk encoder
+ * (anthropic / google today) stays buffered whichever mode is set. Chat and
+ * responses both relay upstream chunks one-for-one — responses does it with
+ * its `streamStart`/`encodeChunk`/`streamEnd` lifecycle, since its SSE events
+ * are not chat-chunk shaped. The schema-assertion cascade's lite lead stays
+ * buffered because its whole turn may be voided. Both axes are HOT-applied
+ * (read per request).
+ */
+export type StreamingUpstreamMode = 'follow' | 'stream' | 'buffered';
+
+/**
+ * Inference streaming posture — two independent axes (ADR-0008 §1).
+ */
+
+/**
+ * Hot-applied: `loadConfig`'s live ref swaps the section on save and both
+ * save handlers re-seed the pipeline gate, so a mode change lands on the next
+ * request (a `deny` mid-flight turn is unaffected — every request reads the
+ * posture once, at admission).
  */
 export interface StreamingConfig {
-  /**
-   * Relay the upstream SSE body to the client frame by frame instead of
-   * buffering the whole generation and re-chunking it. Default TRUE.
-   *
-   * Scope is bounded by capability, not by preference: only a wire with a
-   * streaming executor (today: OpenAI `chat/completions`) streams, and a turn
-   * whose schema-assertion cascade must see the full content first still takes
-   * the buffered path. `false` restores the pre-streaming behavior everywhere —
-   * it exists as a rollback lever, not as a tuning knob. Restart-scoped (no hot
-   * applyConfig).
-   */
-  enabled?: boolean;
+  /** Response shape written to the caller. Absent = `allow`. */
+  client?: { mode?: StreamingClientMode };
+  /** Provider-leg transport. Absent = `follow`. */
+  upstream?: { mode?: StreamingUpstreamMode };
 }
 
 /**

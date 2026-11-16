@@ -21,7 +21,7 @@ process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
 const BASE_CONFIG =
-  'schemaVersion: 2\nclient:\n  port: 3000\n  host: 127.0.0.1\n' +
+  'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n' +
   '  apiKeys:\n    - id: key-test\n      name: test\n      key: sk-ocr-internal-test\n      enabled: true\n      createdAt: "2026-01-01T00:00:00.000Z"\n';
 
 function writeSysoneConfig(defaultModel?: string): void {

@@ -3,11 +3,17 @@ import {
   chatToResponseObject,
   chatToStreamEvents,
   inputItemsToMessages,
+  responsesDeltaFrame,
+  responsesStreamPrefix,
+  responsesStreamSuffix,
   responsesToolsToChat,
   responsesToolChoiceToChat,
+  newResponseMessageId,
+  newResponseStreamSequence,
   type ResponsesRequest,
+  type ResponsesStreamSequence,
 } from '../routes/responses.js';
-import type { ChatCompletionRequest, ChatMessage } from '../types/openai.js';
+import type { ChatCompletionChunk, ChatCompletionRequest, ChatMessage } from '../types/openai.js';
 import type { ExecutionResult } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { getEnvPaths } from '../config/env.js';
@@ -90,15 +96,25 @@ export function __resetResponsesSurfaceForTests(): void {
 
 /**
  * Per-request state, opaque through SurfaceParseResult.state. Beyond the
- * contract-named trio {delta, sessionIdBind, respId} it carries `parent`:
- * the RespNode written in afterResult must record previous_response_id, and
- * the id is only known at parse time (byte-preservation requirement).
+ * contract-named trio {delta, sessionIdBind, respId} it carries `parent` (the
+ * RespNode written in afterResult must record previous_response_id) and
+ * `messageId`.
+ *
+ * Both ids are minted AT PARSE TIME, not in afterResult: on a relayed stream
+ * the `response.created` / `output_item.added` frames flush with the first
+ * upstream chunk, long before the turn produces a result. `afterResult` only
+ * persists the node, so the chain resolves once the turn closes.
+ *
+ * `seq` is the SSE `sequence_number` counter shared by the prefix, every live
+ * delta and the closing frames — strict clients require it on EVERY event.
  */
 interface ResponsesState {
   delta: ChatMessage[];
   sessionIdBind: string | undefined;
   parent: string | null;
   respId: string;
+  messageId: string;
+  seq: ResponsesStreamSequence;
 }
 
 // The wire's only code-bearing parse-400 — single emitter for the text and
@@ -199,16 +215,24 @@ export const responsesSurface: ChatSurface = {
     // selects this surface's own terminal-send branch (pipeline `=== true`).
     request.stream = req.stream === true;
 
-    return { request, state: { delta, sessionIdBind, parent: req.previous_response_id || null, respId: '' } };
+    return {
+      request,
+      state: {
+        delta,
+        sessionIdBind,
+        parent: req.previous_response_id || null,
+        respId: newResponseId(),
+        messageId: newResponseMessageId(),
+        seq: newResponseStreamSequence(),
+      },
+    };
   },
 
   afterResult(result: ExecutionResult, state: unknown): void {
     const s = state as ResponsesState;
-    // Mint strictly before the first response byte (pipeline step 7) so the
-    // id resolves the moment the client sees response.created — same relative
-    // order as the old handler, which appended before BOTH the SSE writeHead
-    // and the JSON send.
-    s.respId = newResponseId();
+    // `s.respId` was minted by parse so the opening frames of a relayed turn
+    // could carry it. Persist the node before the terminal send on the
+    // buffered leg, or before the closing frames on the relayed leg.
     const assistant = result.response?.choices[0]?.message;
     const node: RespNode = {
       id: s.respId,
@@ -228,14 +252,35 @@ export const responsesSurface: ChatSurface = {
 
   encodeJson(result: ExecutionResult, state: unknown): unknown {
     const s = state as ResponsesState;
-    return chatToResponseObject(result.response!, s.respId, result.modelUsed);
+    return chatToResponseObject(result.response!, s.respId, result.modelUsed, s.messageId);
   },
 
   encodeStream(result: ExecutionResult, state: unknown): string[] {
     const s = state as ResponsesState;
-    // The exact minted s.respId (today's closure variable `respId`) — every
-    // emitted event carries it; a mismatch would break continuation.
-    return chatToStreamEvents(result.response!, s.respId, result.modelUsed);
+    // Buffered leg: the full synthesized sequence, carrying the same ids the
+    // relayed leg used in its prefix.
+    return chatToStreamEvents(result.response!, s.respId, result.modelUsed, s.messageId, s.seq);
+  },
+
+  // ---- Relayed leg: one upstream chunk -> one `response.output_text.delta`.
+  // Without these three hooks the responses wire is buffered SSE: all events
+  // arrive AFTER generation, so the client never sees token-by-token output.
+
+  streamStart(state: unknown, ctx: { model: string }): string[] {
+    const s = state as ResponsesState;
+    return responsesStreamPrefix(s.respId, ctx.model, s.messageId, s.seq);
+  },
+
+  encodeChunk(chunk: ChatCompletionChunk, ctx: { state?: unknown }): string | null {
+    const s = ctx.state as ResponsesState | undefined;
+    const text = chunk.choices?.[0]?.delta?.content;
+    if (!s || typeof text !== 'string' || text.length === 0) return null;
+    return responsesDeltaFrame(s.messageId, text, s.seq);
+  },
+
+  streamEnd(result: ExecutionResult, state: unknown): string[] {
+    const s = state as ResponsesState;
+    return responsesStreamSuffix(result.response!, s.respId, result.modelUsed, s.messageId, s.seq);
   },
 
   // `_status` is kept for signature parity with the other wire surfaces; this

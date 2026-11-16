@@ -29,14 +29,14 @@ const sandboxDefault = path.join(sandboxRoot, 'with-default');
 fs.mkdirSync(sandboxPlain);
 fs.mkdirSync(sandboxDefault);
 process.env.OCR_HOME = path.join(sandboxRoot, 'home');
-const baseYaml = 'schemaVersion: 2\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n';
+const baseYaml = 'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n';
 
 /** Materialize a sandbox environment under the throwaway OCR_HOME. */
 function seedSandboxEnv(name: string, yaml: string): void {
   const dir = path.join(process.env.OCR_HOME as string, 'envs', name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.yaml'), yaml);
-  fs.writeFileSync(path.join(dir, 'env.json'), JSON.stringify({ name, type: 'regular', schemaVersion: 2 }));
+  fs.writeFileSync(path.join(dir, 'env.json'), JSON.stringify({ name, type: 'regular', schemaVersion: 3 }));
 }
 
 seedSandboxEnv('plain', baseYaml);

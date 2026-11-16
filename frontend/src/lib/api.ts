@@ -753,6 +753,13 @@ export interface TraceRecord {
     messageCount: number;
     hasSystemPrompt: boolean;
     hasToolsOrSchema: boolean;
+    /**
+     * INBOUND stream tag: the response shape this turn actually wrote
+     * (`true` = SSE). May be true while the client asked JSON — `client.mode:
+     * always` forces a streamed answer. Absent on traces written before the
+     * tag existed.
+     */
+    clientStream?: boolean;
   };
   routing: {
     layerUsed: 'layer0' | 'entry' | 'layer2';
@@ -796,6 +803,13 @@ export interface TraceRecord {
      *  retired retry-escalation ladder may still read 'escalation' — display
      *  only). Absent on old rows. */
     effortSource?: 'client' | 'l2-decision' | 'entry' | 'directive' | 'default' | 'escalation';
+    /**
+     * OUTBOUND stream tag of the served attempt: `'sse'` = the upstream SSE
+     * reader ran, `'buffered'` = one buffered provider call. `'sse'` with
+     * `request.clientStream: false` is the accumulate mode (a stream the
+     * gateway drained and answered as JSON). Absent on legacy traces.
+     */
+    upstreamStream?: 'sse' | 'buffered';
   };
   finops: {
     inputTokens: number;
@@ -981,6 +995,15 @@ export interface CaptureEvent {
   proxy?: string;
   /** Why this exchange happened when it is NOT ordinary turn traffic. 'l2-decision' = the L2 decision layer's decision-model call. Absent = ordinary traffic. */
   purpose?: 'l2-decision';
+  /**
+   * SSE tag for THIS phase (mirrors the backend event). On a REQUEST event:
+   * the body asked for a streamed answer (client leg: the caller's `stream`
+   * flag; upstream leg: the `stream:true` the gateway actually sent). On a
+   * CLIENT RESPONSE event: the gateway wrote an SSE body. Absent when the
+   * protocol carries no such signal (pre-tag archives) — never guessed from
+   * a content-type string.
+   */
+  stream?: boolean;
   truncated?: boolean;
   /**
    * Completion-token total derived at read time from the response body (last
@@ -1021,6 +1044,18 @@ export interface CaptureExchange {
   ttftMs?: number;
   /** response.ts - firstByteTs (decode window). */
   genMs?: number;
+  /**
+   * SSE tag of the REQUEST side: the client's ask (client leg) or the
+   * transport the gateway actually sent (upstream leg). Absent on archives
+   * written before the tag existed.
+   */
+  requestStream?: boolean;
+  /**
+   * SSE tag of the RESPONSE side (client legs): true iff the gateway wrote an
+   * SSE body. Undefined for upstream legs (their transport is the request
+   * tag) and for pre-tag archives.
+   */
+  responseStream?: boolean;
 }
 
 /** One REQUEST: every HTTP exchange sharing one `requestId`. ADR-0024. */

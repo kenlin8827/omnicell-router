@@ -7,6 +7,7 @@ import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import type { ChatCompletionChunk } from '../src/types/openai.js';
 import type { StreamRelay } from '../src/utils/chat-stream.js';
+import { applyStreamingPosture, resetStreamingPostureForTests } from '../src/pipeline/streaming-posture.js';
 
 /**
  * End-to-end streaming through the REAL execution chain: candidate pool →
@@ -109,15 +110,17 @@ describe('true streaming through the candidate pool', () => {
         const stream = new ReadableStream({
           async pull(c) {
             if (pulled++ === 0) {
-              // First frame goes out immediately; the rest arrives 150 ms later.
-              // If the gateway buffered, the relay would see nothing at t≈20 ms.
-              // (150 ms, not 60: a ReadableStream pulls eagerly, so the stall can
-              // start before the first chunk is forwarded — genMs may be shorter
-              // than the sleep by the scheduling skew.)
+              // First frame goes out immediately; the rest arrives 400 ms
+              // later. If the gateway buffered, the relay would see nothing at
+              // t≈20 ms. 400 ms, not a minimal stall: under the 8-worker suite
+              // the forwarding path can be delayed past the sleep's fire time,
+              // so the measured decode window (genMs) loses the skew between
+              // firstChunkAt and the timer — observed ~90 ms. 400 ms keeps the
+              // assertion floor below comfortable.
               c.enqueue(chunkLine({ role: 'assistant', content: 'part-' }));
               return;
             }
-            await new Promise((r) => setTimeout(r, 150));
+            await new Promise((r) => setTimeout(r, 400));
             c.enqueue(chunkLine({ content: 'one' }));
             c.enqueue(chunkLine({}, 'stop'));
             c.enqueue(
@@ -168,7 +171,7 @@ describe('true streaming through the candidate pool', () => {
       // X-OCR-Gen-MS) so a client can derive decode-TPS without reading the
       // trace store.
       assert.ok(typeof result.ttftMs === 'number' && result.ttftMs >= 0);
-      assert.ok(result.genMs! >= 100, `result.genMs should cover the 150ms stall, got ${result.genMs}`);
+      assert.ok(result.genMs! >= 100, `result.genMs should cover the 400ms stall, got ${result.genMs}`);
       // Industry TTFT/TPS split on the trace row: ttftMs = process start →
       // first forwarded chunk (user-perceived), genMs = first chunk → drained
       // stream — here the upstream's 60 ms stall must appear in the decode
@@ -177,7 +180,7 @@ describe('true streaming through the candidate pool', () => {
       assert.ok(trace, 'the turn must be traced');
       assert.equal(trace.execution.modelUsed, 'stub/one');
       assert.ok(typeof trace.execution.ttftMs === 'number' && trace.execution.ttftMs >= 0);
-      assert.ok(trace.execution.genMs! >= 100, `decode window should cover the 150ms stall, got ${trace.execution.genMs}`);
+      assert.ok(trace.execution.genMs! >= 100, `decode window should cover the 400ms stall, got ${trace.execution.genMs}`);
       assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
       assert.ok(trace.execution.genMs! <= trace.execution.latencyMs);
       // Perceived stall ratio: the two visible chunks ('part-' then 'one')
@@ -617,12 +620,13 @@ describe('schema-assertion cascade streaming', () => {
     }
   });
 
-  it('streaming.enabled=false rolls the escalation leg back to buffered', async () => {
+  it('upstream.mode: buffered rolls the escalation leg back to a buffered call', async () => {
     const { server, plusHits, ready } = cascadeServer();
     await ready;
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(cascadeConfig(base, { streaming: { enabled: false } }), [stubProvider(base)]);
+    const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
+    applyStreamingPosture({ upstream: { mode: 'buffered' } });
     try {
       const result = await orchestrator.process(schemaRequest(), {}, relay);
       assert.equal(result.fallbackOccurred, true);
@@ -630,10 +634,13 @@ describe('schema-assertion cascade streaming', () => {
       assert.equal(result.response.choices[0].message.content, '{"ok":"yes"}');
       assert.equal(frames.length, 0, 'the rollback switch must keep the escalation leg buffered too');
       assert.equal(plusHits.length, 1);
+      assert.equal(result.upstreamStream, 'buffered');
       const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
       assert.equal(trace?.execution.ttftMs, undefined);
       assert.equal(trace?.execution.genMs, undefined);
+      assert.equal(trace?.execution.upstreamStream, 'buffered');
     } finally {
+      resetStreamingPostureForTests();
       server.stop(true);
     }
   });
@@ -688,6 +695,176 @@ describe('schema-assertion cascade streaming', () => {
       assert.ok(liteHits >= 1, 'the lite lead must have run and failed the assertion');
       assert.ok(frames.length >= 1, 'the first escalation frame must have been relayed before the break');
       assert.equal(plusHits.length, 1, 'post-commit: no second candidate, no re-issue');
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe('upstream transport axis (streaming.upstream.mode — ADR-0008 §1)', () => {
+  const askRequest = (model: string, stream: boolean) =>
+    ({ model, messages: [{ role: 'user', content: 'hi' }], stream }) as any;
+
+  /** Fake provider that records the `stream` flag it was asked for. */
+  function sseServer(sent: boolean[]) {
+    return serve({
+      port: 0,
+      async fetch(req) {
+        const body = JSON.parse(await req.text()) as { stream?: unknown };
+        sent.push(body.stream === true);
+        if (body.stream !== true) {
+          // A buffered caller gets a buffered answer: an SSE body would be a
+          // protocol lie and the adapter would (correctly) fail to parse it.
+          return new Response(
+            JSON.stringify({
+              id: 'chatcmpl-acc',
+              object: 'chat.completion',
+              created: 1,
+              model: 'up-1',
+              choices: [{ index: 0, message: { role: 'assistant', content: 'buf-answer' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(chunkLine({ role: 'assistant', content: 'acc-' }));
+            c.enqueue(chunkLine({ content: 'answer' }));
+            c.enqueue(chunkLine({}, 'stop'));
+            c.enqueue(
+              `data: ${JSON.stringify({
+                id: 'chatcmpl-acc',
+                object: 'chat.completion.chunk',
+                created: 1,
+                model: 'up-1',
+                choices: [],
+                usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+              })}\n\n`
+            );
+            c.enqueue('data: [DONE]\n\n');
+            c.close();
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+  }
+
+  it('stream: a JSON client is served the upstream SSE reader, accumulated, and tagged on both legs', async () => {
+    const sent: boolean[] = [];
+    const server = sseServer(sent);
+    await waitListening(server.port);
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
+    applyStreamingPosture({ upstream: { mode: 'stream' } });
+    try {
+      // No relay: this is the shape a stream:false client turns into.
+      const result = await orchestrator.process(askRequest('stub/one', false), {});
+
+      assert.deepEqual(sent, [true], 'the provider leg must be asked for SSE');
+      assert.equal(result.response.choices[0]!.message.content, 'acc-answer', 'chunks accumulated into one response');
+      assert.equal(result.response.usage?.completion_tokens, 2, 'the usage frame survives accumulation');
+      assert.equal(result.clientStream, false, 'inbound tag: the client got JSON');
+      assert.equal(result.upstreamStream, 'sse', 'outbound tag: the provider leg streamed');
+      assert.ok(typeof result.ttftMs === 'number', 'ttft is measured in accumulate mode');
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0]!;
+      assert.equal(trace.execution.upstreamStream, 'sse');
+      assert.equal(trace.request.clientStream, false);
+    } finally {
+      resetStreamingPostureForTests();
+      server.stop(true);
+    }
+  });
+
+  it('follow: a JSON client stays on the buffered provider call (historical behavior)', async () => {
+    const sent: boolean[] = [];
+    const server = sseServer(sent);
+    await waitListening(server.port);
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
+    applyStreamingPosture({ upstream: { mode: 'follow' } });
+    try {
+      const result = await orchestrator.process(askRequest('stub/one', false), {});
+      assert.deepEqual(sent, [false], 'no relay on a JSON client → a non-streaming provider call');
+      assert.equal(result.upstreamStream, 'buffered');
+      assert.equal(result.ttftMs, undefined, 'buffered legs keep no TTFT split');
+    } finally {
+      resetStreamingPostureForTests();
+      server.stop(true);
+    }
+  });
+});
+
+describe('SSE idle watchdog (DEFAULT_STREAM_IDLE_TIMEOUT_MS)', () => {
+  it('aborts a stream that goes completely silent, and says why', async () => {
+    // One frame, then silence forever. Without the watchdog this turn would
+    // sit until the two-hour wall clock; with it, the idle bound decides.
+    const server = serve({
+      port: 0,
+      fetch() {
+        const stream = new ReadableStream({
+          async start(c) {
+            c.enqueue(chunkLine({ role: 'assistant', content: 'thinking' }));
+            await new Promise(() => {}); // never resolves, never closes
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    await waitListening(server.port);
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(makeConfig(base), [{ ...stubProvider(base), streamIdleTimeoutMs: 120 }]);
+    const { relay } = makeRelaySink();
+    try {
+      const started = Date.now();
+      const error = await orchestrator.process(request('stub/one', true), {}, relay).then(
+        () => null,
+        (err: Error) => err
+      );
+      assert.ok(error, 'a silent stream must not resolve successfully');
+      assert.match(error.message, /idle for 120ms/i, `expected the idle message, got: ${error.message}`);
+      assert.ok(Date.now() - started < 10_000, 'the idle bound, not the wall clock, must fire');
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe('streamed wall-clock cap (DEFAULT_STREAM_TIMEOUT_MS)', () => {
+  it('aborts a stream that keeps trickling bytes past its cap', async () => {
+    // Progress every 40 ms → the idle watchdog can never fire; only the
+    // streamed wall clock can end this turn. A runaway loop looks exactly like
+    // this, which is what the cap exists for.
+    const server = serve({
+      port: 0,
+      fetch() {
+        const stream = new ReadableStream({
+          async start(c) {
+            // Real platform timers on purpose: this is the fake PROVIDER's own
+            // wire behavior (bytes arriving over a socket), so fake timers
+            // cannot drive it — the watchers live in the client under test.
+            for (;;) {
+              c.enqueue(chunkLine({ content: '.' }));
+              await Bun.sleep(40);
+            }
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    await waitListening(server.port);
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(makeConfig(base), [{ ...stubProvider(base), streamTimeoutMs: 150 }]);
+    const { relay } = makeRelaySink();
+    try {
+      const started = Date.now();
+      const error = await orchestrator.process(request('stub/one', true), {}, relay).then(
+        () => null,
+        (err: Error) => err
+      );
+      assert.ok(error, 'a runaway stream must not resolve successfully');
+      assert.ok(Date.now() - started < 3_000, 'the cap, not the idle watchdog, must fire');
     } finally {
       server.stop(true);
     }

@@ -27,8 +27,43 @@ export const DEFAULT_GATEWAY_PORT = 4000;
  */
 export const DEFAULT_DEV_PORT = 4700;
 
-/** Provider upstream request timeout when `provider.timeoutMs` is unset. */
-export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+/**
+ * BUFFERED provider call (`createCompletion`) wall-clock cap when
+ * `provider.timeoutMs` is unset — 30 MINUTES.
+ *
+ * Why 30 and not 2 h: a buffered call has NO progress signal, so the wall clock
+ * is its only bound — and while it runs it holds the request, a credential's
+ * concurrency/quota and the client's patience. A timeout is retriable, so the
+ * retry budget multiplies it (`retry.inplace.maxAttempts` + the failover hops
+ * ≈ 3 attempts worst case = 90 min for ONE client request). 30 min is already
+ * ~3× the ceiling vendors impose on non-stream calls (Anthropic's SDK floors
+ * its dynamic timeout at 10 min for a non-streaming large-max_tokens request),
+ * so it never truncates a legitimate answer while it still caps a dead socket.
+ * Override per provider with `provider.timeoutMs`.
+ */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * STREAMED provider leg (`createStream`) wall-clock cap when
+ * `provider.streamTimeoutMs` is unset — 60 MINUTES.
+ *
+ * Deliberately larger than the buffered cap: the streamed leg carries a
+ * progress signal, so liveness is enforced by `DEFAULT_STREAM_IDLE_TIMEOUT_MS`
+ * (silence), and the only thing this cap must clear is the largest legitimate
+ * single answer — about 128 k output tokens at a slow 50 tok/s ≈ 43 min. A
+ * stream still trickling bytes past an hour is a runaway loop, not an answer.
+ */
+export const DEFAULT_STREAM_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
+ * SSE idle watchdog for the streamed provider leg: abort after this long
+ * WITHOUT A SINGLE BYTE (keep-alive comments and `ping` frames count as
+ * progress). Five minutes of total silence means a dead connection, while a
+ * long thinking phase that streams deltas never trips it — which is what lets
+ * the TOTAL cap above be an hour without letting a hung socket linger.
+ * Override per provider with `provider.streamIdleTimeoutMs`.
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 
 /**
  * Synthetic health-probe wall-clock bound (backend/src/resilience/health-prober.ts).

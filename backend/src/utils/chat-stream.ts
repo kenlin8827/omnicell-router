@@ -2,6 +2,14 @@ import type { ChatCompletionChunk, ChatCompletionResponse, ToolCall } from '../t
 import type { ReasoningEffort } from '../types/router.js';
 
 /**
+ * Maximum assistant payload (content + tool-call arguments) one accumulator
+ * may hold: 32 Mi chars ≈ 32–128 MiB depending on script density. Declared
+ * once — the streamed transport and the accumulate-only transport share this
+ * ceiling, so a runaway upstream cannot turn into unbounded heap growth.
+ */
+const ACCUMULATE_MAX_CHARS = 32 * 1024 * 1024;
+
+/**
  * Routing facts the execution layer hands the relay before the first chunk of
  * the attempt that proceeds. Field names mirror `ExecutionResult` so the
  * header builder consumes both shapes interchangeably; every one of them is
@@ -58,6 +66,17 @@ export interface StreamRelay {
   stageRouting(facts: StreamRoutingFacts): void;
   /** One upstream chunk, in arrival order. Flushes headers on the first call. */
   onChunk(chunk: ChatCompletionChunk): void;
+  /**
+   * Which transport the served attempt actually used (called ONCE per
+   * attempt, before the first chunk): `'sse'` = the upstream SSE reader ran,
+   * `'buffered'` = one `createCompletion` call (wire without a streaming
+   * executor, mock mode, or `streaming.upstream.mode: buffered`).
+   *
+   * Optional so test relays stay one-liners. The pool uses it to tag the
+   * trace / `X-OCR-Upstream-Stream` without guessing from timing (a stream
+   * that produced no chunks still says `'sse'`).
+   */
+  onTransport?(kind: 'sse' | 'buffered'): void;
   /** True once any byte has reached the client — the no-failover boundary. */
   readonly committed: boolean;
 }
@@ -85,10 +104,31 @@ type MutableToolCall = { id: string; type: 'function'; function: { name: string;
  * VERBATIM, so thinking still streams to the client — only the internal
  * accounting view stays content/tool-calls only.
  */
-export function createChunkAccumulator(): {
+export function createChunkAccumulator(options: { maxChars?: number } = {}): {
   push: (chunk: ChatCompletionChunk) => void;
   finish: () => ChatCompletionResponse;
 } {
+  /**
+   * Hard ceiling on the accumulated assistant payload — the memory bound for
+   * BOTH transports that use this accumulator: a streamed turn (frames also go
+   * to the client) and `streaming.upstream.mode: stream`, where a JSON client's
+   * whole answer is assembled here. The provider wall-clock timeout already
+   * bounds the LIFETIME of an accumulation (an abandoned or stalled stream is
+   * aborted, `finally` clears the timer, the buffer is dropped); this bounds its
+   * SIZE, because a hostile or broken upstream can emit megabytes per second
+   * for the full timeout budget. Exceeding it fails the turn instead of growing
+   * the heap — the same discipline as the capture body cap.
+   */
+  const maxChars = options.maxChars ?? ACCUMULATE_MAX_CHARS;
+  let accumulatedChars = 0;
+  const charge = (delta: number): void => {
+    accumulatedChars += delta;
+    if (accumulatedChars > maxChars) {
+      throw new Error(
+        `Upstream stream exceeded the accumulation cap (${maxChars} characters); the turn was aborted instead of buffered`
+      );
+    }
+  };
   let id = '';
   let created = 0;
   let model = '';
@@ -112,6 +152,7 @@ export function createChunkAccumulator(): {
       for (const choice of chunk.choices ?? []) {
         if (typeof choice.delta?.content === 'string') {
           contentSeen = true;
+          charge(choice.delta.content.length);
           content += choice.delta.content;
         }
         const fragments = choice.delta?.tool_calls as ToolCallFragment[] | undefined;
@@ -130,7 +171,10 @@ export function createChunkAccumulator(): {
             if (frag.id) acc.id = frag.id;
             if (frag.type) acc.type = frag.type;
             if (frag.function?.name) acc.function.name += frag.function.name;
-            if (frag.function?.arguments) acc.function.arguments += frag.function.arguments;
+            if (frag.function?.arguments) {
+              charge(frag.function.arguments.length);
+              acc.function.arguments += frag.function.arguments;
+            }
           });
         }
         if (choice.finish_reason) finishReason = choice.finish_reason;

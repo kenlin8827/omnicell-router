@@ -288,8 +288,10 @@ describe('chat pipeline relay ordering', () => {
     }
   });
 
-  it('the responses surface has no chunk encoder (buffered by construction)', () => {
-    expect(responsesSurface.encodeChunk).toBeUndefined();
+  it('the responses surface relays chunks with a full lifecycle (anthropic stays buffered)', () => {
+    expect(typeof responsesSurface.encodeChunk).toBe('function');
+    expect(typeof responsesSurface.streamStart).toBe('function');
+    expect(typeof responsesSurface.streamEnd).toBe('function');
     expect(responsesSurface.afterResult).toBeDefined();
   });
 });
@@ -379,5 +381,37 @@ describe('provider streaming leg (capture + error class)', () => {
     expect((caught as any).retryAfterSeconds).toBe(7);
     expect(events.map((e) => `${e.direction}/${e.phase}`)).toEqual(['upstream/request', 'upstream/response']);
     expect(events[1].error).toContain('Upstream 429');
+  });
+});
+
+describe('chunk accumulator memory bound', () => {
+  const frame = (delta: Record<string, unknown>) =>
+    ({
+      id: 'chatcmpl-cap',
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: 'up-1',
+      choices: [{ index: 0, delta, finish_reason: null }],
+    }) as any;
+
+  it('fails the turn instead of growing without bound when the payload exceeds the cap', () => {
+    const acc = createChunkAccumulator({ maxChars: 8 });
+    acc.push(frame({ role: 'assistant', content: '1234' }));
+    expect(() => acc.push(frame({ content: '56789' }))).toThrow(/accumulation cap/);
+  });
+
+  it('charges tool-call arguments too, not just content', () => {
+    const acc = createChunkAccumulator({ maxChars: 8 });
+    acc.push(frame({ tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read', arguments: '12345' } }] }));
+    expect(() =>
+      acc.push(frame({ tool_calls: [{ index: 0, function: { arguments: '67890' } }] }))
+    ).toThrow(/accumulation cap/);
+  });
+
+  it('a normal answer stays inside the default cap', () => {
+    const acc = createChunkAccumulator();
+    acc.push(frame({ role: 'assistant', content: 'hello ' }));
+    acc.push(frame({ content: 'world' }));
+    expect(acc.finish().choices[0]!.message.content).toBe('hello world');
   });
 });

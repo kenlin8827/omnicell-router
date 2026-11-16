@@ -152,6 +152,7 @@ describe('Responses API: response object + stream events', () => {
     assert.strictEqual(obj.status, 'completed');
     assert.strictEqual(obj.output[0].type, 'message');
     assert.strictEqual(obj.output[0].content[0].text, 'the answer');
+    assert.deepStrictEqual(obj.tools, [], 'tools is required by strict Responses clients (Junie)');
     assert.deepStrictEqual(obj.usage, { input_tokens: 10, output_tokens: 5, total_tokens: 15 });
   });
 
@@ -199,6 +200,11 @@ describe('Responses API: response object + stream events', () => {
     const completed = JSON.parse(events[events.length - 1].split('data: ')[1]);
     assert.strictEqual(completed.response.id, 'resp_s');
     assert.strictEqual(completed.response.status, 'completed');
+    assert.ok(Array.isArray(completed.response.tools), 'the terminal response carries required tools');
+    events.forEach((frame, i) => {
+      const payload = JSON.parse(frame.split('data: ')[1]);
+      assert.strictEqual(payload.sequence_number, i, 'buffered SSE numbers every event from 0');
+    });
     const deltas = events
       .filter((e) => e.includes('event: response.output_text.delta'))
       .map((e) => JSON.parse(e.split('data: ')[1]).delta);

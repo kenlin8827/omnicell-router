@@ -324,7 +324,7 @@ Every proxied response carries diagnostic metadata:
 * `X-OCR-Breaker-State`: Health state of the invoked candidate (`CLOSED`, `HALF_OPEN`).
 * `X-OCR-Session-ID`: Resolved gateway session id for this conversation.
 * `X-OCR-Session-Ratchet`: Whether the monotonic ratchet locked the tier (`true` / `false`).
-* `X-OCR-Session-Lookup`: Which resolution layer named the session (`explicit_header`, `embedded_user_id`, `request_user`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`).
+* `X-OCR-Session-Lookup`: Which resolution layer named the session (`explicit_header`, `embedded_user_id`, `prefix_chain`, `tail_anchor`, `client_ref`, `conversation_key`, `header_fallback`, `cold_start`; `request_user` is retired and only appears on historical rows).
 * `X-OCR-Cost-USD`: Calculated cost for the execution turn.
 * `X-OCR-Saved-USD`: Net savings compared to the baseline tier.
 * `X-OCR-Latency-MS`: Gateway execution latency in milliseconds.

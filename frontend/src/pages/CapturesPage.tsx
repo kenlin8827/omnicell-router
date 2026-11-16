@@ -10,7 +10,9 @@ import {
   type CaptureSessionRow,
   type CaptureFragmentRow,
   type CaptureEvent,
+  type CaptureExchangeLeg,
   type CaptureRequestView,
+  primaryExchange,
   type CaptureTurnIndexEntry,
   type CaptureReplayResult,
   type CaptureReplayStreamEvent,
@@ -385,6 +387,26 @@ const TAB_LABEL_KEY: Record<string, string> = {
 };
 
 /**
+ * Per-leg protocol tag (ADR-0008 §1): which transport the leg actually spoke.
+ * The chip TEXT stays the protocol literal — the tooltip carries the words —
+ * and a leg whose exchange has no tag chip renders nothing (pre-tag archive).
+ */
+const StreamChip: React.FC<{ stream: boolean; tip: string }> = ({ stream, tip }) => (
+  <span
+    className="badge"
+    title={tip}
+    style={{
+      background: 'var(--chip-bg)',
+      color: stream ? 'var(--hue-blue)' : 'var(--text-muted)',
+      fontFamily: FONT_MONO,
+      fontSize: 'var(--text-2xs)',
+    }}
+  >
+    {stream ? 'SSE' : 'JSON'}
+  </span>
+);
+
+/**
  * Right-side detail drawer for one captured request (portal, Esc/overlay close).
  * Tabs keep the three bodies (inbound request / upstream request / response)
  * focused instead of one long scroll — the upstream tab is where you land only
@@ -471,6 +493,21 @@ const CaptureDrawer: React.FC<{
     request.clientResponse?.apiKey ??
     request.upstreamRequest?.apiKey ??
     request.upstreamResponse?.apiKey;
+  // Protocol tag of one leg, read off that leg's serving exchange. The CLIENT
+  // leg prefers the RESPONSE shape when it disagrees with the ask: a caller
+  // forced to SSE (`client.mode: always`) asked JSON but the reader saw the
+  // streamed body. Upstream legs have no response tag — their transport IS
+  // the request tag. Undefined = pre-tag archive / no signal → no chip.
+  const legStream = (leg: CaptureExchangeLeg): boolean | undefined => {
+    const ex = primaryExchange(request, leg);
+    if (!ex) return undefined;
+    return leg === 'client' && ex.responseStream !== undefined && ex.responseStream !== ex.requestStream
+      ? ex.responseStream
+      : ex.requestStream;
+  };
+  const clientStream = legStream('client');
+  const upstreamStream = legStream('upstream');
+  const decisionStream = legStream('decision');
 
   return createPortal(
     <div
@@ -636,6 +673,8 @@ const CaptureDrawer: React.FC<{
               </span>
             </span>
           )}
+          {/* Client-leg protocol tag, beside the gateway cycle it belongs to. */}
+          {clientStream !== undefined && <StreamChip stream={clientStream} tip={t('sessions.inboundStreamTip')} />}
           {request.upstreamLatencyMs !== undefined && (
             <span
               title={`${t('captures.upstreamLatency')} · ${request.upstreamLatencyMs} ms`}
@@ -647,6 +686,8 @@ const CaptureDrawer: React.FC<{
               </span>
             </span>
           )}
+          {/* Upstream-leg protocol tag: what the gateway actually sent. */}
+          {upstreamStream !== undefined && <StreamChip stream={upstreamStream} tip={t('sessions.outboundStreamTip')} />}
           {/* L2 decision layer leg badge: latency chip + the decision layer model, so the two
               upstream calls of one request are distinguishable at a glance. */}
           {request.decisionRequest && (
@@ -666,6 +707,8 @@ const CaptureDrawer: React.FC<{
               {request.decisionRequest.model !== request.model && ` · ${request.decisionRequest.model}`}
             </span>
           )}
+          {/* Decision-leg protocol tag, beside the decision latency badge. */}
+          {decisionStream !== undefined && <StreamChip stream={decisionStream} tip={t('sessions.outboundStreamTip')} />}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
             <X size={14} />
           </button>

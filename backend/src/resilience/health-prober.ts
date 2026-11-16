@@ -251,9 +251,9 @@ export class ActiveHealthProber {
  * swallowed so the settled race never surfaces an unhandled rejection.
  * Abandoning the WAIT does not cancel the exchange: a hung provider keeps one
  * orphaned call alive per cycle until its own provider timeout
- * (DEFAULT_PROVIDER_TIMEOUT_MS, 300 s) expires, holding that credential's
- * concurrency and quota for the window. The next sweep cycle re-probes;
- * trials are idempotent.
+ * (DEFAULT_PROVIDER_TIMEOUT_MS 30 min buffered / DEFAULT_STREAM_TIMEOUT_MS
+ * 1 h streamed) expires, holding that credential's concurrency and quota for
+ * the window. The next sweep cycle re-probes; trials are idempotent.
  */
 export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   // No-op catch on the loser: once the race settles, the late branch must not

@@ -18,8 +18,8 @@ process.env.OCR_HOME = path.join(csrfSandbox, 'home');
 process.env.OCR_ENV = 'default';
 const csrfEnvDir = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(csrfEnvDir, { recursive: true });
-fs.writeFileSync(path.join(csrfEnvDir, 'config.yaml'), 'schemaVersion: 2\nclient:\n  host: 127.0.0.1\n');
-fs.writeFileSync(path.join(csrfEnvDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 2 }));
+fs.writeFileSync(path.join(csrfEnvDir, 'config.yaml'), 'schemaVersion: 3\nclient:\n  host: 127.0.0.1\n');
+fs.writeFileSync(path.join(csrfEnvDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 3 }));
 
 /**
  * Security P2-3 — drive-by CSRF narrowing on state-changing /api/admin/*

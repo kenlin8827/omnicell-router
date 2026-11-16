@@ -217,8 +217,11 @@ export const YAML_FIELD_COMMENTS_ZH: Record<string, string> = {
   'session.strategy': '会话策略：monotonic 单调棘轮 / sticky 粘性 / stateless 无状态',
   'session.ttlSeconds': '会话保持时长（秒）',
   'session.maxSessions': '会话表容量上限',
-  streaming: '推理流式（上游 SSE 逐帧转发，而非整段缓冲后再分块）',
-  'streaming.enabled': '默认 true。仅对具备流式执行器的线型生效（当前为 OpenAI chat/completions；Anthropic/Google/Responses 仍走缓冲路径）。Schema 断言级联中，lite 冲锋腿始终缓冲（正文先过本地断言、可能整轮作废重问）；断言失败后的升档终答腿与直连路径一样照常流式。置 false 为回滚开关：上述全部恢复"上游非流式 + 网关重新分块"的旧行为，客户端首字节时间重新等于上游整段生成时间。修改后需重启生效',
+  streaming: '推理流式——两个独立轴（保存即时生效）：client = 回给调用方的响应形态，upstream = 上游连接怎么打。两者是不同的问题：JSON 客户端同样可以走上游 SSE（网关累积），SSE 客户端也可以由上游非流式调用来服务',
+  'streaming.client': '回给调用方的响应形态',
+  'streaming.client.mode': 'allow（默认）= 由客户端自己的 stream 标志决定（仅布尔 true 走流式，其他值走 JSON）；deny = 收到 stream:true 直接 400；always = 即使客户端要 JSON 也用 SSE 回复（无分块编码器的协议面改发其缓冲式 SSE 帧）',
+  'streaming.upstream': '上游连接的传输形态',
+  'streaming.upstream.mode': 'follow（默认）= 仅当客户端正在被流式服务、且所服务线型具备流式执行器时才用上游 SSE；stream = 只要线型支持就用上游 SSE，客户端要 JSON 时网关累积（换来网关侧 TTFT/停顿数据与统一传输，但绝不会让 JSON 正文更早到达）；buffered = 永不使用上游 SSE（回滚开关，客户端 SSE 由网关重建）。无流式执行器的线型（当前 Anthropic/Google/Responses）在任何模式下都保持缓冲；Schema 断言级联的 lite 冲锋腿始终缓冲，因为整轮可能作废重问',
   responses: 'Responses 协议面（POST /v1/responses）：网关侧 previous_response_id 会话链',
   'responses.persist': '会话链磁盘恢复（默认 false）：开启后每轮增量以 JSONL 恢复日志写入本环境数据目录（文件权限 0600），启动时自动重放，24 小时过期自动清理——网关重启后长对话仍可续接；关闭时重启即断链（返回 400，客户端需重发完整 input）。日志含对话原文，属敏感数据落盘，与请求捕获（requestCapture）同级隐私考量；磁盘写入失败绝不影响请求本身',
 };

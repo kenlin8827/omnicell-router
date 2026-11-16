@@ -36,6 +36,10 @@ import type { StreamRoutingFacts } from '../utils/chat-stream.js';
  *   where the SSE spread omitted them).
  * - X-OCR-Thinking-Source (ADR-0012): alongside the Thinking-* block when
  *   the ask's author is known — 'client' or a gateway decision.
+ * - X-OCR-Upstream-Stream: always present (`sse` | `buffered`) — the provider
+ *   leg's transport, the OUTBOUND stream tag. The inbound tag is the response
+ *   shape itself (SSE vs JSON); the console reads both from the trace/capture
+ *   planes.
  * - X-OCR-Variant: only when a sibling / `#variant` id was resolved.
  *
  * @param fallbackModel gate model of the surface (requested model name), used
@@ -56,6 +60,11 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     'X-OCR-Session-Lookup': result.sessionLookupType || '',
     'X-OCR-Request-ID': result.requestId || '',
     'X-OCR-Latency-MS': (result.latencyMs ?? 0).toString(),
+    // Stream tags (ADR-0008 §1). OUTBOUND: which transport the provider leg
+    // actually used. 'sse' next to a JSON body IS the answer to "why is a
+    // non-streaming request slow?" — the gateway drained a stream and the
+    // client's latency is the whole generation either way.
+    'X-OCR-Upstream-Stream': result.upstreamStream ?? 'buffered',
   };
   // TTFT/TPS split: emitted ONLY when the committed attempt actually streamed.
   // A buffered turn has no decode window, so both keys stay absent and a client

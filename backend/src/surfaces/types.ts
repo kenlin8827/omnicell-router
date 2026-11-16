@@ -132,6 +132,13 @@ export interface ChatChunkContext {
   model: string;
   /** Client asked for the terminal usage frame (`stream_options.include_usage`). */
   includeUsage: boolean;
+  /**
+   * Opaque per-turn surface state from `parse`. Wires that pre-mint ids for
+   * their streamed lifecycle (responses: response_id / message item id) need
+   * them at the FIRST upstream chunk, long before `afterResult` can run.
+   * Chat wire ignores this.
+   */
+  state?: unknown;
 }
 
 /**
@@ -152,14 +159,27 @@ export interface ChatSurface {
   encodeStream(result: ExecutionResult, state: unknown): string[];
   /**
    * Pass-through frame encoder for the streamed leg: ONE upstream chunk → one
-   * SSE frame, or `null` to drop it. Present only on a wire whose client
-   * protocol is chunk-shaped end to end (today: `chat`); a surface without it
-   * keeps the buffered `encodeStream` path even when its upstream could stream,
-   * because the pipeline only offers a relay when the surface can encode chunks.
+   * SSE frame, or `null` to drop it. Present on a wire whose client protocol is
+   * chunk-shaped end to end (`chat` and, since the relay lifecycle hooks,
+   * `responses`); a surface without it keeps the buffered `encodeStream` path
+   * even when its upstream could stream, because the pipeline only offers a
+   * relay when the surface can encode chunks.
    */
   encodeChunk?(chunk: ChatCompletionChunk, ctx: ChatChunkContext): string | null;
-  /** Runs BEFORE the first response byte (responses wire: RespStore.append). */
+  /** Runs BEFORE the first response byte on the buffered leg (responses: RespStore.append). */
   afterResult?(result: ExecutionResult, state: unknown): void;
+  /**
+   * Relay lifecycle for a wire that is NOT chat-chunk shaped but can still
+   * forward upstream chunks. `streamStart` frames flush with the first byte;
+   * `streamEnd` frames close the turn once the accumulated result exists.
+   *
+   * A surface with `afterResult` may only be handed a relay when it ALSO has
+   * `streamStart`: the hook's state must be pre-minted at parse time so the
+   * opening frame carries ids that `afterResult` will later persist. Wires
+   * without a lifecycle keep the buffered SSE path untouched.
+   */
+  streamStart?(state: unknown, ctx: ChatChunkContext): string[];
+  streamEnd?(result: ExecutionResult, state: unknown, ctx: ChatChunkContext): string[];
   errorBody(status: number, message: string, code?: string): unknown;
   executionError(err: unknown): { status: number; body: unknown };
 }

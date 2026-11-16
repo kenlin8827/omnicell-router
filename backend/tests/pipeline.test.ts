@@ -38,6 +38,32 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
     assert.strictEqual(result.fallbackOccurred, false);
   });
 
+  it('2b. A tools-only request does NOT run the lite lead (no JSON contract to assert)', async () => {
+    // Regression: `tools` used to arm the schema cascade, but SchemaAssertion
+    // has no tool-call contract — the lite answer (empty content on a tool
+    // call) could never pass, so every agent turn paid a full lite generation
+    // and then a full plus generation before the client saw anything.
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Read src/index.ts and summarize it.' }],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'read_file',
+            description: 'Read a file',
+            parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          },
+        },
+      ],
+    };
+
+    const result = await orchestrator.process(req);
+    assert.strictEqual(result.tierUsed, 'plus', 'tools alone routes to the plus baseline, not a lite lead');
+    assert.strictEqual(result.fallbackOccurred, false, 'no discarded lite generation');
+    assert.strictEqual(result.fallbackReason, undefined);
+  });
+
   it('3. Structured task with lite tier syntax error silently escalates to plus', async () => {
     const req: ChatCompletionRequest = {
       model: 'auto',

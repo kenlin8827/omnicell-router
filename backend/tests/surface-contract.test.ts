@@ -15,8 +15,8 @@ import type { ChatSurface, SurfacePathContext, TransportContext } from '../src/s
  * WHY THIS EXISTS: adding a client protocol is supposed to be "append one
  * table row" — but the row only carries its own fields, and the shared
  * pipeline silently consults members the row did not mention (the metered
- * path set, detectSuffix, encodeChunk/afterResult exclusivity, the stream
- * terminator, the error-envelope family). Every one of those is today a
+ * path set, detectSuffix, encodeChunk / afterResult / streamStart coupling,
+ * the stream terminator, the error-envelope family). Every one of those is today a
  * convention that lives in a comment. This suite turns them into executable
  * obligations: each wire must REGISTER its expectations in WIRE_SPEC below,
  * and an unregistered wire fails the suite with a message naming exactly the
@@ -416,18 +416,20 @@ describe('pipeline terminal send — per wire', () => {
     }
   });
 
-  it('a hook that runs before the first byte sees the state parse returned (continuation ids)', async () => {
+  it('parse mints the continuation id; afterResult keeps it and the encoder echoes it', async () => {
     __resetResponsesSurfaceForTests();
-    // The pipeline calls afterResult strictly before the terminal send; a
-    // surface that mints its response id there must then see that SAME id in
-    // the encoded body, or its continuation chain breaks client-side.
+    // The relayed leg flushes `response.created` at the FIRST upstream chunk,
+    // so the id CANNOT be minted by afterResult (which needs the turn result).
+    // parse owns it now; afterResult only persists the RespStore node.
     const responses = SURFACES.find((s) => s.wire === 'responses')! as ChatSurface;
     assert.equal(typeof responses.afterResult, 'function', 'responses must carry the hook this test exists for');
+    assert.equal(typeof responses.streamStart, 'function', 'responses must open the relayed stream itself');
     const parsed = responses.parse({ model: 'gpt-5', input: 'hi' });
     const before = (parsed.state as { respId?: string } | undefined)?.respId ?? '';
+    assert.ok(before, 'parse must mint the id before any byte is written');
     responses.afterResult!(stubResult('served-model'), parsed.state);
     const state = parsed.state as { respId: string };
-    assert.ok(state.respId && state.respId !== before, `${responses.wire}: afterResult must mint the id into the parse-returned state`);
+    assert.equal(state.respId, before, `${responses.wire}: afterResult must NOT replace the parse-minted id (created/completed would diverge)`);
     const encoded = responses.encodeJson(stubResult('served-model'), state) as { id?: string };
     assert.equal(encoded.id, state.respId, `${responses.wire}: the minted id must be the one the client is handed`);
   });
@@ -436,9 +438,12 @@ describe('pipeline terminal send — per wire', () => {
 // ---- 5. the relayed (chunk-by-chunk) leg ------------------------------------
 
 describe('relay leg — chunk-shaped wires', () => {
-  it('encodeChunk returns string|null (never undefined), rewrites model, and gates usage frames', () => {
+  it('chat-wire encodeChunk returns string|null, rewrites model, and gates usage frames', () => {
+    // Model rewriting / usage gating is a CHAT-WIRE obligation. The responses
+    // wire has its own event-shaped delta contract (responses-relay.test.ts),
+    // where frames carry `type` and `delta`, not `model`.
     for (const s of SURFACES.filter(isChatFamily)) {
-      if (!s.encodeChunk) continue;
+      if (!s.encodeChunk || s.wire !== 'chat') continue;
       const battery: ChatCompletionChunk[] = [
         { id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }] },
         { id: 'c2', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', choices: [] },
@@ -492,17 +497,17 @@ describe('relay leg — chunk-shaped wires', () => {
     assert.ok(written[0]!.startsWith('data: {'), 'the first relayed frame is the upstream chunk, framed for this wire');
   });
 
-  it('a surface with an afterResult hook is never handed a relay (the hook must run before the first byte)', async () => {
+  it('afterResult + relay coexist ONLY with a streamStart lifecycle', async () => {
     __resetResponsesSurfaceForTests();
     for (const s of SURFACES.filter(isChatFamily)) {
       const { t } = makeFakeTransport();
       const { orchestrator, seen } = makeStubOrchestrator();
       await runChatSurface(t, s, orchestrator, { ...(s === chatSurface ? { model: 'auto', messages: [{ role: 'user', content: 'hi' }] } : { model: 'gpt-5', input: 'hi' }), stream: true });
       const relay = seen[0]?.relay;
-      if (s.afterResult) {
-        assert.equal(relay, undefined, `${s.wire}: afterResult and the relayed leg are mutually exclusive — silently keeping both would drop the hook and the state it mints`);
+      if (s.afterResult && !s.streamStart) {
+        assert.equal(relay, undefined, `${s.wire}: a hook without a pre-minted lifecycle cannot relay — the state it mints would arrive after the opening frames`);
       } else if (s.encodeChunk) {
-        assert.ok(relay, `${s.wire}: a chunk-shaped wire with no hook must be offered the relay (streamed turn)`);
+        assert.ok(relay, `${s.wire}: a chunk-shaped wire must be offered the relay on a streamed turn`);
       }
     }
   });

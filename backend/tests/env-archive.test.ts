@@ -438,7 +438,7 @@ describe('buildEnvelope — redaction completeness', () => {
 
   it('v1 grouped layout (ADR-0016) redacts every secret path and drops client.webAuth.passwordHash', async () => {
     const v1 = [
-      'schemaVersion: 2',
+      'schemaVersion: 3',
       'client:',
       '  adminKey: sk-ocr-secret-admin',
       '  webAuth:',
