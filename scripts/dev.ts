@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { watch } from 'node:fs';
 import { resolve } from 'node:path';
 import net from 'node:net';
 import { DEFAULT_DEV_PORT } from '../backend/src/config/defaults.js';
@@ -72,12 +73,37 @@ async function main(): Promise<void> {
     OCR_PLUGIN_SRC_DIR: process.env.OCR_PLUGIN_SRC_DIR ?? resolve(import.meta.dir, '..', 'plugins'),
   };
 
-  // 1. Start Backend in watch mode
-  const backend = spawn('bun', ['--no-env-file', '--watch', 'backend/src/index.ts'], {
-    stdio: 'inherit',
-    shell: true,
-    env: backendEnv,
-  });
+  // 1. Start Backend in watch mode. `bun --watch` only watches the backend
+  // entry's import graph, and a PLUGIN is loaded through a dynamic specifier
+  // (plus a static `./adapter.js` the module cache pins after the first load),
+  // so plugin edits never restart this child on their own — the console's
+  // `/plugins/reload` re-imports the entry but the cached class stays. Watch
+  // the plugin source tree here and recycle the backend child instead.
+  let backend: ChildProcess;
+  const startBackend = (): ChildProcess =>
+    spawn('bun', ['--no-env-file', '--watch', 'backend/src/index.ts'], {
+      stdio: 'inherit',
+      shell: true,
+      env: backendEnv,
+    });
+  backend = startBackend();
+  let pluginRestart: ReturnType<typeof setTimeout> | undefined;
+  const pluginSrc = backendEnv.OCR_PLUGIN_SRC_DIR;
+  if (pluginSrc) {
+    try {
+      watch(pluginSrc, { recursive: true }, (_event, file) => {
+        if (!file || !/\.(ts|tsx|js|json)$/.test(String(file))) return;
+        clearTimeout(pluginRestart);
+        pluginRestart = setTimeout(() => {
+          console.log('\n♻️  Plugin source changed — restarting the backend child…');
+          killTree(backend);
+          backend = startBackend();
+        }, 300);
+      });
+    } catch (err) {
+      console.warn('  ⚠ plugin source watch unavailable:', err instanceof Error ? err.message : err);
+    }
+  }
 
   // 2. Start Frontend dev server
   const frontend = spawn('bun', ['run', 'dev'], {
