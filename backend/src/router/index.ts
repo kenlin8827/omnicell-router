@@ -1,7 +1,7 @@
 import { ChatCompletionRequest } from '../types/openai.js';
 import { RoutingDecision, TierLevel } from '../types/router.js';
 import { Layer2Decision } from './layer2-decision.js';
-import { hasToolsOrSchema } from './request-traits.js';
+import { declaresJsonContract } from './request-traits.js';
 import { ClassifierConfig, RoutingMode } from '../config/types.js';
 import { tierFromVirtualEntry } from '../auth/model-access.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -47,9 +47,12 @@ export class RouterEngine {
      *  (failure_events ledger) attribute to the suffering conversation. */
     sessionId?: string
   ): Promise<RoutingDecision> {
-    // Structured-output requests arm the orchestrator's lite-first
-    // schema-assertion cascade regardless of the decided tier.
-    const needsSchemaValidation = hasToolsOrSchema(request);
+    // Structured-output requests (a DECLARED JSON contract) arm the
+    // orchestrator's lite-first schema-assertion cascade regardless of the
+    // decided tier. `tools` alone never arms it: SchemaAssertion has no
+    // tool-call contract to check, so a tools-only lite answer could never
+    // pass (see router/request-traits.ts).
+    const needsSchemaValidation = declaresJsonContract(request);
 
     // 1. Force Tier Override (for testing or explicit client choice)
     if (request.router_options?.force_tier) {

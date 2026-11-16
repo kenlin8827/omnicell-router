@@ -23,7 +23,9 @@
 
 ### 2. 结构化输出门（第 1 层的存活遗产）
 
-`needsSchemaValidation = hasToolsOrSchema(request)`——对请求载荷的直接读取（tools 列表 / `json_schema` / `json_object` response_format），在 `router/request-traits.ts` 计算并随每个 `RoutingDecision` 携带。无论判定到哪个梯队，它都为 orchestrator 的 lite 先行 Schema 断言级联（5A）上膛。路由路径中不再存在任何习得特征。
+`needsSchemaValidation = declaresJsonContract(request)`——对请求载荷的直接读取（`json_schema` / `json_object` 的 `response_format`），在 `router/request-traits.ts` 计算并随每个 `RoutingDecision` 携带。无论判定到哪个梯队，它都为 orchestrator 的 lite 先行 Schema 断言级联（5A）上膛。路由路径中不再存在任何习得特征。
+
+仅凭 `tools` 不再上膛该级联。`SchemaAssertion.validate(content, response_format)` 只有一个可校验的契约——显式声明的 JSON 形状；工具调用答复本身没有 content，带 tools 的请求永远不可能通过，lite 冲锋腿的整段生成被付费后又被丢弃（在仅带 tools 的 auto 请求上实测：lite 已执行、`fallbackReason` 为 `JSON SyntaxError …`、最终由 plus 服务）。以 `tools` 上膛因此让 agent 流量的上游延迟翻倍，却对答复毫无影响。`hasToolsOrSchema` 仅作为 trace 上的请求事实保留。
 
 ### 3. 出厂默认质量优先
 

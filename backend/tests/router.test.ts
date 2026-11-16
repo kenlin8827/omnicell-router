@@ -27,6 +27,26 @@ describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
     assert.strictEqual(decision.needsSchemaValidation, true);
   });
 
+  it('does not arm the schema cascade from tools alone (no JSON contract to assert)', async () => {
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Read a file and answer.' }],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'read_file',
+            description: 'Read a file',
+            parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          },
+        },
+      ],
+    };
+
+    const decision = await RouterEngine.routeAsync(req);
+    assert.strictEqual(decision.needsSchemaValidation, false);
+  });
+
   it('should default safely to plus quality when no decision layer answers, never degrading to lite tier', async () => {
     // Ultra-short query (P=NP?) with no decision layer configured
     const req1: ChatCompletionRequest = {

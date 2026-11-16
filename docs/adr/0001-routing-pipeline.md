@@ -23,7 +23,9 @@ The retired Layer 1 (a local micro-tensor classifier trained by the learning fly
 
 ### 2. Structured-output gate (survives Layer 1)
 
-`needsSchemaValidation = hasToolsOrSchema(request)` — a direct payload read (tools list / `json_schema` / `json_object` response_format), computed in `router/request-traits.ts` and carried on every `RoutingDecision`. It arms the orchestrator's lite-first schema-assertion cascade (5A) regardless of the decided tier. No learned features remain anywhere in the routing path.
+`needsSchemaValidation = declaresJsonContract(request)` — a direct payload read (a `json_schema` / `json_object` `response_format`), computed in `router/request-traits.ts` and carried on every `RoutingDecision`. It arms the orchestrator's lite-first schema-assertion cascade (5A) regardless of the decided tier. No learned features remain anywhere in the routing path.
+
+`tools` alone does NOT arm the cascade. `SchemaAssertion.validate(content, response_format)` has exactly one contract to check — a declared JSON shape; a tool-call answer carries no content, so a tools-only request could never pass, and the lite lead's whole generation was paid for and then discarded (measured on a tools-only auto request: lite ran, `fallbackReason` was `JSON SyntaxError …`, plus served). Arming on `tools` therefore doubled upstream latency for agent traffic while changing nothing about the answer. The `hasToolsOrSchema` trait survives as the recorded request fact on traces only.
 
 ### 3. Shipped defaults are quality-first
 
