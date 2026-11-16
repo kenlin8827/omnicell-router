@@ -4856,6 +4856,10 @@ export interface PluginConfigFieldInfo {
    *  holds one of the listed values (exactly one of `equals` / `in`). Hidden
    *  fields keep their draft value, so a mode toggle never discards input. */
   visibleWhen?: { key: string; equals?: string | boolean; in?: (string | boolean)[] };
+  /** Quick-mode marker: shown in the settings drawer's QUICK view; without it
+   *  the field renders only in the ADVANCED view. A schema with no `essential`
+   *  field has no quick view at all (display-only, like `visibleWhen`). */
+  essential?: boolean;
   /** Locale map keyed by BCP-47 ('zh-CN'), like the manifest description. */
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;

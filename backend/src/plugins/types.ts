@@ -154,6 +154,13 @@ export interface PluginConfigField {
    *  NOT skipped by validation/merge — hiding is cosmetic, so toggling a mode
    *  back never loses what the operator entered. */
   visibleWhen?: { key: string; equals?: string | boolean; in?: (string | boolean)[] };
+  /** Quick-mode marker: a field the console shows in the settings drawer's
+   *  QUICK view (the essentials a typical operator needs). Fields without it
+   *  render only in the ADVANCED view. A schema with no `essential` field at
+   *  all has no quick view — the drawer skips the toggle and shows everything
+   *  (the historical behavior). Pure display, like `visibleWhen`: storage,
+   *  validation and merge are untouched either way. */
+  essential?: boolean;
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;
 }
@@ -577,7 +584,7 @@ export interface ClientAdapterHost {
    * — stays with the hook. The store itself is host property: a package must
    * not re-implement where keys live.
    */
-  apiKeys(): { name: string; key: string; enabled?: boolean; expiresAt?: string }[];
+  apiKeys(): { id: string; name: string; key: string; enabled?: boolean; expiresAt?: string }[];
   /** Mint a key in that same store (the `ocr` command's own mint path). Null
    *  when creation fails — the hook then reports its own advisory. */
   createApiKey(opts: { name: string; description?: string }): { key: string } | null;

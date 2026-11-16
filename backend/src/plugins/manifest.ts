@@ -304,6 +304,9 @@ export function validateConfigSchema(schema: unknown, label: string, sections?: 
         if (!isTextOrLocaleMap(text)) fail(`'${key}' enumLabels['${value}'] must be a string or a locale map of strings`);
       }
     }
+    if (field.essential !== undefined && typeof field.essential !== 'boolean') {
+      fail(`'${key}' essential must be a boolean`);
+    }
   }
 
   // Second pass — `visibleWhen` names a SIBLING field, so a forward reference is

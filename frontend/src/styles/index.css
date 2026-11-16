@@ -853,6 +853,73 @@ details.sub-card > summary::-webkit-details-marker {
   flex-direction: column;
   gap: 10px;
 }
+/* Collapsible group panel (PluginConfigDrawer): every declared config section
+   is ONE CARD — a full-width toggle header plus a padded body. The header
+   drops the `.form-section-title` hairline (the card border already separates
+   the group) and promotes the title to body text so the card reads as a unit,
+   not a form legend. `advanced` groups start collapsed (their manifest says
+   so), the rest open. */
+.form-section-card {
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  transition: border-color 0.2s ease;
+}
+.form-section-card:hover {
+  border-color: color-mix(in srgb, var(--text-main) 22%, var(--card-border));
+}
+.form-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 13px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-dim);
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.form-section-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text-main);
+}
+/* The header paints its own hover band, so it carries the card's top corners.
+   NO `overflow: hidden` on the card itself — Combobox panels (model / key
+   pickers) render inside it and a clipped ancestor would swallow the popover. */
+.form-section-card .form-section-toggle {
+  border-radius: 9px 9px 0 0;
+}
+.form-section-card-closed .form-section-toggle {
+  border-radius: 9px;
+}
+.form-section-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.form-section-card .form-section-title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-main);
+}
+.form-section-card .form-section-title::after {
+  display: none;
+}
+/* The hairline under the header is what separates heading from fields — the
+   card's own hierarchy, not another decorative rule. */
+.form-section-card-body {
+  padding: 16px;
+  border-top: 1px solid var(--divider);
+}
+/* Inside a card the label is the PRIMARY line and the hint the secondary one:
+   promote labels to body color so a long field list scans by name first. */
+.form-section-card .form-label {
+  color: var(--text-main);
+}
+
 .form-label {
   display: block;
   font-size: var(--text-xs);
