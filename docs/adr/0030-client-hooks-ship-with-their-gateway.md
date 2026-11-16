@@ -83,6 +83,22 @@ Consequences, all of them deletions:
 
 Unchanged from ADR-0029 and now load-bearing for every forward-proxy package: the adapter half registers FIRST (it is the half that throws), the gateway is staged and only committed for ids with a loaded row (`retainStagedGateways`). A package whose adapter fails is a red console row — never a hook with no gateway behind it.
 
+### 5. Agent provisioning is the hook's job, transport included
+
+A forward-proxy hook that leads to an agent the machine cannot install is a row that cannot work (§ADR-0027 §1 in spirit). `jetbrains-gateway` therefore provisions Junie itself: resolve the version from the IDE's own ACP registry, fetch, verify, extract into `acp-agents/<agent>/<version>/`, and seed `.downloads` so `AcpBinaryManager` promotes instead of re-fetching.
+
+The transport is part of that decision, not an implementation detail underneath it. The artifact is 215 MB behind a GitHub release redirect, and the failure that motivated this section is measured, not hypothetical: one stream on a throttled link ran at 24 KB/s with no resume (2.5 hours, and the previous 30-minute cap made a first install impossible), while six ranges across mirrors reached ~860 KB/s — four minutes, byte-identical to the release API's `sha256` digest. So `downloadFile` probes with a ranged GET, cuts the archive into 4 MiB pieces, resumes from `<dest>.part` offsets recorded in a `<dest>.part.json` provenance sidecar (URL / mode / sha256, so a partial of ANOTHER asset is discarded rather than spliced in), rotates mirrors per attempt, and reports progress.
+
+Three rules keep this from turning into host policy:
+
+| rule | why |
+| --- | --- |
+| Mirrors and the local archive are OPERATOR config (`downloadMirrors`, `junieArchivePath`, `downloadConcurrency`), never package constants | a mirror is a regional workaround; a hardcoded one ships a third-party host to every operator |
+| The download stays INSIDE `setup()` — no new console verb | the wire vocabulary is `setup`/`teardown` (a hook's two state transitions), and `ClientHookStatus` already reports the intermediate ("proxy hooked, agent missing") via `junieVersion`. A third button would invent a third lifecycle state whose teardown semantics nobody has defined |
+| Verification is best-effort but never absent | the ACP registry publishes no hash for Junie, so the digest comes from the GitHub release API when reachable; otherwise declared size + zip structure. A mismatch deletes the archive, a truncation keeps it (that IS the resume state) |
+
+Consequence for the console: setup can still take minutes on a bad link, so the adapter logs a progress line every 32 MB (`N/M MB (K KB/s via <endpoint>)`) through the host's logger — the operator can tell "downloading" from "hung" without a new action.
+
 ## Consequences
 
 - **Uninstall means uninstall.** Removing `cursor-gateway` removes the launcher row with it; there is no orphan hook and no console table to enforce the pairing.

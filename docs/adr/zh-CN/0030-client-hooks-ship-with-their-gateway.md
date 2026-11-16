@@ -83,6 +83,22 @@ interface ClientHookStatus {
 
 ADR-0029 的规则不变，且对每个代理接入包都成为关键路径：适配器那一半**先**注册（它是会抛错的那半），网关先 stage、只对已装载 id 提交（`retainStagedGateways`）。适配器失败的包是一行红色控制台记录 —— 绝不会是一个背后没有网关的钩子。
 
+### 5. Agent 安装也是钩子的职责，连传输层一起
+
+一个代理钩子如果最终指向机器装不上的 agent，那就是「一行钩不平」的记录（ADR-0027 §1 的精神）。所以 `jetbrains-gateway` 自己安装 Junie：从 IDE 自己的 ACP registry 取版本，下载、校验、解压到 `acp-agents/<agent>/<version>/`，再把归档 seed 进 `.downloads`，让 `AcpBinaryManager` 直接 promote 而不是重新下。
+
+传输层属于这个决策的一部分，不是它下面的实现细节。那个产物是 GitHub release 重定向后的 215 MB，而促成这一节的事故是**实测**而非假设：单流在受限链路上跑 24 KB/s 且无续传（2.5 小时，旧的 30 分钟上限让首次安装根本不可能完成），而六分片跨镜像可达 ~860 KB/s —— 4 分钟，且与 release API 的 `sha256` 摘要逐字节一致。所以 `downloadFile` 先用带 Range 的请求探测，把归档切成 4 MiB 片，按 `<dest>.part` 的偏移续传、并把来源写进 `<dest>.part.json`（URL / 模式 / sha256，于是**另一个**资产的残片会被丢弃而不是拼接），每次尝试轮换镜像，并上报进度。
+
+三条规则保证它不会变成宿主的策略：
+
+| 规则 | 理由 |
+| --- | --- |
+| 镜像与本地包属于**运营者**配置（`downloadMirrors`、`junieArchivePath`、`downloadConcurrency`），绝不是包内常量 | 镜像是区域网络的变通；写死一个等于把第三方主机发给所有运营者 |
+| 下载留在 `setup()` 内部 —— 不新增控制台动词 | 线上词汇只有 `setup`/`teardown`（钩子的两个状态转换），而 `ClientHookStatus` 已经通过 `junieVersion` 表达中间态（「代理好了、agent 缺」）。第三个按钮会造出第三种生命周期状态，而它的 teardown 语义没人定义过 |
+| 校验尽力而为，但永不缺席 | ACP registry 不为 Junie 发布 hash，所以能连上时取 GitHub release API 的摘要，否则用声明大小 + zip 结构。不匹配就删；只是截断就留（那**就是**续传状态） |
+
+对控制台的后果：坏链路上 setup 仍可能要几分钟，所以适配器每 32 MB 经宿主 logger 打一行进度（`N/M MB (K KB/s via <端点>)`）—— 运营者不必靠新按钮就能区分「在下」与「卡死」。
+
 ## 影响
 
 - **卸载就是卸载。** 移除 `cursor-gateway` 会连启动器那一行一起消失；不再有孤儿钩子，也不再需要控制台表来维持配对。

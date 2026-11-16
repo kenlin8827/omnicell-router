@@ -191,7 +191,7 @@ d?.('download validation', () => {
     assert.equal(calls, 1, 'a validated archive must not be re-downloaded');
   });
 
-  it('refuses a truncated body and leaves no .part behind', async () => {
+  it('keeps the partial of a truncated body so the next run can resume', async () => {
     const dir = tmpDir('dl-trunc-');
     const dest = path.join(dir, 'junie.zip');
     const payload = Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array([9]) }));
@@ -201,7 +201,217 @@ d?.('download validation', () => {
     assert.equal(res.ok, false);
     assert.match(res.detail ?? '', /truncated/);
     assert.equal(fs.existsSync(dest), false);
-    assert.equal(fs.existsSync(`${dest}.part`), false);
+    // The bytes ARE the resume state: keeping them is what turns a dropped
+    // 215 MB transfer into "one more attempt" instead of "start over".
+    assert.equal(fs.existsSync(`${dest}.part`), true);
+    assert.equal(fs.readFileSync(`${dest}.part`).length, payload.length);
+    const meta = JSON.parse(fs.readFileSync(`${dest}.part.json`, 'utf8')) as { url: string; mode: string };
+    assert.equal(meta.url, 'https://example.invalid/junie.zip');
+    assert.equal(meta.mode, 'stream');
+  });
+
+  it('resumes from the bytes on disk and never re-asks for them', async () => {
+    const dir = tmpDir('dl-resume-');
+    const dest = path.join(dir, 'junie.zip');
+    const payload = Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array([4, 5, 6]) }));
+    const half = Math.floor(payload.length / 2);
+    fs.writeFileSync(`${dest}.part`, payload.subarray(0, half));
+    fs.writeFileSync(`${dest}.part.json`, JSON.stringify({ url: 'https://example.invalid/junie.zip', mode: 'stream' }));
+    const ranges: (string | null)[] = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      ranges.push(headers.range ?? null);
+      const from = Number(/^bytes=(\d+)-$/.exec(headers.range ?? '')?.[1] ?? 0);
+      return new Response(payload.subarray(from), {
+        status: 206,
+        headers: {
+          'content-range': `bytes ${from}-${payload.length - 1}/${payload.length}`,
+          'content-length': String(payload.length - from),
+        },
+      });
+    }) as unknown as typeof fetch;
+    const res = await downloadFile('https://example.invalid/junie.zip', dest, { fetchImpl });
+    assert.equal(res.ok, true, res.detail);
+    assert.deepEqual(ranges, [`bytes=${half}-`], 'the resumed run must not fetch the bytes it already has');
+    assert.deepEqual(fs.readFileSync(dest), payload);
+  });
+
+  it('assembles a large archive from parallel ranges', async () => {
+    const dir = tmpDir('dl-range-');
+    const dest = path.join(dir, 'junie.zip');
+    // `level: 0` keeps the fixture above the parallel threshold, which a
+    // compressed zip of zeros would not be.
+    const payload = Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array(9 * 1024 * 1024).fill(7) }, { level: 0 }));
+    assert.ok(payload.length > 8 * 1024 * 1024, 'fixture must exceed the parallel threshold');
+    let rangeCalls = 0;
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const match = /^bytes=(\d+)-(\d*)$/.exec(headers.range ?? '');
+      if (!match) return new Response(payload, { status: 200, headers: { 'content-length': String(payload.length) } });
+      rangeCalls += 1;
+      const from = Number(match[1]);
+      const to = match[2] ? Number(match[2]) : payload.length - 1;
+      return new Response(payload.subarray(from, to + 1), {
+        status: 206,
+        headers: {
+          'content-range': `bytes ${from}-${to}/${payload.length}`,
+          'content-length': String(to - from + 1),
+        },
+      });
+    }) as unknown as typeof fetch;
+    const res = await downloadFile('https://example.invalid/junie.zip', dest, { fetchImpl, concurrency: 4 });
+    assert.equal(res.ok, true, res.detail);
+    assert.equal(res.ranged, true);
+    assert.deepEqual(fs.readFileSync(dest), payload);
+    assert.ok(rangeCalls >= 3, `expected several range requests, saw ${rangeCalls}`);
+    assert.equal(fs.existsSync(`${dest}.part`), false, 'a finished download leaves no partial behind');
+    assert.equal(fs.existsSync(`${dest}.part.pieces`), false);
+  });
+
+  it('resumes a parallel partial from its piece markers, never probing past EOF', async () => {
+    const dir = tmpDir('dl-range-resume-');
+    const dest = path.join(dir, 'junie.zip');
+    const payload = Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array(9 * 1024 * 1024).fill(3) }, { level: 0 }));
+    const pieceBytes = 4 * 1024 * 1024;
+    const pieces = Math.ceil(payload.length / pieceBytes);
+    // A partial left by an interrupted run: the file is preallocated to the full
+    // size and only the LAST piece is missing.
+    fs.writeFileSync(`${dest}.part`, payload.subarray(0, (pieces - 1) * pieceBytes).length === 0 ? Buffer.alloc(0) : payload);
+    fs.writeFileSync(
+      `${dest}.part.json`,
+      JSON.stringify({ url: 'https://example.invalid/junie.zip', mode: 'range', total: payload.length, pieceBytes }),
+    );
+    fs.mkdirSync(`${dest}.part.pieces`, { recursive: true });
+    for (let index = 0; index < pieces - 1; index += 1) {
+      fs.writeFileSync(`${dest}.part.pieces/${index}.done`, 'x');
+    }
+    const starts: number[] = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const match = /^bytes=(\d+)-(\d*)$/.exec(headers.range ?? '');
+      assert.ok(match, 'every request must be a bounded range');
+      const from = Number(match[1]);
+      starts.push(from);
+      assert.ok(from < payload.length, `range start ${from} must be inside the asset`);
+      const to = match[2] ? Number(match[2]) : payload.length - 1;
+      return new Response(payload.subarray(from, to + 1), {
+        status: 206,
+        headers: {
+          'content-range': `bytes ${from}-${to}/${payload.length}`,
+          'content-length': String(to - from + 1),
+        },
+      });
+    }) as unknown as typeof fetch;
+    const res = await downloadFile('https://example.invalid/junie.zip', dest, { fetchImpl, concurrency: 2 });
+    assert.equal(res.ok, true, res.detail);
+    assert.deepEqual(starts, [(pieces - 1) * pieceBytes], 'only the missing piece is requested');
+    assert.deepEqual(fs.readFileSync(dest), payload);
+  });
+
+  it('names the two empty-defaulted config keys when a download cannot get through', async () => {
+    const { ensureAcpAgent } = src!;
+    const root = tmpDir('acp-fail-');
+    const fetchImpl = (async () => new Response('', { status: 502 })) as unknown as typeof fetch;
+    const res = await ensureAcpAgent({
+      configDir: path.join(root, 'IntelliJIdea2026.3'),
+      agentsDir: path.join(root, 'acp-agents'),
+      cacheDir: path.join(root, 'downloads'),
+      asset: {
+        id: 'junie',
+        version: '4020.7.0',
+        url: 'https://example.invalid/junie.zip',
+        cmd: './junie/junie.exe',
+        args: [],
+        archiveName: 'junie.zip',
+      },
+      fetchImpl,
+    });
+    assert.equal(res.ok, false);
+    // `downloadMirrors` and `junieArchivePath` default to empty, so a failure is
+    // the one moment the operator has to learn they exist.
+    assert.match(res.detail ?? '', /downloadMirrors/);
+    assert.match(res.detail ?? '', /junieArchivePath/);
+  });
+
+  it('asks the mirror FIRST and never touches the origin when it serves', async () => {
+    const dir = tmpDir('dl-mirror-');
+    const dest = path.join(dir, 'junie.zip');
+    const payload = Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array([8]) }));
+    const seen: string[] = [];
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      seen.push(target);
+      if (target.startsWith('https://mirror.invalid/')) {
+        return new Response(payload, { status: 200, headers: { 'content-length': String(payload.length) } });
+      }
+      return new Response('', { status: 502 });
+    }) as unknown as typeof fetch;
+    const res = await downloadFile('https://example.invalid/junie.zip', dest, { fetchImpl, mirrors: ['https://mirror.invalid/'] });
+    assert.equal(res.ok, true, res.detail);
+    assert.equal(res.source, 'https://mirror.invalid/https://example.invalid/junie.zip');
+    // A mirror exists to avoid the origin, so the probe must not spend its one
+    // request on the path the operator already knows is slow.
+    assert.deepEqual(seen, ['https://mirror.invalid/https://example.invalid/junie.zip']);
+  });
+
+  it('falls through a mirror that answers 404 to the origin', async () => {
+    const dir = tmpDir('dl-mirror-404-');
+    const dest = path.join(dir, 'junie.zip');
+    const payload = Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array([7]) }));
+    const seen: string[] = [];
+    const fetchImpl = (async (url: unknown) => {
+      const target = String(url);
+      seen.push(target);
+      if (target.startsWith('https://dead.invalid/')) return new Response('', { status: 404 });
+      return new Response(payload, { status: 200, headers: { 'content-length': String(payload.length) } });
+    }) as unknown as typeof fetch;
+    const res = await downloadFile('https://example.invalid/junie.zip', dest, { fetchImpl, mirrors: ['https://dead.invalid/'] });
+    assert.equal(res.ok, true, res.detail);
+    assert.equal(res.source, 'https://example.invalid/junie.zip', 'the origin must still get its turn');
+    assert.deepEqual(seen, ['https://dead.invalid/https://example.invalid/junie.zip', 'https://example.invalid/junie.zip']);
+  });
+
+  it('expands mirror templates both ways', () => {
+    const { mirrorUrl } = src!;
+    assert.equal(mirrorUrl('https://ghfast.top/', 'https://github.com/x/y.zip'), 'https://ghfast.top/https://github.com/x/y.zip');
+    assert.equal(mirrorUrl('https://gh-proxy.com/{url}', 'https://github.com/x/y.zip'), 'https://gh-proxy.com/https://github.com/x/y.zip');
+    assert.equal(mirrorUrl('   ', 'https://github.com/x/y.zip'), 'https://github.com/x/y.zip');
+  });
+
+  it('installs from an operator-supplied archive without touching the network', async () => {
+    const { ensureAcpAgent } = src!;
+    const root = tmpDir('acp-import-');
+    const agentsDir = path.join(root, 'acp-agents');
+    const archive = path.join(root, 'junie.zip');
+    fs.writeFileSync(archive, Buffer.from(zipSync({ 'junie/junie.exe': new Uint8Array([1, 2, 3]) })));
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('a local archive must not reach the network');
+    }) as unknown as typeof fetch;
+    const res = await ensureAcpAgent({
+      configDir: path.join(root, 'IntelliJIdea2026.3'),
+      agentsDir,
+      cacheDir: path.join(root, 'downloads'),
+      asset: {
+        id: 'junie',
+        version: '4020.7.0',
+        url: 'https://example.invalid/junie.zip',
+        cmd: './junie/junie.exe',
+        args: ['--acp=true'],
+        archiveName: 'junie.zip',
+      },
+      archivePath: archive,
+      fetchImpl,
+    });
+    if (!res.ok && /archiver|extraction/i.test(res.detail ?? '')) return; // no archiver on this box
+    assert.equal(res.ok, true, res.detail);
+    assert.equal(res.installed, true);
+    assert.equal(calls, 0, 'the origin must not be contacted');
+    assert.equal(fs.existsSync(path.join(agentsDir, 'junie', '4020.7.0', 'junie', 'junie.exe')), true);
+    // the archive is cached for other IDEs, and seeded for the IDE's own manager
+    assert.equal(fs.existsSync(path.join(root, 'downloads', 'junie', '4020.7.0', 'junie.zip')), true);
+    assert.equal(fs.existsSync(path.join(agentsDir, '.downloads', 'junie', '4020.7.0', 'junie.zip')), true);
   });
 
   it('refuses a non-zip 200 (a captive portal or an HTML error page)', async () => {
@@ -249,20 +459,28 @@ d?.('Junie model profiles', () => {
     junieModelsPresent,
     removeJunieModels,
   } = src!;
-  it('uses the verbatim completions URL — Junie appends nothing', () => {
+  it('prefixes an already-versioned base URL without ever double-suffixing it', () => {
+    // `responses` is the generator default (Junie's chat request object has no
+    // streaming executor), so the no-double-suffix rule is asserted on the
+    // DEFAULT path and the chat path is asked for explicitly.
     const base = buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test');
-    assert.equal(base[0].body.baseUrl, 'http://127.0.0.1:4000/v1/chat/completions');
-    // An already-versioned or already-complete URL must not be double-suffixed.
-    assert.equal(buildJunieProfiles('http://127.0.0.1:4000/v1', 'k')[0].body.baseUrl, 'http://127.0.0.1:4000/v1/chat/completions');
+    assert.equal(base[0].body.baseUrl, 'http://127.0.0.1:4000/v1/responses');
     assert.equal(
-      buildJunieProfiles('http://127.0.0.1:4000/v1/chat/completions', 'k')[0].body.baseUrl,
+      buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test', undefined, 'chat')[0].body.baseUrl,
       'http://127.0.0.1:4000/v1/chat/completions',
     );
-    assert.equal(buildJunieProfiles('http://h:1/', 'k')[0].body.baseUrl, 'http://h:1/v1/chat/completions');
+    // An already-versioned or already-complete URL must not be double-suffixed.
+    assert.equal(buildJunieProfiles('http://127.0.0.1:4000/v1', 'k')[0].body.baseUrl, 'http://127.0.0.1:4000/v1/responses');
+    assert.equal(
+      buildJunieProfiles('http://127.0.0.1:4000/v1/chat/completions', 'k', undefined, 'chat')[0].body.baseUrl,
+      'http://127.0.0.1:4000/v1/chat/completions',
+    );
+    assert.equal(buildJunieProfiles('http://h:1/', 'k')[0].body.baseUrl, 'http://h:1/v1/responses');
   });
 
   it('resolves the Responses endpoint without ever stacking protocol paths', () => {
-    assert.equal(junieEndpointUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000/v1/chat/completions');
+    assert.equal(junieEndpointUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000/v1/responses');
+    assert.equal(junieEndpointUrl('http://127.0.0.1:4000', 'chat'), 'http://127.0.0.1:4000/v1/chat/completions');
     assert.equal(junieEndpointUrl('http://127.0.0.1:4000', 'responses'), 'http://127.0.0.1:4000/v1/responses');
     assert.equal(junieEndpointUrl('http://127.0.0.1:4000/v1', 'responses'), 'http://127.0.0.1:4000/v1/responses');
     // A caller handing a chat endpoint into responses mode must not produce
@@ -277,8 +495,8 @@ d?.('Junie model profiles', () => {
     );
   });
 
-  it('emits an OpenAIResponses profile in responses mode and keeps chat as the default', () => {
-    const responses = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', undefined, 'responses');
+  it('emits an OpenAIResponses profile by default, with chat as the explicit escape hatch', () => {
+    const responses = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test');
     assert.equal(responses.length, JUNIE_VIRTUAL_MODELS.length);
     for (const profile of responses) {
       assert.equal(profile.body.apiType, 'OpenAIResponses');
@@ -288,7 +506,7 @@ d?.('Junie model profiles', () => {
       // the chat wire made Junie's batch parser read SSE and throw.
       assert.equal((profile.body.extraBody as Record<string, unknown>).stream, undefined);
     }
-    const chat = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test');
+    const chat = buildJunieProfiles('http://127.0.0.1:4700', 'sk-ocr-test', undefined, 'chat');
     for (const profile of chat) {
       assert.equal(profile.body.apiType, 'OpenAICompletion');
       assert.equal(profile.body.extraBody, undefined);
@@ -355,7 +573,7 @@ d?.('Junie model profiles', () => {
   });
 
   it('keeps apiKey a plain string and every virtual model addressable', () => {
-    const profiles = buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test');
+    const profiles = buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test', undefined, 'chat');
     assert.equal(profiles.length, JUNIE_VIRTUAL_MODELS.length);
     assert.deepEqual(
       profiles.map((p) => p.file),
