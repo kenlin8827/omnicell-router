@@ -4,6 +4,8 @@ import {
   inputItemsToMessages,
   chatToResponseObject,
   chatToStreamEvents,
+  responsesStreamSuffix,
+  newResponseStreamSequence,
   responsesToolsToChat,
   chatToolsToResponses,
   responsesToolChoiceToChat,
@@ -130,7 +132,56 @@ describe('Responses API: input conversion', () => {
     assert.strictEqual(msgs[2].content, 'a.ts,b.ts');
   });
 
-  it('skips reasoning items (chat upstreams cannot consume them)', () => {
+  it('folds parallel function_call items into ONE assistant message answered by every tool message', () => {
+    // Responses emits one function_call item per call; chat-completions
+    // requires all calls of a turn on a single assistant message. Two
+    // assistant messages in a row are rejected by strict upstreams
+    // ("insufficient tool messages following tool_calls message").
+    const msgs = inputItemsToMessages([
+      { role: 'user', content: 'read both files' },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Reading both.' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'read', arguments: '{"p":"a"}' },
+      { type: 'function_call', call_id: 'call_2', name: 'read', arguments: '{"p":"b"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'A' },
+      { type: 'function_call_output', call_id: 'call_2', output: 'B' },
+    ]);
+    assert.strictEqual(msgs.length, 4);
+    assert.strictEqual(msgs[1].role, 'assistant');
+    assert.deepStrictEqual(
+      msgs[1].tool_calls?.map((c) => c.id),
+      ['call_1', 'call_2']
+    );
+    assert.deepStrictEqual(msgs[1].content, [{ type: 'text', text: 'Reading both.' }]);
+    assert.deepStrictEqual(
+      msgs.slice(2).map((m) => [m.role, m.tool_call_id]),
+      [['tool', 'call_1'], ['tool', 'call_2']]
+    );
+  });
+
+  it('carries a reasoning item into the assistant turn that follows it', () => {
+    const msgs = inputItemsToMessages([
+      { role: 'user', content: 'go' },
+      { type: 'reasoning', summary: [{ type: 'summary_text', text: 'thought' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'read', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'A' },
+    ]);
+    assert.strictEqual(msgs[1]!.role, 'assistant');
+    assert.strictEqual(msgs[1]!.reasoning_content, 'thought');
+  });
+
+  it('attaches a reasoning item emitted after its turn (relayed order) to that turn', () => {
+    const msgs = inputItemsToMessages([
+      { role: 'user', content: 'go' },
+      { type: 'function_call', call_id: 'call_1', name: 'read', arguments: '{}' },
+      { type: 'reasoning', content: 'thought' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'A' },
+    ]);
+    assert.strictEqual(msgs[1]!.role, 'assistant');
+    assert.strictEqual(msgs[1]!.reasoning_content, 'thought');
+    assert.strictEqual(msgs[2]!.role, 'tool');
+  });
+
+  it('skips a reasoning item with no text (nothing to replay)', () => {
     const msgs = inputItemsToMessages([
       { type: 'reasoning', summary: [] } as any,
       { role: 'user', content: 'go' },
@@ -178,6 +229,31 @@ describe('Responses API: response object + stream events', () => {
     assert.strictEqual(obj.output[0].content[0].text, 'let me check that file');
     assert.strictEqual(obj.output[1].type, 'function_call');
     assert.strictEqual(obj.output[1].name, 'read');
+  });
+
+  it('emits reasoning as the FIRST output item so the client can replay it', () => {
+    const resp = fakeChatResponse('answer');
+    resp.choices[0].message.reasoning_content = 'thought';
+    const obj = chatToResponseObject(resp, 'resp_r', 'mock-model') as any;
+    assert.strictEqual(obj.output[0].type, 'reasoning');
+    assert.strictEqual(obj.output[0].summary[0].type, 'summary_text');
+    assert.strictEqual(obj.output[0].summary[0].text, 'thought');
+    assert.strictEqual(obj.output[1].type, 'message');
+  });
+
+  it('relayed closing half keeps the message at index 0 and appends the reasoning item', () => {
+    const resp = fakeChatResponse('answer');
+    resp.choices[0].message.reasoning_content = 'thought';
+    const frames = responsesStreamSuffix(resp, 'resp_q', 'mock-model', 'msg_pinned', newResponseStreamSequence());
+    const payloads = frames.map((f) => JSON.parse(f.split('data: ')[1]!) as Record<string, any>);
+    const added = payloads.filter((p) => p.type === 'response.output_item.added');
+    assert.strictEqual(added.length, 1, 'the message item was already announced by the prefix');
+    assert.strictEqual(added[0]!.output_index, 1);
+    assert.strictEqual(added[0]!.item.type, 'reasoning');
+    const completed = payloads.find((p) => p.type === 'response.completed')!.response;
+    assert.strictEqual(completed.output[0].id, 'msg_pinned');
+    assert.strictEqual(completed.output[0].type, 'message');
+    assert.strictEqual(completed.output[completed.output.length - 1].type, 'reasoning');
   });
 
   it('stream event sequence: created -> in_progress -> item/part/deltas -> completed, with final payload intact', () => {
@@ -332,4 +408,29 @@ describe('Responses API: stateful request assembly (route-level logic shape)', (
       createdAt: Date.now(),
     };
   }
+});
+
+describe('Responses API: usage breakdowns', () => {
+  type ResponsesObject = { usage: Record<string, unknown> };
+  const build = (resp: ChatCompletionResponse): ResponsesObject =>
+    chatToResponseObject(resp, 'resp_u', 'mock-model') as unknown as ResponsesObject;
+
+  it('maps cached prompt tokens and reasoning tokens when the upstream reports them', () => {
+    const resp = fakeChatResponse('answer');
+    resp.usage!.prompt_tokens_details = { cached_tokens: 8 };
+    resp.usage!.completion_tokens_details = { reasoning_tokens: 3 };
+    assert.deepStrictEqual(build(resp).usage, {
+      input_tokens: 10,
+      input_tokens_details: { cached_tokens: 8 },
+      output_tokens: 5,
+      output_tokens_details: { reasoning_tokens: 3 },
+      total_tokens: 15,
+    });
+  });
+
+  it('omits both breakdowns when the upstream reported none (no invented zeros)', () => {
+    const usage = build(fakeChatResponse('answer')).usage;
+    assert.equal('input_tokens_details' in usage, false);
+    assert.equal('output_tokens_details' in usage, false);
+  });
 });

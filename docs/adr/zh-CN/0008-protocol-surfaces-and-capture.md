@@ -4,6 +4,7 @@
 
 已实现 — 2026-10-15（事实面语料重写）。2026-12 修订：MITM 腿自己中继 `Upgrade:`/WebSocket 握手（运行时自身的 upgrade 事件不可用——见 §3）；每 host 的 TLS 终结器与签发叶证书都做了 LRU 上限；`forwardProxy.accessLog.bodyBytes` 获得有限默认值（1 MiB），超限体溢写到裸 body 文件而不是撑爆堆。2026-10-21 修订：原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）**退役**——该面仅经 chat 模型协议转换服务；未来 Jev/Bailian 集成以普通 provider 形式经定义文件接入（ADR-0010）。2026-10-24 修订：写侧 `@ai-sdk/typesafe-ai` → package 映射保留原生 `typesafe` 段，该别名继续留在 npm 词表中——2026-10-23 的降级（改用兼容运行时 + 从下拉框隐藏别名）是回归，现予撤回。客户端可加载性仍是独立一层：客户端没有该段时，写给客户端的那一份由 `CLIENT_PACKAGE_FALLBACK` 替换（ADR-0010 修订案）。2026-10-22 修订：原生 decision 支路**以 wire 驱动方式复职**——解析出的 npm 为 `@ai-sdk/typesafe-ai`（或 opencode v2 segment `typesafe`）的 provider 定义解析到 wire `systemone`，在决策面上以**原生直通调用**服务（§7）；所有 chat wire 模型仍走转换。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
 2026-11-15 修订：转换支路自己掌管 JSON 输出钉——以 16384 的 `max_tokens` 起步；厂商拒收 `max_tokens` / `response_format` 时一次性去掉该字段（按模型记忆）；答案先读 `content`，再退到思考字段（`reasoning_content` / `reasoning`）；被长度截断的答案在修复轮附上明确的「更短」指令。
+2026-11-17 修订：Responses 线往返思考文本（`reasoning` item ⇄ `reasoning_content`），并在 chat 线上规范化 tool-call 配对——思考模式上游（DeepSeek）拒绝重放时丢掉思考文本、或工具调用未被就地应答的 assistant 轮（§9）。
 
 ## 决策
 
@@ -67,9 +68,22 @@
 
 `X-OCR-Systemone-Upstream` 携带实际采取的支路（`native` / `converted`）——让两条路径在线上可分辨的诚实标记。2026-10-21 退役的 `systemoneUpstreams[]` 配置支路保持退役：原生支路以**数据**（defs 文件的 npm，ADR-0010）回归，而非配置节。
 
-### 8. Responses 续接状态（`responses.persist`）
+### 8. Responses 续接状态（`responses.persist`、`store`）
 
 `/v1/responses` 链存储以内存 L1 Map 为权威；`responses.persist: false` 默认 = 逐字节的纯内存姿态；ON 时向 append-only JSONL 镜像（`<env dataDir>/responses-chain.jsonl`，0600），启动重放（TTL 24h 过滤 → createdAt 序 → 封顶清扫 → 原子压实；边界 20k 节点 / 256KB 单节点 / 64MB 文件 / 每 1000 append 压实一次）。persist 把**重启失忆**缩到"最后一条未刷盘的轮"——链用型客户端若存储滚了，得到的是有文档的显式失败 400（全量重发降级，提示词保住）；磁盘故障只告警、永不拖垮请求；persist-OFF 的链用客户端每进程恰一条告警讲清这层暴露。
+
+线上 `store` 标志**按标准生效**（缺省 = true，与 OpenAI 一致）：`store:false` 表示该应答不被保留——两种持久化模式下都不写节点——因此之后用它作 `previous_response_id` 解析不到，客户端得到同一份有文档的全量重发 400。应答对象回显**有效值**：请求了不存储的客户端绝不会被告知链还在。请求捕获是独立的运维面：`store:false` 是协议层面的保留指令，不是捕获开关。
+
+部署约束（这是标准的"历史归客户端"姿态，不是需要绕开的限制）：链**按进程、按环境**存在。第二个网关实例、另一个环境、或未开 `responses.persist` 的重启进程，对既有 id 一律回同一个 400——那里根本没有历史。因此链式客户端需要粘性路由，或 `responses.persist: true` + 共享数据目录；以客户端持有历史为一等路径的客户端（每轮发全量 `input`、`previous_response_id` 为 null、`store:false`）完全不受影响，而这条线正是按该姿态设计的。
+
+未实现但**改变语义**的线型参数一律显式失败、绝不静默降级（§9 的 fail-visible 规则用在请求面上）：`conversation`（Conversations API）、`background: true`（无异步执行/轮询端点）、`truncation: "auto"`（无服务端上下文裁剪）、以及 `text.format` 取 `text` 以外的值（结构化输出未映射）——各自返回 400，`error.code = "unsupported_parameter"` 并点名参数。客户端无法察觉被忽略的参数：`conversation` 尤其会让人以为会话在续写、实则每轮从空历史开始，所以报错是唯一诚实的答复。无害透传参数（`metadata`、`service_tier`、`prompt_cache_key`、`include`、`parallel_tool_calls`）继续接受并忽略。非致命项：上游报了就回显 `usage.input_tokens_details.cached_tokens` / `output_tokens_details.reasoning_tokens`，没报则省略，而不是编造 0。
+
+### 9. chat 腿的跨线不变量（Responses ⇄ chat-completions）
+
+每个最终以 chat-completions 请求执行的入站线，都必须产出 chat 线能接受的形状，并在重放时保留 chat 线思考模式上游所需的内容。两条不变量落在**规范 chat 链**上——每条线的转换在自己的输出里满足它们，编排器再作为最后一道闸门重新规范化：
+
+- **tool-call 配对。** 一个 assistant 轮把所有 `tool_calls` 放在**同一条** assistant 消息上（Responses 每个调用发一个 `function_call` item；`inputItemsToMessages` 把它们折叠为一条），且每个调用在任何其他角色出现之前由**恰好一条** `tool` 消息应答——应答不到任何调用的 `tool` 消息同样非法。`repairToolCallPairing`（`pipeline/tool-pairing.ts`）在**两处**幂等地执行该不变量：Responses 面（以及任何输出以 chat-completions 执行的转换）修复自己的链，使交给下游的请求已经合法；编排器则在所有入站线汇合的规范链上再跑一次（原生 chat-completions、Responses——含 `previous_response_id` 链——以及 Anthropic），位于压缩与线形重塑之前；合规的链原样返回（同一数组实例，零成本）。它为客户端从未应答的调用（被取消/放弃的轮）合成缺失的回复，在同一个 id 被应答两次时丢弃后一条，并丢弃任何前序 assistant 消息从未声明过的 id 的回复。编排器的这一遍跑在**压缩前指纹快照之后**，因此会话索引仍基于客户端实际发送的字节，而转发的载荷是严格上游能接受的形状。缺少它时，严格上游会拒绝整个请求（“An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)”）。
+- **思考文本。** chat 线的载体是 `reasoning_content`（模型目录的 `interleaved.field`）。Responses 线的载体是 `reasoning` 输出 item，文本骑在它的 `summary` parts 上（入站也接受 `content`）。被服务的 assistant 消息若带 `reasoning_content`，在缓冲腿上成为 message/function_call items **之前**的 `reasoning` item，在转发腿上追加在它们**之后**（前缀已把 message item 钉在 `output_index 0`）；入站时，reasoning item 归入其消息组的 assistant 轮——在它之前出现就前挂（常规顺序），在它之后出现就后挂（转发顺序）。上游-Responses provider 镜像同一对（`reasoning` 输入 item ⇄ `reasoning_content`）。丢掉这一层会让 DeepSeek 在思考模式下拒绝每一次后续请求（“The `reasoning_content` in the thinking mode must be passed back to the API”）。
 
 ## 后果
 

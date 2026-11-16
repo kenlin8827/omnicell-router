@@ -53,6 +53,12 @@ export function buildResponsesPayload(request: ChatCompletionRequest, model: Mod
       continue;
     }
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
+    // Replay thinking text before the turn's message/function_call items — the
+    // order the Responses wire uses on output. A thinking-mode upstream needs
+    // its previous reasoning back, exactly like the chat wire's reasoning_content.
+    if (msg.role === 'assistant' && msg.reasoning_content) {
+      input.push({ type: 'reasoning', summary: [{ type: 'summary_text', text: msg.reasoning_content }] });
+    }
     if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
       const text = typeof msg.content === 'string' ? msg.content : textOf(msg.content);
       if (text) input.push({ role, content: text });
@@ -101,9 +107,15 @@ export function buildResponsesPayload(request: ChatCompletionRequest, model: Mod
 /** Pure response mapper: OpenAI Responses payload → chat-completions response. */
 export function responsesToChatCompletion(data: any, model: ModelRegistration): ChatCompletionResponse {
   let text = '';
+  let reasoning = '';
   const toolCalls: ToolCall[] = [];
   for (const o of data.output || []) {
-    if (o.type === 'message') {
+    if (o.type === 'reasoning') {
+      const parts = [...(o.summary || []), ...(o.content || [])];
+      for (const part of parts) {
+        if (part && typeof part.text === 'string' && part.text) reasoning += (reasoning ? '\n' : '') + part.text;
+      }
+    } else if (o.type === 'message') {
       text += (o.content || [])
         .filter((c: any) => c.type === 'output_text')
         .map((c: any) => c.text)
@@ -135,6 +147,7 @@ export function responsesToChatCompletion(data: any, model: ModelRegistration): 
         message: {
           role: 'assistant',
           content: text,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
         },
         finish_reason: toolCalls.length ? 'tool_calls' : data.status === 'incomplete' ? 'length' : 'stop',

@@ -192,6 +192,46 @@ describe('responses surface — state coupling (respId + shared store)', () => {
     assert.equal(req.messages[3]!.content, 'child turn');
   });
 
+  it('a chain whose assistant turn called tools is repaired before the next user message', async () => {
+    const toolCallResponse = {
+      ...okResponse,
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const { t: t1, sent: sent1 } = makeFakeTransport();
+    const o1 = makeStubOrchestrator({ result: stubResult('mock-1', toolCallResponse) });
+    await runChatSurface(t1, responsesSurface, o1.orchestrator, { model: 'auto', input: 'read it' });
+    const parentTurnId = String(sent1()[0]!.payload.id);
+
+    // The client cancels the tool call and asks something else: legal on the
+    // Responses wire, fatal on chat-completions without the repair.
+    const { t: t2 } = makeFakeTransport();
+    const o2 = makeStubOrchestrator();
+    await runChatSurface(t2, responsesSurface, o2.orchestrator, {
+      model: 'auto',
+      previous_response_id: parentTurnId,
+      input: 'never mind',
+    });
+
+    const messages = o2.processed[0]!.request.messages;
+    assert.deepStrictEqual(
+      messages.map((m) => [m.role, m.tool_call_id ?? null]),
+      [
+        ['user', null],
+        ['assistant', null],
+        ['tool', 'call_1'],
+        ['user', null],
+      ]
+    );
+  });
+
   it('stream=true: response.created…completed carry the SAME minted id; no [DONE]', async () => {
     const { t, calls } = makeFakeTransport();
     const { orchestrator } = makeStubOrchestrator();
@@ -249,5 +289,82 @@ describe('responses surface — error envelopes', () => {
       assert.ok(wire.includes('"type":"invalid_request_error"'), wire);
       assert.ok(!ops().includes('beginSse'));
     }
+  });
+});
+
+describe('responses surface — store flag (OpenAI parity)', () => {
+  it('store defaults to true and is echoed on the response object', async () => {
+    const { t, sent } = makeFakeTransport();
+    const { orchestrator } = makeStubOrchestrator();
+    await runChatSurface(t, responsesSurface, orchestrator, { model: 'auto', input: 'turn' });
+
+    assert.equal(sent()[0]!.status, 200);
+    assert.equal(sent()[0]!.payload.store, true, 'absent store means retained, OpenAI default');
+  });
+
+  it('store:false is honored — the response is never a chain parent', async () => {
+    const { t: t1, sent: sent1 } = makeFakeTransport();
+    const o1 = makeStubOrchestrator();
+    await runChatSurface(t1, responsesSurface, o1.orchestrator, { model: 'auto', store: false, input: 'private turn' });
+    const unretainedId = String(sent1()[0]!.payload.id);
+    assert.equal(sent1()[0]!.payload.store, false, 'the effective flag is echoed, not silently kept true');
+
+    const { t: t2, sent: sent2 } = makeFakeTransport();
+    const o2 = makeStubOrchestrator();
+    await runChatSurface(t2, responsesSurface, o2.orchestrator, {
+      model: 'auto',
+      previous_response_id: unretainedId,
+      input: 'child turn',
+    });
+
+    assert.equal(sent2()[0]!.status, 400, 'an unretained response cannot be chained');
+    const wire = JSON.stringify(sent2()[0]!.payload);
+    assert.ok(wire.includes('"code":"previous_response_not_found"'), wire);
+    assert.equal(o2.processed.length, 0, 'nothing reached the orchestrator');
+  });
+
+  it('the stream opening object echoes store:false too', async () => {
+    const { t, calls } = makeFakeTransport();
+    const { orchestrator } = makeStubOrchestrator();
+    await runChatSurface(t, responsesSurface, orchestrator, { model: 'auto', stream: true, store: false, input: 'x' });
+
+    const chunks = calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
+    const created = chunks.map(sseData).find((p) => p.type === 'response.created')!;
+    assert.equal((created.response as { store?: boolean }).store, false);
+  });
+});
+
+describe('responses surface — unimplemented parameters fail visible', () => {
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ conversation: 'conv_123' }, 'conversation'],
+    [{ background: true }, 'background'],
+    [{ truncation: 'auto' }, 'truncation'],
+    [{ text: { format: { type: 'json_schema' } } }, 'text.format'],
+  ];
+
+  for (const [extra, named] of cases) {
+    it(`rejects "${named}" with code unsupported_parameter`, async () => {
+      const { t, sent } = makeFakeTransport();
+      const { orchestrator, processed } = makeStubOrchestrator();
+      await runChatSurface(t, responsesSurface, orchestrator, { model: 'auto', input: 'x', ...extra });
+
+      assert.equal(sent()[0]!.status, 400);
+      const payload = sent()[0]!.payload as { error?: { message?: string; code?: string } };
+      assert.equal(payload.error?.code, 'unsupported_parameter');
+      assert.ok(payload.error?.message?.includes(named), String(payload.error?.message));
+      assert.equal(processed.length, 0, 'rejected before the orchestrator');
+    });
+  }
+
+  it('accepts the no-op standard values (truncation disabled, text.format text)', async () => {
+    const { t, sent } = makeFakeTransport();
+    const { orchestrator } = makeStubOrchestrator();
+    await runChatSurface(t, responsesSurface, orchestrator, {
+      model: 'auto',
+      input: 'x',
+      truncation: 'disabled',
+      text: { format: { type: 'text' } },
+    });
+    assert.equal(sent()[0]!.status, 200);
   });
 });

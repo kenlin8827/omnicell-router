@@ -6,6 +6,13 @@ export interface ChatMessage {
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /**
+   * Thinking text of an assistant turn (DeepSeek / Qwen / Moonshot convention,
+   * declared per model as `interleaved.field`). DeepSeek REQUIRES it to be
+   * replayed on follow-up turns in thinking mode; wires that carry it must
+   * preserve the field verbatim in both directions.
+   */
+  reasoning_content?: string;
 }
 
 export interface ChatMessageContentPart {
@@ -120,6 +127,7 @@ export interface ChatCompletionChoice {
     role: 'assistant';
     content: string | null;
     tool_calls?: ToolCall[];
+    reasoning_content?: string;
   };
   finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null;
 }
@@ -140,6 +148,7 @@ export interface ChatCompletionChunkChoice {
     role?: 'assistant';
     content?: string | null;
     tool_calls?: ToolCall[];
+    reasoning_content?: string;
   };
   finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null;
 }

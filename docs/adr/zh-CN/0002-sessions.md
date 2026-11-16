@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。2026-11-16 移除 §1 裸 `request.user` 身份层（用户粒度的取值不得命名会话；Junie 的常量 `user: "primary"` 会塌掉全部会话）；`request_user` 仅作为历史轨迹的只读值保留。
+已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。2026-11-16 移除 §1 裸 `request.user` 身份层（用户粒度的取值不得命名会话；Junie 的常量 `user: "primary"` 会塌掉全部会话）；`request_user` 仅作为历史轨迹的只读值保留。2026-11-17 修正 §1 登记快照：回合结束的指纹是压缩前请求的深拷贝——按 role+content 重塑会丢掉 `tool_call_id` / `tool_calls`，工具循环一旦滑出探针窗口，每一轮都会重新 mint 一个会话。
 
 ## 背景
 
@@ -26,7 +26,7 @@
 
 **客户端会话引用——决断的取舍。** 别名方向与锚点使用同一种不对称：错误的重新绑定最多造成**拆分**（后续轮由内容重新锚定，别名随后跟随），绝不会把内容分开的两个会话合并。因此客户端把同一 id 复用到另一段对话最多付一次拆分的代价；而拒绝使用该 id，则在客户端历史不再像被服务的字节时每次都付一次拆分。每次解析都重绑别名（后写者胜），使它永远是产物而非输入：陈旧别名无法盖过字节精确锚点，被内容证据迁移的对话也会把别名一起带走。
 
-tool-call 锚按**规范形**序列化——易变包装字段（`"type":"function"` 标记、arguments JSON 的美化 vs 重压缩、信封键序）被归一化抹平；对回传时重新序列化的客户端，整对象哈希会在每个 tool-call 边界落空。该保留的区分度照旧保留：纯 tool-call 轮仍按 id + name + arguments 区分，不同的调用绝不互撞（不可逆的假性合并方向）。锚映射、会话键与客户端引用别名持久化到按环境的 JSON 快照（`<env>/data/sessions.json`——只存内容哈希、会话 id 与客户端 id，无明文；快照 `v: 2`，`v: 1` 文件可加载但无别名），2 秒防抖 + 原子写、关停时刷盘；重启不再撕碎非配合型客户端的分组（仅内存态的 tier/钉选/亲和绑定会重建）。完整摘要式重写匹配不到任何锚，刻意开新会话。出生元数据（`origin`、`firstUserMessage`）先写先得、此后不可变。
+tool-call 锚按**规范形**序列化——易变包装字段（`"type":"function"` 标记、arguments JSON 的美化 vs 重压缩、信封键序）被归一化抹平；对回传时重新序列化的客户端，整对象哈希会在每个 tool-call 边界落空。该保留的区分度照旧保留：纯 tool-call 轮仍按 id + name + arguments 区分，不同的调用绝不互撞（不可逆的假性合并方向）。**登记必须把客户端自己的字节交给这个序列化器**：回合结束的指纹是压缩前请求的深拷贝，绝非按 role+content 重塑——丢掉 `name` / `tool_call_id` / `tool_calls` 的副本会把每个含工具消息的边界登记成任何回传都无法复现的键，而解析只探测最近的边界，因此长工具循环滑出可匹配的开场之后，每一轮都会重新 mint 一个会话（`session-tool-anchor.test.ts`）。锚映射、会话键与客户端引用别名持久化到按环境的 JSON 快照（`<env>/data/sessions.json`——只存内容哈希、会话 id 与客户端 id，无明文；快照 `v: 2`，`v: 1` 文件可加载但无别名），2 秒防抖 + 原子写、关停时刷盘；重启不再撕碎非配合型客户端的分组（仅内存态的 tier/钉选/亲和绑定会重建）。完整摘要式重写匹配不到任何锚，刻意开新会话。出生元数据（`origin`、`firstUserMessage`）先写先得、此后不可变。
 
 ### 2. 梯队策略——三种可配置策略
 
@@ -72,4 +72,4 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - 客户端 User-Agent 头随轨迹记录（`request.clientHeaders.userAgent`），并在控制台会话表上只读展示为客户端指纹；因其可被客户端伪造，绝不作为身份或路由输入——与上文排除传输 IP 的理由相同。
 - 旁路（combo）回合从不创建会话实体，因此按会话的回合编号使用独立的持久化计数器（`SessionManager.recordBypassTurn`，快照字段 `bypassTurns`）——纯展示用途的记账，绝不参与路由；缺少它时每个 combo 请求都会读到 `undefined + 1`，控制台请求明细表的每一行都被标成 #1。
 - 操作员编辑（梯队成员表、denylist）下一轮即触达活会话；每个被驱逐会话恰好支付一次缓存重建——强制、可归因、只在有处可去时重试。
-- 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`credential-affinity-orchestrator.test.ts`、`credential-selection.test.ts`、`session.test.ts`、`resilience*.test.ts`。
+- 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`credential-affinity-orchestrator.test.ts`、`credential-selection.test.ts`、`session.test.ts`、`session-tool-anchor.test.ts`（60 个工具往返的循环靠字节精确锚点始终归入同一会话）、`resilience*.test.ts`。

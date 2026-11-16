@@ -3,6 +3,7 @@ import { ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChunk, Cha
 import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
+import { repairToolCallPairing } from './tool-pairing.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
 import { declaresJsonContract, hasToolsOrSchema } from '../router/request-traits.js';
@@ -841,10 +842,35 @@ export class PipelineOrchestrator {
     // (The upstream-facing compressed prefix stays byte-stable across turns
     // because the tool-output compressors are deterministic and headroom
     // runs in session mode.)
-    const fingerprintMessages = normalizedRequest.messages.map(m => ({
-      role: m.role,
-      content: Array.isArray(m.content) ? m.content.map(p => ({ ...p })) : m.content,
-    }));
+    // Deep copy — NOT a role+content reshape. `serializeMessage` hashes `name`,
+    // `tool_call_id` and the canonical tool-call envelope, so a lossy snapshot
+    // indexed every boundary that contained a tool message in a shape the
+    // client's fuller resend could never reproduce; once a tool loop pushed
+    // those boundaries past the probe windows, every turn cold-started.
+    const fingerprintMessages = structuredClone(normalizedRequest.messages);
+
+    // 2B0. Tool-call pairing normalization (pipeline/tool-pairing.ts).
+    // Chat-completions — and every upstream enforcing the same rule (OpenAI,
+    // DeepSeek, Anthropic's tool_use/tool_result pair) — rejects the WHOLE
+    // request when an assistant `tool_calls` entry is not answered by exactly
+    // one `tool` message before the next non-tool message, or when a `tool`
+    // message answers nothing ("insufficient tool messages following
+    // tool_calls message"). History can break that without the router being at
+    // fault (cancelled tool run, parallel call never recorded, client-side
+    // compaction, aborted turn, result appended twice), so normalize it here —
+    // the canonical chain is where every inbound wire converges. Runs AFTER
+    // the fingerprint snapshot (session indexing stays on the bytes the client
+    // sent) and BEFORE compression / wire shaping, so the forwarded payload is
+    // the one an upstream will accept.
+    const pairing = repairToolCallPairing(normalizedRequest.messages);
+    if (pairing.messages !== normalizedRequest.messages) {
+      console.log(
+        `[pipeline:tool-pairing] repaired history: ${pairing.synthesized} missing repl${pairing.synthesized === 1 ? 'y' : 'ies'}, ` +
+          `${pairing.duplicates} duplicate repl${pairing.duplicates === 1 ? 'y' : 'ies'}, ` +
+          `${pairing.orphans} orphan repl${pairing.orphans === 1 ? 'y' : 'ies'}`
+      );
+      normalizedRequest.messages = pairing.messages;
+    }
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
     // 2C. Route-entry experience (ADR-0011). One normalized prompt hash feeds

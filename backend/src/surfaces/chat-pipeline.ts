@@ -41,7 +41,7 @@ export async function runChatSurface(
 
   // 2. Invalid body → 400 through the surface envelope (no headers staged).
   if (parsed.error) {
-    t.sendJson(400, surface.errorBody(400, parsed.error));
+    t.sendJson(400, surface.errorBody(400, parsed.error, parsed.errorCode));
     return;
   }
   // SurfaceParseResult invariant: exactly one of error/request is set.

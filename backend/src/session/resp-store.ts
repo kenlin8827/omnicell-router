@@ -72,6 +72,7 @@ export interface ChatMessageLite {
   content: string;
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
+  reasoning_content?: string;
 }
 
 export interface RespStorePersistenceOptions {

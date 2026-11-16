@@ -96,13 +96,13 @@ type MutableToolCall = { id: string; type: 'function'; function: { name: string;
  * `chat.completion` response shape — the object every post-turn consumer and the
  * non-streaming wire already depend on.
  *
- * The typed `delta` carries only role/content/tool_calls; upstreams (Qwen,
- * DeepSeek-R1, ...) additionally send `reasoning_content`. That field is NOT
- * folded into the assembled response: session fingerprinting, schema assertion
- * and FinOps never read it, and the gateway should not claim knowledge of
- * thinking text it did not verify end-to-end. The relay forwards those chunks
- * VERBATIM, so thinking still streams to the client — only the internal
- * accounting view stays content/tool-calls only.
+ * The typed `delta` carries only role/content/reasoning_content/tool_calls;
+ * upstreams (Qwen, DeepSeek, ...) additionally send `reasoning_content`.
+ * Thinking text IS folded into the assembled response: thinking-mode upstreams
+ * (DeepSeek in particular) require the previous turns' reasoning to be passed
+ * back on the next request, so every wire that rebuilds history from this
+ * accumulator — the Responses encoder, the session echo, the buffered SSE
+ * synthesis — must be able to replay it verbatim.
  */
 export function createChunkAccumulator(options: { maxChars?: number } = {}): {
   push: (chunk: ChatCompletionChunk) => void;
@@ -135,6 +135,8 @@ export function createChunkAccumulator(options: { maxChars?: number } = {}): {
   let systemFingerprint: string | undefined;
   let content = '';
   let contentSeen = false;
+  let reasoning = '';
+  let reasoningSeen = false;
   let finishReason: ChatCompletionResponse['choices'][number]['finish_reason'] = null;
   let usage: ChatCompletionResponse['usage'];
   /** index -> accumulated call; the output array is ordered by that index. */
@@ -154,6 +156,11 @@ export function createChunkAccumulator(options: { maxChars?: number } = {}): {
           contentSeen = true;
           charge(choice.delta.content.length);
           content += choice.delta.content;
+        }
+        if (typeof choice.delta?.reasoning_content === 'string') {
+          reasoningSeen = true;
+          charge(choice.delta.reasoning_content.length);
+          reasoning += choice.delta.reasoning_content;
         }
         const fragments = choice.delta?.tool_calls as ToolCallFragment[] | undefined;
         if (Array.isArray(fragments)) {
@@ -200,6 +207,7 @@ export function createChunkAccumulator(options: { maxChars?: number } = {}): {
               // session fingerprinting and schema assertion read exactly this
               // field — never substitute '' for an absent content.
               content: contentSeen ? content : null,
+              ...(reasoningSeen ? { reasoning_content: reasoning } : {}),
               ...(calls.length ? { tool_calls: calls } : {}),
             },
             finish_reason: calls.length ? 'tool_calls' : finishReason ?? 'stop',

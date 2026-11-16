@@ -123,6 +123,17 @@ describe('chunk accumulator (what accounting reads)', () => {
     acc.push(chunk({ tool_calls: [{ index: 0, id: 'first', function: { name: 'a', arguments: '' } }] }));
     expect(acc.finish().choices[0].message.tool_calls?.map((tc) => tc.id)).toEqual(['first', 'second']);
   });
+
+  it('folds reasoning_content fragments so the assembled turn can replay them', () => {
+    const acc = createChunkAccumulator();
+    acc.push(chunk({ role: 'assistant', reasoning_content: 'thin' }));
+    acc.push(chunk({ reasoning_content: 'king', content: '' }));
+    acc.push(chunk({ content: 'answer' }));
+    acc.push(chunk({}, 'stop'));
+    const res = acc.finish();
+    expect(res.choices[0].message.reasoning_content).toBe('thinking');
+    expect(res.choices[0].message.content).toBe('answer');
+  });
 });
 
 describe('client-side chunk forwarding', () => {

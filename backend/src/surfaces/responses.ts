@@ -12,7 +12,9 @@ import {
   newResponseStreamSequence,
   type ResponsesRequest,
   type ResponsesStreamSequence,
+  unsupportedResponsesParameter,
 } from '../routes/responses.js';
+import { repairToolCallPairing } from '../pipeline/tool-pairing.js';
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatMessage } from '../types/openai.js';
 import type { ExecutionResult } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
@@ -25,8 +27,9 @@ import type { ChatSurface, SurfaceParseResult } from './types.js';
  * The OpenAI Responses surface (/v1/responses), wire 'responses'.
  *
  * Verbatim extraction of the old inline /v1/responses route handler (frozen
- * contract step 3b): same validation texts, same envelope key insertion order
- * (wire bytes depend on object literal order), same store semantics. The
+ * contract step 3b): same validation texts and same envelope key insertion
+ * order (wire bytes depend on object literal order). Retention follows the
+ * client's `store` flag — the state block below owns that rule. The
  * converters stay in routes/responses.ts — the MITM interceptor and the
  * wire tests import them from there.
  *
@@ -107,6 +110,11 @@ export function __resetResponsesSurfaceForTests(): void {
  *
  * `seq` is the SSE `sequence_number` counter shared by the prefix, every live
  * delta and the closing frames — strict clients require it on EVERY event.
+ *
+ * `store` is the client's EFFECTIVE retention flag (default true, OpenAI
+ * parity): `afterResult` appends the node only when it is set, so a
+ * `store:false` response is never a chain parent — exactly the upstream rule
+ * that makes `previous_response_id` unusable without server-side state.
  */
 interface ResponsesState {
   delta: ChatMessage[];
@@ -115,6 +123,7 @@ interface ResponsesState {
   respId: string;
   messageId: string;
   seq: ResponsesStreamSequence;
+  store: boolean;
 }
 
 // The wire's only code-bearing parse-400 — single emitter for the text and
@@ -139,6 +148,15 @@ export const responsesSurface: ChatSurface = {
 
     if (!req || req.input === undefined || req.input === null) {
       return { error: 'Invalid request: "input" is required.' };
+    }
+
+    // Unsupported-but-load-bearing parameters fail here, before any state is
+    // touched: a standard client cannot detect a silently ignored parameter,
+    // and `conversation` in particular would make it believe a session
+    // continued while every turn starts blank.
+    const unsupported = unsupportedResponsesParameter(req);
+    if (unsupported) {
+      return { error: unsupported, errorCode: 'unsupported_parameter' };
     }
 
     // This turn's NEW messages only (never includes rebuilt history — the
@@ -184,6 +202,14 @@ export const responsesSurface: ChatSurface = {
         messages = [{ role: 'system', content: req.instructions }, ...messages];
       }
     }
+    // A cancelled/abandoned call can leave an assistant turn whose calls the
+    // next wire item never answers (a plain user message is legal on the
+    // Responses wire, not on chat-completions). Close them here, after the
+    // rebuilt chain and this turn's delta are one list — the surface's own
+    // contract is that the request it hands downstream is a valid chat chain.
+    // The orchestrator normalizes again as the final gate for every wire
+    // (same idempotent function; a repaired chain costs one pass).
+    messages = repairToolCallPairing(messages).messages;
 
     const request: ChatCompletionRequest = {
       model: req.model?.trim() || 'auto',
@@ -224,6 +250,8 @@ export const responsesSurface: ChatSurface = {
         respId: newResponseId(),
         messageId: newResponseMessageId(),
         seq: newResponseStreamSequence(),
+        // OpenAI parity: `store` defaults to true when the client omits it.
+        store: req.store !== false,
       },
     };
   },
@@ -233,6 +261,11 @@ export const responsesSurface: ChatSurface = {
     // `s.respId` was minted by parse so the opening frames of a relayed turn
     // could carry it. Persist the node before the terminal send on the
     // buffered leg, or before the closing frames on the relayed leg.
+    //
+    // `store:false` = "do not retain this response" (OpenAI parity): no node,
+    // so a later `previous_response_id` naming it resolves to nothing and the
+    // client gets the documented resend-full-input 400. Capture is a
+    // DIFFERENT, operator-controlled plane — it is not the protocol store.
     const assistant = result.response?.choices[0]?.message;
     const node: RespNode = {
       id: s.respId,
@@ -244,22 +277,23 @@ export const responsesSurface: ChatSurface = {
         role: 'assistant',
         content: typeof assistant?.content === 'string' ? assistant.content : '',
         tool_calls: assistant?.tool_calls,
+        reasoning_content: assistant?.reasoning_content,
       },
       createdAt: Date.now(),
     };
-    respStore.append(node);
+    if (s.store) respStore.append(node);
   },
 
   encodeJson(result: ExecutionResult, state: unknown): unknown {
     const s = state as ResponsesState;
-    return chatToResponseObject(result.response!, s.respId, result.modelUsed, s.messageId);
+    return chatToResponseObject(result.response!, s.respId, result.modelUsed, s.messageId, s.store);
   },
 
   encodeStream(result: ExecutionResult, state: unknown): string[] {
     const s = state as ResponsesState;
     // Buffered leg: the full synthesized sequence, carrying the same ids the
     // relayed leg used in its prefix.
-    return chatToStreamEvents(result.response!, s.respId, result.modelUsed, s.messageId, s.seq);
+    return chatToStreamEvents(result.response!, s.respId, result.modelUsed, s.messageId, s.seq, s.store);
   },
 
   // ---- Relayed leg: one upstream chunk -> one `response.output_text.delta`.
@@ -268,7 +302,7 @@ export const responsesSurface: ChatSurface = {
 
   streamStart(state: unknown, ctx: { model: string }): string[] {
     const s = state as ResponsesState;
-    return responsesStreamPrefix(s.respId, ctx.model, s.messageId, s.seq);
+    return responsesStreamPrefix(s.respId, ctx.model, s.messageId, s.seq, s.store);
   },
 
   encodeChunk(chunk: ChatCompletionChunk, ctx: { state?: unknown }): string | null {
@@ -280,7 +314,7 @@ export const responsesSurface: ChatSurface = {
 
   streamEnd(result: ExecutionResult, state: unknown): string[] {
     const s = state as ResponsesState;
-    return responsesStreamSuffix(result.response!, s.respId, result.modelUsed, s.messageId, s.seq);
+    return responsesStreamSuffix(result.response!, s.respId, result.modelUsed, s.messageId, s.seq, s.store);
   },
 
   // `_status` is kept for signature parity with the other wire surfaces; this
@@ -288,11 +322,11 @@ export const responsesSurface: ChatSurface = {
   errorBody(_status: number, message: string, code?: string): unknown {
     // Today's errorReply(): keys in order message/type/code, type pinned to
     // invalid_request_error at every status (this wire's quirk — preserved,
-    // not "fixed"). runChatSurface's parse-400 channel is errorBody(400,
-    // message) only — SurfaceParseResult (frozen) carries no code slot — so
-    // the one code-bearing parse-400 derives its code from message identity,
-    // produced solely by previousNotFoundMessage() above. An explicit code
-    // argument always wins (the transports' pre-dispatch error callers).
+    // not "fixed"). `code` reaches this method from two callers: the parse-400
+    // channel (SurfaceParseResult.errorCode — `unsupported_parameter`) and the
+    // transports' pre-dispatch errors. A parse-400 without an explicit code
+    // falls back to message identity: previousNotFoundMessage() above is the
+    // only producer of `previous_response_not_found`.
     const resolved = code ?? (message.startsWith(PREVIOUS_NOT_FOUND_PREFIX) ? 'previous_response_not_found' : undefined);
     return {
       error: {

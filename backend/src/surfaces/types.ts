@@ -120,6 +120,13 @@ export interface SurfacePathContext {
 export interface SurfaceParseResult {
   request?: ChatCompletionRequest;
   error?: string;
+  /**
+   * Stable machine code for the error envelope (`error.code`). Wires whose
+   * `errorBody` ignores the argument (chat-completions) simply drop it; the
+   * Responses wire carries it, so a client can branch on
+   * `unsupported_parameter` / `previous_response_not_found` instead of prose.
+   */
+  errorCode?: string;
   state?: unknown;
 }
 
