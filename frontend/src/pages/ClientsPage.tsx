@@ -118,6 +118,10 @@ export const ClientsPage: React.FC = () => {
   const toast = useToast();
   const [clients, setClients] = useState<ClientStatus[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Roster refresh in flight (getStatus reload). Separate from `loading`:
+   *  setup/teardown actions keep the cards interactive-looking and must not
+   *  collapse the list into a spinner — only a roster (re)load does. */
+  const [refreshing, setRefreshing] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   /** Per-client per-slot model selection ('auto' = intelligent routing default) */
   const [modelSel, setModelSel] = useState<Record<string, Record<string, string>>>({});
@@ -254,6 +258,7 @@ export const ClientsPage: React.FC = () => {
    *  only at use time. */
   const [caTrust, setCaTrust] = useState<CaTrustResponse | null>(null);
   const loadClients = async () => {
+    setRefreshing(true);
     try {
       const data = await api.getStatus();
       // ONE normalization point: every filter/card below reads `hookKind`
@@ -325,6 +330,8 @@ export const ClientsPage: React.FC = () => {
       });
     } catch (err) {
       console.error(err);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -336,6 +343,27 @@ export const ClientsPage: React.FC = () => {
     api.getProxyCaMeta().then(m => setCaPath(m.path)).catch(() => {});
     api.getProxyCaTrust().then(setCaTrust).catch(() => {});
   }, []);
+
+  // The proxy-tab prerequisite banner reads a mount-time snapshot, but the
+  // forward proxy can come up AFTER this page loaded (gateway restart with
+  // forwardProxy.enabled, or a re-enable). While the proxy tab is the active
+  // view, poll JUST the forward-proxy state (same 4s cadence as the Proxy
+  // Access page) so a banner that no longer matches reality clears itself;
+  // switching tabs stops the poll — no standing background traffic.
+  useEffect(() => {
+    if (activeTab !== 'proxy') return;
+    let alive = true;
+    const tick = () => api.getStatus()
+      .then(s => {
+        if (!alive) return;
+        setFpEnabled(s.forwardProxy ? s.forwardProxy.enabled : null);
+        setFpRunning(s.forwardProxy ? s.forwardProxy.running : null);
+      })
+      .catch(() => {});
+    tick();
+    const iv = setInterval(tick, 4000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [activeTab]);
 
   const expandedPluginId = expanded ? clients.find((c) => c.name === expanded)?.catalogPlugin : undefined;
 
@@ -465,8 +493,13 @@ export const ClientsPage: React.FC = () => {
       // The backend drops keys the running plugin build does not declare (a
       // gateway started before the manifest listed them), so a plain success
       // toast would report a save that silently lost the model choice.
+      const failedSurfaces = (res.surfaces ?? []).filter((surface) => !surface.ok);
       if (res.warnings.length > 0) {
         toast.warning(t('clients.gatewaySaveDropped', { warnings: res.warnings.join('; ') }));
+      } else if (failedSurfaces.length > 0) {
+        // The catalog is saved, but a client picker it feeds could not be
+        // re-materialized — say so instead of a clean success.
+        toast.warning(failedSurfaces.map((surface) => surface.message).join('; '));
       } else {
         toast.success(t('pluginPage.configSaved'));
       }
@@ -1519,8 +1552,8 @@ export const ClientsPage: React.FC = () => {
               );
             })()}
           </div>
-          <button className="btn btn-sm" onClick={loadClients} disabled={loading}>
-            <RefreshCw size={12} />
+          <button className="btn btn-sm" onClick={loadClients} disabled={loading || refreshing}>
+            <RefreshCw size={12} style={refreshing ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('clients.refresh')}</span>
           </button>
         </div>
@@ -1591,8 +1624,23 @@ export const ClientsPage: React.FC = () => {
           </div>
         )}
         {/* Accordion: one full-width row per client — collapsed shows identity + status +
-            quick action, expanding reveals the progressive setup form. */}
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'stretch' }}>
+            quick action, expanding reveals the progressive setup form. The roster's
+            own refresh feedback lives HERE, over the list: a first load (no data
+            yet) shows a centered placeholder; a re-load keeps the cards visible
+            under a translucent spinner veil instead of collapsing them. */}
+        <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          {refreshing && activeTab !== 'manual' && clients.length > 0 && (
+            <div style={{ position: 'absolute', inset: 0, zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'color-mix(in srgb, var(--bg-main) 60%, transparent)', borderRadius: '10px', pointerEvents: 'none' }}>
+              <RefreshCw size={18} style={{ animation: 'ocr-spin 0.8s linear infinite', color: 'var(--text-dim)' }} />
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'stretch' }}>
+          {activeTab !== 'manual' && refreshing && clients.length === 0 && (
+            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
+              <RefreshCw size={16} style={{ animation: 'ocr-spin 0.8s linear infinite', verticalAlign: '-3px', marginRight: 8 }} />
+              {t('common.loading')}
+            </div>
+          )}
           {clients.filter(c => activeTab === 'proxy'
             ? c.hookKind !== 'config'
             : activeTab === 'hook'
@@ -1698,6 +1746,11 @@ export const ClientsPage: React.FC = () => {
 
                 {open && (
                   <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {/* The gateway's model surface describes the WHOLE client, so
+                        it leads the expanded body — above the product rows that
+                        only its members carry. */}
+                    {renderGatewayCatalog(c)}
+
                     {/* Family products: NESTED collapsible panels. Every IDE is
                         taken over (and restored) on its own config root, its own
                         JBR truststore and its own ACP directory, so its files, its
@@ -1781,7 +1834,7 @@ export const ClientsPage: React.FC = () => {
                                             disabled={loading}
                                             onClick={e => { e.stopPropagation(); void handleToggle(c.name, 'setup', p.id); }}
                                           >
-                                            <RefreshCw size={11} />
+                                            <RefreshCw size={11} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
                                             <span>{t('clients.jetbrainsCaReimport')}</span>
                                           </button>
                                         </>
@@ -1874,8 +1927,6 @@ export const ClientsPage: React.FC = () => {
                         {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : c.name === 'jetbrains-proxy' ? 'clients.jetbrainsHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
                       </div>
                     )}
-
-                    {renderGatewayCatalog(c)}
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
                 {(c.hookKind === 'config') && (
@@ -2227,6 +2278,7 @@ export const ClientsPage: React.FC = () => {
             </div>
           </div>
           )}
+        </div>
         </div>
       </div>
       {advancedPlugin ? (

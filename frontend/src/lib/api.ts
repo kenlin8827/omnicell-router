@@ -5951,15 +5951,28 @@ export const opencodeApi = {
   async putPluginConfig(
     id: string,
     values: Record<string, unknown>
-  ): Promise<{ status: string; values: Record<string, unknown>; warnings: string[] }> {
+  ): Promise<{
+    status: string;
+    values: Record<string, unknown>;
+    warnings: string[];
+    /** Client model surfaces re-materialized from this save (gateway plugins own
+     *  one; e.g. Junie's profile files). Empty when the plugin owns none. */
+    surfaces?: Array<{ client: string; ok: boolean; message: string }>;
+  }> {
     const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ values }),
     });
-    const parsed = (await res.json()) as { status: string; error?: string; values?: Record<string, unknown>; warnings?: string[] };
+    const parsed = (await res.json()) as {
+      status: string;
+      error?: string;
+      values?: Record<string, unknown>;
+      warnings?: string[];
+      surfaces?: Array<{ client: string; ok: boolean; message: string }>;
+    };
     if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
-    return { status: parsed.status, values: parsed.values ?? values, warnings: parsed.warnings ?? [] };
+    return { status: parsed.status, values: parsed.values ?? values, warnings: parsed.warnings ?? [], surfaces: parsed.surfaces };
   },
 
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {

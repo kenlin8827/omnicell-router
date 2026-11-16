@@ -94,6 +94,37 @@ d?.('ACP registry resolution', () => {
   });
 });
 
+d?.('ACP registry discovery', () => {
+  const { acpRegistryPath, acpRegistryCandidates } = src!;
+  it('accepts the hashed snapshot 2026.3 writes, newest first', () => {
+    const root = tmpDir('acp-registry-');
+    const agents = path.join(root, 'JetBrains', 'IntelliJIdea2026.3', 'acp-agents');
+    fs.mkdirSync(agents, { recursive: true });
+    const older = path.join(agents, 'registry-aaaa.json');
+    const newer = path.join(agents, 'registry-bbbb.json');
+    fs.writeFileSync(older, JSON.stringify(REGISTRY));
+    fs.writeFileSync(newer, JSON.stringify(REGISTRY));
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(older, past, past);
+    // No plain `registry.json`: the pre-2026.3 name must not be REQUIRED.
+    assert.deepEqual(acpRegistryCandidates(agents), [newer, older]);
+    fs.writeFileSync(acpRegistryPath(agents), JSON.stringify(REGISTRY));
+    assert.equal(acpRegistryCandidates(agents)[0], acpRegistryPath(agents));
+  });
+
+  it('falls back to the legacy flat registry that still publishes junie', () => {
+    const root = tmpDir('acp-legacy-');
+    const agents = path.join(root, 'JetBrains', 'IntelliJIdea2026.3', 'acp-agents');
+    const legacy = path.join(root, 'JetBrains', 'acp-agents');
+    fs.mkdirSync(agents, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    const legacyRegistry = path.join(legacy, 'registry.json');
+    fs.writeFileSync(legacyRegistry, JSON.stringify(REGISTRY));
+    assert.deepEqual(acpRegistryCandidates(agents), [legacyRegistry]);
+    assert.deepEqual(acpRegistryCandidates(tmpDir('acp-empty-')), []);
+  });
+});
+
 d?.('ACP install layout', () => {
   const { acpAgentsDir, acpInstallRoot, acpBinaryPath, acpDownloadPath, detectAcpInstalls } = src!;
   it('puts the agents dir beside the IDE config NAME, not in the roaming root', () => {
@@ -206,7 +237,17 @@ d?.('archive extraction', () => {
 });
 
 d?.('Junie model profiles', () => {
-  const { buildJunieProfiles, JUNIE_TIERS, mergeJunieConfig, writeJunieModels, junieModelsPresent, removeJunieModels } = src!;
+  const {
+    buildJunieProfiles,
+    JUNIE_TIERS,
+    junieTierEntries,
+    junieModelSlug,
+    mergeJunieConfig,
+    refreshJunieModels,
+    writeJunieModels,
+    junieModelsPresent,
+    removeJunieModels,
+  } = src!;
   it('uses the verbatim completions URL — Junie appends nothing', () => {
     const base = buildJunieProfiles('http://127.0.0.1:4000', 'sk-ocr-test');
     assert.equal(base[0].body.baseUrl, 'http://127.0.0.1:4000/v1/chat/completions');
@@ -228,7 +269,7 @@ d?.('Junie model profiles', () => {
     );
     assert.deepEqual(
       profiles.map((p) => p.body.displayName),
-      ['Auto (OCR)', 'Lite (OCR)', 'Plus (OCR)', 'Pro (OCR)', 'Ultra (OCR)'],
+      ['Auto', 'Lite', 'Plus', 'Pro', 'Ultra'],
     );
     for (const profile of profiles) {
       assert.equal(typeof profile.body.apiKey, 'string');
@@ -236,6 +277,11 @@ d?.('Junie model profiles', () => {
       assert.equal(profile.body.id, profile.file.replace(/\.json$/, ''));
       assert.equal(profile.body.primaryModel.id, profile.body.id.replace('ocr-', ''));
       assert.equal(profile.body.fasterModel.id, 'lite');
+      // The picker prints `providerName · displayName`, so the source marker
+      // lives in the provider slot exactly once — a trailing `(OCR)` would
+      // duplicate it on every row.
+      assert.equal(profile.body.providerName, 'OCR');
+      assert.equal(/OCR/i.test(profile.body.displayName), false);
     }
   });
 
@@ -280,6 +326,65 @@ d?.('Junie model profiles', () => {
     fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ model: 'some-cloud-model' }));
     removeJunieModels({ home });
     assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')).model, 'some-cloud-model');
+  });
+
+  it('exposes exactly the list it is given — a registry id keeps its routing id', () => {
+    const home = tmpDir('junie-list-');
+    const models = [
+      { id: 'auto' },
+      { id: 'xiaomi/mimo-v2.6-pro', label: 'MiMo v2.6 Pro' },
+      { id: 'plus' },
+    ];
+    const written = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home, models, defaultTier: 'plus' });
+    assert.deepEqual(
+      written.files.map((file) => path.basename(file)),
+      ['ocr-auto.json', 'ocr-xiaomi-mimo-v2-6-pro.json', 'ocr-plus.json'],
+    );
+    assert.equal(written.model, 'custom:ocr-plus');
+    const concrete = JSON.parse(fs.readFileSync(path.join(home, 'models', 'ocr-xiaomi-mimo-v2-6-pro.json'), 'utf8'));
+    // The picker label is human, the routing target is the gateway's own id.
+    assert.equal(concrete.displayName, 'MiMo v2.6 Pro');
+    assert.equal(concrete.providerName, 'OCR');
+    assert.equal(concrete.primaryModel.id, 'xiaomi/mimo-v2.6-pro');
+    assert.equal(concrete.id, 'ocr-xiaomi-mimo-v2-6-pro');
+    // `lite` is not in this list, so the faster model falls back to a tier it has.
+    assert.equal(concrete.fasterModel.id, 'auto');
+    // Tier ids keep their established label, so a re-follow does not rename them.
+    assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'models', 'ocr-auto.json'), 'utf8')).displayName, 'Auto');
+  });
+
+  it('replaces the previous list and never deletes an operator profile', () => {
+    const home = tmpDir('junie-shrink-');
+    const mine = path.join(home, 'models', 'mine.json');
+    fs.mkdirSync(path.dirname(mine), { recursive: true });
+    fs.writeFileSync(mine, '{"id":"mine"}');
+    writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home });
+    assert.equal(junieModelsPresent({ home }), true);
+
+    const shrunk = writeJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', {
+      home,
+      models: [{ id: 'pro' }],
+      defaultTier: 'ultra',
+    });
+    assert.deepEqual(shrunk.files.map((file) => path.basename(file)), ['ocr-pro.json']);
+    // A default the list no longer carries falls back to its first entry rather
+    // than pointing at a profile that was just deleted.
+    assert.equal(shrunk.model, 'custom:ocr-pro');
+    assert.deepEqual(fs.readdirSync(path.join(home, 'models')).sort(), ['mine.json', 'ocr-pro.json']);
+  });
+
+  it('refuses to provision on refresh — only a hook writes ~/.junie', () => {
+    const home = tmpDir('junie-untouched-');
+    assert.equal(refreshJunieModels('http://127.0.0.1:4000', 'sk-ocr-test', { home, models: [{ id: 'auto' }] }), null);
+    assert.equal(fs.existsSync(path.join(home, 'models')), false);
+    assert.equal(fs.existsSync(path.join(home, 'config.json')), false);
+  });
+
+  it('slug + tier block stay the write contract the gateway view feeds', () => {
+    assert.deepEqual(junieTierEntries().map((entry) => entry.id), JUNIE_TIERS.map((entry) => entry.tier));
+    assert.equal(junieModelSlug('xiaomi/mimo-v2.6-pro'), 'xiaomi-mimo-v2-6-pro');
+    assert.equal(junieModelSlug('ocr/auto'), 'ocr-auto');
+    assert.equal(junieModelSlug('///'), 'model');
   });
 });
 

@@ -4853,6 +4853,32 @@ export function registerConsoleRoutes(
       return reply.type('application/zip').send(Buffer.from(zip));
     });
 
+    /**
+     * Re-materialize every client model surface a gateway plugin owns.
+     *
+     * A gateway's catalog config (list mode, followed key ids) is persisted in
+     * its own artifact, but the clients it feeds MATERIALIZE that list into
+     * their own files — those must be rewritten on save, or the picker keeps
+     * whatever it held at hook time. A failed refresh never fails the save (the
+     * config is already persisted); it is reported next to the values instead.
+     */
+    const refreshOwnedModelSurfaces = async (
+      pluginId: string,
+    ): Promise<Array<{ client: string; ok: boolean; message: string }>> => {
+      const { getAllClientAdapters } = await import('../cli/clients/index.js');
+      const rows: Array<{ client: string; ok: boolean; message: string }> = [];
+      for (const adapter of getAllClientAdapters()) {
+        if (adapter.catalogPlugin !== pluginId || !adapter.refreshModelSurface) continue;
+        try {
+          const result = await adapter.refreshModelSurface();
+          rows.push({ client: adapter.name, ok: result.success, message: result.message });
+        } catch (err) {
+          rows.push({ client: adapter.name, ok: false, message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return rows;
+    };
+
     // Plugin-level configuration (ADR-0017): schema declared in plugin.json,
     // values stored as a plugin artifact — never in config.yaml.
     app.get(`${prefix}/plugins/:id/config`, async (req, reply) => {
@@ -4871,7 +4897,8 @@ export function registerConsoleRoutes(
       try {
         const { applyPluginConfig } = await import('../plugins/host.js');
         const result = await applyPluginConfig(id, body.values as Record<string, unknown>);
-        return { status: 'ok', values: result.values, warnings: result.warnings };
+        const surfaces = await refreshOwnedModelSurfaces(id);
+        return { status: 'ok', values: result.values, warnings: result.warnings, surfaces };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Unknown/unloaded plugin = 404 (same as GET); schema/value problems = 400.

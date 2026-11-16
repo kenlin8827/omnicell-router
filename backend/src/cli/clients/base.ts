@@ -247,6 +247,16 @@ export interface ClientAdapter {
    * table of its own. Absent = the client has no gateway-owned catalog.
    */
   catalogPlugin?: string;
+  /**
+   * Re-materialize the model surface this hook publishes, after the console
+   * saved `catalogPlugin`'s config (new list mode, re-followed key). Called by
+   * the plugin-config save route for every adapter that declares that plugin.
+   *
+   * Only for surfaces that are MATERIALIZED outside the plugin's own files: it
+   * must be a no-op (or an honest "nothing to refresh") on a machine where the
+   * hook was never applied — a settings save must never provision a client.
+   */
+  refreshModelSurface?(): Promise<ClientActionResult>;
 }
 
 /** Version-probe cache: one entry per command, 10-minute TTL — status polls

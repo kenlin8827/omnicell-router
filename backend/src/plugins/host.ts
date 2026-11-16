@@ -193,7 +193,7 @@ export async function buildClientAdapterHostSdk(
     probeVersion: (cmd: string[]) => probeClientVersion(cmd),
     gatewayBaseUrl: (apiKey?: string) => resolveGatewayBaseUrl(apiKey),
     apiKeys: () =>
-      listApiKeys().map((k) => ({ name: k.name, key: k.key, enabled: k.enabled, expiresAt: k.expiresAt })),
+      listApiKeys().map((k) => ({ id: k.id, name: k.name, key: k.key, enabled: k.enabled, expiresAt: k.expiresAt })),
     createApiKey: (opts) => {
       const created = createApiKey(opts);
       return created.success && created.data?.key ? { key: created.data.key } : null;

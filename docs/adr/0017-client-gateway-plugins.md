@@ -104,6 +104,25 @@ A gateway uses the mechanism for its whole operator surface — capture, the mod
 - Boundaries: Tab completion, codebase indexing and login traffic are NOT intercepted (non-claimed hosts / relayed paths — Cursor keeps working against its real backend for those); the gateway carries no `x-cursor-checksum` obligations (it is the server, not the client); personal use, own machine, own account.
 - No new config.yaml section: gateway lifecycle state lives with the plugin artifacts (disabled.json / registrations.json precedent, ADR-0016 posture untouched); operator-set plugin values live in `<pluginsRoot()>/config/<id>.json`, never in schema.
 
+> **Amendment — the client model surface is ONE view, materialized on save.**
+> A gateway plugin's model view (`modelListMode` + `models` + `advertisedModels`)
+> is the single source for BOTH the ids `GET /v1/models` advertises and the list
+> a client picker shows, so the two can never disagree. Junie's picker is such a
+> surface: setup writes one `~/.junie/models/ocr-*.json` profile per view entry
+> (tier block in `none` mode, the configured/followed ids otherwise), each
+> `primaryModel.id` carrying the gateway's OWN id (`auto`, `xiaomi/mimo-v2.6-pro`)
+> — the `ocr/` prefix is advertisement vocabulary for vendor catalogues, and
+> Junie posts straight to `/v1/chat/completions`, so it never sees it. The file
+> set is REPLACED on every write (a shrunken list must not leave orphan profiles
+> behind); profiles without our prefix are never touched. Because the surface is
+> a materialization, a console save re-materializes it through the adapter's
+> optional `refreshModelSurface()` — the plugin-config save route calls it for
+> every adapter declaring that `catalogPlugin` — so "follow this key" is true
+> without re-hooking. Two guards: a refresh never MINTS an API key, and it never
+> creates `~/.junie` state on a machine whose hook was never applied (a settings
+> save must not provision a client). A client restart is still required — the
+> IDE reads its profile list at start.
+
 > **Amendment — the family is every product Junie's IDE plugin loads in.**
 > `JETBRAINS_PRODUCTS` grew from the IDEA + GoLand pair this record shipped with
 > to every IntelliJ-platform product Junie's IDE plugin supports: PyCharm,

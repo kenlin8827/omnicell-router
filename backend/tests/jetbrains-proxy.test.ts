@@ -96,6 +96,25 @@ d?.('jetbrains-proxy proxy.settings.xml surgery', () => {
   });
 });
 
+d?.('jetbrains-proxy status honesty', () => {
+  const { patchProxySettingsXml, readProxySettings, pointsAtManualProxy, describeProxyTarget } = src!;
+  it('reads the FILE, so a stale port is never reported as connected', () => {
+    const stale = readProxySettings(patchProxySettingsXml(SAMPLE, { host: '127.0.0.1', port: 4555 }));
+    assert.equal(pointsAtManualProxy(stale, 'http://127.0.0.1:4557'), false);
+    assert.equal(describeProxyTarget(stale), '127.0.0.1:4555');
+    const moved = readProxySettings(patchProxySettingsXml(SAMPLE, { host: '127.0.0.1', port: 4557 }));
+    assert.equal(pointsAtManualProxy(moved, 'http://127.0.0.1:4557'), true);
+  });
+
+  it('treats PAC, a missing file and a junk URL as not-pointing-at-us', () => {
+    assert.equal(pointsAtManualProxy(readProxySettings(SAMPLE), 'http://127.0.0.1:4557'), false);
+    assert.equal(pointsAtManualProxy(null, 'http://127.0.0.1:4557'), false);
+    assert.equal(pointsAtManualProxy(readProxySettings(patchProxySettingsXml(SAMPLE, { host: '127.0.0.1', port: 4557 })), 'not a url'), false);
+    assert.equal(describeProxyTarget(readProxySettings(SAMPLE)), 'a PAC script');
+    assert.equal(describeProxyTarget(null), 'no proxy.settings.xml');
+  });
+});
+
 d?.('jetbrains-proxy teardown without a backup', () => {
   const { patchProxySettingsXml, stripManagedProxyBlock } = src!;
   it('strips the block it wrote when the backup is gone', () => {

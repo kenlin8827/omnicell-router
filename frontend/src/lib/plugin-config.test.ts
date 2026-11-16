@@ -137,6 +137,14 @@ describe('gateway card vocabulary', () => {
     { key: 'models', type: 'string[]', default: [], control: 'models' },
     { key: 'accountKeyId', type: 'string', default: '', control: 'apiKey' },
   ];
+  /** jetbrains-gateway ships the qoder spelling (unset = `none`); its card is
+   *  the same generic editor, so the vocabulary must come from ITS manifest. */
+  const jetbrainsSchema: PluginConfigFieldInfo[] = [
+    { key: 'model', type: 'string', default: 'auto', control: 'model' },
+    { key: 'modelListMode', type: 'enum', default: 'none', values: ['none', 'custom', 'follow'] },
+    { key: 'models', type: 'string[]', default: [] },
+    { key: 'accountKeyId', type: 'string', default: '', control: 'apiKey' },
+  ];
   /** A future gateway may name its binding anything; the card must follow. */
   const renamedSchema: PluginConfigFieldInfo[] = [
     { key: 'modelListMode', type: 'enum', default: 'all', values: ['all', 'custom', 'follow'] },
@@ -146,6 +154,7 @@ describe('gateway card vocabulary', () => {
   it('reads the unset spelling and key field from each manifest', () => {
     expect(gatewayVocabulary(cursorSchema)).toEqual({ unsetMode: 'all', keyField: 'accountKeyId' });
     expect(gatewayVocabulary(qoderSchema)).toEqual({ unsetMode: 'none', keyField: 'accountKeyId' });
+    expect(gatewayVocabulary(jetbrainsSchema)).toEqual({ unsetMode: 'none', keyField: 'accountKeyId' });
     expect(gatewayVocabulary(renamedSchema)).toEqual({ unsetMode: 'all', keyField: 'gatewayKeyId' });
   });
 
