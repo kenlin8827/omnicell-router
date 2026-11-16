@@ -10,6 +10,7 @@ import { ProxyPage } from './pages/ProxyPage';
 import { MihomoPage } from './pages/MihomoPage';
 import { ProxyPatternsPage } from './pages/ProxyPatternsPage';
 import { ProxyAccessPage } from './pages/ProxyAccessPage';
+import { ProxyLogPage } from './pages/ProxyLogPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { PlaygroundPage } from './pages/PlaygroundPage';
@@ -92,6 +93,7 @@ export const App: React.FC = () => {
         <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />
+        <Route path="proxy-log" element={<ProxyLogPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
         <Route path="breaker-rules" element={<BreakerRulesPage />} />
         <Route path="sessions" element={<SessionsPage />} />

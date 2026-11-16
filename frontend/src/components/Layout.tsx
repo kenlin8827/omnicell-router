@@ -68,9 +68,11 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
    *  rule table and the outbound endpoint live together, away from the model
    *  vocabulary — the model-side reference (include/exclude globs) stays in the
    *  Upstream group on the Proxy Patterns page. Inbound leads: a request enters
-   *  here before any egress decision is made. */
+   *  here before any egress decision is made, and its traffic lands on the log
+   *  page right next to the rules that admitted it. */
   { id: 'grp-proxy', headingKey: 'nav.grpProxy', shortKey: 'nav.shortProxy', icon: Globe, items: [
     { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
+    { to: '/proxy-log', labelKey: 'nav.proxyLog', icon: ScrollText },
     { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
     { to: '/proxy-clash', labelKey: 'nav.proxyMihomo', icon: Cpu },
   ] },
@@ -132,6 +134,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
   '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
+  '/proxy-log': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyLog' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/proxy-access': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyAccess' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
