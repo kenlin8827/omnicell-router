@@ -8,6 +8,7 @@ import { loadConfig } from '../src/config/index.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import type { ModelRegistration } from '../src/config/types.js';
 import type { BreakerRulesConfig, CircuitBreakerConfig, ErrorDiagnosis } from '../src/resilience/types.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * Circuit-breaker rules config — spec `trip.failureRate.minCalls` (R4J
@@ -140,7 +141,7 @@ describe('minCalls clamps (sanitizer + resolver defense)', () => {
   let n = 0;
   const cfg = (yaml: string): CircuitBreakerConfig => {
     const p = path.join(dir, `c${n++}.yaml`);
-    fs.writeFileSync(p, yaml, 'utf8');
+    fs.writeFileSync(p, currentYaml(yaml), 'utf8');
     return loadConfig(p).circuitBreaker!;
   };
 

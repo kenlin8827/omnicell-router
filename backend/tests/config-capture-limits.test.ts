@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * Trust-boundary lock for the capture size knobs.
@@ -31,7 +32,7 @@ afterAll(() => {
 
 function load(yaml: string): ReturnType<typeof loadConfig> {
   const p = path.join(sandbox, `cfg-${Math.random().toString(36).slice(2)}.yaml`);
-  fs.writeFileSync(p, yaml, 'utf8');
+  fs.writeFileSync(p, currentYaml(yaml), 'utf8');
   return loadConfig(p);
 }
 

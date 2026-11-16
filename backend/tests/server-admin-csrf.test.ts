@@ -6,6 +6,7 @@ import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
 import { createServer, canonicalPath } from '../src/server.js';
 import { createSessionToken, SESSION_COOKIE } from '../src/auth/web-auth.js';
+import { currentYaml } from './helpers/current-config.js';
 
 // Isolation: both loadConfig() and the request-time disk key gate read the
 // ACTIVE environment's config.yaml from OCR_HOME. Sandbox the home and seed a
@@ -18,8 +19,8 @@ process.env.OCR_HOME = path.join(csrfSandbox, 'home');
 process.env.OCR_ENV = 'default';
 const csrfEnvDir = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(csrfEnvDir, { recursive: true });
-fs.writeFileSync(path.join(csrfEnvDir, 'config.yaml'), 'schemaVersion: 3\nclient:\n  host: 127.0.0.1\n');
-fs.writeFileSync(path.join(csrfEnvDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 3 }));
+fs.writeFileSync(path.join(csrfEnvDir, 'config.yaml'), currentYaml('schemaVersion: 3\nclient:\n  host: 127.0.0.1\n'));
+fs.writeFileSync(path.join(csrfEnvDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 
 /**
  * Security P2-3 — drive-by CSRF narrowing on state-changing /api/admin/*

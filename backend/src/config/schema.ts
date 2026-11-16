@@ -29,8 +29,9 @@
  *     env-container import gate).
  */
 import { legacySurfaceWarnings, migrationV0ToV1 } from './migrations/v0-to-v1.js';
-import { migrationV1ToV2, SECTION_MOVES_V2, type DiskConfigV2 } from './migrations/v1-to-v2.js';
-import { migrationV2ToV3, SECTION_MOVES_V3, type DiskConfigV3 } from './migrations/v2-to-v3.js';
+import { migrationV1ToV2 } from './migrations/v1-to-v2.js';
+import { migrationV2ToV3 } from './migrations/v2-to-v3.js';
+import { migrationV3ToV4, SECTION_MOVES_V4, type DiskConfigV4 } from './migrations/v3-to-v4.js';
 import {
   toDiskConfigWith,
   toRuntimeConfigWith,
@@ -39,16 +40,16 @@ import {
 } from './layout.js';
 import type { RouterConfig } from './types.js';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** The current disk type — re-exported from the LATEST version's file. */
-export type DiskConfig = DiskConfigV3;
+export type DiskConfig = DiskConfigV4;
 
 /**
- * The CURRENT layout pointer. Bump to `SECTION_MOVES_V3` (etc.) when the
+ * The CURRENT layout pointer. Bump to `SECTION_MOVES_V4` (etc.) when the
  * newest migration file ships — the single edit a new version makes here.
  */
-const LATEST_LAYOUT: ReadonlyArray<SectionMove> = SECTION_MOVES_V3;
+const LATEST_LAYOUT: ReadonlyArray<SectionMove> = SECTION_MOVES_V4;
 
 export interface Migration {
   from: number;
@@ -64,7 +65,12 @@ export interface Migration {
  * v0 = a config.yaml without `schemaVersion` (every file authored before
  * ADR-0016 — the legacy FLAT runtime-shaped layout).
  */
-const MIGRATIONS: ReadonlyArray<Migration> = [migrationV0ToV1, migrationV1ToV2, migrationV2ToV3];
+const MIGRATIONS: ReadonlyArray<Migration> = [
+  migrationV0ToV1,
+  migrationV1ToV2,
+  migrationV2ToV3,
+  migrationV3ToV4,
+];
 
 /** Runtime flat config → current-version disk shape. */
 export function toDiskConfig(flat: Partial<RouterConfig> & Record<string, unknown>): Omit<DiskConfig, 'schemaVersion'> {

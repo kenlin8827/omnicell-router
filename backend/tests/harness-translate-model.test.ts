@@ -14,6 +14,7 @@ import {
   translationChain,
 } from '../src/harness/translation.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * The translation model chain is an operator cost decision (ADR-0015): `defaultModels.translation`
@@ -36,11 +37,11 @@ const BASE_CONFIG =
 
 function writeDefaultsConfig(translationModel?: string): void {
   const section = translationModel === undefined ? '' : `ops:\n  defaultModels:\n    translation: ${translationModel}\n`;
-  fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), BASE_CONFIG + section, 'utf8');
+  fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), currentYaml(BASE_CONFIG + section), 'utf8');
 }
 
 function writeRawConfig(yaml: string): void {
-  fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), yaml, 'utf8');
+  fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), currentYaml(yaml), 'utf8');
 }
 
 describe('translationChain', () => {

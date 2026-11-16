@@ -182,4 +182,39 @@ describe('config schema evolution (ADR-0016)', () => {
     assert.deepEqual((both.upstream.streaming as Record<string, unknown>).upstream, { mode: 'follow' });
     assert.ok(warnings.some((w) => w.includes('streaming.client.mode')));
   });
+
+  it('v3 → v4: the form-memory "none" spelling becomes "default", nothing else moves', () => {
+    const { disk, fromVersion, warnings } = migrateConfig({
+      schemaVersion: 3,
+      routing: {
+        profileMemory: {
+          opencode: { modelMode: 'none', extraModels: ['gpt-5'], virtualModels: [] },
+          pi: { modelMode: 'custom', models: { main: 'auto' } },
+          grok: { modelMode: 'follow' },
+        },
+      },
+    });
+    assert.equal(fromVersion, 3);
+    assert.equal(disk.schemaVersion, SCHEMA_VERSION);
+    const memory = (disk as Record<string, Record<string, Record<string, Record<string, unknown>>>>).routing.profileMemory;
+    assert.equal(memory.opencode.modelMode, 'default');
+    // Sibling snapshot fields are untouched — only the enum spelling moved.
+    assert.deepEqual(memory.opencode.extraModels, ['gpt-5']);
+    assert.deepEqual(memory.opencode.virtualModels, []);
+    assert.equal(memory.pi.modelMode, 'custom');
+    assert.deepEqual(memory.pi.models, { main: 'auto' });
+    assert.equal(memory.grok.modelMode, 'follow');
+    assert.ok(warnings.some((w) => w.includes('modelMode')));
+
+    // Unknown spellings are left to loadConfig's cleaners, never rewritten.
+    const weird = migrateConfig({
+      schemaVersion: 3,
+      routing: { profileMemory: { opencode: { modelMode: 'weird' } } },
+    }).disk as Record<string, Record<string, Record<string, Record<string, unknown>>>>;
+    assert.equal(weird.routing.profileMemory.opencode.modelMode, 'weird');
+
+    // An absent memory tree is never created by the step.
+    const empty = migrateConfig({ schemaVersion: 3, client: { port: 4700 } }).disk as Record<string, Record<string, unknown>>;
+    assert.equal('profileMemory' in ((empty.routing ?? {}) as Record<string, unknown>), false);
+  });
 });

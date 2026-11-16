@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
 import { resolveHost } from '../src/forward-proxy/rules.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * What the loader makes of the `forwardProxy` section (ADR-0018).
@@ -23,7 +24,7 @@ function writeConfig(body: Record<string, unknown>): string {
   // v1 disk shape (ADR-0016): the forward-proxy section lives under `client`.
   const lines = ['schemaVersion: 3', 'client:', '  forwardProxy:', '    enabled: false'];
   for (const [k, v] of Object.entries(body)) lines.push(`    ${k}: ${JSON.stringify(v)}`);
-  fs.writeFileSync(file, lines.join('\n') + '\n');
+  fs.writeFileSync(file, currentYaml(lines.join('\n')) + '\n');
   return file;
 }
 

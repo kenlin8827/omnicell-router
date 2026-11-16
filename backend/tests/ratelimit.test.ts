@@ -28,6 +28,7 @@ import { keyHashPrefix } from '../src/opencode/credentials/index.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import type { CallCredential } from '../src/providers/base.js';
 import type { ModelRegistration, RouterConfig } from '../src/config/types.js';
+import { currentYaml } from './helpers/current-config.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
@@ -349,7 +350,7 @@ describe('config plumbing — credentials:/limits survive the loadConfig round t
     const cfgPath = path.join(dir, 'config.yaml');
     fs.writeFileSync(
       cfgPath,
-      [
+      currentYaml([
         'schemaVersion: 3',
         'upstream:',
         '  credentials:',
@@ -370,7 +371,7 @@ describe('config plumbing — credentials:/limits survive the loadConfig round t
         '        - { window: 1m, requests: 30 }',
         '        - { window: 1d, costUsd: 5 }',
         '',
-      ].join('\n'),
+      ].join('\n')),
       'utf8'
     );
     const cfg = loadConfig(cfgPath);

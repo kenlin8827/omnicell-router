@@ -8,6 +8,7 @@ import { testAdapterHost } from './helpers/adapter-host.js';
 import { getOcrHomeDir } from '../src/cli/paths.js';
 import { pemBundleContainsCa } from '../src/forward-proxy/ca-trust.js';
 import { getEnvPaths } from '../src/config/env.js';
+import { currentYaml } from './helpers/current-config.js';
 
 // The plugin sources live in a gitignored dev tree (a separate repository), so a
 // fresh checkout has no `plugins/cursor-gateway`. A static import cannot be
@@ -382,7 +383,7 @@ if (process.platform !== 'win32') {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(
         configPath,
-        [
+        currentYaml([
           'schemaVersion: 3',
           'client:',
           '  forwardProxy:',
@@ -390,7 +391,7 @@ if (process.platform !== 'win32') {
           `    caDir: ${JSON.stringify(caDir)}`,
           '    rules: [{match: "*", ingress: intercept, egress: proxy}]',
           '',
-        ].join('\n')
+        ].join('\n'))
       );
       const previous = {
         CURSOR_BIN: process.env.CURSOR_BIN,

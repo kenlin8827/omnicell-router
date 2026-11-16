@@ -1111,11 +1111,14 @@ export interface ClientProfileMemoryEntry {
    *  the setup payload omits `virtualModels` and the adapter injects its own
    *  default block; an array (possibly empty) scopes the block to that set. */
   virtualModels?: string[];
-  /** Model-list source on the opencode form: 'none' (default) exposes no
-   *  concrete models, 'follow' derives the extra-model set from the selected
-   *  API key's effective access, 'custom' keeps the manual picker. UI-only —
-   *  the hook still writes a static snapshot. */
-  modelMode?: 'none' | 'custom' | 'follow';
+  /** Model-list source on the opencode form: `'default'` = the console's
+   *  "Default" tab — no concrete models added, the adapter's own
+   *  virtual-entry block applies (pre-v4 files stored this as `'none'`; the
+   *  boot migration renames it), `'follow'` derives the extra-model set from
+   *  the selected API key's effective access, `'custom'` keeps the manual
+   *  picker. The displayed label lives in the i18n tables under
+   *  `clients.modelMode*`. UI-only — the hook still writes a static snapshot. */
+  modelMode?: 'default' | 'custom' | 'follow';
   /** Last-written gateway key id (apiKeys[].id). The client-hook setup ALWAYS
    *  writes the selected key (client config backups cover regrets); the form
    *  re-seeds the picker from this id, and a stale id (key deleted since)

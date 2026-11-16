@@ -6,6 +6,7 @@ import { parse } from 'yaml';
 import { loadConfig, defaultConfigYaml } from '../src/config/index.js';
 import { resolveTierMembers } from '../src/providers/member-match.js';
 import type { TierLevel } from '../src/types/router.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * Lock for "the shipped tier defaults are EMPTY pools — members are
@@ -28,7 +29,7 @@ afterAll(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 
 function writeConfig(name: string, content: string): string {
   const p = path.join(sandbox, name);
-  fs.writeFileSync(p, content, 'utf8');
+  fs.writeFileSync(p, currentYaml(content), 'utf8');
   return p;
 }
 

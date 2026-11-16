@@ -5,6 +5,7 @@ import './helpers/sandbox-home.js';
 import { getConfigPath } from '../src/config/index.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { ComboConfig, ModelRegistration, RouterConfig } from '../src/config/types.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * Hand-edited-YAML safety net for combos (ADR-0003 two-axis liveness): a
@@ -43,7 +44,7 @@ describe('combo lazy refresh (hand-edited-YAML safety net)', () => {
     // config on disk, bypassing every console save route.
     fs.writeFileSync(
       getConfigPath(),
-      'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  combos:\n    - id: lazy-combo\n      models:\n        - p/a\n'
+      currentYaml('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  combos:\n    - id: lazy-combo\n      models:\n        - p/a\n')
     );
 
     const registry = new ProviderRegistry(makeConfig(), false); // constructor saw NO combos

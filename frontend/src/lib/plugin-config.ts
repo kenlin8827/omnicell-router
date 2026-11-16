@@ -99,16 +99,17 @@ export function groupVisibleFields(
 
 /**
  * The vocabulary one gateway card must speak: the enum value persisted for the
- * UI's "None" and the schema field holding the picked key's `apiKeys[].id`.
+ * UI's "Default" and the schema field holding the picked key's `apiKeys[].id`.
  * Both are DECLARED by the manifest (ADR-0017 §7). The shipped gateways agree
- * on the key field (`accountKeyId`) but not on the unset spelling (`all` on
- * cursor-gateway, `none` on qoder-gateway), and a future gateway may name the
- * field anything. Hardcoding either spelling makes a save silently lose the
- * value: the host drops an unknown key and falls back on a failed enum, with a
- * warning.
+ * on the key field (`accountKeyId`) and on the unset spelling (`default`), but
+ * both are per-manifest — a future gateway may name the field or the value
+ * anything. Hardcoding either makes a save silently lose the value: the host
+ * drops an unknown key and falls back on a failed enum, with a warning.
  */
 export interface GatewayVocabulary {
-  /** Enum value the UI's "None" mode persists (`all`, `none`, …). */
+  /** Enum value the UI's "Default" mode persists (the manifest's own unset
+   *  spelling, `default` on the shipped gateways) — unrelated to the
+   *  console's draft value. */
   unsetMode: string;
   /** Schema field carrying the picked key id; '' = the gateway has no
    *  `apiKey` control and the card persists no binding. */
@@ -121,7 +122,7 @@ export function gatewayVocabulary(schema: PluginConfigFieldInfo[]): GatewayVocab
   return {
     // `custom` / `follow` are the two labeled states; the remaining declared
     // value is the gateway's "unset" spelling.
-    unsetMode: mode?.values?.find((value) => value !== 'custom' && value !== 'follow') ?? 'none',
+    unsetMode: mode?.values?.find((value) => value !== 'custom' && value !== 'follow') ?? 'default',
     keyField: key?.key ?? '',
   };
 }
@@ -133,8 +134,8 @@ export interface GatewayCfgDraft extends GatewayVocabulary {
   catalogReplace: boolean;
   /** Namespace the appended OCR entries under `ocr/` (append mode only). */
   catalogPrefix: boolean;
-  /** UI-level mode; `gatewayModeValue` maps `none` to the plugin's spelling. */
-  modelListMode: 'none' | 'custom' | 'follow';
+  /** UI-level mode; `gatewayModeValue` maps `default` to the plugin's spelling. */
+  modelListMode: 'default' | 'custom' | 'follow';
   models: string[];
   /** `apiKeys[].id` held by the plugin's key field ('' = unbound). */
   boundKeyId: string;
@@ -149,7 +150,7 @@ export function parseGatewayCfg(
   const modelListMode =
     values.modelListMode === 'custom' || values.modelListMode === 'follow'
       ? values.modelListMode
-      : 'none';
+      : 'default';
   const bound = vocabulary.keyField ? values[vocabulary.keyField] : undefined;
   return {
     ...vocabulary,
@@ -166,11 +167,11 @@ export function parseGatewayCfg(
   };
 }
 
-/** Persisted enum value for a UI mode: `none` is console vocabulary, while
+/** Persisted enum value for a UI mode: `default` is console vocabulary, while
  *  `custom` and `follow` are declared by both gateways. */
 export function gatewayModeValue(
   vocabulary: GatewayVocabulary,
   mode: GatewayCfgDraft['modelListMode']
 ): string {
-  return mode === 'none' ? vocabulary.unsetMode : mode;
+  return mode === 'default' ? vocabulary.unsetMode : mode;
 }

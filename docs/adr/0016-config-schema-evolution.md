@@ -36,8 +36,13 @@ The table above is the v1 grouping as decided here. Schema v2 (ADR-0031) dropped
 `routing.modelProfiles`. Schema v3 (ADR-0008 §1) split the single
 `upstream.streaming.enabled` flag into the two posture axes
 `streaming.client.mode` / `streaming.upstream.mode`; the `upstream.streaming`
-section itself did not move, so `SECTION_MOVES_V3` is the v2 table verbatim and
-the current layout is `SECTION_MOVES_V3` in `migrations/v2-to-v3.ts`.
+section itself did not move, so `SECTION_MOVES_V3` is the v2 table verbatim.
+Schema v4 renames the console form-memory value
+`routing.profileMemory.*.modelMode: none` to `default` (the tab always
+rendered as "Default" — no concrete models are added, the adapter's
+virtual-entry block applies); no section moved either, so `SECTION_MOVES_V4`
+is the v3 table verbatim and the current layout is `SECTION_MOVES_V4` in
+`migrations/v3-to-v4.ts`.
 
 The runtime `RouterConfig` object is UNCHANGED and stays flat: consumers
 keep reading `config.tiers`, `config.retry`, `config.fallback`. Grouping

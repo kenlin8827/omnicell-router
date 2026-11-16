@@ -162,10 +162,11 @@ export interface ClientProfileMemoryEntry {
    *  untouched — setup omits `virtualModels` (adapter default block); an
    *  array (possibly empty) scopes the block to that set. Mirrors backend. */
   virtualModels?: string[];
-  /** Model-list source: 'none' (default) = no concrete models exposed,
+  /** Model-list source: 'default' = the console's "Default" tab (no concrete
+   *  models exposed, the adapter's own virtual-entry block applies),
    *  'follow' = mirror the selected API key's effective model access,
    *  'custom' = manual picker. Mirrors backend. */
-  modelMode?: 'none' | 'custom' | 'follow';
+  modelMode?: 'default' | 'custom' | 'follow';
   /** Last-written gateway key id (apiKeys[].id); a stale id (deleted key)
    *  seeds nothing. Mirrors backend. */
   apiKeyId?: string;

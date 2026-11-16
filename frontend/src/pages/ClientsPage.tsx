@@ -184,10 +184,11 @@ export const ClientsPage: React.FC = () => {
    *  Falls back to the first product when unset or when a stale id survives a
    *  status refresh. One selection per family card, unlike the card accordion. */
   const [activeProduct, setActiveProduct] = useState<Record<string, string>>({});
-  /** Per-client model-list source: 'none' (default) exposes no concrete
-   *  models, 'follow' mirrors the selected API key's effective access,
+  /** Per-client model-list source: 'default' exposes no concrete models (the
+   *  console renders it as the "Default" tab — the adapter's own virtual-entry
+   *  block applies), 'follow' mirrors the selected API key's effective access,
    *  'custom' keeps the manual picker. */
-  const [modeSel, setModeSel] = useState<Record<string, 'none' | 'custom' | 'follow'>>({});
+  const [modeSel, setModeSel] = useState<Record<string, 'default' | 'custom' | 'follow'>>({});
   /** keyId → effective-model view cache (follow mode, lazy-loaded) */
   const [keyModels, setKeyModels] = useState<Record<string, Awaited<ReturnType<typeof api.getKeyModels>>>>({});
   /** OpenCode agent inventory (lazy: loaded when the opencode form expands) */
@@ -488,7 +489,7 @@ export const ClientsPage: React.FC = () => {
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
         catalogPrefix: draft.catalogPrefix,
-        // Persist the plugin's own unset spelling — `none` is UI vocabulary.
+        // Persist the plugin's own unset spelling — `default` is UI vocabulary.
         modelListMode: gatewayModeValue(draft, draft.modelListMode),
         models,
         ...(draft.keyField ? { [draft.keyField]: picked.id } : {}),
@@ -588,10 +589,10 @@ export const ClientsPage: React.FC = () => {
       const next = { ...prev };
       for (const c of clients) {
         // Seeding heuristic: memory wins; an already-hooked client WITH extra
-        // models falls back to 'custom' (never default a live list to 'none' —
-        // that would silently wipe it on the next setup); empty config → 'none'.
+        // models falls back to 'custom' (never default a live list to 'default' —
+        // that would silently wipe it on the next setup); empty config → 'default'.
         if (next[c.name] === undefined) {
-          next[c.name] = mem[c.name]?.modelMode || (c.extraModels && c.extraModels.length > 0 ? 'custom' : 'none');
+          next[c.name] = mem[c.name]?.modelMode || (c.extraModels && c.extraModels.length > 0 ? 'custom' : 'default');
         }
       }
       return next;
@@ -650,7 +651,7 @@ export const ClientsPage: React.FC = () => {
           : ms,
       extraModels: extraSel[clientName] || [],
       virtualModels: virtualSel[clientName],
-      modelMode: modeSel[clientName] ?? 'none',
+      modelMode: modeSel[clientName] ?? 'default',
       apiKeyId: keyIdOf(apiKeySel[clientName] || ''),
       linksOn: linksOn[clientName],
     };
@@ -678,7 +679,7 @@ export const ClientsPage: React.FC = () => {
     (keyModels[k.id]?.models || []).filter(m => m.allowed).map(m => m.id);
 
   /** Flip the model-list source (draft only — the setup commit persists it). */
-  const setModelMode = (clientName: string, mode: 'none' | 'custom' | 'follow') => {
+  const setModelMode = (clientName: string, mode: 'default' | 'custom' | 'follow') => {
     setModeSel(prev => ({ ...prev, [clientName]: mode }));
   };
 
@@ -764,9 +765,9 @@ export const ClientsPage: React.FC = () => {
       let extras = extraSel[clientName] || [];
       let virtuals: string[] | undefined;
       if (action === 'setup' && supportsExtraModels(clientName)) {
-        const mode = modeSel[clientName] ?? 'none';
-        if (mode === 'none') {
-          // Explicit 'none': no concrete extras; the virtual block stays at the
+        const mode = modeSel[clientName] ?? 'default';
+        if (mode === 'default') {
+          // Explicit 'default': no concrete extras; the virtual block stays at the
           // adapter default (full auto* block for the JSON clients, none for grok).
           extras = [];
         } else if (mode === 'follow') {
@@ -944,7 +945,7 @@ export const ClientsPage: React.FC = () => {
         return { ...prev, [clientName]: draft };
       });
     }
-    setModeSel(prev => ({ ...prev, [clientName]: m?.modelMode || 'none' }));
+    setModeSel(prev => ({ ...prev, [clientName]: m?.modelMode || 'default' }));
     setApiKeySel(prev => {
       const next = { ...prev };
       const k = m?.apiKeyId ? apiKeys.find(x => x.id === m.apiKeyId) : undefined;
@@ -1206,12 +1207,12 @@ export const ClientsPage: React.FC = () => {
             const mode = draft.modelListMode;
             const followKey = apiKeys.find((key) => key.key === (apiKeySel[c.name] || ''));
             const followView = followKey ? keyModels[followKey.id] : undefined;
-            const listed = mode === 'none'
-              // "Unset" is gateway-defined: `all` advertises the whole
-              // registry, the tier-only spelling advertises auto*.
-              ? draft.unsetMode === 'all'
-                ? models.map((model) => model.id)
-                : VIRTUAL_MODEL_IDS
+            // Default = no list set: every shipped gateway then advertises its
+            // built-in virtual entries only. The unset spelling is the
+            // manifest's own (never inferred here — ADR-0017: it is not
+            // contract), so the preview is the built-in block, not the registry.
+            const listed = mode === 'default'
+              ? VIRTUAL_MODEL_IDS
               : mode === 'custom'
                 ? draft.models
                 : followView
@@ -1268,7 +1269,7 @@ export const ClientsPage: React.FC = () => {
                 <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayModelList')}</span>
                 <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    {(['none', 'custom', 'follow'] as const).map((uiMode) => {
+                    {(['default', 'custom', 'follow'] as const).map((uiMode) => {
                       const active = mode === uiMode;
                       return (
                         <button
@@ -1283,8 +1284,8 @@ export const ClientsPage: React.FC = () => {
                             ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
                             : undefined}
                         >
-                          {t(uiMode === 'none'
-                            ? 'clients.modelModeNone'
+                          {t(uiMode === 'default'
+                            ? 'clients.modelModeDefault'
                             : uiMode === 'custom'
                               ? 'clients.modelModeCustom'
                               : 'clients.modelModeFollow')}
@@ -1333,7 +1334,7 @@ export const ClientsPage: React.FC = () => {
                     </>
                   )}
 
-                  {mode === 'none' && (
+                  {mode === 'default' && (
                     <>
                       {renderModelChips(
                         c.name,
@@ -1345,7 +1346,7 @@ export const ClientsPage: React.FC = () => {
                         { marginBottom: 0 },
                       )}
                       <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-                        {t(draft.unsetMode === 'all' ? 'clients.modelModeAllHint' : 'clients.modelModeNoneHint')}
+                        {t('clients.modelModeUnsetHint')}
                       </div>
                     </>
                   )}
@@ -2086,7 +2087,7 @@ export const ClientsPage: React.FC = () => {
                         </div>
                       ))}
                 {supportsExtraModels(c.name) && (() => {
-                        const mode = modeSel[c.name] ?? 'none';
+                        const mode = modeSel[c.name] ?? 'default';
                         const follow = mode === 'follow';
                         const fk = follow ? followKeyOf(c.name) : undefined;
                         const followLoaded = !!fk && !!keyModels[fk.id];
@@ -2096,7 +2097,7 @@ export const ClientsPage: React.FC = () => {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
                             <div style={{ display: 'inline-flex', gap: '4px' }}>
-                              {(['none', 'custom', 'follow'] as const).map(m => (
+                              {(['default', 'custom', 'follow'] as const).map(m => (
                                 <button
                                   key={m}
                                   className="btn btn-sm"
@@ -2106,7 +2107,7 @@ export const ClientsPage: React.FC = () => {
                                     ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
                                     : undefined}
                                 >
-                                  <span>{t(m === 'none' ? 'clients.modelModeNone' : m === 'custom' ? 'clients.modelModeCustom' : 'clients.modelModeFollow')}</span>
+                                  <span>{t(m === 'default' ? 'clients.modelModeDefault' : m === 'custom' ? 'clients.modelModeCustom' : 'clients.modelModeFollow')}</span>
                                 </button>
                               ))}
                             </div>
@@ -2128,8 +2129,8 @@ export const ClientsPage: React.FC = () => {
                                 </>
                               )}
                             </>
-                          ) : mode === 'none' ? (
-                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.modelModeNoneHint')}</div>
+                          ) : mode === 'default' ? (
+                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.modelModeDefaultBlockHint')}</div>
                           ) : (
                             <>
                               {(() => {

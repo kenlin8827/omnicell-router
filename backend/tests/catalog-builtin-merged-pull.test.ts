@@ -48,7 +48,7 @@ describe('builtin provider merged model pull (catalog-first + live top-up)', () 
     const envDir = path.join(tmpDir, 'home', 'envs', 'itest');
     fs.mkdirSync(envDir, { recursive: true });
     fs.writeFileSync(path.join(envDir, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
-    fs.writeFileSync(path.join(envDir, 'env.json'), JSON.stringify({ name: 'itest', type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 3 }));
+    fs.writeFileSync(path.join(envDir, 'env.json'), JSON.stringify({ name: 'itest', type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 1 }));
     process.env.OCR_CATALOG_PATH = path.join(tmpDir, 'catalog-merged.json');
 
     // Builtin baseline source: models.dev-shape payload with pricing/limits —

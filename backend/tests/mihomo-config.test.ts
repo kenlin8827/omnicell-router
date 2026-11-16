@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
 import { loadConfig, sanitizeProxyConfig } from '../src/config/index.js';
-import { SCHEMA_VERSION } from '../src/config/schema.js';
 import { DEFAULT_MIHOMO_CONTROLLER_PORT, DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_TEST_URL } from '../src/config/defaults.js';
 import { manualNodeFields, manualNodeMapping, mihomoConfigSummary, redactSubscriptionUrl, renderMihomoConfig } from '../src/proxy/mihomo-config.js';
+import { currentYaml } from './helpers/current-config.js';
 
 describe('sanitizeProxyConfig', () => {
   test('an old file without mode stays manual and gains mihomo defaults', () => {
@@ -45,11 +45,10 @@ describe('sanitizeProxyConfig', () => {
     expect(proxy.mihomo?.subscriptions?.[0].url).toContain('token=secret');
   });
 
-  test('schemaVersion stays 3 and a current file without mihomo keys loads the defaults', () => {
-    expect(SCHEMA_VERSION).toBe(3);
+  test('a current file without mihomo keys loads the defaults', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mihomo-cfg-'));
     const file = path.join(dir, 'config.yaml');
-    fs.writeFileSync(file, 'schemaVersion: 3\nclient:\n  port: 3999\n  host: 127.0.0.1\nupstream:\n  proxy:\n    enabled: true\n    url: http://10.0.0.8:8888\n');
+    fs.writeFileSync(file, currentYaml('schemaVersion: 3\nclient:\n  port: 3999\n  host: 127.0.0.1\nupstream:\n  proxy:\n    enabled: true\n    url: http://10.0.0.8:8888\n'));
     const cfg = loadConfig(file);
     expect(cfg.proxy?.mode).toBe('manual');
     expect(cfg.proxy?.enabled).toBe(true);

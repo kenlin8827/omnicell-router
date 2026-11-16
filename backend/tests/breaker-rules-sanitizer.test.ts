@@ -11,6 +11,7 @@ import {
 } from '../src/resilience/breaker-state.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import type { BreakerStateFile, CircuitBreakerConfig } from '../src/resilience/types.js';
+import { currentYaml } from './helpers/current-config.js';
 
 /**
  * Circuit-breaker rules config — spec area 10 (invariant 5, sanitizer side):
@@ -29,7 +30,7 @@ let n = 0;
 
 function cfgFrom(yamlText: string): CircuitBreakerConfig {
   const p = path.join(dir, `c${n++}.yaml`);
-  fs.writeFileSync(p, yamlText, 'utf8');
+  fs.writeFileSync(p, currentYaml(yamlText), 'utf8');
   return loadConfig(p).circuitBreaker!;
 }
 

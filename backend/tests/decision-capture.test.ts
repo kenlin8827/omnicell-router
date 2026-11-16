@@ -9,6 +9,7 @@ import {
   datasetHasCapacity,
   resetDecisionCaptureConfig,
 } from '../src/capture/decision-capture.js';
+import { currentYaml } from './helpers/current-config.js';
 
 // ---------------------------------------------------------------------------
 // Dataset-sink gate (config restructure): the L2 decision layer's decision sink writes
@@ -28,8 +29,8 @@ process.env.OCR_HOME = path.join(sandbox, 'home');
 process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
-fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
-fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 3 }));
+fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), currentYaml('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n'));
+fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 process.chdir(sandbox);
 
 const DATASET = () => path.join(ENV_DIR, 'data', 'layer2-decisions.jsonl');
@@ -49,7 +50,7 @@ function clearDataset(): void {
 }
 
 function writeConfig(yaml: string): void {
-  fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), yaml);
+  fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), currentYaml(yaml));
 }
 
 /** Run fn with console.warn captured; returns [result, warnings]. */

@@ -210,7 +210,7 @@ export const YAML_FIELD_COMMENTS_ZH: Record<string, string> = {
   'combos.*.disabled': '禁用开关：true 时该组合下线——不再出现在模型目录（不可选），客户端以该组合 id 调用会被直接拒绝（不可用）；控制台仍可查看并重新启用',
   'combos.*.models': '成员列表（顺序即故障转移链序）：成员可写 \'model-id\' 或 { id, weight }（weight 用于 weighted/round_robin，默认 1）',
   'combos.*.note': '备注：仅控制台展示的自由文本，不参与路由',
-  clientProfileMemory: '控制台表单记忆（按环境保存）：点击“接入”时才写入——记录该次挂接实际应用的完整表单状态：模型列表模式（none=不设置（默认）/ custom=自定义 / follow=跟随所选 API Key 的权限）、自定义模型列表（extraModels）、自定义虚拟档位勾选（virtualModels；缺省 = 适配器默认档位块）、写入的 API Key id（apiKeyId；挂接总是写入所选 Key，不存明文），以及槽位/角色模型引用快照（models/agentModels）供“还原上次提交”按钮回填，仅用于页面回填，不参与路由、也不影响实际接管配置',
+  clientProfileMemory: '控制台表单记忆（按环境保存）：点击“接入”时才写入——记录该次挂接实际应用的完整表单状态：模型列表模式（default=默认（不添加具体模型）/ custom=自定义 / follow=跟随所选 API Key 的权限）、自定义模型列表（extraModels）、自定义虚拟档位勾选（virtualModels；缺省 = 适配器默认档位块）、写入的 API Key id（apiKeyId；挂接总是写入所选 Key，不存明文），以及槽位/角色模型引用快照（models/agentModels）供“还原上次提交”按钮回填，仅用于页面回填，不参与路由、也不影响实际接管配置',
   defaultModels: '默认模型（网关自身内部调用花费的模型，不参与客户端路由）',
   'defaultModels.translation': '控制台内部翻译（技能描述/README）使用的模型：填写网关可见的 modelRef（档位别名 lite/plus/pro/ultra 或已注册模型 id）。未设置 = lite；配置的模型失败降级到 lite，lite 也失败则如实报错——链条绝不自行升级到 auto（内部非关键调用不允许无上限花费；显式写 auto 视为运营者自担成本，照常生效）。可解析性在请求时校验（模型在启动时才注册）；更换该值不使已缓存翻译失效（缓存按原文+语言键控，为派生数据）',
   session: '会话粘性（棘轮：会话内模型不漂移）',
@@ -222,6 +222,6 @@ export const YAML_FIELD_COMMENTS_ZH: Record<string, string> = {
   'streaming.client.mode': 'allow（默认）= 由客户端自己的 stream 标志决定（仅布尔 true 走流式，其他值走 JSON）；deny = 收到 stream:true 直接 400；always = 即使客户端要 JSON 也用 SSE 回复（无分块编码器的协议面改发其缓冲式 SSE 帧）',
   'streaming.upstream': '上游连接的传输形态',
   'streaming.upstream.mode': 'follow（默认）= 仅当客户端正在被流式服务、且所服务线型具备流式执行器时才用上游 SSE；stream = 只要线型支持就用上游 SSE，客户端要 JSON 时网关累积（换来网关侧 TTFT/停顿数据与统一传输，但绝不会让 JSON 正文更早到达）；buffered = 永不使用上游 SSE（回滚开关，客户端 SSE 由网关重建）。无流式执行器的线型（当前 Anthropic/Google/Responses）在任何模式下都保持缓冲；Schema 断言级联的 lite 冲锋腿始终缓冲，因为整轮可能作废重问',
-  responses: 'Responses 协议面（POST /v1/responses）：网关侧 previous_response_id 会话链',
-  'responses.persist': '会话链磁盘恢复（默认 false）：开启后每轮增量以 JSONL 恢复日志写入本环境数据目录（文件权限 0600），启动时自动重放，24 小时过期自动清理——网关重启后长对话仍可续接；关闭时重启即断链（返回 400，客户端需重发完整 input）。日志含对话原文，属敏感数据落盘，与请求捕获（requestCapture）同级隐私考量；磁盘写入失败绝不影响请求本身',
+  responses: 'Responses 协议面（POST /v1/responses）：网关侧 previous_response_id 会话链。协议字段 `store` 按标准生效（默认 true）——store:false 的应答不保留，因此永远不能作为链父节点；请求捕获属独立的运维面，不受该字段影响。链只存在于本进程/本环境：换实例或换环境解析旧 id 会返回 400 previous_response_not_found，链式客户端需粘性路由（或开启 responses.persist 并共享数据目录）',
+  'responses.persist': '会话链磁盘恢复（默认 false）：开启后每个「被保留」的轮次增量以 JSONL 恢复日志写入本环境数据目录（文件权限 0600），启动时自动重放，24 小时过期自动清理——网关重启后长对话仍可续接；关闭时重启即断链（返回 400，客户端需重发完整 input；store:false 的应答在两种模式下都不落盘）。日志含对话原文，属敏感数据落盘，与请求捕获（requestCapture）同级隐私考量；磁盘写入失败绝不影响请求本身',
 };

@@ -116,24 +116,26 @@ describe('groupVisibleFields', () => {
 /**
  * Gateway card vocabulary — Client Hub must persist what the gateway DECLARED.
  *
- * Regression: the shared card once hardcoded qoder-gateway's spelling
- * (`accountKeyId`, `none`) for every gateway, so saving the Cursor card sent
- * `none` to a manifest whose unset value is `all`. The host drops unknown keys
- * and falls back on a failed enum — with a warning — so the operator's
- * model-list choice silently reverted in the gateway. The key field name is
- * not hardcoded either: both gateways now declare `accountKeyId`, but the card
- * still reads whichever field carries `control: apiKey`.
+ * Regression: the shared card once hardcoded one gateway's unset spelling for
+ * every gateway, so saving another card wrote a value its manifest never
+ * declared. The host drops unknown keys and falls back on a failed enum — with
+ * a warning — so the operator's model-list choice silently reverted in the
+ * gateway. Both halves stay manifest-derived: the
+ * unset spelling (the synthetic `unset` fixture below proves the card never
+ * invents the UI word) and the key field (both gateways now declare
+ * `accountKeyId`, but the card still reads whichever field carries
+ * `control: apiKey`).
  */
 describe('gateway card vocabulary', () => {
   const cursorSchema: PluginConfigFieldInfo[] = [
     { key: 'model', type: 'string', default: 'auto', control: 'model' },
-    { key: 'modelListMode', type: 'enum', default: 'all', values: ['all', 'custom', 'follow'], control: 'segmented' },
+    { key: 'modelListMode', type: 'enum', default: 'default', values: ['default', 'custom', 'follow'], control: 'segmented' },
     { key: 'models', type: 'string[]', default: [], control: 'models' },
     { key: 'accountKeyId', type: 'string', default: '', control: 'apiKey' },
   ];
   const qoderSchema: PluginConfigFieldInfo[] = [
     { key: 'model', type: 'string', default: 'auto', control: 'model' },
-    { key: 'modelListMode', type: 'enum', default: 'none', values: ['none', 'custom', 'follow'], control: 'segmented' },
+    { key: 'modelListMode', type: 'enum', default: 'default', values: ['default', 'custom', 'follow'], control: 'segmented' },
     { key: 'models', type: 'string[]', default: [], control: 'models' },
     { key: 'accountKeyId', type: 'string', default: '', control: 'apiKey' },
   ];
@@ -141,41 +143,43 @@ describe('gateway card vocabulary', () => {
    *  the same generic editor, so the vocabulary must come from ITS manifest. */
   const jetbrainsSchema: PluginConfigFieldInfo[] = [
     { key: 'model', type: 'string', default: 'auto', control: 'model' },
-    { key: 'modelListMode', type: 'enum', default: 'none', values: ['none', 'custom', 'follow'] },
+    { key: 'modelListMode', type: 'enum', default: 'default', values: ['default', 'custom', 'follow'] },
     { key: 'models', type: 'string[]', default: [] },
     { key: 'accountKeyId', type: 'string', default: '', control: 'apiKey' },
   ];
-  /** A future gateway may name its binding anything; the card must follow. */
+  /** A future gateway may name its binding and its unset spelling anything;
+   *  `unset` is arbitrary and never a shipped value — the card must echo
+   *  whatever the manifest declares, never the console's own word. */
   const renamedSchema: PluginConfigFieldInfo[] = [
-    { key: 'modelListMode', type: 'enum', default: 'all', values: ['all', 'custom', 'follow'] },
+    { key: 'modelListMode', type: 'enum', default: 'unset', values: ['unset', 'custom', 'follow'] },
     { key: 'gatewayKeyId', type: 'string', default: '', control: 'apiKey' },
   ];
 
   it('reads the unset spelling and key field from each manifest', () => {
-    expect(gatewayVocabulary(cursorSchema)).toEqual({ unsetMode: 'all', keyField: 'accountKeyId' });
-    expect(gatewayVocabulary(qoderSchema)).toEqual({ unsetMode: 'none', keyField: 'accountKeyId' });
-    expect(gatewayVocabulary(jetbrainsSchema)).toEqual({ unsetMode: 'none', keyField: 'accountKeyId' });
-    expect(gatewayVocabulary(renamedSchema)).toEqual({ unsetMode: 'all', keyField: 'gatewayKeyId' });
+    expect(gatewayVocabulary(cursorSchema)).toEqual({ unsetMode: 'default', keyField: 'accountKeyId' });
+    expect(gatewayVocabulary(qoderSchema)).toEqual({ unsetMode: 'default', keyField: 'accountKeyId' });
+    expect(gatewayVocabulary(jetbrainsSchema)).toEqual({ unsetMode: 'default', keyField: 'accountKeyId' });
+    expect(gatewayVocabulary(renamedSchema)).toEqual({ unsetMode: 'unset', keyField: 'gatewayKeyId' });
   });
 
   it('parses the stored binding from the declared field, not a fixed name', () => {
-    const cursor = parseGatewayCfg({ modelListMode: 'all', accountKeyId: 'key-a' }, gatewayVocabulary(cursorSchema));
-    expect(cursor.modelListMode).toBe('none');
+    const cursor = parseGatewayCfg({ modelListMode: 'default', accountKeyId: 'key-a' }, gatewayVocabulary(cursorSchema));
+    expect(cursor.modelListMode).toBe('default');
     expect(cursor.boundKeyId).toBe('key-a');
 
     const qoder = parseGatewayCfg({ accountKeyId: 'key-b' }, gatewayVocabulary(qoderSchema));
-    expect(qoder.modelListMode).toBe('none');
+    expect(qoder.modelListMode).toBe('default');
     expect(qoder.boundKeyId).toBe('key-b');
 
     const renamed = parseGatewayCfg({ gatewayKeyId: 'key-c' }, gatewayVocabulary(renamedSchema));
     expect(renamed.boundKeyId).toBe('key-c');
   });
 
-  it('persists an enum value the manifest accepts for the UI "none" mode', () => {
-    for (const schema of [cursorSchema, qoderSchema]) {
+  it('persists an enum value the manifest accepts for the UI "Default" mode', () => {
+    for (const schema of [cursorSchema, qoderSchema, renamedSchema]) {
       const vocabulary = gatewayVocabulary(schema);
       const mode = schema.find((field) => field.key === 'modelListMode');
-      expect(mode?.values).toContain(gatewayModeValue(vocabulary, 'none'));
+      expect(mode?.values).toContain(gatewayModeValue(vocabulary, 'default'));
       expect(gatewayModeValue(vocabulary, 'custom')).toBe('custom');
       expect(gatewayModeValue(vocabulary, 'follow')).toBe('follow');
     }
@@ -191,10 +195,18 @@ describe('gateway card vocabulary', () => {
   it('falls back safely when a schema declares neither', () => {
     const parsed = parseGatewayCfg(
       { modelListMode: 'custom', models: ['ocr/pro'] },
-      { unsetMode: 'none', keyField: '' }
+      { unsetMode: 'default', keyField: '' }
     );
     expect(parsed.modelListMode).toBe('custom');
     expect(parsed.models).toEqual(['pro']);
     expect(parsed.boundKeyId).toBe('');
+  });
+
+  it('reads an older package’s `none` spelling as the Default mode', () => {
+    // Core derives the spelling from the manifest, so an installed package that
+    // still declares `none` keeps working: any non-custom/follow value is the
+    // no-list-set state.
+    const legacy = parseGatewayCfg({ modelListMode: 'none' }, { unsetMode: 'none', keyField: '' });
+    expect(legacy.modelListMode).toBe('default');
   });
 });

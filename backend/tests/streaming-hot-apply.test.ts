@@ -5,6 +5,7 @@ import path from 'node:path';
 import { loadConfig, saveRawConfig } from '../src/config/index.js';
 import { applyStreamingPosture } from '../src/pipeline/streaming-posture.js';
 import { createServer } from '../src/server.js';
+import { SCHEMA_VERSION } from '../src/config/schema.js';
 
 /**
  * The streaming posture is HOT-APPLIED (ADR-0008 §1): both save handlers call
@@ -18,7 +19,7 @@ import { createServer } from '../src/server.js';
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-stream-hot-'));
 const envDir = path.join(sandbox, 'home', 'envs', 'default');
 const configPath = path.join(envDir, 'config.yaml');
-const yamlFor = (mode: 'allow' | 'deny' | 'always') => `schemaVersion: 3
+const yamlFor = (mode: 'allow' | 'deny' | 'always') => `schemaVersion: ${SCHEMA_VERSION}
 client:
   host: 127.0.0.1
 upstream:
@@ -29,7 +30,7 @@ upstream:
 
 fs.mkdirSync(envDir, { recursive: true });
 fs.writeFileSync(configPath, yamlFor('deny'));
-fs.writeFileSync(path.join(envDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 3 }));
+fs.writeFileSync(path.join(envDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 process.env.OCR_HOME = path.join(sandbox, 'home');
 process.env.OCR_ENV = 'default';
 

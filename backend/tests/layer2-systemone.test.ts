@@ -15,6 +15,7 @@ import { RouterEngine } from '../src/router/index.js';
 import { CaptureRecorder } from '../src/capture/recorder.js';
 import { resetDecisionCaptureConfig } from '../src/capture/decision-capture.js';
 import { getRouteEntryStore, normalizePrompt, promptHashOf } from '../src/router/route-entries.js';
+import { currentYaml } from './helpers/current-config.js';
 import { getEnvPaths } from '../src/config/env.js';
 import { flushRoutingLedgerForTests } from '../src/router/routing-ledger.js';
 import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../src/config/defaults.js';
@@ -42,8 +43,8 @@ process.env.OCR_HOME = path.join(sandboxRoot, 'home');
 process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
-fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
-fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 3 }));
+fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), currentYaml('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n'));
+fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 process.chdir(sandbox);
 
 afterAll(() => {
@@ -88,7 +89,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
 
   test('enabled: a decision-model decision lands as one parseable row', async () => {
     fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
-      'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n');
+      currentYaml('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n'));
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -123,7 +124,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
   });
 
   test('default off: zero writes', async () => {
-    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
+    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), currentYaml('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n'));
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -150,7 +151,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
 
   test('an abandoned late result never lands in the dataset', async () => {
     fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
-      'schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n');
+      currentYaml('schemaVersion: 3\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n'));
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -570,7 +571,7 @@ describe('retired Layer 2 vendor keys are stripped at load time', () => {
     const legacyPath = path.join(sandboxRoot, 'legacy-layer2.yaml');
     fs.writeFileSync(
       legacyPath,
-      [
+      currentYaml([
         'schemaVersion: 3',
         'client:',
         '  port: 3000',
@@ -585,7 +586,7 @@ describe('retired Layer 2 vendor keys are stripped at load time', () => {
         '      apiKey: "sk-legacy"',
         '      timeoutMs: 900',
         '',
-      ].join('\n')
+      ].join('\n'))
     );
     const layer2 = loadConfig(legacyPath).classifier?.layer2 as Record<string, unknown>;
     expect(layer2.enabled).toBe(true);
