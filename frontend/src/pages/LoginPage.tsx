@@ -11,7 +11,7 @@ import { useI18n } from '../i18n/I18nContext';
 // Username-only persistence — the password is never stored anywhere but memory.
 const REMEMBER_KEY = 'ocr_login_username';
 
-export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) => {
+export const LoginPage: React.FC<{ onSuccess: () => void; expired?: boolean }> = ({ onSuccess, expired = false }) => {
   const { t } = useI18n();
   // Default to checked — un-checking is an explicit, per-visit choice.
   const [remember, setRemember] = useState(true);
@@ -69,6 +69,25 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
             <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('authLogin.subtitle')}</div>
           </div>
         </div>
+        {/* Expiry notice, not an error: the session simply ran out (or the
+            gateway restarted with a new cookie secret) while the console was
+            open. The gate re-appears with this line so the form is not read as
+            a first-time login. */}
+        {expired && !error && (
+          <div
+            style={{
+              fontSize: 'var(--text-xs)',
+              color: 'var(--accent-amber)',
+              lineHeight: 'var(--leading-normal)',
+              padding: '8px 10px',
+              borderRadius: '6px',
+              border: '1px solid var(--divider)',
+              background: 'var(--well-bg)',
+            }}
+          >
+            {t('authLogin.expired')}
+          </div>
+        )}
 
         <div>
           <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>

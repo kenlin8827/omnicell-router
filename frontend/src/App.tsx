@@ -37,6 +37,7 @@ import { ToastProvider } from './components/ToastProvider';
 import { TooltipProvider } from './components/TooltipProvider';
 import { LoginPage } from './pages/LoginPage';
 import { api } from './lib/api';
+import { SESSION_EXPIRED_EVENT } from './lib/sessionGuard';
 
 type AuthGateState = 'checking' | 'ok' | 'locked';
 
@@ -44,6 +45,10 @@ export const App: React.FC = () => {
   // Console-auth gate: on boot, ask the gateway whether the webAuth console
   // login is active and whether this browser already holds a session cookie.
   const [authState, setAuthState] = useState<AuthGateState>('checking');
+  /** Set when the gate was reached by an EXPIRY, not by a fresh boot: the
+   *  login form then says why it reappeared instead of looking like a reload
+   *  dropped the session for no reason. */
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -62,11 +67,31 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  /** Any 401 from the admin surface re-locks the console (lib/sessionGuard
+   *  patches fetch and fires this event). Deduplicated by the state itself:
+   *  a burst of parallel requests all failing produces one lock. */
+  useEffect(() => {
+    const onExpired = () => {
+      setSessionExpired(true);
+      setAuthState((s) => (s === 'locked' ? s : 'locked'));
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
+
   if (authState === 'checking') {
     return <div style={{ minHeight: '100vh' }} />;
   }
   if (authState === 'locked') {
-    return <LoginPage onSuccess={() => setAuthState('ok')} />;
+    return (
+      <LoginPage
+        expired={sessionExpired}
+        onSuccess={() => {
+          setSessionExpired(false);
+          setAuthState('ok');
+        }}
+      />
+    );
   }
 
   return (
