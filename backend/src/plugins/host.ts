@@ -48,10 +48,10 @@ import { isRuleRejected } from '../forward-proxy/egress.js';
  * a source tree is read only when `OCR_PLUGIN_SRC_DIR` names one, so the console
  * lists what is INSTALLED rather than whatever happens to sit on disk.
  *   1. DEV  — `<OCR_PLUGIN_SRC_DIR>/<id>/plugin.json` (untracked source; opt-in)
- *   2. BUNDLED — `<ocrHome>/plugins/bundled/*.zip` (packages that ship WITH
- *      the app; SEEDED from the build artifacts on every rebuild (ADR-0029),
- *      an operator install must not shadow one, and uninstall tombstones
- *      instead of deleting)
+ *   2. BUNDLED — `<ocrHome>/plugins/bundled/*.zip` (APP-OWNED packages: staged
+ *      only when `OCR_BUNDLED_PLUGIN_SRC` names a package set explicitly — no
+ *      release ships one, ADR-0032 — an operator install must not shadow one,
+ *      and uninstall tombstones instead of deleting)
  *   3. PACK — `<ocrHome>/plugins/*.zip` (operator-installed; extracted to
  *      `<ocrHome>/plugins/unpacked/<id>/` when absent or stale, then imported)
  *
@@ -86,12 +86,12 @@ function devSourceRoot(): string | undefined {
   return override ? resolve(override) : undefined;
 }
 
-/** The APP-OWNED package tier: packages that ship WITH the app and are never
- *  operator-owned — they win precedence over an operator install, and uninstall
- *  only writes a tombstone. Filled by `seedBundledPlugins()` from the build
- *  artifacts at every rebuild (ADR-0029); an operator can also place one
- *  deliberately. Single definition: the loader, the ownership guards and the
- *  seeder must agree on one location. */
+/** The APP-OWNED package tier: packages that are never operator-owned — they
+ *  win precedence over an operator install, and uninstall only writes a
+ *  tombstone. Nothing a release ships is placed here (ADR-0032): the tier fills
+ *  only when `seedBundledPlugins()` is pointed at an explicit package set
+ *  (ADR-0029), or when an operator places one deliberately. Single definition:
+ *  the loader, the ownership guards and the seeder must agree on one location. */
 export function bundledPluginsDir(): string {
   return join(pluginsRoot(), 'bundled');
 }
@@ -561,10 +561,11 @@ export async function loadInstalledPlugins(): Promise<PluginView[]> {
 }
 
 async function doLoadInstalledPlugins(): Promise<PluginView[]> {
-  // The app-owned tier is (re)seeded from the build artifacts BEFORE discovery,
-  // so a shipped package exists on the first boot of a fresh install and an app
-  // upgrade replaces it in place. Idempotent (byte compare) and a no-op under a
-  // dev tree, where the source being edited must win.
+  // The app-owned tier is (re)staged from an EXPLICITLY named package set before
+  // discovery — tests, or a downstream build that deliberately ships packages.
+  // On a normal install there is no source and this is a no-op (ADR-0032).
+  // Idempotent (byte compare) and disabled under a dev tree, where the source
+  // being edited must win.
   const seeded = seedBundledPlugins(bundledPluginsDir());
   if (seeded.seeded.length > 0) {
     console.log(`[OCR] Plugins: seeded bundled packages: ${seeded.seeded.join(', ')} (from ${seeded.source})`);
@@ -614,9 +615,9 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
   }
 
   const packRoot = pluginsRoot();
-  // Deterministic precedence: packages shipped WITH the app (`bundled/`) win
-  // over operator-installed ones, and file names sort inside each root. Dev
-  // tree already won above. An id must never depend on readdir order.
+  // Deterministic precedence: app-owned packages (`bundled/`) win over
+  // operator-installed ones, and file names sort inside each root. Dev tree
+  // already won above. An id must never depend on readdir order.
   for (const root of [
     { dir: bundledPluginsDir(), bundled: true },
     { dir: packRoot, bundled: false },
@@ -642,10 +643,10 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
         continue;
       }
       if (!root.bundled && id.startsWith('ocr-')) {
-        // `ocr-*` belongs to packages that ship with the app; an operator
-        // install must not shadow one (and an upgrade must stay predictable).
+        // `ocr-*` belongs to app-owned packages; an operator install must not
+        // claim it (and an upgrade must stay predictable).
         views.push(
-          failedView(id, 'packaged', packagedPath, new Error("plugin id 'ocr-*' is reserved for packages shipped with the gateway"))
+          failedView(id, 'packaged', packagedPath, new Error("plugin id 'ocr-*' is reserved for app-owned packages"))
         );
         seenIds.add(id);
         continue;
@@ -741,8 +742,8 @@ let lastViews: PluginView[] = [];
 
 /** Facts for a disabled plugin, WITHOUT importing its code: the manifest from
  *  the load dir when it was unpacked, else straight out of the package zip (a
- *  shipped package is disabled by a tombstone and may never have been
- *  extracted), else a bare id row. */
+ *  tombstoned app-owned package may never have been extracted), else a bare id
+ *  row. */
 function stubDisabledView(
   id: string,
   dir: string,
@@ -868,13 +869,13 @@ export function installPluginPackage(
   assertSupportedPluginApi(manifest.apiVersion);
   // Ownership refusals come FIRST: a rejected install must not touch a single
   // plugin artifact. (Clearing the disabled ledger before this point used to
-  // resurrect a tombstoned shipped package on the next reload.) Both answers
+  // resurrect a tombstoned app-owned package on the next reload.) Both answers
   // come from the MANIFEST id — file names in `bundled/` are free-form.
   if (bundledPackagePath(manifest.id)) {
-    throw new Error(`'${manifest.id}' ships with the gateway — disable it from the plugins page instead of installing an override`);
+    throw new Error(`'${manifest.id}' is an app-owned package (plugins/bundled) — disable it from the plugins page instead of installing an override`);
   }
   if (manifest.id.startsWith('ocr-')) {
-    throw new Error(`plugin id 'ocr-*' is reserved for packages shipped with the gateway`);
+    throw new Error(`plugin id 'ocr-*' is reserved for app-owned packages`);
   }
   // Version gate BEFORE anything lands on disk. A same-version upload is a
   // rebuild (allowed — that is how a broken build gets replaced), a higher one
@@ -931,9 +932,9 @@ function readPackagedManifest(packagedPath: string): PluginManifest | undefined 
   }
 }
 
-/** The package the HOST ships for `id`, if any. File names inside a discovery
+/** The APP-OWNED package for `id`, if any. File names inside a discovery
  *  root are FREE-FORM (the id lives in the manifest), so every ownership
- *  question — "does the app ship this?", "is this install an override?",
+ *  question — "is this package app-owned?", "is this install an override?",
  *  "is this uninstall a tombstone?" — is answered by scanning `bundled/` for
  *  the manifest id, never by guessing `${id}.zip`. */
 function bundledPackagePath(id: string): string | undefined {

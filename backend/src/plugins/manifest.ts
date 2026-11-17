@@ -57,7 +57,7 @@ export function normalizePluginParts(manifest: PluginManifest): PluginPart[] {
  *  alphanumeric. This is the ONE guard for that shape (the host's lifecycle
  *  routes call it too). Without it a hostile package steers those paths with
  *  `../..` (write AND recursive delete outside the plugins root), and the
- *  `ocr-` shipped-package reservation would be bypassable by casing on a
+ *  `ocr-` app-owned reservation would be bypassable by casing on a
  *  case-insensitive filesystem. */
 const PLUGIN_ID = /^[a-z0-9][a-z0-9-]*$/;
 

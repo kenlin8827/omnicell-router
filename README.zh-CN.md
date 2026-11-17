@@ -139,6 +139,11 @@ ocr teardown opencode   # 恢复 OpenCode 直连
 ocr teardown claude     # 恢复 Claude 直连
 ```
 
+插件**一律可选，且从不随应用分发**：前向代理集成（`cursor-gateway`、`qoder-gateway`、
+`jetbrains-gateway`、OpenCode 代理模式）与模型服务（`qoder-models`、`workbuddy-models`）都从
+控制台的 **Plugins** 页安装（上传 `bun run plugins:build` 生成在 `.plugin-dist/` 里的 zip），
+安装包与 npm 包从不携带。全新安装没有任何插件（ADR-0032）。
+
 ---
 
 ## 从源码手动编译

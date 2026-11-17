@@ -16,7 +16,7 @@ Client Hub 里四行代理接入 —— Cursor、Qoder、JetBrains IDEs、OpenCo
 1. **一行点了也没用的卡片。** `cursor-proxy` 的钩子写启动器把 Cursor 指向 forward proxy，但没有 `cursor-gateway` 就没人应答那些 host。操作者可以钩上一个最终只是透明转发的客户端 —— 于是控制台出现了 `GATEWAY_PLUGIN_BY_CLIENT` 表来禁用 setup 按钮，又出现 `LAUNCH_COMMANDS` 表来知道 `ocr cursor` 这个动词。
 2. **核心里的客户端知识，核心自己用不上。** `ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` 是写死的 `CliAction` 成员，直接 import 客户端模块分发；帮助文本逐行手写。
 3. **包无法拥有的生命周期。** 卸载 `cursor-gateway` 后 `cursor-proxy` 那行仍在、仍是已接管、仍然无用；两半各有各的升级路径。
-4. **`SupportedClient` 两头都不实在。** 它自称「本构建随包发布的钩子 id」，却列出了网关在包里的 id。
+4. **`SupportedClient` 两头都不实在。** 它自称「本构建内存在的钩子 id」，却列出了网关在包里的 id。
 
 机制（一个包多条轴）ADR-0028 已经给了。缺的全在**宿主**侧：启动器钩子需要的那些事实，适配器 SDK 没有暴露。
 
@@ -103,6 +103,6 @@ ADR-0029 的规则不变，且对每个代理接入包都成为关键路径：�
 
 - **卸载就是卸载。** 移除 `cursor-gateway` 会连启动器那一行一起消失；不再有孤儿钩子，也不再需要控制台表来维持配对。
 - **`ocr setup cursor-proxy` 照旧可用**，而且帮助文本现在这么说是因为包这么说。
-- **构建要求：** 必须重新生成 `.plugin-dist`（`bun run plugins:build`）—— 旧 zip 播种出的包只声明 `client-gateway`，对打包安装而言 Client Hub 那一行就直接不存在（dev 树通过 `OCR_PLUGIN_SRC_DIR` 直接读 `plugins/`）。
+- **构建/安装要求：** 包仍由 `bun run plugins:build` 生成到 `<repo>/.plugin-dist/`，但任何发行物都不分发它们（ADR-0032）—— 运营者从控制台上传该目录里的 zip。手工装上的旧 zip 只声明 `client-gateway`，Client Hub 那一行就直接不存在（dev 树通过 `OCR_PLUGIN_SRC_DIR` 直接读 `plugins/`）。
 - **写配置型钩子仍留在核心。** `opencode`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`、`kimi`、`openclaw`、`workbuddy` 改写客户端自身配置（模型槽、key 策略、profile 链接）。抽走它们需要 ADR-0027 刻意没有暴露的配置改写接缝（`catalogPlugin`/`launchVerbs` 覆盖不到）；那是下一个家族，不是本次的遗留。
 - **i18n 仍按客户端 id 取几个字符串**（`clients.cursorHint`、`clients.*SetupOk`）。那些是本地化**文案**，不是客户端名册：没有译文的包回落到共享的代理文案。把它们搬进 manifest 等于把 UI 文案写进协议 —— 那是另一个决策。

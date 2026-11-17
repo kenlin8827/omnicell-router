@@ -72,7 +72,7 @@ OpenCode 代理模式 hook 离开核心时是 `plugins/opencode-proxy/`（366 �
 
 - **`ClientAdapter` 的 id 不再是编译期穷尽的。** 自带表类型为 `Record<CoreClientId, …>`，键来自 `cli/clients/reserved.ts` 的保留 id 清单；`SupportedClient` 则为控制台与 CLI 能**寻址**的 id（自带 hook 加上文档化的包 hook）提供类型。不在联合里的插件 id 在边界处仍按 `SupportedClient` 处理（适配器对象结构化转换）——所以那个联合是**标签/CLI** 词表，不是运行时白名单。把它做成运行时白名单等于重新关掉扩展点。
 - **控制台 roster 变成安装相关的。** `client-adapter` 行只在其包被加载且启用时出现。插件页用独立标签渲染第三种类型（`pluginPage.typeClientAdapter`，八种语言齐备）。
-- **这一步时包还没有随桌面端分发。**（已被 ADR-0029 §1 取代：应用现在每次宿主重建时从 `.plugin-dist` 播种 `<ocrHome>/plugins/bundled`。）`tauri.conf.json` 的 resources 只有 `frontend/dist` + 后端二进制，没有任何步骤往应用自有层播种。因此把一个 hook 移出核心，意味着运维必须自己装包（或用 dev 树）。对 `opencode-proxy` 这种需要主动选择的细分模式可以接受，这也是**没有任何默认 hook 被移走**的原因。把插件包纳入随包分发是移走默认 hook 的前提，那是打包任务，不是插件契约变更。
+- **这一步时包还没有随桌面端分发。**（曾被 ADR-0029 §1 取代，最终由 ADR-0032 定在反方向：插件一律可选，任何发行物都不分发插件包——运营者从控制台自行安装，默认没有任何步骤播种 `<ocrHome>/plugins/bundled`。）`tauri.conf.json` 的 resources 只有 `frontend/dist` + 后端二进制，没有任何步骤往应用自有层播种。因此把一个 hook 移出核心，意味着运维必须自己装包（或用 dev 树）。对 `opencode-proxy` 这种需要主动选择的细分模式可以接受，这也是**没有任何默认 hook 被移走**的原因。把插件包纳入随包分发是移走默认 hook 的前提，那是打包任务，不是插件契约变更。
 - **CLI 懒加载插件。** `setupClient` / `teardownClient` / `getAllClientStatuses` 会 await `ensurePluginClientAdapters()`——在本进程还没跑过插件宿主时（`isPluginHostInitialized()`）跑一次，所以从不启动服务端的独立 CLI 里 `ocr setup opencode-gateway` 依然可用。**核心命令**绝不预加载宿主：只有非 OCR 命令（启动动词候选）或 `help` 会加载，因此 `ocr shims-status` 这类纯 JSON 命令不会被插件启动输出污染。
 - **坏包拖不垮 Client Hub。** 懒加载吞掉失败，自带表不受影响；在 `createPlugin` 阶段抛错的包只会变成插件页上的一行失败记录，什么都不贡献。
 

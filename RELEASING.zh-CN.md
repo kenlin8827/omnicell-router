@@ -50,6 +50,7 @@
 - **原生 Node.js 兼容**：运行时支持 Node.js (>= 18.0.0)，终端用户无需预先安装 Bun 或 TypeScript。
 - **内嵌完整 Web 控制台**：发布包内仅包含编译后的生产文件（前端 [frontend/dist](file:///d:/OpenHub/omnicell-router/frontend/dist) 与后端 [backend/dist](file:///d:/OpenHub/omnicell-router/backend/dist)），包解压体积仅约 28 MB（内嵌了完整的离线字体与静态资产）。
 - **完整生命周期管理**：支持所有 CLI 指令，如 `ocr start`（后台启动）、`ocr web`（启动并打开浏览器）、`ocr status`（查看监控）和 `ocr stop`（停止服务）。
+- **不含插件包**：`files` 不包含 `.plugin-dist`，npm 包永远不会顺带安装插件。插件一律可选，由运营者从控制台安装（ADR-0032）。
 
 ### 2.2 发布前准备
 
@@ -213,6 +214,10 @@ bun run build
 
 打包生成的安装包文件保存在：
 `desktop/src-tauri/target/release/bundle/`
+
+安装包只包含桌面外壳、控制台静态资源（`frontend/dist`）与网关 sidecar —— **没有任何插件包**。
+`tauri.conf.json` 不得声明 `plugins/` 资源，`main.rs` 不得设置 `OCR_BUNDLED_PLUGIN_SRC`：
+插件一律可选，从控制台的 Plugins 页安装（ADR-0032）。
 
 ---
 

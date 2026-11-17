@@ -1,7 +1,8 @@
 # ADR-0029 — Package Lifecycle: Shipping, Upgrading, Refusing
 
-- **Status:** Implemented
+- **Status:** Implemented (as amended)
 - **Date:** 2026-11-15
+- **Amended by:** [ADR-0032](./0032-plugins-are-optional.md) — §1 no longer ships or auto-seeds packages; the staging mechanics below stand, the shipping story does not
 - **Relates to:** [ADR-0017](./0017-client-gateway-plugins.md) (plugin contract), [ADR-0027](./0027-client-adapter-plugins.md) (client-adapter packages), [ADR-0028](./0028-multi-part-plugins.md) (multi-part packages)
 
 ## Context
@@ -14,13 +15,13 @@ Three gaps showed up the moment plugin packages stopped being one-copy-per-machi
 
 A fourth, smaller one: `importPlugin` staged a gateway before registering its adapter, so a package that failed registration still had its gateway committed — a console row saying "error" while the gateway kept intercepting that client's traffic.
 
+**Amendment:** ADR-0032 later withdrew the shipping half of this record (§1's automatic seeding from build artifacts and the app-owned-by-default consequence). Plugins are optional and no release distributes a package; the lifecycle mechanics below are unaffected.
+
 ## Decision
 
-### 1. The app seeds its own tier from the build artifacts
+### 1. The app-owned tier is staged explicitly, never shipped
 
-`seedBundledPlugins()` copies `.plugin-dist/*.zip` into `<ocrHome>/plugins/bundled/` at the start of every plugin-host rebuild (boot, install, enable/disable). The desktop launcher names the source explicitly (`OCR_BUNDLED_PLUGIN_SRC = <resourceDir>/plugins`, where the bundler places `.plugin-dist`); otherwise the repo-local `.plugin-dist` is used, resolved from the module's own location so source and compiled trees agree.
-
-Rules:
+ADR-0032 removed the shipping half of this decision: no release artifact carries a package, the desktop shell no longer names a source, and the repo-local fallback is gone. `seedBundledPlugins()` therefore copies only from a source `OCR_BUNDLED_PLUGIN_SRC` explicitly names, and does nothing when nothing is named. The staging mechanics are unchanged:
 
 - **Bytes are the version.** An identical file is left untouched — rewriting it would change its mtime, which is the key `ensureUnpacked` uses to decide whether to re-extract, so a careless seed would re-extract every package on every boot.
 - **One copy per id inside the tier.** A renamed artifact deletes the previous file claiming the same id: discovery sorts by FILE NAME, so a leftover would win or lose by accident.
@@ -53,8 +54,8 @@ There is no aliasing layer, and that is deliberate. Aliasing would make an incom
 
 ## Consequences
 
-- A fresh install has the shipped packages on first boot, and an app upgrade replaces them in place; the operator never uploads a zip to get a feature that ships with the product.
-- Shipped packages are app-owned by definition: the upload route refuses to shadow them (ADR-0017 §6), so their upgrades arrive with a release, not with an upload. Operator installs remain for third-party packages.
-- Boot now WRITES into `<ocrHome>/plugins/bundled/`. It is idempotent and byte-compared, but it is a write: a read-only OCR home leaves seeding as a no-op with the tier simply empty, which is the same state as before this ADR.
+- A fresh install has an EMPTY app-owned tier: the gateway boots with no plugins, and nothing arrives with a release (ADR-0032). Only an explicitly staged source or a deliberately placed file makes a package app-owned.
+- App-owned packages are the ones the upload route refuses to shadow (ADR-0017 §6); since nothing is app-owned unless the operator staged it, a normal operator install is the normal path.
+- Boot writes into `<ocrHome>/plugins/bundled/` only when a staging source was named. It is idempotent and byte-compared, and with no source it is a pure no-op.
 - Packages are no longer silently forward-compatible with a renamed client id. An old package fails loudly; the operator removes it and installs the replacement. The console is the migration UI — there is no automatic one, on purpose.
 - `config/<id>.json` still outlives a version change, so a field renamed by the new version stops applying (the new default takes over) while the old key stays in the file. A migration hook per version remains unimplemented; until then a rename is a breaking change to declare in the release notes, not something the host guesses at.

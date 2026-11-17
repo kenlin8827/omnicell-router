@@ -372,7 +372,8 @@ async function main(): Promise<void> {
   // Packages contribute client hooks AND their launch verbs, so the registry is
   // the only source for "is the first token a launch verb?". It is loaded ONLY
   // for that question and for `help`: a core command must not boot the plugin
-  // host — loading packages seeds the bundled tier and prints diagnostics, and
+  // host — loading packages prints diagnostics (and stages the app-owned tier
+  // only when explicitly pointed at one), and
   // `ocr shims-status` promises a single JSON document on stdout. Commands that
   // need the roster (`setup`, `teardown`, `status`) await it themselves.
   if (!OCR_COMMANDS[action]) {

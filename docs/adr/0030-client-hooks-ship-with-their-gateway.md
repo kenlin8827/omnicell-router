@@ -16,7 +16,7 @@ That split was not a design decision, it was a migration that stopped halfway. I
 1. **A row that cannot work.** `cursor-proxy`'s hook writes launchers that send Cursor to the forward proxy, but nothing answers those hosts without `cursor-gateway`. The operator could hook a client that then relayed everything transparently — so the console carried a `GATEWAY_PLUGIN_BY_CLIENT` table to disable the setup button, and a `LAUNCH_COMMANDS` table to know the `ocr cursor` verb.
 2. **Client knowledge in core that core cannot use.** `ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` were hardcoded `CliAction` members dispatching to imported client modules, and the help text listed every client by hand.
 3. **A lifecycle the package could not own.** Uninstalling `cursor-gateway` left the `cursor-proxy` row behind, hooked and useless; the two halves had different upgrade paths.
-4. **`SupportedClient` was a lie in both directions.** It claimed to be "the ids of the hooks that ship in this build" while listing ids whose gateways were packages.
+4. **`SupportedClient` was a lie in both directions.** It claimed to be "the ids of the hooks present in this build" while listing ids whose gateways were packages.
 
 ADR-0028 already provided the mechanism (one package, several axes). The missing pieces were all on the HOST side: a launcher hook needs facts the adapter SDK did not expose.
 
@@ -103,6 +103,6 @@ Consequence for the console: setup can still take minutes on a bad link, so the 
 
 - **Uninstall means uninstall.** Removing `cursor-gateway` removes the launcher row with it; there is no orphan hook and no console table to enforce the pairing.
 - **`ocr setup cursor-proxy` still works**, and the help text now says so because the package says so.
-- **Build requirement:** the shipped `.plugin-dist` artifacts must be rebuilt (`bun run plugins:build`) — a stale zip seeds a package that declares only `client-gateway`, and the Client Hub row then simply does not exist for packaged installs (dev trees read `plugins/` directly via `OCR_PLUGIN_SRC_DIR`).
+- **Build/install requirement:** the packages are still built with `bun run plugins:build` into `<repo>/.plugin-dist/`, but no release distributes them (ADR-0032) — an operator installs a zip from there through the console. A stale zip installed by hand declares only `client-gateway`, and the Client Hub row then simply does not exist (dev trees read `plugins/` directly via `OCR_PLUGIN_SRC_DIR`).
 - **Config-writer hooks stay in core.** `opencode`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `workbuddy` rewrite a client's own config with model slots, key policy and profile links. Extracting them needs a config-mutation seam ADR-0027 deliberately withheld (`catalogPlugin`/`launchVerbs` do not cover it); they are the next family, not a leftover of this one.
 - **i18n still keys a few strings by client id** (`clients.cursorHint`, `clients.*SetupOk`). Those are localized COPY, not the client roster: a package without a translated hint falls back to the shared proxy text. Moving them into the manifest would put UI copy in the protocol; that is a separate decision.

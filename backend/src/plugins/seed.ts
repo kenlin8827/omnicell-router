@@ -1,23 +1,26 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { unzipSync } from 'fflate';
 import { validatePluginManifest } from './manifest.js';
 import type { PluginManifest } from './types.js';
 
 /**
- * Seeding the APP-OWNED package tier (`<ocrHome>/plugins/bundled`).
+ * Staging the APP-OWNED package tier (`<ocrHome>/plugins/bundled`).
  *
- * `bundled/` is the tier for packages that ship WITH the app: they win
- * precedence over an operator install, and uninstall tombstones them instead of
- * deleting an app-owned file. Until this module existed nothing in the build
- * pipeline wrote there, so "ship a plugin" meant "tell the operator to upload a
- * zip" — every hook that left core (ADR-0027 / ADR-0028) was silently absent
- * from a fresh install.
+ * Plugins are OPTIONAL and are NEVER distributed (ADR-0032): no release artifact
+ * — installer, portable exe, npm tarball — carries a package zip, so nothing is
+ * seeded on a normal install and a fresh OCR home has an empty `bundled/`.
  *
- * The artifacts come from `.plugin-dist/` (`bun run plugins:build`), which the
- * desktop bundle ships as `plugins/` inside its resource dir. Seeding COPIES;
- * the app keeps owning the copy, and the artifact dir stays a build output.
+ * The tier itself still exists, with unchanged semantics (ADR-0017): a package
+ * placed there is app-owned, wins precedence over an operator install, cannot be
+ * shadowed by an upload, and is tombstoned (not deleted) on uninstall.
+ *
+ * Staging runs ONLY when `OCR_BUNDLED_PLUGIN_SRC` names a directory explicitly —
+ * tests that exercise the tier, and an operator/downstream build that deliberately
+ * hands the app a package set. There is NO default source: promoting whatever
+ * happens to sit in a checkout's `.plugin-dist/` would make a source run silently
+ * app-owned, which is exactly the state an optional plugin must never enter by
+ * accident.
  *
  * Rules this module holds to:
  *  - BYTES are the version: an identical file is left untouched, so the
@@ -27,34 +30,25 @@ import type { PluginManifest } from './types.js';
  *    previous file claiming the same id — file names sort, so the loser would
  *    be picked deterministically-but-wrongly.
  *  - A package whose manifest does not validate is NOT seeded. A half-written
- *    build artifact would otherwise become a broken app-owned package that
- *    shadows a working operator install.
+ *    artifact would otherwise become a broken app-owned package that shadows a
+ *    working operator install.
  *  - Tombstones are untouched: `disabled.json` is the operator's ledger, and a
  *    re-seeded package stays disabled until they say otherwise.
  */
 
-/** Where the build put the packages this app ships, or undefined when there is
- *  nothing to seed.
+/** Where an explicitly staged package set lives, or undefined when there is
+ *  nothing to stage — which is the NORMAL case: no release ships packages
+ *  (ADR-0032), so a default source does not exist.
  *
- *  `OCR_BUNDLED_PLUGIN_SRC` wins (the desktop launcher points it at its own
- *  resource dir). Otherwise the repo-local build output is used: the module
- *  lives at `<root>/backend/{src,dist}/plugins`, so `../../..` is the root in
- *  BOTH the source and the compiled tree. A `bun build --compile` binary has no
- *  such layout — it simply finds nothing and seeds nothing.
- *
- *  A dev tree disables seeding outright: `OCR_PLUGIN_SRC_DIR` means the
- *  operator is EDITING sources, and promoting a stale `.plugin-dist` copy over
- *  the tree under edit is the one thing that must never happen. */
+ *  `OCR_BUNDLED_PLUGIN_SRC` is the only way in: tests point it at their own
+ *  artifacts, and a downstream build that deliberately wants app-owned packages
+ *  can too. A dev tree disables staging outright: `OCR_PLUGIN_SRC_DIR` means the
+ *  operator is EDITING sources, and copying a packaged set over the tree under
+ *  edit is the one thing that must never happen. */
 export function bundledPluginSourceDir(): string | undefined {
   if (process.env.OCR_PLUGIN_SRC_DIR?.trim()) return undefined;
-  const override = process.env.OCR_BUNDLED_PLUGIN_SRC?.trim();
-  if (override) return resolve(override);
-  try {
-    const here = fileURLToPath(new URL('.', import.meta.url));
-    return join(resolve(here, '../../..'), '.plugin-dist');
-  } catch {
-    return undefined;
-  }
+  const explicit = process.env.OCR_BUNDLED_PLUGIN_SRC?.trim();
+  return explicit ? resolve(explicit) : undefined;
 }
 
 function readManifestFromBytes(bytes: Uint8Array): PluginManifest {
@@ -81,8 +75,9 @@ export interface SeedResult {
   source?: string;
 }
 
-/** Copy the shipped artifacts into the app-owned tier. Idempotent: safe to run
- *  on every plugin-host rebuild (boot, install, enable/disable). */
+/** Copy the explicitly staged artifacts into the app-owned tier. Idempotent:
+ *  safe to run on every plugin-host rebuild (boot, install, enable/disable).
+ *  A no-op — the normal case — when `bundledPluginSourceDir()` returns nothing. */
 export function seedBundledPlugins(bundledDir: string): SeedResult {
   const source = bundledPluginSourceDir();
   const result: SeedResult = { seeded: [], unchanged: 0, source };

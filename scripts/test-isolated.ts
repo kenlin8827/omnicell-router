@@ -166,12 +166,11 @@ function sandboxEnvFor(tag: string): Record<string, string | undefined> {
   // TMPDIR elsewhere, so all three are set.
   const tmpDir = path.join(dir, 'tmp');
   fs.mkdirSync(tmpDir, { recursive: true });
-  // The app-owned plugin tier is SEEDED from the build artifacts on every
-  // plugin-host rebuild (ADR-0029). Left at its default, every test that loads
-  // plugins would copy whatever this checkout's `.plugin-dist/` happens to hold
-  // — a local build output — into the sandbox, so the suite would pass or fail
-  // by machine. Pinned to a path that does not exist: seeding is a no-op, and a
-  // test that wants it sets this var to its own artifacts (plugin-upgrade.ts).
+  // The app-owned plugin tier is staged only when `OCR_BUNDLED_PLUGIN_SRC`
+  // names a directory (ADR-0029 / ADR-0032: no release ships packages, so there
+  // is no default source). Pinned to a path that does not exist anyway: a test
+  // that has just set this var must not leak artifacts into the next one, and a
+  // future default can never make the suite pass or fail by machine.
   const bundledSrc = path.join(dir, 'plugin-artifacts');
   const env: Record<string, string | undefined> = {
     ...process.env,

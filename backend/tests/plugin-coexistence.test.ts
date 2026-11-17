@@ -21,11 +21,12 @@ import { readProviderDefsFile, writeProviderDefs } from '../src/opencode/provide
 import { deleteProviderDef } from '../src/opencode/user-config.js';
 
 /**
- * Official (`<pluginsRoot>/bundled/*.zip`, shipped with the app) and
- * third-party packages must coexist under ONE deterministic contract
- * (ADR-0017 §6): bundled wins over an operator install, ids are namespaced,
- * package tombstones instead of deleting app-owned files, and the app-owned
- * tier is recognised by MANIFEST id (file names are free-form).
+ * App-owned (`<pluginsRoot>/bundled/*.zip`, an explicitly staged package set —
+ * nothing a release ships, ADR-0032) and third-party packages must coexist
+ * under ONE deterministic contract (ADR-0017 §6): bundled wins over an
+ * operator install, ids are namespaced, package tombstones instead of
+ * deleting app-owned files, and the app-owned tier is recognised by MANIFEST
+ * id (file names are free-form).
  */
 
 const IDS = [
@@ -105,25 +106,25 @@ describe('plugin coexistence: official vs third-party', () => {
     expect(rows[0].version).toBe('2.0.0');
   });
 
-  it('reserves the ocr- id namespace for shipped packages', async () => {
+  it('reserves the ocr- id namespace for app-owned packages', async () => {
     const id = 'ocr-shadow';
     // Refused at install (nothing lands on disk)...
-    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/reserved for packages shipped/);
+    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/reserved for app-owned packages/);
     // ...and again at load for a package that was already there.
     mkdirSync(pluginsRoot(), { recursive: true });
     writeFileSync(join(pluginsRoot(), `${id}.zip`), packageZip(id, '1.0.0'));
     const view = (await loadInstalledPlugins()).find((v) => v.id === id);
     expect(view?.loaded).toBe(false);
-    expect(view?.error ?? '').toMatch(/reserved for packages shipped with the gateway/);
+    expect(view?.error ?? '').toMatch(/reserved for app-owned packages/);
   });
 
-  it('refuses an install that would shadow a shipped package', () => {
+  it('refuses an install that would shadow a app-owned package', () => {
     const id = 'coexist-shipped';
     writeBundled(id, '1.0.0');
-    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/ships with the gateway/);
+    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/is an app-owned package/);
   });
 
-  it('tombstones a shipped package instead of deleting app-owned files', async () => {
+  it('tombstones a app-owned package instead of deleting app-owned files', async () => {
     const id = 'coexist-tombstone';
     writeBundled(id, '1.0.0');
     expect((await loadInstalledPlugins()).find((v) => v.id === id)?.loaded).toBe(true);
@@ -136,7 +137,7 @@ describe('plugin coexistence: official vs third-party', () => {
     const row = listInstalledPlugins().find((v) => v.id === id);
     expect(row?.disabled).toBe(true);
     expect(row?.loaded).toBe(false);
-    // Facts come from the package zip: a tombstoned shipped package is never
+    // Facts come from the package zip: a tombstoned app-owned package is never
     // extracted, so the console must not degrade to a bare `?` row.
     expect(row?.version).toBe('1.0.0');
     expect(row?.wires).toEqual([id]);
@@ -224,18 +225,18 @@ describe('plugin coexistence: official vs third-party', () => {
 
     // The operator's next move is exactly the refused one: install a copy.
     // The refusal must not clear the tombstone on its way out.
-    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/ships with the gateway/);
+    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/is an app-owned package/);
     expect(readDisabledLedger()).toContain(id);
     await loadInstalledPlugins();
     expect(listInstalledPlugins().find((v) => v.id === id)?.disabled).toBe(true);
   });
 
-  it('a shipped package with a free-form file name is still app-owned', async () => {
+  it('a app-owned package with a free-form file name is still app-owned', async () => {
     const id = 'coexist-shipped';
     writeBundled(id, '4.2.0', `official-${id}-v4.zip`);
 
     // Ownership is decided by the MANIFEST id, not by the file name.
-    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/ships with the gateway/);
+    expect(() => installPluginPackage(packageZip(id, '1.0.0'))).toThrow(/is an app-owned package/);
 
     // Export follows the loader's precedence, so the download is the copy the
     // host would actually run.
@@ -254,18 +255,18 @@ describe('plugin coexistence: official vs third-party', () => {
   });
 
   it('refuses the ocr- id namespace at install, not only at load', () => {
-    expect(() => installPluginPackage(packageZip('ocr-shadow', '1.0.0'))).toThrow(/reserved for packages shipped/);
+    expect(() => installPluginPackage(packageZip('ocr-shadow', '1.0.0'))).toThrow(/reserved for app-owned packages/);
     expect(existsSync(join(pluginsRoot(), 'ocr-shadow.zip'))).toBe(false);
   });
 
-  it('does not duplicate an id when the shipped copy fails to load', async () => {
+  it('does not duplicate an id when the app-owned copy fails to load', async () => {
     const id = 'coexist-broken-bundled';
-    // Shipped copy is unloadable (other contract version); the operator copy
-    // is fine. The shipped copy still OWNS the id: one row, no silent pickup.
+    // App-owned copy is unloadable (other contract version); the operator copy
+    // is fine. The app-owned copy still OWNS the id: one row, no silent pickup.
     mkdirSync(join(pluginsRoot(), 'bundled'), { recursive: true });
     writeFileSync(join(pluginsRoot(), 'bundled', `official-${id}.zip`), packageZip(id, '9.9.9', 2));
-    // The operator copy predates the shipped one (an install would be refused),
-    // so it can only get here as a file that is already on disk.
+    // The operator copy predates the app-owned one (an install would be
+    // refused), so it can only get here as a file that is already on disk.
     mkdirSync(pluginsRoot(), { recursive: true });
     writeFileSync(join(pluginsRoot(), `${id}.zip`), packageZip(id, '1.0.0'));
 

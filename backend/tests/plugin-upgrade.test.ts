@@ -37,9 +37,10 @@ delete process.env.OCR_PLUGIN_SRC_DIR; // no dev tree: seeding must be exercised
 
 /** The artifact source the runner pinned (a path that does not exist, so
  *  seeding is inert by default — see scripts/test-isolated.ts). Seeding cases
- *  point it at their own ARTIFACTS dir and RESTORE this value afterwards; a
- *  plain `delete` would fall back to this checkout's `.plugin-dist` and make the
- *  suite depend on a local build output. */
+ *  point it at their own ARTIFACTS dir and RESTORE this value afterwards: no
+ *  default source exists (ADR-0032), but restoring it (rather than deleting)
+ *  keeps a case that forgets to restore from silently staging another case's
+ *  artifacts. */
 const PINNED_BUNDLED_SRC = process.env.OCR_BUNDLED_PLUGIN_SRC;
 function restoreBundledSrc(): void {
   if (PINNED_BUNDLED_SRC === undefined) delete process.env.OCR_BUNDLED_PLUGIN_SRC;
@@ -142,7 +143,7 @@ describe('plugin downgrade: refused, and only a rollback may do it', () => {
 });
 
 describe('app-owned tier: seeding from the build artifacts', () => {
-  it('copies shipped packages into `<pluginsRoot>/bundled` and loads them', async () => {
+  it('copies app-owned packages into `<pluginsRoot>/bundled` and loads them', async () => {
     rmSync(ARTIFACTS, { recursive: true, force: true });
     mkdirSync(ARTIFACTS, { recursive: true });
     writeFileSync(join(ARTIFACTS, 'shipped-one.zip'), packageZip('seed-one', '1.0.0'));
@@ -150,7 +151,7 @@ describe('app-owned tier: seeding from the build artifacts', () => {
     try {
       const views = await loadInstalledPlugins();
       const seeded = views.find((v) => v.id === 'seed-one');
-      assert.ok(seeded, 'the shipped package must be visible on the first boot');
+      assert.ok(seeded, 'the app-owned package must be visible on the first boot');
       assert.equal(seeded.loaded, true);
       assert.equal(seeded.source, 'packaged');
       assert.ok(existsSync(join(bundledPluginsDir(), 'shipped-one.zip')));
@@ -181,7 +182,7 @@ describe('app-owned tier: seeding from the build artifacts', () => {
     }
   });
 
-  it('replaces a shipped package in place on an app upgrade, keeping one copy per id', async () => {
+  it('replaces a app-owned package in place on an app upgrade, keeping one copy per id', async () => {
     rmSync(ARTIFACTS, { recursive: true, force: true });
     mkdirSync(ARTIFACTS, { recursive: true });
     writeFileSync(join(ARTIFACTS, 'shipped.zip'), packageZip('seed-move', '1.0.0'));
@@ -201,7 +202,7 @@ describe('app-owned tier: seeding from the build artifacts', () => {
     }
   });
 
-  it('never resurrects a tombstoned shipped package', async () => {
+  it('never resurrects a tombstoned app-owned package', async () => {
     rmSync(ARTIFACTS, { recursive: true, force: true });
     mkdirSync(ARTIFACTS, { recursive: true });
     writeFileSync(join(ARTIFACTS, 'seed-tomb.zip'), packageZip('seed-tomb', '1.0.0'));

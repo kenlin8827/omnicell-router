@@ -127,7 +127,7 @@ ocr restart             # Restart gateway daemon
 # Client integrations (one-command setup)
 ocr setup claude        # Hook Claude Code to route via OCR
 ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
-ocr setup cursor-proxy  # Hook Cursor via the OCR forward proxy + Cursor Gateway plugin
+ocr setup cursor-proxy  # Hook Cursor via the OCR forward proxy + the cursor-gateway plugin (install it from the console first)
 ocr setup dsh           # Hook DeepSeek Harness to route via OCR
 ocr setup opencode      # Hook OpenCode to route via OCR
 ocr setup pi            # Hook Pi coding agent to route via OCR
@@ -136,7 +136,7 @@ ocr setup omp           # Hook OMP (oh-my-pi) to route via OCR
 ocr setup kimi          # Hook Kimi Code CLI to route via OCR
 ocr setup grok          # Hook Grok CLI to route via OCR
 ocr setup workbuddy     # Hook WorkBuddy (models.json custom models) to route via OCR
-ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + qoder-gateway plugin
+ocr setup qoder-proxy   # Hook Qoder via the OCR forward proxy + the qoder-gateway plugin (install it from the console first)
 
 # Launch through the OCR-managed launchers (after setup)
 ocr cursor              # Start the Cursor IDE with the proxy env applied
@@ -148,6 +148,12 @@ ocr qoder-cli           # Run the Qoder CLI with the proxy env applied
 ocr teardown opencode   # Restore OpenCode to direct connection
 ocr teardown claude     # Restore Claude to direct connection
 ```
+
+Plugins are **optional and never distributed** with the app: the forward-proxy integrations
+(`cursor-gateway`, `qoder-gateway`, `jetbrains-gateway`, OpenCode proxy mode) and the model
+services (`qoder-models`, `workbuddy-models`) are installed from the console's **Plugins** page
+(upload the zip from `bun run plugins:build` -> `.plugin-dist/`), never shipped in the installer
+or the npm package. A fresh install has no plugins (ADR-0032).
 
 ---
 
