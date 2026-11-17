@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { zipSync } from 'fflate';
@@ -140,6 +141,51 @@ describe('junie client-side streaming patch', () => {
     altered[32] = 0x00; // break the verified iconst_1 / goto guard
     assert.equal(mod.inspectModelParameters(buildModelParametersClass(altered)), 'unknown');
     assert.equal(mod.patchModelParameters(buildModelParametersClass(altered)).state, 'unsupported');
+  });
+
+  it('reverts with the same byte flip, so no rollback marker is needed', () => {
+    if (!mod) return;
+    const original = buildModelParametersClass();
+    const patched = mod.patchModelParameters(original).bytes;
+    assert.equal(mod.inspectModelParameters(patched), 'streaming-on');
+    const back = mod.unpatchModelParameters(patched);
+    assert.equal(back.state, 'unpatched');
+    assert.equal(back.bytes.toString('hex'), original.toString('hex'), 'the flip is self-inverse');
+    assert.equal(mod.unpatchModelParameters(back.bytes).state, 'already');
+    assert.equal(mod.unpatchModelParameters(original).state, 'already');
+  });
+
+  it('refuses to revert a changed method shape', () => {
+    if (!mod) return;
+    const altered = Buffer.from(REAL_CODE);
+    altered[32] = 0x00;
+    assert.equal(mod.unpatchModelParameters(buildModelParametersClass(altered)).state, 'unsupported');
+  });
+
+  it('drops a stale marker on an already-clean jar without rewriting it', async () => {
+    if (!mod) return;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-junie-revert-'));
+    try {
+      const cls = buildModelParametersClass();
+      const jarPath = path.join(tmp, 'junie-release-test.jar');
+      const zip = buildZip(mod.MODEL_PARAMETERS_CLASS, cls, 0);
+      fs.writeFileSync(jarPath, zip);
+      // What an `apply` that could not write leaves behind, and what a running
+      // IDE guarantees: a marker that claims a patch the jar never received.
+      const marker = path.join(tmp, mod.JUNIE_STREAMING_MARKER);
+      fs.writeFileSync(
+        marker,
+        JSON.stringify({ jar: jarPath, originalClass: cls.toString('base64'), patchedAt: '2026-01-01T00:00:00.000Z' }),
+      );
+      const result = await mod.revertJunieStreamingPatch({ jars: [jarPath] });
+      assert.equal(result.ok, true);
+      assert.equal(result.jars.length, 1);
+      assert.equal(result.jars[0].state, 'already');
+      assert.equal(fs.existsSync(marker), false, 'the stale marker is gone');
+      assert.deepEqual(fs.readFileSync(jarPath), zip, 'the jar is left untouched');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('reads a deflated class out of a zip without any archiver binary', () => {

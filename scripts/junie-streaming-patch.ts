@@ -10,7 +10,8 @@
  * `apply` rewrites ONE byte inside each `junie-release-*.jar`. The JVM has to
  * reload that class, so QUIT the IDE/Junie first — on Windows an open jar is
  * locked and `jar uf` will refuse it. Re-running is safe (idempotent), and
- * `revert` restores the exact original class bytes from the rollback marker.
+ * `revert` flips that byte back: it needs no rollback marker, and a jar that is
+ * already unpatched is left untouched (only a stale marker is dropped).
  *
  * A Junie upgrade replaces the jar entirely, which simply returns it to
  * `streaming-off`; re-run `apply` (or one-click setup) after each upgrade.
@@ -63,10 +64,16 @@ if (action === 'dry-run' || action === 'apply' || action === 'revert') {
     process.exit(0);
   }
   if (!result.ok) {
-    console.error('\nNot all jars are patched. Quit the IDE/Junie (the jar is locked) and re-run `apply`.');
+    console.error(action === 'revert'
+      ? '\nNot all jars are reverted. Quit the IDE/Junie (the jar is locked) and re-run `revert`.'
+      : '\nNot all jars are patched. Quit the IDE/Junie (the jar is locked) and re-run `apply`.');
     printJars(jars);
   } else if (action === 'apply') {
     console.log('\nRestart the IDE so Junie reloads the patched class.');
+  } else if (result.jars.some((outcome) => outcome.state === 'reverted')) {
+    console.log('\nRestart the IDE so Junie reloads the original class.');
+  } else {
+    console.log('\nNothing to revert — every jar is already in batch mode.');
   }
   process.exit(result.ok ? 0 : 1);
 }
