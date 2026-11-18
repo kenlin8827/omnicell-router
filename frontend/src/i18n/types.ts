@@ -98,7 +98,6 @@ export interface TranslationDict {
   chat: {
     title: string;
     tabChat: string;
-    subtitle: string;
     keyLabel: string;
     keyConfigured: string;
     keyManual: string;
@@ -118,6 +117,18 @@ export interface TranslationDict {
     paramsLabel: string;
     temperatureLabel: string;
     maxTokensLabel: string;
+    effortLabel: string;
+    effortPlaceholder: string;
+    effortNone: string;
+    promptPresetLabel: string;
+    promptPresetManage: string;
+    promptPresetSave: string;
+    promptPresetDelete: string;
+    promptPresetName: string;
+    promptPresetEmpty: string;
+    promptPresetSaved: string;
+    promptPresetDeleted: string;
+    promptPresetNameRequired: string;
     systemLabel: string;
     systemPlaceholder: string;
     send: string;
@@ -163,14 +174,26 @@ export interface TranslationDict {
     factBreaker: string;
     factRequest: string;
     factSession: string;
+    /** Tooltip: the session chip links to /sessions pre-filtered on this id. */
+    factSessionTip: string;
     factTokens: string;
+    historyTitle: string;
+    historyNew: string;
+    historyEmpty: string;
+    historyDelete: string;
+    historyUntitled: string;
+    cardTitle: string;
+    wide: string;
+    narrow: string;
+    expand: string;
+    collapse: string;
+    expandMessage: string;
   };
   /** Decision wire tab (`POST /v1/systemone`): one state evaluated against
    *  typed questions, answered with values + probabilities. */
   decision: {
     title: string;
     tabDecision: string;
-    subtitle: string;
     stateLabel: string;
     statePlaceholder: string;
     stateRequired: string;
@@ -205,6 +228,11 @@ export interface TranslationDict {
     send: string;
     presetLabel: string;
     presetHint: string;
+    historyTitle: string;
+    historyNew: string;
+    historyEmpty: string;
+    historyDelete: string;
+    historyUntitled: string;
   };
 
   /** Ready-to-run System One use cases for the playground (per language). */

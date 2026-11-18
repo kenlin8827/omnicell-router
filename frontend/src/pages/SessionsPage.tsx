@@ -781,26 +781,27 @@ export const SessionsPage: React.FC = () => {
   // per modal open.
   const [detailFull, setDetailFull] = useState(false);
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
-  const [filterInput, setFilterInput] = useState('');
+  // Seeded from the URL so a cross-page jump (the playground's session chip)
+  // arrives pre-filtered, on the same convention as `?apiKey=` below.
+  const [searchParams] = useSearchParams();
+  const urlQuery = searchParams.get('q') || '';
+  const [filterInput, setFilterInput] = useState(urlQuery);
   const [filter, setFilter] = useState('');
   // Per-application selector (server-side ?apiKey=, same semantics as the
   // captures page): '' = all apps, otherwise a client API-key id. Initialized
   // from the URL so /usage row clicks arrive pre-filtered.
-  const [searchParams] = useSearchParams();
   const [apiKeyFilter, setApiKeyFilter] = useState(searchParams.get('apiKey') || '');
   const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
   // Gateway-internal rows (console translation/probe loopback calls, reserved
-  // `ocr-internal:` session ids) — server-side filter, ON by default: these
-  // sessions are noise for inspecting client traffic and stay one click away.
-  // The checkbox lives on the description line below, not in the action
-  // toolbar (see the description block).
-  const [hideInternal, setHideInternal] = useState(true);
+  // `ocr-internal:` session ids) — server-side filter, ON by default. Disabled
+  // when arriving with a `?q=` deep link (the playground's session chip) so the
+  // searched id is never hidden behind a default exclusion.
+  const [hideInternal, setHideInternal] = useState(!urlQuery);
   // Single-request rows — a client's own helper calls (title / step summary /
   // classification) carry no session identity, so ADR-0002 §1 mints one
-  // session per call and one agent turn can emit dozens. Server-side filter
-  // (?hideOneShot=1), ON by default: those rows are noise for reading real
-  // conversations and stay one checkbox away.
-  const [hideOneShot, setHideOneShot] = useState(true);
+  // session per call and one agent turn can emit dozens. Server-side filter,
+  // ON by default — disabled with `?q=` for the same reason as above.
+  const [hideOneShot, setHideOneShot] = useState(!urlQuery);
 
   // Combobox options: the configured client keys (id + application name).
   // Best-effort — a console session without /api-keys visibility just shows

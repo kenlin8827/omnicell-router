@@ -18,7 +18,8 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Bot, Check, ChevronRight, Copy, Eraser, Eye, EyeOff, Loader2, Maximize2, MessagesSquare, Minimize2, Plus, Send, Square, Trash2, User } from 'lucide-react';
+import { Bot, Check, ChevronRight, Clock, Copy, Eraser, Expand, Eye, EyeOff, Loader2, Maximize2, MessagesSquare, Minimize2, Plus, Save, Send, Shrink, Square, Trash2, User } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { api, type ApiKeyItem } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -31,8 +32,9 @@ import { Switch } from '../components/Switch';
 import { MD_COMPONENTS, MD_PLUGINS } from '../components/Prose';
 import { copyToClipboard } from '../lib/clipboard';
 import { FONT_MONO } from '../lib/fonts';
-import type { PlaygroundPresetQuestion } from '../i18n/types';
+import type { PlaygroundPreset, PlaygroundPresetQuestion } from '../i18n/types';
 import { decodeRate, formatRate } from '../lib/format';
+import { EFFORT_LADDER, EFFORT_I18N_KEY, type ReasoningEffort } from '../lib/effort';
 
 /** The observation header names — one place, so header and summary parsing
  *  read the SAME vocabulary (the summary frame reuses the header keys). */
@@ -64,6 +66,172 @@ const HDR_SYSTEMONE_UPSTREAM = 'X-OCR-Systemone-Upstream';
  *  state so a form edit can never mutate the active language's table. */
 const cloneDrafts = (drafts: QuestionDraft[]): QuestionDraft[] =>
   drafts.map((q) => ({ ...q, choices: q.choices.map((c) => ({ ...c })), levels: [...q.levels] }));
+
+/** System prompt presets persisted in localStorage. */
+interface PromptPreset { id: string; name: string; content: string }
+const PROMPT_PRESETS_KEY = 'ocr_playground_prompt_presets';
+const loadPromptPresets = (): PromptPreset[] => {
+  try {
+    const raw = localStorage.getItem(PROMPT_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is PromptPreset => {
+        if (typeof p !== 'object' || p == null) return false;
+        const r = p as Record<string, unknown>;
+        return typeof r.id === 'string' && typeof r.name === 'string' && typeof r.content === 'string';
+      },
+    );
+  } catch {
+    return [];
+  }
+};
+const savePromptPresets = (presets: PromptPreset[]) => {
+  try { localStorage.setItem(PROMPT_PRESETS_KEY, JSON.stringify(presets)); } catch { /* best-effort */ }
+};
+
+// ── playground multi-conversation persistence ───────────────────────────────
+// All state lives in localStorage — zero backend involvement.  Each tab (chat
+// and decision) owns an independent conversation list; the active conversation
+// auto-saves on every meaningful state change and auto-restores on mount.
+
+const PG_CHAT_KEY = 'ocr_playground_chats';
+const PG_DECISION_KEY = 'ocr_playground_decisions';
+const PG_TITLE_LEN = 48;
+const PG_MAX_CONVERSATIONS = 50;
+
+interface PgChatConversation {
+  id: string;
+  title: string;
+  sessionId: string;
+  turns: ChatTurn[];
+  model: string;
+  systemPrompt: string;
+  draft: string;
+  nextId: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface PgDecisionConversation {
+  id: string;
+  title: string;
+  presetId: string;
+  stateInput: string;
+  questionDrafts: QuestionDraft[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Derive a display title from the first user turn (or the decision state). */
+const chatTitle = (turns: ChatTurn[]): string => {
+  const first = turns.find(t => t.role === 'user' && t.content);
+  if (!first) return '';
+  return first.content.slice(0, PG_TITLE_LEN).replace(/\n/g, ' ');
+};
+
+
+// ── chat store ──
+
+const loadChatStore = (): { active: string; conversations: PgChatConversation[] } => {
+  try {
+    const raw = localStorage.getItem(PG_CHAT_KEY);
+    if (!raw) return { active: '', conversations: [] };
+    const parsed = JSON.parse(raw) as { active?: string; conversations?: unknown[] };
+    const list = Array.isArray(parsed.conversations)
+      ? (parsed.conversations as PgChatConversation[]).filter(
+          c => c && typeof c.id === 'string' && typeof c.sessionId === 'string'
+        )
+      : [];
+    return { active: typeof parsed.active === 'string' ? parsed.active : '', conversations: list };
+  } catch { return { active: '', conversations: [] }; }
+};
+
+const saveChatStore = (active: string, conversations: PgChatConversation[]) => {
+  try {
+    const trimmed = conversations.slice(0, PG_MAX_CONVERSATIONS);
+    localStorage.setItem(PG_CHAT_KEY, JSON.stringify({ active, conversations: trimmed }));
+  } catch { /* best-effort */ }
+};
+
+// ── decision store ──
+
+const loadDecisionStore = (): { active: string; conversations: PgDecisionConversation[] } => {
+  try {
+    const raw = localStorage.getItem(PG_DECISION_KEY);
+    if (!raw) return { active: '', conversations: [] };
+    const parsed = JSON.parse(raw) as { active?: string; conversations?: unknown[] };
+    const list = Array.isArray(parsed.conversations)
+      ? (parsed.conversations as PgDecisionConversation[]).filter(
+          c => c && typeof c.id === 'string' && typeof c.stateInput === 'string'
+        )
+      : [];
+    return { active: typeof parsed.active === 'string' ? parsed.active : '', conversations: list };
+  } catch { return { active: '', conversations: [] }; }
+};
+
+const saveDecisionStore = (active: string, conversations: PgDecisionConversation[]) => {
+  try {
+    const trimmed = conversations.slice(0, PG_MAX_CONVERSATIONS);
+    localStorage.setItem(PG_DECISION_KEY, JSON.stringify({ active, conversations: trimmed }));
+  } catch { /* best-effort */ }
+};
+
+const mintPlaygroundSessionId = (): string => `pg_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+
+/** A conversation that does not exist yet — the empty-store seed and the
+ *  target of "new conversation". */
+const emptyChatConversation = (): PgChatConversation => {
+  const now = Date.now();
+  return {
+    id: crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+    title: '',
+    sessionId: mintPlaygroundSessionId(),
+    turns: [],
+    model: 'auto',
+    systemPrompt: '',
+    draft: '',
+    nextId: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
+/** Store + an ACTIVE conversation that really exists in it. An empty store
+ *  seeds one: the auto-save effect keys off the active id, so without a seeded
+ *  conversation a first visit would never persist a single turn. */
+const loadChatStoreWithActive = (): { active: string; conversations: PgChatConversation[] } => {
+  const store = loadChatStore();
+  const conversations = store.conversations.length > 0 ? store.conversations : [emptyChatConversation()];
+  const active = conversations.some(c => c.id === store.active) ? store.active : conversations[0].id;
+  return { active, conversations };
+};
+
+/** Decision-tab twin of `emptyChatConversation`: a fresh draft seeded from the
+ *  given preset (undefined = blank preset fields). */
+const emptyDecisionConversation = (preset?: PlaygroundPreset): PgDecisionConversation => {
+  const now = Date.now();
+  return {
+    id: crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+    title: '',
+    presetId: preset?.id ?? '',
+    stateInput: preset?.state ?? '',
+    questionDrafts: cloneDrafts(preset?.questions ?? []),
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
+const loadDecisionStoreWithActive = (presets: PlaygroundPreset[]): {
+  active: string;
+  conversations: PgDecisionConversation[];
+} => {
+  const store = loadDecisionStore();
+  const conversations = store.conversations.length > 0 ? store.conversations : [emptyDecisionConversation(presets[0])];
+  const active = conversations.some(c => c.id === store.active) ? store.active : conversations[0].id;
+  return { active, conversations };
+};
 
 interface TurnFacts {
   status: number;
@@ -345,9 +513,40 @@ const jsonWell: React.CSSProperties = {
   color: 'var(--text-dim)',
 };
 
-const FactChip: React.FC<{ label: string; value: string; tip?: string }> = ({ label, value, tip }) => (
+/** One observation fact. With `onOpen` the value becomes a link — used by the
+ *  session chip to hand the gateway-minted id to /sessions, which searches
+ *  session ids through its `?q=` filter, so the routing ladder behind a turn
+ *  is one click away instead of a copy/paste round trip. */
+const FactChip: React.FC<{ label: string; value: string; tip?: string; onOpen?: () => void }> = ({
+  label,
+  value,
+  tip,
+  onOpen,
+}) => (
   <span style={chipStyle} title={tip ?? `${label}: ${value}`}>
-    {label} <span style={{ color: 'var(--text-main)', fontFamily: FONT_MONO }}>{value}</span>
+    {label}{' '}
+    {onOpen ? (
+      <button
+        type="button"
+        onClick={onOpen}
+        style={{
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          margin: 0,
+          font: 'inherit',
+          fontFamily: FONT_MONO,
+          color: 'var(--text-main)',
+          cursor: 'pointer',
+          textDecoration: 'underline',
+          textDecorationColor: 'var(--card-border)',
+        }}
+      >
+        {value}
+      </button>
+    ) : (
+      <span style={{ color: 'var(--text-main)', fontFamily: FONT_MONO }}>{value}</span>
+    )}
   </span>
 );
 
@@ -356,8 +555,14 @@ const FactChip: React.FC<{ label: string; value: string; tip?: string }> = ({ la
  *  map (remote images are never fetched). */
 const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const isUser = turn.role === 'user';
   const facts = turn.facts;
+  // Per-message "expand": read one reply at full size when the inline bubble
+  // squeezes long markdown or reasoning. Local to the row — the dialog is the
+  // shared shell, so Esc/backdrop behaviour matches every other dialog.
+  const [messageOpen, setMessageOpen] = useState(false);
+  const [rowHover, setRowHover] = useState(false);
   // Decode-TPS from the gateway-measured window: completion tokens ÷ genMs,
   // the exact pair the console uses. A buffered turn carries no window, so the
   // chip shows '—' rather than a rate synthesized from client-side timing.
@@ -374,7 +579,11 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
           ? t('chat.layer2')
           : facts?.layer;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: isUser ? 'flex-end' : 'flex-start' }}>
+    <div
+      style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: isUser ? 'flex-end' : 'flex-start' }}
+      onMouseEnter={() => setRowHover(true)}
+      onMouseLeave={() => setRowHover(false)}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
         {isUser ? <User size={12} /> : <Bot size={12} />}
         <span>{isUser ? t('chat.you') : t('chat.assistant')}</span>
@@ -383,6 +592,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
 
       <div
         style={{
+          position: 'relative',
           maxWidth: '88%',
           minWidth: 120,
           padding: '8px 12px',
@@ -395,6 +605,31 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
           wordBreak: 'break-word',
         }}
       >
+        {/* Top-right affordance inside the bubble corner: the bubble is the
+            message card, so its controls live on it. */}
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => setMessageOpen(true)}
+          title={t('chat.expandMessage')}
+          aria-label={t('chat.expandMessage')}
+          style={{
+            position: 'absolute', top: 4, right: 4,
+            // Above the message body (an error well or long markdown otherwise
+            // paints over the glyph), and revealed on row hover only: the
+            // affordance must never compete with the reply text.
+            zIndex: 2,
+            width: 20, height: 20, minHeight: 0, padding: 0,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 5,
+            background: 'var(--surface)',
+            opacity: rowHover || messageOpen ? 0.75 : 0,
+            pointerEvents: rowHover || messageOpen ? 'auto' : 'none',
+            transition: 'opacity 0.15s ease',
+          }}
+        >
+          <Maximize2 size={11} />
+        </button>
         {turn.reasoning && (
           <details style={{ marginBottom: turn.content ? 8 : 0 }}>
             <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
@@ -460,10 +695,6 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
           {turn.usage && (
             <FactChip label={t('chat.factRate')} value={formatRate(rate)} tip={t('chat.factRateTip')} />
           )}
-          {/* Failover narrative only when it tells a story. The gateway pushes the
-              first candidate into the path on EVERY routed turn (X-OCR-Failover
-              "false"), so rendering it unconditionally would claim a failover
-              that never happened — the same rule SessionsPage applies. */}
           {facts.failover === 'true' && facts.failoverPath && facts.failoverPath.split(' -> ').length > 1 && (
             <FactChip label={t('chat.factFailover')} value={facts.failoverPath} />
           )}
@@ -475,7 +706,14 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
           )}
           {facts.breaker && facts.breaker !== 'CLOSED' && <FactChip label={t('chat.factBreaker')} value={facts.breaker} />}
           {facts.requestId && <FactChip label={t('chat.factRequest')} value={facts.requestId} />}
-          {facts.sessionId && <FactChip label={t('chat.factSession')} value={facts.sessionId} />}
+          {facts.sessionId && (
+            <FactChip
+              label={t('chat.factSession')}
+              value={facts.sessionId}
+              tip={t('chat.factSessionTip')}
+              onOpen={() => navigate(`/sessions?q=${encodeURIComponent(facts.sessionId!)}`)}
+            />
+          )}
           {turn.usage && (
             <FactChip
               label={t('chat.factTokens')}
@@ -501,6 +739,59 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
             )}
           </div>
         </details>
+      )}
+
+      {messageOpen && (
+        <Dialog
+          title={isUser ? t('chat.you') : t('chat.assistant')}
+          closeLabel={t('common.close')}
+          width={960}
+          onClose={() => setMessageOpen(false)}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0, fontSize: 'var(--text-md)', lineHeight: 'var(--leading-relaxed)', color: 'var(--text-main)' }}>
+            {turn.reasoning && (
+              <details open>
+                <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                  {t('chat.thinkingLabel')}
+                </summary>
+                <pre style={{
+                  margin: '6px 0 0', padding: '8px 10px',
+                  background: 'var(--well-bg)', border: '1px solid var(--card-border)',
+                  borderRadius: 6, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)',
+                  whiteSpace: 'pre-wrap', color: 'var(--text-dim)',
+                  // A flex item's min-content is its longest token; without this
+                  // the pre stretches past the dialog and its border clips the text.
+                  minWidth: 0, width: '100%', maxWidth: '100%', boxSizing: 'border-box',
+                  wordBreak: 'break-word', overflowWrap: 'anywhere',
+                }}>
+                  {turn.reasoning}
+                </pre>
+              </details>
+            )}
+            {isUser ? (
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{turn.content}</div>
+            ) : turn.content ? (
+              <div className="md-well">
+                <ReactMarkdown remarkPlugins={MD_PLUGINS} components={MD_COMPONENTS}>
+                  {turn.content}
+                </ReactMarkdown>
+              </div>
+            ) : null}
+            {turn.error && (
+              <pre style={{
+                margin: 0, padding: '8px 10px', borderRadius: 6,
+                background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent-rose) 45%, transparent)',
+                color: 'var(--accent-rose)', fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)', whiteSpace: 'pre-wrap',
+                minWidth: 0, width: '100%', maxWidth: '100%', boxSizing: 'border-box',
+                wordBreak: 'break-word', overflowWrap: 'anywhere',
+              }}>
+                {turn.error}
+              </pre>
+            )}
+          </div>
+        </Dialog>
       )}
     </div>
   );
@@ -676,6 +967,7 @@ export const PlaygroundPage: React.FC = () => {
   const { t, dict } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
+  const navigate = useNavigate();
 
   /** Language-aware classic use cases (i18n tables, not fixtures). */
   const presets = dict.playgroundPresets;
@@ -698,35 +990,182 @@ export const PlaygroundPage: React.FC = () => {
    *  over the box. A plain `text` input (masked by CSS where supported, or
    *  revealed on demand) sidesteps it entirely. */
   const keyInputText = CAN_MASK_TEXT || keyVisible;
-  const [model, setModel] = useState('auto');
+  const [model, setModel] = useState(() => {
+    // The conversation the chat store will activate (its own `active`, else the
+    // newest) — never a dangling id left behind by an interrupted save.
+    const s = loadChatStore();
+    const seed = s.conversations.find(c => c.id === s.active) ?? s.conversations[0];
+    return seed?.model ?? 'auto';
+  });
   const [modelOptions, setModelOptions] = useState<{ id: string; owned_by?: string }[]>([]);
   const [modelsFailed, setModelsFailed] = useState(false);
   /** id → resolved upstream wire (console catalog). The CHAT surface can only
    *  address non-`systemone` models, so the picker warns before a doomed call. */
   const [wireById, setWireById] = useState<Record<string, string>>({});
+  /** id → supported effort levels (from console catalog). */
+  const [effortsByModel, setEffortsByModel] = useState<Record<string, string[]>>({});
 
   // ── chat tab ────────────────────────────────────────────────────────────
   const [stream, setStream] = useState(true);
   const [showParams, setShowParams] = useState(false);
   const [temperature, setTemperature] = useState('');
   const [maxTokens, setMaxTokens] = useState('');
-  const [systemPrompt, setSystemPrompt] = useState('');
-  const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const [draft, setDraft] = useState('');
+  const [effort, setEffort] = useState('');
+  const [promptPresets, setPromptPresets] = useState<PromptPreset[]>(loadPromptPresets);
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false);
+  const [presetDraftName, setPresetDraftName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
+  const [decisionHistoryOpen, setDecisionHistoryOpen] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(false);
+  // Width preference: WIDE by default; the operator can switch to a narrow
+  // (centered ~900px) column. Client-side view preference, persisted in
+  // localStorage next to the conversation store.
+  const [chatWide, setChatWide] = useState(() => {
+    try { return localStorage.getItem('ocr_playground_wide') !== '0'; } catch { return true; }
+  });
+  const toggleChatWide = () => {
+    setChatWide(v => {
+      try { localStorage.setItem('ocr_playground_wide', v ? '0' : '1'); } catch { /* best-effort */ }
+      return !v;
+    });
+  };
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const nextIdRef = useRef(1);
+  // Multi-conversation state: the store is loaded once WITH a guaranteed active
+  // conversation, working fields drive the UI, and auto-save writes the active
+  // conversation back on every change.
+  const chatSeed = useMemo(loadChatStoreWithActive, []);
+  const [chatConversations, setChatConversations] = useState<PgChatConversation[]>(chatSeed.conversations);
+  const [activeChatId, setActiveChatId] = useState(chatSeed.active);
+  const activeChat = chatConversations.find(c => c.id === activeChatId);
+  const [turns, setTurns] = useState<ChatTurn[]>(() => activeChat?.turns ?? []);
+  const [draft, setDraft] = useState(() => activeChat?.draft ?? '');
+  const [systemPrompt, setSystemPrompt] = useState(() => activeChat?.systemPrompt ?? '');
+  const nextIdRef = useRef(activeChat?.nextId ?? 1);
+  /** Stable session identity for this playground tab: every request carries it
+   *  as `x-session-id` so the gateway groups all turns into one observable
+   *  session (visible on the Sessions page). Reset on new conversation. */
+  const [playgroundSessionId, setPlaygroundSessionId] = useState(
+    () => activeChat?.sessionId ?? mintPlaygroundSessionId()
+  );
+
+  // Auto-save: write the active chat conversation into the store on every change.
+  useEffect(() => {
+    if (!activeChatId) return;
+    const now = Date.now();
+    const updated = chatConversations.map(c =>
+      c.id === activeChatId
+        ? { ...c, turns, draft, systemPrompt, model, nextId: nextIdRef.current,
+            sessionId: playgroundSessionId, title: chatTitle(turns) || c.title, updatedAt: now }
+        : c
+    );
+    setChatConversations(updated);
+    saveChatStore(activeChatId, updated);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turns, draft, systemPrompt, model, playgroundSessionId, activeChatId]);
+
+  /** Adopt a conversation's working fields. Persistence is the caller's job. */
+  const adoptChatConversation = (conv: PgChatConversation) => {
+    setActiveChatId(conv.id);
+    setTurns(conv.turns);
+    setDraft(conv.draft);
+    setSystemPrompt(conv.systemPrompt);
+    setModel(conv.model);
+    nextIdRef.current = conv.nextId;
+    setPlaygroundSessionId(conv.sessionId);
+  };
+
+  const newChatConversation = () => {
+    const conv = emptyChatConversation();
+    const next = [conv, ...chatConversations].slice(0, PG_MAX_CONVERSATIONS);
+    setChatConversations(next);
+    adoptChatConversation(conv);
+    saveChatStore(conv.id, next);
+  };
+
+  const switchChatConversation = (id: string) => {
+    const target = chatConversations.find(c => c.id === id);
+    if (!target) return;
+    adoptChatConversation(target);
+    saveChatStore(id, chatConversations);
+  };
+
+  const deleteChatConversation = (id: string) => {
+    const remaining = chatConversations.filter(c => c.id !== id);
+    // The store always keeps one active conversation: deleting the last row
+    // seeds a fresh empty one instead of leaving the page unpersisted.
+    const next = remaining.length > 0 ? remaining : [emptyChatConversation()];
+    setChatConversations(next);
+    if (id === activeChatId) adoptChatConversation(next[0]);
+    saveChatStore(id === activeChatId ? next[0].id : activeChatId, next);
+  };
 
   // ── decision tab ────────────────────────────────────────────────────────
-  const [presetId, setPresetId] = useState<string>(presets[0]?.id ?? '');
-  const [stateInput, setStateInput] = useState(presets[0]?.state ?? '');
+  // Decision tab: same seed rule as chat — the store always has an active
+  // conversation, so an edited draft is persisted from the first keystroke.
+  const decisionSeed = useMemo(() => loadDecisionStoreWithActive(presets), []);
+  const [decisionConversations, setDecisionConversations] = useState<PgDecisionConversation[]>(
+    decisionSeed.conversations
+  );
+  const [activeDecisionId, setActiveDecisionId] = useState(decisionSeed.active);
+  const activeDecision = decisionConversations.find(c => c.id === activeDecisionId);
+  const [presetId, setPresetId] = useState<string>(() => activeDecision?.presetId ?? (presets[0]?.id ?? ''));
+  const [stateInput, setStateInput] = useState(() => activeDecision?.stateInput ?? (presets[0]?.state ?? ''));
   const [questionDrafts, setQuestionDrafts] = useState<QuestionDraft[]>(() =>
-    cloneDrafts(presets[0]?.questions ?? [])
+    activeDecision ? activeDecision.questionDrafts : cloneDrafts(presets[0]?.questions ?? [])
   );
   const [decision, setDecision] = useState<DecisionResult | null>(null);
   const [decisionError, setDecisionError] = useState<string | undefined>(undefined);
   const [decisionBusy, setDecisionBusy] = useState(false);
+
+  // Auto-save: decision conversations.
+  useEffect(() => {
+    if (!activeDecisionId) return;
+    const now = Date.now();
+    const title = (stateInput || '').slice(0, PG_TITLE_LEN).replace(/\n/g, ' ');
+    const updated = decisionConversations.map(c =>
+      c.id === activeDecisionId
+        ? { ...c, presetId, stateInput, questionDrafts, title: title || c.title, updatedAt: now }
+        : c
+    );
+    setDecisionConversations(updated);
+    saveDecisionStore(activeDecisionId, updated);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetId, stateInput, questionDrafts, activeDecisionId]);
+
+  /** Adopt a decision draft's working fields. Persistence is the caller's job. */
+  const adoptDecisionConversation = (conv: PgDecisionConversation) => {
+    setActiveDecisionId(conv.id);
+    setPresetId(conv.presetId);
+    setStateInput(conv.stateInput);
+    setQuestionDrafts(cloneDrafts(conv.questionDrafts));
+    setDecision(null);
+    setDecisionError(undefined);
+  };
+
+  const newDecisionConversation = () => {
+    const conv = emptyDecisionConversation(presets[0]);
+    const next = [conv, ...decisionConversations].slice(0, PG_MAX_CONVERSATIONS);
+    setDecisionConversations(next);
+    adoptDecisionConversation(conv);
+    saveDecisionStore(conv.id, next);
+  };
+
+  const switchDecisionConversation = (id: string) => {
+    const target = decisionConversations.find(c => c.id === id);
+    if (!target) return;
+    adoptDecisionConversation(target);
+    saveDecisionStore(id, decisionConversations);
+  };
+
+  const deleteDecisionConversation = (id: string) => {
+    const remaining = decisionConversations.filter(c => c.id !== id);
+    const next = remaining.length > 0 ? remaining : [emptyDecisionConversation(presets[0])];
+    setDecisionConversations(next);
+    if (id === activeDecisionId) adoptDecisionConversation(next[0]);
+    saveDecisionStore(id === activeDecisionId ? next[0].id : activeDecisionId, next);
+  };
 
   const activeKey = useMemo(() => {
     if (keySource === 'manual') return manualKey.trim();
@@ -788,16 +1227,21 @@ export const PlaygroundPage: React.FC = () => {
     };
   }, [activeKey]);
 
-  // Resolved upstream wire per model id — read from the console catalog, never
-  // re-derived from the provider's npm string here (that mapping has exactly
-  // one owner: backend/src/providers/wire.ts).
+  // Resolved upstream wire + effort levels per model id — read from the console
+  // catalog, never re-derived from the provider's npm string here (that mapping
+  // has exactly one owner: backend/src/providers/wire.ts).
   useEffect(() => {
     api
       .listGatewayModels()
       .then((rows) => {
-        const map: Record<string, string> = {};
-        for (const row of rows) if (row.wire) map[row.id] = row.wire;
-        setWireById(map);
+        const wMap: Record<string, string> = {};
+        const eMap: Record<string, string[]> = {};
+        for (const row of rows) {
+          if (row.wire) wMap[row.id] = row.wire;
+          if (row.efforts?.length) eMap[row.id] = row.efforts;
+        }
+        setWireById(wMap);
+        setEffortsByModel(eMap);
       })
       .catch(() => {});
   }, []);
@@ -807,6 +1251,16 @@ export const PlaygroundPage: React.FC = () => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns]);
+
+  // Esc restores the expanded chat (mirrors every fullscreen surface).
+  useEffect(() => {
+    if (!chatExpanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setChatExpanded(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [chatExpanded]);
 
   const patchTurn = (id: number, patch: Partial<ChatTurn>) =>
     setTurns((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
@@ -821,6 +1275,7 @@ export const PlaygroundPage: React.FC = () => {
     }
     if (temperature.trim() !== '' && Number.isFinite(Number(temperature))) body.temperature = Number(temperature);
     if (maxTokens.trim() !== '' && Number.isInteger(Number(maxTokens))) body.max_tokens = Number(maxTokens);
+    if (effort) body.reasoning_effort = effort;
     return body;
   };
 
@@ -863,7 +1318,7 @@ export const PlaygroundPage: React.FC = () => {
     try {
       const res = await fetch('/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}`, 'x-session-id': playgroundSessionId },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -976,7 +1431,7 @@ export const PlaygroundPage: React.FC = () => {
     if (turns.length === 0) return;
     const ok = await confirmDialog({ title: t('chat.clear'), description: t('chat.clearConfirm'), danger: true });
     if (!ok) return;
-    setTurns([]);
+    newChatConversation();
   };
 
   const copyCurl = async () => {
@@ -986,6 +1441,7 @@ export const PlaygroundPage: React.FC = () => {
     const curl = `curl -sS ${window.location.origin}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${activeKey || '<API_KEY>'}" \\
+  -H "x-session-id: ${playgroundSessionId}" \\
   -d '${body}'`;
     const ok = await copyToClipboard(curl);
     if (ok) toast.success(t('chat.curlCopied'));
@@ -1070,6 +1526,7 @@ export const PlaygroundPage: React.FC = () => {
     const curl = `curl -sS ${window.location.origin}/v1/systemone \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${activeKey || '<API_KEY>'}" \\
+  -H "x-session-id: ${playgroundSessionId}" \\
   -d '${JSON.stringify(built.body)}'`;
     const ok = await copyToClipboard(curl);
     if (ok) toast.success(t('chat.curlCopied'));
@@ -1093,7 +1550,7 @@ export const PlaygroundPage: React.FC = () => {
     try {
       const res = await fetch('/v1/systemone', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}`, 'x-session-id': playgroundSessionId },
         body: JSON.stringify(body),
       });
       const facts = readFacts((n) => res.headers.get(n) ?? undefined, res.status);
@@ -1127,7 +1584,77 @@ export const PlaygroundPage: React.FC = () => {
     meta: k.enabled ? undefined : t('chat.keyDisabled'),
   }));
 
+  /** Virtual ids (auto, tier aliases) route at runtime — any effort level is
+   *  valid because the gateway resolves the real model per request. Concrete
+   *  models report their own subset from the catalog endpoint. */
+  const VIRTUAL_IDS: Record<string, true> = { auto: true, lite: true, plus: true, pro: true, ultra: true };
+  const availableEfforts = useMemo(() => {
+    const id = model.trim();
+    if (VIRTUAL_IDS[id]) return [...EFFORT_LADDER];
+    return effortsByModel[id] ?? [];
+  }, [model, effortsByModel]);
+
+  const savePreset = () => {
+    const name = presetDraftName.trim();
+    if (!name) { toast.error(t('chat.promptPresetNameRequired')); return; }
+    const next: PromptPreset[] = [
+      ...promptPresets.filter((p) => p.name !== name),
+      { id: crypto.randomUUID(), name, content: systemPrompt },
+    ];
+    setPromptPresets(next);
+    savePromptPresets(next);
+    setPresetDraftName('');
+    toast.success(t('chat.promptPresetSaved'));
+  };
+
+  const deletePreset = (id: string) => {
+    const next = promptPresets.filter((p) => p.id !== id);
+    setPromptPresets(next);
+    savePromptPresets(next);
+    toast.success(t('chat.promptPresetDeleted'));
+  };
+
   const sendDisabled = busy || !draft.trim() || !activeKey || decisionWire;
+
+  /** Shared chat-conversation list body — rendered by the in-page history
+   *  dropdown AND the expanded overlay's own dropdown (the settings card that
+   *  normally hosts it sits behind the overlay). One body, two placements. */
+  const chatHistoryList = (
+    <>
+      {chatConversations.length === 0 && (
+        <div style={{ padding: '8px 12px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+          {t('chat.historyEmpty')}
+        </div>
+      )}
+      {chatConversations.map(c => (
+        <div
+          key={c.id}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px',
+            cursor: 'pointer', fontSize: 'var(--text-sm)',
+            background: c.id === activeChatId ? 'var(--accent-bg, rgba(99,102,241,0.08))' : undefined,
+          }}
+          onClick={() => { switchChatConversation(c.id); setChatHistoryOpen(false); }}
+        >
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {c.title || t('chat.historyUntitled')}
+          </span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0 }}>
+            {c.turns.length} turns
+          </span>
+          <button
+            className="btn btn-sm"
+            style={{ padding: '2px 4px' }}
+            title={t('chat.historyDelete')}
+            onClick={(e) => { e.stopPropagation(); deleteChatConversation(c.id); }}
+          >
+            <Trash2 size={11} />
+          </button>
+        </div>
+      ))}
+    </>
+  );
+
   // Layout: the tab row is page chrome and sits outside the scroll region. In
   // chat mode that region is `overflow: hidden`, so the chat card owns the
   // viewport and the transcript is the only scroller (same idiom as
@@ -1147,7 +1674,7 @@ export const PlaygroundPage: React.FC = () => {
       {/* Page-level tabs (top of the page, above both cards): the two wires
           share one client identity, so they are two views of one page. Sits
           OUTSIDE the scroll region below, so it never scrolls away. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, width: '100%', maxWidth: chatWide ? '100%' : 900, margin: '0 auto' }}>
         <SegGroup
           value={mode}
           onChange={(v) => setMode(v as 'chat' | 'decision')}
@@ -1160,6 +1687,42 @@ export const PlaygroundPage: React.FC = () => {
         <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
           {mode === 'chat' ? 'POST /v1/chat/completions' : 'POST /v1/systemone'}
         </span>
+        {/* Session identity chip: lets the operator jump to Sessions page pre-filtered
+            to this playground session. Shown at all times so the id is reachable even
+            before the first request (copy+paste into Sessions search). */}
+        <button
+          type="button"
+          onClick={() => navigate(`/sessions?q=${encodeURIComponent(playgroundSessionId)}`)}
+          title={t('chat.factSessionTip')}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '2px 7px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--surface)',
+            cursor: 'pointer',
+            fontSize: 'var(--text-xs)',
+            fontFamily: FONT_MONO,
+            color: 'var(--text-dim)',
+            userSelect: 'none',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ opacity: 0.6 }}>{t('chat.factSession')}</span>
+          <span style={{ color: 'var(--accent)' }}>{playgroundSessionId}</span>
+        </button>
+        {/* Page-level width preference: it governs the tab row AND both cards,
+            so it lives on the page chrome, not inside either card. */}
+        <div style={{ flex: 1 }} />
+        <button
+          className="btn btn-sm"
+          onClick={toggleChatWide}
+          title={t(chatWide ? 'chat.narrow' : 'chat.wide')}
+          aria-label={t(chatWide ? 'chat.narrow' : 'chat.wide')}
+          style={{ padding: '4px 6px', flexShrink: 0 }}
+        >
+          {chatWide ? <Shrink size={14} /> : <Expand size={14} />}
+        </button>
       </div>
 
       {/* Everything below the tabs scrolls in ITS OWN box: the mode switch is
@@ -1177,7 +1740,7 @@ export const PlaygroundPage: React.FC = () => {
           paddingRight: 4,
         }}
       >
-      <div className="card" style={{ flexShrink: 0 }}>
+      <div className="card" style={{ flexShrink: 0, width: '100%', maxWidth: chatWide ? '100%' : 900, margin: '0 auto' }}>
         <div className="card-header">
           <div className="card-title">
             <MessagesSquare size={18} color="var(--accent)" />
@@ -1201,14 +1764,56 @@ export const PlaygroundPage: React.FC = () => {
                   <Copy size={13} />
                   <span>{t('chat.copyCurl')}</span>
                 </button>
+                <button className="btn btn-sm" onClick={newDecisionConversation}>
+                  <Plus size={13} />
+                  <span>{t('decision.historyNew')}</span>
+                </button>
+                <button className="btn btn-sm" onClick={() => setDecisionHistoryOpen(v => !v)}>
+                  <Clock size={13} />
+                  <span>{t('decision.historyTitle')}</span>
+                </button>
               </>
             )}
           </div>
         </div>
 
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: 14 }}>
-          {mode === 'chat' ? t('chat.subtitle') : t('decision.subtitle')}
-        </div>
+        {/* History dropdown — decision */}
+        {mode === 'decision' && decisionHistoryOpen && (
+          <div style={{
+            border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)',
+            padding: '6px 0', marginBottom: 10, maxHeight: 220, overflowY: 'auto',
+          }}>
+            {decisionConversations.length === 0 && (
+              <div style={{ padding: '8px 12px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                {t('decision.historyEmpty')}
+              </div>
+            )}
+            {decisionConversations.map(c => (
+              <div
+                key={c.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px',
+                  cursor: 'pointer', fontSize: 'var(--text-sm)',
+                  background: c.id === activeDecisionId ? 'var(--accent-bg, rgba(99,102,241,0.08))' : undefined,
+                }}
+                onClick={() => { switchDecisionConversation(c.id); setDecisionHistoryOpen(false); }}
+              >
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.title || t('decision.historyUntitled')}
+                </span>
+                <button
+                  className="btn btn-sm"
+                  style={{ padding: '2px 4px' }}
+                  title={t('decision.historyDelete')}
+                  onClick={(e) => { e.stopPropagation(); deleteDecisionConversation(c.id); }}
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 260, flex: '1 1 260px' }}>
@@ -1353,29 +1958,73 @@ export const PlaygroundPage: React.FC = () => {
         </div>
 
         {mode === 'chat' && showParams && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 14 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: 140 }}>
-              <label style={labelStyle}>{t('chat.temperatureLabel')}</label>
-              <input
-                className="input"
-                value={temperature}
-                onChange={(e) => setTemperature(e.target.value)}
-                placeholder="0.7"
-                style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
-              />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 14 }}>
+            {/* Row 1: temperature, max_tokens, thinking level — inline */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: 140 }}>
+                <label style={labelStyle}>{t('chat.temperatureLabel')}</label>
+                <input
+                  className="input"
+                  value={temperature}
+                  onChange={(e) => setTemperature(e.target.value)}
+                  placeholder="0.7"
+                  style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: 140 }}>
+                <label style={labelStyle}>{t('chat.maxTokensLabel')}</label>
+                <input
+                  className="input"
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(e.target.value)}
+                  placeholder="1024"
+                  style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
+                />
+              </div>
+              {availableEfforts.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: 200 }}>
+                  <label style={labelStyle}>{t('chat.effortLabel')}</label>
+                  <Combobox
+                    value={effort}
+                    onChange={setEffort}
+                    options={[
+                      { value: '', label: t('chat.effortPlaceholder') },
+                      ...availableEfforts.map((e) => ({
+                        value: e,
+                        label: `${e} — ${t(`op.${EFFORT_I18N_KEY[e as ReasoningEffort]}`)}`,
+                      })),
+                    ]}
+                    placeholder={t('chat.effortPlaceholder')}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              )}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: 140 }}>
-              <label style={labelStyle}>{t('chat.maxTokensLabel')}</label>
-              <input
-                className="input"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(e.target.value)}
-                placeholder="1024"
-                style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
-              />
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: '1 1 320px', minWidth: 260 }}>
-              <label style={labelStyle}>{t('chat.systemLabel')}</label>
+            {/* Row 2: system prompt — full width, preset picker in the label row */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={labelStyle}>{t('chat.systemLabel')}</label>
+                <Combobox
+                  value=""
+                  onChange={(id) => {
+                    const p = promptPresets.find((x) => x.id === id);
+                    if (p) setSystemPrompt(p.content);
+                  }}
+                  options={promptPresets.map((p) => ({ value: p.id, label: p.name }))}
+                  placeholder={t('chat.promptPresetLabel')}
+                  disabled={promptPresets.length === 0}
+                  style={{ width: 170 }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => { setPresetDraftName(''); setPresetDialogOpen(true); }}
+                  title={t('chat.promptPresetManage')}
+                >
+                  <Save size={13} />
+                  <span>{t('chat.promptPresetManage')}</span>
+                </button>
+              </div>
               <textarea
                 className="input"
                 value={systemPrompt}
@@ -1469,13 +2118,79 @@ export const PlaygroundPage: React.FC = () => {
       </div>
 
       {mode === 'chat' ? (
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1, minHeight: 260 }}>
+        <div
+          className="card"
+          style={chatExpanded ? {
+            // Expanded chat: a fixed overlay covering the viewport, so the
+            // transcript gets the whole screen. Esc (or the header toggle)
+            // restores the in-page card.
+            position: 'fixed',
+            inset: 0,
+            zIndex: 60,
+            borderRadius: 0,
+            border: 'none',
+            background: 'var(--bg)',
+            padding: 16,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            margin: 0,
+          } : {
+            position: 'relative',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            flex: 1,
+            minHeight: 260,
+            // The card ITSELF is the reading surface: wide by default, an
+            // optional centered 900px column on demand. Expanded mode ignores
+            // this and takes the whole viewport.
+            width: '100%',
+            maxWidth: chatWide ? '100%' : 900,
+            margin: '0 auto',
+          }}
+        >
+          {/* Card header: left = chat identity, right = conversation actions.
+              Same row in normal and expanded mode — in expanded mode it is the
+              only chrome, so it must never duplicate. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+              <MessagesSquare size={16} color="var(--accent)" />
+              <span>{t('chat.cardTitle')}</span>
+            </div>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm" onClick={newChatConversation}>
+              <Plus size={13} />
+              <span>{t('chat.historyNew')}</span>
+            </button>
+            <button className="btn btn-sm" onClick={() => setChatHistoryOpen(v => !v)}>
+              <Clock size={13} />
+              <span>{t('chat.historyTitle')}</span>
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => setChatExpanded(v => !v)}
+              title={t(chatExpanded ? 'chat.collapse' : 'chat.expand')}
+              aria-label={t(chatExpanded ? 'chat.collapse' : 'chat.expand')}
+              style={{ padding: '4px 6px' }}
+            >
+              {chatExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+          </div>
+          {chatHistoryOpen && (
+            <div style={{
+              border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)',
+              padding: '6px 0', flexShrink: 0, maxHeight: 220, overflowY: 'auto',
+            }}>
+              {chatHistoryList}
+            </div>
+          )}
           <div
             ref={scrollRef}
             style={{
               display: 'flex',
               flexDirection: 'column',
-              gap: 16,
+              gap: 12,
               flex: 1,
               // minHeight:0 is what lets the transcript SHRINK instead of
               // pushing the composer out of the card — the classic flex overflow trap.
@@ -1485,7 +2200,7 @@ export const PlaygroundPage: React.FC = () => {
             }}
           >
             {turns.length === 0 ? (
-              <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-loose)' }}>
+              <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-loose)', paddingTop: 120 }}>
                 <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-main)', marginBottom: 4 }}>{t('chat.emptyTitle')}</div>
                 <div>{t('chat.emptyHint')}</div>
               </div>
@@ -1529,7 +2244,7 @@ export const PlaygroundPage: React.FC = () => {
           className="card"
           // Natural height: a long answers payload is never clipped to a
           // viewport-relative box — the page scrolls, not this card.
-          style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%', maxWidth: chatWide ? '100%' : 900, margin: '0 auto' }}
         >
           <div>
             {decisionError ? (
@@ -1583,6 +2298,96 @@ export const PlaygroundPage: React.FC = () => {
         </div>
       )}
       </div>
+
+      {/* System prompt preset manager dialog */}
+      {presetDialogOpen && (
+        <Dialog title={t('chat.promptPresetLabel')} onClose={() => setPresetDialogOpen(false)} closeLabel={t('common.close')}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 360 }}>
+            {/* Save current prompt as a new preset */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                {t('chat.promptPresetSave')}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  className="input"
+                  value={presetDraftName}
+                  onChange={(e) => setPresetDraftName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') savePreset(); }}
+                  placeholder={t('chat.promptPresetName')}
+                  style={{ flex: 1, fontSize: 'var(--text-sm)' }}
+                  autoFocus
+                />
+                <button className="btn btn-primary btn-sm" onClick={savePreset}>
+                  <Save size={13} />
+                  <span>{t('common.save')}</span>
+                </button>
+              </div>
+            </div>
+            {/* Saved presets list */}
+            {promptPresets.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', padding: '8px 0' }}>
+                {t('chat.promptPresetEmpty')}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {promptPresets.map((p) => (
+                  <div
+                    key={p.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 8,
+                      padding: '8px 10px',
+                      background: 'var(--surface)',
+                      borderRadius: 6,
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-main)' }}>
+                        {p.name}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 'var(--text-xs)',
+                          color: 'var(--text-dim)',
+                          marginTop: 2,
+                          overflow: 'hidden',
+                          whiteSpace: 'nowrap',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {p.content || '—'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => {
+                        setSystemPrompt(p.content);
+                        setPresetDialogOpen(false);
+                      }}
+                      title={t('common.confirm')}
+                    >
+                      <Check size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => deletePreset(p.id)}
+                      title={t('chat.promptPresetDelete')}
+                      style={{ color: 'var(--error)' }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 };
