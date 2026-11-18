@@ -2383,6 +2383,15 @@ export const SessionsPage: React.FC = () => {
                     // column — it is what operators actually read).
                     { key: 'model', label: t('sessions.colModel'), width: 210 },
                     { key: 'prompt', label: t('sessions.colPrompt') },
+                    { key: 'think', label: t('sessions.colThink'), width: 92 },
+                    { key: 'in', label: t('sessions.colIn'), width: 62 },
+                    { key: 'out', label: t('sessions.colOut'), width: 58 },
+                    { key: 'cached', label: t('sessions.colCached'), width: 66 },
+                    { key: 'cost', label: t('sessions.colCost'), width: 88 },
+                    { key: 'ttft', label: t('usage.ttft'), width: 52 },
+                    { key: 'toks', label: t('usage.thToks'), width: 60 },
+                    { key: 'stallRatio', label: t('sessions.speedStallRatio'), width: 62 },
+                    { key: 'ms', label: t('sessions.colMs'), width: 52 },
                     // Its own declared track, not a badge riding the prompt's
                     // right edge: a header makes the mapping self-describing
                     // (no hover needed) and puts every turn's transport in one
@@ -2394,21 +2403,12 @@ export const SessionsPage: React.FC = () => {
                       width: 86,
                       align: 'center',
                     },
-                    { key: 'think', label: t('sessions.colThink'), width: 92 },
-                    { key: 'in', label: t('sessions.colIn'), width: 62 },
-                    { key: 'out', label: t('sessions.colOut'), width: 58 },
-                    { key: 'cached', label: t('sessions.colCached'), width: 66 },
-                    { key: 'cost', label: t('sessions.colCost'), width: 88 },
-                    { key: 'ttft', label: t('usage.ttft'), width: 52 },
-                    { key: 'toks', label: t('usage.thToks'), width: 60 },
-                    { key: 'stallRatio', label: t('sessions.speedStallRatio'), width: 62 },
-                    { key: 'ms', label: t('sessions.colMs'), width: 52 },
                   ]}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 1054 = the 14 declared tracks (34+66+66+210+86+92+62+58+
-                  // 66+88+52+60+62+52); + 220 for the elastic prompt column.
+                  // 1054 = the 14 declared tracks (34+66+66+210+92+62+58+
+                  // 66+88+52+60+62+52+86); + 220 for the elastic prompt column.
                   minWidth={1054 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
@@ -2464,20 +2464,6 @@ export const SessionsPage: React.FC = () => {
                       <td style={{ padding: '6px 8px', minWidth: 0 }}>
                         <PromptCell text={tr.request?.userPromptSummary ?? ''} />
                       </td>
-                      <td style={DETAIL_TD_CENTER}>
-                        {/* Transport map of THIS turn (ADR-0008 §1): client shape
-                            → the shape the provider leg actually ran on. Renders
-                            nothing when the trace carries neither tag (legacy
-                            rows), so the cell stays blank instead of claiming a
-                            shape it does not know. */}
-                        {(tr.request?.clientStream !== undefined || tr.execution.upstreamStream !== undefined) && (
-                          <StreamMap
-                            client={tr.request?.clientStream}
-                            upstream={tr.execution.upstreamStream === undefined ? undefined : tr.execution.upstreamStream === 'sse'}
-                            tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
-                          />
-                        )}
-                      </td>
                       <td style={DETAIL_TD_CENTER}><EffortCell tr={tr} /></td>
                       <td style={DETAIL_TD_CENTER}>{tr.finops.inputTokens.toLocaleString()}</td>
                       <td style={DETAIL_TD_CENTER}>{tr.finops.outputTokens.toLocaleString()}</td>
@@ -2518,6 +2504,20 @@ export const SessionsPage: React.FC = () => {
                         {fmtStallRatio(stallShare)}
                       </td>
                       <td style={DETAIL_TD_CENTER} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Transport map of THIS turn (ADR-0008 §1): client shape
+                            → the shape the provider leg actually ran on. Renders
+                            nothing when the trace carries neither tag (legacy
+                            rows), so the cell stays blank instead of claiming a
+                            shape it does not know. */}
+                        {(tr.request?.clientStream !== undefined || tr.execution.upstreamStream !== undefined) && (
+                          <StreamMap
+                            client={tr.request?.clientStream}
+                            upstream={tr.execution.upstreamStream === undefined ? undefined : tr.execution.upstreamStream === 'sse'}
+                            tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
+                          />
+                        )}
+                      </td>
                     </tr>
                     );
                       });
