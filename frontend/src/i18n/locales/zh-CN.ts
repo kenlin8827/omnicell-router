@@ -325,7 +325,7 @@ export const zhCN: TranslationDict = {
     grpOverview: '概览与看板',
     grpTraffic: '流量与编排',
     grpUpstream: '上游接出',
-    grpAccess: '客户端接入',
+    grpAccess: '接入管理',
     grpProxy: '代理管理',
     grpSafety: '韧性与治理',
     grpObservability: '观测与透镜',
