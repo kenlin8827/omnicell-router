@@ -383,7 +383,7 @@ describe('true streaming through the candidate pool', () => {
     assert.equal(frames.length, 0);
   });
 
-  it('a buffered (stream:false) turn records no ttftMs/genMs — no synthesized decode rate', async () => {
+  it('a buffered-posture (streaming.upstream.mode: buffered) turn records no ttftMs/genMs — no synthesized decode rate', async () => {
     const server = serve({
       port: 0,
       async fetch() {
@@ -402,6 +402,7 @@ describe('true streaming through the candidate pool', () => {
     });
     await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
+    applyStreamingPosture({ upstream: { mode: 'buffered' } });
     const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     try {
       const result = await orchestrator.process(request('stub/one', false), {}, undefined);
@@ -410,6 +411,41 @@ describe('true streaming through the candidate pool', () => {
       assert.ok(trace, 'the turn must be traced');
       assert.equal(trace.execution.ttftMs, undefined);
       assert.equal(trace.execution.genMs, undefined);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it('under the stream default, a JSON-client turn against a JSON-answer upstream still streams (synthetic single chunk)', async () => {
+    const server = serve({
+      port: 0,
+      async fetch() {
+        return new Response(
+          JSON.stringify({
+            id: 'chatcmpl-buf',
+            object: 'chat.completion',
+            created: 1,
+            model: 'up-1',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'buffered' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    });
+    await waitListening(server.port);
+    const base = `http://localhost:${server.port}/v1`;
+    applyStreamingPosture({ upstream: { mode: 'stream' } });
+    const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
+    try {
+      const result = await orchestrator.process(request('stub/one', false), {}, undefined);
+      assert.equal(result.response.choices[0].message.content, 'buffered');
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.ok(trace, 'the turn must be traced');
+      // The upstream leg ran through the relay (one synthetic chunk), so the
+      // TTFT pair IS stamped — the upstreamStream tag records it.
+      assert.equal(trace.execution.upstreamStream, 'sse');
+      assert.equal(typeof trace.execution.ttftMs, 'number');
     } finally {
       server.stop(true);
     }

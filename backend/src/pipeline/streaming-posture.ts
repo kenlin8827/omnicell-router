@@ -44,7 +44,7 @@ export function applyStreamingPosture(cfg?: StreamingConfig): EffectiveStreaming
       : 'allow',
     upstream: UPSTREAM_MODES.includes(upstreamMode as StreamingUpstreamMode)
       ? (upstreamMode as StreamingUpstreamMode)
-      : 'follow',
+      : 'stream',
   };
   return live;
 }

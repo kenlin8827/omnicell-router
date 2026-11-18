@@ -403,6 +403,77 @@ export class OpenAICompatibleProvider implements LLMProvider {
         };
 
         try {
+          // STREAM-TOLERANT FALLBACK. An upstream that ignores `stream:true`
+          // and answers one JSON completion (some compatible-mode relays do)
+          // would previously die in the truncation guard below. Under the
+          // `streaming.upstream.mode: stream` default every JSON-client turn
+          // takes THIS leg, so such an upstream must not break the turn:
+          // drain the body, re-emit the completion as one synthetic chunk, and
+          // let the accumulator assemble it like any stream.
+          if (!(res.headers.get('content-type') ?? '').includes('text/event-stream')) {
+            let json = '';
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const decoded = decoder.decode(value, { stream: true });
+                // Stamp the capture plane's first-byte anchor at the FIRST
+                // read: appending the drained body afterwards would date the
+                // anchor at the end of the transfer and inflate TTFT.
+                if (firstByteTs === undefined && decoded.length > 0) firstByteTs = Date.now();
+                json += decoded;
+              }
+              json += decoder.decode();
+            } catch (err: any) {
+              capture(`Stream aborted: ${err?.message ?? err}`);
+              throw err;
+            }
+            appendRaw(json);
+            let completion: ChatCompletionResponse;
+            try {
+              completion = JSON.parse(json) as ChatCompletionResponse;
+            } catch {
+              capture(`Upstream ${providerName} answered a non-SSE body that is not valid JSON`);
+              throw new Error(`Upstream ${providerName} answered a non-SSE body that is not valid JSON`);
+            }
+            const choice = completion.choices?.[0];
+            if (!choice) {
+              capture(`Upstream ${providerName} completion carried no choices`);
+              throw new Error(`Upstream ${providerName} completion carried no choices`);
+            }
+            const message = choice.message;
+            const chunk: ChatCompletionChunk = {
+              id: completion.id,
+              object: 'chat.completion.chunk',
+              created: completion.created,
+              model: completion.model,
+              ...(completion.system_fingerprint ? { system_fingerprint: completion.system_fingerprint } : {}),
+              ...(completion.usage ? { usage: completion.usage } : {}),
+              choices: [
+                {
+                  index: choice.index ?? 0,
+                  delta: {
+                    role: message.role,
+                    ...(typeof message.content === 'string' ? { content: message.content } : {}),
+                    ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
+                    ...(message.tool_calls?.length
+                      ? {
+                          tool_calls: message.tool_calls.map((call, i) => ({
+                            index: i,
+                            id: call.id,
+                            type: call.type,
+                            function: call.function,
+                          })),
+                        }
+                      : {}),
+                  },
+                  finish_reason: choice.finish_reason ?? 'stop',
+                },
+              ],
+            };
+            yield chunk;
+            return;
+          }
           armIdle();
           while (true) {
             const { done, value } = await reader.read();

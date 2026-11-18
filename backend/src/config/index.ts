@@ -237,10 +237,10 @@ const DEFAULT_CONFIG: RouterConfig = {
     inboundGraceMs: DEFAULT_INBOUND_GRACE_MS,
     persist: { enabled: true },
   },
-  // Two axes, both at their historical behavior (ADR-0008 §1): `allow`
-  // streams only when the caller asks, `follow` streams the provider leg only
-  // when the caller is being streamed to.
-  streaming: { client: { mode: 'allow' }, upstream: { mode: 'follow' } },
+  // Two axes (ADR-0008 §1): `allow` streams only when the caller asks;
+  // `stream` keeps the provider leg on the upstream SSE reader even for JSON
+  // callers — TTFT/stall measurement on by default, client timing unchanged.
+  streaming: { client: { mode: 'allow' }, upstream: { mode: 'stream' } },
   apiKeys: [],
   models: [],
 };
@@ -383,7 +383,7 @@ function resolveStreamingConfig(raw: unknown): StreamingConfig {
   const upstream = src.upstream && typeof src.upstream === 'object' ? (src.upstream as Record<string, unknown>) : {};
   return {
     client: { mode: pickMode(client.mode, STREAMING_CLIENT_MODES, 'allow') },
-    upstream: { mode: pickMode(upstream.mode, STREAMING_UPSTREAM_MODES, 'follow') },
+    upstream: { mode: pickMode(upstream.mode, STREAMING_UPSTREAM_MODES, 'stream') },
   };
 }
 

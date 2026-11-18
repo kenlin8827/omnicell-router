@@ -791,13 +791,14 @@ export type StreamingClientMode = 'allow' | 'deny' | 'always';
  * the client. The two axes exist separately because "the client wants JSON"
  * and "the gateway wants SSE from the provider" are different questions
  * (Kong's `response_streaming` is the same split; ADR-0008 §1).
- * - `follow` (default): upstream SSE iff the client is being streamed to and
- *   the serving wire has a streaming executor — the historical behavior.
- * - `stream`: use the upstream SSE reader wherever the wire has one, and
- *   ACCUMULATE when the client wants JSON. Buys gateway-side TTFT / stall
- *   measurement and a uniform transport on wires that treat non-stream
+ * - `stream` (default): use the upstream SSE reader wherever the wire has
+ *   one, and ACCUMULATE when the client wants JSON. Buys gateway-side TTFT /
+ *   stall measurement and a uniform transport on wires that treat non-stream
  *   requests differently; it does NOT make a JSON client's response arrive
  *   earlier (the body still needs the whole generation).
+ * - `follow`: upstream SSE iff the client is being streamed to and the
+ *   serving wire has a streaming executor — the pre-2026-11 default, kept
+ *   as the conservative rollback.
  * - `buffered`: never use upstream SSE (the pre-streaming rollback lever,
  *   formerly `streaming.enabled: false`).
  *
