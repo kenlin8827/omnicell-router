@@ -13,7 +13,6 @@ import { ProxyAccessPage } from './pages/ProxyAccessPage';
 import { ProxyLogPage } from './pages/ProxyLogPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
-import { PlaygroundPage } from './pages/PlaygroundPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
 import { BreakerRulesPage } from './pages/BreakerRulesPage';
 import { SessionsPage } from './pages/SessionsPage';
@@ -106,7 +105,11 @@ export const App: React.FC = () => {
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
-        <Route path="playground" element={<PlaygroundPage />} />
+        {/* The playground is rendered by Layout OUTSIDE this outlet so it stays
+            mounted across navigation (a running stream, the transcript and the
+            form state must survive leaving the page). The route only claims the
+            path; see Layout's persistent host. */}
+        <Route path="playground" element={null} />
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="catalog" element={<CatalogSourcesPage />} />

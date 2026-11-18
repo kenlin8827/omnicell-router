@@ -963,7 +963,10 @@ const QuestionBuilder: React.FC<{
   );
 };
 
-export const PlaygroundPage: React.FC = () => {
+/** `active` is false while Layout keeps this page mounted but hidden (the
+ *  playground is not unmounted on navigation, so a running stream and the
+ *  transcript survive a trip to another page). */
+export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }) => {
   const { t, dict } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
@@ -1177,6 +1180,23 @@ export const PlaygroundPage: React.FC = () => {
   const selectedWire = wireById[model.trim()];
   const decisionWire = selectedWire === 'systemone';
 
+  /** Re-activation after a hidden stretch (Layout keeps this page mounted):
+   *  the console may have gained keys while we were away, and a transcript
+   *  scroll offset does not survive `display: none` in every engine. The
+   *  first activation is the mount — its effects already run. */
+  const [activationSeq, setActivationSeq] = useState(0);
+  const firstActivation = useRef(true);
+  useEffect(() => {
+    if (!active) return;
+    if (firstActivation.current) {
+      firstActivation.current = false;
+      return;
+    }
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    setActivationSeq((n) => n + 1);
+  }, [active]);
+
   // Configured keys — the console endpoint is the only place the plaintext key
   // is available (the list view masks it); this page re-uses that admin view
   // exactly like ApiKeysPage does.
@@ -1190,7 +1210,7 @@ export const PlaygroundPage: React.FC = () => {
         if (firstEnabled) setKeyId((cur) => cur || firstEnabled.id);
       })
       .catch(() => {});
-  }, []);
+  }, [activationSeq]);
 
   // Model picker source: the CLIENT view (/v1/models), i.e. exactly what the
   // selected key is allowed to address. Falls back to the console catalog when
@@ -1225,7 +1245,7 @@ export const PlaygroundPage: React.FC = () => {
     return () => {
       alive = false;
     };
-  }, [activeKey]);
+  }, [activeKey, activationSeq]);
 
   // Resolved upstream wire + effort levels per model id — read from the console
   // catalog, never re-derived from the provider's npm string here (that mapping
@@ -1244,7 +1264,7 @@ export const PlaygroundPage: React.FC = () => {
         setEffortsByModel(eMap);
       })
       .catch(() => {});
-  }, []);
+  }, [activationSeq]);
 
   // New content (or a new turn) pins the transcript to the bottom.
   useEffect(() => {

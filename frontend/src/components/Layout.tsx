@@ -26,6 +26,7 @@ import { WindowControls } from './WindowControls';
 import { DownloadCenter } from './DownloadCenter';
 import { copyToClipboard } from '../lib/clipboard';
 import { GITHUB_REPO_URL } from '../lib/links';
+import { PlaygroundPage } from '../pages/PlaygroundPage';
 import { STAR_REMINDER_CHANGED_EVENT, isStarNudgeDone } from '../lib/starReminder';
 
 /** Latest release the operator dismissed; a NEWER release prompts again. */
@@ -183,6 +184,18 @@ export const Layout: React.FC = () => {
   // Empty-query ordering for the command palette (see lib/navRecent).
   const [recentRoutes, setRecentRoutes] = useState<string[]>(readRecentRoutes);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY)));
+  /** The playground keeps its component state across navigation: a running
+   *  chat stream, the transcript, the selected tab and the form fields must
+   *  survive a trip to another page. React Router unmounts an outlet page, so
+   *  the page is hosted HERE instead — mounted on first visit and thereafter
+   *  only hidden (`display: none`), with the outlet's canvas hidden in turn.
+   *  Lazy on purpose: a console session that never opens the playground never
+   *  mounts its effects. */
+  const isPlayground = location.pathname === '/playground';
+  const [playgroundMounted, setPlaygroundMounted] = useState(isPlayground);
+  useEffect(() => {
+    if (isPlayground) setPlaygroundMounted(true);
+  }, [isPlayground]);
 
   /** Once the operator used the star CTA, the header repository button drops
    *  its "star us" tooltip — it stays a plain repo link. Re-read on the shared
@@ -590,7 +603,16 @@ export const Layout: React.FC = () => {
             onDismiss={dismissUpdate}
           />
         )}
-        <main className="app-main"><div className="page-canvas"><Outlet context={{ status, statusError, refreshStatus }} /></div></main>
+        <main className="app-main">
+          <div className="page-canvas" style={isPlayground ? { display: 'none' } : undefined}>
+            <Outlet context={{ status, statusError, refreshStatus }} />
+          </div>
+          {playgroundMounted && (
+            <div className="page-canvas" style={isPlayground ? undefined : { display: 'none' }}>
+              <PlaygroundPage active={isPlayground} />
+            </div>
+          )}
+        </main>
       </div>
       <CommandPalette open={paletteOpen} items={commandItems} recent={recentRoutes} onClose={() => setPaletteOpen(false)} onSelect={(to) => navigate(to)} />
     </div>
