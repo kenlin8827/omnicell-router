@@ -1927,7 +1927,7 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, product } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, product, acknowledgeRunning } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
@@ -1936,6 +1936,8 @@ export function registerConsoleRoutes(
       agentModels?: Record<string, string>;
       /** Family adapters: act on ONE product (`intellij-idea`, `goland`, …) instead of all. */
       product?: string;
+      /** The operator was told the client is running and chose to proceed anyway. */
+      acknowledgeRunning?: boolean;
     };
     const cleaned = models && typeof models === 'object'
       ? Object.fromEntries(Object.entries(models).map(([k, v]) => [k, String(v ?? 'auto').trim() || 'auto']))
@@ -1996,6 +1998,7 @@ export function registerConsoleRoutes(
       ...(cleanedVirtual !== undefined ? { virtualModels: cleanedVirtual } : {}),
       ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
       ...(typeof product === 'string' && product.trim() ? { product: product.trim() } : {}),
+      ...(acknowledgeRunning === true ? { acknowledgeRunning: true } : {}),
     });
     if (!result.success) return reply.status(400).send(result);
     return result;
@@ -2003,8 +2006,11 @@ export function registerConsoleRoutes(
 
   const handleTeardown = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { product } = (req.body || {}) as { product?: string };
-    const result = await teardownClient(client, typeof product === 'string' && product.trim() ? { product: product.trim() } : undefined);
+    const { product, acknowledgeRunning } = (req.body || {}) as { product?: string; acknowledgeRunning?: boolean };
+    const result = await teardownClient(client, {
+      ...(typeof product === 'string' && product.trim() ? { product: product.trim() } : {}),
+      ...(acknowledgeRunning === true ? { acknowledgeRunning: true } : {}),
+    });
     if (!result.success) return reply.status(400).send(result);
     return result;
   };

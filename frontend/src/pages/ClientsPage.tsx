@@ -15,6 +15,7 @@ import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, type GatewayCfgDr
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { FONT_MONO } from '../lib/fonts';
 import { copyToClipboard } from '../lib/clipboard';
 /**
@@ -116,6 +117,7 @@ interface GatewayPluginState {
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [clients, setClients] = useState<ClientStatus[]>([]);
   const [loading, setLoading] = useState(false);
   /** Roster refresh in flight (getStatus reload). Separate from `loading`:
@@ -723,8 +725,18 @@ export const ClientsPage: React.FC = () => {
     });
   }, [agents]);
 
-  /** `product` narrows a family card's action to ONE product (JetBrains IDEs). */
-  const handleToggle = async (clientName: string, action: 'setup' | 'teardown', product?: string) => {
+  /**
+   * `product` narrows a family card's action to ONE product (JetBrains IDEs).
+   * `acknowledgeRunning` carries the operator's consent for acting on a client
+   * that is running right now: the backend refuses with `ide_running` first, the
+   * dialog below asks, and only the SECOND call carries the flag.
+   */
+  const handleToggle = async (
+    clientName: string,
+    action: 'setup' | 'teardown',
+    product?: string,
+    opts: { acknowledgeRunning?: boolean } = {},
+  ) => {
     // Every refusal below fires while the card may still be collapsed — the fix
     // (key picker, model mode, context form) lives inside the panel, so reveal
     // it alongside the toast instead of making the operator find the row again.
@@ -813,6 +825,9 @@ export const ClientsPage: React.FC = () => {
       }
       const piPayload = piLinkPayload(clientName);
       const agentPayload = opencodeAgentPayload(clientName);
+      // Consent only ever rides the SECOND call: the first one must be able to
+      // come back with `ide_running` and let the dialog below ask.
+      const acknowledge = opts.acknowledgeRunning === true ? { acknowledgeRunning: true } : {};
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
         ...(keyless && !gatewayPluginId ? {} : { apiKey: apiKeySel[clientName] }),
@@ -822,7 +837,8 @@ export const ClientsPage: React.FC = () => {
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         ...agentPayload,
         ...(product ? { product } : {}),
-      } : product ? { product } : undefined);
+        ...acknowledge,
+      } : { ...(product ? { product } : {}), ...acknowledge });
       // Proxy-mode notices are backend prose — show a localized one-liner instead
       // (the long hints live in the expanded card).
       setActionNotice(
@@ -873,6 +889,27 @@ export const ClientsPage: React.FC = () => {
       await loadClients(true);
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
+      // A running client is a CONSENT stop, not a failure: the backend wrote
+      // nothing yet and hands back what it detected. Ask, then re-run the SAME
+      // action with `acknowledgeRunning` — the write is fine, it is just undone
+      // when the app exits and rewrites its settings from memory.
+      if (err?.reasonCode === 'ide_running' && !opts.acknowledgeRunning) {
+        const proceed = await confirmDialog({
+          title: t('clients.ideRunningTitle'),
+          description: t(action === 'setup' ? 'clients.ideRunningSetup' : 'clients.ideRunningTeardown', {
+            products: err.params?.products ?? '',
+          }),
+          warning: true,
+          confirmLabel: t('clients.ideRunningContinue'),
+          cancelLabel: t('common.cancel'),
+        });
+        if (proceed) {
+          await handleToggle(clientName, action, product, { acknowledgeRunning: true });
+          return;
+        }
+        revealCard();
+        return;
+      }
       toast.error(clientActionErrorText(err, t));
       revealCard();
     } finally {

@@ -228,10 +228,34 @@ export interface ClientAdapter {
    * (the plain `ocr setup` CLI command passes no models). apiKey (optional):
    * gateway-issued key to write into the client's auth field.
    */
-  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: CLAUDE_CODE_MAX_CONTEXT_TOKENS + CLAUDE_CODE_AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */ extraModels?: string[]; /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */ virtualModels?: string[]; /** Effective agent bindings: agent/role name → resolved modelRef ('auto' = inherit the default model), written by the adapters that carry agent bindings. */ agentModels?: Record<string, string>; /** Family adapters: hook ONLY this product (an id from `getStatus().products`); absent = every detected product. Single-product adapters ignore it. */ product?: string }): Promise<ClientActionResult>;
+  setup(options?: {
+    port?: number;
+    models?: Record<string, string>;
+    apiKey?: string;
+    /** Context window tokens written to the client's context-management envs (claude: CLAUDE_CODE_MAX_CONTEXT_TOKENS + CLAUDE_CODE_AUTO_COMPACT_WINDOW) */
+    contextWindow?: number;
+    /** Extra concrete models to expose in the client's model switcher (adapters that publish a model list) */
+    extraModels?: string[];
+    /** Virtual tier entries to inject (follow mode): the subset of auto/lite/plus/pro/ultra the selected key's policy admits. Absent = the adapter's default block (all five where it injects any). */
+    virtualModels?: string[];
+    /** Effective agent bindings: agent/role name → resolved modelRef ('auto' = inherit the default model), written by the adapters that carry agent bindings. */
+    agentModels?: Record<string, string>;
+    /** Family adapters: hook ONLY this product (an id from `getStatus().products`); absent = every detected product. Single-product adapters ignore it. */
+    product?: string;
+    /**
+     * The operator was TOLD the client is running and chose to hook anyway.
+     * An adapter that positively detects a live process refuses with
+     * `reasonCode: 'ide_running'` unless this is set: the write itself is not
+     * wrong, it is just undone when the IDE exits and rewrites its settings
+     * from memory. Absent = a live client is a hard stop.
+     */
+    acknowledgeRunning?: boolean;
+  }): Promise<ClientActionResult>;
   /** Family adapters take the same optional `product` selector — teardown ONE
-   *  product (the other, still-hooked one keeps its hook) or all of them. */
-  teardown(options?: { product?: string }): Promise<ClientActionResult>;
+   *  product (the other, still-hooked one keeps its hook) or all of them.
+   *  `acknowledgeRunning` carries the same consent as {@link setup}: a restore
+   *  performed under a live IDE is overwritten when it exits. */
+  teardown(options?: { product?: string; acknowledgeRunning?: boolean }): Promise<ClientActionResult>;
   /**
    * Passthrough launch verbs this hook publishes (`ocr cursor`,
    * `ocr cursor-agent`) — see `launcher.ts`. Declared here, not in the CLI: a

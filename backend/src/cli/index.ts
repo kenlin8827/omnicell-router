@@ -115,7 +115,8 @@ ${C.bold}USER INTERFACE:${C.reset}
   ${C.cyan}ocr desktop${C.reset}             Open native desktop window (falls back to web if not installed)
 
 ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
-${clientIntegrationHelp()}
+${clientIntegrationHelp()}  Flags for both: --port <n>, --product <id> (JetBrains family: act on ONE IDE), --force (act on a client that is currently running — the hook can be undone when it exits)
+
 ${C.bold}ENVIRONMENTS (book-sets under ~/.omnicell-router/envs/):${C.reset}
   ${C.cyan}ocr env list${C.reset}                List environments (current = next boot picks)
   ${C.cyan}ocr env use <name>${C.reset}       Pin the active environment (or ${C.cyan}default${C.reset}); takes effect on restart
@@ -410,6 +411,13 @@ async function main(): Promise<void> {
   const productIdx = args.findIndex((a) => a === '--product');
   if (productIdx !== -1 && args[productIdx + 1]) product = args[productIdx + 1];
 
+  // `--force`: the operator knows the client is running and wants the hook
+  // anyway. An adapter that can DETECT a live client refuses without it, since
+  // a write under a running IDE is undone when the IDE exits and rewrites its
+  // settings from memory.
+  const acknowledgeRunning = args.includes('--force');
+
+
   // Parse optional --env flag (start/restart): runs the gateway on a named
   // environment by injecting OCR_ENV into the daemon child.
   let envName: string | undefined;
@@ -494,7 +502,11 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
-      const res = await setupClient(client, product ? { port, product } : { port });
+      const res = await setupClient(client, {
+        port,
+        ...(product ? { product } : {}),
+        ...(acknowledgeRunning ? { acknowledgeRunning } : {}),
+      });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
         for (const line of formatClientWarnings(res.warnings)) {
@@ -519,7 +531,10 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
-      const res = await teardownClient(client, product ? { product } : undefined);
+      const res = await teardownClient(client, {
+        ...(product ? { product } : {}),
+        ...(acknowledgeRunning ? { acknowledgeRunning } : {}),
+      });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
       } else {

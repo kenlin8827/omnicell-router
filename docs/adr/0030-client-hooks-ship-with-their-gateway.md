@@ -121,6 +121,22 @@ NO product remains taken over — the same gating rule as the global Junie model
 list. Same lifecycle rule as §5: both land inside `setup()`/`teardown()`, no
 new console verb.
 
+### 7. A detected running client is a CONSENT stop, not a silent write
+
+An IDE holds its settings in memory and rewrites its own config files when it
+exits, so a takeover performed under a live IDE can revert by itself — and a
+teardown performed under one can come back, leaving the console saying "not
+hooked" while the client still routes through the proxy. Neither is an error
+the operator can see, which is why a POSITIVE detection stops the action:
+`setup`/`teardown` return `success: false` with `reasonCode: 'ide_running'` and
+the detected client names in `params.products`, and the operation only proceeds
+when the caller resends it with `acknowledgeRunning: true` (console: a dialog
+that explains the exit-time rewrite; CLI: `--force`). The probe FAILS OPEN —
+`tasklist`/`pgrep` can wedge (one machine's `tasklist` never returned at all,
+which is why `runCommand` now owns a hard deadline), and an unreliable probe
+must never be able to lock the operator out of a hook that would otherwise
+work. So the gate is consent, never a capability test.
+
 ## Consequences
 
 - **Uninstall means uninstall.** Removing `cursor-gateway` removes the launcher row with it; there is no orphan hook and no console table to enforce the pairing.

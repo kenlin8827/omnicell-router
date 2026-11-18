@@ -2353,6 +2353,14 @@ hiddenBadge: string;
     jetbrainsCaReimport: string;
     jetbrainsJunie: string;
     warnIdeRunning: string;
+    /** Consent dialog title: a client is running while the operator asks to hook/unhook it. */
+    ideRunningTitle: string;
+    /** Dialog body for setup: the hook lands but the app rewrites its settings on exit. */
+    ideRunningSetup: string;
+    /** Dialog body for teardown: the restore can be undone the same way. */
+    ideRunningTeardown: string;
+    /** Confirm button on that dialog ("hook anyway"). */
+    ideRunningContinue: string;
     warnCaTrustUnknown: string;
     warnProxyNotRunning: string;
     /** IDE install's truststore is read-only: the CA lives in a copy its vmoptions point at. */

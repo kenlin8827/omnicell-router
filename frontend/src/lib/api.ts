@@ -3123,6 +3123,8 @@ export const api = {
       agentModels?: Record<string, string>;
       /** Family adapters (JetBrains): act on ONE product (`intellij-idea`, `goland`, …); absent = all. */
       product?: string;
+      /** The operator was told the client is running and chose to proceed anyway. */
+      acknowledgeRunning?: boolean;
     }
   ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {

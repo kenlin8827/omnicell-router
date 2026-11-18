@@ -115,17 +115,54 @@ d?.('mergeProxyExceptions', () => {
   });
 });
 
+/**
+ * A whole-store `keytool -list -v` dump, the shape the purge now consumes: one
+ * `Alias name:` block per entry, each carrying its OWN issuer line. Deliberately
+ * contains four traps —
+ *   • `account.jetbrains.com.cn` is one of our bypassed hosts but holds a
+ *     CORPORATE root (must survive);
+ *   • `other.example.com` holds OUR root but is not a bypassed host (must
+ *     survive);
+ *   • `api.jetbrains.ai` holds our root, so it is deleted too;
+ *   • the alias case differs from the host list, so matching must be
+ *     case-insensitive.
+ */
+const STORE_DUMP = `Keystore type: PKCS12
+Keystore provider: SUN
+
+Your keystore contains 4 entries
+
+Alias name: Analytics.Services.JetBrains.Com.Cn
+Creation date: 2026-01-01
+Owner: CN=analytics.services.jetbrains.com.cn
+Issuer: CN=OmniCellRouter Forward Proxy CA
+Certificate fingerprints:
+\t SHA1: 11:22
+
+Alias name: account.jetbrains.com.cn
+Owner: CN=account.jetbrains.com.cn
+Issuer: CN=Corporate Root CA
+
+Alias name: other.example.com
+Owner: CN=other.example.com
+Issuer: CN=OmniCellRouter Forward Proxy CA
+
+Alias name: api.jetbrains.ai
+Owner: CN=api.jetbrains.ai
+Issuer: CN=OmniCellRouter Forward Proxy CA
+`;
+
 d?.('purgePinnedMitmCerts', () => {
-  const { ideSslTrustPath, purgePinnedMitmCerts, JETBRAINS_PROXY_EXCEPTIONS } = src!;
+  const { ideSslTrustPath, purgePinnedMitmCerts, pinnedAliases, JETBRAINS_PROXY_EXCEPTIONS } = src!;
   const dirs: string[] = [];
   after(() => {
     for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
   /**
-   * A stand-in keytool: it answers `-list -v` with an issuer line chosen by the
-   * alias, and logs every argv it saw. `.cmd` on win32, `sh` elsewhere — the same
-   * two shapes `runCommand` handles.
+   * A stand-in keytool: `-list` answers the whole-store dump above, `-delete`
+   * just succeeds. Every argv is logged. `.cmd` on win32, `sh` elsewhere — the
+   * same two shapes `runCommand` handles.
    */
   function fakeKeytool(cwd: string): { tool: string; log: string } {
     const log = path.join(cwd, 'argv.log');
@@ -137,8 +174,24 @@ d?.('purgePinnedMitmCerts', () => {
           '@echo off',
           // Redirect-first so the `>>` is never parsed as part of `%*`.
           `>>"${log}" echo %*`,
-          'echo %* | findstr /C:"analytics.services.jetbrains.com.cn" >nul && echo Issuer: CN=OmniCellRouter Forward Proxy CA',
-          'echo %* | findstr /C:"account.jetbrains.com.cn" >nul && echo Issuer: CN=Corporate Root CA',
+          'echo %* | findstr /C:"-delete" >nul',
+          'if %errorlevel%==0 exit /b 0',
+          'echo Keystore type: PKCS12',
+          'echo Keystore provider: SUN',
+          'echo.',
+          'echo Your keystore contains 4 entries',
+          'echo.',
+          'echo Alias name: Analytics.Services.JetBrains.Com.Cn',
+          'echo Issuer: CN=OmniCellRouter Forward Proxy CA',
+          'echo.',
+          'echo Alias name: account.jetbrains.com.cn',
+          'echo Issuer: CN=Corporate Root CA',
+          'echo.',
+          'echo Alias name: other.example.com',
+          'echo Issuer: CN=OmniCellRouter Forward Proxy CA',
+          'echo.',
+          'echo Alias name: api.jetbrains.ai',
+          'echo Issuer: CN=OmniCellRouter Forward Proxy CA',
           'exit /b 0',
           '',
         ].join('\r\n'),
@@ -151,10 +204,10 @@ d?.('purgePinnedMitmCerts', () => {
       [
         '#!/bin/sh',
         `echo "$@" >> "${log}"`,
-        'case "$*" in',
-        '  *analytics.services.jetbrains.com.cn*) echo "Issuer: CN=OmniCellRouter Forward Proxy CA" ;;',
-        '  *account.jetbrains.com.cn*) echo "Issuer: CN=Corporate Root CA" ;;',
-        'esac',
+        'case "$*" in *-delete*) exit 0 ;; esac',
+        "cat <<'DUMP'",
+        STORE_DUMP.trimEnd(),
+        'DUMP',
         'exit 0',
         '',
       ].join('\n'),
@@ -173,20 +226,47 @@ d?.('purgePinnedMitmCerts', () => {
 
     const purged = await purgePinnedMitmCerts(store, tool, [
       'analytics.services.jetbrains.com.cn',
+      'api.jetbrains.ai',
       'account.jetbrains.com.cn',
       '*.google.com',
       'localhost',
     ], CA_COMMON_NAME);
 
-    assert.deepEqual(purged, ['analytics.services.jetbrains.com.cn']);
+    assert.deepEqual(purged, ['Analytics.Services.JetBrains.Com.Cn', 'api.jetbrains.ai']);
     const lines = fs.readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean);
+    const lists = lines.filter((line) => line.startsWith('-list'));
     const deletes = lines.filter((line) => line.startsWith('-delete'));
-    assert.deepEqual(deletes.map((line) => line.split('-alias ')[1]), ['analytics.services.jetbrains.com.cn']);
-    // A corporate root under the same alias style is left alone (it was listed).
-    assert.ok(lines.some((line) => line.startsWith('-list') && line.endsWith('account.jetbrains.com.cn')));
+    // ONE dump for the whole store, not one JVM per host (that was ~4.7 s of
+    // every setup); deletes only for the aliases that actually matched.
+    assert.equal(lists.length, 1);
+    assert.equal(lists[0].includes('-alias'), false);
+    assert.deepEqual(
+      deletes.map((line) => line.split('-alias ')[1]),
+      ['Analytics.Services.JetBrains.Com.Cn', 'api.jetbrains.ai'],
+    );
+    // Only matching blocks are purged: a corporate root under one of our host
+    // names, and our root under a host we never bypass, both survive.
+    assert.equal(lines.some((line) => line.includes('account.jetbrains.com.cn')), false);
+    assert.equal(lines.some((line) => line.includes('other.example.com')), false);
     // Wildcards and loopback never reach keytool at all.
     assert.equal(lines.some((line) => line.includes('google.com')), false);
-    assert.equal(lines.some((line) => line.endsWith('localhost')), false);
+    assert.equal(lines.some((line) => line.includes('localhost')), false);
+  });
+
+  it('matches an alias block to its OWN issuer, never a neighbour\'s', async () => {
+    // The corporate root sits FIRST here; a naive whole-dump `includes` would
+    // delete the host that holds our root even though only the neighbour names
+    // the CA.
+    const dump = `Alias name: account.jetbrains.com.cn
+Issuer: CN=Corporate Root CA
+
+Alias name: api.jetbrains.ai
+Issuer: CN=OmniCellRouter Forward Proxy CA
+`;
+    const wanted = new Set(['account.jetbrains.com.cn', 'api.jetbrains.ai']);
+    assert.deepEqual(pinnedAliases(dump, wanted, CA_COMMON_NAME), ['api.jetbrains.ai']);
+    // No CA name = fail closed, even with a matching alias in the dump.
+    assert.deepEqual(pinnedAliases(dump, wanted, ''), []);
   });
 
   it('is a no-op when the store or the tool is missing', async () => {
