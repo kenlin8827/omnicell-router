@@ -499,7 +499,9 @@ split back into runner + package on open.
 The parameter table itself is the shared `ScrollTable` (`frontend/src/components/ScrollTable.tsx`):
 its head is a NORMAL ROW outside the scrolling body — never `position: sticky` — so only the body
 scrolls and rows never slide under a floating head. Column widths are measured from the body's
-first row, which keeps the head aligned whether the body lays out to content or to declared widths.
+first row, which keeps the head aligned whether the body lays out to content or to declared widths;
+the head's scrollable width is then taken from the body's own scroll range, so content that
+overflows its track (a long badge) cannot leave the head scrolling short of the body's far right.
 The name column is the narrow one (a flag is short) and the value column takes the remainder, so a
 DSN is not squeezed into a sliver; a value that is still too long opens in a stacked, full-width
 editor from the expand button in its cell, and only Save writes it back to the row. The width split
