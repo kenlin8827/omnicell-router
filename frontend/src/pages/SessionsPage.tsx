@@ -2442,29 +2442,34 @@ export const SessionsPage: React.FC = () => {
                     // right edge: a header makes the mapping self-describing
                     // (no hover needed) and puts every turn's transport in one
                     // scannable vertical, which is how an accidental buffering
-                    // shows up. 86px fits `JSON → JSON` at 11px mono.
+                    // shows up. 104px = the widest badge (`JSON → JSON` at
+                    // `--text-2xs` mono, ~88px) plus the cell padding: a badge
+                    // wider than its track spills over the next column.
                     {
                       key: 'stream',
                       label: <span title={t('sessions.colStreamTip')}>{t('sessions.colStream')}</span>,
-                      width: 86,
+                      width: 104,
                       align: 'center',
                     },
-                    // Own track too: `chat → openai` needs ~110px and squeezing
-                    // it into the 86px transport cell would wrap both badges.
+                    // Own track too, sized the same way: the pair runs up to
+                    // `UNROUTABLE → WORKBUDDY` / `RESPONSES → ANTHROPIC`
+                    // (~158px at `--text-2xs` mono), so the track takes that
+                    // worst case plus padding instead of letting the badge ride
+                    // into the neighbouring column.
                     {
                       key: 'protocol',
                       label: <span title={t('sessions.protocolTip')}>{t('sessions.colProtocol')}</span>,
-                      width: 110,
+                      width: 176,
                       align: 'center',
                     },
                   ]}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 1054 + 110 = the 15 declared tracks (34+66+66+210+92+62+
-                  // 58+66+88+52+60+62+52+86+110); + 220 for the elastic prompt
+                  // 1248 = the 15 declared tracks (34+66+66+210+92+62+58+66+
+                  // 88+52+60+62+52+104+176); + 220 for the elastic prompt
                   // column.
-                  minWidth={1054 + 110 + 220}
+                  minWidth={1248 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
