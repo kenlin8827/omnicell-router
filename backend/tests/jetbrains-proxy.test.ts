@@ -360,3 +360,53 @@ d?.('jetbrains install selection', () => {
     fs.rmSync(goland, { recursive: true, force: true });
   });
 });
+
+d?.('jetbrains-proxy AI activation reset', () => {
+  const { resetAiPlatformLogout } = src!;
+  const OTHER = `<?xml version="1.0" encoding="UTF-8"?>
+<application>
+  <component name="AipLicense">
+    <option name="forciblyLoggedOut" value="true" />
+  </component>
+  <component name="SomethingElse">
+    <option name="keep" value="yes" />
+  </component>
+</application>
+`;
+  const store = (): { dir: string; file: string } => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aip-prefs-'));
+    const file = path.join(dir, 'options', 'other.xml');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    return { dir, file };
+  };
+
+  it('clears the forced-logout marker and keeps every other option intact', () => {
+    const { dir, file } = store();
+    fs.writeFileSync(file, OTHER, 'utf8');
+    assert.deepEqual(resetAiPlatformLogout(file), { ok: true, changed: true });
+    const patched = fs.readFileSync(file, 'utf8');
+    assert.match(patched, /<option name="forciblyLoggedOut" value="false" \/>/);
+    assert.match(patched, /<option name="keep" value="yes" \/>/);
+    // The pre-takeover bytes stay recoverable.
+    assert.equal(fs.readFileSync(`${file}.ocr-backup`, 'utf8'), OTHER);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('is idempotent and leaves an already-clear state alone', () => {
+    const { dir, file } = store();
+    fs.writeFileSync(file, OTHER, 'utf8');
+    assert.equal(resetAiPlatformLogout(file).changed, true);
+    const once = fs.readFileSync(file, 'utf8');
+    assert.equal(resetAiPlatformLogout(file).changed, false);
+    assert.equal(fs.readFileSync(file, 'utf8'), once);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('never creates a file or a backup where there is no such state', () => {
+    const { dir, file } = store();
+    assert.deepEqual(resetAiPlatformLogout(file), { ok: true, changed: false });
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.existsSync(`${file}.ocr-backup`), false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

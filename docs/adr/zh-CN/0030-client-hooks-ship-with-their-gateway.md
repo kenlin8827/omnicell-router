@@ -99,6 +99,22 @@ ADR-0029 的规则不变，且对每个代理接入包都成为关键路径：�
 
 对控制台的后果：坏链路上 setup 仍可能要几分钟，所以适配器每 32 MB 经宿主 logger 打一行进度（`N/M MB (K KB/s via <端点>)`）—— 运营者不必靠新按钮就能区分「在下」与「卡死」。
 
+### 6. 接管同时拥有 Air agent 目录；IDE 区域是可选项
+
+Air in IDEs 的 Manage Agents 目录来自一个 JetBrains 签名的 registry 包，URL 跟着 IDE 的
+**区域**走，而两边的包内容并不一致：中国区包 8 个 agent，国际包 45 个。只留下按区域选出的包，
+等于钩子发了代理却悄悄藏起大多数 agent —— 所以 `setup` 会把 Air 插件自己声明的 Registry 键
+（`air.acp.registry.url`，指向 `resources.jetbrains.com/agentclientprotocol/registry.zip`）
+写进每个已接管 IDE 的 `<config>/options/ide.general.xml`：备份一次、拆卸还原、运营者自己设的
+值绝不覆盖。
+
+IDE 的**区域**本身（`Settings → Language and Region`）是另一回事：它是机器全局的（整台机器上
+所有 JetBrains IDE 共享一个 JDK Preferences 值），且决定账号、市场与 AI 端点 ——
+「JetBrains AI is not available in your region」的判定读的就是 `Region.CHINA`，别无其它。
+所以翻动它是**可选**的（`airRegionUnrestrict`，默认关；目标 `airRegionTarget`），首次使用前
+备份，并且只在**没有任何**产品处于接管状态时才还原 —— 与全局 Junie 模型列表同一条门槛规则。
+与 §5 相同的生命周期规则：两者都落在 `setup()`/`teardown()` 内，不新增控制台动词。
+
 ## 影响
 
 - **卸载就是卸载。** 移除 `cursor-gateway` 会连启动器那一行一起消失；不再有孤儿钩子，也不再需要控制台表来维持配对。

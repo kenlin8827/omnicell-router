@@ -99,6 +99,28 @@ Three rules keep this from turning into host policy:
 
 Consequence for the console: setup can still take minutes on a bad link, so the adapter logs a progress line every 32 MB (`N/M MB (K KB/s via <endpoint>)`) through the host's logger — the operator can tell "downloading" from "hung" without a new action.
 
+### 6. The takeover also owns the Air agent catalog; the IDE region is opt-in
+
+Air in IDEs picks its Manage Agents catalog from a JetBrains-signed registry
+bundle whose URL follows the IDE **Region**, and the bundles are NOT the same
+set: the CN bundle ships 8 agents, the international one 45. A takeover that
+leaves the region-selected bundle in place is a hook that hands out a proxy and
+then silently hides most agents — so `setup` pins the international URL by
+writing the Air plugin's own declared Registry key (`air.acp.registry.url`,
+`resources.jetbrains.com/agentclientprotocol/registry.zip`) into each hooked
+IDE's `<config>/options/ide.general.xml`, backed up once, reverted on teardown,
+and never clobbering a value the operator set themselves.
+
+The IDE **Region** itself (`Settings → Language and Region`) is a different
+beast: machine-global (one JDK-Preferences value for every JetBrains IDE on the
+box) and load-bearing for account, marketplace and AI endpoints — the gate that
+answers "JetBrains AI is not available in your region" reads `Region.CHINA` and
+nothing else. Flipping it is therefore OPT-IN (`airRegionUnrestrict`, default
+off, target `airRegionTarget`), backed up on first use, and restored only once
+NO product remains taken over — the same gating rule as the global Junie model
+list. Same lifecycle rule as §5: both land inside `setup()`/`teardown()`, no
+new console verb.
+
 ## Consequences
 
 - **Uninstall means uninstall.** Removing `cursor-gateway` removes the launcher row with it; there is no orphan hook and no console table to enforce the pairing.
