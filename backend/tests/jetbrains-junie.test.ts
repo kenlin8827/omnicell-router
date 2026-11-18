@@ -700,6 +700,43 @@ d?.('Junie model profiles', () => {
   });
 });
 
+d?.('Junie settings — WMI guard', () => {
+  const { disableJunieStatistics, junieSettingsPath } = src!;
+
+  it('leaves a machine that never ran Junie alone', () => {
+    const home = tmpDir('junie-settings-untouched-');
+    const result = disableJunieStatistics({ home });
+    assert.equal(result.ok, true);
+    assert.equal(result.changed, false);
+    assert.equal(fs.existsSync(junieSettingsPath({ home })), false);
+  });
+
+  it('turns the FUS upload off while keeping every other key', () => {
+    const home = tmpDir('junie-settings-');
+    const file = junieSettingsPath({ home });
+    fs.writeFileSync(file, JSON.stringify({ shareAnonymousStatistics: 'true', sessionCount: '6', braveMode: 'ON' }, null, 4));
+    const first = disableJunieStatistics({ home });
+    assert.deepEqual([first.ok, first.changed], [true, true]);
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(parsed.shareAnonymousStatistics, 'false');
+    assert.equal(parsed.sessionCount, '6');
+    assert.equal(parsed.braveMode, 'ON');
+    // Idempotent: a second run reports "already off" instead of rewriting.
+    const second = disableJunieStatistics({ home });
+    assert.deepEqual([second.ok, second.changed], [true, false]);
+  });
+
+  it('refuses to rewrite a settings file it cannot parse', () => {
+    const home = tmpDir('junie-settings-bad-');
+    const file = junieSettingsPath({ home });
+    fs.writeFileSync(file, 'not json', 'utf8');
+    const result = disableJunieStatistics({ home });
+    assert.equal(result.ok, false);
+    assert.equal(result.changed, false);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'not json');
+  });
+});
+
 d?.('vmoptions trust block', () => {
   const { patchVmOptions, vmOptionsTrustLines, stripVmOptions } = src!;
   const STORE = path.join('C:', 'Users', 'k', '.omnicell-router', 'jbr', 'cacerts');
