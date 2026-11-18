@@ -1121,6 +1121,9 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
   const [decision, setDecision] = useState<DecisionResult | null>(null);
   const [decisionError, setDecisionError] = useState<string | undefined>(undefined);
   const [decisionBusy, setDecisionBusy] = useState(false);
+  /** Same manual-termination contract as the chat tab: a decision call can be
+   *  stopped while it waits, so a hung upstream never locks the form. */
+  const decisionAbortRef = useRef<AbortController | null>(null);
 
   // Auto-save: decision conversations.
   useEffect(() => {
@@ -1567,11 +1570,14 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     const body = built.body;
     setDecisionBusy(true);
     setDecisionError(undefined);
+    const controller = new AbortController();
+    decisionAbortRef.current = controller;
     try {
       const res = await fetch('/v1/systemone', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}`, 'x-session-id': playgroundSessionId },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
       const facts = readFacts((n) => res.headers.get(n) ?? undefined, res.status);
       const upstream = res.headers.get(HDR_SYSTEMONE_UPSTREAM) ?? undefined;
@@ -1592,8 +1598,12 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
         requestJson: body,
       });
     } catch (err) {
-      setDecisionError(String((err as Error)?.message ?? err));
+      // An operator stop is a normal outcome, not a transport failure: say so
+      // instead of surfacing the raw AbortError.
+      const aborted = (err as Error)?.name === 'AbortError';
+      setDecisionError(aborted ? t('chat.aborted') : String((err as Error)?.message ?? err));
     } finally {
+      decisionAbortRef.current = null;
       setDecisionBusy(false);
     }
   };
@@ -2120,18 +2130,24 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
                 question button, the question rows) starts at the left edge,
                 so the primary action lands where the eye already is. */}
             <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-              <button
-                className="btn btn-primary"
-                onClick={() => void sendDecision()}
-                disabled={decisionBusy || !activeKey}
-              >
-                {decisionBusy ? (
-                  <Loader2 size={13} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
-                ) : (
+              {decisionBusy ? (
+                // Same contract as the chat composer: while the wire is
+                // waiting the action becomes a stop, so a hung upstream is
+                // never a locked form.
+                <button className="btn btn-danger" onClick={() => decisionAbortRef.current?.abort()}>
+                  <Square size={13} />
+                  <span>{t('chat.stop')}</span>
+                </button>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void sendDecision()}
+                  disabled={!activeKey}
+                >
                   <Send size={13} />
-                )}
-                <span>{t('decision.send')}</span>
-              </button>
+                  <span>{t('decision.send')}</span>
+                </button>
+              )}
             </div>
           </div>
         )}
