@@ -49,6 +49,9 @@ interface PaginationProps {
   /** When provided (with onPageSizeChange), shows a per-page size selector */
   pageSizeOptions?: number[];
   onPageSizeChange?: (pageSize: number) => void;
+  /** Override for the root container style (e.g. `marginTop: 0` to suppress
+   *  the built-in 12px separator when the caller provides its own spacing). */
+  style?: React.CSSProperties;
 }
 
 /** Page number list with ellipsis gaps: 1 2 … 6 7 8 … 19 20 */
@@ -94,6 +97,7 @@ export const Pagination: React.FC<PaginationProps> = ({
   hasNext,
   pageSizeOptions,
   onPageSizeChange,
+  style: styleProp,
 }) => {
   const { t } = useI18n();
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -137,6 +141,7 @@ export const Pagination: React.FC<PaginationProps> = ({
         gap: 6,
         marginTop: 12,
         flexWrap: 'wrap',
+        ...styleProp,
       }}
     >
       {showSummary && (

@@ -766,6 +766,11 @@ export interface TraceRecord {
      * tag existed.
      */
     clientStream?: boolean;
+    /**
+     * INBOUND protocol surface the client addressed (`chat` = OpenAI
+     * chat/completions, `anthropic`, `responses`). Absent on legacy traces.
+     */
+    inboundWire?: 'chat' | 'anthropic' | 'responses';
   };
   routing: {
     layerUsed: 'layer0' | 'entry' | 'layer2';
@@ -816,6 +821,13 @@ export interface TraceRecord {
      * gateway drained and answered as JSON). Absent on legacy traces.
      */
     upstreamStream?: 'sse' | 'buffered';
+    /**
+     * OUTBOUND protocol wire the served attempt executed on (`openai` /
+     * `anthropic` / `google` / `responses` / `opencode-proxy`). Distinct from
+     * `request.inboundWire` unless the turn is a passthrough. Absent on
+     * legacy traces.
+     */
+    wireKind?: string;
   };
   finops: {
     inputTokens: number;

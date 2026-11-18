@@ -1253,11 +1253,18 @@ hiddenBadge: string;
      *  provider leg actually ran on (`JSON→SSE`, `SSE→SSE`, em dash = unknown). */
     colStream: string;
     colStreamTip: string;
+    /** Protocol-map column header (inbound surface → outbound wireKind). */
+    colProtocol: string;
     promptFallbackTip: string;
     /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
     inboundStreamTip: string;
     /** Stream-tag tooltip (outbound / provider leg): SSE vs buffered call. */
     outboundStreamTip: string;
+    /** Protocol-map tooltip (inbound surface → outbound wireKind). */
+    protocolTip: string;
+    /** Summary-card row: first request's protocol + transport map. */
+    firstRequestTip: string;
+    firstRequestLabel: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;

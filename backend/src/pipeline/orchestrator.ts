@@ -2065,6 +2065,9 @@ export class PipelineOrchestrator {
         // Response shape actually written to the client (surface-owned: the
         // C-3-normalized ask, or `client.mode: always` forcing SSE).
         clientStream: context?.clientStream === true,
+        // Inbound protocol surface the client addressed (chat / anthropic /
+        // responses) — the console's protocol column reads it directly.
+        inboundWire: context?.wire as 'chat' | 'anthropic' | 'responses' | undefined,
         clientHeaders: extractClientHeaders(context?.headers),
         ...(clientRef ? { clientRef } : {}),
       },
@@ -2084,6 +2087,9 @@ export class PipelineOrchestrator {
         credentialKeyHashPrefix: usageCredentialPrefix,
         tierUsed: actualTier,
         latencyMs,
+        // OUTBOUND protocol wire the served attempt ran on (distinct from the
+        // inbound surface unless the turn is a passthrough).
+        wireKind: actualModel.wire,
         ttftMs,
         genMs,
         stalledMs,

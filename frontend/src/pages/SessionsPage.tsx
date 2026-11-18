@@ -1807,7 +1807,11 @@ export const SessionsPage: React.FC = () => {
           // 10% viewport margin on all sides (90vw × 90vh) instead of the
           // viewport-filling `full` mode.
           width={1080}
-          maxSize={detailFull ? { width: '90vw', height: '90vh' } : undefined}
+          // BOTH modes are fixed-height: the detail card flex-fills the body
+          // and the table viewport is the ONE scroller (pager sits inside the
+          // card, always at the dialog's bottom edge). Expand only widens —
+          // never changes the scrolling mechanism.
+          maxSize={detailFull ? { width: '90vw', height: '90vh' } : { height: '88vh' }}
           headerActions={
             <button
               type="button"
@@ -1972,6 +1976,49 @@ export const SessionsPage: React.FC = () => {
                             {timeline.session.turnCount.toLocaleString()}
                           </span>
                         ),
+                      },
+                      {
+                        key: 'protocol',
+                        label: t('sessions.colProtocol'),
+                        title: t('sessions.firstRequestTip'),
+                        span: 2,
+                        children: (() => {
+                          const first = detailDesc
+                            ? timeline.traces[timeline.traces.length - 1]
+                            : timeline.traces[0];
+                          const hasWire =
+                            first?.request?.inboundWire !== undefined || first?.execution.wireKind !== undefined;
+                          const hasStream =
+                            first?.request?.clientStream !== undefined || first?.execution.upstreamStream !== undefined;
+                          if (!first || (!hasWire && !hasStream)) {
+                            return <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>—</span>;
+                          }
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              {hasStream && (
+                                <StreamMap
+                                  client={first.request?.clientStream}
+                                  upstream={
+                                    first.execution.upstreamStream === undefined
+                                      ? undefined
+                                      : first.execution.upstreamStream === 'sse'
+                                  }
+                                  tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
+                                />
+                              )}
+                              {hasWire && (
+                                <span className="badge" title={t('sessions.protocolTip')} style={STREAM_TAG_STYLE}>
+                                  {first.request?.inboundWire ?? '—'}
+                                  <span style={{ margin: '0 3px', opacity: 0.7 }}>→</span>
+                                  {first.execution.wireKind ?? '—'}
+                                </span>
+                              )}
+                              <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)' }}>
+                                {t('sessions.firstRequestLabel')}
+                              </span>
+                            </div>
+                          );
+                        })(),
                       },
                       {
                         key: 'tokens',
@@ -2295,23 +2342,20 @@ export const SessionsPage: React.FC = () => {
                 cost. Third card in the same shell as the two above — a
                 separated block, so the dialog reads as three stacked panels
                 instead of one panel plus two loose sections. */}
-            {timeline.traces.length > 0 && (
+            {timeline.traces.length > 0 && (<>
               <div style={{
                 border: '1px solid var(--divider)',
-                borderRadius: 8,
                 background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
                 overflow: 'hidden',
-                // Expanded: this card fills the Dialog body's remaining height
-                // so the request table scrolls internally — ScrollTable keeps
-                // its head OUTSIDE that scroller (no floating/sticky header)
-                // while the Dialog chrome (title, folds, pager) stays put.
-                // Collapsed: content-sized.
+                // detailOpen: this card flex-fills the Dialog body's FIXED
+                // height (both modes are fixed-height now) so the request
+                // table scrolls internally — ScrollTable keeps its head
+                // OUTSIDE that scroller, and the pager below the table is
+                // therefore always at the dialog's bottom edge. Collapsed:
+                // content-sized.
                 display: 'flex',
                 flexDirection: 'column',
-                // Expanded: fill the remaining height so the table scrolls
-                // inside. Collapsed (or windowed): content height — a shrinkable
-                // card would let `overflow: hidden` clip the last row.
-                flex: detailFull ? '1 1 0' : '0 0 auto',
+                flex: timeline.detailOpen ? '1 1 0' : '0 0 auto',
                 minHeight: 0,
               }}>
                 <div
@@ -2367,12 +2411,13 @@ export const SessionsPage: React.FC = () => {
                 </div>
                 {timeline.detailOpen && (
                 <ScrollTable
-                  // Expanded: the body is the section's flex-fill scroll
-                  // region (ScrollTable keeps the head OUTSIDE it, so rows
-                  // never slide under a floating header — the hand-rolled grid
-                  // this replaced put the header inside its own scroller and
-                  // lost it as soon as the list scrolled).
-                  fill={detailFull}
+                  // Open: the body is this card's flex-fill scroll region —
+                  // the ONE scroller in the dialog (vertical AND horizontal).
+                  // ScrollTable keeps the head OUTSIDE it, so rows never slide
+                  // under a floating header — the hand-rolled grid this
+                  // replaced put the header inside its own scroller and lost
+                  // it as soon as the list scrolled.
+                  fill={timeline.detailOpen}
                   columns={[
                     { key: 'n', label: '#', width: 34 },
                     { key: 'start', label: t('sessions.colStart'), width: 66 },
@@ -2403,13 +2448,22 @@ export const SessionsPage: React.FC = () => {
                       width: 86,
                       align: 'center',
                     },
+                    // Own track too: `chat → openai` needs ~110px and squeezing
+                    // it into the 86px transport cell would wrap both badges.
+                    {
+                      key: 'protocol',
+                      label: <span title={t('sessions.protocolTip')}>{t('sessions.colProtocol')}</span>,
+                      width: 110,
+                      align: 'center',
+                    },
                   ]}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 1054 = the 14 declared tracks (34+66+66+210+92+62+58+
-                  // 66+88+52+60+62+52+86); + 220 for the elastic prompt column.
-                  minWidth={1054 + 220}
+                  // 1054 + 110 = the 15 declared tracks (34+66+66+210+92+62+
+                  // 58+66+88+52+60+62+52+86+110); + 220 for the elastic prompt
+                  // column.
+                  minWidth={1054 + 110 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
@@ -2518,6 +2572,17 @@ export const SessionsPage: React.FC = () => {
                           />
                         )}
                       </td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Protocol map (inbound surface → outbound wire);
+                            renders nothing on legacy rows. */}
+                        {(tr.request?.inboundWire !== undefined || tr.execution.wireKind !== undefined) && (
+                          <span className="badge" title={t('sessions.protocolTip')} style={STREAM_TAG_STYLE}>
+                            {tr.request?.inboundWire ?? '—'}
+                            <span style={{ margin: '0 3px', opacity: 0.7 }}>→</span>
+                            {tr.execution.wireKind ?? '—'}
+                          </span>
+                        )}
+                      </td>
                     </tr>
                     );
                       });
@@ -2530,8 +2595,21 @@ export const SessionsPage: React.FC = () => {
                   const safePage = Math.min(detailPage, maxPage);
                   // Guarded by detailOpen: a collapsed card must not strand a
                   // pager under a fold that shows nothing to page through.
+                  // INSIDE the card on purpose: the card flex-fills the
+                  // fixed-height dialog body, so this footer sits at the
+                  // dialog's bottom edge in BOTH modes — no sticky, no bleed,
+                  // no second scroller. The table viewport above is the one
+                  // and only scrollbar (vertical and horizontal).
                   return sorted.length > detailPageSize ? (
-                    <div style={{ padding: '0 12px 12px' }}>
+                    // No top padding on purpose: Pagination carries its own
+                    // `margin-top: 12px` — stacking the two was the ~22px
+                    // whitespace band the operator flagged.
+                    // flex + marginTop override: Pagination's built-in
+                    // margin-top: 12px plus wrapper padding were compounding
+                    // into a 32px gap. We zero both and add only 4px top
+                    // (visual clearance from the table border) + 8px bottom
+                    // so the pager hugs the table tightly.
+                    <div style={{ padding: '0 12px 8px', flex: '0 0 auto' }}>
                       <Pagination
                         page={safePage}
                         pageSize={detailPageSize}
@@ -2540,12 +2618,13 @@ export const SessionsPage: React.FC = () => {
                         showSummary
                         pageSizeOptions={PAGE_SIZES}
                         onPageSizeChange={(s) => { setDetailPageSize(s); setDetailPage(1); }}
+                        style={{ marginTop: 0 }}
                       />
                     </div>
                   ) : null;
                 })()}
               </div>
-            )}
+            </>)}
         </Dialog>
       )}
     </div>

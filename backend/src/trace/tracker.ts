@@ -79,6 +79,13 @@ export interface ExecutionTrace {
      */
     clientStream?: boolean;
     /**
+     * INBOUND protocol wire the client addressed (`chat` = OpenAI
+     * chat/completions, `anthropic`, `responses`). Forgiving forward-compat:
+     * absent on traces written before the field existed and on internal calls
+     * that carry no surface.
+     */
+    inboundWire?: 'chat' | 'anthropic' | 'responses';
+    /**
      * Non-sensitive subset of inbound request headers. Three categories:
      *   - userAgent / acceptLanguage: client fingerprint.
      *   - clientRequestId: the CALLER's correlation value (x-request-id /
@@ -157,6 +164,15 @@ export interface ExecutionTrace {
      * written before the tag existed and on mock execution.
      */
     upstreamStream?: 'sse' | 'buffered';
+    /**
+     * OUTBOUND protocol wire the served attempt executed on (the model's
+     * resolved wire: `openai` / `anthropic` / `google` / `responses` /
+     * `opencode-proxy`). Distinct from `request.inboundWire` — the client's
+     * protocol and the provider's protocol only coincide on a passthrough.
+     * Absent on traces written before the field existed and on mock
+     * execution.
+     */
+    wireKind?: string;
     /**
      * Perceived stall time: total time the committed attempt's stream spent in
      * gaps of ≥1 s between two consecutive chunks the client received with
