@@ -174,22 +174,45 @@ export interface ClientActionResult {
  * artifact, but the hooked client will still fail at USE time until the
  * advisory is fixed. Rendered as a warning (never an error) so a launcher is
  * never withheld because the operator still has to import the CA.
+ *
+ * Vocabulary ownership is split: these core codes are shared by every hook and
+ * localized by core. A hook that introduces its OWN code declares its text in
+ * the owning package manifest's `warningLabels` (locale map), and the renderers
+ * read it from there — the plugin keeps its wording, the host keeps rendering.
+ * `(string & {})` keeps the core codes autocompleted while letting a package
+ * code through.
  */
+export type CoreWarningCode =
+  | 'ca_not_trusted'
+  | 'ca_trust_unknown'
+  | 'proxy_not_running'
+  | 'ide_running'
+  | 'ide_truststore_readonly';
+
 export interface ClientActionWarning {
-  code:
-    | 'ca_not_trusted'
-    | 'ca_trust_unknown'
-    | 'proxy_not_running'
-    /** One of the hooked IDEs was running, so it can rewrite its proxy settings on exit. */
-    | 'ide_running'
-    /** The install's own truststore is read-only, so the CA went into a copy the IDE's vmoptions point at. */
-    | 'ide_truststore_readonly'
-    /** The ACP agent (Junie) could not be provisioned; the IDE will try its own slow download. */
-    | 'junie_install_failed'
-    /** Junie's OCR model list could not be written (no usable API key, or a locked ~/.junie). */
-    | 'junie_models_failed';
-  /** Template params for the console's i18n string. */
+  /** A `CoreWarningCode`, or a code the owning plugin declared in `warningLabels`. */
+  code: CoreWarningCode | (string & {});
+  /** Template params, filled into the resolved text's `{name}` slots. */
   params?: Record<string, string>;
+}
+
+/** Resolve a package-declared advisory text (`manifest.warningLabels`) for the
+ *  CLI: English first, then the first declared locale; `{name}` slots filled
+ *  from `params`. Undefined means the package declared no text for the code and
+ *  the caller must fall back. */
+export function pluginWarningText(
+  labels: Record<string, string | Record<string, string>> | undefined,
+  code: string,
+  params?: Record<string, string>
+): string | undefined {
+  const label = labels?.[code];
+  const text =
+    typeof label === 'string' ? label : label ? (label['en-US'] ?? label['en'] ?? Object.values(label)[0]) : undefined;
+  if (!text) return undefined;
+  if (!params) return text;
+  let out = text;
+  for (const [k, v] of Object.entries(params)) out = out.split(`{${k}}`).join(v);
+  return out;
 }
 
 export interface ClientAdapter {

@@ -8,10 +8,11 @@ import { InfoTip } from '../components/InfoTip';
 import { AgentRowsTable } from '../components/AgentRowsTable';
 import { SmartAssignDialog, type SmartAssignTarget } from '../components/SmartAssignDialog';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
-import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse, type PluginConfigFieldInfo, type PluginConfigSectionInfo } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
-import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, type GatewayCfgDraft } from '../lib/plugin-config';
+import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, pickLocaleText, SHARED_GATEWAY_CARD_KEYS, type GatewayCfgDraft } from '../lib/plugin-config';
+import { pluginWarningText } from '../lib/warnings';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -115,7 +116,7 @@ interface GatewayPluginState {
 }
 
 export const ClientsPage: React.FC = () => {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
   const [clients, setClients] = useState<ClientStatus[]>([]);
@@ -155,11 +156,16 @@ export const ClientsPage: React.FC = () => {
    *  card. Keyed by PLUGIN id (the config owner). */
   const [gatewayCfg, setGatewayCfg] = useState<Record<string, GatewayCfgDraft>>({});
   const [gatewayCfgBusy, setGatewayCfgBusy] = useState<Record<string, boolean>>({});
-  /** Card-side edits for the Junie model slots (jetbrains-gateway only).
-   *  Holds ONLY the edited keys; display falls back to the committed plugin
+  /** Edits to `placement: 'card'` fields, keyed by PLUGIN id then config key.
+   *  Holds only the touched keys; display falls back to the committed plugin
    *  values, so an empty map shows exactly what the plugin holds. Cleared by a
    *  successful save — the response's values are the new committed baseline. */
-  const [junieEdits, setJunieEdits] = useState<Record<string, Record<string, string>>>({});
+  const [cardEdits, setCardEdits] = useState<Record<string, Record<string, string>>>({});
+  /** Schema + sections of each gateway plugin, kept so the card renders its
+   *  `placement: 'card'` fields from the plugin's own declaration (no console
+   *  knowledge of plugin keys). */
+  const [gatewaySchema, setGatewaySchema] = useState<Record<string, PluginConfigFieldInfo[]>>({});
+  const [gatewaySections, setGatewaySections] = useState<Record<string, PluginConfigSectionInfo[]>>({});
   /** Post-save hint per plugin id: the catalog is live in the gateway already,
    *  but the CLIENT caches its own model list — point at an app restart instead
    *  of a hook teardown, which never refreshes that list. */
@@ -168,6 +174,12 @@ export const ClientsPage: React.FC = () => {
    *  installed, but the client sees no OCR catalog: the card must say so instead
    *  of advertising a model list that does not exist. */
   const [gatewayPlugins, setGatewayPlugins] = useState<Record<string, GatewayPluginState>>({});
+  /** Advisory texts each package declares in its manifest (`warningLabels`),
+   *  refreshed with the same plugin read: a plugin-owned warning code renders
+   *  from the plugin's own wording, never from a core i18n key. */
+  const [pluginWarnLabels, setPluginWarnLabels] = useState<
+    Record<string, Record<string, string | Record<string, string>>>
+  >({});
   /** In-place plugin settings drawer. It edits only the protocol/runtime keys —
    *  the model surface stays in the card editor — so opening it never navigates
    *  away or drops this card's draft. */
@@ -317,6 +329,9 @@ export const ClientsPage: React.FC = () => {
             };
           }
           setGatewayPlugins(next);
+          const labels: Record<string, Record<string, string | Record<string, string>>> = {};
+          for (const p of res.plugins || []) if (p.warningLabels) labels[p.id] = p.warningLabels;
+          setPluginWarnLabels(labels);
         })
         .catch(err => console.error('gateway plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
@@ -394,6 +409,8 @@ export const ClientsPage: React.FC = () => {
         if (!alive) return;
         const parsed = parseGatewayCfg(cfg.values ?? {}, gatewayVocabulary(cfg.schema ?? []));
         setGatewayCfg((prev) => ({ ...prev, [expandedPluginId]: parsed }));
+        setGatewaySchema((prev) => ({ ...prev, [expandedPluginId]: cfg.schema ?? [] }));
+        setGatewaySections((prev) => ({ ...prev, [expandedPluginId]: cfg.sections ?? [] }));
 
       })
       .catch((err) => { if (alive) console.error(`${expandedPluginId} plugin config:`, err); })
@@ -489,10 +506,9 @@ export const ClientsPage: React.FC = () => {
       const model = draft.model;
       const values = {
         ...draft.values,
-        // The Junie rows are card-owned too (jetbrains-gateway): the card keeps
-        // them as an overlay so a takeover-driven save carries them along the
-        // same way the explicit Save button does.
-        ...(junieEdits[pluginId] ?? {}),
+        // `placement: 'card'` fields are edited on this card; carry the overlay
+        // through takeover-driven saves exactly like the explicit Save button.
+        ...(cardEdits[pluginId] ?? {}),
         model,
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
@@ -504,9 +520,9 @@ export const ClientsPage: React.FC = () => {
       };
       const res = await opencodeApi.putPluginConfig(pluginId, values);
       setGatewayCfg((prev) => ({ ...prev, [pluginId]: parseGatewayCfg(res.values ?? values, draft) }));
-      // The response values are the new committed baseline; the Junie overlay
-      // has nothing left to shadow. A FAILED save keeps it for retry.
-      setJunieEdits((prev) => (prev[pluginId] ? { ...prev, [pluginId]: {} } : prev));
+      // The response values are the new committed baseline; the card-owned
+      // overlay has nothing left to shadow. A FAILED save keeps it for retry.
+      setCardEdits((prev) => (prev[pluginId] ? { ...prev, [pluginId]: {} } : prev));
       // Only a catalog-shaped save needs the client to re-read its list; a
       // dropped value (warning) means the advertised list did NOT change.
       setGatewaySavedNotice((prev) => ({ ...prev, [pluginId]: catalogChanged && res.warnings.length === 0 }));
@@ -539,9 +555,9 @@ export const ClientsPage: React.FC = () => {
     if (!draft) return false;
     const base = parseGatewayCfg(draft.values ?? {}, draft);
     const pickedId = apiKeySel[clientName] ? keyIdOf(apiKeySel[clientName]) : '';
-    // Junie-only edits must dirty the card too: a takeover without this check
-    // would hook the client and leave the operator's Junie rows unsaved.
-    const juniePluginId = clients.find((cl) => cl.name === clientName)?.catalogPlugin ?? '';
+    // Card-owned edits must dirty the card too: a takeover without this check
+    // would hook the client and leave the operator's card rows unsaved.
+    const cardPluginId = clients.find((cl) => cl.name === clientName)?.catalogPlugin ?? '';
     return (
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
@@ -550,7 +566,7 @@ export const ClientsPage: React.FC = () => {
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
       draft.boundKeyId !== pickedId ||
-      Object.keys(junieEdits[juniePluginId] ?? {}).length > 0
+      Object.keys(cardEdits[cardPluginId] ?? {}).length > 0
     );
   };
 
@@ -857,16 +873,28 @@ export const ClientsPage: React.FC = () => {
       // routinely imported right after hooking.
       if (action === 'setup' && res.warnings?.length) {
         // Show ALL advisories: a listener warning must not hide the CA one.
+        // Core codes keep core copy; any other code is the owning package's —
+        // its text comes from that package's manifest (`warningLabels`), so the
+        // plugin owns the wording and the console only picks a locale + params.
         const warnKey: Record<string, string> = {
           ca_not_trusted: 'clients.warnCaNotTrusted',
           ca_trust_unknown: 'clients.warnCaTrustUnknown',
           proxy_not_running: 'clients.warnProxyNotRunning',
           ide_running: 'clients.warnIdeRunning',
           ide_truststore_readonly: 'clients.warnIdeTruststoreReadonly',
-          junie_install_failed: 'clients.warnJunieInstallFailed',
-          junie_models_failed: 'clients.warnJunieModelsFailed',
         };
-        toast.warning(res.warnings.map(warn => t(warnKey[warn.code] ?? 'clients.warnProxyNotRunning', warn.params)).join(' '));
+        const hookPluginId = clients.find(c => c.name === clientName)?.pluginId;
+        const labels = hookPluginId ? pluginWarnLabels[hookPluginId] : undefined;
+        toast.warning(
+          res.warnings
+            .map(warn =>
+              warnKey[warn.code]
+                ? t(warnKey[warn.code], warn.params)
+                : pluginWarningText(labels, warn.code, warn.params, lang) ??
+                  t('clients.warnUndeclaredAdvisory', { code: warn.code })
+            )
+            .join(' ')
+        );
       }
       if (action === 'setup') {
         // The hook's forced probe just refreshed the backend cache; mirror it so
@@ -1262,6 +1290,11 @@ export const ClientsPage: React.FC = () => {
                   ? followView.models.filter((model) => model.allowed).map((model) => model.id)
                   : draft.models;
             const visible = [...new Set(listed)];
+            // Manifest declarations for this plugin: the card renders its own
+            // `placement` choices instead of branching on the plugin id.
+            const schema = gatewaySchema[pluginId] ?? [];
+            const sections = gatewaySections[pluginId] ?? [];
+            const hideDefaultModel = schema.find((field) => field.key === 'model')?.placement === 'none';
             const defaultOptions = [...new Set([
               draft.model,
               ...visible,
@@ -1420,11 +1453,10 @@ export const ClientsPage: React.FC = () => {
                 </div>
 
                 {/* The gateway routing default (`model` / `forceModel`) is a
-                    RELAY concept: it fires only when a request names no model,
-                    or force-on. Junie always names the profile's model, so on
-                    the jetbrains card this row is dead config — the Junie block
-                    below owns the primary/faster model slots instead. */}
-                {pluginId !== 'jetbrains-gateway' && (
+                    RELAY concept. A hook whose client always names its model
+                    declares that field `placement: 'none'` — the card then
+                    skips the row instead of offering dead config. */}
+                {!hideDefaultModel && (
                   <>
                     <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
                     <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
@@ -1449,59 +1481,77 @@ export const ClientsPage: React.FC = () => {
                   </>
                 )}
 
-                {pluginId === 'jetbrains-gateway' && (() => {
-                  // Junie model slots — the card owns these two keys (the
-                  // drawer hides them): primaryModel is which profile Junie
-                  // starts on (its stored choice always wins after the
-                  // operator picks in the IDE), fasterModel is what the
-                  // internal helper agents call. Options are the SAME view the
-                  // catalog advertises — in `none` mode that is the tier
-                  // block, which is exactly what Junie's picker will show.
-                  // Values live as an overlay (`junieEdits`) over the
-                  // committed plugin values, so a save never rewrites
-                  // unrelated keys. Protocol/streaming/context-window knobs
-                  // stay in the plugin drawer: they are deployment escape
-                  // hatches, not per-client choices.
-                  const edits = junieEdits[pluginId] ?? {};
+                {(() => {
+                  // Card-owned fields come from the plugin's OWN declaration:
+                  // `placement: 'card'` minus the keys the shared catalog
+                  // editor above already renders (core gateway vocabulary).
+                  // Titles, hints and defaults are the manifest's locale maps,
+                  // so a plugin adds a card row without touching the console.
+                  const fields = schema.filter(
+                    (field) => field.placement === 'card' && SHARED_GATEWAY_CARD_KEYS[field.key] !== true
+                  );
+                  if (!fields.length) return null;
+                  const edits = cardEdits[pluginId] ?? {};
                   const committed = draft.values ?? {};
-                  const junie = (key: string, fallback: string): string => {
-                    if (key in edits) return String(edits[key]);
-                    const raw = committed[key];
-                    return typeof raw === 'string' ? raw : fallback;
+                  const valueOf = (field: PluginConfigFieldInfo): string => {
+                    if (field.key in edits) return String(edits[field.key]);
+                    const raw = committed[field.key];
+                    if (typeof raw === 'string') return raw;
+                    return typeof field.default === 'string' ? field.default : '';
                   };
-                  const setJunie = (key: string, value: string): void => {
+                  const setCard = (key: string, value: string): void => {
                     setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
-                    setJunieEdits((prev) => ({ ...prev, [pluginId]: { ...(prev[pluginId] ?? {}), [key]: value } }));
+                    setCardEdits((prev) => ({ ...prev, [pluginId]: { ...(prev[pluginId] ?? {}), [key]: value } }));
                   };
                   const listed = [...new Set(visible.map((id) => id.replace(/^ocr\//, '')))];
-                  const primary = junie('juniePrimaryModel', 'auto');
-                  const faster = junie('junieFasterModel', '');
-                  return (
-                    <>
-                      <div style={{ gridColumn: '1 / -1', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
-                        {t('clients.junieSection')} <InfoTip text={t('clients.junieSectionInfo')} />
-                      </div>
-                      <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.juniePrimaryModel')}</span>
-                      <Combobox
-                        style={{ gridColumn: 2, minWidth: 0 }}
-                        value={primary}
-                        clearable
-                        disabled={busy}
-                        onChange={(v) => setJunie('juniePrimaryModel', v ?? '')}
-                        options={[...new Set([primary, ...listed])].map((id) => ({ value: id, label: id }))}
-                      />
-                      <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.junieFasterModel')}</span>
-                      <Combobox
-                        style={{ gridColumn: 2, minWidth: 0 }}
-                        value={faster}
-                        clearable
-                        disabled={busy}
-                        onChange={(v) => setJunie('junieFasterModel', v ?? '')}
-                        options={[...new Set([faster, ...listed])].map((id) => ({ value: id, label: id }))}
-                        placeholder={t('clients.junieFasterModelPlaceholder')}
-                      />
-                    </>
-                  );
+                  const groups = new Map<string, PluginConfigFieldInfo[]>();
+                  for (const field of fields) {
+                    const id = field.section ?? '';
+                    groups.set(id, [...(groups.get(id) ?? []), field]);
+                  }
+                  return [...groups].map(([sectionId, sectionFields]) => {
+                    const section = sections.find((entry) => entry.id === sectionId);
+                    const heading = pickLocaleText(section?.title, lang);
+                    const hint = pickLocaleText(section?.desc, lang);
+                    return (
+                      <React.Fragment key={sectionId || 'card'}>
+                        {heading && (
+                          <div style={{ gridColumn: '1 / -1', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
+                            {heading} {hint ? <InfoTip text={hint} /> : null}
+                          </div>
+                        )}
+                        {sectionFields.map((field) => {
+                          const label = pickLocaleText(field.title, lang) ?? field.key;
+                          const value = valueOf(field);
+                          return (
+                            <React.Fragment key={field.key}>
+                              <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{label}</span>
+                              {field.control === 'model' ? (
+                                <Combobox
+                                  style={{ gridColumn: 2, minWidth: 0 }}
+                                  value={value}
+                                  clearable
+                                  disabled={busy}
+                                  onChange={(v) => setCard(field.key, v ?? '')}
+                                  options={[...new Set([value, ...listed])].filter(Boolean).map((id) => ({ value: id, label: id }))}
+                                  placeholder={label}
+                                />
+                              ) : (
+                                <input
+                                  className="input"
+                                  style={{ gridColumn: 2, minWidth: 0 }}
+                                  value={value}
+                                  disabled={busy}
+                                  onChange={(e) => setCard(field.key, e.target.value)}
+                                  placeholder={label}
+                                />
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  });
                 })()}
 
                 <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -1991,8 +2041,8 @@ export const ClientsPage: React.FC = () => {
                                       )}
                                     </span>
                                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                                      {p.junieVersion ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                                      <span>{t('clients.jetbrainsJunie')} {p.junieVersion ?? t('clients.none')}</span>
+                                      {p.agent ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                                      <span>{p.agent ? `${p.agent.name} ${p.agent.version}` : t('clients.none')}</span>
                                     </span>
                                   </div>
                                   {/* Backup is reversible state, not a metric: only its
@@ -2430,6 +2480,7 @@ export const ClientsPage: React.FC = () => {
       {advancedPlugin ? (
         <PluginConfigDrawer
           plugin={advancedPlugin}
+          cardClientName={clients.find((c) => c.catalogPlugin === advancedPlugin.id)?.displayName}
           onClose={() => setAdvancedPlugin(null)}
           showClientsGuide={false}
         />

@@ -25,16 +25,31 @@ const ORDERED_ADAPTERS = Object.values(adapters).sort(
  * take the core hooks down with it.
  */
 let pluginAdaptersReady: Promise<void> | undefined;
+/** The host's advisory-label reader, kept so the CLI can render
+ *  package-declared labels without importing the host statically (the host
+ *  imports this module to register hooks — a static import would be a cycle). */
+let readWarningLabels: ((id: string) => Record<string, string | Record<string, string>> | undefined) | undefined;
 
 export async function ensurePluginClientAdapters(): Promise<void> {
   if (!pluginAdaptersReady) {
     pluginAdaptersReady = import('../../plugins/host.js')
       .then(async (host) => {
+        readWarningLabels = host.getPluginWarningLabels;
         if (!host.isPluginHostInitialized()) await host.loadInstalledPlugins();
       })
       .catch(() => undefined);
   }
   await pluginAdaptersReady;
+}
+
+/** Advisory texts (`manifest.warningLabels`) declared by the package that owns
+ *  this hook; undefined for a core hook or an unloaded package. */
+export async function pluginWarningLabelsFor(
+  name: string
+): Promise<Record<string, string | Record<string, string>> | undefined> {
+  await ensurePluginClientAdapters();
+  const id = pluginIdForClient(name);
+  return id ? readWarningLabels?.(id) : undefined;
 }
 
 /** CLI usage hint: every target, most popular first. */

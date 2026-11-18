@@ -74,6 +74,11 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 绝不能压掉告警。CLI 逐条打印，控制台弹出 warning toast 并刷新 CA 信任 chip。绝不因为根证书尚未导入
 就扣下启动器：安装根证书的向导在另一个页面，拦截只会造成死路。
 
+词表归属与其他插件知识同一条分界线：上面的 code 由 core 共享并本地化；hook 若引入**自己的**
+advisory code，就在本包 manifest 的 `warningLabels` 里声明文案（沿用 `description` 的 locale-map
+契约）。插件拥有措辞，宿主拥有渲染 —— CLI 取 en-US，控制台按当前 UI 语言取值 —— 因此插件告警永远
+不需要新增 core 的 i18n 条目或改 core 的文案。
+
 同一页还能导出插件：`GET /api/admin/plugins/:id/package` 对已打包插件原样返回其安装 zip，对 dev 树插件则先将其入口 **bundle**（第三方依赖内联）再用与 `plugins:build` **同一个确定性打包器**压包——下回来的包可直接再 Install，且与构建产物逐字节相同。
 
 插件包始终**自包含**：发行版宿主是 `bun build --compile` 单文件，编译态只从内嵌 snapshot 解析裸包名，**不**查磁盘 `node_modules`。因此纯源码包会在加载时被拒绝并给出重新打包提示；依赖解析属于打包期（作者/CI），绝不放在插件安装期。`plugin.json` **不**携带依赖清单：仓内插件把 npm 包声明在宿主仓库的 workspace `package.json`（打包器从仓库 `node_modules` 解析），仓外作者直接交付已 bundle 的 `index.js` —— 安装期唯一的契约是入口在零外部包的情况下可解析。bundle 按 **Node** 目标构建而不是 Bun，因为**两个**宿主运行时必须跑同一份产物：编译后的 sidecar 与 `node backend/dist/index.js`（README：Bun 或 Node >= 18）。`bun` 目标会为内联依赖里的 CJS 互操作发射 `import.meta.require` —— 这是纯 Bun API，曾导致包在 sidecar 里能加载、在 Node 入口直接抛 `__require is not a function` —— 所以 CJS 互操作改为发射 `createRequire`，而 bundle 里仍残留 `import.meta.require` 的包会在打包期被拒绝。每个包还带一个内容为 `{"type":"module"}` 的 `package.json`（仓库源码里的 `package.json` 会被替换、绝不随包发出）：入口是 ESM，而裸 `.js` 从 Node 20.19 / 22.7 起才因语法探测默认按 ESM 处理 —— README 仍支持的 Node 18 在没有这个标记时会把 `export` 当 CommonJS 解析并报错。
@@ -85,6 +90,8 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 插件可声明面向 operator 的参数，控制台按声明通用渲染设置表单。三个来源严格分离：
 
 - **声明** —— `plugin.json` `configSchema`：扁平数组，元素 `{key, type, default?, min?, max?, values?, enumLabels?, control?, section?, visibleWhen?, essential?, title?, desc?}`，其中 `type ∈ string|number|boolean|string[]|enum`，另外可选 `configSections` 分组。`title`/`desc`/`enumLabels` 沿用清单的 locale-map 约定（纯字符串或 BCP-47 键的字符串映射）；`enumLabels` 把一个已声明的 `values` 项映射到操作者看到的文案——机器值（`follow`）本身不是标签。`visibleWhen` 是**仅影响显示**的谓词——`{key, equals?|in?}`，且只能指向一个兄弟 enum/boolean 字段。`essential` 同样**仅影响显示**：标记了 `essential` 的字段出现在设置抽屉的**快捷**视图，未标记的只在**高级**视图；一个没有任何 `essential` 字段的 schema 没有快捷视图（抽屉不渲染切换开关）。两个视图共享同一份草稿，保存时 PUT 回全部 schema 键，因此切换视图与隐藏字段都不会丢操作者输入。`control` 从**封闭**的控制台控件词表（`text` | `textarea` | `model` | `models` | `segmented` | `apiKey`）里选一个控件，且必须能驱动该字段的类型（`model` 对 `string`、`models` 对 `string[]`、`segmented` 对 `enum`、`apiKey` 对 `string`——即控制台自己模式开关用的连体按钮形态，这样「不设置 / 自定义 / 跟随 Key」这类三选一不必硬塞进下拉框）；控件只改变取值的**编辑方式**，存储、校验、合并仍按类型驱动，所以 `model` 的值在产物里依然是一个纯字符串。新增控件属于控制台能力（注册表 + 渲染器 + 本 ADR），插件既不能自创也不能组合。`configSections: [{id, title?, advanced?}]` 用来把字段分组，**只声明一次**、由 `field.section` 引用（每个字段自带标题就是 drift twin）；声明了却无人引用的 section、字段指向未声明的 id，安装期即失败；一个 section 里的字段若全被 `visibleWhen` 隐藏，则不渲染该标题。`advanced` 让整组默认折叠——组内取值同样保留，与隐藏字段一致（快捷视图取消该折叠：essential 子集本身就是短表单）。这就是它的全部表面积：没有表达式、没有布局、没有顺序、没有分页、也没有插件自带的 UI 代码（那会以管理员凭证在控制台里运行）。**分组就是终点**：超出 sections 的表单应该是控制台的第一方页面，而不是更厚的协议。排列顺序为：已声明 section 顺序 → 组内 schema 顺序，无分组字段排在最前。排布权留在控制台；插件只声明条件，以及在默认控件不适配数据时从词表里点一个控件。被 `visibleWhen` 隐藏的字段**不清空也不跳过**——它保留取值，仍参与校验与合并，操作者切回某个模式不会丢掉已填内容。仅原始类型；刻意不引 JSON-Schema 引擎或布局 DSL —— 那会把任意 UI 复杂度邀请进插件协议。畸形 schema 在安装/装载时响亮失败（作者侧 API 不得静默降级）：未知或与类型不兼容的 `control`、无人引用的 section、字段指向未声明的 section、`visibleWhen` 指向未知字段、指向没有离散取值的字段、指向目标永远不会取的值、以及可见性成环，都是安装期错误。
+
+  `placement` 声明控制台在**哪里**编辑该字段 —— `drawer`（默认）在插件设置抽屉，`card` 在钩子对应的 Client Hub 卡片，`none` 表示只存储并合并、不提供编辑器（对该钩子即死配置）。它与 `visibleWhen` 一样**仅影响显示**：所有已声明的键仍会被校验、合并并 PUT 回；卡片按同一份声明（label、hint、default、control）通用渲染其 `card` 字段。section 还可以带 `desc` —— 标题下的信息提示，沿用与 `title` 相同的 locale-map 约定。
 - **存储** —— `<pluginsRoot()>/config/<id>.json` 只存 operator 的**生效值**（非默认值）。插件参数**永不**进入 `config.yaml`（ADR-0016：schema 冻结；插件生命周期状态随插件工件存放，disabled.json / registrations.json 先例）。
 - **合并** —— host 逐字段校验存储值（未知键丢弃；类型/范围不符回落默认值并告警；坏工件永不导致装载崩溃），把合并结果通过 host SDK `config()` 交给插件。`''` 是合法的 `string` 值：声明为空的默认值可原样往返。调用时查询：控制台保存后永远是最新。合并结果按插件 id 缓存；每次插件重载使缓存失效，手改工件可被拾取。
 

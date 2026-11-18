@@ -8,8 +8,9 @@ import {
   findLaunchVerb,
   getAllClientAdapters,
   listLaunchVerbs,
+  pluginWarningLabelsFor,
 } from './clients/index.js';
-import { defaultGatewayPort, type ClientActionWarning } from './clients/base.js';
+import { defaultGatewayPort, pluginWarningText, type ClientActionWarning } from './clients/base.js';
 import { runLauncherScript } from './clients/launcher.js';
 import { registerGlobalShims, shimStatus, unregisterGlobalShims } from './shim.js';
 import type { CliAction, SupportedClient } from './types.js';
@@ -45,8 +46,13 @@ ${C.cyan}${C.bold}  ⚡ OmniCellRouter (OCR)${C.reset} ${C.dim}v${APP_VERSION}${
 }
 
 /** Post-setup advisories as CLI lines — the console renders the same codes as
- *  a warning toast; a CLI hook must not look healthy when HTTPS will fail. */
-function formatClientWarnings(warnings: ClientActionWarning[] | undefined): string[] {
+ *  a warning toast; a CLI hook must not look healthy when HTTPS will fail.
+ *  Core codes keep core wording; a package code resolves through the owning
+ *  plugin's `warningLabels`, so plugin text never lives in core. */
+function formatClientWarnings(
+  warnings: ClientActionWarning[] | undefined,
+  pluginLabels?: Record<string, string | Record<string, string>>
+): string[] {
   return (warnings ?? []).map((w) => {
     switch (w.code) {
       case 'ca_not_trusted':
@@ -59,10 +65,8 @@ function formatClientWarnings(warnings: ClientActionWarning[] | undefined): stri
         return 'A JetBrains IDE was running during setup: the hook applies on its next start, and the IDE rewrites proxy.settings.xml from memory when it exits — re-run setup after quitting it.';
       case 'ide_truststore_readonly':
         return `The IDE install's own truststore is not writable, so the MITM CA went into ${w.params?.path ?? 'a copy'} and the IDE's vmoptions now point at it — restart the IDE for JBR to pick it up.`;
-      case 'junie_install_failed':
-        return `Junie could not be provisioned (${w.params?.detail ?? 'unknown error'}) — Agent mode will fall back to the IDE's own download, which needs GitHub reachable and does not resume.`;
-      case 'junie_models_failed':
-        return `Junie's OCR model list was not written (${w.params?.detail ?? 'unknown error'}) — Agent mode will use JetBrains' cloud models instead of this gateway.`;
+      default:
+        return pluginWarningText(pluginLabels, w.code, w.params) ?? `Advisory '${w.code}' — no text was declared for it.`;
     }
   });
 }
@@ -509,7 +513,8 @@ async function main(): Promise<void> {
       });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
-        for (const line of formatClientWarnings(res.warnings)) {
+        const warnLabels = await pluginWarningLabelsFor(client);
+        for (const line of formatClientWarnings(res.warnings, warnLabels)) {
           console.log(`${C.yellow}⚠ ${line}${C.reset}`);
         }
       } else {

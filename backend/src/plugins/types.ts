@@ -73,6 +73,12 @@ export interface PluginManifest {
   /** Plain string, or a locale map ({"zh-CN": …, "en-US": …}) — the console
    *  picks by current UI locale and falls back to en-US / the raw value. */
   description?: string | Record<string, string>;
+  /** Operator-facing text for the setup advisories THIS package emits, keyed by
+   *  the warning `code` it returns from `setup`/`teardown` (ADR-0017). Same
+   *  locale-map convention as `description`; `{param}` slots are filled from the
+   *  warning's `params`. Core-owned codes (`ca_not_trusted`, …) keep core
+   *  wording — a package declares only codes it introduced. */
+  warningLabels?: Record<string, string | Record<string, string>>;
   /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
   logo?: string;
   /** Provider presets this plugin can pre-provision (shown on the plugins page). */
@@ -113,6 +119,9 @@ export interface PluginConfigSection {
   /** Locale-text group heading. Omitted = a visual boundary with no heading. */
   title?: string | Record<string, string>;
   advanced?: boolean;
+  /** Optional hint under the heading (the drawer/card shows it as an info
+   *  tip). Same locale-map convention as `title`. */
+  desc?: string | Record<string, string>;
 }
 
 /** The closed widget vocabulary the CONSOLE owns (ADR-0017 §7). A plugin names
@@ -163,6 +172,11 @@ export interface PluginConfigField {
   essential?: boolean;
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;
+  /** Where the console edits this field. `drawer` (default) = the plugin
+   *  settings drawer; `card` = the Client Hub card the hook backs (its catalog
+   *  editor), rendered generically from key/control/title/desc/default;
+   *  `none` = stored but not edited (dead config for this hook). */
+  placement?: 'drawer' | 'card' | 'none';
 }
 
 /** Options/result seam shared with opencode/probe.ts (concrete types live there). */
@@ -603,6 +617,8 @@ export interface PluginView {
   types: string[];
   wires: string[];
   description?: string | Record<string, string>;
+  /** This package's own advisory texts, keyed by warning code (see PluginManifest). */
+  warningLabels?: Record<string, string | Record<string, string>>;
   presets?: PluginProviderPreset[];
   /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
   logo?: string;

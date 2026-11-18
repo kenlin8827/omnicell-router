@@ -94,7 +94,7 @@ ADR-0029 的规则不变，且对每个代理接入包都成为关键路径：�
 | 规则 | 理由 |
 | --- | --- |
 | 镜像与本地包属于**运营者**配置（`downloadMirrors`、`junieArchivePath`、`downloadConcurrency`），绝不是包内常量 | 镜像是区域网络的变通；写死一个等于把第三方主机发给所有运营者 |
-| 下载留在 `setup()` 内部 —— 不新增控制台动词 | 线上词汇只有 `setup`/`teardown`（钩子的两个状态转换），而 `ClientHookStatus` 已经通过 `junieVersion` 表达中间态（「代理好了、agent 缺」）。第三个按钮会造出第三种生命周期状态，而它的 teardown 语义没人定义过 |
+| 下载留在 `setup()` 内部 —— 不新增控制台动词 | 线上词汇只有 `setup`/`teardown`（钩子的两个状态转换），而 `ClientHookStatus` 已经通过通用的 `agent` 字段（名称 + 版本，由 hook 提供）表达中间态（「代理好了、agent 缺」）。第三个按钮会造出第三种生命周期状态，而它的 teardown 语义没人定义过 |
 | 校验尽力而为，但永不缺席 | ACP registry 不为 Junie 发布 hash，所以能连上时取 GitHub release API 的摘要，否则用声明大小 + zip 结构。不匹配就删；只是截断就留（那**就是**续传状态） |
 
 对控制台的后果：坏链路上 setup 仍可能要几分钟，所以适配器每 32 MB 经宿主 logger 打一行进度（`N/M MB (K KB/s via <端点>)`）—— 运营者不必靠新按钮就能区分「在下」与「卡死」。

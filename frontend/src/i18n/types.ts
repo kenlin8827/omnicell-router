@@ -2323,11 +2323,6 @@ hiddenBadge: string;
     gatewayAutoSaveHint: string;
     gatewayCatalogRestartNotice: string;
     gatewayAdvancedSettings: string;
-    junieSection: string;
-    junieSectionInfo: string;
-    juniePrimaryModel: string;
-    junieFasterModel: string;
-    junieFasterModelPlaceholder: string;
     gatewayAppendSummary: string;
     gatewayReplaceSummary: string;
     gatewayConfigureModels: string;
@@ -2351,7 +2346,6 @@ hiddenBadge: string;
     jetbrainsCaUnknown: string;
     jetbrainsCaNotHooked: string;
     jetbrainsCaReimport: string;
-    jetbrainsJunie: string;
     warnIdeRunning: string;
     /** Consent dialog title: a client is running while the operator asks to hook/unhook it. */
     ideRunningTitle: string;
@@ -2365,10 +2359,8 @@ hiddenBadge: string;
     warnProxyNotRunning: string;
     /** IDE install's truststore is read-only: the CA lives in a copy its vmoptions point at. */
     warnIdeTruststoreReadonly: string;
-    /** The ACP agent (Junie) could not be provisioned; the IDE will try its own download. */
-    warnJunieInstallFailed: string;
-    /** Junie's OCR model list could not be written (no key / locked profile dir). */
-    warnJunieModelsFailed: string;
+    /** A plugin-owned advisory code with no text declared in its package. */
+    warnUndeclaredAdvisory: string;
     qoderTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;

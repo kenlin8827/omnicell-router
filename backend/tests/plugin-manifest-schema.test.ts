@@ -344,3 +344,52 @@ if (fs.existsSync(cursorGatewayPluginJson)) {
     });
   });
 }
+
+describe('manifest: warningLabels', () => {
+  const base = { id: 'p', name: 'P', version: '1.0.0', apiVersion: 1, type: 'client-adapter' };
+
+  it('accepts a plain string and a locale map per code', () => {
+    assert.doesNotThrow(() =>
+      validatePluginManifest(
+        {
+          ...base,
+          warningLabels: {
+            p_advisory: 'Something to know.',
+            p_other: { 'en-US': 'Other.', 'zh-CN': '另一条。' },
+          },
+        },
+        'plugin'
+      )
+    );
+  });
+
+  it('rejects a non-object, a malformed code and a non-text label', () => {
+    assert.throws(
+      () => validatePluginManifest({ ...base, warningLabels: ['p_advisory'] }, 'plugin'),
+      /warningLabels must be an object/
+    );
+    assert.throws(
+      () => validatePluginManifest({ ...base, warningLabels: { 'P-Bad': 'x' } }, 'plugin'),
+      /must be a lowercase code/
+    );
+    assert.throws(
+      () => validatePluginManifest({ ...base, warningLabels: { p_advisory: { 'en-US': 7 } } }, 'plugin'),
+      /must be a string or a locale map/
+    );
+  });
+});
+
+const jetbrainsPluginJson = path.resolve(import.meta.dirname, '../../plugins/jetbrains-gateway/plugin.json');
+if (fs.existsSync(jetbrainsPluginJson)) {
+  describe('warningLabels: the shipped jetbrains-gateway manifest', () => {
+    it('declares en-US and zh-CN text for every code it emits', () => {
+      const manifest = JSON.parse(fs.readFileSync(jetbrainsPluginJson, 'utf8')) as {
+        warningLabels?: Record<string, string | Record<string, string>>;
+      };
+      const missing = Object.entries(manifest.warningLabels ?? {})
+        .filter(([, text]) => typeof text !== 'object' || !text['en-US'] || !text['zh-CN'])
+        .map(([code]) => code);
+      assert.deepEqual(missing, [], 'every warning code needs an en-US + zh-CN label');
+    });
+  });
+}

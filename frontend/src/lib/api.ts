@@ -107,8 +107,8 @@ export interface ClientProductStatus {
   /** Is the MITM root trusted where THIS product's JBR reads it (own store or
    *  the vmoptions copy)? `unknown` when the probe cannot run. */
   caTrusted: boolean | 'unknown';
-  /** Installed ACP agent (Junie) version for this product's config root. */
-  junieVersion: string | null;
+  /** The ACP agent this hook provisioned (name = the agent's own identity). */
+  agent: { name: string; version: string } | null;
   /** Files this product owns (settings, per-product agents dir) — the
    *  `.ocr-backup` snapshot is reversible state, never an artifact. */
   artifacts: ClientArtifact[];
@@ -118,17 +118,9 @@ export interface ClientProductStatus {
  *  `ClientActionWarning`): the artifact was written, but the client will still
  *  fail at use time until this is fixed. */
 export interface ClientActionWarning {
-  code:
-    | 'ca_not_trusted'
-    | 'ca_trust_unknown'
-    | 'proxy_not_running'
-    | 'ide_running'
-    /** IDE install's truststore is read-only; the CA lives in a copy its vmoptions point at. */
-    | 'ide_truststore_readonly'
-    /** The ACP agent (Junie) could not be provisioned. */
-    | 'junie_install_failed'
-    /** Junie's OCR model list could not be written. */
-    | 'junie_models_failed';
+  /** A core code (localized by the console), or a code the owning package
+   *  declared in its manifest's `warningLabels`. */
+  code: string;
   params?: Record<string, string>;
 }
 
@@ -4891,6 +4883,8 @@ export interface PluginViewInfo {
   types?: string[];
   wires: string[];
   description?: string | Record<string, string>;
+  /** Package-declared warning texts, keyed by the advisory code it emits. */
+  warningLabels?: Record<string, string | Record<string, string>>;
   presets?: PluginProviderPresetInfo[];
   source: 'dev' | 'packaged';
   path: string;
@@ -4932,6 +4926,8 @@ export interface PluginConfigFieldInfo {
   /** Locale map keyed by BCP-47 ('zh-CN'), like the manifest description. */
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;
+  /** `drawer` (default), `card` (edited on the Client Hub card) or `none`. */
+  placement?: 'drawer' | 'card' | 'none';
 }
 
 /** One declared group of plugin settings (mirrors backend
@@ -4940,6 +4936,8 @@ export interface PluginConfigFieldInfo {
 export interface PluginConfigSectionInfo {
   id: string;
   title?: string | Record<string, string>;
+  /** Optional hint under the heading (rendered as an info tip). */
+  desc?: string | Record<string, string>;
   advanced?: boolean;
 }
 

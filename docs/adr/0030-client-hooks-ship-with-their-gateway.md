@@ -94,7 +94,7 @@ Three rules keep this from turning into host policy:
 | rule | why |
 | --- | --- |
 | Mirrors and the local archive are OPERATOR config (`downloadMirrors`, `junieArchivePath`, `downloadConcurrency`), never package constants | a mirror is a regional workaround; a hardcoded one ships a third-party host to every operator |
-| The download stays INSIDE `setup()` — no new console verb | the wire vocabulary is `setup`/`teardown` (a hook's two state transitions), and `ClientHookStatus` already reports the intermediate ("proxy hooked, agent missing") via `junieVersion`. A third button would invent a third lifecycle state whose teardown semantics nobody has defined |
+| The download stays INSIDE `setup()` — no new console verb | the wire vocabulary is `setup`/`teardown` (a hook's two state transitions), and `ClientHookStatus` already reports the intermediate ("proxy hooked, agent missing") via the generic `agent` field (name + version, supplied by the hook). A third button would invent a third lifecycle state whose teardown semantics nobody has defined |
 | Verification is best-effort but never absent | the ACP registry publishes no hash for Junie, so the digest comes from the GitHub release API when reachable; otherwise declared size + zip structure. A mismatch deletes the archive, a truncation keeps it (that IS the resume state) |
 
 Consequence for the console: setup can still take minutes on a bad link, so the adapter logs a progress line every 32 MB (`N/M MB (K KB/s via <endpoint>)`) through the host's logger — the operator can tell "downloading" from "hung" without a new action.

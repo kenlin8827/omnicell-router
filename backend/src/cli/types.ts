@@ -132,8 +132,9 @@ export interface ClientProductStatus {
   /** Is the MITM root trusted where THIS product's JBR reads it — its own store
    *  or the vmoptions copy? `unknown` when the probe cannot run. */
   caTrusted: boolean | 'unknown';
-  /** Installed ACP agent (Junie) version for this product's config root, if any. */
-  junieVersion: string | null;
+  /** The ACP agent this hook provisioned for the product, if any. `name` is the
+   *  agent's own identity supplied by the hook — core never names a vendor. */
+  agent: { name: string; version: string } | null;
   /** The files this product owns (settings, per-product agents dir) — the
    *  `.ocr-backup` snapshot is reversible state, never an artifact. */
   artifacts: ClientArtifact[];

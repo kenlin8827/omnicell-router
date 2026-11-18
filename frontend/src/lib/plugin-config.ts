@@ -143,6 +143,20 @@ export interface GatewayCfgDraft extends GatewayVocabulary {
   values: Record<string, unknown>;
 }
 
+/** The gateway-catalog keys the shared card editor renders itself. They are
+ *  core gateway vocabulary (same meaning for every gateway and already typed
+ *  on `GatewayCfgDraft`), and manifests mark them `card` so the plugin drawer
+ *  hides them. Any OTHER `card` field is plugin-declared and rendered by the
+ *  card's generic block. */
+export const SHARED_GATEWAY_CARD_KEYS: Record<string, true> = {
+  model: true,
+  forceModel: true,
+  modelListMode: true,
+  models: true,
+  catalogReplace: true,
+  catalogPrefix: true,
+};
+
 export function parseGatewayCfg(
   values: Record<string, unknown>,
   vocabulary: GatewayVocabulary

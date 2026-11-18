@@ -24,32 +24,6 @@ import { humanizeKey } from '../lib/format';
  * navigating away and discarding its own draft.
  */
 
-/** A gateway's model surface is a CLIENT concern and is edited in Client Hub.
- *  These keys stay in the schema (the storage contract) but are not rendered a
- *  second time here — one source, one editor. */
-const GATEWAY_CLIENT_FACING_FIELDS: Record<string, true> = {
-  model: true,
-  forceModel: true,
-  modelListMode: true,
-  models: true,
-  catalogReplace: true,
-  catalogPrefix: true,
-  // jetbrains-gateway only: the two Junie MODEL slots live on the client card
-  // next to the catalog editor, so the drawer must not render a second editor.
-  // Protocol / streaming-patch / context-window stay in the drawer — they are
-  // deployment escape hatches, not per-client model choices.
-  juniePrimaryModel: true,
-  junieFasterModel: true,
-};
-
-/** Plugins whose model surface is edited on a Client Hub card. */
-const GATEWAY_PLUGIN_CLIENT: Record<string, string> = {
-  'cursor-gateway': 'Cursor',
-  'qoder-gateway': 'Qoder',
-  'jetbrains-gateway': 'JetBrains IDEs',
-};
-const isClientGateway = (id: string): boolean => GATEWAY_PLUGIN_CLIENT[id] !== undefined;
-
 /** The schema key is metadata, not a heading: printing it beside every label
  *  repeated the row it belonged to and turned the form into a wall of
  *  identifiers. It stays reachable on hover because backend warnings
@@ -179,9 +153,17 @@ export interface PluginConfigDrawerProps {
    *  drawer is opened FROM that page — telling the reader to go where they
    *  already are is noise. */
   showClientsGuide?: boolean;
+  /** Display name of the Client Hub card this plugin's `card` fields are edited
+   *  on (the guide note names it). Omitted = the plugin's own name. */
+  cardClientName?: string;
 }
 
-export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, onClose, showClientsGuide = true }) => {
+export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({
+  plugin,
+  onClose,
+  showClientsGuide = true,
+  cardClientName,
+}) => {
   const { t, lang } = useI18n();
   const toast = useToast();
   const [schema, setSchema] = useState<PluginConfigFieldInfo[]>([]);
@@ -288,7 +270,7 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
       // never receives the key secret and core exposes no key-policy lookup to
       // plugins, so the console resolves the key's allowed models here and
       // stores the resulting ids. Re-save after changing the key's policy.
-      if (isClientGateway(plugin.id) && next.modelListMode === 'follow') {
+      if (next.modelListMode === 'follow') {
         // The binding field is the gateway's OWN declaration (`accountKeyId`
         // today), never a hardcoded name.
         const keyField = schema.find((field) => field.control === 'apiKey')?.key;
@@ -448,16 +430,13 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
   // per-section `advanced` collapsing is dropped — the subset is already the
   // short form, so collapsing it again would hide declared essentials.
   const hasEssential = schema.some((field) => field.essential === true);
-  const visibleSchema = (isClientGateway(plugin.id)
-    ? schema.filter(
-        (field) =>
-          GATEWAY_CLIENT_FACING_FIELDS[field.key] !== true &&
-          // The picked-key field is card state too, whatever the gateway
-          // names it — its `control` is the contract.
-          field.control !== 'apiKey'
-      )
-    : schema
-  ).filter((field) => mode === 'quick' ? field.essential === true : true);
+  // Placement is the manifest's call: `card` fields belong to the Client Hub
+  // card and `none` fields are dead config — neither is rendered a second time
+  // here; the apiKey control is card state by contract.
+  const cardFields = schema.filter((field) => field.placement === 'card');
+  const visibleSchema = schema
+    .filter((field) => (field.placement ?? 'drawer') === 'drawer' && field.control !== 'apiKey')
+    .filter((field) => (mode === 'quick' ? field.essential === true : true));
   const visibleSections =
     mode === 'quick'
       ? sections.filter((s) => visibleSchema.some((f) => f.section === s.id)).map((s) => ({ ...s, advanced: false }))
@@ -510,9 +489,9 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
           </div>
         ) : (
           <>
-            {showClientsGuide && isClientGateway(plugin.id) && (
+            {showClientsGuide && cardFields.length > 0 && (
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '12px' }}>
-                {t('pluginPage.gatewayModelsMoved', { client: GATEWAY_PLUGIN_CLIENT[plugin.id] })}{' '}
+                {t('pluginPage.gatewayModelsMoved', { client: cardClientName ?? plugin.name })}{' '}
                 <Link to="/clients">{t('pluginPage.cursorOpenClients')}</Link>
               </div>
             )}

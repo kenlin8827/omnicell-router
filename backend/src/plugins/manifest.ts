@@ -19,6 +19,10 @@ import type { PluginManifest, PluginPart, PluginType } from './types.js';
  *  with the test matrix that proves it. */
 export const SUPPORTED_PLUGIN_API = 1;
 
+/** Where a config field is edited: the plugin drawer (default), the Client Hub
+ *  card the hook backs, or nowhere (stored, but dead for this hook). */
+export const CONFIG_PLACEMENTS = ['drawer', 'card', 'none'] as const;
+
 /** Reject a package built for any other contract version. Called at INSTALL
  *  (before anything touches disk) and at LOAD (packages already on disk). */
 export function assertSupportedPluginApi(apiVersion: number): void {
@@ -173,6 +177,16 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   ) {
     fail('description must be a string or locale map');
   }
+  if (m.warningLabels !== undefined) {
+    if (typeof m.warningLabels !== 'object' || m.warningLabels === null || Array.isArray(m.warningLabels)) {
+      fail('warningLabels must be an object keyed by warning code');
+    }
+    for (const [code, text] of Object.entries(m.warningLabels as Record<string, unknown>)) {
+      // A code is the ABI the hook returns; the console looks it up verbatim.
+      if (!/^[a-z][a-z0-9_]*$/.test(code)) fail(`warningLabels key '${code}' must be a lowercase code (a-z, 0-9, _)`);
+      if (!isTextOrLocaleMap(text)) fail(`warningLabels['${code}'] must be a string or a locale map of strings`);
+    }
+  }
   if (m.presets !== undefined) {
     if (!Array.isArray(m.presets)) fail('presets must be an array');
     for (const preset of m.presets as unknown[]) {
@@ -292,6 +306,9 @@ export function validateConfigSchema(schema: unknown, label: string, sections?: 
         fail(`'${key}' control '${String(field.control)}' cannot drive a ${String(field.type)} field`);
       }
     }
+    if (field.placement !== undefined && !CONFIG_PLACEMENTS.includes(field.placement as never)) {
+      fail(`'${key}' placement must be one of ${CONFIG_PLACEMENTS.join(', ')}`);
+    }
     if (field.enumLabels !== undefined) {
       if (field.type !== 'enum') fail(`'${key}' enumLabels is only meaningful on an enum field`);
       const labels = field.enumLabels;
@@ -373,6 +390,9 @@ function validateSections(
     ids.add(id);
     if (section.title !== undefined && !isTextOrLocaleMap(section.title)) {
       fail(`section '${id}' title must be a string or a locale map of strings`);
+    }
+    if (section.desc !== undefined && !isTextOrLocaleMap(section.desc)) {
+      fail(`section '${id}' desc must be a string or a locale map of strings`);
     }
     if (section.advanced !== undefined && typeof section.advanced !== 'boolean') {
       fail(`section '${id}' advanced must be a boolean`);

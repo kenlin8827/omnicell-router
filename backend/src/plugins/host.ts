@@ -439,6 +439,7 @@ async function importPlugin(
     types: parts.map((p) => p.type),
     wires: modelPart?.wires ?? manifest.wires ?? [],
     description: manifest.description,
+    warningLabels: manifest.warningLabels,
     presets: manifest.presets,
     logo: manifest.logo,
     source,
@@ -1357,6 +1358,16 @@ export function getPluginConfig(
     sections: manifest.configSections ?? [],
     values: mergedPluginConfig(id, manifest.configSchema),
   };
+}
+
+/** One package's advisory texts (`manifest.warningLabels`) for the renderers:
+ *  the CLI prints setup advisories, the console maps the SAME code through this
+ *  map when the code is not core-owned. Loaded packages only — a disabled or
+ *  broken plugin has no advisories to render. */
+export function getPluginWarningLabels(
+  id: string
+): Record<string, string | Record<string, string>> | undefined {
+  return manifestsById.get(id)?.warningLabels;
 }
 
 /** Console config write: validate + persist + fire the plugin's optional
