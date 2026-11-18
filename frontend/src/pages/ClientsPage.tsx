@@ -262,21 +262,27 @@ export const ClientsPage: React.FC = () => {
    *  names it before the operator hooks a launcher and discovers TLS failures
    *  only at use time. */
   const [caTrust, setCaTrust] = useState<CaTrustResponse | null>(null);
-  const loadClients = async () => {
+  /** `refresh=true` (manual button / after a hook flip) bypasses the backend
+   *  roster SWR cache; plain mounts serve the fresh-window snapshot. */
+  const loadClients = async (refresh = false) => {
     setRefreshing(true);
     try {
-      const data = await api.getStatus();
+      // Roster (the slow half — subprocess version probes) and the lightweight
+      // status shell load in PARALLEL from their split endpoints; the 3s-polled
+      // status no longer carries the roster (backend GET /api/admin/clients).
+      const [roster, data] = await Promise.all([api.getClients(refresh), api.getStatus()]);
+      const list = roster.clients || [];
       // ONE normalization point: every filter/card below reads `hookKind`
       // unconditionally, and a gateway predating the field must classify as
       // 'config' (keeps the API-key gate) rather than as a keyless proxy hook.
-      setClients((data.clients || []).map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
+      setClients(list.map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
       if (data.port) setPort(String(data.port));
       setFpEnabled(data.forwardProxy ? data.forwardProxy.enabled : null);
       setFpRunning(data.forwardProxy ? data.forwardProxy.running : null);
       // Seed selections from the client config's current slot values (don't clobber unsaved edits)
       setModelSel(prev => {
         const next = { ...prev };
-        for (const c of data.clients || []) {
+        for (const c of list) {
           if (next[c.name] === undefined) {
             const slots: Record<string, string> = {};
             for (const s of clientSlots(c)) {
@@ -297,7 +303,7 @@ export const ClientsPage: React.FC = () => {
           // hooks themselves (`catalogPlugin`), so this refresh covers every
           // gateway-backed client without naming one.
           const catalogIds = new Set(
-            (data.clients || []).map((c) => c.catalogPlugin).filter((id): id is string => !!id),
+            list.map((c) => c.catalogPlugin).filter((id): id is string => !!id),
           );
           for (const id of catalogIds) {
             const plugin = (res.plugins || []).find((p) => p.id === id);
@@ -315,7 +321,7 @@ export const ClientsPage: React.FC = () => {
       // seeded from the slot echo (bare ref / native pin verbatim).
       setBindSel(prev => {
         const next = { ...prev };
-        for (const c of data.clients || []) {
+        for (const c of list) {
           if (!isRoleTableClient(c.name) || next[c.name] !== undefined) continue;
           const rows: Record<string, string> = {};
           for (const s of clientSlots(c)) {
@@ -328,7 +334,7 @@ export const ClientsPage: React.FC = () => {
       });
       setExtraSel(prev => {
         const next = { ...prev };
-        for (const c of data.clients || []) {
+        for (const c of list) {
           if (next[c.name] === undefined) next[c.name] = c.extraModels || [];
         }
         return next;
@@ -864,7 +870,7 @@ export const ClientsPage: React.FC = () => {
           return rest;
         });
       }
-      await loadClients();
+      await loadClients(true);
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
       toast.error(clientActionErrorText(err, t));
@@ -1632,7 +1638,7 @@ export const ClientsPage: React.FC = () => {
               );
             })()}
           </div>
-          <button className="btn btn-sm" onClick={loadClients} disabled={loading || refreshing}>
+          <button className="btn btn-sm" onClick={() => loadClients(true)} disabled={loading || refreshing}>
             <RefreshCw size={12} style={refreshing ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('clients.refresh')}</span>
           </button>

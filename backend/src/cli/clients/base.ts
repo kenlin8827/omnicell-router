@@ -259,25 +259,39 @@ export interface ClientAdapter {
   refreshModelSurface?(): Promise<ClientActionResult>;
 }
 
-/** Version-probe cache: one entry per command, 10-minute TTL — status polls
- *  must not spawn a subprocess every refresh, and CLI versions don't churn. */
-const versionProbeCache = new Map<string, { version: string | null; at: number }>();
+/** Version-probe cache: one entry per command. Stale-while-revalidate: an
+ *  existing entry (fresh or past VERSION_PROBE_TTL_MS) answers instantly and
+ *  a past-TTL entry triggers a background re-probe, so status reads never pay
+ *  the subprocess spawn again after the first call; only a cold cache blocks.
+ *  CLI versions don't churn, and failures cache like successes. */
+const versionProbeCache = new Map<string, { version: string | null; at: number; probing?: Promise<string | null> }>();
 const VERSION_PROBE_TTL_MS = 10 * 60 * 1000;
+
+function runVersionProbe(cmd: string[]): Promise<string | null> {
+  return (async () => {
+    const { ok, stdout } = await runCommand(cmd[0], cmd.slice(1), 5000);
+    const version = ok ? stdout.match(/\d+(?:\.\d+)+/)?.[0] ?? null : null;
+    versionProbeCache.set(cmd.join(' '), { version, at: Date.now() });
+    return version;
+  })();
+}
 
 /**
  * Probe the installed CLI version by running the adapter's version command.
  * Returns the first `major[.minor[.patch…]]` token in the output (CLI banners
  * are prose — "kimi version 2.4.1"), or null when the command fails/times out
- * (absent client, non-zero exit). Failures are cached like successes so a
+ * (absent client, non-zero exit).
  */
-export async function probeClientVersion(cmd: string[]): Promise<string | null> {
+export function probeClientVersion(cmd: string[]): Promise<string | null> {
   const key = cmd.join(' ');
   const hit = versionProbeCache.get(key);
-  if (hit && Date.now() - hit.at < VERSION_PROBE_TTL_MS) return hit.version;
-  const { ok, stdout } = await runCommand(cmd[0], cmd.slice(1), 5000);
-  const version = ok ? stdout.match(/\d+(?:\.\d+)+/)?.[0] ?? null : null;
-  versionProbeCache.set(key, { version, at: Date.now() });
-  return version;
+  if (!hit) return runVersionProbe(cmd); // cold cache: the one blocking call
+  if (Date.now() - hit.at >= VERSION_PROBE_TTL_MS && !hit.probing) {
+    // Deduplicate concurrent refreshes: everyone answers the stale value
+    // while one background probe runs.
+    hit.probing = runVersionProbe(cmd).finally(() => { hit.probing = undefined; });
+  }
+  return Promise.resolve(hit.version);
 }
 
 /** Client-facing forward-proxy endpoint derived from the runtime config snapshot. */

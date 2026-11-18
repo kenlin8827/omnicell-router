@@ -468,14 +468,12 @@ export interface GatewayStatusResponse {
      */
     classifier?: ClassifierTaxonomyEntry[];
   };
-  clients: ClientStatus[];
   /**
    * Runtime credential directory (provider + keyHash prefix only). Additive:
    * older gateways omit it. Lets the guardrails matrix name an orphan breaker
    * as the inline config-baked default credential instead of a bare #hash.
    */
   credentialHashes?: { provider: string; keyHashPrefix: string }[];
-  registeredModelsCount: number;
   /** Inbound forward-proxy runtime status (backend forward-proxy/status.ts). */
   forwardProxy?: {
     enabled: boolean;
@@ -488,6 +486,13 @@ export interface GatewayStatusResponse {
     error?: string;
   };
 }
+
+/** GET /api/admin/clients — roster only (backend console.ts §3'). */
+export interface ClientRosterResponse {
+  status: string;
+  clients: ClientStatus[];
+}
+
 
 /** One row of the forward-proxy access log (backend forward-proxy/access-log.ts). */
 export interface ProxyAccessEvent {
@@ -2447,6 +2452,15 @@ export interface UpdateCheckResponse {
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Client roster only — the slow half (subprocess version probes) of the
+   *  old aggregated status, now fetched on demand instead of every poll.
+   *  `refresh` bypasses the backend roster SWR cache (the manual button). */
+  async getClients(refresh = false): Promise<ClientRosterResponse> {
+    const res = await fetch('/api/admin/clients' + (refresh ? '?refresh=1' : ''));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

@@ -65,7 +65,18 @@ export function getAllClientAdapters(): ClientAdapter[] {
   return [...ORDERED_ADAPTERS, ...contributed];
 }
 
-export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
+/**
+ * Roster SWR cache: one snapshot of every adapter status. Fresh window answers
+ * from memory (the raw reads are cheap but the assemble fans out over every
+ * config file); past the window the STALE snapshot answers instantly while one
+ * background rebuild refreshes — and `refresh: true` (the Clients page's
+ * manual button) bypasses the cache outright, since a click that says
+ * "refresh" must never show yesterday's hook state.
+ */
+const rosterCache: { at: number; rows: ClientHookStatus[]; rebuild?: Promise<ClientHookStatus[]> } = { at: 0, rows: [] };
+const ROSTER_FRESH_MS = 15_000;
+
+async function buildRoster(): Promise<ClientHookStatus[]> {
   await ensurePluginClientAdapters();
   return Promise.all(
     getAllClientAdapters().map(async adapter => {
@@ -97,6 +108,28 @@ export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
       };
     })
   );
+}
+
+export function getAllClientStatuses(options?: { refresh?: boolean }): Promise<ClientHookStatus[]> {
+  const publish = (build: Promise<ClientHookStatus[]>): Promise<ClientHookStatus[]> => {
+    rosterCache.rebuild = build.then((rows) => {
+      rosterCache.rows = rows;
+      rosterCache.at = Date.now();
+      rosterCache.rebuild = undefined;
+      return rows;
+    });
+    return rosterCache.rebuild;
+  };
+  const hasSnapshot = rosterCache.at > 0;
+  // Forced refresh and a cold cache both build inline; everything else
+  // answers the snapshot immediately.
+  if (options?.refresh || !hasSnapshot) return publish(buildRoster());
+  if (Date.now() - rosterCache.at >= ROSTER_FRESH_MS && !rosterCache.rebuild) {
+    // Background refresh: a failed rebuild never surfaces — the stale
+    // snapshot stands until the next window.
+    publish(buildRoster()).catch(() => {});
+  }
+  return Promise.resolve(rosterCache.rows);
 }
 
 /**
@@ -162,6 +195,8 @@ export async function setupClient(
     }
   }
   const result = await adapter.setup(options);
+  // A hook flip invalidates the roster snapshot: the next read rebuilds.
+  if (result.success) rosterCache.at = 0;
   return siblingNote && result.success ? { ...result, message: result.message + siblingNote } : result;
 }
 export async function teardownClient(
@@ -176,5 +211,7 @@ export async function teardownClient(
       message: unknownClientMessage(name),
     };
   }
-  return adapter.teardown(options);
+  const result = await adapter.teardown(options);
+  if (result.success) rosterCache.at = 0;
+  return result;
 }

@@ -1090,7 +1090,6 @@ export function registerConsoleRoutes(
       classifier: CLASSIFIER_TAXONOMY,
     };
     const metrics = orchestrator.getTracker().getStats();
-    const clients = await getAllClientStatuses();
     const config = loadConfig();
 
     // Runtime credential directory (hash prefixes ONLY — the same display-safe
@@ -1137,10 +1136,9 @@ export function registerConsoleRoutes(
       },
       // Actual listening port (config.yaml `port` is the single source of truth)
       // so the console header shows the real gateway port instead of a literal.
-      port: config.port,
       metrics,
+      port: config.port,
       circuitBreakers: cbSummary,
-      clients,
       credentialHashes,
       registeredModelsCount: registry.getAllModels().length,
       // Inbound forward-proxy runtime status (see forward-proxy/status.ts) —
@@ -1158,6 +1156,19 @@ export function registerConsoleRoutes(
 
   app.get('/api/admin/status', handleStatus);
 
+  // 3'. Client roster — split from /api/admin/status so the console's 3s
+  // status poll never runs the roster's subprocess version probes (kimi /
+  // openclaw `--version`, worst-case 5s timeout each). Only the Clients page
+  // and the Overview card fetch this, on demand.
+  // `?refresh=1` bypasses the roster SWR cache — the Clients page's manual
+  // "Refresh Status" button must never serve a stale snapshot.
+  app.get('/api/admin/clients', async (req) => {
+    const refresh = (req.query as Record<string, string | undefined>).refresh === '1';
+    return {
+      status: 'ok',
+      clients: await getAllClientStatuses({ refresh }),
+    };
+  });
   // 3A1'. Release update check — display-only and cached in-process. The
   // first console read starts the GitHub call in the background and answers
   // `checking: true`; the console polls until the snapshot settles. A stale

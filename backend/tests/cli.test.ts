@@ -1252,10 +1252,21 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.status).toBe('ok');
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
-    expect(Array.isArray(json.clients)).toBe(true);
+    // The roster moved to /api/admin/clients so the 3s status poll never pays
+    // the roster's subprocess version probes.
+    expect(json.clients).toBeUndefined();
+  });
+
+  it('should return the client roster on GET /api/admin/clients', async () => {
+    const { app } = createServer(dummyConfig, true);
+    const res = await app.inject({ method: 'GET', url: '/api/admin/clients' });
+    expect(res.statusCode).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.status).toBe('ok');
     // The roster is core hooks + installed package hooks (ADR-0027/0030), so a
     // frozen count would re-break whenever a hook moves or a package loads:
     // the endpoint's contract is "every registered adapter is reported".
+    expect(Array.isArray(json.clients)).toBe(true);
     expect(json.clients.length).toBe(getAllClientAdapters().length);
   });
 

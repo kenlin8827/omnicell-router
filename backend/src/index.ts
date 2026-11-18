@@ -428,6 +428,12 @@ async function main() {
     console.log(`👉 Sessions Inspect : http://127.0.0.1:${config.port}/api/admin/sessions`);
     console.log('============================================================\n');
 
+    // Warm the client-roster version probes in the background (fire-and-forget):
+    // the subprocess spawns are the one cold-blocking cost of GET
+    // /api/admin/clients — paying them at boot keeps the Clients page instant
+    // even before its first refresh. Failures cache like successes.
+    void import('./cli/clients/index.js').then(m => m.getAllClientStatuses()).catch(() => {});
+
     // Inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server) — opt-in.
     // Fault-tolerance contract: started WITHOUT awaiting the boot path — a
     // failing / slow proxy must never block or crash the gateway. Failures are
