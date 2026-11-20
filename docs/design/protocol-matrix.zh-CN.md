@@ -8,12 +8,12 @@
 
 | 维度 | 完整组合 | 数量 | 可执行证明 |
 | --- | --- | ---: | --- |
-| 请求转换 | 3 北向 × 4 南向 | 12 | `backend/tests/ir-matrix.test.ts` |
-| 缓冲响应转换 | 4 南向 × 3 北向 | 12 | `backend/tests/ir-matrix.test.ts` |
-| 流式转换 | 3 客户端协议 × 4 上游协议 × 2 客户端形态（JSON／SSE）× 2 上游形态（缓冲／原生） | 48 | `backend/tests/ir-matrix.test.ts` |
-| 流式 posture | 客户端 `allow/deny/always` × 上游 `follow/stream/buffered` | 9 | `backend/tests/ir-matrix.test.ts` |
-| 原生 transport 与 JSON fallback | 四个 provider 实现 | 全部 | `backend/tests/provider-native-streams.test.ts` |
-| 脱敏持久化流语料 | Chat／Responses／Anthropic／Gemini golden JSON | 4 | `backend/tests/ir-golden-fixtures.test.ts` 与 `backend/tests/fixtures/ir/` |
+| 请求转换 | 3 北向 × 4 南向 | 12 | `backend/tests/ir/ir-matrix.test.ts` |
+| 缓冲响应转换 | 4 南向 × 3 北向 | 12 | `backend/tests/ir/ir-matrix.test.ts` |
+| 流式转换 | 3 客户端协议 × 4 上游协议 × 2 客户端形态（JSON／SSE）× 2 上游形态（缓冲／原生） | 48 | `backend/tests/ir/ir-matrix.test.ts` |
+| 流式 posture | 客户端 `allow/deny/always` × 上游 `follow/stream/buffered` | 9 | `backend/tests/ir/ir-matrix.test.ts` |
+| 原生 transport 与 JSON fallback | 四个 provider 实现 | 全部 | `backend/tests/providers/provider-native-streams.test.ts` |
+| 脱敏持久化流语料 | Chat／Responses／Anthropic／Gemini golden JSON | 4 | `backend/tests/ir/ir-golden-fixtures.test.ts` 与 `backend/tests/fixtures/ir/` |
 
 公共 fixture 只包含所有目标均可表达的语义：instructions、有序对话输入、函数定义与调用、工具结果、助手正文、终态与缓存 usage。它不意味着所有厂商特性都能移植。特性专项负例证明：不支持的映射必须显式失败，不得静默消失。
 
@@ -72,7 +72,7 @@
 | Headroom | 可选外部 Chat `/v1/compress` 投影 | 投影／转换失败、非 200、messages 数量不匹配与 `compression_skipped` 全部 fail-open 到原 IR；投影失败暴露 `headroomSkippedReason`。 |
 | Caveman | 仅追加 system instructions | 原前缀顺序与内容不变；重复注入确定且幂等。 |
 
-`backend/tests/compression-integrity.test.ts` 同时钉住上述规则和抓包顺序：客户端腿记录压缩前的客户端协议 body，上游腿记录实际压缩后的 provider payload。
+`backend/tests/ir/compression-integrity.test.ts` 同时钉住上述规则和抓包顺序：客户端腿记录压缩前的客户端协议 body，上游腿记录实际压缩后的 provider payload。
 
 ## 6. 抓包保真
 

@@ -30,8 +30,8 @@ when the request still succeeds.
 - Params with no faithful target representation are rejected with
   `400 unsupported_parameter`, never silently dropped (see
   `IrUnsupportedError` and each surface's `executionError`).
-- Regression surface: `backend/tests/responses.test.ts`, `provider-tools.test.ts`,
-  `surface-responses.test.ts`, `anthropic-wire.test.ts`, `chat-compat.test.ts`.
+- Regression surface: `backend/tests/surfaces/responses.test.ts`, `providers/provider-tools.test.ts`,
+  `surfaces/surface-responses.test.ts`, `providers/anthropic-wire.test.ts`, `ir/chat-compat.test.ts`.
 
 **Cache integrity** — cache hits are money, and a lost marker/usage field is invisible:
 

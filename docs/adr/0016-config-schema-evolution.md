@@ -78,7 +78,7 @@ assembles them IN ORDER. `migrateConfig` walks the chain one step at a time
 Binding rules:
 - A released migration file is FROZEN forever; evolution appends new files,
   never edits old ones. Frozen fixtures in `backend/tests/fixtures/` +
-  `backend/tests/config-migration.test.ts` anchor each step's transform.
+  `backend/tests/config/config-migration.test.ts` anchor each step's transform.
 - Migration steps are PURE shape transforms. Business clamping (junk →
   default, ms floors) stays in `loadConfig`'s value cleaners — trust-boundary
   validation never mixes into migration.

@@ -171,10 +171,10 @@ resulting `400` was blamed on the upstream.
   converter libraries and Chat chunk accumulator are deleted.
 - Responses continuation nodes store canonical input/output items (`v: 2`);
   Chat conversion exists only when replaying legacy recovery records.
-- `backend/tests/ir-conformance.test.ts` pins cross-protocol ordering, tool and
+- `backend/tests/ir/ir-conformance.test.ts` pins cross-protocol ordering, tool and
   media fidelity, reasoning, cache controls, usage, explicit failures, stream
   lifecycle/id stability and bounded conversion work.
-- `backend/tests/ir-matrix.test.ts` executes 12 request, 12 buffered-response,
+- `backend/tests/ir/ir-matrix.test.ts` executes 12 request, 12 buffered-response,
   48 streaming and 9 posture combinations. Golden sanitized stream fixtures,
   compression/cache integrity and resource-boundary suites are listed in
   `docs/design/protocol-matrix.md`.

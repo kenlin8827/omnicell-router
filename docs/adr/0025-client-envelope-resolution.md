@@ -6,9 +6,9 @@ tests. Governs: `backend/src/utils/client-envelope.ts`,
 `backend/src/utils/harness-profiles.ts`,
 `backend/src/pipeline/orchestrator.ts`,
 `backend/src/capture/recorder.ts`,
-`backend/tests/client-envelope.test.ts`,
-`backend/tests/session-title.test.ts`,
-`backend/tests/capture.test.ts`.
+`backend/tests/session/client-envelope.test.ts`,
+`backend/tests/session/session-title.test.ts`,
+`backend/tests/capture/capture.test.ts`.
 
 > **Change discipline.** A new harness is covered by DATA (one profile entry)
 > or not at all — the normalizer's rules do not grow per client. A profile tag

@@ -6,9 +6,9 @@
 `backend/src/utils/harness-profiles.ts`、
 `backend/src/pipeline/orchestrator.ts`、
 `backend/src/capture/recorder.ts`、
-`backend/tests/client-envelope.test.ts`、
-`backend/tests/session-title.test.ts`、
-`backend/tests/capture.test.ts`。
+`backend/tests/session/client-envelope.test.ts`、
+`backend/tests/session/session-title.test.ts`、
+`backend/tests/capture/capture.test.ts`。
 
 > **变更纪律。** 新 harness 靠**数据**覆盖（一条 profile 记录），否则就不覆盖——
 > 归一化器的规则不随客户端数量增长。标签只有在真实客户端的线上字节里实测到之后

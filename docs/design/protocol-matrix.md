@@ -8,12 +8,12 @@ Northbound: OpenAI Chat Completions (`openai-chat`), OpenAI Responses (`openai-r
 
 | Dimension | Exhaustive set | Cases | Executable proof |
 | --- | --- | ---: | --- |
-| Request conversion | 3 northbound × 4 southbound | 12 | `backend/tests/ir-matrix.test.ts` |
-| Buffered response conversion | 4 southbound × 3 northbound | 12 | `backend/tests/ir-matrix.test.ts` |
-| Streaming conversion | 3 client protocols × 4 upstream protocols × 2 client shapes (JSON/SSE) × 2 upstream shapes (buffered/native) | 48 | `backend/tests/ir-matrix.test.ts` |
-| Streaming posture | client `allow/deny/always` × upstream `follow/stream/buffered` | 9 | `backend/tests/ir-matrix.test.ts` |
-| Native transport and JSON fallback | four provider implementations | all | `backend/tests/provider-native-streams.test.ts` |
-| Sanitized persisted stream corpus | Chat/Responses/Anthropic/Gemini golden JSON | 4 | `backend/tests/ir-golden-fixtures.test.ts` and `backend/tests/fixtures/ir/` |
+| Request conversion | 3 northbound × 4 southbound | 12 | `backend/tests/ir/ir-matrix.test.ts` |
+| Buffered response conversion | 4 southbound × 3 northbound | 12 | `backend/tests/ir/ir-matrix.test.ts` |
+| Streaming conversion | 3 client protocols × 4 upstream protocols × 2 client shapes (JSON/SSE) × 2 upstream shapes (buffered/native) | 48 | `backend/tests/ir/ir-matrix.test.ts` |
+| Streaming posture | client `allow/deny/always` × upstream `follow/stream/buffered` | 9 | `backend/tests/ir/ir-matrix.test.ts` |
+| Native transport and JSON fallback | four provider implementations | all | `backend/tests/providers/provider-native-streams.test.ts` |
+| Sanitized persisted stream corpus | Chat/Responses/Anthropic/Gemini golden JSON | 4 | `backend/tests/ir/ir-golden-fixtures.test.ts` and `backend/tests/fixtures/ir/` |
 
 The common fixtures contain semantics every target can express: instructions, ordered conversation input, function definitions and calls, tool results, assistant text, terminal status and cached usage. They do not imply every vendor feature is portable. Feature-specific negative cases prove that an unsupported mapping fails explicitly instead of disappearing.
 
@@ -72,7 +72,7 @@ Compression runs before routing and upstream rendering; it never becomes a secon
 | Headroom | Optional external Chat `/v1/compress` projection | Projection/conversion failure, non-200, message-count mismatch and `compression_skipped` fail open to the original IR. Projection failure exposes `headroomSkippedReason`. |
 | Caveman | appended system instructions only | Existing prefix stays ordered and unchanged; repeated injection is deterministic and idempotent. |
 
-`backend/tests/compression-integrity.test.ts` pins these rules together with capture order: the client leg records the pre-compression client protocol body, while the upstream leg records the actual post-compression provider payload.
+`backend/tests/ir/compression-integrity.test.ts` pins these rules together with capture order: the client leg records the pre-compression client protocol body, while the upstream leg records the actual post-compression provider payload.
 
 ## 6. Capture fidelity
 

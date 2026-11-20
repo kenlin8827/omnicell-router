@@ -63,8 +63,8 @@ ADR-0008 曾把所有转换统一到 `ChatCompletionRequest`。那是务实的�
 
 - 核心执行与观测链只使用 IR；旧 route 级 Chat 转换库与 Chat chunk 累积器已删除。
 - Responses 续接节点保存规范 input／output items（`v: 2`）；只有回放旧恢复记录时才进行 Chat 转换。
-- `backend/tests/ir-conformance.test.ts` 钉住跨协议顺序、工具与媒体保真、推理、缓存控制、usage、显式失败、流式生命周期／id 稳定性与有界转换工作。
-- `backend/tests/ir-matrix.test.ts` 执行 12 项请求、12 项缓冲响应、48 项流式与 9 项 posture 组合。脱敏 golden 流 fixture、压缩／缓存完整性与资源边界套件列于 `docs/design/protocol-matrix.zh-CN.md`。
+- `backend/tests/ir/ir-conformance.test.ts` 钉住跨协议顺序、工具与媒体保真、推理、缓存控制、usage、显式失败、流式生命周期／id 稳定性与有界转换工作。
+- `backend/tests/ir/ir-matrix.test.ts` 执行 12 项请求、12 项缓冲响应、48 项流式与 9 项 posture 组合。脱敏 golden 流 fixture、压缩／缓存完整性与资源边界套件列于 `docs/design/protocol-matrix.zh-CN.md`。
 - `bun run test:live` 是显式 opt-in 的真实账号契约入口，不进入隔离测试；跳过配置绝不是 provider 兼容性证据。`bun run bench:ir` 提供本地性能基线。
 - ADR-0008 §9 现在陈述 IR 不变量，不再描述规范 Chat 链。
 

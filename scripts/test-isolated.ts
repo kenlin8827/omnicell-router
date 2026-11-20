@@ -44,13 +44,27 @@ const JOBS = Math.max(
 const repoRoot = path.resolve(import.meta.dir, '..');
 const testsDir = path.join(repoRoot, 'backend', 'tests');
 
-const filters = process.argv.slice(2);
-const files = fs
-  .readdirSync(testsDir)
-  .filter((f) => f.endsWith('.test.ts'))
-  .filter((f) => filters.length === 0 || filters.some((s) => f.includes(s)))
-  .sort()
-  .map((f) => path.join(testsDir, f));
+const SKIP_DIRS = new Set(['helpers', 'fixtures', 'node_modules']);
+
+function collectTestFiles(dir: string, relBase = ''): { abs: string; rel: string }[] {
+  const out: { abs: string; rel: string }[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const subRel = relBase ? `${relBase}/${entry.name}` : entry.name;
+      out.push(...collectTestFiles(path.join(dir, entry.name), subRel));
+    } else if (entry.isFile() && entry.name.endsWith('.test.ts')) {
+      const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+      out.push({ abs: path.join(dir, entry.name), rel });
+    }
+  }
+  return out;
+}
+
+const filters = process.argv.slice(2).map((s) => s.replace(/\\/g, '/'));
+const files = collectTestFiles(testsDir)
+  .filter((f) => filters.length === 0 || filters.some((s) => f.rel.includes(s)))
+  .sort((a, b) => a.rel.localeCompare(b.rel));
 
 if (files.length === 0) {
   console.error(`No test files match: ${filters.join(' ') || '(all)'}`);
@@ -216,8 +230,9 @@ interface FileResult {
  * deadline); a killed child reports exitCode null, which the classifier below
  * surfaces as TIMEOUT.
  */
-async function runFile(file: string): Promise<FileResult> {
-  const name = path.basename(file, '.test.ts');
+async function runFile(entry: { abs: string; rel: string }): Promise<FileResult> {
+  const name = entry.rel.replace(/\.test\.ts$/, '');
+  const safeTag = name.replace(/\//g, '__');
   const started = Date.now();
   const result: FileResult = {
     name,
@@ -230,8 +245,8 @@ async function runFile(file: string): Promise<FileResult> {
   };
   let out = '';
   try {
-    const childEnv = sandboxEnvFor(name);
-    const logFile = path.join(sandbox, `run-${name}.log`);
+    const childEnv = sandboxEnvFor(safeTag);
+    const logFile = path.join(sandbox, `run-${safeTag}.log`);
     const fd = fs.openSync(logFile, 'w');
     let child: Subprocess;
     try {
@@ -239,7 +254,7 @@ async function runFile(file: string): Promise<FileResult> {
       // default, which a server boot cannot reliably meet while eight files share the CPU — one
       // slow boot then reports as a permanent failure in a file that is otherwise green. The
       // assertion is about the answer, never about startup latency.
-      child = Bun.spawn(['bun', 'test', '--no-env-file', '--timeout', '20000', file], {
+      child = Bun.spawn(['bun', 'test', '--no-env-file', '--timeout', '20000', entry.abs], {
         cwd: sandbox,
         env: childEnv,
         stdout: fd,
@@ -304,18 +319,18 @@ try {
     const secs = (r.ms / 1000).toFixed(1).padStart(5);
     if (r.readError) {
       failedFiles.push(r.name);
-      console.log(`✗ ${r.name.padEnd(28)} INFRA FAIL  (unreadable run log: ${r.readError})`);
+      console.log(`✗ ${r.name.padEnd(42)} INFRA FAIL  (unreadable run log: ${r.readError})`);
     } else if (r.spawnError && !r.timedOut) {
       failedFiles.push(r.name);
-      console.log(`✗ ${r.name.padEnd(28)} INFRA FAIL  (${r.spawnError})`);
+      console.log(`✗ ${r.name.padEnd(42)} INFRA FAIL  (${r.spawnError})`);
     } else if (r.timedOut || r.fail > 0 || r.exitCode !== 0) {
       failedFiles.push(r.name);
       console.log(
-        `✗ ${r.name.padEnd(28)} ${r.pass} pass  ${r.fail} FAIL  (${r.timedOut ? `TIMEOUT ${FILE_TIMEOUT_MS / 1000}s` : `exit ${r.exitCode}`})  ${secs}s`,
+        `✗ ${r.name.padEnd(42)} ${r.pass} pass  ${r.fail} FAIL  (${r.timedOut ? `TIMEOUT ${FILE_TIMEOUT_MS / 1000}s` : `exit ${r.exitCode}`})  ${secs}s`,
       );
       if (r.failureBlock) console.log(r.failureBlock + '\n');
     } else {
-      console.log(`✓ ${r.name.padEnd(28)} ${String(r.pass).padStart(4)} pass  ${secs}s`);
+      console.log(`✓ ${r.name.padEnd(42)} ${String(r.pass).padStart(4)} pass  ${secs}s`);
     }
   }
 } finally {

@@ -92,7 +92,7 @@
 - **提示词与缓存完整性。** 提示词归一化只建立稳定的 system／developer 前缀：不裁剪文本、不合并消息、不改写角色、不丢弃结构化 part。目标只有一个指令通道时，由该目标的适配器用 `\n\n` 确定性地连接文本块；无法表示的非文本指令 part 显式报错。缓存计费从 Chat `prompt_tokens_details`、Anthropic `cache_read_input_tokens`、Responses `input_tokens_details` 与 Gemini `cachedContentTokenCount` 映射缓存输入，并保留实际报告的推理／音频明细。客户端缓存 key、retention／options 与消息／part／工具 breakpoint 都有规范表示。通用 OpenAI-compatible Chat 仍剥离异载体的专用缓存字段（`stripCarrierExtensions`），因为严格服务器会拒绝未知字段；没有忠实目标映射的语义控制则显式失败，而非静默丢弃。
 - **一个计费平面，诚实描述流式能力。** 缓冲与原生转发响应具有等价的 usage 与终态语义。四个内置 provider 都把原生上游 SSE 解码成 IR 事件；上游 JSON 响应仍是受支持的 fallback，通过同一规范生命周期展开。客户端与上游流式相互独立，因此由缓冲上游合成客户端 SSE 的路径绝不标成原生 provider 流式。转发的上游 usage 保持完整，合成 SSE 与 JSON 暴露相同的缓存／推理／音频用量字段。
 
-转换与流式工作随输入／输出规模线性增长，并受既有请求体、累积缓冲与归档上限约束。`backend/tests/ir-conformance.test.ts` 钉住跨载体保真、显式失败、生命周期／id 稳定性与有界工作用例；`backend/tests/cache-integrity.test.ts` 钉住费用相关字段。
+转换与流式工作随输入／输出规模线性增长，并受既有请求体、累积缓冲与归档上限约束。`backend/tests/ir/ir-conformance.test.ts` 钉住跨载体保真、显式失败、生命周期／id 稳定性与有界工作用例；`backend/tests/ir/cache-integrity.test.ts` 钉住费用相关字段。
 
 ## 后果
 
