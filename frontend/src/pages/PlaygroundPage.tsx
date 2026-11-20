@@ -681,6 +681,21 @@ const labelStyle: React.CSSProperties = {
   color: 'var(--text-dim)',
 };
 
+/** Compact square icon button for history and preset list rows — overrides
+ *  `.btn-sm` `min-height: 30px` so an 11px icon is not stretched into a tall
+ *  narrow box. */
+const historyIconBtnStyle: React.CSSProperties = {
+  width: 24,
+  height: 24,
+  minHeight: 0,
+  padding: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderRadius: 5,
+  flexShrink: 0,
+};
+
 /** JSON well with an expand affordance: inline stays height-capped, the dialog
  *  shows the same text unclamped (fullscreen toggle for wide payloads). */
 const JsonBlock: React.FC<{
@@ -1700,7 +1715,9 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
   const [imageUrl, setImageUrl] = useState('');
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
+  const [selectedChatHistoryIds, setSelectedChatHistoryIds] = useState<string[]>([]);
   const [decisionHistoryOpen, setDecisionHistoryOpen] = useState(false);
+  const [selectedDecisionHistoryIds, setSelectedDecisionHistoryIds] = useState<string[]>([]);
   const [chatExpanded, setChatExpanded] = useState(false);
   // Width preference: WIDE by default; the operator can switch to a narrow
   // (centered ~900px) column. Client-side view preference, persisted in
@@ -1891,17 +1908,21 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     setPlaygroundSessionId(conv.sessionId);
   };
 
+  /** A fresh empty conversation that inherits the operator's current setup
+   *  (protocol, model, system prompt, runtime knobs, and configured key row) so
+   *  starting a new thread or deleting the last history entry never resets the
+   *  client configuration under test. */
+  const emptyConversationWithCurrentSetup = (): PgChatConversation => ({
+    ...emptyChatConversation(),
+    model,
+    protocol,
+    systemPrompt,
+    params: currentChatParams(),
+    keyId,
+  });
+
   const newChatConversation = () => {
-    const conv: PgChatConversation = {
-      ...emptyChatConversation(),
-      // A new transcript keeps the CLIENT setup — the knobs and the key row are
-      // how this operator talks to the gateway, not part of the topic. The
-      // model and system prompt DO fall back to the neutral defaults
-      // `emptyChatConversation` sets: a prompt written for another thread is
-      // exactly what a "new conversation" is meant to escape.
-      params: currentChatParams(),
-      keyId,
-    };
+    const conv = emptyConversationWithCurrentSetup();
     const next = [conv, ...chatConversations].slice(0, PG_MAX_CONVERSATIONS);
     cancelPendingChatSave();
     immediateChatSaveRef.current = true;
@@ -1924,15 +1945,25 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     }));
   };
 
-  const deleteChatConversation = (id: string) => {
-    const remaining = chatConversations.filter(c => c.id !== id);
+  const deleteChatConversations = (ids: ReadonlySet<string>) => {
+    if (ids.size === 0) return;
+    const remaining = chatConversations.filter(c => !ids.has(c.id));
     // The store always keeps one active conversation: deleting the last row
-    // seeds a fresh empty one instead of leaving the page unpersisted.
-    const next = remaining.length > 0 ? remaining : [emptyChatConversation()];
+    // seeds a fresh empty one with the current setup instead of leaving the page
+    // unpersisted or resetting the operator's configuration.
+    const next = remaining.length > 0 ? remaining : [emptyConversationWithCurrentSetup()];
     cancelPendingChatSave();
     immediateChatSaveRef.current = true;
     setChatConversations(next);
-    if (id === activeChatId) adoptChatConversation(next[0]);
+    setSelectedChatHistoryIds(prev => prev.filter(id => !ids.has(id)));
+    if (ids.has(activeChatId)) {
+      const nextActive = [...next].sort((a, b) => b.updatedAt - a.updatedAt)[0]!;
+      adoptChatConversation(nextActive);
+    }
+  };
+
+  const deleteChatConversation = (id: string) => {
+    deleteChatConversations(new Set([id]));
   };
 
   /** Branch the transcript AT `index`: the turns up to and including it become a
@@ -2058,12 +2089,19 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     saveDecisionStore(id, decisionConversations);
   };
 
-  const deleteDecisionConversation = (id: string) => {
-    const remaining = decisionConversations.filter(c => c.id !== id);
+  const deleteDecisionConversations = (ids: ReadonlySet<string>) => {
+    if (ids.size === 0) return;
+    const remaining = decisionConversations.filter(c => !ids.has(c.id));
     const next = remaining.length > 0 ? remaining : [emptyDecisionConversation(presets[0])];
     setDecisionConversations(next);
-    if (id === activeDecisionId) adoptDecisionConversation(next[0]);
-    saveDecisionStore(id === activeDecisionId ? next[0].id : activeDecisionId, next);
+    setSelectedDecisionHistoryIds(prev => prev.filter(id => !ids.has(id)));
+    const nextActiveId = ids.has(activeDecisionId) ? next[0]!.id : activeDecisionId;
+    if (ids.has(activeDecisionId)) adoptDecisionConversation(next[0]!);
+    saveDecisionStore(nextActiveId, next);
+  };
+
+  const deleteDecisionConversation = (id: string) => {
+    deleteDecisionConversations(new Set([id]));
   };
 
   /** Resolved wire of the typed model id. Unknown ids fail OPEN: the gateway
@@ -2716,7 +2754,27 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     if (turns.length === 0) return;
     const ok = await confirmDialog({ title: t('chat.clear'), description: t('chat.clearConfirm'), danger: true });
     if (!ok) return;
-    newChatConversation();
+    // Clear the current conversation in-place: wipe turns and title and mint a
+    // fresh gateway session id, while preserving every setup field (protocol,
+    // model, key, system prompt, parameters, tools) and without pushing a
+    // second row into the conversation history.
+    cancelActiveChatStream();
+    const nextSessionId = mintPlaygroundSessionId();
+    nextIdRef.current = 1;
+    setTurns([]);
+    setPendingImages([]);
+    setImageUrl('');
+    setImageUrlOpen(false);
+    setPlaygroundSessionId(nextSessionId);
+    cancelPendingChatSave();
+    immediateChatSaveRef.current = true;
+    setChatConversations((prev) =>
+      prev.map((c) =>
+        c.id === activeChatId
+          ? { ...c, title: '', turns: [], nextId: 1, sessionId: nextSessionId, updatedAt: Date.now() }
+          : c,
+      ),
+    );
   };
 
   /** Escape characters that have special meaning inside POSIX double quotes. */
@@ -2932,6 +2990,8 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
    *  summarizer and manual renames, so it tracks the LAST activity, and the
    *  list answers "what was I just working on" with the newest first. */
   const chatHistoryRows = [...chatConversations].sort((a, b) => b.updatedAt - a.updatedAt);
+  const validSelectedChatIds = selectedChatHistoryIds.filter(id => chatConversations.some(c => c.id === id));
+  const allChatHistorySelected = chatHistoryRows.length > 0 && validSelectedChatIds.length === chatHistoryRows.length;
   const chatHistoryList = (
     <>
       {chatHistoryRows.length === 0 && (
@@ -2939,18 +2999,68 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
           {t('chat.historyEmpty')}
         </div>
       )}
+      {chatHistoryRows.length > 0 && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px 8px',
+            borderBottom: '1px solid var(--divider)', marginBottom: 4,
+            fontSize: 'var(--text-xs)', color: 'var(--text-dim)',
+          }}
+        >
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={allChatHistorySelected}
+              onChange={(e) =>
+                setSelectedChatHistoryIds(e.target.checked ? chatHistoryRows.map(c => c.id) : [])
+              }
+              style={{ accentColor: 'var(--accent)', cursor: 'pointer', margin: 0 }}
+            />
+            <span>{t('chat.toolSelectAll')}</span>
+          </label>
+          {validSelectedChatIds.length > 0 && (
+            <span>({t('combobox.selectedCount', { n: validSelectedChatIds.length })})</span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            disabled={validSelectedChatIds.length === 0}
+            style={{ minHeight: 24, height: 24, padding: '0 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            onClick={() => deleteChatConversations(new Set(validSelectedChatIds))}
+          >
+            <Trash2 size={11} />
+            <span>
+              {t('chat.historyDelete')}
+              {validSelectedChatIds.length > 0 ? ` (${validSelectedChatIds.length})` : ''}
+            </span>
+          </button>
+        </div>
+      )}
       {chatHistoryRows.map(c => {
         const last = new Date(c.updatedAt);
+        const checked = validSelectedChatIds.includes(c.id);
         return (
           <div
             key={c.id}
             style={{
-              display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px',
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
               cursor: 'pointer', fontSize: 'var(--text-sm)',
               background: c.id === activeChatId ? 'var(--accent-bg, rgba(99,102,241,0.08))' : undefined,
             }}
             onClick={() => { switchChatConversation(c.id); setChatHistoryOpen(false); }}
           >
+            <input
+              type="checkbox"
+              checked={checked}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) =>
+                setSelectedChatHistoryIds(prev =>
+                  e.target.checked ? [...prev, c.id] : prev.filter(id => id !== c.id),
+                )
+              }
+              style={{ accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0, margin: 0 }}
+            />
             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {c.title || chatTitle(c.turns, t('chat.imageAlt')) || t('chat.historyUntitled')}
             </span>
@@ -2966,7 +3076,7 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
               mis-click never switches the conversation */}
             <button
               className="btn btn-sm"
-              style={{ padding: '2px 4px' }}
+              style={historyIconBtnStyle}
               title={t('chat.historyRetitle')}
               aria-label={t('chat.historyRetitle')}
               disabled={!!titleBusyId || !activeKey || c.turns.length === 0}
@@ -2978,7 +3088,7 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
             </button>
             <button
               className="btn btn-sm"
-              style={{ padding: '2px 4px' }}
+              style={historyIconBtnStyle}
               title={t('chat.historyRename')}
               aria-label={t('chat.historyRename')}
               onClick={(e) => {
@@ -2990,8 +3100,9 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
             </button>
             <button
               className="btn btn-sm"
-              style={{ padding: '2px 4px' }}
+              style={historyIconBtnStyle}
               title={t('chat.historyDelete')}
+              aria-label={t('chat.historyDelete')}
               onClick={(e) => { e.stopPropagation(); deleteChatConversation(c.id); }}
             >
               <Trash2 size={11} />
@@ -3189,41 +3300,103 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
             ))}
 
           {/* History dropdown — decision */}
-          {mode === 'decision' && decisionHistoryOpen && (
-            <div style={{
-              border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)',
-              padding: '6px 0', marginBottom: 10, maxHeight: 220, overflowY: 'auto',
-            }}>
-              {decisionConversations.length === 0 && (
-                <div style={{ padding: '8px 12px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
-                  {t('decision.historyEmpty')}
-                </div>
-              )}
-              {decisionConversations.map(c => (
-                <div
-                  key={c.id}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px',
-                    cursor: 'pointer', fontSize: 'var(--text-sm)',
-                    background: c.id === activeDecisionId ? 'var(--accent-bg, rgba(99,102,241,0.08))' : undefined,
-                  }}
-                  onClick={() => { switchDecisionConversation(c.id); setDecisionHistoryOpen(false); }}
-                >
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.title || t('decision.historyUntitled')}
-                  </span>
-                  <button
-                    className="btn btn-sm"
-                    style={{ padding: '2px 4px' }}
-                    title={t('decision.historyDelete')}
-                    onClick={(e) => { e.stopPropagation(); deleteDecisionConversation(c.id); }}
+          {mode === 'decision' && decisionHistoryOpen && (() => {
+            const validSelectedDecisionIds = selectedDecisionHistoryIds.filter(id =>
+              decisionConversations.some(c => c.id === id),
+            );
+            const allDecisionSelected =
+              decisionConversations.length > 0 && validSelectedDecisionIds.length === decisionConversations.length;
+            return (
+              <div style={{
+                border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)',
+                padding: '6px 0', marginBottom: 10, maxHeight: 220, overflowY: 'auto',
+              }}>
+                {decisionConversations.length === 0 && (
+                  <div style={{ padding: '8px 12px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                    {t('decision.historyEmpty')}
+                  </div>
+                )}
+                {decisionConversations.length > 0 && (
+                  <div
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px 6px',
+                      borderBottom: '1px solid var(--divider)', marginBottom: 4,
+                      fontSize: 'var(--text-xs)', color: 'var(--text-dim)',
+                    }}
                   >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={allDecisionSelected}
+                        onChange={(e) =>
+                          setSelectedDecisionHistoryIds(
+                            e.target.checked ? decisionConversations.map(c => c.id) : [],
+                          )
+                        }
+                        style={{ accentColor: 'var(--accent)', cursor: 'pointer', margin: 0 }}
+                      />
+                      <span>{t('chat.toolSelectAll')}</span>
+                    </label>
+                    {validSelectedDecisionIds.length > 0 && (
+                      <span>({t('combobox.selectedCount', { n: validSelectedDecisionIds.length })})</span>
+                    )}
+                    <div style={{ flex: 1 }} />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      disabled={validSelectedDecisionIds.length === 0}
+                      style={{ minHeight: 24, height: 24, padding: '0 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      onClick={() => deleteDecisionConversations(new Set(validSelectedDecisionIds))}
+                    >
+                      <Trash2 size={11} />
+                      <span>
+                        {t('decision.historyDelete')}
+                        {validSelectedDecisionIds.length > 0 ? ` (${validSelectedDecisionIds.length})` : ''}
+                      </span>
+                    </button>
+                  </div>
+                )}
+                {decisionConversations.map(c => {
+                  const checked = validSelectedDecisionIds.includes(c.id);
+                  return (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px',
+                        cursor: 'pointer', fontSize: 'var(--text-sm)',
+                        background: c.id === activeDecisionId ? 'var(--accent-bg, rgba(99,102,241,0.08))' : undefined,
+                      }}
+                      onClick={() => { switchDecisionConversation(c.id); setDecisionHistoryOpen(false); }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setSelectedDecisionHistoryIds(prev =>
+                            e.target.checked ? [...prev, c.id] : prev.filter(id => id !== c.id),
+                          )
+                        }
+                        style={{ accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0, margin: 0 }}
+                      />
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {c.title || t('decision.historyUntitled')}
+                      </span>
+                      <button
+                        className="btn btn-sm"
+                        style={historyIconBtnStyle}
+                        title={t('decision.historyDelete')}
+                        aria-label={t('decision.historyDelete')}
+                        onClick={(e) => { e.stopPropagation(); deleteDecisionConversation(c.id); }}
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
 
           {/* Collapsed chat setup hides this row entirely; the decision tab has no
@@ -3811,18 +3984,18 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
             </div>
             {/* History opens a MODAL, not an inline dropdown: the list can grow to
               PG_MAX_CONVERSATIONS rows, and an in-card sheet squeezed the
-              transcript. Bounded both ways: 460px wide, the list body scrolls
-              past ~10 rows (50vh) instead of stretching the dialog. */}
+              transcript. Bounded both ways: 760px wide with a generous default
+              height floor so a short history still reads as a proper dialog. */}
             {chatHistoryOpen && (
               <Dialog
                 title={t('chat.historyTitle')}
                 onClose={() => setChatHistoryOpen(false)}
                 closeLabel={t('common.close')}
-                width={560}
+                width={760}
               >
                 {/* Inside the dialog's own padding — no negative margins: they
                   made rows bleed past the card edge and clip their titles. */}
-                <div style={{ maxHeight: '50vh', overflowY: 'auto', margin: '0 -4px' }}>
+                <div style={{ minHeight: 'min(300px, 42vh)', maxHeight: '72vh', overflowY: 'auto', margin: '0 -4px' }}>
                   {chatHistoryList}
                 </div>
               </Dialog>
@@ -4101,6 +4274,7 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
                     <button
                       type="button"
                       className="btn btn-sm"
+                      style={historyIconBtnStyle}
                       onClick={() => {
                         setSystemPrompt(p.content);
                         setPresetDialogOpen(false);
@@ -4114,7 +4288,7 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
                       className="btn btn-sm"
                       onClick={() => deletePreset(p.id)}
                       title={t('chat.promptPresetDelete')}
-                      style={{ color: 'var(--error)' }}
+                      style={{ ...historyIconBtnStyle, color: 'var(--error)' }}
                     >
                       <Trash2 size={13} />
                     </button>
