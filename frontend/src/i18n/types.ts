@@ -115,8 +115,12 @@ export interface TranslationDict {
     decisionBlocked: string;
     streamLabel: string;
     paramsLabel: string;
+    settingsLabel: string;
+    settingsTip: string;
+    /** Tooltip/aria-label of the setup collapse chevron (key/model/stream row). */
+    setupCollapse: string;
+    setupExpand: string;
     temperatureLabel: string;
-    maxTokensLabel: string;
     effortLabel: string;
     effortPlaceholder: string;
     effortNone: string;
@@ -152,18 +156,25 @@ export interface TranslationDict {
     emptyTitle: string;
     emptyHint: string;
     composerPlaceholder: string;
+    attachImage: string;
+    imageUrlToggle: string;
+    imageUrlPlaceholder: string;
+    imageUrlInvalid: string;
+    imageRemove: string;
+    imageAlt: string;
+    imageTooLarge: string;
+    imageTooMany: string;
+    imageUnreadable: string;
+    imageNotStored: string;
     pending: string;
     aborted: string;
     noKey: string;
     factModel: string;
     factTier: string;
-    factLayer: string;
-    /** Tooltip: what layer0 / entry / layer2 mean for this turn. */
-    factLayerTip: string;
-    /** Friendly chip values for the wire's layer enum. */
-    layer0: string;
-    layerEntry: string;
-    layer2: string;
+    /** OUTBOUND protocol id of the served attempt (the provider protocol). */
+    factProtocol: string;
+    /** Tooltip: outbound protocol vs the inbound surface the page called. */
+    factProtocolTip: string;
     factLatency: string;
     /** Decode-TPS chip label (the value is the formatted rate only). */
     factRate: string;
@@ -177,17 +188,70 @@ export interface TranslationDict {
     /** Tooltip: the session chip links to /sessions pre-filtered on this id. */
     factSessionTip: string;
     factTokens: string;
+    factTokensUnknown: string;
+    toolsLabel: string;
+    toolChoiceLabel: string;
+    toolChoiceAuto: string;
+    toolChoiceRequired: string;
+    toolChoiceNone: string;
+    toolAutoRun: string;
+    toolSandboxReset: string;
+    toolSandboxResetDone: string;
+    toolSandboxHint: string;
+    toolSandboxHintTip: string;
+    /** Shown when the tool selection is empty — the request then carries no
+     *  `tools` field at all, which is a real state, not a neutral one. */
+    toolNoneHint: string;
+    toolSelectAll: string;
+    toolClearAll: string;
+    toolRan: string;
+    regenerate: string;
+    toolNotRun: string;
+    /** Send blocked: last assistant turn still has tool calls with no results. */
+    toolPendingBlock: string;
+    /** Tool card whose result is an `error: ...` string — the failed leg. */
+    toolFailed: string;
+    /** Turn-level bulk action for a long tool loop. */
+    toolsExpandAll: string;
+    toolsCollapseAll: string;
     historyTitle: string;
     historyNew: string;
     historyEmpty: string;
+    /** Toast after adopting another conversation from the history dialog. */
+    historySwitched: string;
     historyDelete: string;
     historyUntitled: string;
+    /** History row: manual rename of a conversation. */
+    historyRename: string;
+    /** History row: regenerate the title from a summary of the conversation. */
+    historyRetitle: string;
+    /** Rename dialog header. */
+    titleDialogTitle: string;
+    titlePlaceholder: string;
+    /** Manual title regeneration failed (the old title stays). */
+    titleGenFailed: string;
     cardTitle: string;
     wide: string;
     narrow: string;
     expand: string;
     collapse: string;
     expandMessage: string;
+    /** Bubble action: copy this turn and everything before it into a NEW
+     *  conversation (the source transcript stays untouched). */
+    forkFrom: string;
+    /** Toast after a fork — names the branch it switched to. */
+    forkCreated: string;
+    /** Appended to the copied title so the two history rows stay tellable
+     *  apart once the branch has a title of its own. */
+    forkTitleSuffix: string;
+    /** Bubble action: keep everything up to this turn and drop the rest. */
+    revertTo: string;
+    revertConfirmTitle: string;
+    /** `{count}` is the number of turns about to be dropped. */
+    revertConfirmDesc: string;
+    /** Expanded-message header: copies the message TEXT (markdown source for an
+     *  assistant reply, the typed text for a user turn). */
+    copyMessageText: string;
   };
   /** Decision wire tab (`POST /v1/systemone`): one state evaluated against
    *  typed questions, answered with values + probabilities. */
@@ -1293,6 +1357,8 @@ hiddenBadge: string;
     /** Summary-card row: first request's protocol + transport map. */
     firstRequestTip: string;
     firstRequestLabel: string;
+    protocolMixed: string;
+    protocolMixedTip: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;

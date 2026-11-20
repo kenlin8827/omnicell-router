@@ -447,6 +447,18 @@ details.sub-card > summary::-webkit-details-marker {
   display: none;
 }
 
+/* Playground tool call (a <details> in the transcript): the summary row carries
+   the tool name, a one-line argument digest and the outcome, so a long agent
+   loop folds to one line per call. The page draws its own chevron. */
+details.tool-call > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+details.tool-call > summary::-webkit-details-marker {
+  display: none;
+}
+
 /* List-group: rows nested inside a card share ONE frame + hairline separators
    (Ant/Bootstrap pattern). Per-row borders inside an already-bordered card
    read as box-in-box noise — the boxy credential-list complaint. */
@@ -597,6 +609,12 @@ details.sub-card > summary::-webkit-details-marker {
   border: 1px solid var(--card-border);
   padding: 3px 8px;
   text-align: left;
+}
+/* First column is the row's KEY — model names, tool names, flags. Wrapping it
+   mid-word (`rea` / `d`) destroys scanability; the table block scrolls
+   horizontally instead, so a long key never overflows the column either. */
+.md-well th:first-child, .md-well td:first-child {
+  white-space: nowrap;
 }
 .md-well th { background: var(--chip-bg); font-weight: var(--font-bold); }
 .md-well a { color: var(--accent); }
