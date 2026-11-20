@@ -1,7 +1,7 @@
 /* Single source of truth for typography. Components consume these tokens rather
    than declaring local font stacks or hardcoded type-scale values. */
 :root {
-  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'HarmonyOS Sans SC', 'MiSans', 'Noto Sans SC', sans-serif;
+  --font-sans: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'HarmonyOS Sans SC', 'MiSans', 'Noto Sans SC', sans-serif;
   --font-mono: 'JetBrains Mono', Consolas, 'Segoe UI Variable Text', 'Microsoft YaHei UI', 'Noto Sans SC', monospace;
 
   --text-3xs: 9px;

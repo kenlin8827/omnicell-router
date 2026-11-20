@@ -149,6 +149,49 @@ export function readMcpEntry(req: McpEntryRequest): McpEntryReadResult {
   return locate(req);
 }
 
+export type McpRawEntryResult =
+  | {
+      ok: true;
+      host: HarnessHostId;
+      name: string;
+      file: string;
+      raw: Record<string, unknown>;
+    }
+  | McpEntryFailure;
+
+/**
+ * Read one existing server's raw config object for server-side execution (e.g. MCP inspector).
+ * Never return the raw env/header values from an HTTP route (gate 4 secret discipline).
+ */
+export function readMcpRawEntry(req: McpEntryRequest): McpRawEntryResult {
+  if (!req.name.trim()) return { ok: false, code: 'bad_request', message: 'server name is required' };
+  const landing = landingFor(req.host, req.scope, req.projectRoot ?? process.cwd());
+  if (!landing.ok) return { ok: false, code: 'bad_request', message: landing.message };
+  if (!fs.existsSync(landing.file)) {
+    return { ok: false, code: 'not_found', message: `config file ${landing.file} does not exist` };
+  }
+  const parsed = readMcpLandingFile(landing.file, landing.format);
+  if (!parsed.ok) return { ok: false, code: 'bad_request', message: parsed.reason };
+  const container = mcpContainerAt(parsed.config, landing.container);
+  if (!container) {
+    return { ok: false, code: 'not_found', message: `${landing.file} has no '${landing.container}' object` };
+  }
+  if (!(req.name in container)) {
+    return { ok: false, code: 'not_found', message: `server '${req.name}' is not in ${landing.file}` };
+  }
+  const raw = container[req.name];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, code: 'bad_request', message: 'entry is not an object' };
+  }
+  return {
+    ok: true,
+    host: req.host,
+    name: req.name,
+    file: landing.file,
+    raw: raw as Record<string, unknown>,
+  };
+}
+
 /**
  * The manifest record whose copy is this exact file + server, when one exists.
  *

@@ -25,6 +25,7 @@ import { keyHashPrefix, type CredentialStore } from './opencode/credentials/type
 import { expandEnvTemplate, getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
+import { closeAllMcpInspectSessions } from './harness/host/mcp-inspector.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
 import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
@@ -471,6 +472,7 @@ async function main() {
     // (the store debounces; a graceful exit should not lose the last cycles).
     getQuotaProber()?.stop();
     getQuotaStore().flush();
+    void closeAllMcpInspectSessions();
     // Health prober: same contract — stop the sweep before exit.
     orchestrator.stopProber();
     // Rate-limit windows: flush the last checkpoint so a controlled restart

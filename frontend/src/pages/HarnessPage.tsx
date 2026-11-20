@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, ChevronDown, FolderGit2, FolderCog, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
+import { Boxes, ChevronDown, Compass, FolderGit2, FolderCog, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
 import {
   api,
   type HarnessArtifactView,
@@ -4666,6 +4666,28 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * unreadable file answers a toast instead of opening a form over it. A row entirely claimed by
    * another environment is refused up front — the write would only fail after the gate.
    */
+  const inspectMcpButton = (row: Row) => {
+    if (kind !== 'mcp' || !harness || !row.hosts.includes(harness)) return null;
+    if (!hosts.some((host) => host.id === harness && host.hasMcp)) return null;
+    const inspectScope = tab === 'project' ? 'project' : 'global';
+    const params = new URLSearchParams({ host: harness, scope: inspectScope, name: row.name });
+    if (inspectScope === 'project' && selectedProjectId) {
+      params.set('projectId', selectedProjectId);
+    }
+    return (
+      <button
+        className="btn btn-sm"
+        disabled={installBusy}
+        title={t('mcpBrowser.inspectAction')}
+        onClick={() => navigate(`/harness/mcp-browser?${params.toString()}`)}
+        style={{ flex: '0 0 auto' }}
+      >
+        <Compass size={11} />
+        <span>{t('mcpBrowser.inspectAction')}</span>
+      </button>
+    );
+  };
+
   const editMcpButton = (row: Row) => {
     if (kind !== 'mcp' || !harness || !row.hosts.includes(harness)) return null;
     if (!hosts.some((host) => host.id === harness && host.hasMcp)) return null;
@@ -5218,6 +5240,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       {showStateColumn && <td style={TD_CENTER}>{stateBadge(row)}</td>}
                       <td style={TD_CENTER}>
                         <div style={{ display: 'inline-flex', gap: '6px' }}>
+                          {inspectMcpButton(row)}
                           {editMcpButton(row)}
                           {removeButton(row)}
                         </div>
@@ -5272,6 +5295,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       >
                         <span style={{ color: 'var(--text-muted)' }}>{t('harness.detailChannel')}:</span> {channelLabel(row)}
                       </span>
+                      {inspectMcpButton(row)}
                       {editMcpButton(row)}
                       {removeButton(row)}
                     </div>

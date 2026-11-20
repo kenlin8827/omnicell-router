@@ -31,6 +31,7 @@ import { CombosPage } from './pages/CombosPage';
 import { RouteEntriesPage } from './pages/RouteEntriesPage';
 import { YamlPage } from './pages/YamlPage';
 import { HarnessPage } from './pages/HarnessPage';
+import { McpBrowserPage } from './pages/McpBrowserPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
 import { TooltipProvider } from './components/TooltipProvider';
@@ -138,6 +139,7 @@ export const App: React.FC = () => {
         <Route path="harness/plugins" element={<HarnessPage kind="plugin" />} />
         <Route path="harness/skills" element={<HarnessPage kind="skill" />} />
         <Route path="harness/mcp" element={<HarnessPage kind="mcp" />} />
+        <Route path="harness/mcp-browser" element={<McpBrowserPage />} />
         {/* Same page, landing harness in the URL: for a kind that WRITES into a client (a
             plugin package, an MCP server config) the runtime is part of the artifact's identity,
             so it must survive reload, bookmark and Back/Forward. The bare routes above redirect

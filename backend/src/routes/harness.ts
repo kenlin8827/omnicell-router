@@ -33,6 +33,14 @@ import { fetchRepoStars, peekStarCache } from '../harness/common/stars.js';
 import { readMarketDetail } from '../harness/detail.js';
 import { installArtifact, type InstallResult } from '../harness/host/install.js';
 import { editMcpServer, readMcpEntry } from '../harness/host/mcp-edit.js';
+import {
+  callMcpTool,
+  disconnectMcpSession,
+  getMcpPrompt,
+  inspectMcpServer,
+  readMcpResource,
+  type McpInspectTarget,
+} from '../harness/host/mcp-inspector.js';
 import { searchMcpRegistry } from '../harness/host/mcp-registry.js';
 import { probeMcpCli } from '../harness/host/mcp-cli.js';
 import { probeMcpRuntimes } from '../harness/host/mcp-runtime.js';
@@ -1545,5 +1553,238 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       return { status: 'error', code: result.code, message: result.message };
     }
     return { status: 'ok', ...result };
+  });
+
+  const parseInspectTarget = (
+    raw: unknown
+  ): { ok: true; target: McpInspectTarget } | { ok: false; code: string; message: string } => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, code: 'bad_request', message: 'target object is required' };
+    }
+    const input = raw as Record<string, unknown>;
+    if (input.mode === 'custom') {
+      const transport = typeof input.transport === 'string' ? input.transport : 'stdio';
+      if (transport === 'stdio') {
+        const command = typeof input.command === 'string' ? input.command.trim() : '';
+        if (!command) return { ok: false, code: 'bad_request', message: 'command is required' };
+        const args = Array.isArray(input.args) ? input.args.filter((a): a is string => typeof a === 'string') : [];
+        const env =
+          input.env && typeof input.env === 'object' && !Array.isArray(input.env)
+            ? Object.fromEntries(
+                Object.entries(input.env as Record<string, unknown>).filter(
+                  (kv): kv is [string, string] => typeof kv[1] === 'string'
+                )
+              )
+            : undefined;
+        const cwd = typeof input.cwd === 'string' && input.cwd.trim() ? input.cwd.trim() : undefined;
+        return {
+          ok: true,
+          target: { mode: 'custom', transport: 'stdio', command, args, ...(env ? { env } : {}), ...(cwd ? { cwd } : {}) },
+        };
+      }
+      if (transport === 'auto' || transport === 'streamable-http' || transport === 'sse') {
+        const url = typeof input.url === 'string' ? input.url.trim() : '';
+        if (!url) return { ok: false, code: 'bad_request', message: 'url is required' };
+        const headers =
+          input.headers && typeof input.headers === 'object' && !Array.isArray(input.headers)
+            ? Object.fromEntries(
+                Object.entries(input.headers as Record<string, unknown>).filter(
+                  (kv): kv is [string, string] => typeof kv[1] === 'string'
+                )
+              )
+            : undefined;
+        return {
+          ok: true,
+          target: { mode: 'custom', transport, url, ...(headers ? { headers } : {}) },
+        };
+      }
+      return { ok: false, code: 'bad_request', message: `unsupported transport '${transport}'` };
+    }
+
+    const host = typeof input.host === 'string' ? input.host : '';
+    const name = typeof input.name === 'string' ? input.name : '';
+    if (!host || !name) {
+      return { ok: false, code: 'bad_request', message: 'host and name are required' };
+    }
+    if (!HOSTS.some((h) => h.id === host)) {
+      return { ok: false, code: 'bad_request', message: `unknown host '${host}'` };
+    }
+    const scope = typeof input.scope === 'string' ? input.scope : 'global';
+    if (!isEnabledScope(scope)) {
+      return {
+        ok: false,
+        code: 'unsupported_scope',
+        message: `scope '${scope}' is not supported — reads target ${ENABLED_SCOPES.join(', ')} scope`,
+      };
+    }
+    const root = resolveProjectRoot(
+      { projectRoot: input.projectRoot, projectId: input.projectId },
+      { required: scope === 'project' }
+    );
+    if (!root.ok) {
+      return { ok: false, code: 'bad_request', message: root.message };
+    }
+    return {
+      ok: true,
+      target: {
+        mode: 'host',
+        host: host as HarnessHostId,
+        scope,
+        name,
+        ...(root.projectRoot ? { projectRoot: root.projectRoot } : {}),
+      },
+    };
+  };
+
+  const inspectErrorReply = (reply: { code: (status: number) => void }, err: unknown) => {
+    const e = err as Error & { code?: string };
+    const status = e.code === 'not_found' ? 404 : e.code === 'bad_request' || e.code === 'unsupported_scope' ? 400 : 502;
+    reply.code(status);
+    return {
+      status: 'error',
+      code: e.code ?? 'inspect_failed',
+      message: e instanceof Error ? e.message : String(err),
+    };
+  };
+
+  app.post('/api/admin/harness/mcp/inspect', async (req, reply) => {
+    const body = (req.body || {}) as { target?: unknown; refresh?: boolean } & Record<string, unknown>;
+    const rawTarget = body.target ?? body;
+    const parsed = parseInspectTarget(rawTarget);
+    if (!parsed.ok) {
+      reply.code(400);
+      return { status: 'error', code: parsed.code, message: parsed.message };
+    }
+    try {
+      const snapshot = await inspectMcpServer(parsed.target, { refresh: body.refresh === true });
+      return { status: 'ok', ...snapshot };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
+  });
+
+  app.post('/api/admin/harness/mcp/disconnect', async (req, reply) => {
+    const body = (req.body || {}) as { sessionId?: unknown };
+    if (typeof body.sessionId !== 'string' || !body.sessionId.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'sessionId is required' };
+    }
+    const closed = await disconnectMcpSession(body.sessionId.trim());
+    return { status: 'ok', closed };
+  });
+
+  app.post('/api/admin/harness/mcp/call-tool', async (req, reply) => {
+    const body = (req.body || {}) as {
+      sessionId?: unknown;
+      target?: unknown;
+      toolName?: unknown;
+      arguments?: unknown;
+      timeoutMs?: unknown;
+    };
+    if (typeof body.toolName !== 'string' || !body.toolName.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'toolName is required' };
+    }
+    let target: McpInspectTarget | undefined;
+    if (body.target !== undefined) {
+      const parsed = parseInspectTarget(body.target);
+      if (!parsed.ok) {
+        reply.code(400);
+        return { status: 'error', code: parsed.code, message: parsed.message };
+      }
+      target = parsed.target;
+    }
+    const args =
+      body.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+        ? (body.arguments as Record<string, unknown>)
+        : {};
+    try {
+      const result = await callMcpTool({
+        ...(typeof body.sessionId === 'string' && body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(target ? { target } : {}),
+        toolName: body.toolName.trim(),
+        arguments: args,
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+      });
+      return { status: 'ok', ...result };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
+  });
+
+  app.post('/api/admin/harness/mcp/read-resource', async (req, reply) => {
+    const body = (req.body || {}) as {
+      sessionId?: unknown;
+      target?: unknown;
+      uri?: unknown;
+      timeoutMs?: unknown;
+    };
+    if (typeof body.uri !== 'string' || !body.uri.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'uri is required' };
+    }
+    let target: McpInspectTarget | undefined;
+    if (body.target !== undefined) {
+      const parsed = parseInspectTarget(body.target);
+      if (!parsed.ok) {
+        reply.code(400);
+        return { status: 'error', code: parsed.code, message: parsed.message };
+      }
+      target = parsed.target;
+    }
+    try {
+      const result = await readMcpResource({
+        ...(typeof body.sessionId === 'string' && body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(target ? { target } : {}),
+        uri: body.uri.trim(),
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+      });
+      return { status: 'ok', ...result };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
+  });
+
+  app.post('/api/admin/harness/mcp/get-prompt', async (req, reply) => {
+    const body = (req.body || {}) as {
+      sessionId?: unknown;
+      target?: unknown;
+      promptName?: unknown;
+      arguments?: unknown;
+      timeoutMs?: unknown;
+    };
+    if (typeof body.promptName !== 'string' || !body.promptName.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'promptName is required' };
+    }
+    let target: McpInspectTarget | undefined;
+    if (body.target !== undefined) {
+      const parsed = parseInspectTarget(body.target);
+      if (!parsed.ok) {
+        reply.code(400);
+        return { status: 'error', code: parsed.code, message: parsed.message };
+      }
+      target = parsed.target;
+    }
+    const args =
+      body.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+        ? Object.fromEntries(
+            Object.entries(body.arguments as Record<string, unknown>).filter(
+              (kv): kv is [string, string] => typeof kv[1] === 'string'
+            )
+          )
+        : undefined;
+    try {
+      const result = await getMcpPrompt({
+        ...(typeof body.sessionId === 'string' && body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(target ? { target } : {}),
+        promptName: body.promptName.trim(),
+        ...(args ? { arguments: args } : {}),
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+      });
+      return { status: 'ok', ...result };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
   });
 }

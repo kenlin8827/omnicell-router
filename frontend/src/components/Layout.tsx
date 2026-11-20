@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowLeftRight,
-  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, CloudDownload, Cpu,
+  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, CloudDownload, Compass, Cpu,
   DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
@@ -108,6 +108,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
     { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
     { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
+    { to: '/harness/mcp-browser', labelKey: 'nav.mcpBrowser', icon: Compass },
   ] },
   { id: 'grp-system', headingKey: 'nav.grpSystem', shortKey: 'nav.shortSystem', icon: Settings, items: [
     { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
@@ -131,6 +132,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/harness/plugins': { groupKey: 'nav.grpHarness', titleKey: 'nav.plugins' },
   '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
+  '/harness/mcp-browser': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcpBrowser' },
   '/proxy-upstream': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxy' },
   '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
   '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },

@@ -2373,6 +2373,116 @@ export interface HarnessMcpCliProbe {
   files: number;
 }
 
+export type McpInspectTarget =
+  | {
+      mode: 'host';
+      host: string;
+      scope: 'global' | 'project';
+      name: string;
+      projectId?: string;
+      projectRoot?: string;
+    }
+  | {
+      mode: 'custom';
+      transport: 'stdio';
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      cwd?: string;
+    }
+  | {
+      mode: 'custom';
+      transport: 'auto' | 'streamable-http' | 'sse';
+      url: string;
+      headers?: Record<string, string>;
+    };
+
+export interface McpToolInfo {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+export interface McpResourceInfo {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpResourceTemplateInfo {
+  uriTemplate: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpPromptInfo {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: Array<{
+    name: string;
+    description?: string;
+    required?: boolean;
+  }>;
+}
+
+export interface McpInspectSnapshot {
+  status: string;
+  sessionId: string;
+  transport: 'stdio' | 'streamable-http' | 'sse';
+  serverInfo: {
+    name: string;
+    version: string;
+    title?: string;
+  } | null;
+  instructions?: string;
+  capabilities: Record<string, unknown>;
+  tools: McpToolInfo[];
+  resources: McpResourceInfo[];
+  resourceTemplates: McpResourceTemplateInfo[];
+  prompts: McpPromptInfo[];
+  stderr: string[];
+  connectedAt: number;
+  durationMs: number;
+}
+
+export interface McpCallToolResponse {
+  status: string;
+  sessionId: string;
+  toolName: string;
+  isError: boolean;
+  content: unknown[];
+  structuredContent?: Record<string, unknown>;
+  durationMs: number;
+  stderr: string[];
+}
+
+export interface McpReadResourceResponse {
+  status: string;
+  sessionId: string;
+  uri: string;
+  contents: unknown[];
+  durationMs: number;
+  stderr: string[];
+}
+
+export interface McpGetPromptResponse {
+  status: string;
+  sessionId: string;
+  promptName: string;
+  description?: string;
+  messages: unknown[];
+  durationMs: number;
+  stderr: string[];
+}
+
 export interface HarnessRemovePlan {
   planId: string;
   action: 'remove';
@@ -4093,6 +4203,92 @@ export const api = {
       };
       err.code = data?.code;
       err.plan = data?.plan;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpInspect(body: { target: McpInspectTarget; refresh?: boolean }): Promise<McpInspectSnapshot> {
+    const res = await fetch('/api/admin/harness/mcp/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpDisconnect(sessionId: string): Promise<{ status: string; closed: boolean }> {
+    const res = await fetch('/api/admin/harness/mcp/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    });
+    return res.json();
+  },
+
+  async harnessMcpCallTool(body: {
+    sessionId?: string;
+    target?: McpInspectTarget;
+    toolName: string;
+    arguments?: Record<string, unknown>;
+    timeoutMs?: number;
+  }): Promise<McpCallToolResponse> {
+    const res = await fetch('/api/admin/harness/mcp/call-tool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpReadResource(body: {
+    sessionId?: string;
+    target?: McpInspectTarget;
+    uri: string;
+    timeoutMs?: number;
+  }): Promise<McpReadResourceResponse> {
+    const res = await fetch('/api/admin/harness/mcp/read-resource', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpGetPrompt(body: {
+    sessionId?: string;
+    target?: McpInspectTarget;
+    promptName: string;
+    arguments?: Record<string, string>;
+    timeoutMs?: number;
+  }): Promise<McpGetPromptResponse> {
+    const res = await fetch('/api/admin/harness/mcp/get-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
       throw err;
     }
     return data;
