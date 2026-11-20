@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2, X } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency } from '../lib/format';
@@ -260,6 +260,21 @@ const STREAM_TAG_STYLE: React.CSSProperties = {
   fontSize: 'var(--text-2xs)',
   whiteSpace: 'nowrap',
 };
+/** `inbound surface → outbound protocol` using unambiguous canonical protocol ids
+ *  (legacy rows are normalized at the backend read boundary). */
+const ProtocolMap: React.FC<{ inbound?: string; outbound?: string; tip: string }> = ({ inbound, outbound, tip }) => (
+  <span
+    className="badge"
+    title={`${tip}
+${inbound ?? '—'} → ${outbound ?? '—'}`}
+    style={STREAM_TAG_STYLE}
+  >
+    {inbound ?? '—'}
+    <span style={{ margin: '0 3px', color: 'var(--text-dim)', opacity: 0.7 }}>→</span>
+    {outbound ?? '—'}
+  </span>
+);
+
 const StreamMap: React.FC<{ client?: boolean; upstream?: boolean; tip: string }> = ({ client, upstream, tip }) => (
   <span className="badge" title={tip} style={STREAM_TAG_STYLE}>
     {client === undefined ? '—' : client ? 'SSE' : 'JSON'}
@@ -1040,8 +1055,19 @@ export const SessionsPage: React.FC = () => {
               value={filterInput}
               onChange={e => setFilterInput(e.target.value)}
               placeholder={t('sessions.filterPlaceholder')}
-              style={{ fontSize: 'var(--text-sm)', padding: '5px 8px 5px 24px', width: '100%' }}
+              style={{ fontSize: 'var(--text-sm)', padding: filterInput ? '5px 26px 5px 24px' : '5px 8px 5px 24px', width: '100%' }}
             />
+            {filterInput && (
+              <button
+                type="button"
+                className="input-clear"
+                aria-label={t('common.clear')}
+                title={t('common.clear')}
+                onClick={() => setFilterInput('')}
+              >
+                <X size={11} strokeWidth={2.5} />
+              </button>
+            )}
           </div>
           <button className="btn btn-sm" onClick={clearAll} disabled={loading || total === 0}>
             <Trash2 size={12} />
@@ -1987,6 +2013,11 @@ export const SessionsPage: React.FC = () => {
                           const first = detailDesc
                             ? timeline.traces[timeline.traces.length - 1]
                             : timeline.traces[0];
+                          // A conversation may switch protocol mid-flight (the
+                          // playground does exactly that on one session), so the
+                          // first-request badge must never imply the whole session.
+                          const wires = [...new Set(timeline.traces.map((tr) => tr.request?.inboundWire))];
+                          const wireCount = wires.filter((w) => w !== undefined).length;
                           const hasWire =
                             first?.request?.inboundWire !== undefined || first?.execution.wireKind !== undefined;
                           const hasStream =
@@ -2008,10 +2039,19 @@ export const SessionsPage: React.FC = () => {
                                 />
                               )}
                               {hasWire && (
-                                <span className="badge" title={t('sessions.protocolTip')} style={STREAM_TAG_STYLE}>
-                                  {first.request?.inboundWire ?? '—'}
-                                  <span style={{ margin: '0 3px', opacity: 0.7 }}>→</span>
-                                  {first.execution.wireKind ?? '—'}
+                                <ProtocolMap
+                                  inbound={first.request?.inboundWire}
+                                  outbound={first.execution.wireKind}
+                                  tip={t('sessions.protocolTip')}
+                                />
+                              )}
+                              {wireCount > 1 && (
+                                <span
+                                  title={`${t('sessions.protocolMixedTip')}
+${wires.filter((w) => w !== undefined).join(' · ')}`}
+                                  style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)' }}
+                                >
+                                  {t('sessions.protocolMixed')}
                                 </span>
                               )}
                               <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)' }}>
@@ -2582,11 +2622,11 @@ export const SessionsPage: React.FC = () => {
                         {/* Protocol map (inbound surface → outbound wire);
                             renders nothing on legacy rows. */}
                         {(tr.request?.inboundWire !== undefined || tr.execution.wireKind !== undefined) && (
-                          <span className="badge" title={t('sessions.protocolTip')} style={STREAM_TAG_STYLE}>
-                            {tr.request?.inboundWire ?? '—'}
-                            <span style={{ margin: '0 3px', opacity: 0.7 }}>→</span>
-                            {tr.execution.wireKind ?? '—'}
-                          </span>
+                          <ProtocolMap
+                            inbound={tr.request?.inboundWire}
+                            outbound={tr.execution.wireKind}
+                            tip={t('sessions.protocolTip')}
+                          />
                         )}
                       </td>
                     </tr>

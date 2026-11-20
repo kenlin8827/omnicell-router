@@ -10,7 +10,7 @@ import {
   type CatalogSourceDataProviderRecord,
   type CatalogSourceDataModelRecord,
   type OcrCatalogProvider,
-  type NpmVocabularyEntry,
+  type ProtocolVocabularyEntry,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -25,7 +25,7 @@ import { SegGroup } from '../components/SegGroup';
 import { Field, FieldRow, FormSection } from '../components/Form';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/effort';
-import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
+import { FALLBACK_PROTOCOL_VOCABULARY } from '../lib/protocol-vocabulary';
 
 import { FONT_MONO } from '../lib/fonts';
 import { copyToClipboard } from '../lib/clipboard';
@@ -969,9 +969,9 @@ const OcrEditModal: React.FC<{
   // npm options come from the backend-owned vocabulary (single source of
   // truth with wireFor; api.ts caches the fetch process-lifetime). The
   // hardcoded list below is only the fetch-failed fallback.
-  const [npmVocab, setNpmVocab] = useState<NpmVocabularyEntry[]>([]);
+  const [protocolVocab, setProtocolVocab] = useState<ProtocolVocabularyEntry[]>([]);
   useEffect(() => {
-    opencodeApi.getNpmVocabulary().then(setNpmVocab).catch(() => {});
+    opencodeApi.getProtocolVocabulary().then(setProtocolVocab).catch(() => {});
   }, []);
   const [cacheRead, setCacheRead] = useState(cur.cost?.cache_read != null ? String(cur.cost.cache_read) : '');
   const [cacheWrite, setCacheWrite] = useState(cur.cost?.cache_write != null ? String(cur.cost.cache_write) : '');
@@ -1244,9 +1244,9 @@ const OcrEditModal: React.FC<{
               onChange={(v) => setNpm(v)}
               options={[
                 { value: '', label: t('catalogPage.ocrEditNpmFollow') },
-                  ...(npmVocab.length > 0
-                    ? npmVocab.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))
-                    : FALLBACK_NPM_VOCABULARY.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))),
+                  ...(protocolVocab.length > 0
+                    ? protocolVocab.map((e) => ({ value: e.alias, label: e.alias }))
+                    : FALLBACK_PROTOCOL_VOCABULARY.map((e) => ({ value: e.alias, label: e.alias }))),
               ]}
             />
           </Field>

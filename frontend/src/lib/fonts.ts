@@ -5,4 +5,3 @@
  * Never re-declare a font chain inline.
  */
 export const FONT_MONO = 'var(--font-mono)';
-export const FONT_SANS = 'var(--font-sans)';

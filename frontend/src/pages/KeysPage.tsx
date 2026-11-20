@@ -22,7 +22,7 @@ import {
   type CredentialRevealReasonCode,
   type RateLimitSnapshotEntry,
   type CredentialQuotaView,
-  type NpmVocabularyEntry,
+  type ProtocolVocabularyEntry,
   type PluginAuthType,
 } from '../lib/api';
 import { CREDENTIAL_WEIGHT_MAX } from '../lib/defaults';
@@ -49,7 +49,7 @@ import { useModelTest } from '../lib/useModelTest';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
-import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
+import { FALLBACK_PROTOCOL_VOCABULARY } from '../lib/protocol-vocabulary';
 import { failureCaption } from '../lib/quotaFailure';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -1311,7 +1311,7 @@ export const KeysPage: React.FC = () => {
       id: p.id,
       name: p.name ?? '',
       baseURL: p.baseURL ?? '',
-      npm: displayNpm(p.npm) ?? '',
+      npm: displayProtocol(p.npm) ?? '',
       pullPattern: p.autoPullPattern ?? '',
       headerRows: headersToRows(p.headers),
     });
@@ -1359,31 +1359,30 @@ export const KeysPage: React.FC = () => {
   // Transient "just copied" marker for a card's endpoint (Check icon swap).
   const [copiedEndpoint, setCopiedEndpoint] = useState<string | null>(null);
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
-  // The backend-owned npm SDK vocabulary (providers/vocabulary.ts) — dropdown
-  // order AND the v2-package → v1-alias display mapping come from here, so the
-  // gateway's wire truth and the UI never drift apart.
-  const [npmVocabulary, setNpmVocabulary] = useState<NpmVocabularyEntry[]>([]);
+  // The backend-owned OCR protocol vocabulary (providers/vocabulary.ts) —
+  // dropdown order and display labels come from here, so the gateway's wire
+  // truth and the UI never drift apart.
+  const [protocolVocabulary, setProtocolVocabulary] = useState<ProtocolVocabularyEntry[]>([]);
   useEffect(() => {
-    opencodeApi.getNpmVocabulary().then(setNpmVocabulary).catch(() => {
+    opencodeApi.getProtocolVocabulary().then(setProtocolVocabulary).catch(() => {
       /* fail-open: the form falls back to the curated list below */
     });
   }, []);
 
-  /** v2 `package` / v1 alias → the display alias (vocabulary-driven). */
-  const displayNpm = useCallback((npm?: string): string | undefined => {
-    if (!npm) return undefined;
-    const hit = npmVocabulary.find((e) => e.package === npm || e.alias === npm);
-    return hit ? hit.alias : npm;
-  }, [npmVocabulary]);
+  /** Protocol id → display label (vocabulary-driven). */
+  const displayProtocol = useCallback((protocol?: string): string | undefined => {
+    if (!protocol) return undefined;
+    const hit = protocolVocabulary.find((e) => e.package === protocol || e.alias === protocol);
+    return hit ? hit.alias : protocol;
+  }, [protocolVocabulary]);
 
-  // npm dropdown options: the vocabulary's ordered aliases ARE the list — the
+  // Protocol dropdown options: the vocabulary's ordered ids ARE the list — the
   // wire truth is backend data, not a frontend copy. Catalog-observed packages
   // do NOT ride through: the catalog carries unroutable SDKs (azure, bedrock,
-  // vertex — SDK-side signing) and v2-package spellings that duplicate their
-  // alias entries. Anything else can still be typed into the custom field.
-  const npmOptions = useMemo(
-    () => (npmVocabulary.length > 0 ? npmVocabulary.map((e) => e.alias) : FALLBACK_NPM_VOCABULARY.map((e) => e.alias)),
-    [npmVocabulary]
+  // vertex — SDK-side signing). Anything else can still be typed.
+  const protocolOptions = useMemo(
+    () => (protocolVocabulary.length > 0 ? protocolVocabulary.map((e) => e.alias) : FALLBACK_PROTOCOL_VOCABULARY.map((e) => e.alias)),
+    [protocolVocabulary]
   );
 
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
@@ -2476,12 +2475,12 @@ export const KeysPage: React.FC = () => {
                   "[OCR] excluded" log). */}
               <ProviderCardFooter hasProbe={Boolean(testResults[p.id])}>
                 <div className="provider-card-chips">
-                    {displayNpm(p.npm) && (
+                    {displayProtocol(p.npm) && (
                       <span
                         style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
-                        title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
+                        title={`${displayProtocol(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
                       >
-                        {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
+                        {displayProtocol(p.npm)!}
                       </span>
                     )}
                     {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
@@ -2756,7 +2755,7 @@ export const KeysPage: React.FC = () => {
                       <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
                       {c.npm && (
                         <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '0 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
-                          {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
+                          {displayProtocol(c.npm) || ''}
                         </span>
                       )}
                     </div>
@@ -2869,7 +2868,7 @@ export const KeysPage: React.FC = () => {
             <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
           </FormField>
-          {/* AI SDK package is low-frequency (almost always the openai-compatible
+          {/* Protocol id is low-frequency (almost always the openai-chat
               default) — parked last so the common path reads ID → name → URL → key. */}
           <FormField label={t('op.fNpmLabel')}>
             {npmChoice === CUSTOM_NPM ? (
@@ -2890,7 +2889,7 @@ export const KeysPage: React.FC = () => {
                 clearable
                 options={[
                   { value: '', label: t('op.fNpm') },
-                  ...npmOptions.map((pkg) => ({ value: pkg, label: pkg })),
+                  ...protocolOptions.map((pkg) => ({ value: pkg, label: pkg })),
                   { value: CUSTOM_NPM, label: `${t('op.fNpmCustom')}…` },
                 ]}
               />
@@ -3312,10 +3311,10 @@ export const KeysPage: React.FC = () => {
                     // Current value rides first ONLY when the vocabulary does not
                     // already list it — otherwise the dropdown shows the same
                     // alias twice, both ticked.
-                    ...(editDef.npm && !npmOptions.includes(editDef.npm)
+                    ...(editDef.npm && !protocolOptions.includes(editDef.npm)
                       ? [{ value: editDef.npm, label: editDef.npm }]
                       : []),
-                    ...npmOptions.map((pkg) => ({ value: pkg, label: pkg })),
+                    ...protocolOptions.map((pkg) => ({ value: pkg, label: pkg })),
                   ]}
                 />
               </FormField>

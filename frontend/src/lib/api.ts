@@ -759,10 +759,12 @@ export interface TraceRecord {
      */
     clientStream?: boolean;
     /**
-     * INBOUND protocol surface the client addressed (`chat` = OpenAI
-     * chat/completions, `anthropic`, `responses`). Absent on legacy traces.
+     * INBOUND protocol id the client addressed (`openai-chat` =
+     * chat/completions, `anthropic-messages`, `openai-responses`). Legacy
+     * traces are normalized at the backend read boundary (`persist.ts`).
+     * Absent on pre-tag traces.
      */
-    inboundWire?: 'chat' | 'anthropic' | 'responses';
+    inboundWire?: 'openai-chat' | 'anthropic-messages' | 'openai-responses';
   };
   routing: {
     layerUsed: 'layer0' | 'entry' | 'layer2';
@@ -927,7 +929,7 @@ export interface CaptureSessionRow {
    * surface is labeled explicitly — chat included. Undefined = a legacy
    * archive without request lines or an unrecognized path (unbadged).
    */
-  protocol?: 'chat' | 'anthropic' | 'responses' | 'systemone';
+  protocol?: 'openai-chat' | 'anthropic-messages' | 'openai-responses' | 'systemone';
 }
 
 /** One date-dir fragment of a stitched (cross-midnight) conversation read. */
@@ -2424,7 +2426,7 @@ async function readNdjsonLines(res: Response, onLine: (line: string) => void): P
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  for (;;) {
+  for (; ;) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -3500,6 +3502,16 @@ export const api = {
   async getApiKeys(): Promise<{ status: string; keys: ApiKeyItem[] }> {
     const res = await fetch('/api/admin/api-keys');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** One-shot plaintext reveal for Playground / copy — list endpoint is masked. */
+  async revealApiKey(id: string): Promise<{ status: string; id: string; key: string }> {
+    const res = await fetch(`/api/admin/api-keys/${encodeURIComponent(id)}/reveal`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
     return res.json();
   },
 
@@ -4709,8 +4721,7 @@ export const api = {
     stitched = true
   ): Promise<CaptureArchiveSummary | null> {
     const res = await fetch(
-      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/summary${
-        stitched ? '?stitched=1' : ''
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/summary${stitched ? '?stitched=1' : ''
       }`
     );
     if (!res.ok) return null;
@@ -4945,10 +4956,10 @@ export interface PluginConfigSectionInfo {
 // Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
 
-export interface NpmVocabularyEntry {
-  /** The v1 alias users type (`@ai-sdk/<x>`). */
+export interface ProtocolVocabularyEntry {
+  /** Canonical OCR protocol id (the dropdown value). */
   alias: string;
-  /** The opencode v2 `package` shape stored in the defs file (ADR-0010). */
+  /** Same id — kept for readers that address the legacy field name. */
   package: string;
   /** Resolved wire — informational; authoritative in the backend's wireFor(). */
   wire: string;
@@ -4956,7 +4967,7 @@ export interface NpmVocabularyEntry {
   order: number;
 }
 /** Process-lifetime cache — the vocabulary is boot-scoped backend data. */
-let npmVocabularyCache: NpmVocabularyEntry[] | null = null;
+let protocolVocabularyCache: ProtocolVocabularyEntry[] | null = null;
 
 export interface OpenCodeProviderView {
   id: string;
@@ -5139,7 +5150,11 @@ export type ProbeHintCode =
 export interface TestProviderResult {
   status: string;
   ok: boolean;
-  kind?: 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
+  /** Wire id the probe actually spoke. Open on purpose: a wire is either a core
+   *  shape or a plugin wire id, and the plugin half is derived from the loaded
+   *  plugin registry (backend `providers/plugin-wires.ts`) — never a closed
+   *  enum in this mirror. */
+  kind?: string;
   model?: string;
   latencyMs?: number;
   authHint?: boolean;
@@ -5796,13 +5811,13 @@ export const opencodeApi = {
     );
   },
 
-  /** One entry of the backend-owned npm SDK vocabulary (providers/vocabulary.ts). */
-  async getNpmVocabulary(): Promise<NpmVocabularyEntry[]> {
-    if (npmVocabularyCache) return npmVocabularyCache;
-    const res = await ocJson<{ status: string; entries: NpmVocabularyEntry[] }>(
-      await fetch('/api/admin/opencode/npm-vocabulary')
+  /** One entry of the backend-owned OCR protocol vocabulary (providers/vocabulary.ts). */
+  async getProtocolVocabulary(): Promise<ProtocolVocabularyEntry[]> {
+    if (protocolVocabularyCache) return protocolVocabularyCache;
+    const res = await ocJson<{ status: string; entries: ProtocolVocabularyEntry[] }>(
+      await fetch('/api/admin/opencode/protocol-vocabulary')
     );
-    npmVocabularyCache = res.entries;
+    protocolVocabularyCache = res.entries;
     return res.entries;
   },
 

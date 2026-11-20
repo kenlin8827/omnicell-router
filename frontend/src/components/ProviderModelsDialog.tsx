@@ -663,6 +663,11 @@ export const ProviderModelsDialog: React.FC<{
   // Close on backdrop click only when BOTH press and release happen on the
   // overlay itself (shared guard: useBackdropDismiss).
   const backdrop = useBackdropDismiss(onClose);
+  // The nested add/edit form is a SECOND overlay with its OWN armed state — it
+  // must not share the parent's guard, and a text-selection drag that starts
+  // inside a field and ends on the scrim must not throw away the in-progress
+  // form. This used to be a plain `onClick`, which dismissed on any drag-out.
+  const formBackdrop = useBackdropDismiss(() => setForm(null));
 
   return createPortal(
     <div
@@ -1065,7 +1070,7 @@ export const ProviderModelsDialog: React.FC<{
 
       {/* ---- Nested add/edit form dialog (opencode v2 model editor) ---- */}
       {form && (
-        <div onClick={() => setForm(null)} style={formOverlayStyle(blur)}>
+        <div {...formBackdrop} style={formOverlayStyle(blur)}>
           <div className="card" onClick={(e) => e.stopPropagation()} style={formDialogStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>

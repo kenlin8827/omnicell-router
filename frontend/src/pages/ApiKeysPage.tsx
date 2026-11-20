@@ -236,6 +236,10 @@ export const ApiKeysPage: React.FC = () => {
   // always-visible copy button — the secret one in Actions).
   const [idHover, setIdHover] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState<Record<string, boolean>>({});
+  /** Plaintext cache — list endpoint is masked; reveal fills this per id. */
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
+  const revealedKeysRef = useRef(revealedKeys);
+  revealedKeysRef.current = revealedKeys;
 
   // Create modal state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -290,7 +294,13 @@ export const ApiKeysPage: React.FC = () => {
   const fetchRawModels = async (key: ApiKeyItem) => {
     setViewRaw({ loading: true, json: null });
     try {
-      const res = await fetch('/v1/models', { headers: { Authorization: `Bearer ${key.key}` } });
+      const plain = await ensureRevealedKey(key.id);
+      if (viewingKeyRef.current?.id !== key.id) return;
+      if (!plain) {
+        setViewRaw({ loading: false, json: { error: t('common.failed') } });
+        return;
+      }
+      const res = await fetch('/v1/models', { headers: { Authorization: `Bearer ${plain}` } });
       const body = await res.json();
       // Ignore the response if the modal switched to another key while the
       // fetch was in flight — a late payload would show under the wrong key.
@@ -333,13 +343,22 @@ export const ApiKeysPage: React.FC = () => {
   // what the policy does (allowed → 200 + served model; denied → 403).
   const runModelTest = async (model: string) => {
     if (!viewingKey) return;
+    const keyId = viewingKey.id;
     setTestState((prev) => ({ ...prev, [model]: 'loading' }));
     try {
+      const plain = await ensureRevealedKey(keyId);
+      if (viewingKeyRef.current?.id !== keyId) return;
+      if (!plain) {
+        setTestState((prev) => ({ ...prev, [model]: 'error' }));
+        setTestResult((prev) => ({ ...prev, [model]: t('common.failed') }));
+        return;
+      }
       const res = await fetch('/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${viewingKey.key}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plain}` },
         body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 8 }),
       });
+      if (viewingKeyRef.current?.id !== keyId) return;
       if (res.ok) {
         const served = res.headers.get('X-OCR-Model') || '';
         setTestState((prev) => ({ ...prev, [model]: 'ok' }));
@@ -350,6 +369,7 @@ export const ApiKeysPage: React.FC = () => {
         setTestResult((prev) => ({ ...prev, [model]: body?.error?.message || `HTTP ${res.status}` }));
       }
     } catch (err: any) {
+      if (viewingKeyRef.current?.id !== keyId) return;
       setTestState((prev) => ({ ...prev, [model]: 'error' }));
       setTestResult((prev) => ({ ...prev, [model]: err.message || 'network error' }));
     }
@@ -409,6 +429,20 @@ export const ApiKeysPage: React.FC = () => {
     fetchKeys();
   }, []);
 
+  const ensureRevealedKey = async (id: string): Promise<string | null> => {
+    const cached = revealedKeysRef.current[id];
+    if (cached) return cached;
+    try {
+      const r = await api.revealApiKey(id);
+      revealedKeysRef.current = { ...revealedKeysRef.current, [id]: r.key };
+      setRevealedKeys((prev) => ({ ...prev, [id]: r.key }));
+      return r.key;
+    } catch {
+      toast.error(t('common.failed'));
+      return null;
+    }
+  };
+
   const handleCopy = (text: string, id: string) => {
     // A failed write (denied permission, unfocused document, sandboxed shell)
     // must surface — this is the path that produced silent no-op copies.
@@ -422,6 +456,12 @@ export const ApiKeysPage: React.FC = () => {
     setCopiedId(id);
     copyTimer.current = setTimeout(() => setCopiedId(null), 2000);
   };
+
+  const handleCopySecret = async (id: string) => {
+    const key = await ensureRevealedKey(id);
+    if (!key) return;
+    handleCopy(key, id);
+  };
   useEffect(
     () => () => {
       if (copyTimer.current) clearTimeout(copyTimer.current);
@@ -430,7 +470,14 @@ export const ApiKeysPage: React.FC = () => {
   );
 
   const handleToggleShowSecret = (id: string) => {
-    setShowSecret((prev) => ({ ...prev, [id]: !prev[id] }));
+    const next = !showSecret[id];
+    if (next && !revealedKeys[id]) {
+      void ensureRevealedKey(id).then((key) => {
+        if (key) setShowSecret((prev) => ({ ...prev, [id]: true }));
+      });
+      return;
+    }
+    setShowSecret((prev) => ({ ...prev, [id]: next }));
   };
 
   const handleToggleEnabled = async (item: ApiKeyItem) => {
@@ -456,6 +503,20 @@ export const ApiKeysPage: React.FC = () => {
       const res = await api.deleteApiKey(item.id);
       if (res.success) {
         setKeys((prev) => prev.filter((k) => k.id !== item.id));
+        setRevealedKeys((prev) => {
+          if (!(item.id in prev)) return prev;
+          const next = { ...prev };
+          delete next[item.id];
+          return next;
+        });
+        setShowSecret((prev) => {
+          if (!(item.id in prev)) return prev;
+          const next = { ...prev };
+          delete next[item.id];
+          return next;
+        });
+        setSelectedKeyId((cur) => (cur === item.id ? null : cur));
+        setPickerKeyId((cur) => (cur === item.id ? null : cur));
       } else {
         toast.error(res.error || t('common.failed'));
       }
@@ -495,6 +556,7 @@ export const ApiKeysPage: React.FC = () => {
 
       if (res.success && res.data) {
         setCreatedKey(res.data);
+        setRevealedKeys((prev) => ({ ...prev, [res.data!.id]: res.data!.key }));
         setShowCreateModal(false);
         setFormName('');
         setFormKey('');
@@ -574,10 +636,17 @@ export const ApiKeysPage: React.FC = () => {
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
   const keyPlaceholder = t('apiKeys.quickConnectKeyPlaceholder');
   const selectedKey = keys.find((k) => k.id === selectedKeyId) ?? null;
+  const selectedPlainKey = selectedKeyId ? revealedKeys[selectedKeyId] : undefined;
   // The picker previews whatever the user has staged in the modal — independent of the committed selection.
   const pickerPreview = keys.find((k) => k.id === pickerKeyId) ?? null;
   const inlineKey =
-    revealKey && selectedKey ? selectedKey.key : keyPlaceholder;
+    revealKey && selectedPlainKey ? selectedPlainKey : keyPlaceholder;
+
+  useEffect(() => {
+    if (!revealKey || !selectedKeyId || revealedKeysRef.current[selectedKeyId]) return;
+    void ensureRevealedKey(selectedKeyId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealKey, selectedKeyId]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -735,9 +804,10 @@ export const ApiKeysPage: React.FC = () => {
               <tbody>
                 {pagedKeys.map((item) => {
                   const isVisible = showSecret[item.id];
-                  const displayKey = isVisible
-                    ? item.key
-                    : item.key.slice(0, 8) + '••••••••' + item.key.slice(-4);
+                  const plain = revealedKeys[item.id];
+                  const displayKey = isVisible && plain
+                    ? plain
+                    : item.key; // list is already masked
 
                   return (
                     <tr
@@ -842,7 +912,7 @@ export const ApiKeysPage: React.FC = () => {
                             {isVisible ? <EyeOff size={13} /> : <Eye size={13} />}
                           </button>
                           <button
-                            onClick={() => handleCopy(item.key, item.id)}
+                            onClick={() => void handleCopySecret(item.id)}
                             style={{
                               background: 'transparent',
                               border: 'none',
@@ -1076,11 +1146,11 @@ export const ApiKeysPage: React.FC = () => {
               lineHeight: 'var(--leading-snug)',
             }}
           >
-            {selectedKey && revealKey
+            {selectedKey && revealKey && selectedPlainKey
               ? t('apiKeys.quickConnectSecurityNotice', {
                   placeholder: keyPlaceholder,
-                  prefix: selectedKey.key.slice(0, 10),
-                  suffix: selectedKey.key.slice(-4),
+                  prefix: selectedPlainKey.slice(0, 10),
+                  suffix: selectedPlainKey.slice(-4),
                 })
               : keys.length > 1
                 ? t('apiKeys.quickConnectNeedPickNotice', {

@@ -132,9 +132,9 @@ export const ClientsPage: React.FC = () => {
   const [models, setModels] = useState<{ id: string; tier?: string; kind?: string; members?: number }[]>([]);
   /** Gateway API keys (Claude auth token writer) */
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
-  /** Per-client selected API key (raw key token) — setup ALWAYS writes the
-   *  picked key into the client config (client config backups cover regrets);
-   *  the picker is mandatory. */
+  /** Per-client selected API key id — setup resolves the plaintext secret via
+   *  api.revealApiKey before writing into the client config (client config
+   *  backups cover regrets); the picker is mandatory. */
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
   /** Clients whose key picker is flagged by a refused setup: red trigger + a
    *  scroll-to/focus. Cleared when a key is picked, another action starts, the
@@ -428,7 +428,7 @@ export const ClientsPage: React.FC = () => {
     for (const [pluginId, draft] of Object.entries(gatewayCfg)) {
       if (draft.modelListMode !== 'follow') continue;
       const clientName = clients.find((c) => c.catalogPlugin === pluginId)?.name ?? '';
-      const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+      const picked = apiKeys.find((k) => k.id === (apiKeySel[clientName] || ''));
       if (picked && !keyModels[picked.id]) pending.add(picked.id);
     }
     for (const keyId of pending) {
@@ -448,7 +448,7 @@ export const ClientsPage: React.FC = () => {
     const clientName = clients.find((c) => c.catalogPlugin === expandedPluginId)?.name ?? '';
     const bound = apiKeys.find((k) => k.id === parsed.boundKeyId);
     if (!bound) return;
-    setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.key }));
+    setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.id }));
   }, [expandedPluginId, gatewayCfg, apiKeys]);
 
   /** Catalog-relevant draft fields differ from the committed values — after
@@ -478,7 +478,7 @@ export const ClientsPage: React.FC = () => {
     // model access and usage attribution all hang on it, so the card cannot
     // save an unbound gateway.
     const clientName = clients.find((c) => c.catalogPlugin === pluginId)?.name ?? '';
-    const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+    const picked = apiKeys.find((k) => k.id === (apiKeySel[clientName] || ''));
     if (!picked) {
       toast.error(t('clients.apiKeyRequired'));
       return false;
@@ -554,7 +554,7 @@ export const ClientsPage: React.FC = () => {
   const gatewayDraftDirty = (draft: GatewayCfgDraft | undefined, clientName: string): boolean => {
     if (!draft) return false;
     const base = parseGatewayCfg(draft.values ?? {}, draft);
-    const pickedId = apiKeySel[clientName] ? keyIdOf(apiKeySel[clientName]) : '';
+    const pickedId = apiKeySel[clientName] || '';
     // Card-owned edits must dirty the card too: a takeover without this check
     // would hook the client and leave the operator's card rows unsaved.
     const cardPluginId = clients.find((cl) => cl.name === clientName)?.catalogPlugin ?? '';
@@ -588,7 +588,7 @@ export const ClientsPage: React.FC = () => {
         if (next[c.name] !== undefined || c.catalogPlugin) continue;
         const id = mem[c.name]?.apiKeyId;
         const k = id ? apiKeys.find(x => x.id === id) : undefined;
-        if (k) next[c.name] = k.key;
+        if (k) next[c.name] = k.id;
       }
       return next;
     });
@@ -676,7 +676,7 @@ export const ClientsPage: React.FC = () => {
       extraModels: extraSel[clientName] || [],
       virtualModels: virtualSel[clientName],
       modelMode: modeSel[clientName] ?? 'default',
-      apiKeyId: keyIdOf(apiKeySel[clientName] || ''),
+      apiKeyId: apiKeySel[clientName] || '',
       linksOn: linksOn[clientName],
     };
     // Pure updater required: computing `next` (and firing the POST) inside the
@@ -687,14 +687,9 @@ export const ClientsPage: React.FC = () => {
     api.saveClientProfileMemory(next).catch(e => console.warn('profile memory save failed:', e));
   };
 
-  /** Gateway key id behind a selected key token ('' = nothing picked) — the
-   *  form memory stores the STABLE id, never the raw token. */
-  const keyIdOf = (keyValue: string): string =>
-    apiKeys.find(k => k.key === keyValue)?.id || '';
-
   /** The key object behind a client's apiKey selection (undefined = nothing picked). */
   const followKeyOf = (clientName: string): ApiKeyItem | undefined =>
-    apiKeys.find(k => k.key === (apiKeySel[clientName] || ''));
+    apiKeys.find(k => k.id === (apiKeySel[clientName] || ''));
 
   /** The key's allowed model view (follow preview): virtual tier entries the
    *  policy admits (injected by the adapters per the same verdict) plus the
@@ -785,7 +780,7 @@ export const ClientsPage: React.FC = () => {
         // Every OCR-routed turn is charged to the bound key; a takeover without
         // one produces a hooked client that 401s on every OCR model. Refuse it
         // here instead of letting setup succeed half-configured.
-        const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+        const picked = apiKeys.find((k) => k.id === (apiKeySel[clientName] || ''));
         const expiry = picked?.expiresAt ? Date.parse(picked.expiresAt) : NaN;
         if (!picked || picked.enabled === false || (!Number.isNaN(expiry) && expiry <= Date.now())) {
           toast.error(t('clients.gatewayKeyRequired'));
@@ -834,10 +829,27 @@ export const ClientsPage: React.FC = () => {
       // render the key picker.
       const hookKind = clients.find(c => c.name === clientName)?.hookKind ?? 'config';
       const keyless = hookKind !== 'config';
-      if (action === 'setup' && !keyless && !(apiKeySel[clientName] || '')) {
+      const selectedKeyId = apiKeySel[clientName] || '';
+      if (action === 'setup' && !keyless && !selectedKeyId) {
         toast.error(t('clients.apiKeyRequired'));
         flagKeyError();
         return;
+      }
+      let resolvedApiKey: string | undefined;
+      if (action === 'setup' && !(keyless && !gatewayPluginId) && selectedKeyId) {
+        try {
+          const { key: plainKey } = await api.revealApiKey(selectedKeyId);
+          if (!plainKey) {
+            toast.error(t('common.failed'));
+            revealCard();
+            return;
+          }
+          resolvedApiKey = plainKey;
+        } catch (err: any) {
+          toast.error(err?.message || t('common.failed'));
+          revealCard();
+          return;
+        }
       }
       const piPayload = piLinkPayload(clientName);
       const agentPayload = opencodeAgentPayload(clientName);
@@ -846,7 +858,7 @@ export const ClientsPage: React.FC = () => {
       const acknowledge = opts.acknowledgeRunning === true ? { acknowledgeRunning: true } : {};
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
-        ...(keyless && !gatewayPluginId ? {} : { apiKey: apiKeySel[clientName] }),
+        ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
         ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
@@ -1020,7 +1032,7 @@ export const ClientsPage: React.FC = () => {
     setApiKeySel(prev => {
       const next = { ...prev };
       const k = m?.apiKeyId ? apiKeys.find(x => x.id === m.apiKeyId) : undefined;
-      next[clientName] = k ? k.key : '';
+      next[clientName] = k ? k.id : '';
       return next;
     });
     if (clientName === 'opencode' || isRoleTableClient(clientName)) {
@@ -1276,7 +1288,7 @@ export const ClientsPage: React.FC = () => {
         ) : draft ? (
           (() => {
             const mode = draft.modelListMode;
-            const followKey = apiKeys.find((key) => key.key === (apiKeySel[c.name] || ''));
+            const followKey = apiKeys.find((key) => key.id === (apiKeySel[c.name] || ''));
             const followView = followKey ? keyModels[followKey.id] : undefined;
             // Default = no list set: every shipped gateway then advertises its
             // built-in virtual entries only. The unset spelling is the
@@ -1327,7 +1339,7 @@ export const ClientsPage: React.FC = () => {
                     clearKeyError(c.name);
                   }}
                   options={apiKeys.map((key) => ({
-                    value: key.key,
+                    value: key.id,
                     label: key.name,
                     meta: key.key.length > 12 ? `${key.key.slice(0, 8)}…${key.key.slice(-4)}` : undefined,
                   }))}
@@ -2134,7 +2146,7 @@ export const ClientsPage: React.FC = () => {
                         setApiKeySel(prev => ({ ...prev, [c.name]: v }));
                         clearKeyError(c.name);
                       }}
-                      options={apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined }))}
+                      options={apiKeys.map(k => ({ value: k.id, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined }))}
                       placeholder={t('clients.apiKeySelect')}
                       invalid={!!keyError[c.name]}
                       triggerRef={el => { keyPickerRefs.current[c.name] = el; }}

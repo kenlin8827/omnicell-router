@@ -136,15 +136,15 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 // (⇢ proxy, circled-plus day-span). Legacy archives without request lines
 // stay unbadged.
 const PROTOCOL_LABEL: Record<NonNullable<CaptureSessionRow['protocol']>, string> = {
-  chat: 'captures.protocolChat',
-  anthropic: 'captures.protocolAnthropic',
-  responses: 'captures.protocolResponses',
+  'openai-chat': 'captures.protocolChat',
+  'anthropic-messages': 'captures.protocolAnthropic',
+  'openai-responses': 'captures.protocolResponses',
   systemone: 'captures.protocolDecision',
 };
 const PROTOCOL_HUE: Record<NonNullable<CaptureSessionRow['protocol']>, { bg: string; fg: string }> = {
-  chat: { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
-  anthropic: { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
-  responses: { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
+  'openai-chat': { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
+  'anthropic-messages': { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
+  'openai-responses': { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
   systemone: { bg: 'var(--hue-blue-soft)', fg: 'var(--hue-blue)' },
 };
 
@@ -2435,7 +2435,7 @@ export const CapturesPage: React.FC = () => {
                       >
                         {s.protocol && (
                           <span
-                            title={t('captures.protocolTip', { protocol: t(PROTOCOL_LABEL[s.protocol]) })}
+                            title={t('captures.protocolTip', { protocol: s.protocol })}
                             style={{
                               fontSize: 'var(--text-2xs)',
                               lineHeight: 'var(--leading-14)',
