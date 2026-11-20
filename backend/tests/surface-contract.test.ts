@@ -5,9 +5,10 @@ import { chatSurface } from '../src/surfaces/chat.js';
 import { runChatSurface } from '../src/surfaces/chat-pipeline.js';
 import { INFERENCE_ROUTE_PATHS, SURFACES, detectSurface } from '../src/surfaces/table.js';
 import { __resetResponsesSurfaceForTests } from '../src/surfaces/responses.js';
-import type { ChatCompletionChunk, ChatCompletionRequest } from '../src/types/openai.js';
+import type { CanonicalRequest, StreamEvent } from '../src/ir/types.js';
 import type { ExecutionResult } from '../src/types/router.js';
 import type { ChatSurface, SurfacePathContext, TransportContext } from '../src/surfaces/types.js';
+import { responseIR } from './helpers/ir.js';
 
 /**
  * CONFORMANCE suite for the protocol-surface table (surfaces/table.ts).
@@ -51,7 +52,7 @@ interface WireSpec {
 }
 
 const WIRE_SPEC: Record<string, WireSpec> = {
-  chat: {
+  'openai-chat': {
     validBody: () => ({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] }),
     invalidBody: () => ({ model: 'auto', messages: 'not-an-array' }),
     invalidBodyError: 'Invalid request: "messages" array is required.',
@@ -60,7 +61,7 @@ const WIRE_SPEC: Record<string, WireSpec> = {
     passthroughStatuses: [400, 600],
     isTerminalFrame: (f) => f === 'data: [DONE]\n\n',
   },
-  anthropic: {
+  'anthropic-messages': {
     validBody: () => ({
       model: 'claude-sonnet-4-5',
       max_tokens: 64,
@@ -75,7 +76,7 @@ const WIRE_SPEC: Record<string, WireSpec> = {
     // The Anthropic wire has no [DONE] sentinel — message_stop is the terminator.
     isTerminalFrame: (f) => f.startsWith('event: message_stop'),
   },
-  responses: {
+  'openai-responses': {
     validBody: () => ({ model: 'gpt-5', input: 'hi' }),
     invalidBody: () => ({ model: 'gpt-5' }),
     invalidBodyError: 'Invalid request: "input" is required.',
@@ -90,14 +91,10 @@ const WIRE_SPEC: Record<string, WireSpec> = {
 
 // ---- fixtures ---------------------------------------------------------------
 
-const canonicalResponse = {
-  id: 'chatcmpl-1',
-  object: 'chat.completion',
-  created: 1,
-  model: 'upstream-deployment-name',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'hello there' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
-};
+const canonicalResponse = responseIR('hello there', {
+  id: 'resp-1', createdAt: 1, model: 'upstream-deployment-name',
+  usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+});
 
 function stubResult(modelUsed: string): ExecutionResult {
   return {
@@ -145,15 +142,15 @@ function makeFakeTransport(url = '/v1/inference') {
 }
 
 interface ProcessArgs {
-  request: ChatCompletionRequest;
+  request: CanonicalRequest;
   ctx: Record<string, unknown>;
   relay: unknown;
 }
 
-function makeStubOrchestrator(behavior: { result?: ExecutionResult; throwOn?: unknown; chunks?: ChatCompletionChunk[] } = {}) {
+function makeStubOrchestrator(behavior: { result?: ExecutionResult; throwOn?: unknown; chunks?: StreamEvent[] } = {}) {
   const seen: ProcessArgs[] = [];
   const orchestrator = {
-    process: async (request: ChatCompletionRequest, ctx: Record<string, unknown>, relay?: { onChunk(c: ChatCompletionChunk): void }) => {
+    process: async (request: CanonicalRequest, ctx: Record<string, unknown>, relay?: { onChunk(event: StreamEvent): void }) => {
       seen.push({ request, ctx: ctx ?? {}, relay });
       if (behavior.throwOn !== undefined) throw behavior.throwOn;
       for (const chunk of behavior.chunks ?? []) relay?.onChunk(chunk);
@@ -257,9 +254,9 @@ describe('surface parse — the IR handshake', () => {
       const parsed = s.parse(spec.validBody());
       assert.equal(parsed.error, undefined, `${s.wire}: registered valid body was rejected — ${parsed.error}`);
       const request = parsed.request!;
-      assert.ok(Array.isArray(request.messages) && request.messages.length > 0, `${s.wire}: IR must carry a non-empty messages array`);
-      for (const m of request.messages) {
-        assert.equal(typeof m?.role, 'string', `${s.wire}: every IR message needs a role (session identity and scrubbing read it)`);
+      assert.ok(Array.isArray(request.input) && request.input.length > 0, `${s.wire}: IR must carry a non-empty input array`);
+      for (const item of request.input) {
+        assert.equal(typeof item?.type, 'string', `${s.wire}: every IR input item needs a discriminant`);
       }
       if (request.model !== undefined) {
         assert.equal(typeof request.model, 'string', `${s.wire}: model must stay a string in the IR`);
@@ -293,7 +290,7 @@ describe('surface error envelopes', () => {
         assert.equal(messageOf(body), `msg-${status}`, `${s.wire}: errorBody must round-trip the message at ${status}`);
         assert.ok(JSON.stringify(body).length > 0, `${s.wire}: errorBody must be JSON-serializable`);
         const type = typeOf(body);
-        if (isChatFamily(s) && s.wire === 'responses') {
+        if (isChatFamily(s) && s.wire === 'openai-responses') {
           // This wire pins type=invalid_request_error at EVERY status (documented quirk).
           assert.equal(type, 'invalid_request_error', `${s.wire}: type is pinned on this wire`);
         } else {
@@ -357,15 +354,10 @@ describe('surface error envelopes', () => {
     }
   });
 
-  it('CHARACTERIZATION (known gap): the responses 4xx branch can emit an envelope with no message', () => {
-    // responses.executionError's 4xx branch sends `message: e?.message` with no
-    // fallback, so an error carrying a statusCode but no message produces
-    // {error:{type,code}} — the client sees an error with nothing to read.
-    // Pinned deliberately: fix it (one `|| 'Bad request.'`) and this test must
-    // be deleted, which is how the gap stops being invisible.
-    const responses = SURFACES.find((s) => s.wire === 'responses')! as ChatSurface;
+  it('responses 4xx errors always carry a readable message', () => {
+    const responses = SURFACES.find((s) => s.wire === 'openai-responses')! as ChatSurface;
     const body = responses.executionError({ statusCode: 404 }).body as { error: Record<string, unknown> };
-    assert.equal(body.error.message, undefined, 'gap present — if this assertion fails, delete this test');
+    assert.equal(body.error.message, 'Bad request.');
   });
 });
 
@@ -421,7 +413,7 @@ describe('pipeline terminal send — per wire', () => {
     // The relayed leg flushes `response.created` at the FIRST upstream chunk,
     // so the id CANNOT be minted by afterResult (which needs the turn result).
     // parse owns it now; afterResult only persists the RespStore node.
-    const responses = SURFACES.find((s) => s.wire === 'responses')! as ChatSurface;
+    const responses = SURFACES.find((s) => s.wire === 'openai-responses')! as ChatSurface;
     assert.equal(typeof responses.afterResult, 'function', 'responses must carry the hook this test exists for');
     assert.equal(typeof responses.streamStart, 'function', 'responses must open the relayed stream itself');
     const parsed = responses.parse({ model: 'gpt-5', input: 'hi' });
@@ -443,17 +435,15 @@ describe('relay leg — chunk-shaped wires', () => {
     // wire has its own event-shaped delta contract (responses-relay.test.ts),
     // where frames carry `type` and `delta`, not `model`.
     for (const s of SURFACES.filter(isChatFamily)) {
-      if (!s.encodeChunk || s.wire !== 'chat') continue;
-      const battery: ChatCompletionChunk[] = [
-        { id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }] },
-        { id: 'c2', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', choices: [] },
-        { id: 'c3', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } as unknown as ChatCompletionChunk,
+      if (!s.encodeChunk || s.wire !== 'openai-chat') continue;
+      const battery: StreamEvent[] = [
+        { type: 'response.output_text.delta', index: 0, partIndex: 0, text: 'hi' },
+        { type: 'response.output_item.done', index: 0, item: { type: 'message', role: 'assistant', content: [] } },
+        { type: 'response.usage', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
       ];
       for (const includeUsage of [false, true]) {
-        for (const chunk of battery) {
-          const frame = s.encodeChunk(chunk, { model: 'served-model', includeUsage });
-          // `undefined` would slip past the pipeline's `!== null` guard and
-          // write the literal text "undefined" into the client's stream.
+        for (const event of battery) {
+          const frame = s.encodeChunk(event, { model: 'served-model', includeUsage });
           assert.ok(
             frame === null || typeof frame === 'string',
             `${s.wire}: encodeChunk must return string or null, saw ${String(frame)}`
@@ -461,25 +451,22 @@ describe('relay leg — chunk-shaped wires', () => {
           if (frame === null) continue;
           assertWellFormedFrame(frame, `${s.wire} relay frame`);
           const payload = JSON.parse(dataPayload(frame)) as { model?: string; usage?: unknown };
-          assert.equal(payload.model, 'served-model', `${s.wire}: every relayed frame must carry the gateway-served id, not the upstream deployment name`);
+          assert.equal(payload.model, 'served-model', `${s.wire}: every relayed frame must carry the gateway-served id`);
         }
       }
-      const usageOnly: ChatCompletionChunk = {
-        id: 'c4',
-        object: 'chat.completion.chunk',
-        created: 1,
-        model: 'upstream-deployment-name',
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-      } as unknown as ChatCompletionChunk;
-      assert.equal(s.encodeChunk(usageOnly, { model: 'served-model', includeUsage: false }), null, `${s.wire}: an unrequested usage frame must be dropped (strict clients reject unknown frames)`);
-      assert.notEqual(s.encodeChunk(usageOnly, { model: 'served-model', includeUsage: true }), null, `${s.wire}: a requested usage frame must be forwarded (FinOps-visible)`);
+      const usageOnly: StreamEvent = {
+        type: 'response.usage', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      };
+      assert.equal(s.encodeChunk(usageOnly, { model: 'served-model', includeUsage: false }), null, `${s.wire}: an unrequested usage frame must be dropped`);
+      assert.notEqual(s.encodeChunk(usageOnly, { model: 'served-model', includeUsage: true }), null, `${s.wire}: a requested usage frame must be forwarded`);
     }
   });
 
   it('a relay writes the summary comment BEFORE [DONE] and closes exactly once', async () => {
-    const frames: ChatCompletionChunk[] = [
-      { id: 'r1', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] },
-      { id: 'r2', object: 'chat.completion.chunk', created: 1, model: 'upstream-deployment-name', choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: 'stop' }] },
+    const frames: StreamEvent[] = [
+      { type: 'response.created', id: 'resp-relay', model: 'upstream-deployment-name', createdAt: 1 },
+      { type: 'response.output_item.added', index: 0, item: { type: 'message', role: 'assistant', content: [] } },
+      { type: 'response.output_text.delta', index: 0, partIndex: 0, text: 'hi' },
     ];
     const { t, calls, ops } = makeFakeTransport();
     const { orchestrator } = makeStubOrchestrator({ chunks: frames });
@@ -502,7 +489,7 @@ describe('relay leg — chunk-shaped wires', () => {
     for (const s of SURFACES.filter(isChatFamily)) {
       const { t } = makeFakeTransport();
       const { orchestrator, seen } = makeStubOrchestrator();
-      await runChatSurface(t, s, orchestrator, { ...(s === chatSurface ? { model: 'auto', messages: [{ role: 'user', content: 'hi' }] } : { model: 'gpt-5', input: 'hi' }), stream: true });
+      await runChatSurface(t, s, orchestrator, { ...specFor(s).validBody(), stream: true });
       const relay = seen[0]?.relay;
       if (s.afterResult && !s.streamStart) {
         assert.equal(relay, undefined, `${s.wire}: a hook without a pre-minted lifecycle cannot relay — the state it mints would arrive after the opening frames`);
@@ -520,7 +507,7 @@ describe('parse path context', () => {
     const seen: Array<SurfacePathContext | undefined> = [];
     const probe: ChatSurface = {
       ...chatSurface,
-      wire: 'chat',
+      wire: 'openai-chat',
       parse(body: unknown, pathCtx?: SurfacePathContext) {
         seen.push(pathCtx);
         return chatSurface.parse(body);
@@ -582,8 +569,15 @@ function assertFramesContract(frames: string[], wire: string, spec: WireSpec): v
       }
     }
   }
-  const last = frames[frames.length - 1]!;
-  assert.ok(spec.isTerminalFrame(last), `${wire}: stream must end on this wire's terminator, saw ${JSON.stringify(last.slice(0, 60))}`);
+  // SSE comment frames (e.g. `: ocr-summary {...}`) are legal frames but not
+  // events. Anthropic and Responses append completion facts AFTER their
+  // terminator (see review-regressions.test.ts); strict parsers still stop at
+  // the terminator. Grade the last EVENT frame, not the last physical frame.
+  const lastEvent = [...frames].reverse().find((f) => !f.startsWith(':'));
+  assert.ok(
+    lastEvent !== undefined && spec.isTerminalFrame(lastEvent),
+    `${wire}: stream must end on this wire's terminator, saw ${JSON.stringify((lastEvent ?? frames[frames.length - 1])?.slice(0, 60))}`,
+  );
 }
 
 // ---- 7. this suite's own teeth --------------------------------------------
@@ -594,7 +588,7 @@ describe('the suite rejects a half-registered wire (what a new protocol will hit
   // unregistered wire as passing.
   const unregistered: ChatSurface = {
     ...chatSurface,
-    wire: 'chat',
+    wire: 'openai-chat',
     detectSuffix: '/completions',
     routePath: '/v1beta/models/Gemini-Pro:generateContent',
   };
@@ -624,12 +618,12 @@ describe('the suite rejects a half-registered wire (what a new protocol will hit
 
   it('a streamed leg that never ends its stream is caught', () => {
     assert.throws(
-      () => assertFramesContract(['data: {"id":"a"}\n\n'], 'gemini', WIRE_SPEC.chat),
+      () => assertFramesContract(['data: {"id":"a"}\n\n'], 'gemini', WIRE_SPEC['openai-chat']),
       /terminator/
     );
-    assert.throws(() => assertFramesContract(['data: {"id":"a"}'], 'gemini', WIRE_SPEC.chat), /blank line/);
-    assert.throws(() => assertFramesContract(['{"id":"a"}\n\n'], 'gemini', WIRE_SPEC.chat), /field or comment/);
-    assert.throws(() => assertFramesContract([], 'gemini', WIRE_SPEC.chat), /at least one frame/);
+    assert.throws(() => assertFramesContract(['data: {"id":"a"}'], 'gemini', WIRE_SPEC['openai-chat']), /blank line/);
+    assert.throws(() => assertFramesContract(['{"id":"a"}\n\n'], 'gemini', WIRE_SPEC['openai-chat']), /field or comment/);
+    assert.throws(() => assertFramesContract([], 'gemini', WIRE_SPEC['openai-chat']), /at least one frame/);
   });
 });
 

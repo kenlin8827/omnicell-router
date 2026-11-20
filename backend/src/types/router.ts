@@ -1,4 +1,4 @@
-import { ChatCompletionResponse } from './openai.js';
+import type { CanonicalResponse } from '../ir/types.js';
 // Type-only imports: erased at runtime, so the resilience -> types/router
 // value-direction import cycle can never exist.
 import type { CircuitBreakerSnapshot } from '../resilience/types.js';
@@ -50,8 +50,36 @@ export const TIER_RANK: Record<TierLevel, number> = {
  * Default `supportedReasoningEfforts` for a thinking-capable model is
  * the full 6-level ladder — there is no 5-level "thinking subset".
  */
-export const EFFORT_LADDER = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const EFFORT_LADDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ReasoningEffort = (typeof EFFORT_LADDER)[number];
+
+/** Shared thinking-token budget estimates for protocols that express effort as a token budget. */
+export const EFFORT_TO_BUDGET: Record<ReasoningEffort, number> = {
+  none: 0,
+  minimal: 512,
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+  xhigh: 32768,
+  max: 65536,
+};
+
+/**
+ * Map an explicit thinking-token budget to the effort ladder. Needed on wires
+ * whose SDK has no native budget field (OpenAI chat exposes `reasoning_effort`
+ * only), so an Anthropic `thinking.budget_tokens` / Responses
+ * `reasoning.max_tokens` request is translated instead of silently dropped.
+ * Thresholds invert `EFFORT_TO_BUDGET`.
+ */
+export function effortFromThinkingBudget(tokens: number): ReasoningEffort {
+  if (tokens <= EFFORT_TO_BUDGET.none) return 'none';
+  if (tokens <= EFFORT_TO_BUDGET.minimal) return 'minimal';
+  if (tokens <= EFFORT_TO_BUDGET.low) return 'low';
+  if (tokens <= EFFORT_TO_BUDGET.medium) return 'medium';
+  if (tokens <= EFFORT_TO_BUDGET.high) return 'high';
+  if (tokens <= EFFORT_TO_BUDGET.xhigh) return 'xhigh';
+  return 'max';
+}
 
 /**
  * WHO authored the effective effort ask (ADR-0012). Every value except
@@ -203,10 +231,18 @@ export interface RoutingDecision {
 
 
 export interface ExecutionResult {
-  response?: ChatCompletionResponse;
+  response?: CanonicalResponse;
   tierUsed?: TierLevel;
   modelUsed: string;
   layerUsed?: 'layer0' | 'entry' | 'layer2';
+  /**
+   * OUTBOUND protocol id of the SERVED attempt (the provider protocol id the
+   * gateway spoke to the upstream, e.g. `openai-chat`). Distinct from the
+   * inbound surface the client addressed — the gateway may have converted.
+   * Resolved from the served model's wire through the offered protocol table
+   * (`protocolForWire`), so the console prints one vocabulary on every page.
+   */
+  protocolUsed?: string;
   fallbackOccurred: boolean;
   fallbackReason?: string;
   sessionId?: string;

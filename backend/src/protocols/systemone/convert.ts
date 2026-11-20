@@ -7,7 +7,7 @@
  * reply is normalized back into the System One `answers` shape. Probabilities
  * produced this way are self-reported estimates — NOT calibrated.
  */
-import { ChatCompletionRequest, ChatCompletionResponse, ChatMessage } from '../../types/openai.js';
+import type { CanonicalRequest, CanonicalResponse, InputItem } from '../../ir/types.js';
 import { EFFORT_LADDER, EffortMap, ReasoningEffort } from '../../types/router.js';
 import { applyEffortMap } from '../../providers/member-match.js';
 import {
@@ -136,34 +136,29 @@ export function decisionReasoningEffort(model: {
  * ordinary chat model. `repair` (optional) appends the model's previous
  * invalid output plus the failure reason for a single correction attempt.
  */
-export function buildDecisionChatRequest(
+export function buildDecisionRequest(
   req: SystemoneRequest,
   modelId: string,
-  repair?: { previousOutput: string; reason: string }
-): ChatCompletionRequest {
+  repair?: { previousOutput: string; reason: string },
+): CanonicalRequest {
   const userPayload = JSON.stringify({ state: req.state, questions: req.questions });
-  const messages: ChatMessage[] = [
-    { role: 'system', content: DECISION_SYSTEM_PROMPT },
-    { role: 'user', content: `STATE and QUESTIONS follow as one JSON document:\n${userPayload}` },
+  const input: InputItem[] = [
+    { type: 'message', role: 'system', content: [{ type: 'text', text: DECISION_SYSTEM_PROMPT }] },
+    { type: 'message', role: 'user', content: [{ type: 'text', text: `STATE and QUESTIONS follow as one JSON document:\n${userPayload}` }] },
   ];
   if (repair) {
-    messages.push({ role: 'assistant', content: repair.previousOutput.slice(0, 4000) || '(empty output)' });
-    messages.push({
-      role: 'user',
-      content:
-        `Your previous output could not be used: ${repair.reason}. ` +
-        'Reply again with ONLY the corrected JSON object following the required shape.',
+    input.push({ type: 'message', role: 'assistant', content: [{ type: 'text', text: repair.previousOutput.slice(0, 4000) || '(empty output)' }] });
+    input.push({
+      type: 'message', role: 'user', content: [{
+        type: 'text',
+        text: `Your previous output could not be used: ${repair.reason}. Reply again with ONLY the corrected JSON object following the required shape.`,
+      }],
     });
   }
   return {
-    model: modelId,
-    messages,
-    temperature: 0,
-    stream: false,
-    response_format: { type: 'json_object' },
-    // No max_tokens here: the pin is the DECIDER's job (decide.ts), same as
-    // reasoning_effort — it owns the initial value and the vendor-rejection
-    // fallback, memoized per model.
+    model: modelId, input, stream: false,
+    generation: { temperature: 0 },
+    text: { format: { type: 'json_object' } },
   };
 }
 
@@ -310,31 +305,26 @@ function buildScoreAnswer(raw: Record<string, any>, q: SystemoneQuestion): Syste
  * decision call returns an unusable empty body; the answer JSON often sits
  * intact in the reasoning field.
  */
-function completionTextCandidates(chat: ChatCompletionResponse): string[] {
-  const message = chat.choices?.[0]?.message as any;
-  const content = message?.content;
-  const surfaces: unknown[] = [
-    // `content` is a string in the chat contract; a non-string is a rendered
-    // block list, stringified so its JSON text stays readable. null /
-    // undefined means "no content surface at all" — never JSON.stringify it,
-    // or the literal '""' would be the first candidate and shadow the
-    // thinking fields (DeepSeek reasoners routinely answer with content:null).
-    typeof content === 'string' ? content : content == null ? undefined : JSON.stringify(content),
-    message?.reasoning_content,
-    message?.reasoning,
-  ];
-  return surfaces.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+function completionTextCandidates(response: CanonicalResponse): string[] {
+  const surfaces: string[] = [];
+  for (const item of response.output) {
+    if (item.type === 'message') {
+      for (const part of item.content) {
+        if (part.type === 'text' || part.type === 'refusal') surfaces.push(part.text);
+      }
+    }
+  }
+  for (const item of response.output) {
+    if (item.type === 'reasoning') {
+      if (item.text) surfaces.push(item.text);
+      surfaces.push(...(item.summary ?? []));
+    }
+  }
+  return surfaces.filter((text) => text.trim() !== '');
 }
 
-/**
- * The best text surface a completion carried — content first, thinking
- * fields as fallback. The repair-retry uses this for its "your previous
- * output could not be used" message: showing the model the text it ACTUALLY
- * produced (even when content came back empty) turns a blind guess into a
- * targeted correction.
- */
-export function chatOutputText(chat: ChatCompletionResponse): string {
-  return completionTextCandidates(chat)[0] ?? '';
+export function canonicalOutputText(response: CanonicalResponse): string {
+  return completionTextCandidates(response)[0] ?? '';
 }
 
 /**
@@ -343,11 +333,11 @@ export function chatOutputText(chat: ChatCompletionResponse): string {
  * deliberately no fabricated answers (the caller may repair-retry once).
  */
 export function synthesizeSystemoneResponse(
-  chat: ChatCompletionResponse,
+  response: CanonicalResponse,
   req: SystemoneRequest,
-  modelId: string
+  modelId: string,
 ): SystemoneSynthesis {
-  const texts = completionTextCandidates(chat);
+  const texts = completionTextCandidates(response);
   // First surface carrying a usable ANSWER ENVELOPE wins — `content` in trust
   // order, thinking fields only when it yields nothing usable. A surface that
   // parses to some OTHER JSON object (a stats blob, the echoed questions) must
@@ -396,9 +386,10 @@ export function synthesizeSystemoneResponse(
   }
   if (problems.length > 0) return { ok: false, reason: problems.join('; ') };
 
-  const usage = chat.usage
-    ? { input_tokens: chat.usage.prompt_tokens ?? 0, output_tokens: chat.usage.completion_tokens ?? 0 }
-    : undefined;
+  const usage = {
+    input_tokens: response.usage.inputTokens,
+    output_tokens: response.usage.outputTokens,
+  };
   return {
     ok: true,
     response: { model: modelId, answers, ...(usage ? { usage } : {}) },

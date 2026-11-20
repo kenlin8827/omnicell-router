@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { ChatMessage } from '../../../types/openai.js';
+import type { InputItem } from '../../../ir/types.js';
+import { chatRequestToIR } from '../../../ir/adapters/openai-chat.js';
+import { anthropicRequestToIR } from '../../../ir/adapters/anthropic-messages.js';
+import { responsesRequestToIR } from '../../../ir/adapters/openai-responses.js';
 import {
   NO_TURN,
   classifyTurnBoundary,
@@ -30,6 +34,8 @@ interface DraftRequest {
   legs: Map<string, Map<string, number>>;
   /** The inbound chat body, when the archive still carries it. */
   body?: readonly ChatMessage[];
+  /** Parsed inbound JSON body for non-Chat surfaces (Responses / Anthropic) when no recorded pair exists. */
+  rawBody?: Record<string, unknown>;
   /** The structural prompt pair the schema-1 writer recorded. */
   pair?: RecordedPair;
   /** True once a client REQUEST line for this id was seen. */
@@ -190,6 +196,8 @@ export class V1ToV2Migrate extends CaptureArchiveMigrator {
         req.sessionId = sessionOf(line);
         const body = parseChatMessages(line);
         if (body) req.body = body;
+        const rawBody = parseJsonObject(line);
+        if (rawBody) req.rawBody = rawBody;
         const pair = readRecordedPair(line);
         if (pair) req.pair = pair;
         clientSpanOwner.set(span, requestId);
@@ -243,9 +251,28 @@ export class V1ToV2Migrate extends CaptureArchiveMigrator {
         continue;
       }
       const sessionId = req.sessionId;
-      const decision = req.body
-        ? classifyTurnBoundary(req.body, prevMessageCount.get(sessionId))
-        : classifyRecordedPair(req.pair, prevMessageCount.get(sessionId));
+      let decision: { isPromptStart: boolean; turnDecision: TurnDecision; messageCount?: number };
+      if (req.body) {
+        try {
+          decision = classifyTurnBoundary(
+            chatRequestToIR({ model: 'archive', stream: false, messages: [...req.body] }).input,
+            prevMessageCount.get(sessionId),
+          );
+        } catch {
+          // Non-Chat v1 payloads (e.g. Anthropic tool_result blocks) cannot be
+          // projected through chatRequestToIR; fall back to the recorded pair
+          // when present, or parse via the Anthropic adapter when no pair exists.
+          const fallbackInput = !req.pair ? parseFallbackCanonicalInput(req.rawBody) : undefined;
+          decision = fallbackInput
+            ? classifyTurnBoundary(fallbackInput, prevMessageCount.get(sessionId))
+            : classifyRecordedPair(req.pair, prevMessageCount.get(sessionId));
+        }
+      } else {
+        const fallbackInput = !req.pair ? parseFallbackCanonicalInput(req.rawBody) : undefined;
+        decision = fallbackInput
+          ? classifyTurnBoundary(fallbackInput, prevMessageCount.get(sessionId))
+          : classifyRecordedPair(req.pair, prevMessageCount.get(sessionId));
+      }
       if (decision.messageCount !== undefined) {
         prevMessageCount.set(sessionId, decision.messageCount);
       }
@@ -344,17 +371,43 @@ function rebuiltExchangeId(
 
 /** The inbound chat body of a client-request line, when it is still readable. */
 function parseChatMessages(line: Record<string, unknown>): readonly ChatMessage[] | undefined {
+  const parsed = parseJsonObject(line);
+  return parsed && Array.isArray(parsed.messages) ? (parsed.messages as ChatMessage[]) : undefined;
+}
+
+function parseJsonObject(line: Record<string, unknown>): Record<string, unknown> | undefined {
   const wire = line.wire;
   if (wire === null || typeof wire !== 'object') return undefined;
   const raw = (wire as { requestBody?: unknown }).requestBody;
   if (typeof raw !== 'string' || raw === '') return undefined;
   try {
-    const parsed = JSON.parse(raw) as { messages?: unknown };
-    return Array.isArray(parsed.messages) ? (parsed.messages as ChatMessage[]) : undefined;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
   } catch {
     // Truncated or media-scrubbed body — the recorded pair takes over.
     return undefined;
   }
+}
+
+function parseFallbackCanonicalInput(rawBody: Record<string, unknown> | undefined): InputItem[] | undefined {
+  if (!rawBody) return undefined;
+  if ('input' in rawBody) {
+    try {
+      return responsesRequestToIR({ model: 'archive', ...rawBody }).input;
+    } catch {
+      return undefined;
+    }
+  }
+  if (Array.isArray(rawBody.messages)) {
+    try {
+      return anthropicRequestToIR({ model: 'archive', max_tokens: 1, ...rawBody }).input;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 interface RecordedPair {

@@ -504,7 +504,9 @@ test('V1ToV2Migrate gives an orphan upstream exchange its own prompt-less reques
   const recorder = new CaptureRecorder({
     enabled: true,
     dir: root,
-    retentionDays: 7,
+    // The fixture date is intentional migration history; do not let the
+    // recorder's real-time retention sweep delete it before the read.
+    retentionDays: 365,
     maxTotalMB: 512,
     maxBodyBytes: 1_048_576,
   });

@@ -2,10 +2,11 @@
  * One-shot upstream probe behind the console "Test" buttons.
  *
  * Speaks the wire shapes users actually configure in their provider defs:
- *   - openai      → POST {base}/chat/completions              (default / OpenAI-compatible gateways)
- *   - anthropic   → POST {base}/messages                      (x-api-key)
- *   - google      → POST {base}/models/{model}:generateContent
- *   - systemone   → POST {base}/systemone                     (TypeSafe decision wire)
+ *   - openai-chat        → POST {base}/chat/completions       (default / OpenAI-compatible gateways)
+ *   - anthropic-messages → POST {base}/messages               (x-api-key)
+ *   - google-gemini      → POST {base}/models/{model}:generateContent
+ *   - openai-responses   → POST {base}/responses
+ *   - systemone          → POST {base}/systemone              (TypeSafe decision wire)
  *
  * A probe sends a tiny "ping" completion (max_tokens 16) and reports latency.
  * Real cost is a fraction of a cent; the value is catching dead keys / wrong
@@ -16,17 +17,24 @@
  */
 
 import { proxiedFetch } from '../utils/proxy.js';
-import { wireFor, unroutableInfo, anthropicMessagesUrl } from '../providers/wire.js';
+import { wireFor, unroutableInfo, anthropicMessagesUrl, type WireKind } from '../providers/wire.js';
 import { redactBodySecrets } from './credentials/opencode-v2-store.js';
+import { redactUpstreamBody } from '../observability/upstream-body-redaction.js';
+import { setHeaderCaseInsensitive } from '../providers/executors/http-json.js';
 import { getModelServicePlugin } from '../plugins/host.js';
+import { canonicalProtocol } from '../providers/protocol.js';
+import { loadConfig } from '../config/index.js';
+import { assertAllowedUpstream, UpstreamUrlError } from '../utils/upstream-url-guard.js';
 
-export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'unroutable';
+/** The probe speaks the same wire vocabulary as dispatch — no second enum, so
+ *  a model can never be probed on one wire and routed on another. */
+export type ProbeKind = WireKind;
 /** Wires the core probes natively with the HTTP logic below; any other kind is plugin-delegated. */
-const BUILTIN_PROBE_KINDS: Partial<Record<Exclude<ProbeKind, 'unroutable'>, true>> = {
-  openai: true,
-  anthropic: true,
-  google: true,
-  responses: true,
+const BUILTIN_PROBE_KINDS: Partial<Record<WireKind, true>> = {
+  'openai-chat': true,
+  'anthropic-messages': true,
+  'google-gemini': true,
+  'openai-responses': true,
   systemone: true,
 };
 
@@ -146,7 +154,9 @@ function hintForStatus(status: number, body = ''): { authHint?: boolean; hintCod
 }
 
 export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
-  const kind = opts.kind ?? 'openai';
+  // Callers may carry a legacy short wire spelling; normalize so a stored def
+  // probed on the old name still reaches the same native HTTP branch.
+  const kind = canonicalProtocol(opts.kind ?? 'openai-chat');
   if (kind === 'unroutable') {
     // never fire a guessed wire at a package we cannot speak.
     const info = unroutableInfo();
@@ -164,23 +174,29 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
     // a guessed HTTP wire at a gateway that never speaks it — fail honestly.
     return { ok: false, kind, model: opts.model, upstreamBody: `the ${kind} plugin is not installed (console /plugins)` };
   }
+  try {
+    assertAllowedUpstream(opts.baseURL, loadConfig().port);
+  } catch (err) {
+    const msg = err instanceof UpstreamUrlError ? err.message : String(err);
+    return { ok: false, kind, model: opts.model, upstreamBody: msg, transportCode: 'unreachable' };
+  }
   const base = opts.baseURL.replace(/\/+$/, '');
   let url: string;
   const headers: Record<string, string> = {
     'content-type': 'application/json',
   };
 
-  if (kind === 'anthropic') {
+  if (kind === 'anthropic-messages') {
     url = anthropicMessagesUrl(base); // tolerates both /v1-suffixed and bare bases
     headers['anthropic-version'] = '2023-06-01';
     // P2-review cleanup: the retired `oauth` flag's Bearer branch was dead —
     // no caller ever passed it (the console test route only probes api-key
     // credentials; OAuth rows are excluded before this point).
     headers['x-api-key'] = opts.apiKey;
-  } else if (kind === 'google') {
+  } else if (kind === 'google-gemini') {
     url = `${base}/models/${encodeURIComponent(opts.model)}:generateContent`;
     headers['x-goog-api-key'] = opts.apiKey;
-  } else if (kind === 'responses') {
+  } else if (kind === 'openai-responses') {
     // OpenAI Responses API wire (@ai-sdk/openai) — input, not messages.
     url = `${base}/responses`;
     headers['authorization'] = `Bearer ${opts.apiKey}`;
@@ -193,14 +209,16 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
     headers['authorization'] = `Bearer ${opts.apiKey}`;
   }
   // User-configured headers win — same precedence as the gateway executor.
-  Object.assign(headers, opts.headers || {});
+  for (const [k, v] of Object.entries(opts.headers || {})) {
+    setHeaderCaseInsensitive(headers, k, v);
+  }
 
   const body =
-    kind === 'anthropic'
+    kind === 'anthropic-messages'
       ? { model: opts.model, max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }
-      : kind === 'google'
+      : kind === 'google-gemini'
         ? { contents: [{ parts: [{ text: 'ping' }] }], generationConfig: { maxOutputTokens: 16 } }
-        : kind === 'responses'
+        : kind === 'openai-responses'
           ? { model: opts.model, input: 'ping', stream: false }
           : kind === 'systemone'
             ? { model: opts.model, state: 'ping', questions: { probe: { type: 'noul', instructions: 'ping' } } }
@@ -214,10 +232,24 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
+        // Manual redirects: a 302 to metadata/link-local must not inherit the
+        // Authorization header the probe attached to the first hop.
+        redirect: 'manual',
         signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       },
       { provider: opts.provider, model: opts.model }
     );
+    if (res.status >= 300 && res.status < 400) {
+      return {
+        ok: false,
+        kind,
+        model: opts.model,
+        latencyMs: Date.now() - started,
+        upstreamBody: `Upstream redirected (${res.status}); credentialed probes do not follow redirects.`,
+        transportCode: 'unreachable',
+        transportUrl: url,
+      };
+    }
     const latencyMs = Date.now() - started;
     if (!res.ok) {
       const raw = await res.text().catch(() => '');
@@ -228,7 +260,10 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
       // 600 chars: enough for a full provider business-error (Ark's
       // ModelNotOpen sentence + request id) — the console surfaces this on
       // demand (failure InfoTip), so the cap is the user-visible truth.
-      const text = redactBodySecrets(raw.replace(/\s+/g, ' '), { key: opts.apiKey }).slice(0, 600);
+      const text = redactUpstreamBody(
+        redactBodySecrets(raw.replace(/\s+/g, ' '), { key: opts.apiKey }),
+        { apiKey: opts.apiKey, headers, maxChars: 600, collapseWhitespace: true },
+      );
       const { authHint, hintCode } = hintForStatus(res.status, raw);
       const modelScoped =
         (res.status === 404 && !!structuredApiError(raw)) ||

@@ -2,7 +2,6 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { ChatMessage } from '../src/types/openai.js';
 import {
-  scanDirectives,
   applyTierDirectives,
   applyEffortDirectives,
   resolveDirectivePrefix,
@@ -11,6 +10,7 @@ import {
 import { DEFAULT_DIRECTIVE_PREFIX } from '../src/config/defaults.js';
 import { loadConfig, saveConfig } from '../src/config/index.js';
 import { applyDirectivesConfig, resetDirectivesGateForTests } from '../src/pipeline/directive-gate.js';
+import { scanChatDirectives as scanDirectives } from './helpers/ir.js';
 
 /**
  * `@ocr-*` directive contract (ADR-0011 rewrite) — the two properties that
@@ -194,9 +194,9 @@ describe('applyTierDirectives', () => {
 });
 
 describe('applyEffortDirectives', () => {
-  it('raises from an unspecified baseline to low', () => {
+  it('raises from an unspecified baseline to minimal', () => {
     const r = applyEffortDirectives(['effort_up'], undefined);
-    assert.equal(r.effort, 'low');
+    assert.equal(r.effort, 'minimal');
     assert.equal(r.changed, true);
   });
 
@@ -308,8 +308,8 @@ describe('configurable namespace (ADR-0011 §4)', () => {
   });
 
   it('exposes the whole vocabulary for the resolved prefix', () => {
-    // 4 steps + continue + 4 tier pins + 6 effort pins.
-    assert.equal(directiveTokens().length, 15);
+    // 4 steps + continue + 4 tier pins + 7 effort pins.
+    assert.equal(directiveTokens().length, 16);
     assert.deepEqual(directiveTokens().slice(0, 4), [
       '@ocr-tier-up', '@ocr-tier-down', '@ocr-effort-up', '@ocr-effort-down',
     ]);
@@ -318,7 +318,7 @@ describe('configurable namespace (ADR-0011 §4)', () => {
       '@ocr-tier-lite', '@ocr-tier-plus', '@ocr-tier-pro', '@ocr-tier-ultra',
     ]);
     assert.deepEqual(directiveTokens().slice(9), [
-      '@ocr-effort-none', '@ocr-effort-low', '@ocr-effort-medium',
+      '@ocr-effort-none', '@ocr-effort-minimal', '@ocr-effort-low', '@ocr-effort-medium',
       '@ocr-effort-high', '@ocr-effort-xhigh', '@ocr-effort-max',
     ]);
     assert.equal(directiveTokens('@omnicell-')[5], '@omnicell-tier-lite');

@@ -55,9 +55,9 @@ describe('downgradeReasoning — pure ranking', () => {
     assert.strictEqual(downgradeReasoning('high', []), 'none');
   });
 
-  it('EFFORT_LADDER is the 6-level vocabulary aligned with OpenCode', () => {
+  it('EFFORT_LADDER is the 7-level cross-protocol vocabulary', () => {
     assert.deepStrictEqual([...EFFORT_LADDER], [
-      'none', 'low', 'medium', 'high', 'xhigh', 'max',
+      'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
     ]);
   });
 
@@ -104,7 +104,7 @@ function configWithModels(
       pricing: { input: 1, output: 2, cacheRead: 0.5 },
       supportedReasoningEfforts: m.supportedReasoningEfforts,
       supportsReasoningEffort: m.supportsReasoningEffort,
-      wire: 'openai',
+      wire: 'openai-chat',
     })),
   };
 }

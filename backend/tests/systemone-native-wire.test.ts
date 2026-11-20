@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { wireFor } from '../src/providers/wire.js';
 import { probeKindFor } from '../src/opencode/probe.js';
-import { opencodeV2PackageFor } from '../src/opencode/user-config.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { RouterConfig, ModelRegistration } from '../src/config/types.js';
 import { runSystemoneDecision } from '../src/protocols/systemone/decide.js';
@@ -32,8 +31,9 @@ afterAll(() => {
 });
 
 // ---------------------------------------------------------------------------
-// npm → wire vocabulary: @ai-sdk/typesafe-ai and the opencode v2 segment
-// 'typesafe' both resolve to wire 'systemone' (ADR-0008 §7).
+// npm → wire vocabulary: `@ai-sdk/typesafe-ai` resolves to wire 'systemone'
+// (ADR-0008 §7). opencode-v2 package spellings are an earlier integration
+// layer and are unroutable here.
 // ---------------------------------------------------------------------------
 describe('typesafe npm → systemone wire', () => {
   test('@ai-sdk/typesafe-ai resolves to the decision wire', () => {
@@ -41,18 +41,9 @@ describe('typesafe npm → systemone wire', () => {
     expect(wireFor('@AI-SDK/TypeSafe-AI')).toBe('systemone');
   });
 
-  test('opencode v2 segment typesafe resolves to the decision wire', () => {
-    expect(wireFor('@opencode/ai/providers/typesafe')).toBe('systemone');
+  test('opencode-v2 spellings are not resolved by the wire layer', () => {
+    expect(wireFor('@opencode/ai/providers/typesafe')).toBe('unroutable');
     expect(wireFor('@opencode/ai/providers/unknown-segment')).toBe('unroutable');
-  });
-
-  // Write side keeps the authored segment so the decision wire survives into the
-  // book and into OCR's own inference; client loadability is a separate layer
-  // (CLIENT_PACKAGE_FALLBACK substitutes the compatible runtime in the client
-  // copy only — ADR-0010).
-  test('the v2 write side emits the native typesafe segment', () => {
-    expect(opencodeV2PackageFor('@ai-sdk/typesafe-ai')).toBe('@opencode/ai/providers/typesafe');
-    expect(wireFor(opencodeV2PackageFor('@ai-sdk/typesafe-ai'))).toBe('systemone');
   });
 
   test('the console probe infers the same wire (test ≡ inference)', () => {

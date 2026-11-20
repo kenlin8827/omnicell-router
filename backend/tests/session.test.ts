@@ -6,6 +6,7 @@ import path from 'node:path';
 import { SessionManager } from '../src/session/session-manager.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
 import { RoutingDecision, TierLevel, TierModelConfig } from '../src/types/router.js';
+import { registerTurn, resolveIR, inputOf } from './helpers/ir.js';
 
 describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
   let sessionManager: SessionManager;
@@ -31,7 +32,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       messages: [{ role: 'user', content: 'What is the speed of light?' }],
     };
 
-    const resolve1 = sessionManager.resolveSessionId(req1);
+    const resolve1 = resolveIR(sessionManager, req1);
     assert.strictEqual(resolve1.lookupType, 'cold_start');
     const sessionId1 = resolve1.sessionId;
     // 64 random bits, 16 hex: one console line (ADR-0002 §1 item 8).
@@ -39,7 +40,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
 
     // Turn 1 completes with assistant reply
     const assistantReply1 = 'The speed of light in vacuum is approximately 299,792,458 meters per second.';
-    sessionManager.registerCompletedTurn(sessionId1, req1.messages, assistantReply1);
+    registerTurn(sessionManager, sessionId1, req1.messages, assistantReply1);
 
     // Turn 2 (Client sends full conversation history, NO headers)
     const req2: ChatCompletionRequest = {
@@ -51,7 +52,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const resolve2 = sessionManager.resolveSessionId(req2);
+    const resolve2 = resolveIR(sessionManager, req2);
     assert.strictEqual(resolve2.lookupType, 'prefix_chain', 'Should locate session via prefix chain hash of prior turn');
     assert.strictEqual(resolve2.sessionId, sessionId1, 'Session ID must match across turns');
   });
@@ -113,7 +114,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     // Client passes custom header
-    const resolve = sessionManager.resolveSessionId(req, {
+    const resolve = resolveIR(sessionManager, req, {
       headers: { 'x-session-id': 'custom-enterprise-session-888' },
     });
 
@@ -127,7 +128,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       messages: [{ role: 'user', content: 'Anything' }],
     };
 
-    const resolve = sessionManager.resolveSessionId(req, {
+    const resolve = resolveIR(sessionManager, req, {
       headers: { 'x-grok-session-id': 'conv_abc123' },
     });
 
@@ -136,7 +137,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
 
     // Same harness conversation resends turn 1 (retry / re-fork): the header
     // is deterministic per conversation, so it re-attaches instead of split.
-    const resend = sessionManager.resolveSessionId(req, {
+    const resend = resolveIR(sessionManager, req, {
       headers: { 'x-grok-session-id': 'conv_abc123' },
     });
     assert.strictEqual(resend.lookupType, 'header_fallback');
@@ -149,7 +150,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       messages: [{ role: 'user', content: 'Anything' }],
     };
 
-    const conversationForm = sessionManager.resolveSessionId(req, {
+    const conversationForm = resolveIR(sessionManager, req, {
       headers: { 'x-my-harness-conversation-id': 'thread-42' },
     });
     assert.strictEqual(conversationForm.lookupType, 'header_fallback');
@@ -157,7 +158,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
 
     // Bare forms belong to step 1 (explicit_header) — the vendor probe must
     // not shadow or re-rank them.
-    const bare = sessionManager.resolveSessionId(req, {
+    const bare = resolveIR(sessionManager, req, {
       headers: { 'x-session-id': 'bare-explicit-1' },
     });
     assert.strictEqual(bare.lookupType, 'explicit_header');
@@ -165,7 +166,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
 
     // Multiple vendor headers: alphabetically first lowercased name wins,
     // independent of arrival order.
-    const multi = sessionManager.resolveSessionId(req, {
+    const multi = resolveIR(sessionManager, req, {
       headers: { 'x-zed-session-id': 'zed-1', 'x-app-session-id': 'app-1' },
     });
     assert.strictEqual(multi.lookupType, 'header_fallback');
@@ -181,7 +182,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     // `ocr-internal:` is the gateway's internal-row marker — a client claim
     // would hide the session from the console. The probe falls through to the
     // random mint (cold_start), never naming the session with the value.
-    const internal = sessionManager.resolveSessionId(req, {
+    const internal = resolveIR(sessionManager, req, {
       headers: { 'x-app-session-id': 'ocr-internal:stealth' },
     });
     assert.strictEqual(internal.lookupType, 'cold_start');
@@ -189,21 +190,21 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
 
     // Unbounded header values would persist into the snapshot and console
     // rows verbatim — >200 chars falls back to the random mint too.
-    const oversized = sessionManager.resolveSessionId(req, {
+    const oversized = resolveIR(sessionManager, req, {
       headers: { 'x-app-session-id': 'x'.repeat(201) },
     });
     assert.strictEqual(oversized.lookupType, 'cold_start');
     assert.ok(oversized.sessionId.length <= 29, 'fallback must be the bounded random mint');
 
     // Boundary: a 200-char id is accepted verbatim.
-    const atCap = sessionManager.resolveSessionId(req, {
+    const atCap = resolveIR(sessionManager, req, {
       headers: { 'x-app-session-id': 'a'.repeat(200) },
     });
     assert.strictEqual(atCap.lookupType, 'header_fallback');
     assert.strictEqual(atCap.sessionId, 'a'.repeat(200));
 
     // A guarded first header falls through to the next matching one.
-    const fallthrough = sessionManager.resolveSessionId(req, {
+    const fallthrough = resolveIR(sessionManager, req, {
       headers: { 'x-a-session-id': 'ocr-internal:x', 'x-b-session-id': 'conv_ok' },
     });
     assert.strictEqual(fallthrough.lookupType, 'header_fallback');
@@ -216,11 +217,11 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       model: 'auto',
       messages: [{ role: 'user', content: 'Q' }],
     };
-    const resolved = sessionManager.resolveSessionId(req1, {
+    const resolved = resolveIR(sessionManager, req1, {
       headers: { 'x-grok-session-id': 'conv_abc123' },
     });
     assert.strictEqual(resolved.lookupType, 'header_fallback');
-    sessionManager.registerCompletedTurn(resolved.sessionId, req1.messages, assistantReply);
+    registerTurn(sessionManager, resolved.sessionId, req1.messages, assistantReply);
 
     // Turn 2 carries the vendor header again, but the prefix chain anchor is
     // stronger evidence — it must win ("honored ONLY on the cold-start path").
@@ -232,7 +233,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
         { role: 'user', content: 'Q2' },
       ],
     };
-    const turn2 = sessionManager.resolveSessionId(req2, {
+    const turn2 = resolveIR(sessionManager, req2, {
       headers: { 'x-grok-session-id': 'conv_abc123' },
     });
     assert.strictEqual(turn2.lookupType, 'prefix_chain');
@@ -248,8 +249,8 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     // Two distinct conversations share the first message under one conv key.
-    const a = sessionManager.resolveSessionId(req1, identityA);
-    const b = sessionManager.resolveSessionId(req1, identityB);
+    const a = resolveIR(sessionManager, req1, identityA);
+    const b = resolveIR(sessionManager, req1, identityB);
     assert.strictEqual(a.lookupType, 'header_fallback');
     assert.strictEqual(b.lookupType, 'header_fallback');
     assert.notStrictEqual(a.sessionId, b.sessionId, 'Different vendor headers = distinct conversations');
@@ -267,7 +268,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
         { role: 'user', content: 'next' },
       ],
     };
-    const split = sessionManager.resolveSessionId(req2, identityA);
+    const split = resolveIR(sessionManager, req2, identityA);
     assert.strictEqual(split.lookupType, 'header_fallback');
     assert.strictEqual(split.sessionId, a.sessionId, 'The client re-attaches to its own claimed id');
     assert.notStrictEqual(split.sessionId, b.sessionId, 'Distinct claims never cross-merge');
@@ -275,7 +276,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     // A header-less conversation re-minting at the same ambiguous key still
     // gets a random id — the no-false-merge guarantee protects content
     // identity, and headerless splits keep it.
-    const headless = sessionManager.resolveSessionId(req2, {});
+    const headless = resolveIR(sessionManager, req2, {});
     assert.strictEqual(headless.lookupType, 'cold_start');
   });
 
@@ -286,7 +287,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       user: 'openai-user-guid-999',
     };
 
-    const resolve = sessionManager.resolveSessionId(req);
+    const resolve = resolveIR(sessionManager, req);
     assert.strictEqual(resolve.lookupType, 'cold_start');
     assert.match(resolve.sessionId, /^sess_[0-9a-f]{16}$/);
     assert.notStrictEqual(resolve.sessionId, 'openai-user-guid-999');
@@ -297,12 +298,12 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     // layer was removed, every conversation and every turn resolved to the
     // single session id "primary". A plain user-scoped value must never be an
     // identity: two opening turns cold-start into distinct conversations.
-    const a = sessionManager.resolveSessionId({
+    const a = resolveIR(sessionManager, {
       model: 'auto',
       messages: [{ role: 'user', content: 'First task about caching' }],
       user: 'primary',
     });
-    const b = sessionManager.resolveSessionId({
+    const b = resolveIR(sessionManager, {
       model: 'auto',
       messages: [{ role: 'user', content: 'Unrelated second task' }],
       user: 'primary',
@@ -323,8 +324,8 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       messages: [{ role: 'user', content: '继续' }],
     };
 
-    const resolveA = sessionManager.resolveSessionId(reqA);
-    const resolveB = sessionManager.resolveSessionId(reqB);
+    const resolveA = resolveIR(sessionManager, reqA);
+    const resolveB = resolveIR(sessionManager, reqB);
 
     assert.strictEqual(resolveA.lookupType, 'cold_start');
     assert.strictEqual(resolveB.lookupType, 'cold_start');
@@ -343,7 +344,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       user: 'user_c03d325e349e0b47f2a8336e13d5eaf9d05c9efefc4806eb0b3b791d5d2bbc4e_account_7bb46d46-8baa-438c-a46c-1f53417c3f9b_session_6f978fa1-8a13-4a42-9f77-65bef0e6802f',
     };
 
-    const resolve = sessionManager.resolveSessionId(req);
+    const resolve = resolveIR(sessionManager, req);
     assert.strictEqual(resolve.lookupType, 'embedded_user_id');
     assert.strictEqual(resolve.sessionId, 'cc_6f978fa1-8a13-4a42-9f77-65bef0e6802f');
   });
@@ -357,7 +358,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       user: '{"device_id":"00afe3c9d2b47f6a8c51e0d9b7a3f25c8e64d1b09c7f3a25e8b4c6d9f0a1b234","account_uuid":"","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}',
     };
 
-    const resolve = sessionManager.resolveSessionId(req);
+    const resolve = resolveIR(sessionManager, req);
     assert.strictEqual(resolve.lookupType, 'embedded_user_id');
     assert.strictEqual(resolve.sessionId, 'cc_7c9e6679-7425-40de-944b-e07fc1f90ae7');
   });
@@ -370,7 +371,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       user: raw,
     };
 
-    const resolve = sessionManager.resolveSessionId(req);
+    const resolve = resolveIR(sessionManager, req);
     assert.strictEqual(resolve.lookupType, 'cold_start', 'JSON without session_id is not an embedded conversation id');
     assert.notStrictEqual(resolve.sessionId, raw);
   });
@@ -382,7 +383,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       user: 'corp_alice_session_workstation7',
     };
 
-    const resolve = sessionManager.resolveSessionId(req);
+    const resolve = resolveIR(sessionManager, req);
     assert.strictEqual(resolve.lookupType, 'cold_start', 'Non-Claude-Code-shaped user values are never an id');
     assert.notStrictEqual(resolve.sessionId, 'corp_alice_session_workstation7');
   });
@@ -401,30 +402,30 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     // Session A: first turn ended in a pure tool-call.
-    const rA = sessionManager.resolveSessionId(
+    const rA = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }] }
     );
     const sidA = rA.sessionId;
-    sessionManager.registerCompletedTurn(sidA, [{ role: 'user', content: u1 }, tcX], 'done A');
+    registerTurn(sessionManager, sidA, [{ role: 'user', content: u1 }, tcX], 'done A');
 
     // Session B: same first user message, different pure tool-call. Without
     // full-fidelity hashing both chains would serialize identically and share
     // every anchor key.
-    const rB = sessionManager.resolveSessionId(
+    const rB = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }] }
     );
     const sidB = rB.sessionId;
-    sessionManager.registerCompletedTurn(sidB, [{ role: 'user', content: u1 }, tcY], 'done B');
+    registerTurn(sessionManager, sidB, [{ role: 'user', content: u1 }, tcY], 'done B');
 
     // Replaying each history must return its OWN session — the lossy hash
     // would have merged both onto whichever registered last.
-    const replayA = sessionManager.resolveSessionId(
+    const replayA = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }, tcX, { role: 'user', content: 'go on' }] }
     );
     assert.strictEqual(replayA.lookupType, 'prefix_chain');
     assert.strictEqual(replayA.sessionId, sidA, 'Replay of A must not land on B');
 
-    const replayB = sessionManager.resolveSessionId(
+    const replayB = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }, tcY, { role: 'user', content: 'go on' }] }
     );
     assert.strictEqual(replayB.lookupType, 'prefix_chain');
@@ -440,7 +441,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const resolve = sessionManager.resolveSessionId(req);
+    const resolve = resolveIR(sessionManager, req);
     assert.strictEqual(resolve.lookupType, 'cold_start');
   });
 
@@ -453,17 +454,17 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     const u3 = 'Who measured it first?';
     const a3 = 'Ole Rømer in 1676, using Io eclipse timings.';
 
-    const r1 = sessionManager.resolveSessionId(
+    const r1 = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }] }
     );
     const sid = r1.sessionId;
-    sessionManager.registerCompletedTurn(sid, [{ role: 'user', content: u1 }], a1);
-    sessionManager.registerCompletedTurn(
+    registerTurn(sessionManager, sid, [{ role: 'user', content: u1 }], a1);
+    registerTurn(sessionManager,
       sid,
       [{ role: 'user', content: u1 }, { role: 'assistant', content: a1 }, { role: 'user', content: u2 }],
       a2
     );
-    sessionManager.registerCompletedTurn(
+    registerTurn(sessionManager,
       sid,
       [
         { role: 'user', content: u1 }, { role: 'assistant', content: a1 },
@@ -486,7 +487,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const resolve = sessionManager.resolveSessionId(truncated);
+    const resolve = resolveIR(sessionManager, truncated);
     assert.strictEqual(resolve.lookupType, 'tail_anchor', 'Truncated history must match a registered tail window');
     assert.strictEqual(resolve.sessionId, sid, 'Truncated continuation must stay in the same session');
 
@@ -501,7 +502,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
         { role: 'user', content: 'And in dollars?' },
       ],
     };
-    const stubResolve = sessionManager.resolveSessionId(stub);
+    const stubResolve = resolveIR(sessionManager, stub);
     assert.strictEqual(stubResolve.lookupType, 'cold_start', 'Below minimum window length: fail towards split');
     assert.notStrictEqual(stubResolve.sessionId, sid);
   });
@@ -511,11 +512,11 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     const a1v1 = 'Use a token bucket...';
     const a1v2 = 'A sliding-window counter is better...'; // regenerated, different bytes
 
-    const r1 = sessionManager.resolveSessionId(
+    const r1 = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }] }
     );
     const sid = r1.sessionId;
-    sessionManager.registerCompletedTurn(sid, [{ role: 'user', content: u1 }], a1v1);
+    registerTurn(sessionManager, sid, [{ role: 'user', content: u1 }], a1v1);
 
     // The client discarded a1v1 and resends the SAME first user message with a
     // different assistant reply (regenerated / different provider earlier).
@@ -529,7 +530,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const resolve = sessionManager.resolveSessionId(regenerated);
+    const resolve = resolveIR(sessionManager, regenerated);
     assert.strictEqual(resolve.lookupType, 'conversation_key', 'Chain anchors miss on rewritten bytes; the conversation key must catch it');
     assert.strictEqual(resolve.sessionId, sid, 'Regenerated conversation stays in the same session');
   });
@@ -540,12 +541,12 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     const u2a = 'Compare with threads.';
     const a2 = 'Threads preempt; loops cooperate...';
 
-    const r1 = sessionManager.resolveSessionId(
+    const r1 = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }] }
     );
     const sid = r1.sessionId;
-    sessionManager.registerCompletedTurn(sid, [{ role: 'user', content: u1 }], a1);
-    sessionManager.registerCompletedTurn(
+    registerTurn(sessionManager, sid, [{ role: 'user', content: u1 }], a1);
+    registerTurn(sessionManager,
       sid,
       [{ role: 'user', content: u1 }, { role: 'assistant', content: a1 }, { role: 'user', content: u2a }],
       a2
@@ -565,27 +566,27 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const resolve = sessionManager.resolveSessionId(branched);
+    const resolve = resolveIR(sessionManager, branched);
     assert.strictEqual(resolve.lookupType, 'prefix_chain');
     assert.strictEqual(resolve.sessionId, sid);
   });
 
   it('must split (not false-merge) when the conversation key is ambiguous — two live sessions share a first message', () => {
     const hi = 'hi';
-    const rA = sessionManager.resolveSessionId(
+    const rA = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: hi }] }
     );
     const sidA = rA.sessionId;
-    sessionManager.registerCompletedTurn(sidA, [{ role: 'user', content: hi }], 'Reply A');
+    registerTurn(sessionManager, sidA, [{ role: 'user', content: hi }], 'Reply A');
 
     // Conversation B starts with the byte-identical first message (a turn-1
     // shaped resend → always a distinct mint).
-    const rB = sessionManager.resolveSessionId(
+    const rB = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: hi }] }
     );
     const sidB = rB.sessionId;
     assert.notStrictEqual(sidA, sidB);
-    sessionManager.registerCompletedTurn(sidB, [{ role: 'user', content: hi }], 'Reply B');
+    registerTurn(sessionManager, sidB, [{ role: 'user', content: hi }], 'Reply B');
 
     // A continues with rewritten assistant bytes: chain/tail anchors miss and
     // the conversation key is now ambiguous (claimed by both A and B). It must
@@ -598,7 +599,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
         { role: 'user', content: 'next' },
       ],
     };
-    const resolve = sessionManager.resolveSessionId(cont);
+    const resolve = resolveIR(sessionManager, cont);
     assert.strictEqual(resolve.lookupType, 'cold_start', 'Ambiguous conversation key must not re-anchor');
     assert.notStrictEqual(resolve.sessionId, sidB, 'Must never merge into the other conversation');
     assert.notStrictEqual(resolve.sessionId, sidA, 'And never silently pick the first');
@@ -624,11 +625,11 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const r1 = sessionManager.resolveSessionId({ model: 'auto', messages: [{ role: 'user', content: u1 }] });
+    const r1 = resolveIR(sessionManager, { model: 'auto', messages: [{ role: 'user', content: u1 }] });
     const sid = r1.sessionId;
     // Gateway registers the completed turn with the full assistant message
     // object (content + tool_calls) — NOT a content-only string.
-    sessionManager.registerCompletedTurn(sid, [{ role: 'user', content: u1 }], gatewayAssistant);
+    registerTurn(sessionManager, sid, [{ role: 'user', content: u1 }], gatewayAssistant);
 
     // Client resends the assistant turn re-serialized: no "type", compacted
     // (semantically identical) arguments JSON, plus a tool result.
@@ -649,7 +650,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       ],
     };
 
-    const resolve = sessionManager.resolveSessionId(turn2, { keyId: 'app-1' });
+    const resolve = resolveIR(sessionManager, turn2, { keyId: 'app-1' });
     assert.strictEqual(resolve.sessionId, sid, 'Tool-call byte drift must NOT split the session');
     assert.ok(
       resolve.lookupType === 'prefix_chain' || resolve.lookupType === 'tail_anchor',
@@ -663,16 +664,16 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     try {
       const u1 = 'Persist me across restarts.';
       const mgr1 = new SessionManager({ enabled: true, strategy: 'monotonic' }, file);
-      const r1 = mgr1.resolveSessionId({ model: 'auto', messages: [{ role: 'user', content: u1 }] }, { keyId: 'app-9' });
+      const r1 = resolveIR(mgr1, { model: 'auto', messages: [{ role: 'user', content: u1 }] }, { keyId: 'app-9' });
       const sid = r1.sessionId;
       // A regenerated (rewritten) assistant reply makes chain/tail anchors miss;
       // the conversation key must catch it — even from a fresh process.
-      mgr1.registerCompletedTurn(sid, [{ role: 'user', content: u1 }], 'original reply bytes');
+      registerTurn(mgr1, sid, [{ role: 'user', content: u1 }], 'original reply bytes');
       mgr1.flushPersist();
 
       const mgr2 = new SessionManager({ enabled: true, strategy: 'monotonic' }, file);
       const regenerated = sessionRegen(u1, 'totally different regenerated reply', 'follow-up');
-      const resolve = mgr2.resolveSessionId(regenerated, { keyId: 'app-9' });
+      const resolve = resolveIR(mgr2, regenerated, { keyId: 'app-9' });
       assert.strictEqual(resolve.lookupType, 'conversation_key');
       assert.strictEqual(resolve.sessionId, sid, 'Reloaded anchors/keys must rejoin the pre-restart session');
     } finally {
@@ -714,22 +715,59 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(sessionManager.recordBypassTurn(sid), 1, 'counter restarts after the session is deleted');
   });
 
+  it('bulk clear wipes every per-session counter, like deleteSession (no orphan state)', () => {
+    const sid = 'cc_bulk-clear-test';
+    sessionManager.recordBypassTurn(sid);
+    sessionManager.recordBypassTurn(sid);
+    sessionManager.allocateTurnIndex(sid, inputOf([{ role: 'user', content: 'hi' }]));
+    assert.strictEqual(sessionManager.turnHighWaterOf(sid), 1, 'precondition: turn high-water advanced');
+
+    sessionManager.clear();
+
+    assert.strictEqual(sessionManager.turnHighWaterOf(sid), 0, 'turn high-water dies with the session');
+    assert.strictEqual(sessionManager.recordBypassTurn(sid), 1, 'bypass counter restarts after a bulk clear');
+  });
+
+  it('bulk clear leaves no orphan counters in the persisted snapshot', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-sess-'));
+    const file = path.join(dir, 'sessions.json');
+    try {
+      const sid = 'cc_bulk-clear-persist';
+      const mgr = new SessionManager({ enabled: true, strategy: 'monotonic' }, file);
+      mgr.recordBypassTurn(sid);
+      mgr.allocateTurnIndex(sid, inputOf([{ role: 'user', content: 'hi' }]));
+      mgr.flushPersist();
+      const before = JSON.parse(fs.readFileSync(file, 'utf8'));
+      assert.strictEqual(before.bypassTurns[sid], 1, 'precondition: counter reached the snapshot');
+      assert.ok(before.turnCounters[sid], 'precondition: turn counter reached the snapshot');
+
+      mgr.clear();
+      mgr.flushPersist();
+
+      const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+      assert.deepStrictEqual(after.bypassTurns, {}, 'no bypass counters survive the clear');
+      assert.deepStrictEqual(after.turnCounters, {}, 'no turn counters survive the clear');
+    } finally {
+      rmrf(dir);
+    }
+  });
+
   it('scopes the conversation key to the API-key identity (same message, different key = different session)', () => {
     const u1 = 'Shared opening.';
     const a1 = 'reply';
-    const rK1 = sessionManager.resolveSessionId({ model: 'auto', messages: [{ role: 'user', content: u1 }] }, { keyId: 'key-A' });
-    sessionManager.registerCompletedTurn(rK1.sessionId, [{ role: 'user', content: u1 }], a1);
+    const rK1 = resolveIR(sessionManager, { model: 'auto', messages: [{ role: 'user', content: u1 }] }, { keyId: 'key-A' });
+    registerTurn(sessionManager, rK1.sessionId, [{ role: 'user', content: u1 }], a1);
 
     // Same first user message, DIFFERENT api key: the content key differs, so
     // a regenerated continuation under key-B must NOT join key-A's session.
     const regenB = sessionRegen(u1, 'different reply', 'next');
-    const resolveB = sessionManager.resolveSessionId(regenB, { keyId: 'key-B' });
+    const resolveB = resolveIR(sessionManager, regenB, { keyId: 'key-B' });
     assert.strictEqual(resolveB.lookupType, 'cold_start', 'Different API key → different conversation key → no cross-key merge');
     assert.notStrictEqual(resolveB.sessionId, rK1.sessionId);
   });
 
   it('attaches immutable birth origin metadata (first-write-wins)', () => {
-    const r = sessionManager.resolveSessionId(
+    const r = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: 'origin test' }] }
     );
     const sid = r.sessionId;
@@ -739,12 +777,12 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       reason: 'test',
       needsSchemaValidation: false,
     }, mockModelFinder);
-    sessionManager.attachOrigin(sid, { wire: 'chat', lookupType: r.lookupType }, '1.2.3.4', 'origin test');
+    sessionManager.attachOrigin(sid, { wire: 'openai-chat', lookupType: r.lookupType }, '1.2.3.4', 'origin test');
     // A later attach with different values must be ignored (no metadata drift).
-    sessionManager.attachOrigin(sid, { wire: 'anthropic', lookupType: 'prefix_chain' }, '9.9.9.9', 'HACK');
+    sessionManager.attachOrigin(sid, { wire: 'anthropic-messages', lookupType: 'prefix_chain' }, '9.9.9.9', 'HACK');
 
     const s = sessionManager.getSession(sid)!;
-    assert.deepStrictEqual(s.origin, { wire: 'chat', lookupType: 'cold_start', clientIp: '1.2.3.4' });
+    assert.deepStrictEqual(s.origin, { wire: 'openai-chat', lookupType: 'cold_start', clientIp: '1.2.3.4' });
     assert.strictEqual(s.firstUserMessage, 'origin test');
   });
 
@@ -752,7 +790,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     const u1 = 'Delete me later.';
     const a1 = 'Done.';
 
-    const r1 = sessionManager.resolveSessionId(
+    const r1 = resolveIR(sessionManager,
       { model: 'auto', messages: [{ role: 'user', content: u1 }] }
     );
     const sid = r1.sessionId;
@@ -772,7 +810,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       supportsTools: true,
       supportsJsonSchema: true,
     }));
-    sessionManager.registerCompletedTurn(sid, [{ role: 'user', content: u1 }], a1);
+    registerTurn(sessionManager, sid, [{ role: 'user', content: u1 }], a1);
     assert.strictEqual(sessionManager.deleteSession(sid), true);
 
     // A continuing client (full history, one exchange) must NOT re-link to the
@@ -785,7 +823,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
         { role: 'user', content: 'Again?' },
       ],
     };
-    const resolve = sessionManager.resolveSessionId(continuation);
+    const resolve = resolveIR(sessionManager, continuation);
     assert.strictEqual(resolve.lookupType, 'cold_start', 'Deleted session must not be re-anchorable');
     assert.notStrictEqual(resolve.sessionId, sid);
   });

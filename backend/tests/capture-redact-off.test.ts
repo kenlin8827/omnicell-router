@@ -1,10 +1,6 @@
 /**
- * `requestCapture.redactSecrets: false` — the operator opt-OUT of capture-side
- * credential redaction. Pins:
- *   • with redactSecrets false, credential-shaped header values persist
- *     VERBATIM in the archive (authorization keeps the raw bearer token);
- *   • default (true) keeps redaction — covered by capture.test.ts /
- *     capture-keyid.test.ts, not re-pinned here.
+ * `requestCapture.redactSecrets: false` is IGNORED (S-06) — live credentials
+ * must never land in the archive. Pins that an explicit false still redacts.
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,7 +40,7 @@ async function waitUntil(pred: () => boolean, timeoutMs = 2500): Promise<void> {
   }
 }
 
-describe('capture redactSecrets opt-out', () => {
+describe('capture redactSecrets false is forced on', () => {
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-capture-redactoff-'));
     dateDir = CaptureRecorder.localDateDir(new Date());
@@ -77,7 +73,7 @@ describe('capture redactSecrets opt-out', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('redactSecrets:false persists the raw authorization value', async () => {
+  it('redactSecrets:false still redacts authorization (opt-out removed)', async () => {
     const marker = `REDACTOFF-${Date.now()}`;
     const res = await app.inject({
       method: 'POST',
@@ -90,7 +86,7 @@ describe('capture redactSecrets opt-out', () => {
     await waitUntil(() => readEvents().some(e => JSON.stringify(e.wire ?? {}).includes(marker)));
     const reqEv = readEvents().find(e => e.direction === 'client' && e.phase === 'request')!;
     assert.ok(reqEv, 'client request event captured');
-    assert.equal(reqEv.wire.requestHeaders['authorization'], `Bearer ${CLIENT_KEY}`,
-      'authorization value persists verbatim when redaction is opted out');
+    assert.equal(reqEv.wire.requestHeaders['authorization'], '[REDACTED]',
+      'authorization stays redacted even when config asks for redactSecrets:false');
   });
 });

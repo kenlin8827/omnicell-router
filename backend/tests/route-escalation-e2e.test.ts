@@ -13,6 +13,7 @@ import { ChatCompletionRequest, ChatCompletionMessage } from '../src/types/opena
 import { promptHashOf, getRouteEntryStore } from '../src/router/route-entries.js';
 import { flushRoutingLedgerForTests } from '../src/router/routing-ledger.js';
 import { applyDirectivesConfig } from '../src/pipeline/directive-gate.js';
+import { processIR } from './helpers/ir.js';
 
 /**
  * `@ocr-*` directives, end to end through the REAL orchestrator in mock mode
@@ -39,13 +40,13 @@ const assistant = (text: string): ChatCompletionMessage => ({ role: 'assistant',
 
 async function turn(model: string, ...messages: ChatCompletionMessage[]) {
   const req: ChatCompletionRequest = { model, messages };
-  return orchestrator.process(req);
+  return processIR(orchestrator, req);
 }
 
 /** Turn with extra wire fields (e.g. a client-explicit reasoning_effort). */
 async function turnWith(extra: Partial<ChatCompletionRequest>, ...messages: ChatCompletionMessage[]) {
   const req: ChatCompletionRequest = { model: 'auto', messages, ...extra };
-  return orchestrator.process(req);
+  return processIR(orchestrator, req);
 }
 
 describe('Directive escalation — orchestrator end to end (mock mode)', () => {
@@ -126,7 +127,7 @@ describe('Directive escalation — orchestrator end to end (mock mode)', () => {
       assistant('mock reply two'),
       user('@ocr-effort-up think harder about the locking protocol')
     );
-    assert.equal(r.requestedEffort, 'low', 'directive raised the ask one rung from unspecified');
+    assert.equal(r.requestedEffort, 'minimal', 'directive raised the ask one rung from unspecified');
     assert.equal(r.actualEffort, 'none', 'mock pin supports no thinking — clamped');
     assert.equal(r.reasoningDegraded, true);
     assert.equal(r.effortSource, 'directive');
@@ -142,10 +143,10 @@ describe('Directive escalation — orchestrator end to end (mock mode)', () => {
       user('@ocr-tier-up @ocr-effort-up upgrade both axes please')
     );
     assert.equal(r.tierUsed, 'pro');
-    assert.equal(r.requestedEffort, 'low');
+    assert.equal(r.requestedEffort, 'minimal');
     const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
     assert.equal(trace?.routing?.reasonCode, 'directive.tier_up', 'the tier directive is the headline');
-    assert.equal(trace?.routing?.reasonParams?.effort, 'low');
+    assert.equal(trace?.routing?.reasonParams?.effort, 'minimal');
   });
 
   it('turn 6c: opposite steps on one axis net out in place', async () => {

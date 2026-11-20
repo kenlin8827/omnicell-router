@@ -4,8 +4,10 @@ import { anthropicSurface } from '../src/surfaces/anthropic.js';
 import { runChatSurface } from '../src/surfaces/chat-pipeline.js';
 import { SURFACES } from '../src/surfaces/table.js';
 import type { TransportContext } from '../src/surfaces/types.js';
-import type { ChatCompletionRequest } from '../src/types/openai.js';
+import type { CanonicalRequest, StreamEvent } from '../src/ir/types.js';
 import type { ExecutionResult } from '../src/types/router.js';
+import { responseIR } from './helpers/ir.js';
+import { IrUnsupportedError } from '../src/ir/errors.js';
 
 /**
  * Surface-level unit tests for the anthropic wire (contract step 3a):
@@ -48,9 +50,9 @@ function makeFakeTransport(opts: { enforce?: (model: string) => boolean } = {}) 
   return { t, calls, ops: () => calls.map((c) => c.op) };
 }
 
-function stubResult(modelUsed: string, response: unknown): ExecutionResult {
+function stubResult(modelUsed: string, response: ExecutionResult['response']): ExecutionResult {
   return {
-    response: response as never,
+    response,
     tierUsed: 'lite',
     modelUsed,
     fallbackOccurred: false,
@@ -60,19 +62,12 @@ function stubResult(modelUsed: string, response: unknown): ExecutionResult {
   };
 }
 
-const okResponse = {
-  id: 'chatcmpl-1',
-  object: 'chat.completion',
-  created: 1,
-  model: 'mock-1',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-};
+const okResponse = responseIR('ok', { id: 'msg-1', createdAt: 1, model: 'mock-1' });
 
 function makeStubOrchestrator(behavior: { result?: ExecutionResult; throw?: unknown } = {}) {
-  const processed: Array<{ request: ChatCompletionRequest }> = [];
+  const processed: Array<{ request: CanonicalRequest }> = [];
   const orchestrator = {
-    process: async (request: ChatCompletionRequest) => {
+    process: async (request: CanonicalRequest) => {
       processed.push({ request });
       if (behavior.throw !== undefined) throw behavior.throw;
       return behavior.result ?? stubResult('mock-1', okResponse);
@@ -90,7 +85,7 @@ const anthropicBody = (extra: Record<string, unknown> = {}) => ({
 
 describe('anthropic surface — metadata', () => {
   it('matches the contract §1 entry', () => {
-    assert.equal(anthropicSurface.wire, 'anthropic');
+    assert.equal(anthropicSurface.wire, 'anthropic-messages');
     assert.equal(anthropicSurface.exec, 'chat-pipeline');
     assert.equal(anthropicSurface.capture, true);
     assert.equal(anthropicSurface.routePath, '/v1/messages');
@@ -110,7 +105,11 @@ describe('anthropic surface — parse + 400 envelope', () => {
     assert.equal(status, 400);
     assert.deepEqual(body, {
       type: 'error',
-      error: { type: 'invalid_request_error', message: 'Invalid request: "messages" array is required.' },
+      error: {
+        type: 'invalid_request_error',
+        message: 'Invalid request: "messages" array is required.',
+        code: 'unsupported_parameter',
+      },
     });
     assert.equal(processed.length, 0);
   });
@@ -132,8 +131,8 @@ describe('anthropic surface — parse + 400 envelope', () => {
     assert.equal(calls.find((c) => c.op === 'enforce')?.args[0], 'mock-lite');
     const req = processed[0]!.request;
     assert.equal(req.model, 'mock-lite');
-    assert.equal(req.max_tokens, 4096);
-    assert.deepEqual(req.messages![0], { role: 'system', content: 'be nice' });
+    assert.equal(req.generation?.maxOutputTokens, 4096);
+    assert.equal(req.instructions, 'be nice');
   });
 });
 
@@ -151,10 +150,49 @@ describe('anthropic surface — SSE framing', () => {
     const chunks = calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
     assert.ok(chunks.length >= 4, 'start + delta(s) + stop + message framing events');
     assert.ok(chunks[0]!.startsWith('event: message_start\n'), 'sequence opens with message_start');
-    assert.ok(chunks[chunks.length - 1]!.startsWith('event: message_stop\n'), 'sequence ends with message_stop');
+    const body = chunks.join('');
+    const stopAt = body.indexOf('event: message_stop\n');
+    const summaryAt = body.indexOf(': ocr-summary ');
+    assert.ok(stopAt >= 0, 'message_stop is the protocol terminator');
+    assert.ok(summaryAt > stopAt, 'ocr-summary trails message_stop on the buffered path too');
     assert.ok(!chunks.some((c) => c.includes('[DONE]')), 'anthropic wire has no [DONE] sentinel');
     assert.ok(chunks.some((c) => c.startsWith('event: content_block_delta\n') && c.includes('"text_delta"')));
     assert.ok(chunks.some((c) => c.startsWith('event: message_delta\n')));
+  });
+
+  it('streamEnd trails the protocol terminator with the completion-fact comment', () => {
+    const frames = anthropicSurface.streamEnd!({ ...stubResult('mock-1', okResponse), ttftMs: 12, genMs: 40 }, undefined);
+    assert.equal(frames.length, 1);
+    assert.ok(frames[0]!.startsWith(': ocr-summary '), 'the comment is not an event, so message_stop stays the terminator');
+    const facts = JSON.parse(frames[0]!.slice(': ocr-summary '.length).trim()) as Record<string, string>;
+    assert.equal(facts['X-OCR-Gen-MS'], '40');
+    assert.equal(facts['X-OCR-TTFT-MS'], '12');
+  });
+
+  it('a relayed turn writes message_stop and then the completion-fact comment', async () => {
+    const events: StreamEvent[] = [
+      { type: 'response.usage', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
+      { type: 'response.completed' },
+    ];
+    const orchestrator = {
+      process: async (_request: CanonicalRequest, _ctx: unknown, relay?: { onChunk(event: StreamEvent): void }) => {
+        for (const event of events) await relay?.onChunk(event);
+        return { ...stubResult('mock-1', okResponse), ttftMs: 12, genMs: 40 };
+      },
+    } as unknown as Parameters<typeof runChatSurface>[2];
+    const { t, calls } = makeFakeTransport();
+    await runChatSurface(t, anthropicSurface, orchestrator, anthropicBody({ stream: true }));
+
+    const chunks = calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
+    const body = chunks.join('');
+    const stopAt = body.indexOf('event: message_stop\n');
+    const summaryAt = body.indexOf(': ocr-summary ');
+    assert.ok(stopAt >= 0, 'message_stop is still the protocol terminator');
+    assert.ok(summaryAt > stopAt, 'the comment follows message_stop');
+    assert.ok(!body.includes('[DONE]'));
+    const summary = JSON.parse(body.slice(summaryAt + ': ocr-summary '.length).trim()) as Record<string, string>;
+    assert.equal(summary['X-OCR-Gen-MS'], '40');
+    assert.equal(summary['X-OCR-TTFT-MS'], '12');
   });
 
   it('non-boolean truthy stream takes the JSON path (approved C-3 convergence)', async () => {
@@ -202,6 +240,23 @@ describe('anthropic surface — execution errors', () => {
       assert.equal(status, expectedStatus);
       assert.deepEqual(body, { type: 'error', error: { type: expectedType, message: expectedMessage } });
       assert.ok(!ops().includes('beginSse'));
+    }
+  });
+
+  it('IrUnsupportedError is 400 unsupported_parameter, including the explicit-model wrapper', async () => {
+    const cases = [
+      new IrUnsupportedError('input_file', 'no file', 'anthropic-messages'),
+      Object.assign(new Error('Explicit model did not serve. Last error: no file'), {
+        statusCode: 400, name: 'IrUnsupportedError', code: 'unsupported_parameter',
+      }),
+    ];
+    for (const err of cases) {
+      const { t, calls } = makeFakeTransport();
+      const { orchestrator } = makeStubOrchestrator({ throw: err });
+      await runChatSurface(t, anthropicSurface, orchestrator, anthropicBody());
+      const send = calls.filter((c) => c.op === 'sendJson')[0]!;
+      assert.equal(send.args[0], 400);
+      assert.equal((send.args[1] as { error: { code?: string } }).error.code, 'unsupported_parameter');
     }
   });
 });

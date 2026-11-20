@@ -19,6 +19,7 @@ import { CAVEMAN_PROMPTS } from '../src/compression/caveman-prompts.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
 import { CompressionConfig } from '../src/config/types.js';
 import { GIT_LOG_ENTRIES_MAX } from '../src/compression/constants.js';
+import { messagesOf, toIR } from './helpers/ir.js';
 
 // ── detectContentKind ───────────────────────────────────────────────────────
 
@@ -85,14 +86,14 @@ describe('detectContentKind', () => {
 
 // ── compressToolOutputs ─────────────────────────────────────────────────────
 
-function reqWithToolContent(content: string): ChatCompletionRequest {
-  return {
+function reqWithToolContent(content: string) {
+  return toIR({
     model: 'auto',
     messages: [
       { role: 'user', content: 'run git status' },
       { role: 'tool', tool_call_id: 'call_1', content },
     ],
-  };
+  });
 }
 
 describe('compressToolOutputs', () => {
@@ -109,7 +110,7 @@ describe('compressToolOutputs', () => {
     expect(stats).not.toBeNull();
     expect(stats!.hits.length).toBeGreaterThan(0);
     expect(stats!.hits[0].kind).toBe('git-status');
-    const out = req.messages[1].content as string;
+    const out = messagesOf(req)[1].content as string;
     expect(out.length).toBeLessThan(stats!.bytesBefore);
     expect(out).toContain('branch: main');
     expect(out).toContain('modified(40)');
@@ -120,7 +121,7 @@ describe('compressToolOutputs', () => {
     const req = reqWithToolContent(text);
     const stats = compressToolOutputs(req, true);
     expect(stats!.hits[0]?.kind).toBe('grep-hits');
-    const out = req.messages[1].content as string;
+    const out = messagesOf(req)[1].content as string;
     expect(out).toContain('50 matches / 5 files');
     expect(out.length).toBeLessThan(text.length);
   });
@@ -129,21 +130,21 @@ describe('compressToolOutputs', () => {
     const req = reqWithToolContent('tiny');
     const stats = compressToolOutputs(req, true);
     expect(stats!.hits.length).toBe(0);
-    expect(req.messages[1].content).toBe('tiny');
+    expect(messagesOf(req)[1].content).toBe('tiny');
   });
 
   test('never grows the input (safety net)', () => {
     const text = 'a.ts:1:x\n'.repeat(80);
     const req = reqWithToolContent(text);
     compressToolOutputs(req, true);
-    expect((req.messages[1].content as string).length).toBeLessThanOrEqual(text.length);
+    expect((messagesOf(req)[1].content as string).length).toBeLessThanOrEqual(text.length);
   });
 
   test('prepends a token-saver marker with kind and line counts', () => {
     const text = 'On branch main\nChanges not staged for commit:\n  modified:   a.ts\n'.repeat(40);
     const req = reqWithToolContent(text);
     compressToolOutputs(req, true);
-    const out = req.messages[1].content as string;
+    const out = messagesOf(req)[1].content as string;
     expect(out).toMatch(
       /^\[token-saver: git-status \d+->\d+ lines; rerun a narrower command or pipe through head\/tail for full output\]\n/
     );
@@ -160,33 +161,36 @@ describe('compressToolOutputs', () => {
     const req = reqWithToolContent(text);
     const stats = compressToolOutputs(req, true);
     expect(stats!.hits.length).toBe(0);
-    expect(req.messages[1].content).toBe(text);
+    expect(messagesOf(req)[1].content).toBe(text);
   });
 
   test('compresses text parts inside array-form tool content', () => {
     const gitStatusText = 'On branch dev\nChanges to be committed:\n  new file:   x.ts\n'.repeat(40);
-    const req: ChatCompletionRequest = {
+    const req = toIR({
       model: 'auto',
       messages: [
         { role: 'user', content: 'status?' },
         { role: 'tool', tool_call_id: 'c2', content: [{ type: 'text', text: gitStatusText }] },
       ],
-    };
+    });
     const stats = compressToolOutputs(req, true);
     expect(stats!.hits.length).toBe(1);
-    const part = (req.messages[1].content as any[])[0];
-    expect(part.text.length).toBeLessThan(gitStatusText.length);
+    const item = req.input[1];
+    expect(item?.type).toBe('tool_result');
+    const part = item?.type === 'tool_result' ? item.content[0] : undefined;
+    expect(part?.type).toBe('text');
+    expect(part?.type === 'text' ? part.text.length : 0).toBeLessThan(gitStatusText.length);
   });
 
   test('leaves non-tool messages untouched', () => {
     const text = 'On branch main\nChanges not staged for commit:\n  modified:   a.ts\n'.repeat(40);
-    const req: ChatCompletionRequest = {
+    const req = toIR({
       model: 'auto',
       messages: [{ role: 'user', content: text }],
-    };
+    });
     const stats = compressToolOutputs(req, true);
     expect(stats!.hits.length).toBe(0);
-    expect(req.messages[0].content).toBe(text);
+    expect(messagesOf(req)[0].content).toBe(text);
   });
 
   test('formatCompressionLog summarizes hits', () => {
@@ -312,28 +316,28 @@ describe('compressor contracts', () => {
 
 describe('injectCaveman', () => {
   test('appends prompt to existing system message', () => {
-    const req: ChatCompletionRequest = {
+    const req = toIR({
       model: 'auto',
       messages: [
         { role: 'system', content: 'You are helpful.' },
         { role: 'user', content: 'hi' },
       ],
-    };
+    });
     expect(injectCaveman(req, 'full')).toBe(true);
-    const sys = req.messages[0].content as string;
+    const sys = messagesOf(req)[0].content as string;
     expect(sys).toContain('You are helpful.');
     expect(sys).toContain(CAVEMAN_PROMPTS.full);
   });
 
   test('creates system message at index 0 when absent', () => {
-    const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
+    const req = toIR({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] });
     expect(injectCaveman(req, 'lite')).toBe(true);
-    expect(req.messages[0].role).toBe('system');
-    expect(req.messages[0].content).toBe(CAVEMAN_PROMPTS.lite);
+    expect(messagesOf(req)[0].role).toBe('system');
+    expect(messagesOf(req)[0].content).toBe(CAVEMAN_PROMPTS.lite);
   });
 
   test('idempotent — second injection is a no-op', () => {
-    const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
+    const req = toIR({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] });
     expect(injectCaveman(req, 'ultra')).toBe(true);
     const snapshot = JSON.stringify(req);
     expect(injectCaveman(req, 'ultra')).toBe(false);
@@ -341,22 +345,23 @@ describe('injectCaveman', () => {
   });
 
   test('invalid level is a no-op', () => {
-    const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
+    const req = toIR({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] });
     expect(injectCaveman(req, 'not-a-level')).toBe(false);
-    expect(req.messages.length).toBe(1);
+    expect(messagesOf(req).length).toBe(1);
   });
 
   test('handles array-form system content', () => {
-    const req: ChatCompletionRequest = {
+    const req = toIR({
       model: 'auto',
       messages: [
         { role: 'system', content: [{ type: 'text', text: 'Base rules.' }] },
         { role: 'user', content: 'hi' },
       ],
-    };
+    });
     expect(injectCaveman(req, 'wenyan')).toBe(true);
-    const parts = req.messages[0].content as any[];
-    expect(parts.some((p: any) => p.text === CAVEMAN_PROMPTS.wenyan)).toBe(true);
+    const item = req.input[0];
+    const parts = item?.type === 'message' ? item.content : [];
+    expect(parts.some((part) => part.type === 'text' && part.text === CAVEMAN_PROMPTS.wenyan)).toBe(true);
     // idempotent on array form too
     expect(injectCaveman(req, 'wenyan')).toBe(false);
   });
@@ -408,6 +413,6 @@ describe('applyCompression', () => {
     expect(outcome.headroom).toBeNull();
     expect(outcome.cavemanInjected).toBe(true);
     // caveman injected a system message at index 0
-    expect(req.messages[0].role).toBe('system');
+    expect(messagesOf(req)[0].role).toBe('system');
   });
 });

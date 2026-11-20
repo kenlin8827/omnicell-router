@@ -6,6 +6,7 @@ import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { createServer } from '../src/server.js';
 import { loadConfig } from '../src/config/index.js';
+import { processIR } from './helpers/ir.js';
 
 /**
  * Auth mirror of server.ts preHandler key resolution: when the local
@@ -100,7 +101,7 @@ describe('Custom Model Combos: routing & execution', () => {
   it('should route a combo-named request to the first member under priority selection', async () => {
     const { registry, orchestrator } = makeOrchestrator(baseConfig);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-priority',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
@@ -114,7 +115,7 @@ describe('Custom Model Combos: routing & execution', () => {
   it('should fail over in combo config order when the leader hits a hard 402', async () => {
     const { registry, orchestrator } = makeOrchestrator(baseConfig);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-priority',
       messages: [{ role: 'user', content: 'Hello combo' }],
       __simulate_error_model__: 'lite-1',
@@ -137,7 +138,7 @@ describe('Custom Model Combos: routing & execution', () => {
     // NOT in the combo — the request must fail instead of silently escalating.
     await assert.rejects(
       async () =>
-        orchestrator.process({
+        processIR(orchestrator, {
           model: 'combo-single',
           messages: [{ role: 'user', content: 'Hello combo' }],
           __simulate_error_model__: 'lite-1',
@@ -155,7 +156,7 @@ describe('Custom Model Combos: routing & execution', () => {
     const { registry, orchestrator } = makeOrchestrator(baseConfig);
     registry.getCircuitBreakerManager().trip('lite-1', { reason: 'pre-tripped', cooldownMs: 3600000 });
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-priority',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
@@ -167,7 +168,7 @@ describe('Custom Model Combos: routing & execution', () => {
   it('should support cross-tier combos and report the executed member tier', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-cross',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
@@ -179,11 +180,11 @@ describe('Custom Model Combos: routing & execution', () => {
   it('round_robin selection should rotate the leader across members', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    const r1 = await orchestrator.process({
+    const r1 = await processIR(orchestrator, {
       model: 'combo-rr',
       messages: [{ role: 'user', content: 'Turn 1' }],
     } as any);
-    const r2 = await orchestrator.process({
+    const r2 = await processIR(orchestrator, {
       model: 'combo-rr',
       messages: [{ role: 'user', content: 'Turn 2' }],
     } as any);
@@ -195,7 +196,7 @@ describe('Custom Model Combos: routing & execution', () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
     // weight 1,000,000 : 1 — probability of the minority draw is ~1e-6
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-weighted',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
@@ -209,7 +210,7 @@ describe('Custom Model Combos: routing & execution', () => {
     const members = registry.resolveCombo('combo-unknown-member');
     assert.deepEqual(members.map(m => m.id), ['lite-2']);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-unknown-member',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
@@ -227,7 +228,7 @@ describe('Custom Model Combos: routing & execution', () => {
     const { registry, orchestrator } = makeOrchestrator(cfg);
     for (const m of registry.getAllModels()) m.unclassified = true;
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-priority',
       messages: [{ role: 'user', content: 'Hello pool-less combo' }],
     } as any);
@@ -243,7 +244,7 @@ describe('Custom Model Combos: routing & execution', () => {
     const { registry, orchestrator } = makeOrchestrator(cfg);
     for (const m of registry.getAllModels()) m.unclassified = true;
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'lite-2',
       messages: [{ role: 'user', content: 'Hello pool-less explicit model' }],
     } as any);
@@ -272,7 +273,7 @@ describe('Custom Model Combos: routing & execution', () => {
     };
     const { orchestrator } = makeOrchestrator(cfg);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'combo-shadow',
       messages: [{ role: 'user', content: 'Combo or shadowed physical model?' }],
     } as any);
@@ -351,7 +352,7 @@ describe('Custom Model Combos: operator disable', () => {
 
     await assert.rejects(
       async () =>
-        orchestrator.process({
+        processIR(orchestrator, {
           model: 'combo-disabled',
           messages: [{ role: 'user', content: 'Hello disabled combo' }],
         } as any),

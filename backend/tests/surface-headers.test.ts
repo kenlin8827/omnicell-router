@@ -27,6 +27,7 @@ import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
+import { responseIR } from './helpers/ir.js';
 
 let soChatProviders: any[] = [];
 
@@ -41,10 +42,11 @@ function fakeChat(content: string) {
 }
 
 const TEST_KEY = 'sk-ocr-surface-headers-test';
-const BASE14 = [
+const BASE15 = [
   'x-ocr-tier',
   'x-ocr-layer',
   'x-ocr-model',
+  'x-ocr-protocol',
   'x-ocr-failover',
   'x-ocr-failover-attempts',
   'x-ocr-failover-path',
@@ -62,7 +64,7 @@ const THINKING3 = ['x-ocr-thinking-requested', 'x-ocr-thinking-actual', 'x-ocr-t
 // legs served by a REAL orchestrator (fastify rows) gain the source header;
 // stub-fed harnesses (mitm rows) keep the 3-key set.
 const THINKING4 = [...THINKING3, 'x-ocr-thinking-source'];
-const sortedKeys = (...extra: string[]): string[] => [...BASE14, ...extra].sort();
+const sortedKeys = (...extra: string[]): string[] => [...BASE15, ...extra].sort();
 
 type Leg = 'fastify' | 'mitm';
 interface Row {
@@ -145,11 +147,7 @@ function xOcrKeys(headers: Headers | Record<string, unknown>): string[] {
  */
 function stubResult(effortRow: boolean): unknown {
   const base = {
-    response: {
-      id: 'mock-cmpl', object: 'chat.completion', created: 1, model: 'mock-1',
-      choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-    },
+    response: responseIR('hi', { id: 'resp-mock', createdAt: 1, model: 'mock-1' }),
     tierUsed: 'lite',
     modelUsed: 'mock-1',
     fallbackOccurred: false,
@@ -158,12 +156,13 @@ function stubResult(effortRow: boolean): unknown {
     requestId: 'trace-1',
     // Non-empty everywhere else, mirroring what the mockMode orchestrator
     // produces on the Fastify leg: the builder's '' defaults for missing
-    // failoverPath/sessionLookupType get header-dropped by Bun's http on
-    // the MITM wire (empty values are not sent), which would make the
+    // failoverPath/sessionLookupType/protocolUsed get header-dropped by Bun's
+    // http on the MITM wire (empty values are not sent), which would make the
     // cross-leg SET comparison meaningless. The partial-stub crash guard
     // (R-4 ??/|| defaults) is pinned separately in ocr-headers.test.ts.
     failoverPath: ['mock-1'],
     sessionLookupType: 'cold_start',
+    protocolUsed: 'openai-chat',
   };
   return effortRow
     ? { ...base, requestedEffort: 'high', actualEffort: 'medium', reasoningDegraded: true }
@@ -264,7 +263,7 @@ describe('surface-headers: X-OCR key-set golden matrix', () => {
     soChatProviders = [
       {
         name: 'native-test',
-        type: 'openai-compatible',
+        type: 'openai-chat',
         baseUrl: `http://127.0.0.1:${fakeUpstream.port}`,
         apiKey: 'sk-test',
       },
@@ -304,9 +303,9 @@ describe('surface-headers: X-OCR key-set golden matrix', () => {
 
   for (const row of HEADER_ROWS) {
     it(`${row.name}: exact x-ocr-* key set`, async () => {
-      currentStub = stubResult(row.expected.length > BASE14.length);
+      currentStub = stubResult(row.expected.length > BASE15.length);
       const keys = row.leg === 'fastify' ? await fastifyKeys(row) : await mitmKeys(row);
-      assert.deepEqual(keys, row.expected, `${row.name}: golden key set`);
+      assert.deepEqual(keys, row.expected, `${row.name}: golden key set | actual=${keys.join(',')} | expected=${row.expected.join(',')}`);
     });
   }
 });

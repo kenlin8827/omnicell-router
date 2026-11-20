@@ -24,8 +24,9 @@ fs.writeFileSync(path.join(csrfEnvDir, 'env.json'), JSON.stringify({ name: 'defa
 
 /**
  * Security P2-3 — drive-by CSRF narrowing on state-changing /api/admin/*
- * while webAuth is INACTIVE (cors origin:true + no session gate): a request
- * carrying an Origin/Referer must be loopback- or same-host originated.
+ * while webAuth is INACTIVE (no session gate; CORS now rejects non-loopback
+ * origins): a request carrying an Origin/Referer must be loopback- or
+ * same-host originated.
  * Requests WITHOUT Origin (CLI, curl, local processes) pass untouched;
  * GETs are never gated; the webAuth-active path keeps its own 401 gate.
  *

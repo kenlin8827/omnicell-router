@@ -54,9 +54,9 @@ function clientRequest(sessionId: string, requestId: string, requestLine: string
 
 describe('capture-protocol (session-list protocol badge + decision titles)', () => {
   it('protocolFromRequestLine classifies the four inference surfaces', () => {
-    assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/chat/completions HTTP/1.1'), 'chat', 'chat labeled explicitly');
-    assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/messages HTTP/1.1'), 'anthropic');
-    assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/responses?beta=true HTTP/1.1'), 'responses', 'query string stripped');
+    assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/chat/completions HTTP/1.1'), 'openai-chat', 'chat labeled explicitly');
+    assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/messages HTTP/1.1'), 'anthropic-messages');
+    assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/responses?beta=true HTTP/1.1'), 'openai-responses', 'query string stripped');
     assert.equal(CaptureRecorder.protocolFromRequestLine('POST /v1/systemone HTTP/1.1'), 'systemone');
     assert.equal(CaptureRecorder.protocolFromRequestLine('CONNECT host:443 HTTP/1.1'), undefined, 'non-inference lines stay unbadged');
     assert.equal(CaptureRecorder.protocolFromRequestLine(''), undefined);
@@ -100,7 +100,7 @@ describe('capture-protocol (session-list protocol badge + decision titles)', () 
     );
     const row = recorder.listSessions(dateDir).find(r => r.sessionId === sid);
     assert.ok(row, 'chat archive row exists');
-    assert.equal(row!.protocol, 'chat', 'chat surface labeled');
+    assert.equal(row!.protocol, 'openai-chat', 'chat surface labeled');
     assert.equal(row!.preview, 'hello router');
   });
 

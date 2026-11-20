@@ -465,7 +465,7 @@ const openaiChatMerge: StreamMergeAdapter<{
  * Anthropic messages dialect: message_start / content_block_start /
  * content_block_delta / message_delta / message_stop events → `message`
  * body. Field set mirrors the message shape the backend synthesizes for
- * Anthropic clients (routes/anthropic.ts toAnthropicMessage): content
+ * Anthropic clients (ir/adapters/anthropic-messages.ts irToAnthropicResponse): content
  * blocks in index order (text with citations, thinking with signature,
  * tool_use with parsed input), stop_reason / stop_sequence from
  * message_delta, usage = message_start.usage + the last output_tokens.
@@ -619,12 +619,6 @@ export interface TranscriptMedia {
 
 const MEDIA_TOKEN_STRICT = /^\[MEDIA (.+?) sha256=([0-9a-f]{16})(?: file=([^\]]+))?\]$/;
 const MEDIA_TOKEN_GLOBAL = /\[MEDIA (.+?) sha256=([0-9a-f]{16})(?: file=([^\]]+))?\]/g;
-
-export function parseMediaToken(text: string): TranscriptMedia | null {
-  const m = MEDIA_TOKEN_STRICT.exec(text.trim());
-  if (!m) return null;
-  return { info: m[1], sha256: m[2], file: m[3] ?? null };
-}
 
 /** All tokens embedded in a string (export scanning uses this on raw JSONL). */
 export function findMediaTokens(text: string): TranscriptMedia[] {

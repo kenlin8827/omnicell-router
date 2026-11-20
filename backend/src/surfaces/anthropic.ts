@@ -1,83 +1,110 @@
-import { anthropicToOpenAI, chatToAnthropicStreamEvents, openAIToAnthropic } from '../routes/anthropic.js';
 import type { ExecutionResult } from '../types/router.js';
-import type { ChatSurface, SurfaceParseResult } from './types.js';
+import {
+  AnthropicMessagesEventEncoder,
+  anthropicRequestToIR,
+  canonicalToAnthropicResponse,
+} from '../ir/adapters/anthropic-messages.js';
+import { canonicalResponseToEvents } from '../ir/stream.js';
+import { IrUnsupportedError } from '../ir/errors.js';
+import type { StreamEvent } from '../ir/types.js';
+import { buildChatOcrSummaryFrame } from './ocr-headers.js';
+import type { ChatSurface, ChatChunkContext, SurfaceParseResult } from './types.js';
 
-/**
- * The Anthropic Messages surface (/v1/messages), wire 'anthropic'.
- *
- * Verbatim extraction of the old inline /v1/messages route handler: same 400
- * message texts, same {type:'error', error:{type, message}} envelope with its
- * key insertion order (wire bytes depend on object literal order), same
- * [400,600)→pass-through status mapping. The wire converters stay in
- * routes/anthropic.ts — the MITM interceptor and the wire tests import them
- * from there (contract step 3a).
- *
- * Stream-branch note: the old handler branched on `request.stream` TRUTHINESS;
- * the shared pipeline gates on `=== true` (approved C-3 convergence, same as
- * the chat leg in step 2). Anthropic clients send boolean `stream: true`, so
- * only a non-boolean truthy value changes path — it now takes the JSON leg.
- */
+interface AnthropicSurfaceState {
+  encoder: AnthropicMessagesEventEncoder;
+}
+
+function sse(event: Record<string, unknown>): string {
+  return `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+/** Anthropic Messages surface with direct IR JSON and event lifecycle codecs. */
 export const anthropicSurface: ChatSurface = {
-  wire: 'anthropic',
+  wire: 'anthropic-messages',
   exec: 'chat-pipeline',
   capture: true,
   routePath: '/v1/messages',
   detectSuffix: '/v1/messages',
 
   parse(body: unknown): SurfaceParseResult {
-    // Today's handler entry: `body || {}` fed to the converter, same fallback
-    // text on the (unreachable-in-practice) error-less rejection. The
-    // converter normalizes model to trim()||'auto' — gateModel in the
-    // pipeline re-trims, which is idempotent, so the 403 gate sees exactly
-    // today's value.
-    const { request, error } = anthropicToOpenAI((body || {}) as Parameters<typeof anthropicToOpenAI>[0]);
-    if (!request || error) {
-      return { error: error || 'Invalid request.' };
+    try {
+      return { request: anthropicRequestToIR(body ?? {}), state: { encoder: new AnthropicMessagesEventEncoder() } };
+    } catch (err) {
+      return {
+        error: (err as Error | undefined)?.message || 'Invalid request.',
+        ...(err instanceof IrUnsupportedError ? { errorCode: 'unsupported_parameter' } : {}),
+      };
     }
-    // No per-request state: today's SSE/JSON encoding used result.modelUsed
-    // only (the dead `const id` local is dropped per R-7).
-    return { request };
   },
 
   encodeJson(result: ExecutionResult): unknown {
-    return openAIToAnthropic(result.response!, result.modelUsed);
+    return canonicalToAnthropicResponse(result.response!, result.modelUsed);
   },
 
   encodeStream(result: ExecutionResult): string[] {
-    // The generator ends the sequence with message_stop — the Anthropic wire
-    // has no [DONE] sentinel and today's stream block wrote none (contract §4:
-    // generators stay as-is with their own DONE/frame sequence).
-    return chatToAnthropicStreamEvents(result.response!, result.modelUsed);
+    const encoder = new AnthropicMessagesEventEncoder();
+    const frames: string[] = [];
+    for (const event of canonicalResponseToEvents(result.response!)) {
+      for (const payload of encoder.encode(event, result.modelUsed, result.response)) frames.push(sse(payload));
+    }
+    // Mirror chat: buffered SSE (no relay) never calls streamEnd, so the
+    // trailing observation comment has to ride encodeStream itself.
+    frames.push(buildChatOcrSummaryFrame(result));
+    return frames;
   },
 
-  errorBody(status: number, message: string): unknown {
-    return anthropicErrorBody(status, message);
+  encodeChunk(event: StreamEvent, ctx: ChatChunkContext): string | null {
+    const state = ctx.state as AnthropicSurfaceState | undefined;
+    if (!state) return null;
+    const payloads = state.encoder.encode(event, ctx.model);
+    return payloads.length ? payloads.map(sse).join('') : null;
+  },
+
+  streamEnd(result: ExecutionResult, state: unknown): string[] {
+    // Mirror Responses: if the live relay never saw a terminal IR event
+    // (decoder/finish gap), synthesize completed/failed/incomplete so the
+    // client still gets message_stop. A turn that already closed returns [].
+    const frames: string[] = [];
+    const encoder = (state as AnthropicSurfaceState | undefined)?.encoder;
+    const response = result.response;
+    if (encoder && response) {
+      const event: StreamEvent = response.status === 'failed'
+        ? { type: 'response.failed', reason: response.reason }
+        : response.status === 'incomplete'
+          ? { type: 'response.incomplete', reason: response.reason }
+          : { type: 'response.completed' };
+      for (const payload of encoder.encode(event, result.modelUsed, response)) frames.push(sse(payload));
+    }
+    // The comment follows the protocol terminator (message_stop or error).
+    frames.push(buildChatOcrSummaryFrame(result));
+    return frames;
+  },
+
+  errorBody(status: number, message: string, code?: string): unknown {
+    return anthropicErrorBody(status, message, code);
   },
 
   executionError(err: unknown): { status: number; body: unknown } {
-    const e = err as { statusCode?: unknown; message?: string } | null | undefined;
+    const e = err as { statusCode?: unknown; message?: string; name?: string; code?: string } | null | undefined;
     const statusCode = e?.statusCode;
-    // Today's catch: explicit integer 4xx/5xx pass through, anything else
-    // (including out-of-range) collapses to 500.
     const status =
       typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
         ? statusCode
         : 500;
-    return { status, body: anthropicErrorBody(status, e?.message || 'Internal Router Error') };
+    const code = e?.name === 'IrUnsupportedError' || e?.code === 'unsupported_parameter'
+      ? 'unsupported_parameter'
+      : undefined;
+    return { status, body: anthropicErrorBody(status, e?.message || 'Internal Router Error', code) };
   },
 };
 
-// One envelope for both error paths so they can never drift. The interface's
-// `code` slot is deliberately absent: Anthropic's error object is
-// {type, message}, and today's handler sent no code on either path (the 403
-// gate keeps its OpenAI-shaped envelope because the SHARED guard writes it —
-// preserved, not "fixed", per contract §4).
-function anthropicErrorBody(status: number, message: string): unknown {
+function anthropicErrorBody(status: number, message: string, code?: string): unknown {
   return {
     type: 'error',
     error: {
       type: status >= 500 ? 'api_error' : 'invalid_request_error',
       message,
+      ...(code ? { code } : {}),
     },
   };
 }

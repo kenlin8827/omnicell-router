@@ -3,12 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { saveConfig } from '../src/config/index.js';
-import { normalizeModelsDev, modelsDevLogoUrl } from '../src/opencode/catalog/sources/models-dev.js';
+import { normalizeModelsDev, modelsDevLogoUrl, syncModelsDev } from '../src/opencode/catalog/sources/models-dev.js';
 import { normalizeOpenRouter, OPENROUTER_PROVIDER_ID } from '../src/opencode/catalog/sources/openrouter.js';
 import { getProviderDefsPath, writeProviderDefs } from '../src/opencode/provider-defs.js';
 import { mergeModels, CatalogRepository, isCustomProvider } from '../src/opencode/catalog/repository.js';
 import { readCacheFile, writeCacheFile } from '../src/opencode/catalog/cache.js';
 import { readOcrStore, writeOcrStore } from '../src/opencode/catalog/ocr-store.js';
+import { readOverridesStore, upsertOverride } from '../src/opencode/catalog/overrides-store.js';
 import { ocrCredentialsFile, resolveDefaultPaths } from '../src/opencode/credentials/paths.js';
 import { resetCredentialStoreForTests } from '../src/opencode/credentials/factory.js';
 import { isAllowedLogoUrl, localLogoApiPath, getLogoCached, writeLogoCache } from '../src/opencode/catalog/logos.js';
@@ -83,6 +84,7 @@ describe('Catalog sources & repository', () => {
     expect(records.length).toBe(1);
     const a = records[0];
     expect(a.id).toBe('anthropic');
+    expect(a.npm).toBe('anthropic-messages'); // @ai-sdk/anthropic → protocol id at ingest
     expect(a.logo).toBe('https://models.dev/logos/anthropic.svg');
     const m = a.models[0];
     expect(m.source).toBe('opencode');
@@ -109,6 +111,61 @@ describe('Catalog sources & repository', () => {
     expect(opus5?.temperature).toBe(false); // explicitly unsupported — must not collapse to missing
     expect(opus5?.reasoningOptions).toEqual([{ type: 'effort', values: ['low', 'high', 'max'] }]);
     expect(modelsDevLogoUrl('deepseek')).toBe('https://models.dev/logos/deepseek.svg');
+  });
+
+  it('translates catalog npm to a protocol id and leaves unknown packages alone', () => {
+    const records = normalizeModelsDev({
+      zen: {
+        name: 'Zen',
+        npm: '@ai-sdk/openai-compatible',
+        models: {
+          'gpt-6-luna': { name: 'Luna', provider: { npm: '@ai-sdk/openai' } },
+          'already': { name: 'Already', provider: { npm: 'openai-responses' } },
+          'mystery': { name: 'Mystery', provider: { npm: '@ai-sdk/not-a-protocol' } },
+          'opencode-pkg': { name: 'From v2', provider: { npm: '@opencode/ai/providers/google' } },
+        },
+      },
+    });
+    const zen = records[0];
+    expect(zen.npm).toBe('openai-chat');
+    expect(zen.models.find((m) => m.id === 'gpt-6-luna')?.npm).toBe('openai-responses');
+    expect(zen.models.find((m) => m.id === 'already')?.npm).toBe('openai-responses');
+    expect(zen.models.find((m) => m.id === 'mystery')?.npm).toBe('@ai-sdk/not-a-protocol');
+    expect(zen.models.find((m) => m.id === 'opencode-pkg')?.npm).toBe('google-gemini');
+  });
+
+  it('translates a stale models.dev cache on read', async () => {
+    writeCacheFile('catalog-protocol-replay', [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        npm: '@ai-sdk/anthropic',
+        custom: false,
+        connected: false,
+        sources: ['opencode'],
+        models: [{ id: 'claude', npm: '@opencode/ai/providers/anthropic', source: 'opencode' }],
+      },
+    ]);
+    const replay = await syncModelsDev(false, { cacheName: 'catalog-protocol-replay', url: 'http://127.0.0.1:9/unused' });
+    expect(replay.origin).toBe('cache');
+    expect(replay.providers[0].npm).toBe('anthropic-messages');
+    expect(replay.providers[0].models[0].npm).toBe('anthropic-messages');
+  });
+
+  it('translates override npm on read and on write without a read-time rewrite', () => {
+    const file = path.join(path.dirname(process.env.OCR_CATALOG_PATH!), 'overrides.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        updated: 1,
+        models: { 'anthropic||claude': { npm: '@ai-sdk/anthropic', name: 'Claude' } },
+      }),
+    );
+    expect(readOverridesStore()?.models['anthropic||claude']?.npm).toBe('anthropic-messages');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).models['anthropic||claude'].npm).toBe('@ai-sdk/anthropic');
+    upsertOverride('anthropic', 'claude', { npm: '@ai-sdk/openai' });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).models['anthropic||claude'].npm).toBe('openai-responses');
   });
 
   it('normalizes OpenRouter models converting $/token pricing to $/1M', () => {
@@ -251,7 +308,7 @@ describe('Catalog sources & repository', () => {
     ];
     writeOcrStore('sig-1', providers as any);
     const store = readOcrStore();
-    expect(store?.version).toBe(4);
+    expect(store?.version).toBe(5);
     expect(store?.sig).toBe('sig-1');
     expect(store?.builtAt).toBeGreaterThan(0);
     expect(store?.providers[0].id).toBe('anthropic');

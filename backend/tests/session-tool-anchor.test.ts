@@ -7,6 +7,7 @@ import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import type { LLMProvider } from '../src/providers/base.js';
 import type { ChatCompletionRequest, ChatCompletionResponse, ChatMessage } from '../src/types/openai.js';
 import type { ModelRegistration, RouterConfig } from '../src/config/types.js';
+import { processIR, responseIR } from './helpers/ir.js';
 
 /**
  * Zero-header session continuity across a long agent tool loop, driven through
@@ -53,34 +54,17 @@ function makeOrchestrator(): PipelineOrchestrator {
   let served = 0;
   const provider: LLMProvider = {
     name: 'p1',
-    async createCompletion(): Promise<ChatCompletionResponse> {
+    async createCompletion() {
       served += 1;
       const id = `call_${served}`;
-      return {
-        id: `ok-${id}`,
-        object: 'chat.completion',
-        created: 1,
-        model: 'tooly',
-        choices: [
-          {
-            index: 0,
-            // The gateway-side echo: full object, pretty-printed arguments.
-            message: {
-              role: 'assistant',
-              content: '',
-              tool_calls: [
-                {
-                  id,
-                  type: 'function',
-                  function: { name: 'read_file', arguments: `{\n  "path": "file-${served}.ts"\n}` },
-                },
-              ],
-            },
-            finish_reason: 'tool_calls',
-          },
-        ],
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-      } as ChatCompletionResponse;
+      return responseIR('', {
+        id: `ok-${id}`, model: 'tooly', reason: 'tool_calls',
+        output: [{
+          type: 'tool_call', id, callId: id, name: 'read_file',
+          arguments: `{\n  "path": "file-${served}.ts"\n}`,
+        }],
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      });
     },
   };
   registry.registerProvider('p1', provider);
@@ -112,7 +96,7 @@ describe('agent tool loop keeps one session across many turns', () => {
   it('re-anchors every continuation whose history already carries tool messages', async () => {
     const orchestrator = makeOrchestrator();
 
-    const first = await orchestrator.process(turn([sys, firstUser]));
+    const first = await processIR(orchestrator, turn([sys, firstUser]));
     assert.strictEqual(first.sessionLookupType, 'cold_start');
 
     // A second conversation sharing the byte-identical opening (the
@@ -120,7 +104,7 @@ describe('agent tool loop keeps one session across many turns', () => {
     // conversation key, so the key is ambiguous and only the byte-exact
     // anchors can hold a conversation together — the situation that produced
     // the session churn.
-    const sibling = await orchestrator.process(
+    const sibling = await processIR(orchestrator,
       turn([{ role: 'system', content: 'You are a different agent.' }, firstUser])
     );
     assert.notStrictEqual(sibling.sessionId, first.sessionId);
@@ -128,7 +112,7 @@ describe('agent tool loop keeps one session across many turns', () => {
     const history: ChatMessage[] = [sys, firstUser];
     for (let n = 1; n <= EXCHANGES; n++) {
       history.push(clientAssistant(n), toolResult(n));
-      const result = await orchestrator.process(turn([...history, { role: 'user', content: `continue ${n}` }]));
+      const result = await processIR(orchestrator, turn([...history, { role: 'user', content: `continue ${n}` }]));
       assert.strictEqual(result.sessionId, first.sessionId, `turn ${n} must re-anchor the same session`);
       if (n === EXCHANGES) {
         assert.ok(

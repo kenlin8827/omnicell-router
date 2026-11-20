@@ -7,13 +7,14 @@ import { bootServer, makeConfig } from './helpers/systemone-seam.js';
 import { __resetEnvResolutionForTests } from '../src/config/env.js';
 import { RouterConfig } from '../src/config/types.js';
 import {
-  buildDecisionChatRequest,
-  chatOutputText,
+  buildDecisionRequest,
+  canonicalOutputText,
   decisionReasoningEffort,
-  synthesizeSystemoneResponse,
+  synthesizeSystemoneResponse as synthesizeCanonicalResponse,
   validateSystemoneRequest,
 } from '../src/protocols/systemone/convert.js';
 import { ChatCompletionResponse } from '../src/types/openai.js';
+import { responseToIR } from './helpers/ir.js';
 import { SCHEMA_VERSION } from '../src/config/schema.js';
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,15 @@ function fakeChat(content: string): ChatCompletionResponse {
   } as ChatCompletionResponse;
 }
 
+// Chat JSON remains an explicit fixture boundary for System One unit tests.
+function synthesizeSystemoneResponse(response: ChatCompletionResponse, req: any, modelId: string) {
+  return synthesizeCanonicalResponse(responseToIR(response), req, modelId);
+}
+
+function chatOutputText(response: ChatCompletionResponse): string {
+  return canonicalOutputText(responseToIR(response));
+}
+
 describe('System One: request validation', () => {
   test('accepts a well-formed request', () => {
     const v = validateSystemoneRequest(REQ);
@@ -100,30 +110,31 @@ describe('System One: request validation', () => {
   });
 });
 
-describe('System One: chat request synthesis', () => {
+describe('System One: canonical request synthesis', () => {
   test('one call carries every question + the JSON contract', () => {
-    const chat = buildDecisionChatRequest(REQ, 'test/chat');
-    expect(chat.response_format).toEqual({ type: 'json_object' });
-    expect(chat.temperature).toBe(0);
-    expect(chat.model).toBe('test/chat');
-    const user = String((chat.messages[1] as any).content);
+    const request = buildDecisionRequest(REQ, 'test/chat');
+    expect(request.text?.format).toEqual({ type: 'json_object' });
+    expect(request.generation?.temperature).toBe(0);
+    expect(request.model).toBe('test/chat');
+    const user = JSON.stringify(request.input[1]);
     expect(user).toContain('department');
     expect(user).toContain('severity');
     expect(user).toContain('T-1001');
-    expect(String((chat.messages[0] as any).content)).toContain('System One');
-    // No max_tokens here: the pin (initial value + rejection fallback) is
-    // owned by the decider, same as reasoning_effort.
-    expect(chat.max_tokens).toBeUndefined();
+    expect(JSON.stringify(request.input[0])).toContain('System One');
+    // No token cap here: the pin (initial value + rejection fallback) is
+    // owned by the decider, same as reasoning effort.
+    expect(request.generation?.maxOutputTokens).toBeUndefined();
   });
 
   test('repair mode appends the bad output and the reason', () => {
-    const chat = buildDecisionChatRequest(REQ, 'test/chat', {
+    const request = buildDecisionRequest(REQ, 'test/chat', {
       previousOutput: '{"oops": true}',
       reason: "'escalate': no answer object",
     });
-    expect(chat.messages.length).toBe(4);
-    expect((chat.messages[2] as any).role).toBe('assistant');
-    expect(String((chat.messages[3] as any).content)).toContain('could not be used');
+    expect(request.input.length).toBe(4);
+    expect(request.input[2]?.type).toBe('message');
+    expect(request.input[2]?.role).toBe('assistant');
+    expect(JSON.stringify(request.input[3])).toContain('could not be used');
   });
 });
 
@@ -309,7 +320,7 @@ describe('POST /v1/systemone end-to-end', () => {
         [
           {
             name: 'chat-test',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -387,7 +398,7 @@ describe('POST /v1/systemone end-to-end', () => {
         [
           {
             name: 'reject-none',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -458,7 +469,7 @@ describe('POST /v1/systemone end-to-end', () => {
         [
           {
             name: 'reject-max-tokens',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -529,7 +540,7 @@ describe('POST /v1/systemone end-to-end', () => {
         [
           {
             name: 'reject-all',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -605,7 +616,7 @@ describe('POST /v1/systemone end-to-end', () => {
         [
           {
             name: 'reject-none-low',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -676,7 +687,7 @@ describe('POST /v1/systemone end-to-end', () => {
         [
           {
             name: 'reject-json',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -711,7 +722,7 @@ describe('POST /v1/systemone end-to-end', () => {
   test("model:'auto' is gated by the RESOLVED physical model, not just the alias", async () => {
     useSandbox('with-default'); // sandbox defaultModel: "test/chat"
     const config = makeConfig(
-      [{ name: 'dummy', type: 'openai-compatible', baseUrl: 'http://localhost:1', apiKey: 'sk-dummy' }],
+      [{ name: 'dummy', type: 'openai-chat', baseUrl: 'http://localhost:1', apiKey: 'sk-dummy' }],
       [
         {
           id: 'test/chat',
@@ -743,7 +754,7 @@ describe('POST /v1/systemone end-to-end', () => {
     // resolves its baseline tier at construction); a dummy that is never
     // called keeps this test focused on the reject paths.
     const config = makeConfig(
-      [{ name: 'dummy', type: 'openai-compatible', baseUrl: 'http://localhost:1', apiKey: 'sk-dummy' }],
+      [{ name: 'dummy', type: 'openai-chat', baseUrl: 'http://localhost:1', apiKey: 'sk-dummy' }],
       [
         {
           id: 'dummy/chat',
@@ -772,7 +783,7 @@ describe('System One: tier alias resolution', () => {
    *  observable through X-OCR-Model (the header names the resolved model). */
   function tieredConfig(upstreamPort: number, apiKeys: any[] = []): RouterConfig {
     const config = makeConfig(
-      [{ name: 'native-tiers', type: 'openai-compatible', baseUrl: `http://localhost:${upstreamPort}`, apiKey: 'sk-test' }],
+      [{ name: 'native-tiers', type: 'openai-chat', baseUrl: `http://localhost:${upstreamPort}`, apiKey: 'sk-test' }],
       [
         {
           id: 'native/lite-a',
@@ -968,7 +979,7 @@ describe('System One: tier alias resolution', () => {
         [
           {
             name: 'chat-test',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,

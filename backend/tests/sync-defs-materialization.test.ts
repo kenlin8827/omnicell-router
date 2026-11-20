@@ -193,7 +193,7 @@ describe('def materialization (v2 write direction)', () => {
   it('a wire the client has no package for is substituted in the client copy only (book untouched)', async () => {
     const p = withDb(withService(sandboxPaths()));
     const typesafeDef = {
-      package: '@opencode/ai/providers/typesafe',
+      package: 'systemone',
       settings: { baseURL: 'https://ark.cn-beijing.volces.com/api/v3' },
       models: { 'doubao-1': { name: 'doubao-1' } },
     };

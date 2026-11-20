@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import type { CredentialPaths } from './paths.js';
 import { resolveOpencodeConfigPath } from './paths.js';
-import { OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE, readJsonc } from '../user-config.js';
-import { wireFor, type WireKind } from '../../providers/wire.js';
+import { CLIENT_COMPATIBLE_PACKAGE, readJsonc } from '../user-config.js';
+import { currentPackageFor, opencodePackageFor } from '../provider-package.js';
+import { wireFor, type CoreWireKind } from '../../providers/wire.js';
+import { isPluginWire } from '../../providers/plugin-wires.js';
 import { clientDefNodes, writeDefSlot } from '../provider-def-adapters.js';
 import { readProviderDefsFile } from '../provider-defs.js';
 
@@ -71,28 +73,136 @@ export function defsRenderChanged(
  * The substitute answers only "can the client LOAD it"; whether the upstream
  * speaks that protocol is a vendor fact (ark does, api.typesafe.ai does not).
  */
-const CLIENT_PACKAGE_FALLBACK: Partial<Record<WireKind, string>> = {
-  systemone: OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
-  // The vendored Qoder wire has no client SDK segment. Substituting
-  // openai-compatible lets the client LOAD the node; the OCR gateway relay is
-  // the usable client path.
-  qoder: OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
-  // Same for the vendored WorkBuddy wire: no client SDK segment; the OCR
-  // gateway relay is the usable client path.
-  workbuddy: OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
+const CLIENT_PACKAGE_FALLBACK: Partial<Record<CoreWireKind, string>> = {
+  systemone: CLIENT_COMPATIBLE_PACKAGE,
 };
 
+/** The package the client loads for a wire it has no SDK segment for. Core
+ *  wires declare theirs above; EVERY plugin wire has none by definition (the
+ *  transport is vendored inside the plugin), so the substitution is derived
+ *  from `isPluginWire` rather than spelled per vendor here. */
+function clientPackageFallbackFor(wire: string): string | undefined {
+  const declared = CLIENT_PACKAGE_FALLBACK[wire as CoreWireKind];
+  if (declared) return declared;
+  return isPluginWire(wire) ? CLIENT_COMPATIBLE_PACKAGE : undefined;
+}
+
+/**
+ * Translate every retired package spelling in a node (provider package +
+ * model-level provider packages) to the OCR protocol id. The book may predate
+ * the vocabulary retirement; the client copy is mapped to the SDK package
+ * afterwards and must never carry a retired spelling.
+ */
+function currentPackageNode(node: any): any {
+  let out = node;
+  if (typeof node?.package === 'string') {
+    const pkg = currentPackageFor(node.package);
+    if (pkg !== node.package) out = { ...out, package: pkg };
+  }
+  const models = out?.models;
+  if (models && typeof models === 'object') {
+    let changed = false;
+    const next: Record<string, any> = {};
+    for (const [mid, model] of Object.entries(models)) {
+      const provider = (model as any)?.provider;
+      if (provider && typeof provider.package === 'string') {
+        const pkg = currentPackageFor(provider.package);
+        if (pkg !== provider.package) {
+          next[mid] = { ...(model as any), provider: { ...provider, package: pkg } };
+          changed = true;
+          continue;
+        }
+      }
+      next[mid] = model;
+    }
+    if (changed) out = { ...out, models: next };
+  }
+  return out;
+}
 /**
  * The map a push writes: the render set with client-unloadable packages
  * substituted (see CLIENT_PACKAGE_FALLBACK). Deterministic from the book, so the
  * drift badge and the write compare the exact same thing.
  */
+/** Strip credential-bearing fields before a client-facing materialization. */
+function stripSecretsFromDefNode(node: any): any {
+  if (!node || typeof node !== 'object') return node;
+  const out: Record<string, any> = { ...node };
+  if (out.settings && typeof out.settings === 'object') {
+    const { apiKey: _k, ...rest } = out.settings;
+    out.settings = rest;
+  }
+  if (out.options && typeof out.options === 'object') {
+    const { apiKey: _k, ...rest } = out.options;
+    out.options = rest;
+  }
+  const redactHeaders = (headers: Record<string, unknown> | undefined) => {
+    if (!headers || typeof headers !== 'object') return headers;
+    return Object.fromEntries(
+      Object.entries(headers).map(([k, v]) =>
+        /authorization|api[-_]?key|-key\b|token|secret|cookie|password|credential|bearer|signature|x-auth|proxy-auth|\bauth\b|\bkey\b/i.test(
+          k,
+        )
+          ? [k, '[REDACTED]']
+          : [k, v],
+      ),
+    );
+  };
+  if (out.headers) out.headers = redactHeaders(out.headers);
+  if (out.settings?.headers) {
+    out.settings = { ...out.settings, headers: redactHeaders(out.settings.headers) };
+  }
+  if (out.options?.headers) {
+    out.options = { ...out.options, headers: redactHeaders(out.options.headers) };
+  }
+  if (out.models && typeof out.models === 'object') {
+    const nextModels: Record<string, any> = {};
+    for (const [mid, model] of Object.entries(out.models)) {
+      nextModels[mid] = stripSecretsFromDefNode(model);
+    }
+    out.models = nextModels;
+  }
+  return out;
+}
+
+function resolveClientPackage(pkg: string): string {
+  const normalized = currentPackageFor(pkg);
+  const fallback = clientPackageFallbackFor(wireFor(normalized));
+  return opencodePackageFor(fallback ?? normalized);
+}
+
 export function clientRenderableDefs(providers: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
-  for (const [id, node] of Object.entries(providers)) {
-    const pkg = typeof node?.package === 'string' ? node.package : undefined;
-    const fallback = pkg ? CLIENT_PACKAGE_FALLBACK[wireFor(pkg)] : undefined;
-    out[id] = fallback && fallback !== pkg ? { ...node, package: fallback } : node;
+  for (const [id, rawNode] of Object.entries(providers)) {
+    const node = currentPackageNode(rawNode);
+    out[id] = opencodePackageNode(stripSecretsFromDefNode(node));
+  }
+  return out;
+}
+
+/**
+ * The client file speaks opencode's SDK package vocabulary, not OCR's protocol
+ * ids: translate provider- and model-level packages on the way out (the
+ * inverse table lives in `provider-package.ts`).
+ */
+function opencodePackageNode(node: any): any {
+  let out = node;
+  if (typeof node?.package === 'string') {
+    out = { ...out, package: resolveClientPackage(node.package) };
+  }
+  if (node?.models && typeof node.models === 'object') {
+    let changed = false;
+    const models: Record<string, any> = {};
+    for (const [mid, model] of Object.entries(node.models)) {
+      const provider = (model as any)?.provider;
+      if (provider && typeof provider.package === 'string') {
+        models[mid] = { ...(model as any), provider: { ...provider, package: resolveClientPackage(provider.package) } };
+        changed = true;
+        continue;
+      }
+      models[mid] = model;
+    }
+    if (changed) out = { ...out, models };
   }
   return out;
 }
@@ -180,11 +290,31 @@ export function materializeDefs(
   // actually needs to undo. Best-effort — a backup failure never blocks the
   // converge (the defs book is the truth and is still intact on disk).
   try {
-    fs.copyFileSync(configPath, `${configPath}${CLIENT_BACKUP_SUFFIX}`);
-    // copyFileSync lands the copy with umask defaults (0644 on POSIX) — the
-    // backup can carry secret-bearing headers, so it is restricted to the
-    // owner like the auth-side backup. Best-effort (Windows chmod advisory).
-    fs.chmodSync(`${configPath}${CLIENT_BACKUP_SUFFIX}`, 0o600);
+    // Create the backup with owner-only mode from the first byte — copyFileSync
+    // inherits the source mode (often 0644) and leaves a wide window before
+    // chmod. wx fails if a stale backup already exists; unlink then retry.
+    const backup = `${configPath}${CLIENT_BACKUP_SUFFIX}`;
+    const payload = fs.readFileSync(configPath);
+    const writeBackup = () => {
+      const fd = fs.openSync(backup, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, payload);
+      } finally {
+        fs.closeSync(fd);
+      }
+    };
+    try {
+      writeBackup();
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') throw err;
+      fs.unlinkSync(backup);
+      writeBackup();
+    }
+    try {
+      fs.chmodSync(backup, 0o600);
+    } catch {
+      /* Windows chmod is advisory */
+    }
   } catch {
     // missing client file (first write) / unreadable — nothing to preserve
   }

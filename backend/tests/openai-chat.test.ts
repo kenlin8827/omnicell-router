@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { serve } from 'bun';
-import { OpenAICompatibleProvider } from '../src/providers/openai-compatible.js';
+import { OpenAIChatProvider } from '../src/providers/executors/openai-chat.js';
 import { ModelRegistration, ProviderConfig } from '../src/config/types.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
+import { toIR } from './helpers/ir.js';
 
 function makeModel(): ModelRegistration {
   return {
@@ -11,7 +12,7 @@ function makeModel(): ModelRegistration {
     upstreamModel: 'upstream-model-id',
     tier: 'plus',
     isDefaultInTier: false,
-    wire: 'openai',
+    wire: 'openai-chat',
     pricing: { input: 1, output: 2, cacheRead: 0.25 },
   };
 }
@@ -23,7 +24,7 @@ function makeModel(): ModelRegistration {
  * upstreams (e.g. Alibaba) reject stream_options without stream:true with a 400.
  * A streamed client is served by `createStream` instead, which sets both.
  */
-describe('OpenAICompatibleProvider payload shaping', () => {
+describe('OpenAIChatProvider payload shaping', () => {
   test('createCompletion strips stream_options from a non-streaming payload', async () => {
     let received: any = null;
     const server = serve({
@@ -46,11 +47,11 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'user', content: 'hi' }],
@@ -58,8 +59,9 @@ describe('OpenAICompatibleProvider payload shaping', () => {
         stream_options: { include_usage: true },
       } as ChatCompletionRequest;
 
-      const res = await provider.createCompletion(request, makeModel());
-      expect(res.object).toBe('chat.completion');
+      const res = await provider.createCompletion(toIR(request), makeModel());
+      expect(res.status).toBe('completed');
+      expect(res.output[0]).toMatchObject({ type: 'message', content: [{ type: 'text', text: 'ok' }] });
       expect(received).not.toBeNull();
       expect(received.stream).toBe(false);
       expect(received.stream_options).toBeUndefined();
@@ -92,11 +94,11 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'user', content: 'hi' }],
@@ -106,14 +108,14 @@ describe('OpenAICompatibleProvider payload shaping', () => {
 
       // false → strip temperature (top_p has no capability flag, so it still passes through)
       const stripped = { ...makeModel(), temperature: false as const };
-      await provider.createCompletion(request, stripped);
+      await provider.createCompletion(toIR(request), stripped);
       expect(received.temperature).toBeUndefined();
       expect(received.top_p).toBe(0.9);
 
       // true / undefined → passed through unchanged
-      await provider.createCompletion(request, { ...makeModel(), temperature: true });
+      await provider.createCompletion(toIR(request), { ...makeModel(), temperature: true });
       expect(received.temperature).toBe(1);
-      await provider.createCompletion(request, makeModel());
+      await provider.createCompletion(toIR(request), makeModel());
       expect(received.temperature).toBe(1);
     } finally {
       server.stop(true);
@@ -142,20 +144,21 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'user', content: 'hi' }],
       };
 
-      const stream = await provider.createStream(request, makeModel());
-      const chunks = [];
-      for await (const chunk of stream) chunks.push(chunk);
-      expect(chunks.length).toBe(1);
+      const stream = await provider.createStream(toIR(request), makeModel());
+      const events = [];
+      for await (const event of stream) events.push(event);
+      expect(events.some((event) => event.type === 'response.output_text.delta' && event.text === 'ok')).toBe(true);
+      expect(events.at(-1)?.type).toBe('response.completed');
       expect(received.stream).toBe(true);
       expect(received.stream_options).toEqual({ include_usage: true });
     } finally {
@@ -185,18 +188,18 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'user', content: 'hi' }],
         reasoning_effort: 'high',
       } as ChatCompletionRequest;
 
-      await provider.createCompletion(request, makeModel());
+      await provider.createCompletion(toIR(request), makeModel());
       expect(received.reasoning_effort).toBe('high');
     } finally {
       server.stop(true);
@@ -221,18 +224,18 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'user', content: 'hi' }],
         reasoning_effort: 'medium',
       } as ChatCompletionRequest;
 
-      const stream = await provider.createStream(request, makeModel());
+      const stream = await provider.createStream(toIR(request), makeModel());
       for await (const _ of stream) { /* drain */ }
       expect(received.reasoning_effort).toBe('medium');
     } finally {
@@ -240,7 +243,7 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     }
   });
 
-  // P1.3 regression removed: the openai-compatible provider used to
+  // P1.3 regression removed: the openai-chat provider used to
   // translate `max` → `xhigh` here, but the orchestrator's downgrade step
   // already collapses `max` to the model's highest supported tier before
   // reaching this provider. A `max` that survives is a config error and
@@ -267,18 +270,18 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'user', content: 'hi' }],
         reasoning_effort: 'high',
       } as ChatCompletionRequest;
 
-      await provider.createCompletion(request, makeModel());
+      await provider.createCompletion(toIR(request), makeModel());
       expect(received.reasoning_effort).toBe('high');
     } finally {
       server.stop(true);
@@ -287,8 +290,9 @@ describe('OpenAICompatibleProvider payload shaping', () => {
 
   /**
    * The OpenAI `developer` role (o1-era) is 400-rejected by the long tail of
-   * OpenAI-compatible servers. Default on this wire: rewrite to `system`
-   * (order + content preserved); `supportsDeveloperRole: true` opts out.
+   * OpenAI-compatible servers. The IR -> Chat projection now folds all
+   * system/developer blocks into ONE system message (text preserved), so the
+   * `supportsDeveloperRole` opt-out is inert; see the assertions below.
    */
   test('createCompletion rewrites developer role to system by default, passthrough when opted in', async () => {
     let received: any = null;
@@ -312,11 +316,11 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [
@@ -326,17 +330,22 @@ describe('OpenAICompatibleProvider payload shaping', () => {
         ],
       } as ChatCompletionRequest;
 
-      // undefined (safe default) and false → rewritten to system
-      await provider.createCompletion(request, makeModel());
+      // IR folds every system/developer block into ONE system message (prompt /
+      // cache integrity: cross-provider failover must not duplicate the prompt).
+      // developer → system rewrite is therefore a no-op on the already-folded
+      // system role; supportsDeveloperRole only matters when a future adapter
+      // emits developer parts that still need a vendor that accepts them.
+      await provider.createCompletion(toIR(request), makeModel());
       expect(received.messages).toEqual([
-        { role: 'system', content: 'instructions' },
+        { role: 'system', content: 'instructions\n\nmore instructions' },
         { role: 'user', content: 'hi' },
-        { role: 'system', content: 'more instructions' },
       ]);
 
-      // true → passthrough verbatim
-      await provider.createCompletion(request, { ...makeModel(), supportsDeveloperRole: true });
-      expect(received.messages).toEqual(request.messages);
+      await provider.createCompletion(toIR(request), { ...makeModel(), supportsDeveloperRole: true });
+      expect(received.messages).toEqual([
+        { role: 'system', content: 'instructions\n\nmore instructions' },
+        { role: 'user', content: 'hi' },
+      ]);
     } finally {
       server.stop(true);
     }
@@ -364,17 +373,17 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     try {
       const config: ProviderConfig = {
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       };
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = new OpenAIChatProvider(config);
       const request: ChatCompletionRequest = {
         model: 'test-provider/test-model',
         messages: [{ role: 'developer', content: 'instructions' }],
       } as ChatCompletionRequest;
 
-      const stream = await provider.createStream(request, makeModel());
+      const stream = await provider.createStream(toIR(request), makeModel());
       for await (const _ of stream) { /* drain */ }
       expect(received.messages).toEqual([{ role: 'system', content: 'instructions' }]);
     } finally {

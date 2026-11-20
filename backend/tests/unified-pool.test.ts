@@ -7,6 +7,7 @@ import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { SessionManager } from '../src/session/session-manager.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/index.js';
+import { chatOf, processIR } from './helpers/ir.js';
 
 // ─── Shared fixtures ────────────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ describe('Unified pool: last-candidate force-try', () => {
 
     // Mock upstream is actually healthy — force-trying the last candidate
     // must succeed instead of failing with zero attempts.
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator,{
       model: 'combo-all-down',
       messages: [{ role: 'user', content: 'Force try' }],
     } as any);
@@ -78,7 +79,7 @@ describe('Unified pool: last-candidate force-try', () => {
       cb.trip(id, { reason: 'pre-tripped', cooldownMs: 3600000 });
     }
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator,{
       model: 'lite',
       messages: [{ role: 'user', content: 'Force try tier' }],
     } as any);
@@ -127,7 +128,7 @@ describe('Unified breaker gate: peek vs consume', () => {
 
     // Request 1: canary via combo leader position — dry checks must not have
     // eaten the probe; canary succeeds → CLOSED.
-    const r1 = await orchestrator.process({
+    const r1 = await processIR(orchestrator,{
       model: 'combo-recover',
       messages: [{ role: 'user', content: 'Recovery probe' }],
     } as any);
@@ -135,7 +136,7 @@ describe('Unified breaker gate: peek vs consume', () => {
     assert.equal(cb.getPairBreaker('lite-1', '')?.getState(), 'CLOSED');
 
     // Request 2: fully healthy again — normal serving.
-    const r2 = await orchestrator.process({
+    const r2 = await processIR(orchestrator,{
       model: 'combo-recover',
       messages: [{ role: 'user', content: 'After recovery' }],
     } as any);
@@ -198,14 +199,14 @@ describe('Unified session modes: explicit wins', () => {
     // Turn 2 extends the REAL chain (captured assistant content) so zero-header
     // resolution maps both turns to the same session.
     const baseMessages = [{ role: 'user', content: 'Raise the ceiling' }];
-    const r1 = await orchestrator.process({ model: 'pro', messages: baseMessages } as any);
+    const r1 = await processIR(orchestrator,{ model: 'pro', messages: baseMessages } as any);
     const messages = [
       ...baseMessages,
-      { role: 'assistant', content: r1.response!.choices[0]!.message!.content },
+      { role: 'assistant', content: chatOf(r1.response).choices[0]!.message!.content },
       { role: 'user', content: 'now explicit lite' },
     ];
 
-    const result = await orchestrator.process({ model: 'lite-1', messages } as any);
+    const result = await processIR(orchestrator,{ model: 'lite-1', messages } as any);
 
     assert.equal(result.sessionId, r1.sessionId); // same session, high ceiling
     assert.equal(result.modelUsed, 'lite-1'); // exactly this model — no ratchet override
@@ -219,17 +220,17 @@ describe('Unified session modes: explicit wins', () => {
     // Turn 1 pins the tier default (lite-1); turn 2 explicitly names the
     // SECONDARY lite model on the SAME session (real chain plugin).
     const baseMessages = [{ role: 'user', content: 'Session start' }];
-    const r1 = await orchestrator.process({ model: 'lite', messages: baseMessages } as any);
+    const r1 = await processIR(orchestrator,{ model: 'lite', messages: baseMessages } as any);
     const before = (orchestrator.getSessionManager() as any).sessions.get(r1.sessionId);
     assert.equal(before.maxTier, 'lite');
     assert.equal(before.pinnedModel, 'lite-1');
 
     const messages = [
       ...baseMessages,
-      { role: 'assistant', content: r1.response!.choices[0]!.message!.content },
+      { role: 'assistant', content: chatOf(r1.response).choices[0]!.message!.content },
       { role: 'user', content: 'switch to lite-2' },
     ];
-    const result = await orchestrator.process({ model: 'lite-2', messages } as any);
+    const result = await processIR(orchestrator,{ model: 'lite-2', messages } as any);
     assert.equal(result.sessionId, r1.sessionId);
     assert.equal(result.modelUsed, 'lite-2');
 
@@ -246,7 +247,7 @@ describe('429 hard-trip with explicit Retry-After', () => {
     const config = makeConfig();
     const { registry, orchestrator } = makeOrchestrator(config);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator,{
       model: 'lite',
       messages: [{ role: 'user', content: 'Hit the limit' }],
       __simulate_error_model__: 'lite-1',
@@ -267,7 +268,7 @@ describe('429 hard-trip with explicit Retry-After', () => {
     breaker.trip('simulated rate limit', 'RATE_LIMITED', 60);
     await new Promise(r => setTimeout(r, 90));
 
-    const r2 = await orchestrator.process({
+    const r2 = await processIR(orchestrator,{
       model: 'lite',
       messages: [{ role: 'user', content: 'After cooldown' }],
     } as any);
@@ -285,7 +286,7 @@ describe('Unified attempt cap: explicit/combo use chain length', () => {
     });
     const { orchestrator } = makeOrchestrator(config);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator,{
       model: 'combo-long',
       messages: [{ role: 'user', content: 'Deep failover' }],
       __simulate_error_model__: 'lite-1',
@@ -296,7 +297,7 @@ describe('Unified attempt cap: explicit/combo use chain length', () => {
     assert.deepEqual(result.failoverPath, ['lite-1', 'lite-2']);
 
     // Both first members hard-down (402 trips them) → third must still serve
-    const result2 = await orchestrator.process({
+    const result2 = await processIR(orchestrator,{
       model: 'combo-long',
       messages: [{ role: 'user', content: 'Deeper failover' }],
       __simulate_error_model__: 'lite-2',
@@ -318,7 +319,7 @@ describe('P1 hardening: dead combos fail fast, reserved ids never route', () => 
 
     await assert.rejects(
       async () =>
-        orchestrator.process({
+        processIR(orchestrator,{
           model: 'combo-dead',
           messages: [{ role: 'user', content: 'Dead combo' }],
         } as any),

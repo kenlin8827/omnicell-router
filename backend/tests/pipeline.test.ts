@@ -5,7 +5,8 @@ import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
-import type { StreamRelay } from '../src/utils/chat-stream.js';
+import type { StreamRelay } from '../src/utils/stream-relay.js';
+import { processIR } from './helpers/ir.js';
 
 describe('End-to-End Pipeline & FinOps Orchestration', () => {
   const config = loadConfig();
@@ -19,7 +20,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
       messages: [{ role: 'user', content: 'hello there' }],
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
     assert.strictEqual(result.tierUsed, 'lite');
     // Cost accounting was stripped from the execution contract; only routing
     // facts remain on the result.
@@ -33,7 +34,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
       response_format: { type: 'json_object' },
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
     assert.strictEqual(result.tierUsed, 'lite');
     assert.strictEqual(result.fallbackOccurred, false);
   });
@@ -58,7 +59,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
       ],
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
     assert.strictEqual(result.tierUsed, 'plus', 'tools alone routes to the plus baseline, not a lite lead');
     assert.strictEqual(result.fallbackOccurred, false, 'no discarded lite generation');
     assert.strictEqual(result.fallbackReason, undefined);
@@ -83,7 +84,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
       },
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
     assert.strictEqual(result.fallbackOccurred, true);
     assert.strictEqual(result.tierUsed, 'plus');
     assert.ok(result.fallbackReason?.includes('Missing required key'));
@@ -120,7 +121,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
       },
     };
 
-    const result = await orchestrator.process(req, {}, relay);
+    const result = await processIR(orchestrator, req, {}, relay);
     assert.strictEqual(result.fallbackOccurred, true);
     assert.strictEqual(result.tierUsed, 'plus');
     assert.strictEqual(frames.length, 0, 'mock execution must never feed the relay');
@@ -146,8 +147,8 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
     { ...config } as any,
     true, // mockMode = true
     [
-      { name: 'alpha', type: 'openai-compatible', baseUrl: 'https://alpha.example.com/v1', apiKey: 'x' },
-      { name: 'beta', type: 'openai-compatible', baseUrl: 'https://beta.example.com/v1', apiKey: 'x' },
+      { name: 'alpha', type: 'openai-chat', baseUrl: 'https://alpha.example.com/v1', apiKey: 'x' },
+      { name: 'beta', type: 'openai-chat', baseUrl: 'https://beta.example.com/v1', apiKey: 'x' },
     ]
   );
   const tracker = new FinOpsTracker();
@@ -166,7 +167,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   registry.registerModel(mk('beta/qwen-test-flash', 'beta', 'lite', 1.0));
 
   it('resolves a bare upstream name to the registered model (cheapest first)', async () => {
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'qwen-test-flash',
       messages: [{ role: 'user', content: 'hello' }],
     } as ChatCompletionRequest);
@@ -184,7 +185,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   });
 
   it('pins the provider via the MITM target host when the client dialed it', async () => {
-    const result = await orchestrator.process(
+    const result = await processIR(orchestrator,
       {
         model: 'qwen-test-flash',
         messages: [{ role: 'user', content: 'hello' }],
@@ -196,7 +197,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   });
 
   it('host matching is case- and port-insensitive', async () => {
-    const result = await orchestrator.process(
+    const result = await processIR(orchestrator,
       {
         model: 'qwen-test-flash',
         messages: [{ role: 'user', content: 'hello' }],
@@ -207,7 +208,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   });
 
   it('falls back to cheapest-first when the target host matches no provider', async () => {
-    const result = await orchestrator.process(
+    const result = await processIR(orchestrator,
       {
         model: 'qwen-test-flash',
         messages: [{ role: 'user', content: 'hello' }],
@@ -221,7 +222,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
     // B2 negative: the Fastify-shaped context carries client-controlled
     // `headers`. Claiming alpha (the pricier same-name sibling) there must
     // change nothing — resolution stays cheapest-hit-first (beta).
-    const result = await orchestrator.process(
+    const result = await processIR(orchestrator,
       {
         model: 'qwen-test-flash',
         messages: [{ role: 'user', content: 'hello' }],
@@ -238,7 +239,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
     // the pool filter finding zero candidates.
     await assert.rejects(
       () =>
-        orchestrator.process(
+        processIR(orchestrator,
           {
             model: 'qwen-test-flash',
             messages: [{ role: 'user', content: 'hello' }],
@@ -254,7 +255,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   });
 
   it('keeps the classifier contract for an unregistered bare name', async () => {
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'no-such-upstream-name',
       messages: [{ role: 'user', content: 'hello' }],
     } as ChatCompletionRequest);

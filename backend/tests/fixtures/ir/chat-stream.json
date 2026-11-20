@@ -1,0 +1,29 @@
+[
+  {
+    "id": "chatcmpl-fixture",
+    "object": "chat.completion.chunk",
+    "created": 1,
+    "model": "fixture-model",
+    "choices": [{ "index": 0, "delta": { "role": "assistant", "content": "hel" }, "finish_reason": null }]
+  },
+  {
+    "id": "chatcmpl-fixture",
+    "object": "chat.completion.chunk",
+    "created": 1,
+    "model": "fixture-model",
+    "choices": [{ "index": 0, "delta": { "content": "lo" }, "finish_reason": "stop" }]
+  },
+  {
+    "id": "chatcmpl-fixture",
+    "object": "chat.completion.chunk",
+    "created": 1,
+    "model": "fixture-model",
+    "choices": [],
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 3,
+      "total_tokens": 13,
+      "prompt_tokens_details": { "cached_tokens": 4 }
+    }
+  }
+]

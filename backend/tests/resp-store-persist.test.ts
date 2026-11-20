@@ -16,16 +16,23 @@ function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-resp-persist-'));
 }
 
-function node(id: string, parent: string | null, content: string, createdAt = Date.now()): RespNode {
+function node(id: string, parent: string | null, content: string, createdAt = Date.now(), sessionId = 'sess_t'): RespNode {
   return {
+    v: 2,
     id,
     parent,
-    sessionId: 'sess_t',
+    sessionId,
     model: 'mock-model',
-    input: [{ role: 'user', content }],
-    assistant: { role: 'assistant', content: `a-${content}` },
+    input: [{ type: 'message', role: 'user', content: [{ type: 'text', text: content }] }],
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'text', text: `a-${content}` }] }],
     createdAt,
   };
+}
+
+function texts(items: RespNode['input']): string[] {
+  return items.map((item) => item.type === 'message'
+    ? item.content.map((part) => part.type === 'text' ? part.text : '').join('')
+    : '');
 }
 
 describe('RespStore L2 recovery log', () => {
@@ -43,19 +50,14 @@ describe('RespStore L2 recovery log', () => {
     assert.strictEqual(stats.loaded, 3);
     assert.strictEqual(stats.malformed, 0);
 
-    const rebuilt = b.buildMessages('r2');
+    const rebuilt = b.buildInput('r2');
     assert.ok(rebuilt);
-    // buildMessages(parentId) returns everything THROUGH the parent turn
-    // (its input delta AND its assistant reply); the caller appends the
-    // current turn's delta on top — frozen step-3b semantics.
-    assert.deepStrictEqual(
-      rebuilt.messages.map((m) => `${m.role}:${m.content}`),
-      ['user:one', 'assistant:a-one', 'user:two', 'assistant:a-two']
-    );
-    const alt = b.buildMessages('r3');
+    // The rebuilt canonical input includes the parent's delta and assistant output.
+    assert.deepStrictEqual(texts(rebuilt.input), ['one', 'a-one', 'two', 'a-two']);
+    const alt = b.buildInput('r3');
     assert.ok(alt);
-    assert.strictEqual(alt.messages.length, 4); // tree branch intact
-    assert.strictEqual(alt.messages[2].content, 'two-alt');
+    assert.strictEqual(alt.input.length, 4); // tree branch intact
+    assert.strictEqual(texts(alt.input)[2], 'two-alt');
   });
 
   it('replay drops TTL-expired nodes', async () => {
@@ -94,7 +96,7 @@ describe('RespStore L2 recovery log', () => {
     const raw = fs.readFileSync(file, 'utf8');
     assert.ok(raw.includes('"small"'));
     assert.ok(!raw.includes('"big"'));
-    assert.ok(s.buildMessages('small')); // L1 unaffected by the skip
+    assert.ok(s.buildInput('small')); // L1 unaffected by the skip
 
     const t = new RespStore();
     const stats = t.enablePersistence({ filePath: file, maxNodeBytes: 400 });
@@ -112,17 +114,23 @@ describe('RespStore L2 recovery log', () => {
     assert.strictEqual(stats.loaded, 0);
     s.append(node('r1', null, 'ok')); // must not throw
     await s.flushPersistence(); // must resolve despite the failed write
-    assert.ok(s.buildMessages('r1')); // L1 is the authority
+    assert.ok(s.buildInput('r1')); // L1 is the authority
   });
 
   it('compaction trims to the byte budget (oldest first)', async () => {
     const file = path.join(tmpDir(), 'chain.jsonl');
     const s = new RespStore();
-    // ~524B budget: three ~220B lines cannot all fit — the oldest must go.
-    s.enablePersistence({ filePath: file, maxTotalMB: 0.0005 });
-    s.append(node('r1', null, 'one'));
-    s.append(node('r2', 'r1', 'two'));
-    s.append(node('r3', 'r2', 'three'));
+    const createdAt = Date.now();
+    const first = node('r1', null, 'one', createdAt);
+    const second = node('r2', 'r1', 'two', createdAt + 1);
+    const third = node('r3', 'r2', 'three', createdAt + 2);
+    const retainedBytes = [second, third]
+      .reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry) + '\n'), 0);
+    // Fit exactly the newest two records, independent of canonical field sizes.
+    s.enablePersistence({ filePath: file, maxTotalMB: retainedBytes / (1024 * 1024) });
+    s.append(first);
+    s.append(second);
+    s.append(third);
     await s.flushPersistence();
     await s.compact();
 
@@ -145,5 +153,32 @@ describe('RespStore L2 recovery log', () => {
 
     const t = new RespStore();
     assert.strictEqual(t.enablePersistence({ filePath: file }).loaded, 0);
+  });
+
+  it('deleteBySession purges ONE session (memory + recovery log), leaving other chains intact', async () => {
+    const file = path.join(tmpDir(), 'chain.jsonl');
+    const s = new RespStore();
+    s.enablePersistence({ filePath: file });
+    s.append(node('r1', null, 'one', Date.now(), 'sess_a'));
+    s.append(node('r2', 'r1', 'two', Date.now(), 'sess_a'));
+    s.append(node('r9', null, 'other', Date.now(), 'sess_b'));
+    await s.flushPersistence();
+
+    assert.strictEqual(s.deleteBySession('sess_a'), 2);
+    assert.strictEqual(s.size, 1);
+    assert.equal(s.buildInput('r2'), null, 'the purged chain cannot resolve a parent');
+    assert.ok(s.buildInput('r9'), 'another session\'s chain is untouched');
+    assert.strictEqual(s.deleteBySession('sess_a'), 0, 'idempotent');
+
+    // The purge compacts fire-and-forget; `compact()` joins the in-flight run
+    // deterministically (it awaits the same promise the purge started).
+    await s.compact();
+
+    const t = new RespStore();
+    assert.deepStrictEqual(
+      [t.enablePersistence({ filePath: file }).loaded, t.get('r9')?.id],
+      [1, 'r9'],
+      'the purged conversation is not replayed on the next boot',
+    );
   });
 });

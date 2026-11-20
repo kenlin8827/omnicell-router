@@ -5,6 +5,7 @@ import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { ChatCompletionRequest, ChatCompletionMessage } from '../src/types/openai.js';
+import { processIR } from './helpers/ir.js';
 
 /**
  * Trace `request.userPromptSummary` names the user message THAT TRIGGERED the
@@ -26,7 +27,7 @@ const tool = (text: string): ChatCompletionMessage => ({ role: 'tool', content: 
 
 async function turn(...messages: ChatCompletionMessage[]) {
   const req: ChatCompletionRequest = { model: 'auto', messages };
-  return orchestrator.process(req);
+  return processIR(orchestrator, req);
 }
 
 function lastTrace() {

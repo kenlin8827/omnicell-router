@@ -20,6 +20,7 @@ import { getEnvPaths } from '../src/config/env.js';
 import { flushRoutingLedgerForTests } from '../src/router/routing-ledger.js';
 import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../src/config/defaults.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
+import { evaluateIR, toIR } from './helpers/ir.js';
 
 // ---------------------------------------------------------------------------
 // Layer 2 rides the gateway's own System One protocol — no vendor
@@ -98,13 +99,13 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cap', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-cap', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-cap/jev', provider: 'l2-cap', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-cap/jev', timeoutMs: 5000 }, registry);
+      const result = await evaluateIR(request, { enabled: true, model: 'l2-cap/jev', timeoutMs: 5000 }, registry);
       expect(result).not.toBeNull();
       await new Promise((r) => setTimeout(r, 100));
 
@@ -133,11 +134,11 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cap2', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-cap2', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-cap2/jev', provider: 'l2-cap2', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      await Layer2Decision.evaluate(
+      await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'l2-cap2/jev', timeoutMs: 5000 },
         registry
@@ -162,11 +163,11 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cap3', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
+        [{ name: 'l2-cap3', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
         [{ id: 'l2-cap3/jev', provider: 'l2-cap3', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'l2-cap3/jev', timeoutMs: 150 },
         registry
@@ -192,7 +193,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-native', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-native', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-native/jev',
@@ -206,7 +207,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         request,
         { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 },
         registry
@@ -245,7 +246,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-native', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-native', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-native/jev',
@@ -261,7 +262,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const decisionConfig = { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 } as const;
 
       // Wire attempt fails → the console surface gets a failure record.
-      expect(await Layer2Decision.evaluate(request, decisionConfig, registry)).toBeNull();
+      expect(await evaluateIR(request, decisionConfig, registry)).toBeNull();
       const failed = Layer2Decision.getLastOutcome();
       expect(failed).not.toBeNull();
       expect(failed!.ok).toBe(false);
@@ -270,14 +271,14 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
 
       // Next attempt succeeds → the failure record is replaced.
       fail = false;
-      expect(await Layer2Decision.evaluate(request, decisionConfig, registry)).not.toBeNull();
+      expect(await evaluateIR(request, decisionConfig, registry)).not.toBeNull();
       const okOutcome = Layer2Decision.getLastOutcome();
       expect(okOutcome!.ok).toBe(true);
       expect(okOutcome!.latencyMs).toBeGreaterThanOrEqual(0);
 
       // A cache hit is NOT a wire attempt: the record must stay untouched.
       const before = Layer2Decision.getLastOutcome()!.ts;
-      expect(await Layer2Decision.evaluate(request, decisionConfig, registry)).not.toBeNull();
+      expect(await evaluateIR(request, decisionConfig, registry)).not.toBeNull();
       expect(Layer2Decision.getLastOutcome()!.ts).toBe(before);
     } finally {
       upstream.stop(true);
@@ -306,7 +307,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
         [
           {
             name: 'l2-chat',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -325,7 +326,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Decision.evaluate(request, { enabled: true, timeoutMs: 5000 }, registry, 'l2-chat/model');
+      const result = await evaluateIR(request, { enabled: true, timeoutMs: 5000 }, registry, 'l2-chat/model');
 
       expect(result).not.toBeNull();
       expect(result!.targetTier).toBe('ultra');
@@ -353,7 +354,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cache', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-cache', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-cache/jev',
@@ -368,8 +369,8 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const config2 = { enabled: true, model: 'l2-cache/jev', timeoutMs: 5000 };
 
-      const first = await Layer2Decision.evaluate(request, config2, registry);
-      const second = await Layer2Decision.evaluate(request, config2, registry);
+      const first = await evaluateIR(request, config2, registry);
+      const second = await evaluateIR(request, config2, registry);
 
       expect(first!.targetTier).toBe('plus');
       expect(second!.targetTier).toBe('plus');
@@ -397,7 +398,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
         [
           {
             name: 'l2-fail',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -417,13 +418,13 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       // Decision off.
-      expect(await Layer2Decision.evaluate(request, { enabled: false, model: 'l2-fail/model' }, registry)).toBeNull();
+      expect(await evaluateIR(request, { enabled: false, model: 'l2-fail/model' }, registry)).toBeNull();
       // No model configured anywhere.
-      expect(await Layer2Decision.evaluate(request, { enabled: true }, registry)).toBeNull();
+      expect(await evaluateIR(request, { enabled: true }, registry)).toBeNull();
       // Model not registered.
-      expect(await Layer2Decision.evaluate(request, { enabled: true, model: 'nope/absent' }, registry)).toBeNull();
+      expect(await evaluateIR(request, { enabled: true, model: 'nope/absent' }, registry)).toBeNull();
       // Upstream 500 → upstream_error is swallowed, routing falls back.
-      expect(await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-fail/model', timeoutMs: 5000 }, registry)).toBeNull();
+      expect(await evaluateIR(request, { enabled: true, model: 'l2-fail/model', timeoutMs: 5000 }, registry)).toBeNull();
     } finally {
       upstream.stop(true);
     }
@@ -442,7 +443,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
         [
           {
             name: 'l2-slow',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 60_000,
@@ -462,7 +463,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const request: ChatCompletionRequest = { model: 'user', messages: [{ role: 'user', content: PROOF }] };
 
       const started = Date.now();
-      const result = await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-slow/model', timeoutMs: 300 }, registry);
+      const result = await evaluateIR(request, { enabled: true, model: 'l2-slow/model', timeoutMs: 300 }, registry);
       expect(result).toBeNull();
       expect(Date.now() - started).toBeLessThan(3000);
     } finally {
@@ -486,7 +487,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-late', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
+        [{ name: 'l2-late', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
         [
           {
             id: 'l2-late/jev',
@@ -501,10 +502,10 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const decisionCfg = { enabled: true, model: 'l2-late/jev', timeoutMs: 150 };
 
-      expect(await Layer2Decision.evaluate(request, decisionCfg, registry)).toBeNull();
+      expect(await evaluateIR(request, decisionCfg, registry)).toBeNull();
       // Immediate re-decision of the identical context: the abandoned call must
       // NOT have cached its answer.
-      expect(await Layer2Decision.evaluate(request, decisionCfg, registry)).toBeNull();
+      expect(await evaluateIR(request, decisionCfg, registry)).toBeNull();
 
       // Let both abandoned upstream calls finish landing.
       await new Promise((r) => setTimeout(r, 1200));
@@ -534,7 +535,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
         [
           {
             name: 'l2-repair',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 60_000,
@@ -553,7 +554,7 @@ describe('Layer 2 decision layer speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-repair/model', timeoutMs: 150 }, registry);
+      const result = await evaluateIR(request, { enabled: true, model: 'l2-repair/model', timeoutMs: 150 }, registry);
       expect(result).toBeNull();
 
       // Wait past the first call's own duration: no repair may have been sent.
@@ -607,7 +608,7 @@ describe('routeAsync wires the Layer 2 decision layer', () => {
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-route', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-route', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-route/jev',
@@ -622,7 +623,7 @@ describe('routeAsync wires the Layer 2 decision layer', () => {
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       const decision = await RouterEngine.routeAsync(
-        request,
+        toIR(request),
         { layer2: { enabled: true, model: 'auto', timeoutMs: 5000 } },
         registry,
         'l2-route/jev' // systemone.defaultModel, reached via model: 'auto'
@@ -637,7 +638,7 @@ describe('routeAsync wires the Layer 2 decision layer', () => {
 
   test('no registry → the default plus baseline stands (decision layer-less callers keep working)', async () => {
     const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
-    const decision = await RouterEngine.routeAsync(request, { layer2: { enabled: true } });
+    const decision = await RouterEngine.routeAsync(toIR(request), { layer2: { enabled: true } });
     expect(decision.layerUsed).toBe('layer0');
     expect(decision.targetTier).toBe('plus');
   });
@@ -657,7 +658,7 @@ describe('routeAsync wires the Layer 2 decision layer', () => {
         [
           {
             name: 'l2-unset',
-            type: 'openai-compatible',
+            type: 'openai-chat',
             baseUrl: `http://localhost:${upstream.port}`,
             apiKey: 'sk-test',
             timeoutMs: 5000,
@@ -679,7 +680,7 @@ describe('routeAsync wires the Layer 2 decision layer', () => {
         messages: [{ role: 'user', content: PROOF }],
       };
 
-      const decision = await RouterEngine.routeAsync(request, { layer2: { enabled: true } }, registry);
+      const decision = await RouterEngine.routeAsync(toIR(request), { layer2: { enabled: true } }, registry);
 
       expect(decision.layerUsed).toBe('layer0');
       expect(decision.targetTier).not.toBe('ultra');
@@ -761,7 +762,7 @@ describe('decision-call capture (requestCapture.enabled master)', () => {
       },
     });
     try {
-      const decisionProvider = { name: 'jc-conv', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
+      const decisionProvider = { name: 'jc-conv', type: 'openai-chat', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
       const decisionModel = {
         id: `${decisionProvider.name}/decider`,
         provider: decisionProvider.name,
@@ -773,7 +774,7 @@ describe('decision-call capture (requestCapture.enabled master)', () => {
         pricing: { input: 1, output: 1, cacheRead: 0 },
       };
       const config = makeConfig(
-        [decisionProvider, { name: 'jc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${execUpstream.port}`, apiKey: 'sk-exec-secret', timeoutMs: 5000 }],
+        [decisionProvider, { name: 'jc-exec', type: 'openai-chat', baseUrl: `http://127.0.0.1:${execUpstream.port}`, apiKey: 'sk-exec-secret', timeoutMs: 5000 }],
         [
           decisionModel,
           { id: 'jc-exec/chat', provider: 'jc-exec', upstreamModel: 'exec-upstream', tier: 'plus', pricing: { input: 1, output: 1, cacheRead: 0 } },
@@ -884,7 +885,7 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
 
   function decisionOnlyConfig(port: number, name = 'je') {
     return makeConfig(
-      [{ name, type: 'openai-compatible', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-je', timeoutMs: 5000 }],
+      [{ name, type: 'openai-chat', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-je', timeoutMs: 5000 }],
       [{ id: `${name}/jev`, provider: name, upstreamModel: 'jev', tier: 'ultra', pricing: PRICING }]
     );
   }
@@ -900,7 +901,7 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
     );
     try {
       const { registry } = bootServer(decisionOnlyConfig(upstream.port));
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je/jev', timeoutMs: 5000, effortDecision: true },
         registry
@@ -911,10 +912,10 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
       expect(result!.effortConfidence).toBeCloseTo(0.88, 10);
       expect(result!.reasonParams?.effort).toBe('high');
       // The wire carried BOTH questions; the effort answer space is the
-      // full 6-level ladder, 'none' included.
+      // full 7-level ladder, 'none' included.
       const wirePayload = JSON.parse(body.messages[1].content.split('\n').slice(1).join('\n'));
       expect(Object.keys(wirePayload.questions).sort()).toEqual(['effort', 'tier']);
-      expect(Object.keys(wirePayload.questions.effort.criteria)).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+      expect(Object.keys(wirePayload.questions.effort.criteria)).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
       expect(wirePayload.questions.effort.type).toBe('choice');
     } finally {
       upstream.stop(true);
@@ -929,7 +930,7 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
     );
     try {
       const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je2'));
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }], reasoning_effort: 'low' },
         { enabled: true, model: 'je2/jev', timeoutMs: 5000, effortDecision: true },
         registry
@@ -954,7 +955,7 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
     );
     try {
       const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je3'));
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je3/jev', timeoutMs: 5000 },
         registry
@@ -977,7 +978,7 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
     });
     try {
       const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je4'));
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je4/jev', timeoutMs: 5000, effortDecision: true },
         registry
@@ -1004,15 +1005,15 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
       const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const on = { enabled: true, model: 'je5/jev', timeoutMs: 5000, effortDecision: true };
 
-      const first = await Layer2Decision.evaluate(req, on, registry);
+      const first = await evaluateIR(req, on, registry);
       expect(first!.effort).toBe('low');
-      const second = await Layer2Decision.evaluate(req, on, registry);
+      const second = await evaluateIR(req, on, registry);
       expect(second!.reason).toContain('[Decision Cache]');
       expect(second!.effort).toBe('low'); // the effort answer survives the cache round-trip
       expect(calls).toBe(1); // the second judgment was served from cache
 
       // Gate OFF: same state, different namespace → a fresh decision layer call, no effort.
-      const off = await Layer2Decision.evaluate(req, { enabled: true, model: 'je5/jev', timeoutMs: 5000 }, registry);
+      const off = await evaluateIR(req, { enabled: true, model: 'je5/jev', timeoutMs: 5000 }, registry);
       expect(off!.effort).toBeUndefined();
       expect(off!.reason).not.toContain('[Decision Cache]');
       expect(calls).toBe(2);
@@ -1038,8 +1039,8 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
     try {
       const config = makeConfig(
         [
-          { name: 'fc-decision', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
-          { name: 'fc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
+          { name: 'fc-decision', type: 'openai-chat', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
+          { name: 'fc-exec', type: 'openai-chat', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
         ],
         [
           // ULTRA keeps the decision layer model out of the pro pool it selects.
@@ -1129,8 +1130,8 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
     try {
       const config = makeConfig(
         [
-          { name: 'fl-decision', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
-          { name: 'fl-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
+          { name: 'fl-decision', type: 'openai-chat', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
+          { name: 'fl-exec', type: 'openai-chat', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
         ],
         [
           { id: 'fl-decision/jev', provider: 'fl-decision', upstreamModel: 'jev', tier: 'ultra', pricing: PRICING },

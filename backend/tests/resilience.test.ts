@@ -13,6 +13,7 @@ import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { createServer } from '../src/server.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
 import { loadConfig } from '../src/config/index.js';
+import { processIR } from './helpers/ir.js';
 
 /**
  * Auth mirror of server.ts preHandler key resolution: when the local
@@ -538,7 +539,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
       __simulate_message__: 'insufficient_quota on primary-plus',
     };
 
-    const result = await orchestrator.process(request);
+    const result = await processIR(orchestrator, request);
 
     // Request should succeed without error!
     assert.ok(result.response);
@@ -560,7 +561,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
       model: 'plus',
       messages: [{ role: 'user', content: 'Follow up question' }],
     };
-    const result2 = await orchestrator.process(req2);
+    const result2 = await processIR(orchestrator, req2);
     assert.equal(result2.modelUsed, 'secondary-plus');
     assert.equal(result2.failoverOccurred, false); // No failover needed, secondary was picked first!
   });
@@ -577,7 +578,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
       messages: [{ role: 'user', content: 'Hello assistant' }],
       router_options: { session_id: sessionId },
     };
-    const res1 = await orchestrator.process(req1);
+    const res1 = await processIR(orchestrator, req1);
     assert.equal(res1.modelUsed, 'primary-plus');
 
     const sessionBefore = orchestrator.getSessionManager().getSession(sessionId);
@@ -608,7 +609,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
       router_options: { session_id: sessionId },
     };
 
-    const res2 = await orchestrator.process(req2);
+    const res2 = await processIR(orchestrator, req2);
 
     // Session must NOT crash; it should auto-heal to secondary-plus!
     assert.equal(res2.modelUsed, 'secondary-plus');

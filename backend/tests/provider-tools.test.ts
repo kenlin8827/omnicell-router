@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAnthropicPayload, anthropicToChatCompletion } from '../src/providers/anthropic.js';
-import { buildGooglePayload, googleToChatCompletion } from '../src/providers/google.js';
-import { buildResponsesPayload, responsesToChatCompletion } from '../src/providers/responses.js';
+import { buildAnthropicPayload, anthropicToChatCompletion } from './helpers/ir.js';
+import { buildGooglePayload, googleToChatCompletion } from './helpers/ir.js';
+import { buildResponsesPayload, responsesToChatCompletion } from './helpers/ir.js';
 import { ChatCompletionRequest, ToolCall } from '../src/types/openai.js';
 import { UpstreamError } from '../src/resilience/error-classifier.js';
 
@@ -58,11 +58,75 @@ describe('Anthropic upstream wire: tools mapping', () => {
     assert.strictEqual(toolTurn.content[0].content, 'a.ts,b.ts');
   });
 
-  it('keeps system prompt + ephemeral cache block and maps tool_choice', () => {
+  it('maps tool_choice without inventing a system cache breakpoint', () => {
     const req = { ...chatRequest, tool_choice: 'auto' as const };
     const p = buildAnthropicPayload(req, model) as any;
-    assert.strictEqual(p.system[0].cache_control.type, 'ephemeral');
+    assert.strictEqual(p.system[0].cache_control, undefined);
     assert.deepStrictEqual(p.tool_choice, { type: 'auto' });
+  });
+
+  it('preserves a client-declared system cache marker including ttl', () => {
+    const p = buildAnthropicPayload(
+      {
+        ...chatRequest,
+        messages: [
+          { role: 'system', content: [{ type: 'text', text: 'You are a coding agent.', cache_control: { type: 'ephemeral', ttl: '1h' } }] },
+          ...chatRequest.messages.slice(1),
+        ],
+      },
+      model,
+    ) as any;
+    assert.deepStrictEqual(p.system[0].cache_control, { type: 'ephemeral', ttl: '1h' });
+  });
+
+
+  it('keeps EVERY system/developer message instead of overwriting the prompt', () => {
+    const p = buildAnthropicPayload(
+      {
+        ...chatRequest,
+        messages: [
+          { role: 'system', content: 'first' },
+          { role: 'user', content: 'u' },
+          { role: 'developer', content: [{ type: 'text', text: 'second' }] },
+          { role: 'user', content: 'v' },
+        ],
+      },
+      model
+    ) as any;
+    assert.strictEqual(p.system[0].text, 'first\n\nsecond');
+  });
+
+  it('joins text parts inside one system message with a blank line', () => {
+    const p = buildAnthropicPayload(
+      {
+        model: 'auto',
+        messages: [{ role: 'system', content: [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }] }],
+      },
+      model
+    ) as any;
+    assert.strictEqual(p.system[0].text, 'first\n\nsecond');
+    const g = buildGooglePayload(
+      {
+        model: 'auto',
+        messages: [{ role: 'system', content: [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }] }],
+      },
+      model
+    ) as any;
+    assert.strictEqual(g.systemInstruction.parts[0].text, 'first\n\nsecond');
+  });
+  it('maps parallel_tool_calls:false onto disable_parallel_tool_use', () => {
+    const p = buildAnthropicPayload({ ...chatRequest, parallel_tool_calls: false }, model) as any;
+    assert.deepStrictEqual(p.tool_choice, { type: 'auto', disable_parallel_tool_use: true });
+
+    const forced = buildAnthropicPayload(
+      { ...chatRequest, tool_choice: 'required', parallel_tool_calls: false },
+      model
+    ) as any;
+    assert.deepStrictEqual(forced.tool_choice, { type: 'any', disable_parallel_tool_use: true });
+
+    // `true` / absent leaves Anthropic's default (parallel allowed) untouched.
+    const allowed = buildAnthropicPayload({ ...chatRequest, parallel_tool_calls: true }, model) as any;
+    assert.strictEqual(allowed.tool_choice, undefined);
   });
 
   it('maps image parts to Anthropic source blocks (base64 + url) and stop to stop_sequences', () => {
@@ -107,6 +171,51 @@ describe('Anthropic upstream wire: tools mapping', () => {
     assert.strictEqual(msg.tool_calls?.[0].function.name, 'read_file');
     assert.strictEqual(JSON.parse(msg.tool_calls?.[0].function.arguments || '{}').path, 'a.ts');
     assert.strictEqual(resp.usage.prompt_tokens, 16, 'uncached + cached = prompt tokens');
+  });
+
+  it('maps json_schema to output_config.format and carries strict tool schemas', () => {
+    const p = buildAnthropicPayload(
+      {
+        ...chatRequest,
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'files', schema: { type: 'object' }, strict: true },
+        },
+        tools: [
+          {
+            type: 'function',
+            function: { name: 'list_files', parameters: { type: 'object' }, strict: true },
+          },
+        ],
+      },
+      model
+    ) as any;
+    assert.deepStrictEqual(p.output_config, {
+      format: { type: 'json_schema', schema: { type: 'object' } },
+    });
+    assert.strictEqual(p.tools[0].strict, true);
+  });
+
+  it('flattens text-part tool results to text instead of JSON-stringifying them', () => {
+    const p = buildAnthropicPayload(
+      {
+        ...chatRequest,
+        messages: [
+          { role: 'user', content: 'go' },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { id: 'c1', type: 'function', function: { name: 'list_files', arguments: '{}' } },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'c1', content: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] },
+        ],
+      },
+      model
+    ) as any;
+    const toolMessage = p.messages.find((m: any) => m.content?.[0]?.type === 'tool_result');
+    assert.strictEqual(toolMessage.content[0].content, 'one\ntwo');
   });
 });
 
@@ -183,6 +292,61 @@ describe('Google upstream wire: tools mapping', () => {
     assert.deepStrictEqual(JSON.parse(tc?.function.arguments || '{}'), { path: 'a.ts' });
     assert.deepStrictEqual(resp.usage, { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 });
   });
+
+  it('maps response_format, seed and penalties onto generationConfig', () => {
+    const p = buildGooglePayload(
+      {
+        ...chatRequest,
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'files', schema: { type: 'object', properties: { a: { type: 'string' } } } },
+        },
+        seed: 7,
+        presence_penalty: 0.5,
+        frequency_penalty: 0.25,
+      },
+      model
+    ) as any;
+    assert.strictEqual(p.generationConfig.responseMimeType, 'application/json');
+    assert.deepStrictEqual(p.generationConfig.responseSchema, {
+      type: 'object',
+      properties: { a: { type: 'string' } },
+    });
+    assert.strictEqual(p.generationConfig.seed, 7);
+    assert.strictEqual(p.generationConfig.presencePenalty, 0.5);
+    assert.strictEqual(p.generationConfig.frequencyPenalty, 0.25);
+  });
+
+  it('maps json_object without a schema to a JSON response MIME type', () => {
+    const p = buildGooglePayload(
+      { ...chatRequest, response_format: { type: 'json_object' } },
+      model
+    ) as any;
+    assert.strictEqual(p.generationConfig.responseMimeType, 'application/json');
+    assert.strictEqual(p.generationConfig.responseSchema, undefined);
+  });
+
+  it('flattens text-part tool results before building the functionResponse', () => {
+    const p = buildGooglePayload(
+      {
+        ...chatRequest,
+        messages: [
+          { role: 'user', content: 'go' },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { id: 'c1', type: 'function', function: { name: 'list_files', arguments: '{}' } },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'c1', content: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] },
+        ],
+      },
+      model
+    ) as any;
+    const functionResponse = p.contents.at(-1).parts[0].functionResponse;
+    assert.deepStrictEqual(functionResponse.response, { result: 'one\ntwo' });
+  });
 });
 
 describe('Responses upstream wire: tools mapping', () => {
@@ -228,6 +392,124 @@ describe('Responses upstream wire: tools mapping', () => {
     assert.strictEqual(msg.tool_calls?.[0].id, 'call_1', 'call_id must round-trip so the tool result matches');
     assert.strictEqual(msg.tool_calls?.[0].function.name, 'read_file');
     assert.strictEqual(resp.usage.total_tokens, 7, 'total falls back to input+output when absent');
+  });
+  it('carries tool `strict` on the flat tool definition', () => {
+    const p = buildResponsesPayload(
+      {
+        ...chatRequest,
+        tools: [
+          {
+            type: 'function',
+            function: { name: 'list_files', parameters: { type: 'object' }, strict: true },
+          },
+        ],
+      },
+      model
+    );
+    assert.strictEqual(p.tools[0].strict, true);
+  });
+
+  it('maps tool_choice, response_format, parallel_tool_calls and user onto the Responses payload', () => {
+    const p = buildResponsesPayload(
+      {
+        ...chatRequest,
+        tool_choice: { type: 'function', function: { name: 'list_files' } },
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'files', schema: { type: 'object' }, strict: true },
+        },
+        parallel_tool_calls: false,
+        user: 'u-1',
+      },
+      model
+    );
+    assert.deepStrictEqual(p.tool_choice, { type: 'function', name: 'list_files' });
+    assert.deepStrictEqual(p.text, {
+      format: { type: 'json_schema', name: 'files', schema: { type: 'object' }, strict: true },
+    });
+    assert.strictEqual(p.parallel_tool_calls, false);
+    assert.strictEqual(p.user, 'u-1');
+  });
+
+  it('passes scalar tool_choice through and maps json_object format', () => {
+    const p = buildResponsesPayload(
+      { ...chatRequest, tool_choice: 'required', response_format: { type: 'json_object' } },
+      model
+    );
+    assert.strictEqual(p.tool_choice, 'required');
+    assert.deepStrictEqual(p.text, { format: { type: 'json_object' } });
+  });
+
+  it('keeps content_filter distinct from length on an incomplete upstream response', () => {
+    const base = {
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'partial' }] }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    const filtered = responsesToChatCompletion(
+      { ...base, status: 'incomplete', incomplete_details: { reason: 'content_filter' } },
+      model
+    );
+    const truncated = responsesToChatCompletion(
+      { ...base, status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } },
+      model
+    );
+    assert.strictEqual(filtered.choices[0].finish_reason, 'content_filter');
+    assert.strictEqual(truncated.choices[0].finish_reason, 'length');
+  });
+
+  it('maps Responses refusal parts to chat message.refusal (not into content)', () => {
+    const resp = responsesToChatCompletion(
+      {
+        output: [
+          {
+            type: 'message',
+            content: [
+              { type: 'output_text', text: 'partial ' },
+              { type: 'refusal', refusal: 'I cannot help with that.' },
+            ],
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+      model
+    );
+    assert.strictEqual(resp.choices[0].message.content, 'partial ');
+    assert.strictEqual(resp.choices[0].message.refusal, 'I cannot help with that.');
+  });
+
+  it('throws an UpstreamError when the upstream turn status is failed', () => {
+    assert.throws(
+      () =>
+        responsesToChatCompletion(
+          {
+            status: 'failed',
+            error: { message: 'upstream exploded' },
+            output: [],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+          model
+        ),
+      (err: unknown) => err instanceof UpstreamError && /upstream exploded/.test(err.message)
+    );
+  });
+
+  it('forwards metadata / service_tier / cache keys onto the Responses payload', () => {
+    const p = buildResponsesPayload(
+      {
+        ...chatRequest,
+        metadata: { tenant: 'a' },
+        service_tier: 'flex',
+        prompt_cache_key: 'pk',
+        safety_identifier: 'sid',
+        max_completion_tokens: 99,
+      },
+      model
+    );
+    assert.deepStrictEqual(p.metadata, { tenant: 'a' });
+    assert.strictEqual(p.service_tier, 'flex');
+    assert.strictEqual(p.prompt_cache_key, 'pk');
+    assert.strictEqual(p.safety_identifier, 'sid');
+    assert.strictEqual(p.max_output_tokens, 99);
   });
 });
 

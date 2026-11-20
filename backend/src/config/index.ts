@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
-import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingClientMode, StreamingConfig, StreamingUpstreamMode, WebAuthConfig } from './types.js';
+import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingConfig, WebAuthConfig } from './types.js';
 import { INTERCEPT_POSTURES, lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
@@ -174,7 +174,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
     maxSessionMB: 512,
     storeMedia: true,
-    redactSecrets: true, // false = raw credentials persist in the archive (explicit opt-out)
+    redactSecrets: true, // forced on by CaptureRecorder; a false value is ignored (S-06)
   },
   tracePersist: {
     enabled: true, // default on: console history survives restarts (pure observability data)

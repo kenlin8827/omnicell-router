@@ -28,6 +28,7 @@ import { keyHashPrefix } from '../src/opencode/credentials/index.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import type { CallCredential } from '../src/providers/base.js';
 import type { ModelRegistration, RouterConfig } from '../src/config/types.js';
+import { processIR, responseIR } from './helpers/ir.js';
 import { currentYaml } from './helpers/current-config.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
@@ -728,20 +729,16 @@ function makeRlFixture() {
   const stub = (name: string, sink?: (p: string | undefined) => void) => ({
     name,
     async createCompletion(
-      _req: ChatCompletionRequest,
+      _req: unknown,
       model: ModelRegistration,
       _ctx: unknown,
       credential?: CallCredential
-    ): Promise<ChatCompletionResponse> {
+    ) {
       sink?.(credential?.keyHashPrefix);
-      return {
-        id: `ok-${name}`,
-        object: 'chat.completion',
-        created: 1,
-        model: model.upstreamModel,
-        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
-      } as ChatCompletionResponse;
+      return responseIR('ok', {
+        id: `ok-${name}`, model: model.upstreamModel,
+        usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+      });
     },
   });
   registry.registerProvider('rlp', stub('rlp', (p) => seenByAlpha.push(p)) as never, chainAlpha);
@@ -779,7 +776,7 @@ describe('outbound shaping — executeCandidatePool', () => {
     rl.dispatch(credentialSubject('rlp', first.keyHashPrefix)); // the hash pick is already at cap
     setRateLimitEventLogForTests(new RateLimitEventLog());
     const turn = { model: 'rl-combo', messages: [{ role: 'user', content: 'shaping' }] } as ChatCompletionRequest;
-    const res = await orchestrator.process(turn, { headers: { 'x-session-id': sessionId } });
+    const res = await processIR(orchestrator, turn, { headers: { 'x-session-id': sessionId } });
     expect(res.modelUsed).toBe('rl/alpha'); // shaped WITHIN the provider (slack sibling)
     const slack = first.keyHashPrefix === chainAlpha[0].keyHashPrefix ? chainAlpha[1] : chainAlpha[0];
     expect(res.servedCredentialPrefix).toBe(slack.keyHashPrefix);
@@ -810,7 +807,7 @@ describe('outbound shaping — executeCandidatePool', () => {
     rl.dispatch(credentialSubject('rlp', chainAlpha[1].keyHashPrefix));
     setRateLimitEventLogForTests(new RateLimitEventLog());
     const turn = { model: 'rl-combo', messages: [{ role: 'user', content: 'cross-provider' }] } as ChatCompletionRequest;
-    const res = await orchestrator.process(turn, { headers: { 'x-session-id': 'sess-rl-skip' } });
+    const res = await processIR(orchestrator, turn, { headers: { 'x-session-id': 'sess-rl-skip' } });
     expect(res.modelUsed).toBe('rl/beta'); // alpha skipped while beta remained
     expect(seenByAlpha.length).toBe(0);
     // The event ledger tells the shaping story: the candidate skipped at the
@@ -830,7 +827,7 @@ describe('outbound shaping — executeCandidatePool', () => {
     // exactly what a cap must NOT move.
     const turn = { model: 'rl/alpha', messages: [{ role: 'user', content: 'keep me bound' }] } as ChatCompletionRequest;
     const sessionId = 'sess-rl-keep';
-    const first = await orchestrator.process(turn, { headers: { 'x-session-id': sessionId } });
+    const first = await processIR(orchestrator, turn, { headers: { 'x-session-id': sessionId } });
     expect(first.modelUsed).toBe('rl/alpha');
     const bound = orchestrator.getSessionManager().getSession(sessionId)?.boundKeyHashPrefix;
     expect(bound).toBeDefined();
@@ -846,7 +843,7 @@ describe('outbound shaping — executeCandidatePool', () => {
     expect(rl.peek(credentialSubject('rlp', bound)).allowed).toBe(false);
     setRateLimitEventLogForTests(new RateLimitEventLog());
     const before = seenByAlpha.length;
-    const second = await orchestrator.process(
+    const second = await processIR(orchestrator,
       { ...turn, messages: [{ role: 'user', content: 'keep me bound 2' }] } as ChatCompletionRequest,
       { headers: { 'x-session-id': sessionId } }
     );
@@ -871,7 +868,7 @@ describe('outbound shaping — executeCandidatePool', () => {
       credentials: { rlp: chainAlpha.map((c) => ({ keyHashPrefix: c.keyHashPrefix, limits: [{ window: '1d', tokens: 120 }] })) },
     } as unknown as RouterConfig);
     const turn = { model: 'rl/alpha', messages: [{ role: 'user', content: 'usage' }] } as ChatCompletionRequest;
-    const res = await orchestrator.process(turn, { headers: { 'x-session-id': 'sess-rl-usage' } });
+    const res = await processIR(orchestrator, turn, { headers: { 'x-session-id': 'sess-rl-usage' } });
     const prefix = res.servedCredentialPrefix ?? chainAlpha[0].keyHashPrefix;
     const v = rl.peek(credentialSubject('rlp', prefix));
     expect(v.allowed).toBe(false); // 150 tokens > 120 budget
@@ -1361,7 +1358,7 @@ describe('decision-wire metering', () => {
       } as unknown as RouterConfig;
       const decChat = {
         name: 'dec-chat',
-        type: 'openai-compatible' as const,
+        type: 'openai-chat' as const,
         baseUrl: `http://localhost:${upstream.port}`,
         apiKey: 'sk-test',
         timeoutMs: 5000,

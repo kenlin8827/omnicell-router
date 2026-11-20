@@ -8,6 +8,7 @@ import { keyHashPrefix } from '../src/opencode/credentials/index.js';
 import type { CallCredential } from '../src/providers/base.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 import type { ModelRegistration, RouterConfig } from '../src/config/types.js';
+import { processIR, responseIR } from './helpers/ir.js';
 
 /**
  * Session affinity through the REAL orchestrator pipeline
@@ -47,19 +48,13 @@ function makeStub(name: string) {
   const provider = {
     name,
     async createCompletion(
-      _req: ChatCompletionRequest,
+      _req: unknown,
       model: ModelRegistration,
       _ctx: unknown,
       credential?: CallCredential
-    ): Promise<ChatCompletionResponse> {
+    ) {
       seen.push(credential);
-      return {
-        id: `ok-${name}`,
-        object: 'chat.completion',
-        created: 1,
-        model: model.upstreamModel,
-        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-      } as ChatCompletionResponse;
+      return responseIR('ok', { id: `ok-${name}`, model: model.upstreamModel });
     },
   };
   return { provider: provider as unknown as import('../src/providers/base.js').LLMProvider, seen };
@@ -104,7 +99,7 @@ describe('affinity bind + persistence across turns', () => {
     const { orchestrator, stub1 } = makeFixture();
     const sessionId = 'sess-aff-keep';
 
-    const r1 = await orchestrator.process(turn('first hello', 'p1/alpha'), sessCtx(sessionId));
+    const r1 = await processIR(orchestrator, turn('first hello', 'p1/alpha'), sessCtx(sessionId));
     const expected = chainP1[credentialSpreadIndex(sessionId, 2)].keyHashPrefix;
     expect(stub1.seen[0]?.keyHashPrefix).toBe(expected); // selection actually served
     expect(r1.servedCredentialPrefix).toBe(expected); // observability mirrors it (additive)
@@ -114,7 +109,7 @@ describe('affinity bind + persistence across turns', () => {
     expect(typeof session.boundAt).toBe('number');
 
     // Turn 2: explicit head "changes" (nothing tripped) — no rebalancing allowed.
-    const r2 = await orchestrator.process(turn('second hello', 'p1/alpha'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello', 'p1/alpha'), sessCtx(sessionId));
     expect(stub1.seen[1]?.keyHashPrefix).toBe(expected);
     expect(session.boundKeyHashPrefix).toBe(expected);
     expect(r2.servedCredentialPrefix).toBe(expected);
@@ -125,12 +120,12 @@ describe('affinity bind + persistence across turns', () => {
     const sessionId = 'sess-aff-fail';
     const cb = registry.getCircuitBreakerManager();
 
-    await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
     const other = chainP1.find((c) => c.keyHashPrefix !== bound)!;
 
     cb.tripPair(m1.id, bound, { cooldownMs: 600000 }, 'p1');
-    const r2 = await orchestrator.process(turn('hello again', 'p1/alpha'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('hello again', 'p1/alpha'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // SAME model — only the credential moved
     expect(stub1.seen[1]?.keyHashPrefix).toBe(other.keyHashPrefix);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(other.keyHashPrefix);
@@ -138,7 +133,7 @@ describe('affinity bind + persistence across turns', () => {
 
     // Old credential recovers: NO switch-back (the prefix lives where traffic went).
     cb.resetScoped(m1.id, bound);
-    const r3 = await orchestrator.process(turn('hello third', 'p1/alpha'), sessCtx(sessionId));
+    const r3 = await processIR(orchestrator, turn('hello third', 'p1/alpha'), sessCtx(sessionId));
     expect(stub1.seen[2]?.keyHashPrefix).toBe(other.keyHashPrefix);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(other.keyHashPrefix);
     expect(r3.servedCredentialPrefix).toBe(other.keyHashPrefix);
@@ -147,7 +142,7 @@ describe('affinity bind + persistence across turns', () => {
   it('all-unhealthy force keeps legacy semantics: no prefix, no attribution, binding frozen', async () => {
     const { orchestrator, registry, stub1 } = makeFixture(undefined, 'm1only');
     const sessionId = 'sess-aff-nospec';
-    await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
 
     // Trip BOTH p1 credentials: selection says all-unhealthy (no bind decided).
@@ -156,7 +151,7 @@ describe('affinity bind + persistence across turns', () => {
     // alternative, and the model breaker (not a pair) records the outcome.
     const cb = registry.getCircuitBreakerManager();
     for (const c of chainP1) cb.tripPair(m1.id, c.keyHashPrefix, { cooldownMs: 600000 }, 'p1');
-    const r2 = await orchestrator.process(turn('hello again', 'p1/alpha'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('hello again', 'p1/alpha'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // served via the last-candidate force
     expect(stub1.seen[1]).toBeUndefined(); // no credential selector on the forced call
     expect(r2.servedCredentialPrefix).toBeUndefined();
@@ -169,7 +164,7 @@ describe('self-healing: credential rebind rides the model repin', () => {
     const { orchestrator, registry, stub1, stub2 } = makeFixture();
     const sessionId = 'sess-aff-heal';
 
-    const r1 = await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
+    const r1 = await processIR(orchestrator, turn('hello', 'p1/alpha'), sessCtx(sessionId));
     expect(r1.modelUsed).toBe(m1.id);
     const boundP1 = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
     expect(chainP1.some((c) => c.keyHashPrefix === boundP1)).toBe(true);
@@ -181,7 +176,7 @@ describe('self-healing: credential rebind rides the model repin', () => {
       registry.getCircuitBreakerManager().tripPair(m1.id, c.keyHashPrefix, { reason: 'test outage' }, 'p1');
     }
     // auto mode so the session pin (ratchet) drives the preference:
-    const r2 = await orchestrator.process(turn('hello again', 'plus'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('hello again', 'plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
     const session = orchestrator.getSessionManager().getSession(sessionId)!;
     expect(session.pinnedModel).toBe(m2.id);
@@ -213,12 +208,12 @@ describe('self-healing: credential rebind rides the model repin', () => {
     const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
     const sessionId = 'sess-aff-heal-same';
 
-    await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
     for (const c of chainP1) {
       registry.getCircuitBreakerManager().tripPair(m1.id, c.keyHashPrefix, undefined, 'p1');
     }
-    const r2 = await orchestrator.process(turn('hello again', 'plus'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('hello again', 'plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2same.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(bound); // continuity
     expect(stub.seen[1]?.keyHashPrefix).toBe(bound); // served on the SAME credential
@@ -229,7 +224,7 @@ describe('explicit-pin and combo paths flow through the same selection', () => {
   it('combo leader serves through the selected credential (no bypass)', async () => {
     const { orchestrator, stub1 } = makeFixture([{ id: 'mycombo', models: ['p1/alpha', 'p2/beta'] }]);
     const sessionId = 'sess-aff-combo';
-    const result = await orchestrator.process(turn('hello combo', 'mycombo'), sessCtx(sessionId));
+    const result = await processIR(orchestrator, turn('hello combo', 'mycombo'), sessCtx(sessionId));
     expect(result.modelUsed).toBe(m1.id); // priority strategy: first healthy member leads
     const served = stub1.seen[0];
     expect(served).toBeDefined();
@@ -244,11 +239,11 @@ describe('explicit-pin and combo paths flow through the same selection', () => {
     const { orchestrator, stub1 } = makeFixture();
     const sessionId = 'sess-aff-stale';
     // Turn 1 binds through the spread.
-    await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const session = orchestrator.getSessionManager().getSession(sessionId)!;
     // Simulate the stale-binding boot state (pool rebuilt without that key):
     session.boundKeyHashPrefix = 'ffffffffffff';
-    const r2 = await orchestrator.process(turn('hello again', 'p1/alpha'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('hello again', 'p1/alpha'), sessCtx(sessionId));
     expect(r2.servedCredentialPrefix).toBeDefined(); // recovered via forced re-spread
     expect(r2.servedCredentialPrefix).not.toBe('ffffffffffff');
     expect(session.boundKeyHashPrefix).toBe(r2.servedCredentialPrefix);

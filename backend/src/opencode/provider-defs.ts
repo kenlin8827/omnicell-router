@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PROVIDER_ID_RULE, isValidProviderId, readJsonc } from './user-config.js';
+import { currentPackageFor } from './provider-package.js';
 import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 import { detectClientFlavor, type OpencodeFlavor } from './credentials/paths.js';
 import { providerDefAdapter } from './provider-def-adapters.js';
@@ -104,6 +105,57 @@ export function catalogModelToDef(m: Record<string, any>): Record<string, any> {
   return def;
 }
 
+/**
+ * Defs written by older builds carry retired package spellings
+ * (`@opencode/ai/providers/*`, `@ai-sdk/*`). Normalize them to the OCR
+ * protocol id on every read AND write so the book converges without a
+ * separate migration pass; the retired spelling is never emitted again.
+ */
+function currentPackageNodes(providers: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [id, node] of Object.entries(providers)) {
+    if (!node || typeof node !== 'object') {
+      out[id] = node;
+      continue;
+    }
+    let next = node;
+    if (typeof node.package === 'string') {
+      const pkg = currentPackageFor(node.package);
+      if (pkg !== node.package) next = { ...next, package: pkg };
+    }
+    if (typeof node.npm === 'string') {
+      const pkg = currentPackageFor(node.npm);
+      if (pkg !== node.npm) next = { ...next, npm: pkg };
+    }
+    if (node.models && typeof node.models === 'object') {
+      let modelsChanged = false;
+      const models: Record<string, any> = {};
+      for (const [mid, model] of Object.entries(node.models)) {
+        const provider = (model as any)?.provider;
+        if (provider && typeof provider === 'object') {
+          let nextProvider = provider;
+          if (typeof provider.package === 'string') {
+            const pkg = currentPackageFor(provider.package);
+            if (pkg !== provider.package) nextProvider = { ...nextProvider, package: pkg };
+          }
+          if (typeof provider.npm === 'string') {
+            const pkg = currentPackageFor(provider.npm);
+            if (pkg !== provider.npm) nextProvider = { ...nextProvider, npm: pkg };
+          }
+          if (nextProvider !== provider) {
+            models[mid] = { ...(model as any), provider: nextProvider };
+            modelsChanged = true;
+            continue;
+          }
+        }
+        models[mid] = model;
+      }
+      if (modelsChanged) next = { ...next, models };
+    }
+    out[id] = next;
+  }
+  return out;
+}
 /** Tolerant read: missing / corrupt / wrong version → null. */
 export function readProviderDefsFile(paths: CredentialPaths = resolveDefaultPaths()): ProviderDefsFile | null {
   try {
@@ -113,7 +165,7 @@ export function readProviderDefsFile(paths: CredentialPaths = resolveDefaultPath
     if (parsed?.version !== 1 || typeof parsed.providers !== 'object' || parsed.providers === null) {
       return null;
     }
-    return parsed as ProviderDefsFile;
+    return { ...(parsed as ProviderDefsFile), providers: currentPackageNodes(parsed.providers) };
   } catch {
     return null;
   }
@@ -126,7 +178,7 @@ export function writeProviderDefs(
 ): void {
   const file = getProviderDefsPath(paths);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const next: ProviderDefsFile = { version: 1, updated: Date.now(), providers };
+  const next: ProviderDefsFile = { version: 1, updated: Date.now(), providers: currentPackageNodes(providers) };
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
   renameWithRetry(tmp, file);

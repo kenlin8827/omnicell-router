@@ -10,8 +10,11 @@ import { SURFACES, detectSurface } from '../src/surfaces/table.js';
 import type { TransportContext } from '../src/surfaces/types.js';
 import type { ModelAccessConfig } from '../src/config/types.js';
 import type { ChatCompletionRequest } from '../src/types/openai.js';
+import type { CanonicalRequest } from '../src/ir/types.js';
 import type { ExecutionResult } from '../src/types/router.js';
 import { applyStreamingPosture, resetStreamingPostureForTests } from '../src/pipeline/streaming-posture.js';
+import { responseIR } from './helpers/ir.js';
+import { IrUnsupportedError } from '../src/ir/errors.js';
 
 /**
  * Frozen-order unit tests for the chat surface pipeline (contract step 2):
@@ -62,9 +65,9 @@ function makeFakeTransport(opts: {
   return { t, calls, ops: () => calls.map((c) => c.op) };
 }
 
-function stubResult(modelUsed: string, response: unknown): ExecutionResult {
+function stubResult(modelUsed: string, response: ExecutionResult['response']): ExecutionResult {
   return {
-    response: response as never,
+    response,
     tierUsed: 'lite',
     modelUsed,
     fallbackOccurred: false,
@@ -74,19 +77,12 @@ function stubResult(modelUsed: string, response: unknown): ExecutionResult {
   };
 }
 
-const okResponse = {
-  id: 'chatcmpl-1',
-  object: 'chat.completion',
-  created: 1,
-  model: 'mock-1',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-};
+const okResponse = responseIR('ok', { id: 'resp-1', createdAt: 1, model: 'mock-1' });
 
 function makeStubOrchestrator(behavior: { result?: ExecutionResult; throw?: unknown } = {}) {
-  const processed: Array<{ request: ChatCompletionRequest; ctx: Record<string, unknown> }> = [];
+  const processed: Array<{ request: CanonicalRequest; ctx: Record<string, unknown> }> = [];
   const orchestrator = {
-    process: async (request: ChatCompletionRequest, ctx: Record<string, unknown>) => {
+    process: async (request: CanonicalRequest, ctx: Record<string, unknown>) => {
       processed.push({ request, ctx: ctx ?? {} });
       if (behavior.throw !== undefined) throw behavior.throw;
       return behavior.result ?? stubResult('mock-1', okResponse);
@@ -146,7 +142,7 @@ describe('chat surface — frozen §1.3 order', () => {
     await runChatSurface(t, chatSurface, orchestrator, chatBody());
 
     const ctx = processed[0]!.ctx;
-    assert.equal(ctx.wire, 'chat');
+    assert.equal(ctx.wire, 'openai-chat');
     assert.equal(ctx.modelAccess, policy, 'modelAccess comes from the gate, not a re-read');
     assert.equal(ctx.clientIp, '127.0.0.1');
     assert.deepEqual(ctx.headers, { 'user-agent': 'surface-chat-test' });
@@ -178,7 +174,7 @@ describe('chat surface — frozen §1.3 order', () => {
     assert.ok(!ops().includes('beginSse'));
   });
 
-  it('non-stream sends sendJson(200, result.response, full X-OCR header set)', async () => {
+  it('non-stream sends sendJson(200, encoded Chat response, full X-OCR header set)', async () => {
     const { t, calls } = makeFakeTransport();
     const result = { ...stubResult('mock-1', okResponse), requestedEffort: 'high' as const };
     const { orchestrator } = makeStubOrchestrator({ result });
@@ -186,7 +182,8 @@ describe('chat surface — frozen §1.3 order', () => {
 
     const send = calls.find((c) => c.op === 'sendJson')!;
     assert.equal(send.args[0], 200);
-    assert.equal(send.args[1], okResponse, 'encodeJson passes result.response through as-is');
+    assert.deepEqual((send.args[1] as any).choices[0].message, { role: 'assistant', content: 'ok' });
+    assert.equal((send.args[1] as any).model, 'mock-1');
     const headers = send.args[2] as Record<string, string>;
     for (const key of [
       'X-OCR-Tier', 'X-OCR-Layer', 'X-OCR-Model', 'X-OCR-Failover', 'X-OCR-Failover-Attempts',
@@ -244,6 +241,25 @@ describe('chat surface — frozen §1.3 order', () => {
     assert.equal(send.args[0], 500);
     assert.deepEqual(send.args[1], { error: { message: 'Internal Router Error', type: 'api_error' } });
   });
+
+  it('IrUnsupportedError is 400 unsupported_parameter, including the explicit-model wrapper', async () => {
+    const cases = [
+      new IrUnsupportedError('input_file', 'no file here', 'openai-chat'),
+      Object.assign(new Error('Explicit model did not serve. Last error: no file here'), {
+        statusCode: 400,
+        name: 'IrUnsupportedError',
+        code: 'unsupported_parameter',
+      }),
+    ];
+    for (const err of cases) {
+      const { t, calls } = makeFakeTransport();
+      const { orchestrator } = makeStubOrchestrator({ throw: err });
+      await runChatSurface(t, chatSurface, orchestrator, chatBody());
+      const send = calls.filter((c) => c.op === 'sendJson')[0]!;
+      assert.equal(send.args[0], 400);
+      assert.equal((send.args[1] as { error: { code?: string } }).error.code, 'unsupported_parameter');
+    }
+  });
 });
 
 describe('surface table (step 4 contents)', () => {
@@ -263,7 +279,7 @@ describe('surface table (step 4 contents)', () => {
   });
 
   it('chat surface metadata matches the contract', () => {
-    assert.equal(chatSurface.wire, 'chat');
+    assert.equal(chatSurface.wire, 'openai-chat');
     assert.equal(chatSurface.exec, 'chat-pipeline');
     assert.equal(chatSurface.capture, true);
     assert.equal(chatSurface.routePath, '/v1/chat/completions');

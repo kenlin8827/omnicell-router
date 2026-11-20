@@ -71,7 +71,7 @@ describe('projectSessionEntity (console whitelist)', () => {
     createdAt: 1,
     lastActiveAt: 2,
     historyTiers: ['lite', 'plus'],
-    origin: { wire: 'openai', lookupType: 'header', clientIp: '10.0.0.9' },
+    origin: { wire: 'openai-chat', lookupType: 'header', clientIp: '10.0.0.9' },
     firstUserMessage: 'hello',
     boundKeyHashPrefix: 'abc123',
     boundAt: 4,

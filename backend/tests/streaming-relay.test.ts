@@ -5,13 +5,15 @@ import { runChatSurface } from '../src/surfaces/chat-pipeline.js';
 import { responsesSurface } from '../src/surfaces/responses.js';
 import { buildChatOcrCompletionFacts, buildChatOcrRoutingHeaders } from '../src/surfaces/ocr-headers.js';
 import type { TransportContext } from '../src/surfaces/types.js';
-import type { ChatCompletionRequest } from '../src/types/openai.js';
+import type { ChatCompletionChunk, ChatCompletionRequest } from '../src/types/openai.js';
+import type { CanonicalRequest, StreamEvent } from '../src/ir/types.js';
 import type { ExecutionResult } from '../src/types/router.js';
-import { createChunkAccumulator } from '../src/utils/chat-stream.js';
-import { buildChatStreamChunks } from '../src/utils/chat-sse.js';
-import { OpenAICompatibleProvider } from '../src/providers/openai-compatible.js';
+import { createEventAccumulator } from '../src/ir/stream.js';
+import { ChatStreamDecoder } from '../src/ir/adapters/openai-chat-stream.js';
+import { OpenAIChatProvider } from '../src/providers/executors/openai-chat.js';
 import { UpstreamError } from '../src/resilience/error-classifier.js';
 import type { ModelRegistration, ProviderConfig } from '../src/config/types.js';
+import { responseIR, toIR } from './helpers/ir.js';
 
 /**
  * True upstream streaming (the end of "fake streaming"). Four contracts are
@@ -52,33 +54,28 @@ const streamRequest = (extra: Partial<ChatCompletionRequest> = {}): ChatCompleti
     ...extra,
   }) as ChatCompletionRequest;
 
-const bufferedResult = (over: Partial<ExecutionResult> = {}): ExecutionResult =>
-  ({
-    response: {
-      id: 'chatcmpl-1',
-      object: 'chat.completion',
-      created: 1,
-      model: 'p/m',
-      choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 },
-    },
-    tierUsed: 'lite',
-    modelUsed: 'p/m',
-    layerUsed: 'layer0',
-    fallbackOccurred: false,
-    failoverOccurred: false,
-    failoverAttempts: 1,
-    failoverPath: ['p/m'],
-    inplaceRetries: 0,
-    latencyMs: 1200,
-    sessionId: 'sess-1',
-    requestId: 'trace-1',
-    actualEffort: 'low',
-    requestedEffort: 'low',
-    ...over,
-  }) as ExecutionResult;
+const bufferedResult = (over: Partial<ExecutionResult> = {}): ExecutionResult => ({
+  response: responseIR('hello', {
+    id: 'resp-1', createdAt: 1, model: 'p/m',
+    usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+  }),
+  tierUsed: 'lite',
+  modelUsed: 'p/m',
+  layerUsed: 'layer0',
+  fallbackOccurred: false,
+  failoverOccurred: false,
+  failoverAttempts: 1,
+  failoverPath: ['p/m'],
+  inplaceRetries: 0,
+  latencyMs: 1200,
+  sessionId: 'sess-1',
+  requestId: 'trace-1',
+  actualEffort: 'low',
+  requestedEffort: 'low',
+  ...over,
+});
 
-const chunk = (delta: Record<string, unknown>, finish: string | null = null, usage?: unknown) =>
+const chunk = (delta: Record<string, unknown>, finish: string | null = null, usage?: unknown): ChatCompletionChunk =>
   ({
     id: 'chatcmpl-1',
     object: 'chat.completion.chunk',
@@ -86,101 +83,111 @@ const chunk = (delta: Record<string, unknown>, finish: string | null = null, usa
     model: 'upstream-model-id',
     choices: [{ index: 0, delta, finish_reason: finish }],
     ...(usage ? { usage } : {}),
-  }) as any;
+  }) as ChatCompletionChunk;
 
-describe('chunk accumulator (what accounting reads)', () => {
-  it('rebuilds content, finish_reason and usage from frames', () => {
-    const acc = createChunkAccumulator();
+/** Explicit Chat-wire fixture decoder feeding the canonical event accumulator. */
+function chatAccumulator(options: { maxChars?: number } = {}) {
+  const decoder = new ChatStreamDecoder();
+  const accumulator = createEventAccumulator(options);
+  return {
+    push(frame: ChatCompletionChunk) {
+      for (const event of decoder.push(frame)) accumulator.push(event);
+    },
+    finish() {
+      for (const event of decoder.finish()) accumulator.push(event);
+      return accumulator.finish();
+    },
+  };
+}
+
+describe('canonical event accumulator (what accounting reads)', () => {
+  it('rebuilds content, status and usage from Chat-wire fixture frames', () => {
+    const acc = chatAccumulator();
     acc.push(chunk({ role: 'assistant', content: '' }));
     acc.push(chunk({ content: 'he' }));
     acc.push(chunk({ content: 'llo' }));
     acc.push(chunk({}, 'stop'));
-    acc.push({ id: 'chatcmpl-1', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } } as any);
+    acc.push({ id: 'chatcmpl-1', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } } as ChatCompletionChunk);
     const res = acc.finish();
-    expect(res.choices[0].message.content).toBe('hello');
-    expect(res.choices[0].finish_reason).toBe('stop');
-    expect(res.usage?.total_tokens).toBe(5);
+    expect(res.output[0]).toMatchObject({ type: 'message', content: [{ type: 'text', text: 'hello' }] });
+    expect(res.status).toBe('completed');
+    expect(res.usage.totalTokens).toBe(5);
     expect(res.id).toBe('chatcmpl-1');
   });
 
-  it('merges tool_call fragments by index and keeps content null', () => {
-    const acc = createChunkAccumulator();
+  it('merges tool_call fragments by index without inventing a message', () => {
+    const acc = chatAccumulator();
     acc.push(chunk({ tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'read', arguments: '' } }] }));
     acc.push(chunk({ tool_calls: [{ index: 0, function: { arguments: '{"path"' } }] }));
     acc.push(chunk({ tool_calls: [{ index: 0, function: { arguments: ':"a"}' } }] }));
     acc.push(chunk({ tool_calls: [{ index: 1, id: 'call_b', type: 'function', function: { name: 'write' } }] }));
     acc.push(chunk({}, 'tool_calls'));
     const res = acc.finish();
-    expect(res.choices[0].message.content).toBeNull();
-    expect(res.choices[0].finish_reason).toBe('tool_calls');
-    expect(res.choices[0].message.tool_calls?.map((tc) => tc.id)).toEqual(['call_a', 'call_b']);
-    expect(res.choices[0].message.tool_calls?.[0].function.arguments).toBe('{"path":"a"}');
+    expect(res.output.map((item) => item.type)).toEqual(['tool_call', 'tool_call']);
+    expect(res.output.map((item) => item.type === 'tool_call' ? item.id : '')).toEqual(['call_a', 'call_b']);
+    expect(res.output[0]).toMatchObject({ arguments: '{"path":"a"}' });
   });
 
-  it('orders tool calls by index even when fragments arrive shuffled', () => {
-    const acc = createChunkAccumulator();
+  it('assigns immutable canonical item ids in arrival order when wire indexes arrive shuffled', () => {
+    // Chat tool_calls.index correlates fragments; it is not a retroactive output
+    // ordering key. Renumbering after item.added would break downstream streams.
+    const acc = chatAccumulator();
     acc.push(chunk({ tool_calls: [{ index: 1, id: 'second', function: { name: 'b', arguments: '' } }] }));
     acc.push(chunk({ tool_calls: [{ index: 0, id: 'first', function: { name: 'a', arguments: '' } }] }));
-    expect(acc.finish().choices[0].message.tool_calls?.map((tc) => tc.id)).toEqual(['first', 'second']);
+    expect(acc.finish().output.map((item) => item.type === 'tool_call' ? item.id : '')).toEqual(['second', 'first']);
   });
 
-  it('folds reasoning_content fragments so the assembled turn can replay them', () => {
-    const acc = createChunkAccumulator();
+  it('folds reasoning fragments into a separate item before the answer', () => {
+    const acc = chatAccumulator();
     acc.push(chunk({ role: 'assistant', reasoning_content: 'thin' }));
     acc.push(chunk({ reasoning_content: 'king', content: '' }));
     acc.push(chunk({ content: 'answer' }));
     acc.push(chunk({}, 'stop'));
     const res = acc.finish();
-    expect(res.choices[0].message.reasoning_content).toBe('thinking');
-    expect(res.choices[0].message.content).toBe('answer');
+    expect(res.output[0]).toMatchObject({ type: 'reasoning', text: 'thinking' });
+    expect(res.output[1]).toMatchObject({ type: 'message', content: [{ type: 'text', text: 'answer' }] });
   });
 });
 
 describe('client-side chunk forwarding', () => {
   it('rewrites model to the served id and passes reasoning_content through', () => {
-    const frame = chatSurface.encodeChunk!(chunk({ reasoning_content: 'think', content: 'hi' }), {
-      model: 'p/m',
-      includeUsage: false,
-    });
+    const event: StreamEvent = { type: 'response.reasoning.delta', index: 0, text: 'think' };
+    const frame = chatSurface.encodeChunk!(event, { model: 'p/m', includeUsage: false });
     const parsed = JSON.parse(frame!.replace('data: ', '').trim());
     expect(parsed.model).toBe('p/m');
     expect(parsed.choices[0].delta.reasoning_content).toBe('think');
   });
 
   it('drops the usage frame unless the client asked for it', () => {
-    const usageOnly = { id: 'x', object: 'chat.completion.chunk', created: 1, model: 'u', choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } as any;
-    expect(chatSurface.encodeChunk!(usageOnly, { model: 'p/m', includeUsage: false })).toBeNull();
-    expect(chatSurface.encodeChunk!(usageOnly, { model: 'p/m', includeUsage: true })).toContain('"usage"');
+    const event: StreamEvent = {
+      type: 'response.usage', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    };
+    expect(chatSurface.encodeChunk!(event, { model: 'p/m', includeUsage: false })).toBeNull();
+    expect(chatSurface.encodeChunk!(event, { model: 'p/m', includeUsage: true })).toContain('"usage"');
   });
 
-  it('the buffered re-chunker emits reasoning deltas too (no leg deletes thinking)', () => {
-    const frames = buildChatStreamChunks(
-      {
-        id: 'chatcmpl-r',
-        object: 'chat.completion',
-        created: 1,
-        model: 'p/m',
-        choices: [
-          {
-            index: 0,
-            // Not in the typed shape, but exactly what an interleaved-thinking
-            // upstream puts on the wire (catalog `interleaved.field`).
-            message: { role: 'assistant', content: 'answer', reasoning_content: 'think' } as any,
-            finish_reason: 'stop',
-          },
+  it('the buffered canonical re-chunker emits reasoning deltas before the answer', () => {
+    const result = bufferedResult({
+      response: responseIR('answer', {
+        id: 'resp-r', createdAt: 1, model: 'p/m',
+        output: [
+          { type: 'reasoning', text: 'think' },
+          { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
         ],
-      } as any,
-      'p/m'
-    );
-    const deltas = frames.map((f) => JSON.parse(f.replace('data: ', '').trim()).choices[0].delta);
+      }),
+    });
+    const frames = chatSurface.encodeStream!(result, undefined);
+    const deltas = frames
+      .filter((frame) => frame.startsWith('data: {'))
+      .map((frame) => JSON.parse(frame.replace('data: ', '').trim()).choices?.[0]?.delta)
+      .filter(Boolean);
     const reasoningText = deltas
-      .filter((d: any) => typeof d.reasoning_content === 'string')
-      .map((d: any) => d.reasoning_content)
+      .filter((delta: any) => typeof delta.reasoning_content === 'string')
+      .map((delta: any) => delta.reasoning_content)
       .join('');
     expect(reasoningText).toBe('think');
-    // Thinking is replayed BEFORE the answer it produced.
-    const firstReasoning = frames.findIndex((f) => f.includes('reasoning_content'));
-    const firstAnswer = frames.findIndex((f, i) => i > 0 && f.includes('"content":"answ"'));
+    const firstReasoning = frames.findIndex((frame) => frame.includes('reasoning_content'));
+    const firstAnswer = frames.findIndex((frame) => frame.includes('"content":"answer"'));
     expect(firstReasoning >= 0 && firstReasoning < firstAnswer).toBe(true);
   });
 });
@@ -213,15 +220,22 @@ describe('chat pipeline relay ordering', () => {
       markWritten = resolve;
     });
     const orchestrator = {
-      process: async (req: ChatCompletionRequest, ctx: Record<string, unknown>, relay?: any) => {
+      process: async (req: CanonicalRequest, ctx: Record<string, unknown>, relay?: any) => {
         seen.hasRelay = relay !== undefined;
         if (!relay) return bufferedResult();
         relay.stageRouting({ modelUsed: 'p/m', tierUsed: 'lite', layerUsed: 'layer0', requestId: 't', sessionId: 's' });
-        relay.onChunk(chunk({ role: 'assistant', content: 'a' }));
+        relay.onChunk({ type: 'response.created', id: 'resp-1', model: 'p/m', createdAt: 1 });
+        relay.onChunk({ type: 'response.output_item.added', index: 0, item: { type: 'message', role: 'assistant', content: [] } });
+        relay.onChunk({ type: 'response.content_part.added', index: 0, partIndex: 0, part: { type: 'text', text: '' } });
+        relay.onChunk({ type: 'response.output_text.delta', index: 0, partIndex: 0, text: 'a' });
         markWritten();
         await written; // proves the byte went out before the call resolved
-        relay.onChunk(chunk({ content: 'b' }));
-        if (behavior.extraChunks) for (let i = 0; i < behavior.extraChunks; i++) relay.onChunk(chunk({ content: 'x' }));
+        relay.onChunk({ type: 'response.output_text.delta', index: 0, partIndex: 0, text: 'b' });
+        if (behavior.extraChunks) {
+          for (let i = 0; i < behavior.extraChunks; i++) {
+            relay.onChunk({ type: 'response.output_text.delta', index: 0, partIndex: 0, text: 'x' });
+          }
+        }
         if (behavior.failAfterFirstChunk) throw new Error('upstream died mid-stream');
         return bufferedResult();
       },
@@ -315,7 +329,7 @@ describe('provider streaming leg (capture + error class)', () => {
       upstreamModel: 'upstream-model-id',
       tier: 'lite',
       isDefaultInTier: false,
-      wire: 'openai',
+      wire: 'openai-chat',
       pricing: { input: 1, output: 2, cacheRead: 0.25 },
     }) as ModelRegistration;
 
@@ -333,14 +347,14 @@ describe('provider streaming leg (capture + error class)', () => {
       },
     });
     try {
-      const provider = new OpenAICompatibleProvider({
+      const provider = new OpenAIChatProvider({
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       } as ProviderConfig);
       const stream = await provider.createStream(
-        { model: 'x', messages: [] } as ChatCompletionRequest,
+        toIR({ model: 'x', messages: [] }),
         modelReg(),
         { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
       );
@@ -371,14 +385,14 @@ describe('provider streaming leg (capture + error class)', () => {
     });
     let caught: unknown;
     try {
-      const provider = new OpenAICompatibleProvider({
+      const provider = new OpenAIChatProvider({
         name: 'test-provider',
-        type: 'openai',
+        type: 'openai-chat',
         baseUrl: `http://localhost:${server.port}`,
         apiKey: 'sk-test',
       } as ProviderConfig);
       await provider.createStream(
-        { model: 'x', messages: [] } as ChatCompletionRequest,
+        toIR({ model: 'x', messages: [] }),
         modelReg(),
         { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
       );
@@ -393,26 +407,108 @@ describe('provider streaming leg (capture + error class)', () => {
     expect(events.map((e) => `${e.direction}/${e.phase}`)).toEqual(['upstream/request', 'upstream/response']);
     expect(events[1].error).toContain('Upstream 429');
   });
+
+  // The idle deadline bounds EVERY wait on the provider leg, not just the body
+  // reads. A head that never arrives had no deadline at all before this (only
+  // the 60-minute total timeout), which is exactly the shape of a request that
+  // hangs until the gateway is restarted.
+  it('fails a head that never arrives at the idle deadline', async () => {
+    const events: any[] = [];
+    const server = serve({
+      port: 0,
+      // Never answers: the client must give up on its own budget.
+      async fetch() {
+        return new Promise<Response>(() => {});
+      },
+    });
+    let caught: unknown;
+    try {
+      const provider = new OpenAIChatProvider({
+        name: 'test-provider',
+        type: 'openai-chat',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+        streamIdleTimeoutMs: 120,
+      } as ProviderConfig);
+      await provider.createStream(
+        toIR({ model: 'x', messages: [] }),
+        modelReg(),
+        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      server.stop(true);
+    }
+    expect((caught as Error).message).toContain('stream idle for 120ms');
+  });
+
+  it('fails a body that stalls after the first frame at the idle deadline, and pairs the event', async () => {
+    const events: any[] = [];
+    const server = serve({
+      port: 0,
+      async fetch() {
+        const encoder = new TextEncoder();
+        // One frame, then silence: the reader's next read never settles.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk({ content: 'hi' }))}\n\n`));
+          },
+        });
+        return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    let caught: unknown;
+    const seen: string[] = [];
+    try {
+      const provider = new OpenAIChatProvider({
+        name: 'test-provider',
+        type: 'openai-chat',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+        streamIdleTimeoutMs: 120,
+      } as ProviderConfig);
+      const stream = await provider.createStream(
+        toIR({ model: 'x', messages: [] }),
+        modelReg(),
+        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
+      );
+      for await (const event of stream) {
+        if (event.type === 'response.output_text.delta') seen.push(event.text);
+      }
+    } catch (err) {
+      caught = err;
+    } finally {
+      server.stop(true);
+    }
+    expect(seen).toEqual(['hi']);
+    expect((caught as Error).message).toContain('stream idle for 120ms');
+    // The stalled exchange must still close in the archive: an unanswered
+    // upstream leg is what leaves the console showing a turn pending forever.
+    expect(events.map((e) => `${e.direction}/${e.phase}`)).toEqual(['upstream/request', 'upstream/response']);
+    expect(events[1].error).toContain('stream idle for 120ms');
+    expect(events[1].wire.responseBody).toContain('hi');
+  });
 });
 
-describe('chunk accumulator memory bound', () => {
-  const frame = (delta: Record<string, unknown>) =>
+describe('canonical accumulator memory bound', () => {
+  const frame = (delta: Record<string, unknown>): ChatCompletionChunk =>
     ({
       id: 'chatcmpl-cap',
       object: 'chat.completion.chunk',
       created: 1,
       model: 'up-1',
       choices: [{ index: 0, delta, finish_reason: null }],
-    }) as any;
+    }) as ChatCompletionChunk;
 
   it('fails the turn instead of growing without bound when the payload exceeds the cap', () => {
-    const acc = createChunkAccumulator({ maxChars: 8 });
+    const acc = chatAccumulator({ maxChars: 8 });
     acc.push(frame({ role: 'assistant', content: '1234' }));
     expect(() => acc.push(frame({ content: '56789' }))).toThrow(/accumulation cap/);
   });
 
   it('charges tool-call arguments too, not just content', () => {
-    const acc = createChunkAccumulator({ maxChars: 8 });
+    const acc = chatAccumulator({ maxChars: 8 });
     acc.push(frame({ tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read', arguments: '12345' } }] }));
     expect(() =>
       acc.push(frame({ tool_calls: [{ index: 0, function: { arguments: '67890' } }] }))
@@ -420,9 +516,9 @@ describe('chunk accumulator memory bound', () => {
   });
 
   it('a normal answer stays inside the default cap', () => {
-    const acc = createChunkAccumulator();
+    const acc = chatAccumulator();
     acc.push(frame({ role: 'assistant', content: 'hello ' }));
     acc.push(frame({ content: 'world' }));
-    expect(acc.finish().choices[0]!.message.content).toBe('hello world');
+    expect(acc.finish().output[0]).toMatchObject({ content: [{ type: 'text', text: 'hello world' }] });
   });
 });

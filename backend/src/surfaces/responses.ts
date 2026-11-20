@@ -1,67 +1,29 @@
 import path from 'node:path';
+import type { ExecutionResult } from '../types/router.js';
+import type { CanonicalRequest, InputItem, StreamEvent } from '../ir/types.js';
+import { responsesRequestToIR, responsesToolToWire } from '../ir/adapters/openai-responses.js';
 import {
-  chatToResponseObject,
-  chatToStreamEvents,
-  inputItemsToMessages,
-  responsesDeltaFrame,
-  responsesStreamPrefix,
-  responsesStreamSuffix,
-  responsesToolsToChat,
-  responsesToolChoiceToChat,
+  OpenAIResponsesEventEncoder,
+  canonicalToResponsesObject,
   newResponseMessageId,
   newResponseStreamSequence,
-  type ResponsesRequest,
-  type ResponsesStreamSequence,
-  unsupportedResponsesParameter,
-} from '../routes/responses.js';
-import { repairToolCallPairing } from '../pipeline/tool-pairing.js';
-import type { ChatCompletionChunk, ChatCompletionRequest, ChatMessage } from '../types/openai.js';
-import type { ExecutionResult } from '../types/router.js';
+  responsesEventFrame,
+  type ResponsesEcho,
+} from '../ir/adapters/openai-responses-output.js';
+import { canonicalResponseToEvents } from '../ir/stream.js';
+import { IrUnsupportedError } from '../ir/errors.js';
 import { loadConfig } from '../config/index.js';
 import { getEnvPaths } from '../config/env.js';
-import { ChatMessageLite, RespNode, RespStore, newResponseId } from '../session/resp-store.js';
+import { RespStore, newResponseId, type RespNode } from '../session/resp-store.js';
 import { WarnThrottle } from '../observability/warn-throttle.js';
-import type { ChatSurface, SurfaceParseResult } from './types.js';
+import { buildChatOcrSummaryFrame } from './ocr-headers.js';
+import type { ChatSurface, ChatChunkContext, SurfaceParseResult } from './types.js';
 
-/**
- * The OpenAI Responses surface (/v1/responses), wire 'responses'.
- *
- * Verbatim extraction of the old inline /v1/responses route handler (frozen
- * contract step 3b): same validation texts and same envelope key insertion
- * order (wire bytes depend on object literal order). Retention follows the
- * client's `store` flag — the state block below owns that rule. The
- * converters stay in routes/responses.ts — the MITM interceptor and the
- * wire tests import them from there.
- *
- * Stateful mode (previous_response_id) uses ONE module-level RespStore: the
- * old handler owned a per-registration instance; the shared singleton is the
- * frozen step-3b decision (R-6 — the bounded FIFO/age sweep inside RespStore
- * is unchanged, and cross-leg Fastify↔MITM visibility is intended stateful
- * behavior — both legs now route the responses wire through this surface).
- *
- * Persistence: the singleton optionally mirrors to an
- * on-disk recovery log (`responses.persist`, default OFF → byte-identical
- * in-memory posture). Configuration is read lazily on the first parse of the
- * process (env switch = restart, so boot-time freshness is guaranteed); when
- * a client starts relying on the chain while persistence is off, one warn
- * per process points at the switch.
- */
-
-// Single store for every consumer in-process: parse reads it (buildMessages),
-// afterResult writes it (append). Tests construct their own RespStore
-// instances directly (session/resp-store.js), so nothing imports this one.
 const respStore = new RespStore();
-
 let storeConfigured = false;
 let persistActive = false;
 let surfaceWarns = new WarnThrottle();
 
-/**
- * One-shot lazy wiring: read `responses.persist`, and when on, replay the
- * recovery log BEFORE any parse can resolve a previous_response_id.
- * Everything off the happy path degrades to memory-only with a loud warn —
- * the log is a restart-survival optimization, never a request dependency.
- */
 function ensureStoreConfigured(): void {
   if (storeConfigured) return;
   storeConfigured = true;
@@ -89,7 +51,6 @@ function ensureStoreConfigured(): void {
   }
 }
 
-/** Test seam (precedent: env.__resetEnvResolutionForTests): redo lazy wiring + warn dedup. */
 export function __resetResponsesSurfaceForTests(): void {
   storeConfigured = false;
   persistActive = false;
@@ -98,45 +59,73 @@ export function __resetResponsesSurfaceForTests(): void {
 }
 
 /**
- * Per-request state, opaque through SurfaceParseResult.state. Beyond the
- * contract-named trio {delta, sessionIdBind, respId} it carries `parent` (the
- * RespNode written in afterResult must record previous_response_id) and
- * `messageId`.
- *
- * Both ids are minted AT PARSE TIME, not in afterResult: on a relayed stream
- * the `response.created` / `output_item.added` frames flush with the first
- * upstream chunk, long before the turn produces a result. `afterResult` only
- * persists the node, so the chain resolves once the turn closes.
- *
- * `seq` is the SSE `sequence_number` counter shared by the prefix, every live
- * delta and the closing frames — strict clients require it on EVERY event.
- *
- * `store` is the client's EFFECTIVE retention flag (default true, OpenAI
- * parity): `afterResult` appends the node only when it is set, so a
- * `store:false` response is never a chain parent — exactly the upstream rule
- * that makes `previous_response_id` unusable without server-side state.
+ * Console session delete cascade: drop the session's `previous_response_id`
+ * nodes (memory + recovery log). `ensureStoreConfigured` runs first so a
+ * `responses.persist: true` deployment rewrites the JSONL instead of leaving
+ * the purged turns on disk for the next boot to replay. Returns the number of
+ * nodes removed; a live chain degrades fail-visible (400 full-resend), which
+ * is the documented posture for a missing parent.
  */
+export function purgeResponseChainForSession(sessionId: string): number {
+  ensureStoreConfigured();
+  return respStore.deleteBySession(sessionId);
+}
+
 interface ResponsesState {
-  delta: ChatMessage[];
+  delta: InputItem[];
   sessionIdBind: string | undefined;
   parent: string | null;
   respId: string;
   messageId: string;
-  seq: ResponsesStreamSequence;
   store: boolean;
+  echo: ResponsesEcho;
+  encoder: OpenAIResponsesEventEncoder;
 }
 
-// The wire's only code-bearing parse-400 — single emitter for the text and
-// for the prefix errorBody() matches on (see errorBody for why matching is
-// needed at all).
 const PREVIOUS_NOT_FOUND_PREFIX = 'Unknown previous_response_id "';
 
 function previousNotFoundMessage(id: string): string {
   return `${PREVIOUS_NOT_FOUND_PREFIX}${id}" (expired, evicted, or from before a gateway restart). Resend the full conversation input.`;
 }
 
+function gatewayUnsupported(body: Record<string, any>): string | null {
+  if (body.conversation !== undefined && body.conversation !== null) {
+    return 'Unsupported parameter: "conversation" — the Conversations API is not implemented by this gateway; send the full conversation "input" on every turn and omit "conversation".';
+  }
+  if (body.background === true) {
+    return 'Unsupported parameter: "background" — this gateway has no asynchronous execution or polling endpoint; omit "background".';
+  }
+  if (body.truncation === 'auto') {
+    return 'Unsupported parameter: "truncation" — automatic context trimming is not implemented; shorten the input or send "truncation": "disabled".';
+  }
+  return null;
+}
+
+function echoOf(request: CanonicalRequest, raw: Record<string, any>): ResponsesEcho {
+  return {
+    instructions: request.instructions ?? null,
+    metadata: request.metadata ?? null,
+    temperature: request.generation?.temperature ?? null,
+    top_p: request.generation?.topP ?? null,
+    max_output_tokens: request.generation?.maxOutputTokens ?? null,
+    tool_choice: raw.tool_choice ?? 'auto',
+    parallel_tool_calls: request.parallelToolCalls ?? true,
+    previous_response_id: request.previousResponseId ?? null,
+    service_tier: request.serviceTier ?? null,
+    tools: request.tools?.map(responsesToolToWire) ?? [],
+    text: raw.text ?? { format: { type: 'text' } },
+    reasoning: raw.reasoning ?? null,
+    truncation: raw.truncation ?? 'disabled',
+    background: raw.background ?? false,
+    include: request.include ?? [],
+    prompt: raw.prompt ?? null,
+    conversation: raw.conversation ?? null,
+    safety_identifier: request.safetyIdentifier ?? null,
+  };
+}
+
 export const responsesSurface: ChatSurface = {
-  wire: 'responses',
+  wire: 'openai-responses',
   exec: 'chat-pipeline',
   capture: true,
   routePath: '/v1/responses',
@@ -144,141 +133,66 @@ export const responsesSurface: ChatSurface = {
 
   parse(body: unknown): SurfaceParseResult {
     ensureStoreConfigured();
-    const req = body as ResponsesRequest | undefined | null;
-
-    if (!req || req.input === undefined || req.input === null) {
-      return { error: 'Invalid request: "input" is required.' };
-    }
-
-    // Unsupported-but-load-bearing parameters fail here, before any state is
-    // touched: a standard client cannot detect a silently ignored parameter,
-    // and `conversation` in particular would make it believe a session
-    // continued while every turn starts blank.
-    const unsupported = unsupportedResponsesParameter(req);
-    if (unsupported) {
-      return { error: unsupported, errorCode: 'unsupported_parameter' };
-    }
-
-    // This turn's NEW messages only (never includes rebuilt history — the
-    // parent chain in the store already holds it).
-    let delta: ChatMessage[];
+    const raw = (body ?? {}) as Record<string, any>;
+    const unsupported = gatewayUnsupported(raw);
+    if (unsupported) return { error: unsupported, errorCode: 'unsupported_parameter' };
+    let parsed: CanonicalRequest;
     try {
-      delta = inputItemsToMessages(req.input);
-    } catch (e) {
-      return { error: (e as Error | undefined)?.message || 'Invalid input items.' };
+      parsed = responsesRequestToIR(raw);
+    } catch (err) {
+      return {
+        error: (err as Error | undefined)?.message || 'Invalid input items.',
+        ...(err instanceof IrUnsupportedError ? { errorCode: 'unsupported_parameter' } : {}),
+      };
     }
-    if (delta.length === 0) {
-      return { error: 'Invalid request: "input" resolved to an empty message list.' };
-    }
-
-    // Full request messages = [instructions?] + [rebuilt history?] + delta.
-    // `instructions` is request-scoped (like a system prompt for THIS turn),
-    // so it is prepended at send time and never baked into stored deltas.
-    let messages: ChatMessage[];
+    const delta = parsed.input;
+    let input = delta;
     let sessionIdBind: string | undefined;
-    if (req.previous_response_id) {
-      // Live client proven to rely on gateway-held state while persist=off:
-      // one warn per process pointing at the exact switch (warn-once = the
-      // dedup-by-key semantics of WarnThrottle over a constant key).
+    if (parsed.previousResponseId) {
       if (!persistActive) {
         surfaceWarns.warn('resp-chain-not-persisted',
           '[responses] previous_response_id in use but responses.persist=false — the conversation chain ' +
             'is memory-only and a gateway restart will break continuation (clients then must resend the ' +
             'full input). Set responses.persist: true in config.yaml to survive restarts.');
       }
-      const built = respStore.buildMessages(req.previous_response_id);
-      if (!built) {
-        // Fail-visible: never silently open a new session.
-        return { error: previousNotFoundMessage(req.previous_response_id) };
-      }
-      messages = [...built.messages, ...delta];
-      if (req.instructions?.trim()) {
-        messages = [{ role: 'system', content: req.instructions }, ...messages];
-      }
+      const built = respStore.buildInput(parsed.previousResponseId);
+      if (!built) return { error: previousNotFoundMessage(parsed.previousResponseId) };
+      input = [...built.input, ...delta];
       sessionIdBind = built.sessionId;
-    } else {
-      messages = [...delta];
-      if (req.instructions?.trim()) {
-        messages = [{ role: 'system', content: req.instructions }, ...messages];
-      }
     }
-    // A cancelled/abandoned call can leave an assistant turn whose calls the
-    // next wire item never answers (a plain user message is legal on the
-    // Responses wire, not on chat-completions). Close them here, after the
-    // rebuilt chain and this turn's delta are one list — the surface's own
-    // contract is that the request it hands downstream is a valid chat chain.
-    // The orchestrator normalizes again as the final gate for every wire
-    // (same idempotent function; a repaired chain costs one pass).
-    messages = repairToolCallPairing(messages).messages;
+    const request: CanonicalRequest = { ...parsed, input };
+    // These controls describe the gateway-owned emulation, not an upstream call.
+    delete request.store;
+    delete request.previousResponseId;
+    delete request.background;
+    delete request.truncation;
+    if (sessionIdBind) request.routerOptions = { ...request.routerOptions, sessionId: sessionIdBind };
 
-    const request: ChatCompletionRequest = {
-      model: req.model?.trim() || 'auto',
-      messages,
-    };
-    if (req.temperature !== undefined) request.temperature = req.temperature;
-    if (req.top_p !== undefined) request.top_p = req.top_p;
-    if (req.max_output_tokens !== undefined) request.max_tokens = req.max_output_tokens;
-    if (req.tools !== undefined && !Array.isArray(req.tools)) {
-      return { error: 'Invalid request: "tools" must be an array.' };
-    }
-    if (req.tools?.length) request.tools = responsesToolsToChat(req.tools as unknown[]);
-    if (req.tool_choice !== undefined && req.tool_choice !== null) {
-      request.tool_choice = responsesToolChoiceToChat(req.tool_choice);
-    }
-    if (req.reasoning?.effort) request.reasoning_effort = req.reasoning.effort;
-    // Responses-native reasoning.max_tokens maps to router's max_thinking_tokens,
-    // which provider payload builders translate per-upstream (see anthropic.ts,
-    // google.ts, responses.ts buildResponsesPayload).
-    if (req.reasoning?.max_tokens != null) request.max_thinking_tokens = req.reasoning.max_tokens;
-    if (req.user) request.user = req.user;
-    // Exact session binding for stateful turns: the parent node remembers the
-    // routing session; router_options.session_id resolves via the explicit
-    // layer — zero ambiguity, no content heuristics involved.
-    if (sessionIdBind) request.router_options = { ...request.router_options, session_id: sessionIdBind };
-    // Frozen C-3 normalization, done inside parse: typed boolean only. The old
-    // handler branched on `body.stream` truthiness and never set the field;
-    // provider builders force upstream stream:false regardless, so this only
-    // selects this surface's own terminal-send branch (pipeline `=== true`).
-    request.stream = req.stream === true;
-
+    const respId = newResponseId();
+    const messageId = newResponseMessageId();
+    const store = raw.store !== false;
+    const echo = echoOf(parsed, raw);
+    const seq = newResponseStreamSequence();
     return {
       request,
       state: {
-        delta,
-        sessionIdBind,
-        parent: req.previous_response_id || null,
-        respId: newResponseId(),
-        messageId: newResponseMessageId(),
-        seq: newResponseStreamSequence(),
-        // OpenAI parity: `store` defaults to true when the client omits it.
-        store: req.store !== false,
-      },
+        delta, sessionIdBind, parent: parsed.previousResponseId ?? null,
+        respId, messageId, store, echo,
+        encoder: new OpenAIResponsesEventEncoder(respId, messageId, seq, store, echo),
+      } satisfies ResponsesState,
     };
   },
 
   afterResult(result: ExecutionResult, state: unknown): void {
     const s = state as ResponsesState;
-    // `s.respId` was minted by parse so the opening frames of a relayed turn
-    // could carry it. Persist the node before the terminal send on the
-    // buffered leg, or before the closing frames on the relayed leg.
-    //
-    // `store:false` = "do not retain this response" (OpenAI parity): no node,
-    // so a later `previous_response_id` naming it resolves to nothing and the
-    // client gets the documented resend-full-input 400. Capture is a
-    // DIFFERENT, operator-controlled plane — it is not the protocol store.
-    const assistant = result.response?.choices[0]?.message;
     const node: RespNode = {
+      v: 2,
       id: s.respId,
       parent: s.parent,
       sessionId: result.sessionId || s.sessionIdBind || '',
       model: result.modelUsed,
-      input: s.delta as ChatMessageLite[],
-      assistant: {
-        role: 'assistant',
-        content: typeof assistant?.content === 'string' ? assistant.content : '',
-        tool_calls: assistant?.tool_calls,
-        reasoning_content: assistant?.reasoning_content,
-      },
+      input: s.delta,
+      output: result.response?.output ?? [],
       createdAt: Date.now(),
     };
     if (s.store) respStore.append(node);
@@ -286,68 +200,71 @@ export const responsesSurface: ChatSurface = {
 
   encodeJson(result: ExecutionResult, state: unknown): unknown {
     const s = state as ResponsesState;
-    return chatToResponseObject(result.response!, s.respId, result.modelUsed, s.messageId, s.store);
+    return canonicalToResponsesObject(result.response!, {
+      respId: s.respId, messageId: s.messageId,
+    }, result.modelUsed, s.store, s.echo);
   },
 
   encodeStream(result: ExecutionResult, state: unknown): string[] {
     const s = state as ResponsesState;
-    // Buffered leg: the full synthesized sequence, carrying the same ids the
-    // relayed leg used in its prefix.
-    return chatToStreamEvents(result.response!, s.respId, result.modelUsed, s.messageId, s.seq, s.store);
+    const frames: string[] = [];
+    for (const event of canonicalResponseToEvents(result.response!)) {
+      for (const payload of s.encoder.encode(event, result.modelUsed, result.response)) {
+        frames.push(responsesEventFrame(payload));
+      }
+    }
+    // Mirror chat: buffered SSE (no relay) never calls streamEnd, so the
+    // trailing observation comment has to ride encodeStream itself.
+    frames.push(buildChatOcrSummaryFrame(result));
+    return frames;
   },
 
-  // ---- Relayed leg: one upstream chunk -> one `response.output_text.delta`.
-  // Without these three hooks the responses wire is buffered SSE: all events
-  // arrive AFTER generation, so the client never sees token-by-token output.
-
-  streamStart(state: unknown, ctx: { model: string }): string[] {
-    const s = state as ResponsesState;
-    return responsesStreamPrefix(s.respId, ctx.model, s.messageId, s.seq, s.store);
+  // Relay capability marker required by runChatSurface when afterResult is
+  // defined; response.created / response.in_progress frames are emitted by
+  // OpenAIResponsesEventEncoder upon receiving the initial IR event.
+  streamStart(): string[] {
+    return [];
   },
 
-  encodeChunk(chunk: ChatCompletionChunk, ctx: { state?: unknown }): string | null {
+  encodeChunk(event: StreamEvent, ctx: ChatChunkContext): string | null {
     const s = ctx.state as ResponsesState | undefined;
-    const text = chunk.choices?.[0]?.delta?.content;
-    if (!s || typeof text !== 'string' || text.length === 0) return null;
-    return responsesDeltaFrame(s.messageId, text, s.seq);
+    if (!s) return null;
+    const payloads = s.encoder.encode(event, ctx.model);
+    return payloads.length ? payloads.map(responsesEventFrame).join('') : null;
   },
 
   streamEnd(result: ExecutionResult, state: unknown): string[] {
     const s = state as ResponsesState;
-    return responsesStreamSuffix(result.response!, s.respId, result.modelUsed, s.messageId, s.seq, s.store);
+    const response = result.response!;
+    const event: StreamEvent = response.status === 'failed'
+      ? { type: 'response.failed', reason: response.reason }
+      : response.status === 'incomplete'
+        ? { type: 'response.incomplete', reason: response.reason }
+        : { type: 'response.completed' };
+    return [
+      ...s.encoder.encode(event, result.modelUsed, response).map(responsesEventFrame),
+      buildChatOcrSummaryFrame(result),
+    ];
   },
 
-  // `_status` is kept for signature parity with the other wire surfaces; this
-  // wire's quirk is that `type` is pinned regardless of status.
   errorBody(_status: number, message: string, code?: string): unknown {
-    // Today's errorReply(): keys in order message/type/code, type pinned to
-    // invalid_request_error at every status (this wire's quirk — preserved,
-    // not "fixed"). `code` reaches this method from two callers: the parse-400
-    // channel (SurfaceParseResult.errorCode — `unsupported_parameter`) and the
-    // transports' pre-dispatch errors. A parse-400 without an explicit code
-    // falls back to message identity: previousNotFoundMessage() above is the
-    // only producer of `previous_response_not_found`.
     const resolved = code ?? (message.startsWith(PREVIOUS_NOT_FOUND_PREFIX) ? 'previous_response_not_found' : undefined);
-    return {
-      error: {
-        message,
-        type: 'invalid_request_error',
-        code: resolved,
-      },
-    };
+    return { error: { message, type: 'invalid_request_error', code: resolved } };
   },
 
   executionError(err: unknown): { status: number; body: unknown } {
-    const e = err as { statusCode?: unknown; message?: string } | null | undefined;
+    const e = err as { statusCode?: unknown; message?: string; name?: string } | null | undefined;
     const statusCode = e?.statusCode;
-    // Today's catch: explicitly tagged 4xx (e.g. variant resolution) keep
-    // their status with code invalid_request_error (type and code are
-    // literally identical there — preserved); everything else collapses to a
-    // 502 upstream_error with the fallback message.
     if (typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
       return {
         status: statusCode,
-        body: { error: { message: e?.message, type: 'invalid_request_error', code: 'invalid_request_error' } },
+        body: {
+          error: {
+            message: e?.message || 'Bad request.',
+            type: 'invalid_request_error',
+            code: e?.name === 'IrUnsupportedError' ? 'unsupported_parameter' : 'invalid_request_error',
+          },
+        },
       };
     }
     return {

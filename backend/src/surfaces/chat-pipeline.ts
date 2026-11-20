@@ -1,9 +1,22 @@
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { buildOcrSummaryFrame } from '../utils/chat-sse.js';
-import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
-import { buildChatOcrRoutingHeaders, buildChatOcrHeaders, buildChatOcrCompletionFacts } from './ocr-headers.js';
+import type { StreamRelay, StreamRoutingFacts } from '../utils/stream-relay.js';
+import { buildChatOcrHeaders, buildChatOcrRoutingHeaders, buildChatOcrSummaryFrame } from './ocr-headers.js';
 import type { ChatSurface, SurfacePathContext, TransportContext } from './types.js';
 import { streamingPosture } from '../pipeline/streaming-posture.js';
+
+/** Preserve synchronous sinks while serializing writes when the transport applies backpressure. */
+function writeSseFrames(t: TransportContext, frames: Iterable<string>): void | Promise<void> {
+  let pending: Promise<void> | undefined;
+  for (const frame of frames) {
+    if (pending) {
+      pending = pending.then(() => t.writeSseChunk(frame));
+      continue;
+    }
+    const result = t.writeSseChunk(frame);
+    if (result) pending = Promise.resolve(result);
+  }
+  return pending;
+}
 
 /**
  * The frozen execution order for every chat-shaped wire (contract §1.3).
@@ -23,8 +36,10 @@ import { streamingPosture } from '../pipeline/streaming-posture.js';
  * when it also supplies `streamStart` — its ids must be minted at parse time,
  * since the hook itself runs after the turn. Two consequences are encoded
  * rather than accidental:
- *  - the header block carries routing facts only; on the chat wire completion
- *    facts ride the trailing `ocr-summary` comment frame before `[DONE]`;
+ *  - the header block carries routing facts only; completion facts ride the
+ *    trailing `ocr-summary` comment on every chat-shaped wire (chat places it
+ *    before `[DONE]`; anthropic and responses place it after their terminal
+ *    event);
  *  - a failure after the first byte ends the stream WITHOUT `[DONE]` — no JSON
  *    error body, no retry, because the client already holds part of the answer.
  */
@@ -83,7 +98,7 @@ export async function runChatSurface(
   //    The orchestrator still decides whether to USE the relay (wire capability
   //    / assertion cascade / mock mode / upstream transport mode) — when it
   //    does not, no byte is written and the buffered send below runs as before.
-  const includeUsage = request.stream_options?.include_usage === true;
+  const includeUsage = request.streamOptions?.includeUsage === true;
   let streamed = false;
   let stagedFacts: StreamRoutingFacts | undefined;
   let relay: StreamRelay | undefined;
@@ -98,6 +113,7 @@ export async function runChatSurface(
         stagedFacts = facts;
       },
       onChunk(chunk) {
+        const opening: string[] = [];
         if (!streamed) {
           streamed = true;
           // Headers flush with the first byte, so only the ROUTING half of the
@@ -106,12 +122,11 @@ export async function runChatSurface(
           // Responses wire: created / in_progress / output_item.added /
           // content_part.added must precede EVERY delta, and their ids were
           // minted by parse (afterResult has not run yet).
-          for (const frame of surface.streamStart?.(parsed.state, chunkCtx()) ?? []) {
-            t.writeSseChunk(frame);
-          }
+          opening.push(...surface.streamStart?.(parsed.state, chunkCtx()) ?? []);
         }
         const frame = surface.encodeChunk!(chunk, chunkCtx());
-        if (frame !== null) t.writeSseChunk(frame);
+        if (frame !== null) opening.push(frame);
+        return writeSseFrames(t, opening);
       },
       get committed() {
         return streamed;
@@ -134,6 +149,9 @@ export async function runChatSurface(
         // the orchestrator stamps it on the trace so the console can tag the
         // inbound leg without re-deriving the posture.
         clientStream: wantsStream,
+        // Capture keeps the client's protocol envelope; IR belongs to routing
+        // and execution, never to the inbound wire archive.
+        clientBody: body,
         ...t.captureProcessContext(),
       },
       relay
@@ -145,14 +163,15 @@ export async function runChatSurface(
       // same one the store persists — the buffered leg runs it at step 7c.
       surface.afterResult?.(result, parsed.state);
       if (surface.streamEnd) {
-        for (const frame of surface.streamEnd(result, parsed.state, chunkCtx())) {
-          t.writeSseChunk(frame);
-        }
+        await writeSseFrames(t, surface.streamEnd(result, parsed.state, chunkCtx()));
       } else {
-        // Chat wire: completion-time facts, then [DONE] — the summary MUST
-        // precede [DONE], because most parsers stop reading at [DONE].
-        t.writeSseChunk(buildOcrSummaryFrame(buildChatOcrCompletionFacts(result)));
-        t.writeSseChunk('data: [DONE]\n\n');
+        // Fallback when a surface defines no streamEnd. The summary precedes
+        // [DONE]; most parsers stop reading at [DONE]. Chat, Anthropic and
+        // Responses all define streamEnd and do not take this branch.
+        await writeSseFrames(t, [
+          buildChatOcrSummaryFrame(result),
+          'data: [DONE]\n\n',
+        ]);
       }
       t.endSse();
       return;
@@ -179,9 +198,7 @@ export async function runChatSurface(
       // pre-refactor leg shared this defect; ordering fixes it).
       const chunks = surface.encodeStream(result, parsed.state);
       t.beginSse(headers);
-      for (const chunk of chunks) {
-        t.writeSseChunk(chunk);
-      }
+      await writeSseFrames(t, chunks);
       t.endSse();
     } else {
       t.sendJson(200, surface.encodeJson(result, parsed.state), headers);

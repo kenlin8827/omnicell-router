@@ -1,106 +1,88 @@
-/**
- * Tool-call pairing normalization for the canonical chat-completions chain.
- *
- * Chat-completions — and every upstream that enforces the same rule (OpenAI,
- * DeepSeek, Anthropic's tool_use/tool_result pair) — requires every
- * `tool_calls` entry on an assistant message to be answered by exactly ONE
- * `tool` message carrying that `tool_call_id`, before any message of another
- * role appears, and forbids a `tool` message that answers no call. A client
- * can break any of those three clauses without meaning to: a cancelled or
- * aborted tool execution, a parallel call whose result was never recorded, a
- * client-side compaction that dropped old tool messages, an abandoned turn
- * continued with a plain user message, a retried result appended twice.
- * Forwarded verbatim, strict upstreams reject the WHOLE request:
- * "An assistant message with 'tool_calls' must be followed by tool messages
- * responding to each 'tool_call_id'. (insufficient tool messages following
- * tool_calls message)".
- *
- * Three repairs, all confined to the messages that violate the contract:
- *   - MISSING reply → a `tool` message is synthesized at the point the next
- *     message of another role appears (and at the end of the chain), so the
- *     model learns the call produced no result;
- *   - DUPLICATE reply (same id twice) → the later one is dropped;
- *   - ORPHAN reply (no preceding assistant message declared its id) → dropped:
- *     it can only be answered by history this list does not contain, and no
- *     strict upstream will accept it anyway.
- * A conforming conversation is returned untouched (same array instance), so a
- * clean chain never pays for the repair.
- *
- * Call sites (idempotent — a conforming chain is returned untouched): the
- * Responses surface repairs its own assembled chain so the request it hands
- * downstream is already valid, and the pipeline orchestrator runs it on the
- * canonical chain every inbound wire converges on (native chat-completions,
- * Responses, Anthropic) before compression and wire shaping.
- */
-import { ChatMessage } from '../types/openai.js';
+import type { InputItem } from '../ir/types.js';
 
-/** Content of the synthesized reply for a call the client never answered. */
 export const UNANSWERED_TOOL_CONTENT = 'Tool call was cancelled before returning a result.';
 
 export interface ToolPairingRepair {
-  messages: ChatMessage[];
-  /** Calls closed with a synthesized `tool` message. */
+  input: InputItem[];
   synthesized: number;
-  /** Second and later `tool` messages for an id already answered. */
   duplicates: number;
-  /** `tool` messages whose id no assistant message in the chain declared. */
   orphans: number;
 }
 
-export function repairToolCallPairing(messages: ChatMessage[]): ToolPairingRepair {
-  const out: ChatMessage[] = [];
-  /** Call ids of the current assistant turn not yet answered. */
+/** Repair tool_call/tool_result correlation without projecting through Chat. */
+export function repairToolCallPairing(input: InputItem[]): ToolPairingRepair {
+  const out: InputItem[] = [];
   let pending: string[] = [];
-  /** Every call id any assistant message in this chain declared. */
+  let seenToolResult = false;
   const declared = new Set<string>();
   let synthesized = 0;
   let duplicates = 0;
   let orphans = 0;
-
   const flush = (): void => {
-    for (const id of pending) {
-      out.push({ role: 'tool', content: UNANSWERED_TOOL_CONTENT, tool_call_id: id });
+    for (const callId of pending) {
+      out.push({
+        type: 'tool_result', callId,
+        content: [{ type: 'text', text: UNANSWERED_TOOL_CONTENT }],
+      });
       synthesized += 1;
     }
     pending = [];
+    seenToolResult = false;
   };
-
-  for (const msg of messages) {
-    if (msg.role === 'assistant') {
-      // No later message can answer the previous turn's calls.
-      flush();
-      out.push(msg);
-      pending = [];
-      for (const tc of msg.tool_calls ?? []) {
-        const id = tc.id;
-        // An id-less call cannot be answered by anything — including a
-        // synthesized reply — so it is left for the upstream to judge.
-        if (!id) continue;
-        declared.add(id);
-        pending.push(id);
+  const hasPendingResultInTurn = (startIndex: number): boolean => {
+    for (let j = startIndex; j < input.length; j += 1) {
+      const next = input[j]!;
+      if (next.type === 'tool_result') {
+        if (next.callId && pending.includes(next.callId)) return true;
+        continue;
+      }
+      if (next.type === 'reasoning' || next.type === 'tool_call') continue;
+      if (next.type === 'message' && next.role === 'assistant') continue;
+      break;
+    }
+    return false;
+  };
+  for (let i = 0; i < input.length; i += 1) {
+    const item = input[i]!;
+    if (item.type === 'tool_call') {
+      // Once any tool_result has been observed for the previous turn, a new
+      // tool_call starts a new assistant turn and must flush unanswered calls.
+      if (seenToolResult && pending.length > 0) flush();
+      const callId = item.callId ?? item.id;
+      out.push(item);
+      if (callId) {
+        declared.add(callId);
+        pending.push(callId);
       }
       continue;
     }
-    if (msg.role === 'tool') {
-      const idx = msg.tool_call_id ? pending.indexOf(msg.tool_call_id) : -1;
-      if (idx >= 0) {
-        pending.splice(idx, 1);
-        out.push(msg);
-      } else if (msg.tool_call_id && declared.has(msg.tool_call_id)) {
-        // Answered twice for the same call: keep the first reply only.
-        duplicates += 1;
-      } else {
-        // Never declared anywhere in this chain — unplaceable client data.
-        orphans += 1;
-      }
+    if (item.type === 'tool_result') {
+      const index = item.callId ? pending.indexOf(item.callId) : -1;
+      if (index >= 0) {
+        pending.splice(index, 1);
+        out.push(item);
+        seenToolResult = true;
+      } else if (item.callId && declared.has(item.callId)) duplicates += 1;
+      else orphans += 1;
       continue;
     }
-    // user / system / developer: no later message can answer these calls.
+    if (item.type === 'message' && item.role === 'assistant') {
+      if (seenToolResult && pending.length > 0) flush();
+      out.push(item);
+      continue;
+    }
+    if (item.type === 'reasoning') {
+      // Flush unanswered calls from an abandoned turn before a new turn's
+      // reasoning block, but preserve pending calls when interleaved thinking
+      // within the same assistant turn still has its matching tool_result ahead.
+      if (pending.length > 0 && (seenToolResult || !hasPendingResultInTurn(i + 1))) flush();
+      out.push(item);
+      continue;
+    }
     flush();
-    out.push(msg);
+    out.push(item);
   }
   flush();
-
   const changed = synthesized > 0 || duplicates > 0 || orphans > 0;
-  return { messages: changed ? out : messages, synthesized, duplicates, orphans };
+  return { input: changed ? out : input, synthesized, duplicates, orphans };
 }

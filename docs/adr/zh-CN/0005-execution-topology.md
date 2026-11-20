@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——chat provider 仅来自定义文件 + 凭证库（ADR-0010）；原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）整体退役（ADR-0008 修订）——决策面仅经协议转换服务；`buildDirectPool` 失败不再回退到 config 内联 provider（注册表仅以 mock 模式启动）。2026-10-22 修订：原生支路以定义文件驱动的 wire 形式恢复（ADR-0008 §7）——解析 wire 为 `systemone` 的模型（定义 `npm '@ai-sdk/typesafe-ai'`）由厂商直通服务（`protocols/systemone/native.ts`）；`systemoneUpstreams[]` 仍保持退役。
+已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——chat provider 仅来自定义文件 + 凭证库（ADR-0010）；原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）整体退役（ADR-0008 修订）——决策面仅经协议转换服务；`buildDirectPool` 失败不再回退到 config 内联 provider（注册表仅以 mock 模式启动）。2026-10-22 修订：原生支路以定义文件驱动的 wire 形式恢复（ADR-0008 §7）——解析 wire 为 `systemone` 的模型（定义 `protocol: 'systemone'`；遗留 `@ai-sdk/typesafe-ai` / opencode 段 `typesafe` 仅作只读别名，经 `providers/protocol.ts` / `opencode/provider-package.ts`）由厂商直通服务（`protocols/systemone/native.ts`）；`systemoneUpstreams[]` 仍保持退役。
 
 ## 决策
 
@@ -14,7 +14,7 @@
 
 `providers/boot-direct.ts`：(a) OCR 定义文件的 provider 节点（`<ocrHome>/providers.json`；ADR-0010——原 `opencode.jsonc` 读取：同形状同解析器，boot 一次性移植；节点级 `npm/options` 旧形状丢弃并上报；`env:[VAR]` 名单物化为 `{env:X}` 模板）。节点的 `models` map **就是**该 provider 的模型宇宙：空节点不路由任何模型（目录只是节点的**来源**，绝不是回落池；ADR-0010 修订案）；(b) 启动绑定的 CredentialStore 凭证链（ADR-0006）——`resolveKey/resolveKeyChain`，首位不变量 `chain[0].key === config.apiKey`，内联 key 前插于 store key 之前，裸 key 只驻**进程内**、永不序列化；(c) 目录（为已维护 id 提供 wire + 定价 + 能力元数据）。
 
-失败教义：不可路由的 provider 被**排除并上报**（`db_unreadable | no_credential | no_baseURL | 全模型不可路由`），永不炸启动；OAuth 行列示挂牌、永不进链、永不被路由（`:163-209,323-326`）。线型派发**数据驱动**：npm 包优先级 `model > catalog entry > provider def > recommendation`——协议真身在目录数据里，不在代码表里（`wire.ts:1-11`）；每 provider 基座：openai-compatible / anthropic / responses / google / systemone（System One wire 是 decision 协议执行器，**不是** chat 执行器——原生服务决策面，ADR-0008 §7，且被排除在 chat 池之外）。
+失败教义：不可路由的 provider 被**排除并上报**（`db_unreadable | no_credential | no_baseURL | 全模型不可路由`），永不炸启动；OAuth 行列示挂牌、永不进链、永不被路由（`:163-209,323-326`）。线型派发**数据驱动**：npm 包优先级 `model > catalog entry > provider def > recommendation`——协议真身在目录数据里，不在代码表里（`wire.ts:1-11`）；每 provider 基座：openai-chat / anthropic-messages / openai-responses / google-gemini / systemone（System One wire 是 decision 协议执行器，**不是** chat 执行器——原生服务决策面，ADR-0008 §7，且被排除在 chat 池之外）。
 
 ### 3. 唯一的候选咽喉
 
@@ -26,9 +26,11 @@
 - **Failover 链走**：auto 用 `retry.failover.maxAttempts` 预算；显式/combo 上限 = 链长（其组合即契约）；`tierCrossPolicy: same_tier_only | allow_escalate`——升档模式**只**给 lite 链附健康 plus 尾巴；严格防降级：高梯队链永不附低梯队尾巴（`:1227-1229,1311-1315`）。
 - 结构断言级联（仅 auto + 结构化输出）：lite 冲锋 → **本地静态断言**（零额外 LLM；JSON 语法/required/type/enum）→ 失败则携失败输出 + `[System Assertion Error]` 纠正消息升 `fallback.escalateTier`（plus|pro|ultra）、temperature 压 0.1——显式模型、combo、`router_options.disable_fallback` 全部跳过。降级是诚实的（因果入 `reasonParams`），不是静默兜底。lite 冲锋腿保持缓冲（其字节可能整轮作废）；升档腿的响应即终答（不再二次断言），按直连路径的提交点契约照常流式并同规记账 `ttftMs`/`genMs`（ADR-0008 §3）。
 
-### 5. 流式 = 只朝下游的重分块
+### 5. 客户端与上游流式是两个独立轴
 
-网关对上游**非**流式，向客户端重分块为 SSE（`chat-sse.ts:3-6`）：role → content 4 字/块 → tool_calls 32 字/块 → 终块带真实 `finish_reason` + usage。终块载荷**先编码后 beginSse**（绝不双重终止）。两种传输都实现 `beginSse/writeSseChunk/endSse`；`X-OCR-*` 头在 SSE 腿同型携带。客户端离场逐腿检测、合成 499（nginx 惯例）记录、永不上游发送。MITM 中不匹配 surface 表的流量走裸双向 splice（跳逐头双向剥离；ADR-0008）。
+`streaming.client.mode` 为 `allow | deny | always`；`streaming.upstream.mode` 为 `follow | stream | buffered`。3×3 posture 矩阵独立于协议转换：三个北向协议面均可输出 JSON 或 SSE，四个内置南向 provider 均支持缓冲 JSON 与原生 SSE。JSON 客户端配合上游 `stream` 时，把原生上游事件排干聚合成一个 Canonical IR 响应，不提交客户端字节，因此重试／failover 仍合法。SSE 客户端配合缓冲上游时，接收由最终 IR 合成的规范事件。原生中继逐事件转发，两种 node transport 都等待客户端 drain，不存在无界慢客户端队列。注册表累积**同一批**事件完成 usage 与终态记账，不维护第二条 Chat 形状的流。
+
+提交点优先于可用性：响应头或首个 SSE 字节到达客户端后，失败只关闭流，不再发送第二个 JSON 终态，也不重试客户端可能已经持有的输出。提交前仍遵循普通两级重试。客户端离场逐腿检测、合成 499（nginx 惯例）记录、永不上游发送；迭代器提前退出会取消 body，正常中继排空则保留计费所需终态 usage。MITM 中不匹配 surface 表的流量走裸双向 splice（跳逐头双向剥离；ADR-0008）。资源上限、fallback 语义与可执行 12+12+48+9 转换／posture 矩阵见 ADR-0033 和 `docs/design/protocol-matrix.zh-CN.md`。
 
 ### 6. Token-saver 压缩族——三段，全部 fail-open
 
@@ -50,7 +52,7 @@ TraceTracker：环 5000 + 按环境 `traces.db`（WAL）持久化，保留 7 天
 
 - **TTFT**（`gen_ai.server.time_to_first_token`；vLLM `time_to_first_token_seconds`）——逐轮 `ttftMs`，以 **P50 与 P95 百分位**报告，绝不用算术平均。延迟是长尾分布：一次 30 秒冷启动就能把 20 轮的均值拖到没人体验过的水平，而 P50 仍停在典型轮次、P95 承载长尾。所有公开延迟表都是这么报的（Artificial Analysis：中位数 + P95；OpenRouter：P50）。
 - **输出速率**（output speed）——输出 tokens ÷ 解码窗口（`genMs`），即 `gen_ai.server.time_per_output_token` 的倒数（vLLM `inter_token_latency_seconds`）。聚合按 token 加权（`Σtokens ÷ Σwindows`），绝不是逐轮比率的平均。
-- **卡顿率**（逐轮 `stalledMs`，会话 `stallRatio`；控制台标签"卡顿率"）——落定尝试的流中，客户端等待两块带流式输出的 chunk 之间 ≥1 秒停顿所占的流式时间比例。流式输出 = 正文、工具调用片段，**以及思考/推理增量**（`reasoning_content` / `reasoning`）：中继原样转发思考文本（`utils/chat-stream.ts`），排除它就会把推理模型的整段思考算成停顿。只有 role 的开场、`finish_reason` 帧与结尾 usage 帧都不算输出。停顿逐轮累加（`stalledMs`），再除以该会话所有可测流式轮次的解码窗口之和（`stallRatio`）——与视频流媒体 QoE 的 rebuffering ratio 同一个量，只是作用在客户端收到的流上。用占比而非最长值，反复的小顿挫与一次长冻结落在同一把尺子上，答案长短也不会扭曲数字——这正是最长间隔取最大值表达不了的维度，也是它被替换而非扩展的原因。非流式轮次、或输出 chunk 不足两块时为 undefined（'—'）；`0` 表示已测量且平滑。占比达到 10% 标琥珀色。测量点在网关中继，客户端绘制与网络抖动不在窗口内。
+- **卡顿率**（逐轮 `stalledMs`，会话 `stallRatio`；控制台标签"卡顿率"）——落定尝试的流中，客户端等待两块带流式输出的 chunk 之间 ≥1 秒停顿所占的流式时间比例。流式输出 = 正文、工具调用片段，**以及思考/推理增量**（`reasoning_content` / `reasoning`）：中继以 Canonical IR 流事件转发思考文本（`ir/stream.ts`），排除它就会把推理模型的整段思考算成停顿。只有 role 的开场、`finish_reason` 帧与结尾 usage 帧都不算输出。停顿逐轮累加（`stalledMs`），再除以该会话所有可测流式轮次的解码窗口之和（`stallRatio`）——与视频流媒体 QoE 的 rebuffering ratio 同一个量，只是作用在客户端收到的流上。用占比而非最长值，反复的小顿挫与一次长冻结落在同一把尺子上，答案长短也不会扭曲数字——这正是最长间隔取最大值表达不了的维度，也是它被替换而非扩展的原因。非流式轮次、或输出 chunk 不足两块时为 undefined（'—'）；`0` 表示已测量且平滑。占比达到 10% 标琥珀色。测量点在网关中继，客户端绘制与网络抖动不在窗口内。
 
 窗口边界属于指标定义本身，因此凡出现该数字处都须说明：本速率**不含 TTFT**，与 OTel 的 `time_per_output_token`、Artificial Analysis 的每查询速度一致；OpenRouter 的 `Throughput` 从请求发出量到最后一个 token，**包含** TTFT（同一模型其数值更低——两者不可比）。
 

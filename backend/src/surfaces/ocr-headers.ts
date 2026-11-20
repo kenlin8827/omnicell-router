@@ -1,5 +1,6 @@
 import type { ExecutionResult } from '../types/router.js';
-import type { StreamRoutingFacts } from '../utils/chat-stream.js';
+import { buildOcrSummaryFrame } from '../utils/chat-sse.js';
+import type { StreamRoutingFacts } from '../utils/stream-relay.js';
 
 /**
  * Single sink for the X-OCR response headers on every protocol surface.
@@ -18,10 +19,12 @@ import type { StreamRoutingFacts } from '../utils/chat-stream.js';
  */
 
 /**
- * The 13 base X-OCR headers plus conditionals for a chat-shaped execution
+ * The 14 base X-OCR headers plus conditionals for a chat-shaped execution
  * result (chat / anthropic / responses wires share this exact set). ADR-0021:
  * `X-OCR-Request-ID` names THIS request (the console row); the caller's own
- * correlation value is never echoed back.
+ * correlation value is never echoed back. `X-OCR-Protocol` names the OUTBOUND
+ * protocol id the served attempt spoke (the inbound surface is the URL the
+ * client called — a converted turn carries two different values).
  *
  * Conditional additions:
  * - X-OCR-TTFT-MS / X-OCR-Gen-MS: only when the committed attempt streamed.
@@ -41,6 +44,9 @@ import type { StreamRoutingFacts } from '../utils/chat-stream.js';
  *   shape itself (SSE vs JSON); the console reads both from the trace/capture
  *   planes.
  * - X-OCR-Variant: only when a sibling / `#variant` id was resolved.
+ * - X-OCR-Tool-Markup-Leak (ADR-0034): markup that remained text because it was
+ *   outside the scoped recovery path or failed its completeness/schema gates.
+ * - X-OCR-Recovered-Tool-Calls: complete calls recovered by the scoped repair.
  *
  * @param fallbackModel gate model of the surface (requested model name), used
  *   when the orchestrator reported no `modelUsed` (C-4: modelUsed || gate || 'auto').
@@ -50,6 +56,7 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     'X-OCR-Tier': `${result.tierUsed ?? ''}${result.fallbackOccurred ? '-escalated' : ''}`,
     'X-OCR-Layer': result.layerUsed || 'layer0',
     'X-OCR-Model': result.modelUsed || fallbackModel || 'auto',
+    'X-OCR-Protocol': result.protocolUsed || '',
     'X-OCR-Failover': result.failoverOccurred ? 'true' : 'false',
     'X-OCR-Failover-Attempts': (result.failoverAttempts || 1).toString(),
     'X-OCR-Failover-Path': result.failoverPath?.join(' -> ') || '',
@@ -83,12 +90,18 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
   if (result.variantUsed) {
     headers['X-OCR-Variant'] = result.variantUsed;
   }
+  // Recovery and residual leakage are separate facts: a repaired call is
+  // visible, and malformed/unscoped markup still names the broken endpoint.
+  const leaked = result.response?.toolMarkupLeak;
+  if (leaked) headers['X-OCR-Tool-Markup-Leak'] = leaked.calls.toString();
+  const recovered = result.response?.toolTextRecovery;
+  if (recovered) headers['X-OCR-Recovered-Tool-Calls'] = recovered.calls.toString();
   return headers;
 }
 
 /**
  * Routing-time X-OCR header block for a streamed turn — see
- * `StreamRoutingFacts` in utils/chat-stream (every field is decidable before a
+ * `StreamRoutingFacts` in utils/stream-relay (every field is decidable before a
  * single upstream byte exists).
  *
  * Deliberately NOT `buildChatOcrHeaders` with defaults: SSE headers flush with
@@ -106,6 +119,7 @@ export function buildChatOcrRoutingHeaders(
     'X-OCR-Tier': facts.tierUsed ?? '',
     'X-OCR-Layer': facts.layerUsed || 'layer0',
     'X-OCR-Model': facts.modelUsed || fallbackModel || 'auto',
+    'X-OCR-Protocol': facts.protocolUsed || '',
     'X-OCR-Session-ID': facts.sessionId || '',
     'X-OCR-Session-Ratchet': facts.sessionRatchetApplied ? 'true' : 'false',
     'X-OCR-Session-Lookup': facts.sessionLookupType || '',
@@ -133,9 +147,18 @@ export function buildChatOcrCompletionFacts(result: ExecutionResult): Record<str
   const routing = buildChatOcrRoutingHeaders(result, result.modelUsed || 'auto');
   const completion: Record<string, string> = {};
   for (const [k, v] of Object.entries(all)) {
-    if (!(k in routing)) completion[k] = v;
+    if (!(k in routing) || routing[k] !== v) completion[k] = v;
   }
   return completion;
+}
+
+/** The one trailing comment every chat-shaped stream owes its client.
+ *  Chat places it before `[DONE]`; Anthropic and Responses place it after
+ *  their own terminal event. A comment is not an event, so strict parsers
+ *  still stop on `message_stop` / `response.completed`, while a reader that
+ *  drains the body (the playground) can compute tok/s from `X-OCR-Gen-MS`. */
+export function buildChatOcrSummaryFrame(result: ExecutionResult): string {
+  return buildOcrSummaryFrame(buildChatOcrCompletionFacts(result));
 }
 
 /**

@@ -1,19 +1,20 @@
 import type { ChatCompletionRequest } from '../types/openai.js';
 import type { ExecutionResult } from '../types/router.js';
-import { buildChatStreamChunks, formatChatChunkForClient } from '../utils/chat-sse.js';
+import { normalizeLegacyChatRequest } from '../protocols/chat-compat.js';
+import { chatRequestToIR, irToChatResponse } from '../ir/adapters/openai-chat.js';
+import { canonicalResponseToEvents } from '../ir/stream.js';
+import { ChatEventEncoder } from '../ir/adapters/openai-chat-stream.js';
+import { IrUnsupportedError } from '../ir/errors.js';
+import { buildChatOcrSummaryFrame } from './ocr-headers.js';
 import type { ChatSurface, SurfaceParseResult } from './types.js';
 
-/**
- * The OpenAI chat-completions surface (/v1/chat/completions).
- *
- * Every member below is the verbatim extraction of the old inline server.ts
- * handler — same message strings, same JSON key insertion order (wire bytes
- * depend on object literal order), same status→type mapping. Byte-identity
- * is the step-2 acceptance bar; the SSE generator itself is untouched per
- * contract §4 (generators stay as-is with their own DONE/frame sequence).
- */
+interface ChatSurfaceState {
+  encoder: ChatEventEncoder;
+}
+
+/** OpenAI Chat Completions is a protocol boundary, never the execution IR. */
 export const chatSurface: ChatSurface = {
-  wire: 'chat',
+  wire: 'openai-chat',
   exec: 'chat-pipeline',
   capture: true,
   routePath: '/v1/chat/completions',
@@ -24,27 +25,54 @@ export const chatSurface: ChatSurface = {
     if (!body || !Array.isArray(messages)) {
       return { error: 'Invalid request: "messages" array is required.' };
     }
-    // `model` stays client-sent verbatim — the orchestrator's fork
-    // (auto / auto-<tier> / concrete ids / variants / combos) owns resolution.
-    return { request: body as ChatCompletionRequest };
+    try {
+      const wire = normalizeLegacyChatRequest(body as ChatCompletionRequest);
+      return { request: chatRequestToIR(wire), state: { encoder: new ChatEventEncoder({ deferUsage: true }) } };
+    } catch (err) {
+      return {
+        error: (err as Error | undefined)?.message || 'Invalid request.',
+        ...(err instanceof IrUnsupportedError ? { errorCode: 'unsupported_parameter' } : {}),
+      };
+    }
   },
 
   encodeJson(result: ExecutionResult): unknown {
-    // Every turn that reaches an encoder came out of the pipeline with a
-    // response; the field is optional only for transports that relay an
-    // origin answer verbatim (gateway plugins), which never call this.
-    return result.response!;
+    const response = result.response!;
+    return irToChatResponse(response, response.id ?? `chatcmpl-${Date.now()}`, result.modelUsed);
   },
 
   encodeStream(result: ExecutionResult): string[] {
-    // Plain `result.modelUsed` — today's handler passed exactly this to the
-    // generator; the `modelUsed || gate || 'auto'` fallback is only for the
-    // X-OCR-Model HEADER (ocr-headers.ts), never for chunk bodies.
-    return [...buildChatStreamChunks(result.response!, result.modelUsed), 'data: [DONE]\n\n'];
+    const state: ChatSurfaceState = { encoder: new ChatEventEncoder({ deferUsage: true }) };
+    const frames: string[] = [];
+    for (const event of canonicalResponseToEvents(result.response!)) {
+      const frame = chatSurface.encodeChunk!(event, {
+        model: result.modelUsed,
+        includeUsage: true,
+        state,
+      });
+      if (frame !== null) frames.push(frame);
+    }
+    frames.push(...chatSurface.streamEnd!(result, state, {
+      model: result.modelUsed, includeUsage: true, state,
+    }));
+    return frames;
   },
 
-  encodeChunk(chunk, ctx) {
-    return formatChatChunkForClient(chunk, ctx.model, ctx.includeUsage);
+  streamEnd(result: ExecutionResult, state: unknown): string[] {
+    const encoder = (state as ChatSurfaceState).encoder;
+    return [
+      ...encoder.finish(result.response!, result.modelUsed).map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`),
+      buildChatOcrSummaryFrame(result),
+      'data: [DONE]\n\n',
+    ];
+  },
+
+  encodeChunk(event, ctx) {
+    if (event.type === 'response.usage' && !ctx.includeUsage) return null;
+    const state = ctx.state as ChatSurfaceState | undefined;
+    const encoder = state?.encoder ?? new ChatEventEncoder();
+    const chunk = encoder.encode(event, ctx.model);
+    return chunk ? `data: ${JSON.stringify(chunk)}\n\n` : null;
   },
 
   errorBody(status: number, message: string, code?: string): unknown {
@@ -52,23 +80,17 @@ export const chatSurface: ChatSurface = {
   },
 
   executionError(err: unknown): { status: number; body: unknown } {
-    const e = err as { statusCode?: unknown; message?: string } | null | undefined;
+    const e = err as { statusCode?: unknown; message?: string; code?: string; name?: string } | null | undefined;
     const statusCode = e?.statusCode;
-    // Explicit 4xx/5xx from the orchestrator pass through; anything else (or
-    // a non-integer / out-of-range statusCode) collapses to 500 — today's
-    // mapping, restated with typeof because Number.isInteger is not a TS
-    // type predicate (semantics unchanged: isInteger implies typeof number).
     const status =
       typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
         ? statusCode
         : 500;
-    return { status, body: chatErrorBody(status, e?.message || 'Internal Router Error') };
+    const code = e?.name === 'IrUnsupportedError' ? 'unsupported_parameter' : e?.code;
+    return { status, body: chatErrorBody(status, e?.message || 'Internal Router Error', code) };
   },
 };
 
-// One envelope for both error paths (parse-400 and execution catch) so they
-// can never drift. `code` rides last, only when a caller provides it — the
-// chat wire has never sent a code on these two shapes.
 function chatErrorBody(status: number, message: string, code?: string): unknown {
   const error: Record<string, string> = {
     message,

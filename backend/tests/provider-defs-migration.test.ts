@@ -111,7 +111,7 @@ describe('importProviderDefsAtBoot', () => {
     expect(defs!.version).toBe(1);
     expect(defs!.providers['zhipu']).toEqual({
       name: 'Zhipu',
-      package: '@opencode/ai/providers/openai-compatible',
+      package: 'openai-chat',
       settings: { baseURL: 'https://open.bigmodel.cn/api/paas/v4' },
     });
     expect(fs.readFileSync(p).equals(before)).toBe(true); // read-once: never a writer
@@ -128,7 +128,7 @@ describe('importProviderDefsAtBoot', () => {
     expect(rec!.skipped).toBe(1);
     const providers = readProviderDefsFile()!.providers;
     // OCR is the truth after the first port: the client copy cannot reset it.
-    expect(providers['other']).toEqual({ name: 'Other', package: '@opencode/ai/providers/openai' });
+    expect(providers['other']).toEqual({ name: 'Other', package: 'openai-responses' });
     expect(providers['zhipu']).toEqual({ name: 'Zhipu', package: 'p' });
   });
 
@@ -154,7 +154,7 @@ describe('importProviderDefsAtBoot', () => {
     expect(rec!.converted).toBe(1);
     const node = readProviderDefsFile()!.providers['maisuitx'];
     // The defs file stores the current spelling; a verbatim copy would be dropped.
-    expect(node.package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(node.package).toBe('openai-chat');
     expect(node.npm).toBeUndefined();
     expect(node.options).toBeUndefined();
     expect(node.name).toBe('Maisui TX');
@@ -245,7 +245,7 @@ describe('per-flavor def adapters (the client version decides the slot)', () => 
     expect(rec!.imported).toBe(1);
     const providers = readProviderDefsFile()!.providers;
     expect(Object.keys(providers)).toEqual(['v1relay']);
-    expect(providers['v1relay'].package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(providers['v1relay'].package).toBe('openai-chat');
   });
 
   it('v2-flavored machine: reads the canonical `providers` slot only, ignores the retired singular slot', () => {

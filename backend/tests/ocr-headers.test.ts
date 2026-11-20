@@ -22,10 +22,11 @@ function chatResult(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
   };
 }
 
-const BASE_14 = [
+const BASE_15 = [
   'X-OCR-Tier',
   'X-OCR-Layer',
   'X-OCR-Model',
+  'X-OCR-Protocol',
   'X-OCR-Failover',
   'X-OCR-Failover-Attempts',
   'X-OCR-Failover-Path',
@@ -40,9 +41,9 @@ const BASE_14 = [
 ];
 
 describe('buildChatOcrHeaders — frozen base set', () => {
-  it('1. plain result emits exactly the 14 base headers, in contract order', () => {
+  it('1. plain result emits exactly the 15 base headers, in contract order', () => {
     const headers = buildChatOcrHeaders(chatResult(), 'auto');
-    assert.deepStrictEqual(Object.keys(headers), BASE_14);
+    assert.deepStrictEqual(Object.keys(headers), BASE_15);
   });
 
   it('2. base values follow the frozen formatting rules', () => {
@@ -65,6 +66,8 @@ describe('buildChatOcrHeaders — frozen base set', () => {
     assert.equal(headers['X-OCR-Tier'], 'lite-escalated');
     assert.equal(headers['X-OCR-Layer'], 'layer2');
     assert.equal(headers['X-OCR-Model'], 'mock-model');
+    // Empty (stub result carries no protocol) — never a guessed id.
+    assert.equal(headers['X-OCR-Protocol'], '');
     assert.equal(headers['X-OCR-Failover'], 'true');
     assert.equal(headers['X-OCR-Failover-Attempts'], '3');
     assert.equal(headers['X-OCR-Failover-Path'], 'a/1 -> b/2 -> c/3');
@@ -88,6 +91,15 @@ describe('buildChatOcrHeaders — frozen base set', () => {
       'auto'
     );
   });
+
+  it('3b. X-OCR-Protocol carries the OUTBOUND protocol id verbatim', () => {
+    assert.equal(
+      buildChatOcrHeaders(chatResult({ modelUsed: 'x/y', protocolUsed: 'openai-chat' }), 'auto')[
+        'X-OCR-Protocol'
+      ],
+      'openai-chat'
+    );
+  });
 });
 
 describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
@@ -108,7 +120,7 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
       chatResult({ requestedEffort: 'low', actualEffort: 'medium', reasoningDegraded: true }),
       'auto'
     );
-    assert.deepStrictEqual(Object.keys(headers).slice(BASE_14.length), [
+    assert.deepStrictEqual(Object.keys(headers).slice(BASE_15.length), [
       'X-OCR-Thinking-Requested',
       'X-OCR-Thinking-Actual',
       'X-OCR-Thinking-Degraded',
@@ -152,12 +164,38 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
     assert.equal('X-OCR-Gen-MS' in buffered, false);
   });
 
-  it('8. thinking + variant combine: 18 keys total', () => {
+  it('7c. a leaked tool-call markup count rides X-OCR-Tool-Markup-Leak (ADR-0034)', () => {
+    const leaked = buildChatOcrHeaders(
+      chatResult({
+        response: { toolMarkupLeak: { calls: 3 } } as unknown as ExecutionResult['response'],
+      }),
+      'auto',
+    );
+    assert.equal(leaked['X-OCR-Tool-Markup-Leak'], '3');
+    assert.equal('X-OCR-Tool-Markup-Leak' in buildChatOcrHeaders(chatResult(), 'auto'), false);
+  });
+
+  it('7d. scoped recovery and residual leakage have distinct headers (ADR-0034)', () => {
+    const headers = buildChatOcrHeaders(
+      chatResult({
+        response: {
+          toolMarkupLeak: { calls: 1 },
+          toolTextRecovery: { kind: 'dsml', calls: 2 },
+        } as unknown as ExecutionResult['response'],
+      }),
+      'auto',
+    );
+    assert.equal(headers['X-OCR-Tool-Markup-Leak'], '1');
+    assert.equal(headers['X-OCR-Recovered-Tool-Calls'], '2');
+    assert.equal('X-OCR-Recovered-Tool-Calls' in buildChatOcrHeaders(chatResult(), 'auto'), false);
+  });
+
+  it('8. thinking + variant combine: 19 keys total', () => {
     const headers = buildChatOcrHeaders(
       chatResult({ requestedEffort: 'low', actualEffort: 'low', variantUsed: 'quick' }),
       'auto'
     );
-    assert.equal(Object.keys(headers).length, 18);
+    assert.equal(Object.keys(headers).length, 19);
   });
 });
 
@@ -180,11 +218,12 @@ describe('buildChatOcrHeaders — stub tolerance (frozen ?? / || defaults)', () 
     assert.equal(headers['X-OCR-Request-ID'], '');
     assert.equal(headers['X-OCR-Latency-MS'], '0');
     assert.equal(headers['X-OCR-Upstream-Stream'], 'buffered');
+    assert.equal(headers['X-OCR-Protocol'], '');
   });
 
-  it('10. nearly-empty object still produces the 14 base keys without throwing', () => {
+  it('10. nearly-empty object still produces the 15 base keys without throwing', () => {
     const headers = buildChatOcrHeaders({} as unknown as ExecutionResult, 'gate');
-    assert.deepStrictEqual(Object.keys(headers), BASE_14);
+    assert.deepStrictEqual(Object.keys(headers), BASE_15);
     assert.equal(headers['X-OCR-Model'], 'gate');
   });
 });

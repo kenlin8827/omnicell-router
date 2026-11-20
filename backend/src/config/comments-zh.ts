@@ -198,7 +198,7 @@ export const YAML_FIELD_COMMENTS_ZH: Record<string, string> = {
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
   requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理；单会话另有 maxSessionMB 封顶（失控的 agent 循环不会吃光共享容量，触顶档案停止追加并落一条 archive-overflow 终态行）',
   'requestCapture.storeMedia': 'base64 图片/文档等二进制载荷转存硬盘（默认 true）：请求体中的 base64 媒体替换为 [MEDIA …sha256=… file=media/…] 占位符，内容寻址去重（同一张图多轮重发只落一份），随日期目录同批清理；关闭或写盘失败时仍替换为无 file= 的占位符（不留 base64 在归档里），对话回放页可直接显示缩略图',
-  'requestCapture.redactSecrets': '捕获凭证脱敏开关（默认 true）：请求捕获归档里凭证形请求头（authorization / x-api-key / cookie / token 等）与查询串认证参数的值一律替换为 [REDACTED]；设为 false 后这些值原样落盘（含上游 provider 密钥），便于排查上游实际收到的完整请求——归档将包含真实密钥，请妥善保管',
+  'requestCapture.redactSecrets': '捕获凭证脱敏（强制开启）：归档里凭证形请求头、查询串认证参数与 body 中 Bearer 回显一律替换为 [REDACTED]；设为 false 也会被忽略——活密钥不会落盘',
   catalog: '目录数据源：远程 catalog 源定义与本地锚定（控制台 /catalog 页可视化编辑，改后即时生效）',
   'catalog.syncIntervalMs': '目录自动同步周期（毫秒，默认 86400000 = 24h）',
   'catalog.lockedModels': '本地锚定的模型 id 列表：这些模型的本地定义值（含 0 价）不被任何远程源覆盖',

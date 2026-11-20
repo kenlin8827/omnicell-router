@@ -51,11 +51,12 @@ export interface CatalogModel {
   id: string;
   name?: string;
   /**
-   * Model-level AI-SDK package override (models.dev `model.provider.npm`).
-   * Beats the provider-level npm when present — e.g. opencode(Zen) is
-   * `@ai-sdk/openai-compatible` overall, but `gpt-6-luna` carries
-   * `@ai-sdk/openai`, i.e. Responses-API-only, and Zen rejects it on the
-   * chat/completions wire with `ModelProtocolUnsupported`.
+   * Model-level protocol id (models.dev `model.provider.npm`, translated at
+   * ingest). Beats the provider-level value when present — e.g. opencode(Zen)
+   * is `openai-chat` overall, but `gpt-6-luna` carries
+   * `openai-responses`, and Zen rejects that model on the chat/completions
+   * wire with `ModelProtocolUnsupported`. The slot name stays `npm` because
+   * that is the upstream and model-def file spelling.
    */
   npm?: string;
   /** Model-default thinking level (OCR extension — pinned when the client omits `reasoning_effort`). */
@@ -66,8 +67,9 @@ export interface CatalogModel {
   temperature?: boolean;
   /**
    * Override-only capability flag (no catalog source publishes role support):
-   * `supportsDeveloperRole` — see ModelRegistration for the semantics. The
-   * default (undefined) is the safe convert-to-`system` behavior.
+   * `supportsDeveloperRole` — see ModelRegistration for the semantics. Kept
+   * for config forward-compatibility; currently inert because the IR -> Chat
+   * projection folds all developer blocks into one `system` message.
    */
   supportsDeveloperRole?: boolean;
   /**
@@ -120,6 +122,7 @@ export interface CatalogProviderRecord {
   name?: string;
   /** models.dev logo asset (svg); frontend falls back to an initial-letter avatar on error */
   logo?: string;
+  /** OCR protocol id. models.dev `npm` is translated at ingest. */
   npm?: string;
   /** default API base from the catalog */
   api?: string;

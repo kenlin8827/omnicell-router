@@ -15,7 +15,7 @@
  * `Authorization: Bearer TYPESAFE_AI_API_KEY`; usage rides
  * `input_tokens` / `output_tokens`.
  *
- * Capture/error discipline mirrors providers/openai-compatible.ts: request
+ * Capture/error discipline mirrors providers/executors/openai-chat.ts: request
  * event before fetch, paired response/failure event after the body arrives,
  * UpstreamError on a non-2xx head.
  */

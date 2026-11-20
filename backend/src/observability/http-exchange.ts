@@ -54,19 +54,18 @@ const DENY_HEADER_SUBSTRINGS = [
 ];
 
 /**
- * Module-level kill switch for capture-side credential redaction, driven by
- * `requestCapture.redactSecrets` (default true = redact). When an operator
- * explicitly sets `redactSecrets: false`, header and query-param values pass
- * through UNSANITIZED — raw API keys reach the capture archive on disk. That
- * is a conscious operator decision; the default keeps the redaction always on.
- * Set from CaptureRecorder (constructor + applyConfig) so console hot-apply
- * and controlled-restart config switches both take effect.
+ * Module-level switch for capture-side credential redaction. ALWAYS ON:
+ * `CaptureRecorder` (constructor + applyConfig) calls this with `true` and
+ * ignores `requestCapture.redactSecrets: false` (S-06) — live credentials
+ * must never land in the archive. The config key remains for forward-compat
+ * reads only. The setter is kept so boot and console hot-apply both re-assert
+ * the policy through the same path; no caller passes `false`.
  */
 let captureRedactionEnabled = true;
 
-/** Apply the `requestCapture.redactSecrets` policy (true = redact, default). */
-export function setCaptureSecretRedaction(redact: boolean): void {
-  captureRedactionEnabled = redact;
+/** Re-assert the always-on capture redaction policy (opt-out removed, S-06). */
+export function setCaptureSecretRedaction(_redact: boolean): void {
+  captureRedactionEnabled = true;
 }
 
 /** Sentinel value written in place of a credential-bearing header value. */
@@ -143,9 +142,9 @@ function encodeWireBody(body: string | Uint8Array | undefined | null): WireBody 
 const QUERY_AUTH_PARAM_RE = /(^|[^a-z])(key|apikey|token|secret|signature|credential|password|auth|sig)([^a-z]|$)/i;
 
 function redactQueryAuth(u: URL): void {
-  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) does not
-  // persist raw unless the operator disabled redaction
-  // (`requestCapture.redactSecrets: false`) — redact the value, keep the name.
+  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) must never
+  // persist raw; `requestCapture.redactSecrets: false` is ignored (S-06).
+  // Redact the value, keep the name.
   for (const name of [...new Set(u.searchParams.keys())]) {
     if (captureRedactionEnabled && QUERY_AUTH_PARAM_RE.test(name)) u.searchParams.set(name, REDACTED);
   }
@@ -269,8 +268,16 @@ export interface ClientExchangeContext {
      * branches) before `emitClientResponse` runs at finalize. Capped at
      * CLIENT_RESPONSE_BODY_CAP chars so a runaway stream can't exhaust
      * memory — the recorder truncates further down to maxBodyBytes.
+     *
+     * Streaming legs push into `responseBodyParts` (O(1) per chunk); the
+     * joined string is materialised once at finalize. Buffered `sendJson`
+     * still writes `responseBody` directly.
      */
     responseBody?: string;
+    /** Chunk list for SSE accumulation — joined once in emitClientResponse. */
+    responseBodyParts?: string[];
+    /** Running char count of `responseBodyParts` (avoids re-reducing). */
+    responseBodyPartsLen?: number;
     /**
      * Epoch ms of the FIRST streamed response chunk — stamped by the SSE
      * transport on its first `writeSseChunk` (never by `sendJson`: a buffered
@@ -334,9 +341,23 @@ function upstreamStreamOf(requestBody: string, url: string): boolean | undefined
  * branches). No-op once the cap is reached.
  */
 export function appendClientResponseChunk(ctx: ClientExchangeContext, chunk: string): void {
-  const cur = ctx.pending.responseBody ?? '';
-  if (cur.length >= CLIENT_RESPONSE_BODY_CAP) return;
-  ctx.pending.responseBody = (cur + chunk).slice(0, CLIENT_RESPONSE_BODY_CAP);
+  const len = ctx.pending.responseBodyPartsLen ?? 0;
+  if (len >= CLIENT_RESPONSE_BODY_CAP) return;
+  const room = CLIENT_RESPONSE_BODY_CAP - len;
+  const piece = chunk.length > room ? chunk.slice(0, room) : chunk;
+  if (!piece) return;
+  (ctx.pending.responseBodyParts ??= []).push(piece);
+  ctx.pending.responseBodyPartsLen = len + piece.length;
+}
+
+/** Join any streamed parts into `responseBody` once, before wire encode. */
+function materializePendingResponseBody(ctx: ClientExchangeContext): string {
+  if (ctx.pending.responseBodyParts?.length) {
+    ctx.pending.responseBody = ctx.pending.responseBodyParts.join('');
+    ctx.pending.responseBodyParts = undefined;
+    ctx.pending.responseBodyPartsLen = undefined;
+  }
+  return ctx.pending.responseBody ?? '';
 }
 
 /**
@@ -527,7 +548,7 @@ export function emitClientResponse(
     responseHeaders: sanitizePlainHeadersForCapture(headersMap),
     // Stashed by the transport adapters' terminal sends — '' when the reply
     // went out through a path that bypasses them (e.g. raw socket errors).
-    responseBody: encodeWireBody(ctx.pending.responseBody ?? ''),
+    responseBody: encodeWireBody(materializePendingResponseBody(ctx)),
   };
   void ctx.recorder.recordEvent({
     eventType: 'http-exchange',

@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChatStreamChunks } from '../src/utils/chat-sse.js';
-import { ChatCompletionResponse } from '../src/types/openai.js';
+import { canonicalResponseToEvents } from '../src/ir/stream.js';
+import { ChatEventEncoder } from '../src/ir/adapters/openai-chat-stream.js';
+import type { ChatCompletionResponse } from '../src/types/openai.js';
+import { responseToIR } from './helpers/ir.js';
 
 function resp(overrides: Partial<ChatCompletionResponse['choices'][0]['message']> & { content?: string }): ChatCompletionResponse {
   return {
@@ -16,38 +18,42 @@ function resp(overrides: Partial<ChatCompletionResponse['choices'][0]['message']
   } as ChatCompletionResponse;
 }
 
-describe('chat SSE synthesizer (streaming exchange)', () => {
-  it('text responses: role chunk → content deltas → real finish_reason → [DONE] carries usage', () => {
-    const chunks = buildChatStreamChunks(resp({ content: 'abcdefghij' }), 'served-model');
-    const parsed = chunks.map((c) => JSON.parse(c.slice('data: '.length)));
-    assert.strictEqual(parsed[0].choices[0].delta.role, 'assistant');
-    assert.strictEqual(parsed.map((p) => p.choices[0].delta.content || '').join(''), 'abcdefghij');
-    const finalChunk = parsed[parsed.length - 1];
-    assert.strictEqual(finalChunk.choices[0].finish_reason, 'stop', 'text responses finish with stop');
-    assert.deepStrictEqual(finalChunk.usage.total_tokens, 8, 'usage rides the final chunk');
-    assert.ok(chunks.every((c) => c.endsWith('\n\n')));
+function encode(response: ChatCompletionResponse) {
+  const ir = responseToIR(response);
+  const encoder = new ChatEventEncoder();
+  const events = canonicalResponseToEvents(ir);
+  const chunks = events.flatMap((event) => {
+    if (event.type === 'response.completed' || event.type === 'response.incomplete' || event.type === 'response.failed') return [];
+    const chunk = encoder.encode(event, 'served-model');
+    return chunk ? [chunk] : [];
+  });
+  chunks.push(...encoder.finish(ir, 'served-model'));
+  return chunks;
+}
+
+describe('Chat IR event encoder', () => {
+  it('emits role, text, usage and the real finish reason', () => {
+    const chunks = encode(resp({ content: 'abcdefghij' }));
+    assert.strictEqual(chunks[0]!.choices[0]!.delta.role, 'assistant');
+    assert.strictEqual(chunks.map((chunk) => chunk.choices[0]?.delta.content || '').join(''), 'abcdefghij');
+    const usage = chunks.find((chunk) => chunk.usage);
+    assert.strictEqual(usage?.usage?.total_tokens, 8);
+    assert.strictEqual(chunks.at(-1)!.choices[0]!.finish_reason, 'stop');
   });
 
-  it('tool-call responses: emit tool_call fragments per OpenAI spec and finish_reason tool_calls', () => {
-    const chunks = buildChatStreamChunks(
-      resp({
-        content: '',
-        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }],
-      }),
-      'served-model'
-    );
-    const parsed = chunks.map((c) => JSON.parse(c.slice('data: '.length)));
-    const fragments = parsed.map((p) => p.choices[0].delta.tool_calls).filter(Boolean).flat();
-    assert.strictEqual(fragments[0].id, 'call_1', 'first fragment carries id');
-    assert.strictEqual(fragments[0].function.name, 'read_file');
-    assert.strictEqual(fragments.slice(1).map((f) => f.function.arguments).join(''), '{"path":"a.ts"}');
-    const finalChunk = parsed[parsed.length - 1];
-    assert.strictEqual(finalChunk.choices[0].finish_reason, 'tool_calls', 'hardcoded stop would break tool loops');
+  it('emits complete tool calls and finish_reason tool_calls', () => {
+    const chunks = encode(resp({
+      content: '',
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }],
+    }));
+    const fragments = chunks.map((chunk) => chunk.choices[0]?.delta.tool_calls).filter(Boolean).flat();
+    assert.strictEqual(fragments[0]!.id, 'call_1');
+    assert.strictEqual(fragments[0]!.function.name, 'read_file');
+    assert.strictEqual(fragments.slice(1).map((fragment) => fragment.function.arguments).join(''), '{"path":"a.ts"}');
+    assert.strictEqual(chunks.at(-1)!.choices[0]!.finish_reason, 'tool_calls');
   });
 
-  it('model id on every chunk is the SERVED model', () => {
-    const chunks = buildChatStreamChunks(resp({ content: 'x' }), 'served-model');
-    const parsed = chunks.map((c) => JSON.parse(c.slice('data: '.length)));
-    assert.ok(parsed.every((p) => p.model === 'served-model'));
+  it('uses the served model id on every chunk', () => {
+    assert.ok(encode(resp({ content: 'x' })).every((chunk) => chunk.model === 'served-model'));
   });
 });

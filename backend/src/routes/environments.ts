@@ -447,7 +447,16 @@ export function registerEnvironmentRoutes(app: FastifyInstance, deps: Environmen
       // implies secrets=include. The password travels ONLY in the
       // x-ocr-archive-password header, never the query (access logs).
       const encrypt = query.encrypt === '1';
-      const includeSecrets = encrypt || query.secrets === 'include';
+      // Security S-01: plaintext secret export is disabled. Secrets leave the
+      // host only inside an AE-2 encrypted ZIP (?encrypt=1 + password header).
+      if (query.secrets === 'include' && !encrypt) {
+        return fail(
+          reply,
+          400,
+          'Plaintext secret export is disabled; use ?encrypt=1 with the x-ocr-archive-password header',
+        );
+      }
+      const includeSecrets = encrypt;
       // ?include= — comma-separated payload-key subset (unknown keys ignored,
       // the set is closed); absent = every payload file that exists.
       const includePayload =

@@ -194,4 +194,64 @@ describe('capture-http (Fastify leg event shape, inject)', () => {
       );
     }
   });
+
+  it('client requests retain their protocol envelope while directives stay scrubbed', async () => {
+    const cases = [
+      {
+        url: '/v1/chat/completions',
+        payload: {
+          model: 'auto',
+          messages: [{ role: 'user', content: `@ocr-tier-up\nHTTP-WIRE-CHAT-${Date.now()}` }],
+          parallel_tool_calls: false,
+          client_extension: { keep: true },
+        },
+        textKey: 'messages',
+      },
+      {
+        url: '/v1/messages',
+        payload: {
+          model: 'auto',
+          max_tokens: 32,
+          system: 'system @ocr-effort-up',
+          messages: [{ role: 'user', content: `HTTP-WIRE-ANTHROPIC-${Date.now()}` }],
+          client_extension: { keep: true },
+        },
+        textKey: 'messages',
+      },
+      {
+        url: '/v1/responses',
+        payload: {
+          model: 'auto',
+          input: [{ role: 'user', content: [{ type: 'input_text', text: `HTTP-WIRE-RESPONSES-${Date.now()}` }] }],
+          prompt_cache_key: 'client-cache-key',
+          client_extension: { keep: true },
+        },
+        textKey: 'input',
+      },
+    ] as const;
+
+    for (const item of cases) {
+      const marker = JSON.stringify(item.payload).match(/HTTP-WIRE-[A-Z]+-\d+/)![0];
+      const res = await app.inject({
+        method: 'POST',
+        url: item.url,
+        headers: { authorization: `Bearer ${TEST_KEY}`, 'user-agent': UA },
+        payload: item.payload,
+      });
+      assert.equal(res.statusCode, 200, item.url);
+      const events = await settle(marker);
+      const captured = JSON.parse(events.find((event) => event.phase === 'request')!.wire.requestBody);
+      assert.ok(Array.isArray(captured[item.textKey]), `${item.url} keeps ${item.textKey}`);
+      assert.deepEqual(captured.client_extension, { keep: true }, 'unknown client fields survive capture');
+      assert.ok(!events[0]!.wire.requestBody.includes('@ocr-'), 'reserved directives never reach the archive');
+      if (item.url === '/v1/chat/completions') {
+        assert.equal(captured.input, undefined, 'chat capture is not rewritten to IR');
+        assert.equal(captured.parallel_tool_calls, false);
+      }
+      if (item.url === '/v1/responses') {
+        assert.equal(captured.prompt_cache_key, 'client-cache-key');
+        assert.equal(captured.input[0].content[0].type, 'input_text');
+      }
+    }
+  });
 });

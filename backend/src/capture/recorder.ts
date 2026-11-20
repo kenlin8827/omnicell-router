@@ -6,57 +6,11 @@ import { getEnvPaths } from '../config/env.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 import { setCaptureSecretRedaction } from '../observability/http-exchange.js';
+import { redactUpstreamBody } from '../observability/upstream-body-redaction.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
 import { harnessProfileOf, type HarnessProfile } from '../utils/harness-profiles.js';
 import { NO_TURN, type TurnDecision, type TurnIdentity } from './turn-boundary.js';
 import { migrateArchiveRoot } from './migrate/index.js';
-
-/**
- * One captured turn — a single JSONL line in the per-session archive file.
- * `request` is the PRE-compression snapshot (what the client actually sent);
- * `response` is the full upstream payload. Either becomes a plain string with
- * `truncated: true` when it exceeds the per-body byte budget (a truncated
- * JSON document is no longer valid JSON, so it is stored as a string).
- * Request headers are captured in SANITIZED form only: every header name is
- * kept, credential-shaped values are replaced with `[REDACTED]` (deny-list:
- * `DENY_HEADER_SUBSTRINGS` in `observability/http-exchange.ts`).
- *
- * `upstreamRequest` is the REAL outbound wire body the provider actually
- * sent — translated through the wire (OpenAI / Anthropic / Google / Responses
- * / OpenCode-proxy), with `model.upstreamModel` substituted and routing-only
- * fields (`router_options`, `stream_options`) stripped. Shape varies by
- * wire (see provider adapter payload builders).
- *
- * `upstreamHttp` is the HTTP-level observation of the SUCCESSFUL outbound
- * call (last-write-wins across in-place retries and failover hops): the
- * resolved URL, HTTP status, a SAFE subset of response headers
- * (retry-after / request-id / content-type / ratelimit trio), TTFB, total
- * duration, and the wire kind. Header capture excludes all credential-
- * bearing fields.
- */
-interface UpstreamHttpRecord {
-  url: string;
-  method: string;
-  status: number;
-  /**
-   * All response headers from the upstream call — full header names are kept
-   * so the captured record is a faithful snapshot of the wire. VALUES whose
-   * name matches the credential deny-list (api-key / authorization / cookie /
-   * token / secret / password / bearer / signature / credential / x-auth /
-   * proxy-auth / x-goog-api-key) are replaced with the literal string
-   * `[REDACTED]` so API keys never reach the disk. The deny-list is case-
-   * insensitive substring match — see `sanitizeHeadersForCapture` in
-   * `observability/http-exchange.ts`.
-   */
-  responseHeaders?: Record<string, string>;
-  /** First-byte latency (ms). null when no body byte arrived (pre-body error). */
-  ttfbMs: number | null;
-  /** Total round-trip latency (ms) from request fire to fetch resolve. */
-  durationMs: number;
-  /** 1-based index of the successful attempt inside the candidate chain. */
-  attemptIndex: number;
-  wireKind: 'openai' | 'anthropic' | 'google' | 'responses' | 'opencode-proxy';
-}
 
 /**
  * Raw HTTP wire capture: the byte-faithful snapshot of one HTTP exchange.
@@ -426,7 +380,11 @@ interface CaptureDateRow {
  * as the quiet neutral default) — legacy archives without request lines
  * (or unrecognized paths) stay undefined = unbadged.
  */
-export type CaptureSessionProtocol = 'chat' | 'anthropic' | 'responses' | 'systemone';
+export type CaptureSessionProtocol =
+  | 'openai-chat'
+  | 'anthropic-messages'
+  | 'openai-responses'
+  | 'systemone';
 
 interface CaptureSessionRow {
   file: string; // safe file name (already sanitized at write time)
@@ -457,7 +415,7 @@ interface CaptureSessionRow {
   /**
    * Inbound protocol discriminator, derived at list time from the FIRST
    * client-request event's request line (`POST /v1/messages HTTP/1.1` →
-   * 'anthropic'). Every recognized surface is labeled explicitly — chat
+   * 'anthropic-messages'). Every recognized surface is labeled explicitly — chat
    * included. Undefined = a legacy archive without request lines or an
    * unrecognized path — the console renders absence as unbadged.
    */
@@ -673,8 +631,11 @@ export class CaptureRecorder {
     this.maxBodyBytes = config?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.maxSessionBytes = (config?.maxSessionMB ?? 512) * 1024 * 1024;
     this.storeMedia = config?.storeMedia ?? true;
-    setCaptureSecretRedaction(config?.redactSecrets ?? true);
-    this.redactSecrets = config?.redactSecrets ?? true;
+    // redactSecrets:false is no longer honored — live credentials must never
+    // land in the archive (S-06). The config key remains for forward-compat
+    // reads but is forced on.
+    setCaptureSecretRedaction(true);
+    this.redactSecrets = true;
     this.rootDir = path.resolve(config?.dir || getEnvPaths().captureDir);
 
     if (this.enabled) {
@@ -711,8 +672,8 @@ export class CaptureRecorder {
     this.maxBodyBytes = cfg?.maxBodyBytes ?? this.maxBodyBytes;
     this.maxSessionBytes = (cfg?.maxSessionMB ?? this.maxSessionBytes / (1024 * 1024)) * 1024 * 1024;
     this.storeMedia = cfg?.storeMedia ?? this.storeMedia;
-    setCaptureSecretRedaction(cfg?.redactSecrets ?? true);
-    this.redactSecrets = cfg?.redactSecrets ?? true;
+    setCaptureSecretRedaction(true);
+    this.redactSecrets = true;
     const newDir = path.resolve(cfg?.dir || this.rootDir);
     if (newDir !== this.rootDir) {
       this.rootDir = newDir;
@@ -795,8 +756,14 @@ export class CaptureRecorder {
     // bodies only — responses are one-shot per turn, and a generated-image
     // payload in one IS the captured content.
     const dateDir = CaptureRecorder.localDateDir(new Date(ts));
-    const truncatedReq = truncateBody(this.scrubMedia(event.wire?.requestBody, dateDir));
-    const truncatedResp = truncateBody(event.wire?.responseBody);
+    // Body-side secret scrub (Bearer / known patterns) — header deny-list does
+    // not cover echoed keys inside JSON error bodies or client messages.
+    const scrubBody = (body: WireBody | undefined): WireBody | undefined => {
+      if (typeof body !== 'string' || !body) return body;
+      return redactUpstreamBody(body, { maxChars: 0, collapseWhitespace: false });
+    };
+    const truncatedReq = truncateBody(this.scrubMedia(scrubBody(event.wire?.requestBody), dateDir));
+    const truncatedResp = truncateBody(scrubBody(event.wire?.responseBody));
     const truncated = truncatedReq.truncated || truncatedResp.truncated || undefined;
     const wire: RawWireCapture = {
       ...event.wire,
@@ -1854,19 +1821,6 @@ export class CaptureRecorder {
   }
 
   /**
-   * Requests whose events survived a tail slice. A request created from a
-   * stray trailing response (its client request fell outside the window) has
-   * no event in the slice and drops out.
-   */
-  private static requestsInWindow(
-    all: CaptureRequestSummary[],
-    window: CaptureEvent[]
-  ): CaptureRequestSummary[] {
-    const visible = new Set(window);
-    return all.filter(r => CaptureRecorder.requestEvents(r).some(e => visible.has(e)));
-  }
-
-  /**
    * Read the raw JSONL archive verbatim (for export/download). Unlike
    * readRecords this is NOT capped at the read window — exports should be
    * complete; per-line size is already bounded by maxBodyBytes at write time,
@@ -2459,11 +2413,11 @@ export class CaptureRecorder {
     if (!m) return undefined;
     switch (m[1]) {
       case '/v1/chat/completions':
-        return 'chat';
+        return 'openai-chat';
       case '/v1/messages':
-        return 'anthropic';
+        return 'anthropic-messages';
       case '/v1/responses':
-        return 'responses';
+        return 'openai-responses';
       case '/v1/systemone':
         return 'systemone';
       default:

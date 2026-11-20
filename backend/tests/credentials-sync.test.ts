@@ -332,7 +332,7 @@ describe('read sync (pull): client -> OCR file', () => {
     expect(first.defsImported).toBe(1);
     expect(first.defsConverted).toBe(0);
     const defs = JSON.parse(fs.readFileSync(getProviderDefsPath(p), 'utf8'));
-    expect(defs.providers.myrelay.package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(defs.providers.myrelay.package).toBe('openai-chat');
     expect(defs.providers.myrelay.settings.baseURL).toBe('https://relay.example/v1');
 
     // Rerun: the OCR defs file now owns it — skipped, never rewritten.

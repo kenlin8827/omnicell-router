@@ -19,6 +19,7 @@ import { allHostProbes, probeOptionsFor } from './harness/plugin/adapters/index.
 import { INFERENCE_ROUTE_PATHS, SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
+import { purgeResponseChainForSession } from './surfaces/responses.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
 import { RouterConfig, ProviderConfig } from './config/types.js';
@@ -161,8 +162,8 @@ function distinctTraceUserAgents(traces: ExecutionTrace[]): string[] {
 
 /**
  * Security P2-3 — drive-by CSRF verdict for state-changing /api/admin/* calls
- * while webAuth is INACTIVE (cors origin:true + no session gate means any web
- * page could POST/XHR at the admin surface):
+ * while webAuth is INACTIVE (no session gate means any local web page could
+ * POST/XHR at the admin surface; CORS now rejects non-loopback origins):
  *   - NO Origin/Referer (CLI, curl, local processes) -> untouched (null).
  *   - Origin hostname loopback, or equal to the request Host -> allowed.
  *   - Anything else -> blocked with a machine-readable reason.
@@ -193,7 +194,12 @@ function crossOriginAdminVerdict(origin: string, requestHost: string | undefined
     return 'malformed_origin';
   }
   if (isExactLoopbackHost(host)) return null;
-  const reqHost = (requestHost || '').split(',')[0].split(':')[0].toLowerCase().trim();
+  const rawReqHost = (requestHost || '').split(',')[0].trim().toLowerCase();
+  const closeBracket = rawReqHost.indexOf(']');
+  const reqHost =
+    rawReqHost.startsWith('[') && closeBracket > 0
+      ? rawReqHost.slice(1, closeBracket)
+      : rawReqHost.split(':')[0];
   if (reqHost && host === reqHost) return null;
   return 'cross_origin_admin_request';
 }
@@ -283,8 +289,24 @@ export function createServer(
   const orchestrator =
     customOrchestrator || new PipelineOrchestrator(config, registry, tracker);
 
-  // Register CORS to allow any web frontend (Chatbox, NextChat, OpenWebUI)
-  app.register(cors, { origin: true });
+  // CORS: reflect ONLY loopback Origins (Vite/dev console + same-machine
+  // tools). Same-origin SPA traffic needs no ACAO. Foreign Origins (evil.com
+  // drive-by against a loopback admin with webAuth off) must NOT receive
+  // Access-Control-Allow-Origin — that was the S-01 credential-exfil path.
+  // Requests with no Origin (curl/CLI) stay reachable.
+  app.register(cors, {
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      try {
+        const host = new URL(origin).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+        if (isExactLoopbackHost(host)) return cb(null, true);
+      } catch {
+        /* malformed Origin → refuse reflection */
+      }
+      return cb(null, false);
+    },
+    credentials: true,
+  });
 
   // Client-exchange capture lives in the two transport adapters: the Fastify
   // transport stashes + finalizes inside sendJson/beginSse/endSse and owns
@@ -353,11 +375,13 @@ export function createServer(
     // treatment is the strictest choice at every gate below.
     const isAdminSurface = path === null || path.startsWith('/api/admin/');
 
-    // Security P2-3: webAuth-inactive admin writes must be same-host or
-    // loopback-origin (keyless CLI/curl/local carry no Origin and pass).
+    // Security P2-3 / S-04: webAuth-inactive admin writes.
+    //   · With Origin/Referer → same-host or loopback only (drive-by CSRF).
+    //   · Without Origin (curl/CLI) → loopback peer OR adminKey Bearer.
+    //     A remote no-Origin write previously passed with zero auth.
     // When webAuth is ACTIVE the session gate below already refuses
     // cookie-less cross-origin writes (401) — nothing to add there.
-    if (req.method !== 'GET' && isAdminSurface && !isWebAuthActive(config)) {
+    if (req.method !== 'GET' && isAdminSurface && !(path !== null && isAdminAuthEndpoint(path)) && !isWebAuthActive(config)) {
       const originHeader = (req.headers.origin as string | undefined) || (req.headers.referer as string | undefined);
       if (originHeader) {
         const verdict = crossOriginAdminVerdict(originHeader, req.headers.host);
@@ -376,6 +400,25 @@ export function createServer(
           );
           return;
         }
+      }
+      // Enforce non-loopback peer auth unconditionally (do not skip when a
+      // spoofable Origin header is present).
+      const authHeader = req.headers.authorization;
+      const xApiKeyHeader = req.headers['x-api-key'] as string | undefined;
+      const bearer = (authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : '') || xApiKeyHeader?.trim() || '';
+      const peer = String(req.ip || '').replace(/^::ffff:/i, '').toLowerCase();
+      const loopbackPeer = peer === '::1' || isExactLoopbackHost(peer);
+      if (!loopbackPeer && !(adminKey && bearer && bearer === adminKey)) {
+        reply.hijack();
+        reply.raw.writeHead(401, { 'content-type': 'application/json; charset=utf-8' });
+        reply.raw.end(JSON.stringify({
+          error: {
+            message: 'State-changing /api/admin/* from a non-loopback peer requires the adminKey when console login is off.',
+            type: 'authentication_error',
+            code: 'console_auth_required',
+          },
+        }));
+        return;
       }
     }
 
@@ -1003,150 +1046,150 @@ export function createServer(
   );
 
   const catalogProviders = async (policy: ReturnType<typeof getModelAccessPolicy>) => {
-  const listCatalog = async () => (await import('./opencode/catalog/repository.js')).catalogRepository.list();
-  // One snapshot per request: each list() call rereads config.yaml from disk,
-  // so the anonymous /v1/models + /v1/catalog.json surfaces must not call it
-  // per-consumer. The snapshot also keeps every consumer within a request on
-  // the same catalog generation.
-  const catalogOnce = await listCatalog();
-  const listCatalogOnce = async () => catalogOnce;
+    const listCatalog = async () => (await import('./opencode/catalog/repository.js')).catalogRepository.list();
+    // One snapshot per request: each list() call rereads config.yaml from disk,
+    // so the anonymous /v1/models + /v1/catalog.json surfaces must not call it
+    // per-consumer. The snapshot also keeps every consumer within a request on
+    // the same catalog generation.
+    const catalogOnce = await listCatalog();
+    const listCatalogOnce = async () => catalogOnce;
 
-  // ── Virtual provider ('omnicell-router'): auto*/combos/variants ──
-  const virtualModel = async (envPromise: Promise<VirtualEnvelope>, ocr: Record<string, unknown>) => {
-    const env = await envPromise;
-    return {
-      ...(env.memberCount > 0 ? { memberCount: env.memberCount } : {}),
-      ...virtualModelsDevBlock(env),
-      ocr: { ...ocr, ...(env.memberCount > 0 ? { memberCount: env.memberCount } : {}) },
+    // ── Virtual provider ('omnicell-router'): auto*/combos/variants ──
+    const virtualModel = async (envPromise: Promise<VirtualEnvelope>, ocr: Record<string, unknown>) => {
+      const env = await envPromise;
+      return {
+        ...(env.memberCount > 0 ? { memberCount: env.memberCount } : {}),
+        ...virtualModelsDevBlock(env),
+        ocr: { ...ocr, ...(env.memberCount > 0 ? { memberCount: env.memberCount } : {}) },
+      };
     };
-  };
-  const [autoM, liteM, plusM, proM, ultraM] = await Promise.all(
-    ['auto', 'lite', 'plus', 'pro', 'ultra'].map((alias) =>
-      virtualModel(tierAliasEnvelope(registry, listCatalogOnce, alias), {
-        kind: alias === 'auto' ? 'auto' : 'tier',
-        ...(alias !== 'auto' ? { tier: alias } : {}),
-      })
-    )
-  );
-  const virtualModels: Record<string, unknown> = {
-    auto: { id: 'auto', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)', ...autoM },
-    lite: { id: 'lite', description: 'Force Lite & low-cost layer (~$0.2/M)', ...liteM },
-    plus: { id: 'plus', description: 'Force Plus workhorse layer (~$3-$15/M)', ...plusM },
-    pro: { id: 'pro', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)', ...proM },
-    ultra: { id: 'ultra', description: 'Force Ultra frontier-tier layer (~$60+/M)', ...ultraM },
-  };
-  for (const c of registry.getCombos()) {
-    virtualModels[c.id] = {
-      id: c.id,
-      description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
-      ...(await virtualModel(comboEnvelope(registry, listCatalogOnce, c), {
-        kind: 'combo',
-        selection: c.selection || 'priority',
-        members: c.models.map((raw) => (typeof raw === 'string' ? raw : raw?.id)).filter(Boolean),
-      })),
+    const [autoM, liteM, plusM, proM, ultraM] = await Promise.all(
+      ['auto', 'lite', 'plus', 'pro', 'ultra'].map((alias) =>
+        virtualModel(tierAliasEnvelope(registry, listCatalogOnce, alias), {
+          kind: alias === 'auto' ? 'auto' : 'tier',
+          ...(alias !== 'auto' ? { tier: alias } : {}),
+        })
+      )
+    );
+    const virtualModels: Record<string, unknown> = {
+      auto: { id: 'auto', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)', ...autoM },
+      lite: { id: 'lite', description: 'Force Lite & low-cost layer (~$0.2/M)', ...liteM },
+      plus: { id: 'plus', description: 'Force Plus workhorse layer (~$3-$15/M)', ...plusM },
+      pro: { id: 'pro', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)', ...proM },
+      ultra: { id: 'ultra', description: 'Force Ultra frontier-tier layer (~$60+/M)', ...ultraM },
     };
-  }
+    for (const c of registry.getCombos()) {
+      virtualModels[c.id] = {
+        id: c.id,
+        description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
+        ...(await virtualModel(comboEnvelope(registry, listCatalogOnce, c), {
+          kind: 'combo',
+          selection: c.selection || 'priority',
+          members: c.models.map((raw) => (typeof raw === 'string' ? raw : raw?.id)).filter(Boolean),
+        })),
+      };
+    }
 
-  // Provider map insertion order is the display order (JSON object keys are
-  // ordered): the VIRTUAL provider first — its models are auto alias →
-  // tier aliases (ladder order) → combos — then concrete providers in
-  // registry order, variants appended after their provider's base models.
-  const providers: Record<string, any> = {
-    'omnicell-router': {
-      id: 'omnicell-router',
-      name: 'OmniCellRouter',
-      models: virtualModels,
-    },
-  };
+    // Provider map insertion order is the display order (JSON object keys are
+    // ordered): the VIRTUAL provider first — its models are auto alias →
+    // tier aliases (ladder order) → combos — then concrete providers in
+    // registry order, variants appended after their provider's base models.
+    const providers: Record<string, any> = {
+      'omnicell-router': {
+        id: 'omnicell-router',
+        name: 'OmniCellRouter',
+        models: virtualModels,
+      },
+    };
 
-  // ── Concrete providers: catalog passthrough, registry fallback ──
-  const allModels = registry.getAllModels();
-  const catById = new Map(
-    (await findMemberCatalogRecords(allModels.map((m) => m.id), listCatalogOnce)).records.map((c) => [c.id, c])
-  );
-  const CATALOG_PROVIDER_NAME = new Map(catalogOnce.map((p) => [p.id, p.name]));
-  const ensureProvider = (id: string) =>
-    (providers[id] ??= { id, ...(CATALOG_PROVIDER_NAME.get(id) ? { name: CATALOG_PROVIDER_NAME.get(id) } : {}), models: {} });
-  for (const m of allModels) {
-    const provider = ensureProvider(m.provider);
-    const cat = catById.get(m.id);
-    // A federated upstream whose provider id collides with the virtual
-    // provider namespace (a `omnicell-router` def pointing at ANOTHER
-    // instance) can register upstreamModel === 'auto'/'lite'/... — writing
-    // that key would clobber the virtual alias block and erase the gateway's
-    // own cascade entry. The two are different models: key the concrete row
-    // by its globally-unique registered id instead, which is also its
-    // addressable id (ocr.model), so both entries coexist.
-    const key = provider.models[m.upstreamModel] === undefined ? m.upstreamModel : m.id;
-    provider.models[key] = {
-      id: key,
-      ...(cat
-        ? modelsDevBlock(cat)
-        : {
+    // ── Concrete providers: catalog passthrough, registry fallback ──
+    const allModels = registry.getAllModels();
+    const catById = new Map(
+      (await findMemberCatalogRecords(allModels.map((m) => m.id), listCatalogOnce)).records.map((c) => [c.id, c])
+    );
+    const CATALOG_PROVIDER_NAME = new Map(catalogOnce.map((p) => [p.id, p.name]));
+    const ensureProvider = (id: string) =>
+      (providers[id] ??= { id, ...(CATALOG_PROVIDER_NAME.get(id) ? { name: CATALOG_PROVIDER_NAME.get(id) } : {}), models: {} });
+    for (const m of allModels) {
+      const provider = ensureProvider(m.provider);
+      const cat = catById.get(m.id);
+      // A federated upstream whose provider id collides with the virtual
+      // provider namespace (a `omnicell-router` def pointing at ANOTHER
+      // instance) can register upstreamModel === 'auto'/'lite'/... — writing
+      // that key would clobber the virtual alias block and erase the gateway's
+      // own cascade entry. The two are different models: key the concrete row
+      // by its globally-unique registered id instead, which is also its
+      // addressable id (ocr.model), so both entries coexist.
+      const key = provider.models[m.upstreamModel] === undefined ? m.upstreamModel : m.id;
+      provider.models[key] = {
+        id: key,
+        ...(cat
+          ? modelsDevBlock(cat)
+          : {
             reasoning: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort),
             cost: { input: m.pricing.input, output: m.pricing.output, cache_read: m.pricing.cacheRead, ...(m.pricing.cacheWrite !== undefined ? { cache_write: m.pricing.cacheWrite } : {}) },
           }),
-      ocr: { tier: m.tier, model: m.id },
-    };
-  }
-
-  // Variant siblings live under their base model's provider as separate
-  // model entries (`<upstream>-<variant>` keys): the variant id pins the
-  // effort, so the block declares reasoning:false with the single pinned tier.
-  for (const { base, variant } of registry.getVariantExposures()) {
-    const upstreamBase = base.id.includes('/') ? base.id.split('/').slice(1).join('/') : base.id;
-    const provider = ensureProvider(base.provider);
-    const cat = catById.get(base.id);
-    // Same anti-clobber rule as the concrete loop: if the natural
-    // `<upstream>-<variant>` key is taken (virtual alias / sibling model),
-    // fall back to the globally-unique registered sibling id.
-    const vKey =
-      provider.models[`${upstreamBase}-${variant.id}`] === undefined
-        ? `${upstreamBase}-${variant.id}`
-        : `${base.id}-${variant.id}`;
-    provider.models[vKey] = {
-      id: vKey,
-      ...(cat ? modelsDevBlock(cat) : {}),
-      reasoning: false,
-      reasoning_options: [{ type: 'effort', values: [variant.reasoningEffort] }],
-      ocr: {
-        tier: base.tier,
-        kind: 'variant',
-        parent: base.id,
-        variant: { id: variant.id, reasoningEffort: variant.reasoningEffort },
-      },
-    };
-  }
-
-  if (policy) {
-    // Same verdicts as before, applied per model entry; providers whose
-    // entire model map filters out are dropped (a provider key with an
-    // empty models map would be a dead catalog entry).
-    const tierAllowed = (t: string) => allModels.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
-    const verdict = (id: string, ocr: any): boolean => {
-      if (ocr?.parent) return isModelAllowed(ocr.parent, policy, ocr?.tier);
-      if (ocr?.kind === 'combo') {
-        return registry.resolveCombo(id).every((mem: any) => isModelAllowed(mem.id, policy, mem.tier));
-      }
-      if (ocr?.kind === 'auto' || ocr?.kind === 'tier') {
-        // Virtual auto* entries honor runtime viability: bare `auto` needs an
-        // allowed model in ANY tier, tier aliases in their tier — in BOTH modes.
-        return isAutoEntryUsable(id, policy, tierAllowed);
-      }
-      // Concrete entry — the model key is the upstream name; the policy
-      // vocabulary is the full registered id (ocr.model).
-      return isModelAllowed(ocr?.model ?? id, policy, ocr?.tier);
-    };
-    for (const pid of Object.keys(providers)) {
-      const models = providers[pid].models as Record<string, any>;
-      for (const mid of Object.keys(models)) {
-        if (!verdict(mid, models[mid].ocr)) delete models[mid];
-      }
-      if (Object.keys(models).length === 0) delete providers[pid];
+        ocr: { tier: m.tier, model: m.id },
+      };
     }
-  }
 
-  return providers;
+    // Variant siblings live under their base model's provider as separate
+    // model entries (`<upstream>-<variant>` keys): the variant id pins the
+    // effort, so the block declares reasoning:false with the single pinned tier.
+    for (const { base, variant } of registry.getVariantExposures()) {
+      const upstreamBase = base.id.includes('/') ? base.id.split('/').slice(1).join('/') : base.id;
+      const provider = ensureProvider(base.provider);
+      const cat = catById.get(base.id);
+      // Same anti-clobber rule as the concrete loop: if the natural
+      // `<upstream>-<variant>` key is taken (virtual alias / sibling model),
+      // fall back to the globally-unique registered sibling id.
+      const vKey =
+        provider.models[`${upstreamBase}-${variant.id}`] === undefined
+          ? `${upstreamBase}-${variant.id}`
+          : `${base.id}-${variant.id}`;
+      provider.models[vKey] = {
+        id: vKey,
+        ...(cat ? modelsDevBlock(cat) : {}),
+        reasoning: false,
+        reasoning_options: [{ type: 'effort', values: [variant.reasoningEffort] }],
+        ocr: {
+          tier: base.tier,
+          kind: 'variant',
+          parent: base.id,
+          variant: { id: variant.id, reasoningEffort: variant.reasoningEffort },
+        },
+      };
+    }
+
+    if (policy) {
+      // Same verdicts as before, applied per model entry; providers whose
+      // entire model map filters out are dropped (a provider key with an
+      // empty models map would be a dead catalog entry).
+      const tierAllowed = (t: string) => allModels.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
+      const verdict = (id: string, ocr: any): boolean => {
+        if (ocr?.parent) return isModelAllowed(ocr.parent, policy, ocr?.tier);
+        if (ocr?.kind === 'combo') {
+          return registry.resolveCombo(id).every((mem: any) => isModelAllowed(mem.id, policy, mem.tier));
+        }
+        if (ocr?.kind === 'auto' || ocr?.kind === 'tier') {
+          // Virtual auto* entries honor runtime viability: bare `auto` needs an
+          // allowed model in ANY tier, tier aliases in their tier — in BOTH modes.
+          return isAutoEntryUsable(id, policy, tierAllowed);
+        }
+        // Concrete entry — the model key is the upstream name; the policy
+        // vocabulary is the full registered id (ocr.model).
+        return isModelAllowed(ocr?.model ?? id, policy, ocr?.tier);
+      };
+      for (const pid of Object.keys(providers)) {
+        const models = providers[pid].models as Record<string, any>;
+        for (const mid of Object.keys(models)) {
+          if (!verdict(mid, models[mid].ocr)) delete models[mid];
+        }
+        if (Object.keys(models).length === 0) delete providers[pid];
+      }
+    }
+
+    return providers;
   };
 
   // 2B. Single model lookup (OpenAI standard)
@@ -1198,11 +1241,11 @@ export function createServer(
       owned_by: specific ? specific.provider : variantRef ? variantRef.base.provider : 'omnicell-router',
       ...(variantRef
         ? {
-            metadata: {
-              parent: variantRef.base.id,
-              variant: { id: variantRef.variant.id, reasoningEffort: variantRef.variant.reasoningEffort },
-            },
-          }
+          metadata: {
+            parent: variantRef.base.id,
+            variant: { id: variantRef.variant.id, reasoningEffort: variantRef.variant.reasoningEffort },
+          },
+        }
         : {}),
     };
   });
@@ -1404,7 +1447,21 @@ export function createServer(
     const hadTraces = tracker.getSessionIds().includes(id);
     tracker.deleteBySession(id);
 
-    if (!existed && !hadTraces) {
+    // Cascade: drop this session's Responses chain nodes. Without it the
+    // delete is undone by the client's next `previous_response_id` turn — the
+    // surviving parent rebuilds the input AND rebinds this sessionId, so the
+    // row comes straight back — and the purged conversation text would sit in
+    // `responses-chain.jsonl` after the capture archives above were removed.
+    // A chain-only session (no entity, no traces) still counts as found.
+    // Fails soft: a broken store must not turn a successful delete into a 500.
+    let chainNodesDeleted = 0;
+    try {
+      chainNodesDeleted = purgeResponseChainForSession(id);
+    } catch (err) {
+      req.log.warn(err, 'responses chain cascade delete errored');
+    }
+
+    if (!existed && !hadTraces && chainNodesDeleted === 0) {
       return reply.status(404).send({
         error: {
           message: `Session '${id}' not found`,
@@ -1443,6 +1500,7 @@ export function createServer(
       status: 'ok',
       message: `Session '${id}' and its traces have been successfully cleared`,
       capturesDeleted,
+      chainNodesDeleted,
     };
   });
 
@@ -1451,7 +1509,7 @@ export function createServer(
     const { id } = req.params as { id: string };
     const session = orchestrator.getSessionManager()?.getSession(id);
     const traces = orchestrator.getTraceTracker().getTracesBySession(id);
-    
+
     // Return empty list or session trajectory
     return {
       object: 'list',

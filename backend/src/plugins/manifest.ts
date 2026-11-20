@@ -194,7 +194,8 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
       const p = preset as Record<string, unknown>;
       if (typeof p.presetId !== 'string' || !p.presetId) fail('preset.presetId must be a non-empty string');
       if (typeof p.providerId !== 'string' || !p.providerId) fail('preset.providerId must be a non-empty string');
-      if (typeof p.npm !== 'string' || !p.npm) fail('preset.npm must be a non-empty string');
+      const protocol = typeof p.protocol === 'string' && p.protocol ? p.protocol : p.npm;
+      if (typeof protocol !== 'string' || !protocol) fail('preset.protocol must be a non-empty string');
       if (typeof p.baseUrl !== 'string' || !p.baseUrl) fail('preset.baseUrl must be a non-empty string');
       if (
         p.displayName !== undefined &&

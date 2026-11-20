@@ -1,5 +1,5 @@
 import { ModelRegistration, ModelVariant, ProviderConfig } from '../config/types.js';
-import { DispatchingProvider } from './dispatch.js';
+import { DispatchingProvider } from './executors/dispatch.js';
 import type { ProviderRegistry } from './registry.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
@@ -16,7 +16,7 @@ import {
 import { getCredentialStore, getCredentialStoreStatus } from '../opencode/credentials/index.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { sanitizeExtraHeaders } from '../utils/http-headers.js';
-import { isSelfBaseURL } from '../utils/self-url.js';
+import { assertAllowedUpstream, UpstreamUrlError } from '../utils/upstream-url-guard.js';
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
 import { getProviderTakedownStore } from './provider-takedown.js';
@@ -230,12 +230,22 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // `omnicell-router` def pointing at ANOTHER instance is a legitimate
     // federation upstream. Excluded loudly, never silently (ADR-0005 §2:
     // unroutable is excluded and reported, never a boot abort).
-    if (isSelfBaseURL(baseURL, loadConfig().port)) {
-      excluded.push({
-        provider: rec.id,
-        reason: `provider baseURL (${baseURL}) points at this gateway — the gateway cannot be its own upstream`,
-        reasonCode: 'self_loop',
-      });
+    try {
+      assertAllowedUpstream(baseURL, loadConfig().port);
+    } catch (err) {
+      if (err instanceof UpstreamUrlError && err.reasonCode === 'self_upstream_refused') {
+        excluded.push({
+          provider: rec.id,
+          reason: `provider baseURL (${baseURL}) points at this gateway — the gateway cannot be its own upstream`,
+          reasonCode: 'self_loop',
+        });
+      } else {
+        excluded.push({
+          provider: rec.id,
+          reason: err instanceof UpstreamUrlError ? err.message : String(err),
+          reasonCode: err instanceof UpstreamUrlError ? err.reasonCode : 'invalid_upstream_url',
+        });
+      }
       continue;
     }
 
@@ -335,7 +345,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         // Tri-state developer-role capability flag (override-only; default =
         // the openai wire rewrites `developer` → `system`).
         supportsDeveloperRole: catModel?.supportsDeveloperRole,
-        supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
+        supportsPromptCaching: wire === 'anthropic-messages' || (catModel?.cost?.cache_read != null ? true : undefined),
         // Variants become routable sibling ids (`<id>-<variant>`) + `#variant`
         // syntax; the jsonc def is the source (catalog records may mirror it).
         variants,

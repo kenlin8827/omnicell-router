@@ -7,6 +7,7 @@ import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { createServer } from '../src/server.js';
 import { loadConfig } from '../src/config/index.js';
 import { routableVariants } from '../src/providers/boot-direct.js';
+import { processIR } from './helpers/ir.js';
 
 /**
  * Auth mirror of server.ts preHandler key resolution (same helper shape as
@@ -168,7 +169,7 @@ describe('Model variants: routing & effort injection', () => {
   it('routes #variant to the base model with the variant effort pinned', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'vis-1#strong',
       messages: [{ role: 'user', content: 'Hello variant' }],
     } as any);
@@ -183,7 +184,7 @@ describe('Model variants: routing & effort injection', () => {
   it('routes sibling ids identically', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'vis-1-quick',
       messages: [{ role: 'user', content: 'Hello sibling' }],
     } as any);
@@ -196,7 +197,7 @@ describe('Model variants: routing & effort injection', () => {
   it('the variant choice wins over a client-sent reasoning_effort', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    const result = await orchestrator.process({
+    const result = await processIR(orchestrator, {
       model: 'vis-1#strong',
       messages: [{ role: 'user', content: 'Conflict case' }],
       reasoning_effort: 'low',
@@ -212,7 +213,7 @@ describe('Model variants: routing & effort injection', () => {
 
     await assert.rejects(
       async () =>
-        orchestrator.process({
+        processIR(orchestrator, {
           model: 'vis-1#nope',
           messages: [{ role: 'user', content: 'typo' }],
         } as any),

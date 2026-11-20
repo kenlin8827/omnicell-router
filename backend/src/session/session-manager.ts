@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ChatCompletionRequest } from '../types/openai.js';
+import type { CanonicalRequest, InputItem, MessageItem, OutputItem } from '../ir/types.js';
 import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
 import { SessionConfig } from '../config/types.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
@@ -100,16 +100,6 @@ export interface SessionIdentity {
    * HTTP header (the Cursor host leg has no request at all).
    */
   clientRef?: ClientConversationRef;
-}
-
-/**
- * The assistant echo registered after a completed turn. The orchestrator
- * passes the served response message (content + tool_calls); a bare string is
- * accepted for content-only registrations (tests, legacy callers).
- */
-export interface AssistantEcho {
-  content?: unknown;
-  tool_calls?: unknown;
 }
 
 // Memory/safety bounds — intentionally NOT config-exposed: they tune memory,
@@ -275,96 +265,82 @@ export class SessionManager {
    *     arguments on resend, so raw JSON.stringify of the whole object would
    *     miss every tool-call boundary on the next turn.
    */
-  private static serializeMessage(m: any): string {
-    const role = m.role || 'user';
-    let extra = '';
-    if (m.name) extra += `|name:${m.name}`;
-    if (m.tool_call_id) extra += `|tcid:${m.tool_call_id}`;
-    if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-      extra += `|tcs:${SessionManager.toolCallsText(m.tool_calls)}`;
+  private static serializeMessage(item: InputItem | OutputItem): string {
+    if (item.type === 'message') {
+      const name = 'name' in item ? item.name : undefined;
+      // Exclude transport-level `cache` breakpoints: clients like Claude Code
+      // slide cache_control forward on every turn.
+      return `message:${item.role}:${name ?? ''}:${SessionManager.contentText(item.content)}`;
     }
-    return `${role}:${SessionManager.contentText(m.content)}${extra}`;
-  }
-
-  /** Normalized text form of a message content field (string / parts / null). */
-  private static contentText(content: unknown): string {
-    if (typeof content === 'string') return content;
-    if (content === null || content === undefined) return '';
-    if (Array.isArray(content)) {
-      return content.map((p: any) => {
-        if (p && typeof p === 'object') {
-          return typeof p.text === 'string'
-            ? `text:${p.text}`
-            : `${p.type || 'part'}:${JSON.stringify(p)}`;
-        }
-        return String(p ?? '');
-      }).join(' ');
+    if (item.type === 'tool_call') {
+      return `tool_call:${item.callId ?? item.id}\u0000${item.name}\u0000${SessionManager.canonicalToolArgs(item.arguments)}\u0000${item.signature ?? ''}`;
     }
-    return JSON.stringify(content);
-  }
-
-  private static toolCallsText(toolCalls: any[]): string {
-    return toolCalls
-      .map(tc => {
-        const fn = tc?.function ?? {};
-        return `${String(tc?.id ?? '')}\u0000${String(fn.name ?? '')}\u0000${SessionManager.canonicalToolArgs(fn.arguments)}`;
-      })
-      .join('\u0001');
-  }
-
-  /** Re-compact a JSON arguments string; non-JSON strings trim, others stringify. */
-  private static canonicalToolArgs(a: unknown): string {
-    if (typeof a === 'string') {
-      try {
-        return JSON.stringify(JSON.parse(a));
-      } catch {
-        return a.trim();
-      }
+    if (item.type === 'tool_result') {
+      return `tool_result:${item.callId}:${SessionManager.contentText(item.content)}:${item.isError === true}`;
     }
-    if (a && typeof a === 'object') return JSON.stringify(a);
-    return '';
-  }
-
-  /**
-   * Salted hash of a message window. Salt isolates the anchor families from
-   * each other so the same message slice can never cross-match.
-   */
-  public static hashWindow(messages: any[], salt: string): string {
-    const h = crypto.createHash('sha256');
-    h.update(salt);
-    for (const m of messages) {
-      h.update(SessionManager.serializeMessage(m));
-      h.update('\n---\n');
+    if (item.type === 'reasoning') {
+      return `reasoning:${item.text ?? ''}:${JSON.stringify(item.summary ?? [])}:${item.signature ?? ''}:${item.encrypted ?? ''}`;
     }
-    return h.digest('hex').slice(0, ANCHOR_HEX);
+    return `${item.type}:${JSON.stringify(item)}`;
   }
 
-  /**
-   * Deterministic conversation key: apiKey identity (or '' for key-less legs)
-   * + FULL first user message (no truncation — prefix cuts of boilerplate
-   * first messages were a collision source). No transport IP: it adds nothing
-   * on a local gateway and IPv4/IPv6 flapping actively broke re-anchoring.
-   * Returns null when the history carries no first user text (nothing to key
-   * on — resolution then rides the anchors / mint path alone).
-   */
-  public static conversationKey(messages: any[], keyId?: string): string | null {
-    const firstUser = (messages || []).find((m: any) => m?.role === 'user');
+  private static contentText(content: MessageItem['content']): string {
+    return content.map((part) => {
+      if (part.type === 'text' || part.type === 'refusal') return `${part.type}:${part.text}`;
+      // Strip transport-level cache breakpoints from non-text parts (image, file, audio)
+      // so sliding cache_control across turns does not break multimodal session anchors.
+      const { cache: _cache, ...rest } = part as typeof part & { cache?: unknown };
+      return `${part.type}:${JSON.stringify(rest)}`;
+    }).join(' ');
+  }
+
+  private static canonicalToolArgs(value: unknown): string {
+    if (typeof value === 'string') {
+      try { return JSON.stringify(JSON.parse(value)); } catch { return value.trim(); }
+    }
+    return value && typeof value === 'object' ? JSON.stringify(value) : '';
+  }
+
+  /** One canonical string per item: no content-tree clone on the request path. */
+  public static serializeInput(input: readonly InputItem[]): string[] {
+    // Exclude reasoning items: most clients omit prior reasoning on resend.
+    return input
+      .filter((item) => item.type !== 'reasoning')
+      .map((item) => SessionManager.serializeMessage(item));
+  }
+
+  private static hashSerializedWindow(input: readonly string[], salt: string): string {
+    const hash = crypto.createHash('sha256');
+    hash.update(salt);
+    for (const item of input) {
+      hash.update(item);
+      hash.update('\n---\n');
+    }
+    return hash.digest('hex').slice(0, ANCHOR_HEX);
+  }
+
+  public static hashWindow(input: readonly InputItem[], salt: string): string {
+    return SessionManager.hashSerializedWindow(SessionManager.serializeInput(input), salt);
+  }
+
+  public static conversationKey(input: InputItem[], keyId?: string): string | null {
+    const firstUser = input.find((item): item is MessageItem => item.type === 'message' && item.role === 'user');
     if (!firstUser) return null;
     const text = SessionManager.contentText(firstUser.content).trim();
     if (!text) return null;
-    return crypto
-      .createHash('sha256')
-      .update(`K\u0000${keyId ?? ''}\u0000${text}`)
-      .digest('hex')
-      .slice(0, CONVERSATION_KEY_HEX);
+    return crypto.createHash('sha256').update(`K\u0000${keyId ?? ''}\u0000${text}`)
+      .digest('hex').slice(0, CONVERSATION_KEY_HEX);
   }
 
-  private static assistantIndices(messages: any[]): number[] {
-    const idx: number[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      if (messages[i]?.role === 'assistant') idx.push(i);
+  private static assistantIndices(input: InputItem[]): number[] {
+    const indices: number[] = [];
+    for (let index = 0; index < input.length; index++) {
+      const item = input[index]!;
+      if ((item.type === 'message' && item.role === 'assistant') || item.type === 'tool_call' || item.type === 'reasoning') {
+        indices.push(index);
+      }
     }
-    return idx;
+    return indices;
   }
 
   /**
@@ -474,8 +450,8 @@ export class SessionManager {
    * hands the same value to the resolver and the trace, so the console's alias
    * and the session it names can never disagree.
    */
-  public static clientRefOf(request: ChatCompletionRequest): ClientConversationRef | null {
-    return SessionManager.normalizeClientRef(request.router_options?.client_ref);
+  public static clientRefOf(request: CanonicalRequest): ClientConversationRef | null {
+    return SessionManager.normalizeClientRef(request.routerOptions?.clientRef);
   }
 
   /**
@@ -485,7 +461,7 @@ export class SessionManager {
    * evidence contradicts).
    */
   public resolveSessionId(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     identity?: SessionIdentity
   ): SessionResolveResult {
     const clientRef = identity?.clientRef ?? SessionManager.clientRefOf(request);
@@ -495,7 +471,7 @@ export class SessionManager {
   }
 
   private resolveIdentity(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     identity: SessionIdentity | undefined,
     clientRef: ClientConversationRef | null
   ): SessionResolveResult {
@@ -511,9 +487,8 @@ export class SessionManager {
       return { sessionId: id.trim(), lookupType: 'explicit_header' };
     }
 
-    // 1 (cont.) Explicit router_options.session_id
-    if (request.router_options?.session_id) {
-      return { sessionId: request.router_options.session_id.trim(), lookupType: 'explicit_header' };
+    if (request.routerOptions?.sessionId) {
+      return { sessionId: request.routerOptions.sessionId.trim(), lookupType: 'explicit_header' };
     }
 
     // 2. Embedded client session UUID (Claude Code metadata.user_id). The ONLY
@@ -531,7 +506,7 @@ export class SessionManager {
     // 2+; an unmatched turn 1 cold-starts. `request_user` survives only as a
     // readable value in traces written before this layer was removed.
 
-    const messages = request.messages || [];
+    const messages = request.input;
     const priorHistory = messages.slice(0, -1);
     const key = SessionManager.conversationKey(messages, identity?.keyId);
     // Vendor header: names an otherwise-minted cold start (historical
@@ -547,7 +522,7 @@ export class SessionManager {
     // distinct id (two conversations sharing a byte-identical first message
     // must not false-merge — the split self-heals from turn 2 when the
     // branches get their own anchors).
-    if (messages.length < 2 || !priorHistory.some(m => m?.role === 'assistant')) {
+    if (messages.length < 2 || SessionManager.assistantIndices(priorHistory).length === 0) {
       if (alias) {
         if (key) this.claimConvKey(key, alias);
         return { sessionId: alias, lookupType: 'client_ref' };
@@ -857,64 +832,56 @@ export class SessionManager {
   }
 
   /**
-   * Post-turn registration. Builds two anchor families over the completed
-   * chain (requestMessages + the served assistant echo; the orchestrator
-   * passes the PRE-compression fingerprint so keys are derived from original
-   * client bytes — see orchestrator step 2B):
-   *
-   * - Chain anchors: hash of every head prefix ending at an assistant
-   *   message. One chained-hashing pass (copy() per boundary).
-   * - Tail anchors: every length-2..TAIL_WINDOW window of the trailing
-   *   TAIL_WINDOW messages that ends at an assistant message. These are what
-   *   let a truncated history (client dropped old turns) find its way back.
-   *
-   * The assistant echo keeps tool_calls (in canonical serialization) —
-   * dropping them made every tool-call boundary of an agent loop unmatchable.
+   * Register anchors from the pre-compression serialized request plus the
+   * served output items. The caller serializes once; no message/content tree is
+   * cloned or re-serialized for the full chain on the completion path.
    */
   public registerCompletedTurn(
     sessionId: string,
-    requestMessages: any[],
-    assistant: string | AssistantEcho | null | undefined
+    requestItems: readonly string[],
+    assistant: readonly OutputItem[],
   ): void {
     if (!this.config.enabled || this.config.strategy === 'stateless') return;
 
     try {
-      const echo: any =
-        typeof assistant === 'string' || assistant == null
-          ? { role: 'assistant', content: assistant ?? '' }
-          : { role: 'assistant', content: assistant.content ?? '', tool_calls: assistant.tool_calls };
-      const chain = [...(requestMessages || []), echo];
+      const chain = [
+        ...requestItems,
+        ...assistant
+          .filter((item) => item.type !== 'reasoning')
+          .map((item) => SessionManager.serializeMessage(item)),
+      ];
+      const isAssistantBoundary = (item: string | undefined): boolean =>
+        item !== undefined && (
+          item.startsWith('message:assistant:') ||
+          item.startsWith('tool_call:')
+        );
 
-      // Chain anchors — single pass with per-boundary copy().
       const hasher = crypto.createHash('sha256');
       hasher.update('C');
-      for (let i = 0; i < chain.length; i++) {
-        hasher.update(SessionManager.serializeMessage(chain[i]));
+      for (const item of chain) {
+        hasher.update(item);
         hasher.update('\n---\n');
-        if (chain[i]?.role === 'assistant') {
+        if (isAssistantBoundary(item)) {
           const digest = hasher.copy().digest('hex').slice(0, ANCHOR_HEX);
           this.setBounded(this.chainAnchors, digest, sessionId, MAX_CHAIN_ENTRIES);
         }
       }
 
-      // Tail anchors — suffix windows (length 3..TAIL_WINDOW, always ending
-      // at an assistant boundary) of the trailing TAIL_WINDOW messages.
       const tail = chain.slice(-TAIL_WINDOW);
-      for (const end of SessionManager.assistantIndices(tail)) {
+      for (let end = 0; end < tail.length; end++) {
+        if (!isAssistantBoundary(tail[end])) continue;
         const startMin = Math.max(0, end - TAIL_WINDOW + 1);
-        for (let s = end - 2; s >= startMin; s--) {
-          const hash = SessionManager.hashWindow(tail.slice(s, end + 1), 'T');
+        for (let start = end - 2; start >= startMin; start--) {
+          const hash = SessionManager.hashSerializedWindow(tail.slice(start, end + 1), 'T');
           this.setBounded(this.tailAnchors, hash, sessionId, MAX_TAIL_ENTRIES);
         }
       }
 
       this.markDirty();
       const session = this.sessions.get(sessionId);
-      if (session) {
-        session.lastActiveAt = Date.now();
-      }
+      if (session) session.lastActiveAt = Date.now();
     } catch {
-      // Graceful error handling: session tracking must never break routing.
+      // Session tracking must never break routing.
     }
   }
 
@@ -1067,12 +1034,24 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * Bulk sibling of `deleteSession`: EVERY session-keyed map goes, not just
+   * the ones that hold routing state. `bypassTurns` / `turnCounters` are
+   * keyed by sessionId too — leaving them behind would (a) keep counters for
+   * sessions that no longer exist in memory, (b) write those orphans into the
+   * `v: 3` snapshot on the next flush so "clear" does not survive as a clean
+   * state file, and (c) hand a stale request count / turn high-water to any
+   * session that re-mints the same id (a Responses `previous_response_id`
+   * chain rebinds its parent's sessionId after a clear).
+   */
   public clear(): void {
     this.sessions.clear();
     this.chainAnchors.clear();
     this.tailAnchors.clear();
     this.convKeys.clear();
     this.clientRefs.clear();
+    this.bypassTurns.clear();
+    this.turnCounters.clear();
     this.markDirty();
   }
 
@@ -1154,7 +1133,7 @@ export class SessionManager {
         for (const [k, v] of Object.entries(data.turnCounters)) {
           const c = v as { highWater?: unknown; lastMessageCount?: unknown };
           if (typeof k === 'string' && typeof c?.highWater === 'number' &&
-              Number.isInteger(c.highWater) && c.highWater >= 0) {
+            Number.isInteger(c.highWater) && c.highWater >= 0) {
             this.setBounded(this.turnCounters, k, {
               highWater: c.highWater,
               ...(typeof c.lastMessageCount === 'number' ? { lastMessageCount: c.lastMessageCount } : {}),

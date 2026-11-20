@@ -7,7 +7,6 @@ import {
   getProviderModelDefs,
   upsertProviderDef,
   upsertProviderModel,
-  opencodeV2PackageFor,
 } from '../src/opencode/user-config.js';
 import { resolveDefaultPaths } from '../src/opencode/credentials/paths.js';
 import { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
@@ -76,7 +75,7 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
     });
     expect(res.success).toBe(true);
     const node = readRaw().providers.acme;
-    expect(node.package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(node.package).toBe('openai-chat');
     expect(node.settings).toEqual({ baseURL: 'https://acme.test/v1', timeoutMs: 30000 });
     expect(node.headers).toEqual({ 'X-Tenant': 't' });
     expect(node.env).toEqual(['ACME_TOKEN']);
@@ -110,11 +109,12 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
     });
     expect(res.success).toBe(true);
     const parsed = readRaw();
-    expect(parsed.providers.acmev2.package).toBe('@opencode/ai/providers/anthropic');
+    expect(parsed.providers.acmev2.package).toBe('anthropic-messages');
     expect(parsed.providers.acmev2.settings.baseURL).toBe('https://acme.test/v1');
-    // untouched sibling keeps its node verbatim
+    // the untouched sibling is preserved structurally, with its retired client
+    // package normalized to the OCR protocol id
     expect(parsed.providers.headroom).toEqual({
-      package: '@opencode/ai/providers/openai-compatible',
+      package: 'openai-chat',
       settings: { baseURL: 'http://127.0.0.1:8787/v1' },
     });
   });
@@ -196,8 +196,8 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
     expect(node.canonical).toBe('openai');
     expect(node.env).toEqual(['FOO_TOKEN']); // invalid names filtered
     expect(node.body).toEqual({ stream_options: { include_usage: true } });
-    expect(node.models.m1.provider).toEqual({ package: '@opencode/ai/providers/anthropic' });
-    expect(node.models.m2.provider).toEqual({ package: '@opencode/ai/providers/anthropic' });
+    expect(node.models.m1.provider).toEqual({ package: 'anthropic-messages' });
+    expect(node.models.m2.provider).toEqual({ package: 'anthropic-messages' });
     expect(node.models.m3).toEqual({ name: 'Plain' });
   });
 
@@ -221,13 +221,13 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
     const d2 = getProviderNodeById('eq2');
     // getProviderNodeById normalizes opencode v2 → internal view: both must agree on
     // every slot boot reads (npm/baseURL/headers), the two shapes converge.
-    expect(d2.npm).toBe('@opencode/ai/providers/openai-compatible');
+    expect(d2.npm).toBe('openai-chat');
     expect(d2.options.baseURL).toBe(d1.options.baseURL);
     expect(d2.options.headers).toEqual(d1.options.headers);
     expect(wireFor(d1.npm)).toBe(wireFor(d2.npm));
     const m1 = getProviderModelDefs('eq1')!.m1;
     const m2 = getProviderModelDefs('eq2')!.m1;
-    expect(m2.provider.npm).toBe('@opencode/ai/providers/anthropic'); // normalizeModelDef reverses the write; opencodeV2PackageFor mapped the value
+    expect(m2.provider.npm).toBe('anthropic-messages'); // normalizeModelDef reverses the write; the protocol id round-trips verbatim
     expect(wireFor(m2.provider.npm)).toBe(wireFor(m1.provider.npm)); // boot consumes it through wireFor — same wire both shapes
   });
 });
@@ -252,50 +252,6 @@ describe('upsertProviderModel — model defs are the current v2 FILE shape, not 
     const model = readRaw().providers.zhipu.models['glm-4.5'];
     expect(model.cost).toEqual({ input: 0.6, output: 1.8, cache_read: 0.13 });
     expect(model.variants).toEqual({ fast: { reasoningEffort: 'low' } });
-    expect(model.provider).toEqual({ npm: '@ai-sdk/openai-compatible' });
+    expect(model.provider).toEqual({ npm: 'openai-chat' });
   });
 });
-
-describe('opencodeV2PackageFor — the write-side package vocabulary', () => {
-  // Task test (e) is really the PARITY claim: every mapped opencode v2 package must
-  // resolve to the SAME wire as the opencode v1 npm it replaced (wireFor is the shared
-  // decision function used by boot-direct and probe.probeKindFor alike).
-  const PAIRS: [string, string][] = [
-    ['@ai-sdk/openai-compatible', '@opencode/ai/providers/openai-compatible'],
-    ['@ai-sdk/openai', '@opencode/ai/providers/openai'],
-    ['@ai-sdk/anthropic', '@opencode/ai/providers/anthropic'],
-    ['@ai-sdk/google', '@opencode/ai/providers/google'],
-    ['@ai-sdk/azure', '@opencode/ai/providers/azure'],
-    ['@ai-sdk/vertex', '@opencode/ai/providers/vertex'],
-    ['@ai-sdk/google-vertex', '@opencode/ai/providers/google-vertex'],
-    ['@ai-sdk/bedrock', '@opencode/ai/providers/bedrock'],
-    ['@ai-sdk/amazon-bedrock', '@opencode/ai/providers/amazon-bedrock'],
-  ];
-
-  it('maps each known opencode v1 npm to its read-side opencode v2 package with wire parity', () => {
-    for (const [legacyNpm, aiPackage] of PAIRS) {
-      expect(opencodeV2PackageFor(legacyNpm)).toBe(aiPackage);
-      expect(wireFor(aiPackage)).toBe(wireFor(legacyNpm));
-    }
-  });
-
-  it('maps the TypeSafe npm onto its native typesafe segment (decision wire)', () => {
-    // The segment is a real read-side wire (`systemone`). Client loadability is
-    // NOT handled here — CLIENT_PACKAGE_FALLBACK substitutes the compatible
-    // runtime in the client copy only, so the book keeps this value.
-    expect(opencodeV2PackageFor('@ai-sdk/typesafe-ai')).toBe('@opencode/ai/providers/typesafe');
-    expect(wireFor('@opencode/ai/providers/typesafe')).toBe('systemone');
-  });
-
-  it('passes already-v2 packages and unknown npm strings through verbatim', () => {
-    expect(opencodeV2PackageFor('@opencode/ai/providers/openai-compatible')).toBe(
-      '@opencode/ai/providers/openai-compatible'
-    );
-    // Unmapped: never fabricate an unprobed opencode v2 segment — the opencode v1 string keeps
-    // resolving through the classic heuristic (mistral → openai wire).
-    expect(opencodeV2PackageFor('@ai-sdk/mistral')).toBe('@ai-sdk/mistral');
-    expect(wireFor(opencodeV2PackageFor('@ai-sdk/mistral'))).toBe(wireFor('@ai-sdk/mistral'));
-    expect(opencodeV2PackageFor('@ai-sdk/mantle-sdk')).toBe('@ai-sdk/mantle-sdk');
-  });
-});
-

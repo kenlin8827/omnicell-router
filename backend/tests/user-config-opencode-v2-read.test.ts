@@ -65,7 +65,7 @@ describe('normalizeProviderDef — opencode v2 provider shape on read', () => {
       },
     });
     const def = getProviderNodeById('acme');
-    expect(def.npm).toBe('@opencode/ai/providers/openai-compatible');
+    expect(def.npm).toBe('openai-chat');
     expect(def.options.baseURL).toBe('https://acme.test/v1');
     expect(def.options.apiKey).toBe('{env:ACME_KEY}');
     expect(def.options.timeoutMs).toBe(30000);
@@ -141,7 +141,7 @@ describe('normalizeModelDef — per-model opencode v2 fields', () => {
       },
     });
     const defs = getProviderModelDefs('mix')!;
-    expect(defs['opencode v2-model'].provider.npm).toBe('@opencode/ai/providers/anthropic');
+    expect(defs['opencode v2-model'].provider.npm).toBe('anthropic-messages');
     // boot reads the RAW settings slot for defaultEffort — settings is the
     // opencode v1 model-level slot name too, so normalization must not overlay it.
     expect(defs['opencode v2-model'].settings.reasoningEffort).toBe('high');
@@ -161,7 +161,7 @@ describe('management view + write side', () => {
       },
     });
     const view = listConfigProviders().find((p) => p.id === 'acmev2')!;
-    expect(view.npm).toBe('@opencode/ai/providers/google');
+    expect(view.npm).toBe('google-gemini');
     expect(view.baseURL).toBe('https://acmev2.test/v1');
     expect(view.auth.inline).toBe(true);
     expect(view.auth.keyMasked).toContain('••••');
@@ -180,11 +180,11 @@ describe('management view + write side', () => {
     });
     expect(res.success).toBe(true);
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    // The untouched neighbor keeps its bytes.
-    expect(raw.providers.acmev2.package).toBe('@opencode/ai/providers/google');
+    // The untouched neighbor is normalized to the current npm spelling on write.
+    expect(raw.providers.acmev2.package).toBe('google-gemini');
     expect(raw.providers.acmev2.npm).toBeUndefined();
-    // The new node: v2 shape, native slot, npm mapped to a v2 package.
-    expect(raw.providers.newprov.package).toBe('@opencode/ai/providers/openai-compatible');
+    // The new node: v2 shape, native slot, npm emitted verbatim.
+    expect(raw.providers.newprov.package).toBe('openai-chat');
     expect(raw.providers.newprov.settings.apiKey).toBe('sk-x');
     expect(raw.providers.newprov.npm).toBeUndefined();
     expect(raw.providers.newprov.options).toBeUndefined();

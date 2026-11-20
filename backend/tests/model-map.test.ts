@@ -14,6 +14,6 @@ describe('routingModeForceTier', () => {
   });
 
   test('existing force_tier wins over global mode', () => {
-    expect(routingModeForceTier('auto', { force_tier: 'plus' }, 'cost')).toBeUndefined();
+    expect(routingModeForceTier('auto', { forceTier: 'plus' }, 'cost')).toBeUndefined();
   });
 });

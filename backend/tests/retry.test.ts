@@ -9,6 +9,7 @@ import { createServer } from '../src/server.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/index.js';
 import { loadConfig } from '../src/config/index.js';
 import { credentialSubject, getRateLimiter } from '../src/ratelimit/rate-limiter.js';
+import { processIR } from './helpers/ir.js';
 
 /** Restores a monkey-patched rate-limiter singleton (see the 429 shaping test);
  *  a leaked spy would shape every later test in this process. */
@@ -112,7 +113,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
       __simulate_fail_times__: 1,
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
 
     // Verified: Request succeeded on primary-plus!
     assert.ok(result.response);
@@ -156,7 +157,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
       __simulate_fail_times__: 1,
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
 
     // Because inplace is disabled, it immediately fails over to secondary-plus
     assert.equal(result.modelUsed, 'secondary-plus');
@@ -178,7 +179,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
       __simulate_message__: 'insufficient_quota: credential balance is 0',
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
 
     // Verified: Bypassed in-place retry, switched immediately to backup
     assert.equal(result.modelUsed, 'secondary-plus');
@@ -206,7 +207,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     };
 
     await assert.rejects(async () => {
-      await orchestrator.process(req);
+      await processIR(orchestrator, req);
     }, (err: any) => {
       assert.ok(err.message.includes('context_length_exceeded') || err.message.includes('400'));
       return true;
@@ -232,7 +233,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
       const registry = new ProviderRegistry(baseConfig, true);
       const orchestrator = new PipelineOrchestrator(baseConfig, registry, new FinOpsTracker());
       await assert.rejects(
-        () => orchestrator.process(failReq('mock-lite-1') as any),
+        () => processIR(orchestrator, failReq('mock-lite-1') as any),
         /Explicit model 'mock-lite-1' did not serve the request/
       );
     });
@@ -240,7 +241,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     it('router_options.failover: true restores tier-pool substitution for that request only', async () => {
       const registry = new ProviderRegistry(baseConfig, true);
       const orchestrator = new PipelineOrchestrator(baseConfig, registry, new FinOpsTracker());
-      const result = await orchestrator.process(failReq('mock-lite-1', {
+      const result = await processIR(orchestrator, failReq('mock-lite-1', {
         router_options: { failover: true },
       }) as any);
       assert.equal(result.modelUsed, 'mock-lite-2');
@@ -250,7 +251,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     it('forced tier keeps its in-tier failover without any opt-in', async () => {
       const registry = new ProviderRegistry(baseConfig, true);
       const orchestrator = new PipelineOrchestrator(baseConfig, registry, new FinOpsTracker());
-      const result = await orchestrator.process(failReq('lite') as any);
+      const result = await processIR(orchestrator, failReq('lite') as any);
       assert.equal(result.modelUsed, 'mock-lite-2');
       assert.equal(result.failoverOccurred, true);
     });
@@ -345,7 +346,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
       __simulate_status__: 503,
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
 
     // Under allow_escalate, should escalate up to plus-1 to preserve user uptime!
     assert.equal(result.tierUsed, 'plus');
@@ -373,7 +374,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
 
     // A forced tier is a contract (ADR-0014): no plus tail, fail loud.
     await assert.rejects(async () => {
-      await orchestrator.process(req);
+      await processIR(orchestrator, req);
     }, (err: any) => {
       assert.ok(err.message.includes('503'));
       return true;
@@ -406,7 +407,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     };
 
     await assert.rejects(async () => {
-      await orchestrator.process(req);
+      await processIR(orchestrator, req);
     }, (err: any) => {
       assert.ok(err.message.includes('503'));
       return true;
@@ -430,7 +431,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
 
     // Must NOT downgrade to lite-1; should fail instead of degrading code intelligence
     await assert.rejects(async () => {
-      await orchestrator.process(req);
+      await processIR(orchestrator, req);
     });
   });
 });
@@ -614,7 +615,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering ', 
       __simulate_fail_times__: 1,
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
     assert.equal(result.modelUsed, 'model-b');
     assert.equal(result.failoverOccurred, true);
     assert.equal(result.inplaceRetries, 0); // 0 in-place retries because 503 wasn't in retryOnCauses!
@@ -670,7 +671,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering ', 
       __simulate_fail_times__: 3,
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
 
     // The turn survives via failover; the question is what the breaker saw.
     assert.equal(result.modelUsed, 'secondary-plus');
@@ -738,7 +739,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering ', 
       __simulate_fail_times__: 1,
     };
 
-    const result = await orchestrator.process(req);
+    const result = await processIR(orchestrator, req);
 
     assert.equal(result.modelUsed, 'primary-plus');
     assert.equal(result.inplaceRetries, 1);

@@ -8,6 +8,7 @@ import type { CallCredential } from '../src/providers/base.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 import type { ModelRegistration, RouterConfig, TierMemberRule } from '../src/config/types.js';
 import type { TierLevel } from '../src/types/router.js';
+import { processIR, responseIR } from './helpers/ir.js';
 
 /**
  * Session-pin eviction (the ratchet-mode hard switch).
@@ -62,19 +63,13 @@ function makeStub(name: string) {
   const provider = {
     name,
     async createCompletion(
-      _req: ChatCompletionRequest,
+      _req: unknown,
       model: ModelRegistration,
       _ctx: unknown,
       credential?: CallCredential
-    ): Promise<ChatCompletionResponse> {
+    ) {
       seen.push(credential);
-      return {
-        id: `ok-${name}`,
-        object: 'chat.completion',
-        created: 1,
-        model: model.upstreamModel,
-        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-      } as ChatCompletionResponse;
+      return responseIR('ok', { id: `ok-${name}`, model: model.upstreamModel });
     },
   };
   return { provider: provider as unknown as import('../src/providers/base.js').LLMProvider, seen };
@@ -157,14 +152,14 @@ describe('config eviction: removed from tier members', () => {
     const { orchestrator, registry, stub1, stub2, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-members';
 
-    const r1 = await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    const r1 = await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
     expect(r1.modelUsed).toBe(m1.id); // priority pool head pins the session
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
 
     // Operator edits the plus list down to p2/* — m1 no longer joins any pool.
     commitMembers(registry, { plus: [{ pattern: 'p2/*' }] });
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
     const session = orchestrator.getSessionManager().getSession(sessionId)!;
     expect(session.pinnedModel).toBe(m2.id); // hard switch + write-back in one seam
@@ -185,14 +180,14 @@ describe('config eviction: removed from tier members', () => {
   it('the global denylist (tiers.exclude) evicts a pin the same way member lists do', async () => {
     const { orchestrator, registry, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-deny';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     // The registry holds the committed tierPolicies object live; the denylist
     // is applied from it at pool-build time. Mutating the getter's return is
     // the sanctioned test hook (production path: console save → applyTierConfigNow).
     registry.getTierPolicies().exclude = ['p1/alpha'];
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m2.id);
   });
@@ -200,12 +195,12 @@ describe('config eviction: removed from tier members', () => {
   it('a zombie pin (id gone from the registry) is repaired, not re-fallen-back forever', async () => {
     const { orchestrator, m1 } = makeFixture();
     const sessionId = 'sess-ev-zombie';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     // Simulate the post-restart state: config.models lost the pinned id.
     orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel = 'ghost/gone';
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id);
     // Pre-fix the zombie string survived (each turn silently used the tier
     // head via the null-pin fallback); the eviction seam writes it back.
@@ -215,12 +210,12 @@ describe('config eviction: removed from tier members', () => {
   it('a model MOVED to another tier is NOT config-evicted (cross-tier move != removal)', async () => {
     const { orchestrator, registry, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-move';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     // m1 is now claimed by pro (its m.tier is rewritten), plus keeps m2.
     commitMembers(registry, { plus: [{ pattern: 'p2/*' }], pro: [{ pattern: 'p1/*' }] });
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     // Forced-plus turn (ADR-0014): the pin (now pro-tier) is neither followed
     // nor rewritten — the plus pool serves its head, and the pin STAYS m1 (a
     // cross-tier MOVE is not an eviction: no repin away happened).
@@ -233,14 +228,14 @@ describe('config eviction: removed from tier members', () => {
     const sessionId = 'sess-ev-hand';
     const hand = { ...m2, tierMatch: undefined } as unknown as ModelRegistration;
     registry.registerModel(hand); // re-register m2 as hand-configured
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
 
     // Empty the plus list: m1 (captured) falls out of every pool and gets
     // evicted; m2 (hand-configured) is reclassify-immune and stays in the
     // pool through its declared tier — and serves as the landing.
     commitMembers(registry, { plus: [] });
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m2.id);
   });
@@ -250,7 +245,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
   it('a model whose every credential is operator-DISABLED is pinned out (aggregate reads out)', async () => {
     const { orchestrator, registry, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-disabled';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     const store = registry.getCircuitBreakerManager().getCredentialStateStore();
     for (const c of chainP1) store.disable('p1', c.keyHashPrefix);
@@ -261,7 +256,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
       // All pairs operator-DISABLED → takedown outranks trial state → 'unavailable'.
       expect(registry.modelHealthView(m1)).toBe('unavailable');
 
-      const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+      const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
       expect(r2.modelUsed).toBe(m2.id);
       expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m2.id);
       expect(lastTurnParams(orchestrator, sessionId)).toMatchObject({ repin: 'health', repinFrom: m1.id, repinTo: m2.id });
@@ -274,7 +269,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
   it('partial disablement is NOT eviction: the pin holds, only the credential moves', async () => {
     const { orchestrator, registry, stub1, m1 } = makeFixture();
     const sessionId = 'sess-ev-partial';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
     const parked = chainP1.find((c) => c.keyHashPrefix === bound)!;
     const other = chainP1.find((c) => c.keyHashPrefix !== bound)!;
@@ -282,7 +277,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
     const store = registry.getCircuitBreakerManager().getCredentialStateStore();
     store.disable('p1', parked.keyHashPrefix);
     try {
-      const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+      const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
       expect(r2.modelUsed).toBe(m1.id); // same model — the aggregate still reads available
       expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
       expect(stub1.seen[1]?.keyHashPrefix).toBe(other.keyHashPrefix); // credential FORCED-rebinded
@@ -294,7 +289,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
   it('a recovering trial model is NEVER evicted (busy canary ≠ gone — the pin survives the trial)', async () => {
     const { orchestrator, registry, m1 } = makeFixture();
     const sessionId = 'sess-ev-halfopen';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     const cb = registry.getCircuitBreakerManager();
     // Open both pairs, then outlast the cooldown floor (manual trips clamp to
@@ -310,7 +305,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
     expect(registry.modelAvailable(m1).available).toBe(false); // peek: unavailable (a peek-based predicate would evict)
     expect(registry.modelHealthView(m1)).toBe('recovering'); // capability: trial in flight → never evict
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     // The pin is the contract: no eviction fired ('recovering' ≠
     // 'unavailable'), so the session rides the trial. Where the turn's
     // request itself lands is EXISTING gate semantics — model breaker CLOSED
@@ -324,7 +319,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
   it('no healthy landing keeps the evicted pin (safe fail, never jump into a fire pit)', async () => {
     const { orchestrator, registry, stub1, m1 } = makeFixture('m1only');
     const sessionId = 'sess-ev-landing';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     // Trip every pair: aggregate down (health eviction), and the only landing
     // candidate is m1 itself → the guard refuses the switch, legacy force serves.
@@ -333,7 +328,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
     // Hard-OPEN pairs (long cooldown): capability view reads 'unavailable'.
     expect(registry.modelHealthView(m1)).toBe('unavailable');
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // served via the last-candidate force
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
     expect(stub1.seen[1]).toBeUndefined(); // no credential selector on the forced call
@@ -365,7 +360,7 @@ describe('shadow mode: automatic trips never evict', () => {
   it('a shadowed model-scope trip reads available and the pin holds', async () => {
     const { orchestrator, registry, m1 } = makeFixture('both', { circuitBreaker: shadowBreaker });
     const sessionId = 'sess-ev-shadow';
-    const r1 = await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    const r1 = await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
     expect(r1.modelUsed).toBe(m1.id);
 
     registry
@@ -376,7 +371,7 @@ describe('shadow mode: automatic trips never evict', () => {
     expect(registry.getCircuitBreakerManager().getSummary().tripped).toBe(1);
     expect(registry.modelHealthView(m1)).toBe('available');
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // still served — shadow denies nothing
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
   });
@@ -386,7 +381,7 @@ describe('shadow mode: automatic trips never evict', () => {
       circuitBreaker: { ...shadowBreaker, shadow: false },
     });
     const sessionId = 'sess-ev-noshadow';
-    await orchestrator.process(turn('first hello'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
 
     registry
       .getCircuitBreakerManager()
@@ -394,7 +389,7 @@ describe('shadow mode: automatic trips never evict', () => {
     expect(registry.getCircuitBreakerManager().getSummary().tripped).toBe(1);
     expect(registry.modelHealthView(m1)).toBe('unavailable');
 
-    const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m2.id);
     expect(lastTurnParams(orchestrator, sessionId)).toMatchObject({ repin: 'health', repinFrom: m1.id, repinTo: m2.id });
@@ -405,11 +400,11 @@ describe('eviction scope: only ratchet-mode pins are hard-switched', () => {
   it('explicit requests still serve a config-evicted model (explicit-wins contract)', async () => {
     const { orchestrator, registry, stub1, m1 } = makeFixture();
     const sessionId = 'sess-ev-explicit';
-    await orchestrator.process(turn('first hello', 'p1/alpha'), sessCtx(sessionId));
+    await processIR(orchestrator, turn('first hello', 'p1/alpha'), sessCtx(sessionId));
 
     commitMembers(registry, { plus: [{ pattern: 'p2/*' }] }); // m1 unclassified
 
-    const r2 = await orchestrator.process(turn('second hello', 'p1/alpha'), sessCtx(sessionId));
+    const r2 = await processIR(orchestrator, turn('second hello', 'p1/alpha'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // client named it, registry still has it
     expect(stub1.seen).toHaveLength(2);
   });
@@ -432,7 +427,7 @@ describe('eviction scope: only ratchet-mode pins are hard-switched', () => {
     const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
 
     commitMembers(registry, { plus: [{ pattern: 'p2/*' }] }); // m1 unclassified by tier
-    const r = await orchestrator.process(turn('combo hello', 'evcombo'), sessCtx('sess-ev-combo'));
+    const r = await processIR(orchestrator, turn('combo hello', 'evcombo'), sessCtx('sess-ev-combo'));
     expect(r.modelUsed).toBe(m1.id); // member list owns the combo pool; tier eviction is not combo eviction
   });
 });

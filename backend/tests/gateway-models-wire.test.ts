@@ -26,8 +26,8 @@ describe('GET /api/admin/gateway-models carries the resolved wire', () => {
     apiKeys: [],
     models: [
       { id: 'w/decision', provider: 'w-ts', upstreamModel: 'dec', tier: 'plus', pricing, wire: 'systemone' },
-      { id: 'w/anthropic', provider: 'w-ant', upstreamModel: 'claude', tier: 'lite', pricing, wire: 'anthropic' },
-      { id: 'w/plain', provider: 'w-openai', upstreamModel: 'gpt', tier: 'pro', pricing, wire: 'openai' },
+      { id: 'w/anthropic', provider: 'w-ant', upstreamModel: 'claude', tier: 'lite', pricing, wire: 'anthropic-messages' },
+      { id: 'w/plain', provider: 'w-openai', upstreamModel: 'gpt', tier: 'pro', pricing, wire: 'openai-chat' },
       // No wire: the shape a hand-registered model without catalog npm has.
       { id: 'w/nowire', provider: 'w-openai', upstreamModel: 'x', tier: 'ultra', pricing },
     ],
@@ -41,8 +41,8 @@ describe('GET /api/admin/gateway-models carries the resolved wire', () => {
     const row = (id: string) => body.models.find((m) => m.id === id);
 
     assert.strictEqual(row('w/decision')?.wire, 'systemone', 'decision wire is exposed, not inferred');
-    assert.strictEqual(row('w/anthropic')?.wire, 'anthropic');
-    assert.strictEqual(row('w/plain')?.wire, 'openai');
+    assert.strictEqual(row('w/anthropic')?.wire, 'anthropic-messages');
+    assert.strictEqual(row('w/plain')?.wire, 'openai-chat');
     assert.ok(!('wire' in (row('w/nowire') ?? {})), 'unresolved wire must not fabricate a default');
     assert.ok(!('wire' in (row('auto') ?? {})), 'virtual auto* rows have no upstream wire');
   });

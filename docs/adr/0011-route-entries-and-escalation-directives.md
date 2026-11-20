@@ -129,7 +129,7 @@ because of the removal is dropped; a **user** message left with no content at al
 upstream-facing payload must be byte-equivalent to one that never carried a directive, so the
 vendor never sees a reserved word and the prefix cache stays stable across turns. Unknown
 `@ocr-*` tokens are scrubbed too (a typo must not leak) and reported to the ledger. The scrubbed
-chain is what feeds hashing, snippets, traces and capture.
+chain is what feeds hashing, snippets, traces and session identity. Capture stores a separately scrubbed projection of the original client-protocol envelope, never the IR snapshot, so observability does not rewrite the client's protocol.
 
 A message left with nothing but directives ("just continue") is dropped entirely; the chain then
 ends on the previous assistant turn, which IS the continue semantic. Such a turn carries no prompt

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { canonicalProtocol } from '../providers/protocol.js';
 import type { ExecutionTrace } from './tracker.js';
 
 /**
@@ -53,6 +54,20 @@ function normalizeReplayedTrace(raw: unknown): ExecutionTrace | null {
     }
     delete fin.savedCostUsd;
     fin.costUsd = Number(fin.costUsd) || 0;
+  }
+  const req = record.request;
+  if (req && typeof req === 'object') {
+    const r = req as Record<string, unknown>;
+    if (typeof r.inboundWire === 'string' && r.inboundWire) {
+      r.inboundWire = canonicalProtocol(r.inboundWire);
+    }
+  }
+  const exec = record.execution;
+  if (exec && typeof exec === 'object') {
+    const e = exec as Record<string, unknown>;
+    if (typeof e.wireKind === 'string' && e.wireKind) {
+      e.wireKind = canonicalProtocol(e.wireKind);
+    }
   }
   return record as unknown as ExecutionTrace;
 }

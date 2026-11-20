@@ -548,4 +548,51 @@ describe('traces.db v1 → v2 migration (ADR-0021)', () => {
     }
   });
 
+  it('normalizes legacy inboundWire and wireKind aliases when replaying from SQLite', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-traces-legacy-'));
+    const trackers: TraceTracker[] = [];
+    const legacy = mkTrace({
+      requestId: 'req_legacy_wire',
+      sessionId: 'sess_legacy_wire',
+      timestamp: Date.now(),
+      request: {
+        model: 'auto',
+        userPromptSummary: 'hello',
+        messageCount: 1,
+        hasSystemPrompt: false,
+        hasToolsOrSchema: false,
+        inboundWire: 'chat' as unknown as 'openai-chat',
+      },
+      execution: {
+        modelUsed: 'm',
+        provider: 'p',
+        tierUsed: 'lite',
+        latencyMs: 50,
+        fallbackOccurred: false,
+        wireKind: 'openai-compatible',
+      },
+    });
+    const db = new Database(path.join(dir, 'traces.db'), { create: true });
+    db.run(`CREATE TABLE traces (request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL)`);
+    db.run('INSERT INTO traces (request_id, session_id, ts, data) VALUES (?, ?, ?, ?)', [
+      legacy.requestId,
+      legacy.sessionId,
+      legacy.timestamp,
+      JSON.stringify(legacy),
+    ]);
+    db.run('PRAGMA user_version = 3');
+    db.close();
+
+    try {
+      const tracker = new TraceTracker(10, { ...PERSIST, dir });
+      trackers.push(tracker);
+      await tracker.whenReady;
+      const replayed = tracker.getTrace('req_legacy_wire');
+      assert.equal(replayed?.request.inboundWire, 'openai-chat');
+      assert.equal(replayed?.execution.wireKind, 'openai-chat');
+    } finally {
+      await cleanup(dir, trackers);
+    }
+  });
+
 });

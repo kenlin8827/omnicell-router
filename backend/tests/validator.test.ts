@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { SchemaAssertion } from '../src/validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../src/validator/parser.js';
-import { ChatCompletionRequest, ResponseFormat } from '../src/types/openai.js';
+import type { TextConfig } from '../src/ir/types.js';
+import { toIR } from './helpers/ir.js';
 
 describe('Step 3: Cascading Fallback & Static Schema Assertion', () => {
   it('should cleanly extract and validate JSON wrapped in markdown code fence', () => {
@@ -20,17 +21,15 @@ describe('Step 3: Cascading Fallback & Static Schema Assertion', () => {
   });
 
   it('should validate JSON against required fields and enum values', () => {
-    const format: ResponseFormat = {
+    const format: TextConfig['format'] = {
       type: 'json_schema',
-      json_schema: {
-        name: 'PersonSchema',
-        schema: {
-          type: 'object',
-          required: ['name', 'status'],
-          properties: {
-            name: { type: 'string' },
-            status: { type: 'string', enum: ['active', 'inactive', 'pending'] },
-          },
+      name: 'PersonSchema',
+      schema: {
+        type: 'object',
+        required: ['name', 'status'],
+        properties: {
+          name: { type: 'string' },
+          status: { type: 'string', enum: ['active', 'inactive', 'pending'] },
         },
       },
     };
@@ -54,10 +53,10 @@ describe('Step 3: Cascading Fallback & Static Schema Assertion', () => {
   });
 
   it('should properly package fallback context with assertion error message', () => {
-    const originalReq: ChatCompletionRequest = {
+    const originalReq = toIR({
       model: 'auto',
       messages: [{ role: 'user', content: 'Extract name and status as JSON.' }],
-    };
+    });
 
     const escalated = FallbackContextBuilder.buildEscalationRequest(
       originalReq,
@@ -67,9 +66,11 @@ describe('Step 3: Cascading Fallback & Static Schema Assertion', () => {
     );
 
     assert.strictEqual(escalated.model, 'claude-3-5-sonnet');
-    assert.strictEqual(escalated.messages.length, 3);
-    assert.strictEqual(escalated.messages[1].role, 'assistant');
-    assert.strictEqual(escalated.messages[2].role, 'user');
-    assert.ok(typeof escalated.messages[2].content === 'string' && escalated.messages[2].content.includes('System Assertion Error'));
+    assert.strictEqual(escalated.input.length, 3);
+    assert.strictEqual(escalated.input[1]?.type, 'message');
+    assert.strictEqual(escalated.input[1]?.role, 'assistant');
+    assert.strictEqual(escalated.input[2]?.type, 'message');
+    assert.strictEqual(escalated.input[2]?.role, 'user');
+    assert.ok(JSON.stringify(escalated.input[2]).includes('System Assertion Error'));
   });
 });

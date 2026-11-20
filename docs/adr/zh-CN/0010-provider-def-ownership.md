@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented — 2026-10-20（阶段：定义库 + 一次性 jsonc 移植；CRUD/boot/视图漏斗换源；先物化后推 key 的同步 REPLACE 语义；CLI 钩子改道）。修订 ADR-0005 §2(a) 的 boot 数据源。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——定义文件是连接定义的唯一事实源（见 §1）。
+Implemented — 2026-10-20（阶段：定义库 + 一次性 jsonc 移植；CRUD/boot/视图漏斗换源；先物化后推 key 的同步 REPLACE 语义；CLI 钩子改道）。修订 ADR-0005 §2(a) 的 boot 数据源。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——定义文件是连接定义的唯一事实源（见 §1）。2026-11-19 修订：catalog 的 `npm` 槽保持原名，值改为 OCR 协议 id（见下方修订案）。
 
 ## Decision
 
@@ -76,7 +76,7 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 从客户端读取连接 def 的流动现在有两条（启动导入 + 同步读方向），都由适配器（而不是调用方）负责处理客户端配置可手写带来的两类差异：
 
 - **两个适配器，一 flavor 一个（`provider-def-adapters.ts`）。** 机器的 flavor（`credentials/paths.ts`，与凭证同步客户端共用）选择适配器；适配器负责自己的槽位与节点形状。槽位**拼写**绝不外泄：调用方只请求操作（导入用 `providerDefAdapter(flavor).read`，物化器与漂移徽章用 `clientDefNodes` / `writeDefSlot`——def 写入方恒为 v2 正规槽），这样没有第二个模块能长出"defs 到底住哪"的独立意见——共享的 `PROVIDER_SLOT` 式常量正是这种漂移双胞胎，而把两种拼写并排声明会抹掉适配器存在的意义：
-  - `opencode-v2` → 正规的复数 **`providers`** 槽，`package`/`settings` 拼写，逐字复制。退役的单数 `provider` 槽**不读**——一个 flavor 一个槽，没有遗留兼容通道（测试钉死；理由见下）。
+  - `opencode-v2` → 正规的复数 **`providers`** 槽，`package`/`settings` 拼写。package 的**值**是 OCR 协议 id（`openai-chat`、`openai-responses`、`anthropic-messages`、`google-gemini`、`systemone`，以及原生 `qoder`/`workbuddy`）——绝不是 SDK npm 包名。opencode 的 SDK 拼写（`@opencode/ai/providers/<segment>`）由 opencode 集成自己的双向映射表（`opencode/provider-package.ts`）拥有：导入时翻译成协议 id，写客户端副本时翻译回 SDK 包名；未知段原样传出，由 `wireFor` 明确判 `unroutable`。退役的单数 `provider` 槽**不读**——一个 flavor 一个槽，没有遗留兼容通道（测试钉死；理由见下）。
   - `opencode-v1` → 只读单数 **`provider`** 槽，`npm`/`options` 拼写，需要转换；复数正规槽同样不读。
   每次读取恰好只读本适配器的槽。读方向对客户端文件永远不写。
 - **实测的槽位行为（2.0.29，2026-10-23）。** opencode v2 两种拼写**都接受**作为输入，并把旧的那一种折叠进正规形态：手写在 `provider` 下的 v1 节点（`npm`/`options`），在服务端的解码配置（`GET /api/config`）里出现在 `providers` 下、且是 `package`/`settings` 形状（原始 npm 包名会加 `aisdk:` 前缀）。所以 `providers` 才是正规/生效拼写——物化器写它、schema 也只声明它（`@opencode/schema` 2.0.16 的 `Config` 结构里只有 `providers`）——而 `provider` 是兼容**输入**，不是第二套真相。所以 v2 适配器仍然**只读**正规槽：v1 形状的残留节点经折叠照旧在客户端注册，但兼容输入不是 OCR 导入、跟踪的真相——接管只认正规拼写。
@@ -85,7 +85,7 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **按导入版本重新武装。** `credential-store.json` 里的 marker 带 `version`（`PROVIDER_DEFS_IMPORT_VERSION`）；旧版本写入的 marker（或没有 marker）视为**过期**，下一次启动会重跑。这样已有安装无需手动操作、也不会丢账本，就能拿到新增的单数槽读取与形状转换。延后的导入（客户端配置不可解析 / defs 写失败）不写新记录、保留旧记录可见、下次启动重试。
 - **退役槽被忽略，绝不剪除。** v2 机器上两个方向都不碰单数 `provider` 槽：导入不读它，物化器只 REPLACE `providers`、其余遗留节点逐字不动，`defsDrift` 也只比较正规槽。记录在案的后果：OCR 里已删除的 def 可能仍被过期的遗留副本经折叠保活在客户端，而拉取看不见它——清除它是客户端文件编辑，与 key 删除同一条"客户端侧也要删"的规则（ADR-0006）。
 - **内置 ⇒ 只写密钥；自定义 ⇒ 写配置节点。** 写方向渲染的集合是 defs 册**减去客户端自己已定义的 provider id**。依据是证据而不是维护的 id 清单：`GET /api/provider` 只对 catalog 定义的 provider 返回 `integrationID`，而仅因被写进配置才存在的节点（如中继 `maisuitx`）没有这个字段。这些内置 provider 不需要配置节点——客户端本来就持有它们的 package/baseURL/模型清单——所以只让密钥流转（推送的 key 那一半完全不变）。客户端不认识的一律写，因此任何已连接的自定义 provider 都会落到 `providers` 里。这个 id 集合会记录在写结果上（`defsSkippedBuiltIn`），因为 `defsDrift` 必须与推送用过的渲染集合一致；没有服务可问时整册照写——缺一个 def 会断路由，多一个 def 从来不会。
-- **客户端加载不了的 wire 用替代 package，而不是跳过——更不对操作员隐藏。** 客户端的 `package` 是闭集；它没有对应 package 的 wire（今天的 `systemone` / TypeSafe：SDK 模块存在，但只暴露 `experimental.evaluation`，加载器里没有这个段）它根本服务不了。两层、一个方向：(a) npm 词表与写侧 npm→package 表**提供**原生段（`@ai-sdk/typesafe-ai` → `@opencode/ai/providers/typesafe`），让下拉框与 defs 册端到端保留决策 wire——2026-10-23 的改动把该别名从词表隐藏、把映射降级为兼容运行时，是回归而非保险，现予撤回（2026-10-24；任何写侧路径都不得隐藏读侧仍可解析的 wire）；(b) 已经带不可加载 package 的 def（手写或导入的）仍然只在**写给客户端的那一份**换成兼容运行时 package（`CLIENT_PACKAGE_FALLBACK`，一条，按 wire 索引）——册子保留作者写的 def，OCR 自己的 wire 判据仍解析为 `systemone`。这是从册子确定推导出来的，所以 `defsDrift` 比较的正是推送会写的那张表。不做运行时探测：客户端只要节点的 `models` 里有条目就会注册模型，与 package 能否解析无关，探测会对一个服务不了请求的 package 报"正常"。将来客户端支持了这个段，改那一条（或删掉它）下一次推送就让所有 def 自动切回。替代只回答"客户端能不能加载"；上游是否说这种协议仍是供应商事实（ark 会；api.typesafe.ai 只有 `POST /systemone`，不会）。
+- **客户端加载不了的协议用替代 package，而不是跳过——更不对操作员隐藏。** defs 册保存的是 OCR 协议 id（`openai-chat`、`openai-responses`、`anthropic-messages`、`google-gemini`、`systemone`、`qoder`、`workbuddy`），绝不是 SDK npm 包名。客户端加载器没有对应模块的协议（今天的 `systemone` / TypeSafe：SDK 模块存在，但只暴露 `experimental.evaluation`）它根本服务不了。两层、一个方向：(a) 协议词表**提供** `systemone`，让下拉框与册子端到端保留决策 wire。opencode 的 SDK 拼写（`@opencode/ai/providers/*`）由 `opencode/provider-package.ts` 拥有：导入时翻译成协议 id，写客户端副本时翻译回 SDK 包名；未知段原样传出，`wireFor` 明确判 `unroutable`，绝不猜；(b) 客户端没有对应 SDK 模块的 def，只在**写给客户端的那一份**换成兼容协议（`openai-chat`，即 `@opencode/ai/providers/openai-compatible`）（`CLIENT_PACKAGE_FALLBACK`，一条，按 wire 索引）——册子保留作者写的 def，OCR 自己的 wire 判据仍解析为 `systemone`。这是从册子确定推导出来的，所以 `defsDrift` 比较的正是推送会写的那张表。不做运行时探测：客户端只要节点的 `models` 里有条目就会注册模型，与 package 能否解析无关，探测会对一个服务不了请求的 package 报"正常"。将来客户端支持了这个模块，改那一条（或删掉它）下一次推送就让所有 def 自动切回。替代只回答"客户端能不能加载"；上游是否说这种协议仍是供应商事实（ark 会；api.typesafe.ai 只有 `POST /systemone`，不会）。
 - **读方向也由它负责。** `pullIntoOcr` 用「本次同步的那个客户端」的适配器导入 provider defs——手动或自动跑 `opencode-v2` 永远是 v2 适配器，`opencode-v1` 永远是 v1 适配器；版本由同步请求决定，绝不靠猜。按 provider 收窄的运行只导入那一个节点。outcome 带 `defsImported` / `defsConverted` / `defsSkipped` / `defsFailed`（硬失败再加一条 `failed` 条目），控制台能看到。启动期、marker 门控的导入保留，作为「从不手动同步」的安装的种子。
 - **仍然禁止。** 不把过期的客户端副本写回：读方向的 defs 是只增的，写方向对正规槽是 REPLACE。在 OCR 删掉、但客户端正规槽里仍然存在的 provider，会被下一次拉取重新导入——与 key 删除是同一项已记录的取舍（删除后紧跟的那次推送会把它传播出去；在那之前客户端副本是唯一证据）。退役槽里的遗留副本两个方向都不碰，它不是拉取能重新接管的路径——见上方记录在案的后果。已导入的 def 在 OCR 里编辑；客户端对 OCR 自有 def 的改动会被忽略（报告为 `skipped`）。
 
@@ -99,3 +99,10 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **硬性池排除，如实上报。** `buildDirectPool` 在读取凭据/defs 之前检查账本并推入 `operator_disabled` 排除项；该 provider 不注册任何模型/实例。下游自动成立：`/v1/models` 不再列出该 provider，直连 id 无法命中（404），引用其模型的组合成为死引用（保存/启动告警），梯队池失去这些成员，会话 pin 走既有的 `configEvicted` → 重选路径。控制台各面仍读聚合：provider 卡片带禁用徽章，维护页的 `/models` 行保留并带同一徽章（`providerDisabled`），一键即可恢复——模型隐藏先例的上一级。
 - **手动生命周期，一键恢复。** 只由操作员设置（`POST /opencode/providers/:id/disable`），只由操作员解除（`/enable`）；冷却、重连、Push 或熔断重置都不会清除。路由挂在池同步接缝上，同一请求内完成下架/恢复，无需重启。重新启用是精确恢复：不需要重建任何隐藏模型簿记。删除 provider（或断开它最后一条凭据）时，只有在**什么都不剩**（既无 defs 节点也无凭据）的情况下才清除账本行：该 id 就此释放，重新连接从启用状态开始；部分清凭据则保留下架状态。
 - **额度探测不受影响。** 覆盖激活跟随凭据（ADR-0009 §1）；被禁用 provider 的探测照常运行（廉价、纯展示），控制台因此能看到它何时重新可用。额度平面从不门控路由。
+
+## 修订案 —— catalog 的 `npm` 槽存的是协议 id（2026-11-19）
+
+字段名保持 `npm`。这是 models.dev 的键，也是模型定义文件的拼写（`provider.npm`）；改名会把 `catalogModelToDef` 写回的 schema 拆成两套。OCR 存储并对外提供的值是 OCR 协议 id，与 provider def 的 `package`、插件预设的 `protocol` 是同一套词表。
+
+- **在入库时翻译，不在 `wireFor` 里加别名。** `normalizeModelsDev`（所有 `provider-catalog` 源）以及 models.dev 的 cache / stale 回放都把字符串送进 `protocolIdFromNpm`（`currentPackageFor`：`@ai-sdk/*` 与 `@opencode/ai/providers/<segment>`）。已经是协议 id 的原样通过。未知包名转成小写后原样通过，不猜测。`readOverridesStore` 在读取时做同一映射，不回写 `overrides.json`；下一次 override 写入会把译好的 id 落盘，因为它往返的是这个读视图。`upsertOverride` 在写入时翻译，避免提交上来的 SDK 包名原样落盘。
+- **`ocr.json` 版本 5。** 版本 4 的快照在这个槽里仍是 SDK 包名。store 签名不含代码变更，因此 4 被烧毁（单调递增、永不复用），下次启动从已经翻译过的源重建聚合。上文「版本 4」那一条记录的是书册统一修订案，不是当前文件版本。

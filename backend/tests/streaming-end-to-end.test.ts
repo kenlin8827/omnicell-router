@@ -5,9 +5,10 @@ import { ProviderConfig, RouterConfig } from '../src/config/types.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
-import type { ChatCompletionChunk } from '../src/types/openai.js';
-import type { StreamRelay } from '../src/utils/chat-stream.js';
+import type { StreamEvent } from '../src/ir/types.js';
+import type { StreamRelay } from '../src/utils/stream-relay.js';
 import { applyStreamingPosture, resetStreamingPostureForTests } from '../src/pipeline/streaming-posture.js';
+import { chatOf, processIR } from './helpers/ir.js';
 
 /**
  * End-to-end streaming through the REAL execution chain: candidate pool →
@@ -19,7 +20,7 @@ import { applyStreamingPosture, resetStreamingPostureForTests } from '../src/pip
  */
 
 function makeRelaySink() {
-  const frames: ChatCompletionChunk[] = [];
+  const frames: StreamEvent[] = [];
   const relay: StreamRelay = {
     stageRouting: () => {},
     onChunk: (chunk) => frames.push(chunk),
@@ -67,7 +68,7 @@ function sseBody(...frames: string[]): string {
 }
 
 function stubProvider(baseUrl: string): ProviderConfig {
-  return { name: 'stub', type: 'openai-compatible', baseUrl, apiKey: 'sk-stub' };
+  return { name: 'stub', type: 'openai-chat', baseUrl, apiKey: 'sk-stub' };
 }
 
 function makeConfig(baseUrl: string, extra: Partial<RouterConfig> = {}): RouterConfig {
@@ -147,7 +148,7 @@ describe('true streaming through the candidate pool', () => {
 
     try {
       let settled = false;
-      const pending = orchestrator.process(request('stub/one'), {}, relay).finally(() => {
+      const pending = processIR(orchestrator, request('stub/one'), {}, relay).finally(() => {
         settled = true;
       });
       // THE point of the whole change: a byte reaches the client while the turn
@@ -162,8 +163,8 @@ describe('true streaming through the candidate pool', () => {
       const result = await pending;
       assert.equal(frames.length >= 3, true);
       // The buffered object every consumer reads was rebuilt from those frames.
-      assert.equal(result.response.choices[0].message.content, 'part-one');
-      assert.equal(result.response.usage?.completion_tokens, 3);
+      assert.equal(chatOf(result.response).choices[0].message.content, 'part-one');
+      assert.equal(chatOf(result.response).usage?.completion_tokens, 3);
       assert.equal(result.modelUsed, 'stub/one');
       assert.equal(hits, 1);
       assert.equal(relay.committed, true);
@@ -231,10 +232,10 @@ describe('true streaming through the candidate pool', () => {
     const { relay } = makeRelaySink();
 
     try {
-      await orchestrator.process(request('stub/one'), {}, relay);
+      await processIR(orchestrator, request('stub/one'), {}, relay);
       const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
       assert.ok(trace, 'the turn must be traced');
-      // The relay forwards reasoning verbatim (chat-stream.ts), so the client
+      // The relay forwards reasoning verbatim (stream-relay.ts), so the client
       // receives progress during thinking. Counting only content/tool_calls
       // would leave a single 1.2 s gap and count it as stalled time; with
       // reasoning counted, every hop is 400 ms and the turn is smooth.
@@ -285,12 +286,14 @@ describe('true streaming through the candidate pool', () => {
 
     try {
       let rejected = false;
-      await orchestrator.process(request('pair'), {}, relay).catch(() => {
+      await processIR(orchestrator, request('pair'), {}, relay).catch(() => {
         rejected = true;
       });
       assert.ok(rejected, 'a broken stream must surface as a failed turn');
       assert.ok(frames.length >= 1, 'the first frame must have been relayed before the break');
-      assert.equal(frames.length, 1, 'only the committed frame may have been relayed');
+      const text = frames.filter((event) => event.type === 'response.output_text.delta');
+      assert.equal(text.length, 1, 'only the committed text may have been relayed');
+      assert.equal(text[0]?.type === 'response.output_text.delta' ? text[0].text : '', 'halfway');
       assert.equal(seenPaths.length, 1, `mid-stream failure must not re-issue upstream, saw ${seenPaths.length} calls`);
     } finally {
       server.stop(true);
@@ -317,9 +320,9 @@ describe('true streaming through the candidate pool', () => {
     const { orchestrator } = boot(config, [stubProvider(base)]);
     const { relay, frames } = makeRelaySink();
     try {
-      const result = await orchestrator.process(request('pair'), {}, relay);
+      const result = await processIR(orchestrator, request('pair'), {}, relay);
       assert.equal(hits, 2, 'the head-level 5xx must fail over to the next candidate');
-      assert.equal(result.response.choices[0].message.content, 'second wins');
+      assert.equal(chatOf(result.response).choices[0].message.content, 'second wins');
       assert.equal(result.failoverOccurred, true);
       assert.ok(frames.length >= 1);
     } finally {
@@ -327,7 +330,7 @@ describe('true streaming through the candidate pool', () => {
     }
   });
 
-  it('a wire without a streaming executor keeps the buffered call', async () => {
+  it('a native stream with a JSON fallback still feeds the relay', async () => {
     let body = '';
     const server = serve({
       port: 0,
@@ -338,7 +341,7 @@ describe('true streaming through the candidate pool', () => {
             type: 'message',
             role: 'assistant',
             model: 'up-1',
-            content: [{ type: 'text', text: 'buffered' }],
+            content: [{ type: 'text', text: 'buffered fallback' }],
             stop_reason: 'end_turn',
             usage: { input_tokens: 2, output_tokens: 3 },
           }),
@@ -349,25 +352,25 @@ describe('true streaming through the candidate pool', () => {
     await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const config = makeConfig(base);
-    // Second provider on the Anthropic wire: no createStream anywhere on it.
-    const providers: ProviderConfig[] = [stubProvider(base), { name: 'stub-a', type: 'anthropic', baseUrl: base, apiKey: 'sk' }];
+    const providers: ProviderConfig[] = [stubProvider(base), { name: 'stub-a', type: 'anthropic-messages', baseUrl: base, apiKey: 'sk' }];
     (config.models as any[]).push({
       id: 'stub-a/one',
       provider: 'stub-a',
       upstreamModel: 'up-1',
       tier: 'lite',
       priority: 3,
-      wire: 'anthropic',
+      wire: 'anthropic-messages',
       pricing: { input: 0.1, cacheRead: 0.01, output: 0.2 },
     });
     const { orchestrator } = boot(config, providers);
     const { relay, frames } = makeRelaySink();
     try {
-      const result = await orchestrator.process(request('stub-a/one'), {}, relay);
-      body = JSON.stringify(result.response.choices[0].message.content);
-      assert.equal(body, JSON.stringify('buffered'));
-      assert.equal(frames.length, 0, 'an unstreamable wire must never feed the relay');
-      assert.equal(relay.committed, false);
+      const result = await processIR(orchestrator, request('stub-a/one'), {}, relay);
+      body = JSON.stringify(chatOf(result.response).choices[0].message.content);
+      assert.equal(body, JSON.stringify('buffered fallback'));
+      assert.ok(frames.some((event) => event.type === 'response.output_text.delta'));
+      assert.equal(frames.at(-1)?.type, 'response.completed');
+      assert.equal(relay.committed, true);
     } finally {
       server.stop(true);
     }
@@ -378,8 +381,8 @@ describe('true streaming through the candidate pool', () => {
     const registry = new ProviderRegistry(config, true);
     const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
     const { relay, frames } = makeRelaySink();
-    const result = await orchestrator.process(request('stub/one'), {}, relay);
-    assert.ok(result.response.choices.length >= 1);
+    const result = await processIR(orchestrator, request('stub/one'), {}, relay);
+    assert.ok(chatOf(result.response).choices.length >= 1);
     assert.equal(frames.length, 0);
   });
 
@@ -405,8 +408,8 @@ describe('true streaming through the candidate pool', () => {
     applyStreamingPosture({ upstream: { mode: 'buffered' } });
     const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     try {
-      const result = await orchestrator.process(request('stub/one', false), {}, undefined);
-      assert.equal(result.response.choices[0].message.content, 'buffered');
+      const result = await processIR(orchestrator, request('stub/one', false), {}, undefined);
+      assert.equal(chatOf(result.response).choices[0].message.content, 'buffered');
       const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
       assert.ok(trace, 'the turn must be traced');
       assert.equal(trace.execution.ttftMs, undefined);
@@ -438,8 +441,8 @@ describe('true streaming through the candidate pool', () => {
     applyStreamingPosture({ upstream: { mode: 'stream' } });
     const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     try {
-      const result = await orchestrator.process(request('stub/one', false), {}, undefined);
-      assert.equal(result.response.choices[0].message.content, 'buffered');
+      const result = await processIR(orchestrator, request('stub/one', false), {}, undefined);
+      assert.equal(chatOf(result.response).choices[0].message.content, 'buffered');
       const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
       assert.ok(trace, 'the turn must be traced');
       // The upstream leg ran through the relay (one synthetic chunk), so the
@@ -581,13 +584,13 @@ describe('schema-assertion cascade streaming', () => {
     const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames, staged } = makeFactsSink();
     try {
-      const result = await orchestrator.process(schemaRequest(), {}, relay);
+      const result = await processIR(orchestrator, schemaRequest(), {}, relay);
       // The lite attempt ran and failed the assertion; the escalation served.
       assert.equal(liteHits(), 1);
       assert.equal(result.fallbackOccurred, true);
       assert.ok(result.fallbackReason?.includes('not valid JSON'));
       assert.equal(result.tierUsed, 'plus');
-      assert.equal(result.response.choices[0].message.content, '{"ok":"yes"}');
+      assert.equal(chatOf(result.response).choices[0].message.content, '{"ok":"yes"}');
       // THE fix: the escalation output reached the relay progressively.
       assert.ok(frames.length >= 2, `expected relayed frames, got ${frames.length}`);
       assert.equal(relay.committed, true);
@@ -641,10 +644,10 @@ describe('schema-assertion cascade streaming', () => {
     const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
     try {
-      const result = await orchestrator.process(schemaRequest(), {}, relay);
+      const result = await processIR(orchestrator, schemaRequest(), {}, relay);
       assert.equal(result.fallbackOccurred, false);
       assert.equal(result.tierUsed, 'lite');
-      assert.equal(result.response.choices[0].message.content, '{"ok":"valid"}');
+      assert.equal(chatOf(result.response).choices[0].message.content, '{"ok":"valid"}');
       assert.equal(frames.length, 0, 'a discardable lite attempt must never commit relay bytes');
       assert.equal(relay.committed, false);
       const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
@@ -664,10 +667,10 @@ describe('schema-assertion cascade streaming', () => {
     const { relay, frames } = makeFactsSink();
     applyStreamingPosture({ upstream: { mode: 'buffered' } });
     try {
-      const result = await orchestrator.process(schemaRequest(), {}, relay);
+      const result = await processIR(orchestrator, schemaRequest(), {}, relay);
       assert.equal(result.fallbackOccurred, true);
       assert.equal(result.tierUsed, 'plus');
-      assert.equal(result.response.choices[0].message.content, '{"ok":"yes"}');
+      assert.equal(chatOf(result.response).choices[0].message.content, '{"ok":"yes"}');
       assert.equal(frames.length, 0, 'the rollback switch must keep the escalation leg buffered too');
       assert.equal(plusHits.length, 1);
       assert.equal(result.upstreamStream, 'buffered');
@@ -724,7 +727,7 @@ describe('schema-assertion cascade streaming', () => {
     const { relay, frames } = makeFactsSink();
     try {
       let rejected = false;
-      await orchestrator.process(schemaRequest(), {}, relay).catch(() => {
+      await processIR(orchestrator, schemaRequest(), {}, relay).catch(() => {
         rejected = true;
       });
       assert.ok(rejected, 'a broken escalation stream must surface as a failed turn');
@@ -796,11 +799,11 @@ describe('upstream transport axis (streaming.upstream.mode — ADR-0008 §1)', (
     applyStreamingPosture({ upstream: { mode: 'stream' } });
     try {
       // No relay: this is the shape a stream:false client turns into.
-      const result = await orchestrator.process(askRequest('stub/one', false), {});
+      const result = await processIR(orchestrator, askRequest('stub/one', false), {});
 
       assert.deepEqual(sent, [true], 'the provider leg must be asked for SSE');
-      assert.equal(result.response.choices[0]!.message.content, 'acc-answer', 'chunks accumulated into one response');
-      assert.equal(result.response.usage?.completion_tokens, 2, 'the usage frame survives accumulation');
+      assert.equal(chatOf(result.response).choices[0]!.message.content, 'acc-answer', 'chunks accumulated into one response');
+      assert.equal(chatOf(result.response).usage?.completion_tokens, 2, 'the usage frame survives accumulation');
       assert.equal(result.clientStream, false, 'inbound tag: the client got JSON');
       assert.equal(result.upstreamStream, 'sse', 'outbound tag: the provider leg streamed');
       assert.ok(typeof result.ttftMs === 'number', 'ttft is measured in accumulate mode');
@@ -821,7 +824,7 @@ describe('upstream transport axis (streaming.upstream.mode — ADR-0008 §1)', (
     const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     applyStreamingPosture({ upstream: { mode: 'follow' } });
     try {
-      const result = await orchestrator.process(askRequest('stub/one', false), {});
+      const result = await processIR(orchestrator, askRequest('stub/one', false), {});
       assert.deepEqual(sent, [false], 'no relay on a JSON client → a non-streaming provider call');
       assert.equal(result.upstreamStream, 'buffered');
       assert.equal(result.ttftMs, undefined, 'buffered legs keep no TTFT split');
@@ -854,7 +857,7 @@ describe('SSE idle watchdog (DEFAULT_STREAM_IDLE_TIMEOUT_MS)', () => {
     const { relay } = makeRelaySink();
     try {
       const started = Date.now();
-      const error = await orchestrator.process(request('stub/one', true), {}, relay).then(
+      const error = await processIR(orchestrator, request('stub/one', true), {}, relay).then(
         () => null,
         (err: Error) => err
       );
@@ -895,7 +898,7 @@ describe('streamed wall-clock cap (DEFAULT_STREAM_TIMEOUT_MS)', () => {
     const { relay } = makeRelaySink();
     try {
       const started = Date.now();
-      const error = await orchestrator.process(request('stub/one', true), {}, relay).then(
+      const error = await processIR(orchestrator, request('stub/one', true), {}, relay).then(
         () => null,
         (err: Error) => err
       );

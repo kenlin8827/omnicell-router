@@ -81,9 +81,10 @@ export function maskApiKey(key: string): string {
 }
 
 /**
- * List all configured API keys (with keys optionally masked)
+ * List all configured API keys. Default MASKS the secret — plaintext reads
+ * go through `listApiKeys(false)` on a dedicated reveal path only.
  */
-export function listApiKeys(mask = false): ApiKeyConfig[] {
+export function listApiKeys(mask = true): ApiKeyConfig[] {
   const config = loadConfig();
   const keys = config.apiKeys || [];
   if (!mask) return keys;

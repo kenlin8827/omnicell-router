@@ -39,6 +39,8 @@ import { getProxyCaller } from '../forward-proxy/caller-context.js';
 import { forwardTo, proxyFail, RULE_REJECTED_MESSAGE, type ForwardTarget } from '../forward-proxy/server.js';
 import { resolveUpstreamTls } from '../forward-proxy/upstream-tls.js';
 import { isRuleRejected } from '../forward-proxy/egress.js';
+import { claimPluginWires, isCoreWire } from '../providers/plugin-wires.js';
+import { currentProtocol } from '../providers/protocol.js';
 /**
  * Plugin host: discovers, unpacks and loads plugins. Two types today
  * (ADR-0017): 'model-service' (outbound executors, registry below) and
@@ -193,7 +195,7 @@ export async function buildClientAdapterHostSdk(
     probeVersion: (cmd: string[]) => probeClientVersion(cmd),
     gatewayBaseUrl: (apiKey?: string) => resolveGatewayBaseUrl(apiKey),
     apiKeys: () =>
-      listApiKeys().map((k) => ({ id: k.id, name: k.name, key: k.key, enabled: k.enabled, expiresAt: k.expiresAt })),
+      listApiKeys(false).map((k) => ({ id: k.id, name: k.name, key: k.key, enabled: k.enabled, expiresAt: k.expiresAt })),
     createApiKey: (opts) => {
       const created = createApiKey(opts);
       return created.success && created.data?.key ? { key: created.data.key } : null;
@@ -688,6 +690,11 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
   registry.clear();
   for (const [k, v] of nextRegistry) registry.set(k, v);
   nextRegistry.clear();
+  // The wire vocabulary follows the same commit point: the protocol decision
+  // points (`wireFor`, the dispatch tables, the console vocabulary) read this
+  // set instead of enumerating vendor protocols, so a loaded/removed plugin
+  // adds/removes its wires atomically with the registry swap.
+  claimPluginWires([...registry.values()].flatMap((entry) => entry.view.wires));
   commitGateways();
   commitPluginClientAdapterRebuild();
   lastViews = views;
@@ -806,6 +813,7 @@ export async function setPluginDisabled(id: string, disabled: boolean): Promise<
 
 /** Executor lookup for one wire — the dispatch layer's only entry point. */
 export function getModelServicePluginEntry(wire: string): { plugin: ModelServicePlugin; view: PluginView } | undefined {
+  if (isCoreWire(wire)) return undefined;
   for (const entry of registry.values()) {
     if (entry.view.wires.includes(wire)) return entry;
   }
@@ -1199,7 +1207,7 @@ export async function syncPluginPresets(): Promise<string[]> {
       const result = upsertProviderDef({
         id: preset.providerId,
         name: typeof preset.displayName === 'string' ? preset.displayName : (preset.displayName['en-US'] ?? Object.values(preset.displayName)[0]),
-        npm: preset.npm,
+        npm: currentProtocol(preset.protocol || preset.npm!),
         baseURL: preset.baseUrl,
       });
       if (result.success) {
@@ -1286,7 +1294,7 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         name,
         defaultName,
         logo: logoUrl,
-        npm: preset.npm,
+        npm: currentProtocol(preset.protocol || preset.npm!),
         baseURL: preset.baseUrl,
         custom: true,
         connected: Boolean(store.resolveKey(preset.providerId)?.key),

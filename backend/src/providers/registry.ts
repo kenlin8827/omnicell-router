@@ -1,17 +1,24 @@
 import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
-import { OpenAICompatibleProvider } from './openai-compatible.js';
-import { AnthropicProvider } from './anthropic.js';
-import { ResponsesProvider } from './responses.js';
-import { GoogleProvider } from './google.js';
+import { OpenAIChatProvider } from './executors/openai-chat.js';
+import { AnthropicMessagesProvider } from './executors/anthropic-messages.js';
+import { OpenAIResponsesProvider } from './executors/openai-responses.js';
+import { GoogleGeminiProvider } from './executors/google-gemini.js';
 import { getModelServicePlugin } from '../plugins/host.js';
 import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, TierMemberRule, ComboConfig, ComboModelRef } from '../config/types.js';
 import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts, type EffortMap } from '../types/router.js';
-import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
+import type { CanonicalRequest, CanonicalResponse } from '../ir/types.js';
+import { createEventAccumulator } from '../ir/stream.js';
+import { createToolMarkupScanner, detectToolMarkupLeak, type ToolMarkupLeak } from './compat/tool-markup-leak.js';
+import { createToolMarkupStreamRecovery, recoverToolMarkupInResponse, toolMarkupRecoveryFor } from './compat/tool-markup-recovery.js';
+import { recordFailureEvent } from '../observability/failure-events.js';
+import type { StreamRelay } from '../utils/stream-relay.js';
+import { createPluginProvider } from './executors/plugin-adapter.js';
+import { isPluginWire } from './plugin-wires.js';
+import { canonicalProtocol } from './protocol.js';
 import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type ModelHealthView } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_IDS, type ExpandedMembers } from './member-match.js';
-import { createChunkAccumulator, type StreamRelay } from '../utils/chat-stream.js';
 
 /**
  * Normalize a client-supplied upstream host for provider matching: lowercase,
@@ -40,6 +47,25 @@ function hostOfBaseUrl(baseUrl: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * One line at the observation join point. Residual markup is an UPSTREAM defect
+ * the operator has to act on (wrong endpoint, or a relay whose tool-call parser
+ * is off), so it belongs in the failure ledger. Validated recovered calls have
+ * their own response marker; this row fires only for markup left unrecovered.
+ */
+function reportToolMarkupLeak(leak: ToolMarkupLeak | null, model: ModelRegistration): void {
+  if (!leak) return;
+  recordFailureEvent({
+    model: model.id,
+    provider: model.provider,
+    errorClass: 'UNKNOWN',
+    role: 'serving',
+    message:
+      `upstream returned ${leak.calls} tool-call block(s) as TEXT — the endpoint is not ` +
+      'converting its own tool-call format; point the provider at an API that parses it',
+  });
 }
 
 export class ProviderRegistry {
@@ -99,28 +125,18 @@ export class ProviderRegistry {
     // CredentialStore (ADR-0005/0010) and enter via `registerProvider`; tests
     // may hand extra configs through the third constructor parameter.
     for (const pConfig of providerConfigs) {
+      const wire = canonicalProtocol(pConfig.type);
       this.providerConfigs.set(pConfig.name, pConfig);
       this.providerHosts.set(pConfig.name, hostOfBaseUrl(pConfig.baseUrl));
-      if (pConfig.type === 'anthropic') {
-        this.providers.set(pConfig.name, new AnthropicProvider(pConfig));
-      } else if (pConfig.type === 'responses') {
-        this.providers.set(pConfig.name, new ResponsesProvider(pConfig));
-      } else if (pConfig.type === 'google') {
-        this.providers.set(pConfig.name, new GoogleProvider(pConfig));
-      } else if (pConfig.type === 'qoder' || pConfig.type === 'workbuddy') {
-        const plugin = getModelServicePlugin(pConfig.type);
-        this.providers.set(
-          pConfig.name,
-          plugin
-            ? plugin.createProvider(pConfig)
-            : {
-                name: pConfig.name,
-                createCompletion: async () => {
-                  throw new Error(`Provider '${pConfig.name}' is on the ${pConfig.type} wire but the ${pConfig.type} plugin is not installed (console /plugins)`);
-                },
-              }
-        );
-      } else if (pConfig.type === 'systemone') {
+      if (wire === 'anthropic-messages') {
+        this.providers.set(pConfig.name, new AnthropicMessagesProvider(pConfig));
+      } else if (wire === 'openai-responses') {
+        this.providers.set(pConfig.name, new OpenAIResponsesProvider(pConfig));
+      } else if (wire === 'google-gemini') {
+        this.providers.set(pConfig.name, new GoogleGeminiProvider(pConfig));
+      } else if (wire === 'openai-chat') {
+        this.providers.set(pConfig.name, new OpenAIChatProvider(pConfig));
+      } else if (wire === 'systemone') {
         // Decision-wire providers have NO chat executor (ADR-0008 §7) — the
         // native decision limb calls them through protocols/systemone/native.ts.
         // Register a placeholder that fails any chat dispatch honestly.
@@ -133,7 +149,26 @@ export class ProviderRegistry {
           },
         });
       } else {
-        this.providers.set(pConfig.name, new OpenAICompatibleProvider(pConfig));
+        // Beyond the core wires above, the protocol belongs to a PLUGIN. The
+        // plugin host is the authority on which wires exist, so the decision
+        // ASKS it — a core branch naming a vendor protocol would silently
+        // mis-route every protocol it does not name.
+        const plugin = getModelServicePlugin(wire);
+        if (plugin) {
+          this.providers.set(pConfig.name, createPluginProvider(plugin, pConfig));
+        } else if (isPluginWire(wire)) {
+          // Plugin protocol with no executor: keep the provider addressable and
+          // fail honestly, so the console can point at /plugins instead of the
+          // request dying against the wrong upstream.
+          this.providers.set(pConfig.name, {
+            name: pConfig.name,
+            createCompletion: async () => {
+              throw new Error(`Provider '${pConfig.name}' is on the ${wire} wire but the ${wire} plugin is not installed (console /plugins)`);
+            },
+          });
+        } else {
+          this.providers.set(pConfig.name, new OpenAIChatProvider(pConfig));
+        }
       }
     }
 
@@ -1073,80 +1108,66 @@ export class ProviderRegistry {
    * breaker work (no classification changes here).
    */
   public async execute(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credentialKeyHashPrefix?: string,
-    /**
-       * Progressive-output relay. Present = the caller is able to forward
-       * chunks to the client as they arrive; the registry still returns ONE
-       * complete `ChatCompletionResponse` (accumulated from the chunks), so
-       * every post-turn consumer — breaker, FinOps, rate ledger, trace, session
-       * registration — keeps reading a buffered object and is untouched by
-       * streaming. Absent, or a wire with no streaming executor, or mock mode =
-       * the existing buffered call, byte-for-byte as before.
-       */
-    relay?: StreamRelay
-  ): Promise<ChatCompletionResponse> {
+    relay?: StreamRelay,
+  ): Promise<CanonicalResponse> {
     if (this.mockMode) {
-      // Mock execution never touches a provider wire: the turn is buffered by
-      // construction, and the transport tag says so.
       relay?.onTransport?.('buffered');
       return this.mockExecute(request, model);
     }
-
     const provider = this.providers.get(model.provider);
-    if (!provider) {
-      throw new Error(`Provider '${model.provider}' not found for model '${model.id}'`);
-    }
-
+    if (!provider) throw new Error(`Provider '${model.provider}' not found for model '${model.id}'`);
     const chain = this.credentialChains.get(model.provider);
     let credential: CallCredential | undefined;
     if (credentialKeyHashPrefix !== undefined) {
-      credential = chain?.find((c) => c.keyHashPrefix === credentialKeyHashPrefix);
+      credential = chain?.find((entry) => entry.keyHashPrefix === credentialKeyHashPrefix);
       if (!credential) {
-        // Loud fail (cp-failfast): a selector matching no chain entry means the
-        // caller routes on credential state that is stale w.r.t. this boot's pool
-        // — silently serving the baked key would hide exactly the drift the
-        // keyHash anchor exists to catch.
-        throw new Error(
-          `Unknown credential selector '${credentialKeyHashPrefix}' for provider '${model.provider}'`
-        );
+        throw new Error(`Unknown credential selector '${credentialKeyHashPrefix}' for provider '${model.provider}'`);
       }
     }
-
     try {
+      const recovery = toolMarkupRecoveryFor(request, model, this.providerConfigs.get(model.provider));
       if (relay) {
         const streams = provider.supportsStreaming
           ? provider.supportsStreaming(model)
           : typeof provider.createStream === 'function';
         if (streams) {
-          const accumulate = createChunkAccumulator();
-          // Transport tag first: the attempt IS on the SSE reader from here on,
-          // even if the first chunk never arrives (a dead stream then tags as
-          // 'sse' with no timing, which is the honest reading).
+          const accumulate = createEventAccumulator();
+          const scanner = recovery ? null : createToolMarkupScanner();
+          const rewrite = recovery ? createToolMarkupStreamRecovery(request) : null;
           relay.onTransport?.('sse');
           const stream = await provider.createStream!(request, model, upstreamEventContext, credential);
-          // Drained to the end even when the client has gone away: the turn's
-          // usage frame arrives only with the last chunk, and an abort-triggered
-          // accounting hole would let a client dodge token rate limits by
-          // cancelling repeatedly.
-          for await (const chunk of stream) {
-            accumulate.push(chunk);
-            relay.onChunk(chunk);
+          // Drain for terminal usage even if the client disconnected. Relay and
+          // accounting consume the same event objects without history copies.
+          for await (const event of stream) {
+            const outgoing = rewrite ? rewrite.push(event) : [event];
+            if (scanner && event.type === 'response.output_text.delta') scanner.push(event.text);
+            for (const item of outgoing) {
+              accumulate.push(item);
+              await relay.onChunk(item);
+            }
           }
-          return accumulate.finish();
+          for (const item of rewrite?.finish() ?? []) {
+            accumulate.push(item);
+            await relay.onChunk(item);
+          }
+          const accumulated = accumulate.finish();
+          const finished = rewrite ? rewrite.finishResponse(accumulated) : accumulated;
+          reportToolMarkupLeak(rewrite ? finished.toolMarkupLeak ?? null : scanner!.leak(), model);
+          return finished;
         }
-        // No streaming executor for this wire — fall through to the buffered
-        // call. Legal precisely because nothing has been forwarded yet: a relay
-        // that has committed bytes can never take this path (createStream would
-        // have been reached first, and its failure surfaces as an error).
         relay.onTransport?.('buffered');
       }
-      return await provider.createCompletion(request, model, upstreamEventContext, credential);
+      const buffered = await provider.createCompletion(request, model, upstreamEventContext, credential);
+      const finished = recovery ? recoverToolMarkupInResponse(buffered, request) : buffered;
+      const leak = recovery ? finished.toolMarkupLeak ?? null : detectToolMarkupLeak(finished);
+      if (!leak) return finished;
+      reportToolMarkupLeak(leak, model);
+      return { ...finished, toolMarkupLeak: leak };
     } catch (err) {
-      // Attribution stamp: selector hit → that credential; no selector → the chain
-      // head, which IS the baked key boot executed with (registry invariant).
       const used = credential ?? chain?.[0];
       if (used && err && (typeof err === 'object' || typeof err === 'function')) {
         (err as { usedCredentialKeyHashPrefix?: string }).usedCredentialKeyHashPrefix = used.keyHashPrefix;
@@ -1155,86 +1176,48 @@ export class ProviderRegistry {
     }
   }
 
-  /**
-   * High-fidelity mock executor for automated testing & offline demos
-   */
   private async mockExecute(
-    request: ChatCompletionRequest,
-    model: ModelRegistration
-  ): Promise<ChatCompletionResponse> {
-    const reqAny = request as any;
-    if (reqAny.__simulate_error_model__ === model.id || reqAny.__simulate_error_all__) {
+    request: CanonicalRequest,
+    model: ModelRegistration,
+  ): Promise<CanonicalResponse> {
+    const controls = request as CanonicalRequest & Record<string, any>;
+    if (controls.__simulate_error_model__ === model.id || controls.__simulate_error_all__) {
       let shouldThrow = true;
-      if (typeof reqAny.__simulate_fail_times__ === 'number') {
-        if (reqAny.__simulate_fail_times__ > 0) {
-          reqAny.__simulate_fail_times__--;
-          shouldThrow = true;
-        } else {
-          shouldThrow = false;
-        }
+      if (typeof controls.__simulate_fail_times__ === 'number') {
+        shouldThrow = controls.__simulate_fail_times__-- > 0;
       }
-
       if (shouldThrow) {
-        const status = reqAny.__simulate_status__ || 503;
-        const errorMsg = reqAny.__simulate_message__ || `Simulated error for model ${model.id} (Status ${status})`;
+        const status = controls.__simulate_status__ || 503;
+        const message = controls.__simulate_message__ || `Simulated error for model ${model.id} (Status ${status})`;
         throw new UpstreamError({
-          message: errorMsg,
+          message,
           status,
-          errorBody: JSON.stringify({ error: { message: errorMsg, code: reqAny.__simulate_code__ } }),
+          errorBody: JSON.stringify({ error: { message, code: controls.__simulate_code__ } }),
           provider: model.provider,
           modelId: model.id,
-          retryAfterSeconds: reqAny.__simulate_retry_after__,
+          retryAfterSeconds: controls.__simulate_retry_after__,
         });
       }
     }
-
-    const isJsonRequested =
-      request.response_format?.type === 'json_object' ||
-      request.response_format?.type === 'json_schema' ||
-      /json/i.test(JSON.stringify(request.messages));
-
-    let content = 'This is a standard mock response from ' + model.id;
-
+    const format = request.text?.format?.type;
+    const isJsonRequested = format === 'json_object' || format === 'json_schema' || /json/i.test(JSON.stringify(request.input));
+    let content = `This is a standard mock response from ${model.id}`;
     if (isJsonRequested) {
-      // Simulate lite tier occasionally returning slightly malformed JSON or valid JSON
-      if (model.tier === 'lite' && (request as any).__simulate_malformed__) {
-        content = '{ "name": "sample", "invalid_json_trailing": ';
-      } else {
-        content = JSON.stringify({
-          status: 'success',
-          tier: model.tier,
-          model: model.id,
-          data: {
-            title: 'Mock Structured Output',
-            category: 'test',
-          },
+      content = model.tier === 'lite' && controls.__simulate_malformed__
+        ? '{ "name": "sample", "invalid_json_trailing": '
+        : JSON.stringify({
+          status: 'success', tier: model.tier, model: model.id,
+          data: { title: 'Mock Structured Output', category: 'test' },
         });
-      }
     }
-
     return {
       id: `mock-chatcmpl-${Date.now()}`,
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
+      createdAt: Math.floor(Date.now() / 1000),
       model: model.id,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content,
-          },
-          finish_reason: 'stop',
-        },
-      ],
-      usage: {
-        prompt_tokens: 150,
-        completion_tokens: 80,
-        total_tokens: 230,
-        prompt_tokens_details: {
-          cached_tokens: 50,
-        },
-      },
+      status: 'completed',
+      reason: 'stop',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'text', text: content }] }],
+      usage: { inputTokens: 150, outputTokens: 80, totalTokens: 230, cachedInputTokens: 50 },
     };
   }
 }

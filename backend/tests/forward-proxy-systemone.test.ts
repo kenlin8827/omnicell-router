@@ -122,7 +122,7 @@ function startChatUpstream(received: any[]): ReturnType<typeof serve> {
 
 function chatProviderConfig(port: number): { providers: any[]; models: any[] } {
   return {
-    providers: [{ name: 'native-test', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-test' }],
+    providers: [{ name: 'native-test', type: 'openai-chat', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-test' }],
     models: [
       {
         id: 'native-test/jev',

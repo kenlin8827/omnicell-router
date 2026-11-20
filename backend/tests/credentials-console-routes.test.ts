@@ -489,7 +489,7 @@ describe('POST/PATCH /opencode/providers — implicit auth.json side-write suppr
     expect(readOcrFile(p).providers.myprov[0].key).toBe('sk-created-key');
   });
 
-  it('create inline mode — {env:VAR} translates to the env declaration, never a store key', async () => {
+  it('create with apiKeyInline is refused — credentials stay in the bound store', async () => {
     const p = credPaths();
     bindStore(p);
     const res = await app.inject({
@@ -497,15 +497,9 @@ describe('POST/PATCH /opencode/providers — implicit auth.json side-write suppr
       url: '/api/admin/opencode/providers',
       payload: { id: 'myprov', baseURL: 'https://x.test/v1', apiKey: '{env:MY_KEY}', apiKeyInline: true },
     });
-    expect(res.statusCode).toBe(200);
-    const jsonc: any = readJsoncProviders(p);
-    // P4: a literal `{env:X}` string is not a store key — the writer translates
-    // it to env:["X"] and drops the fake inline key.
-    expect(jsonc.myprov.env).toEqual(['MY_KEY']);
-    expect(jsonc.myprov.settings?.apiKey).toBeUndefined();
-    // nothing landed in the credential store for an inline key
-    expect(readOcrFile(p)?.providers?.myprov ?? []).toHaveLength(0);
-    expect(fetchCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reasonCode).toBe('api_key_inline_forbidden');
+    expect(readJsoncProviders(p).myprov).toBeUndefined();
   });
 
   it('update with key routes to the local store, auth.json stays absent', async () => {
@@ -1701,7 +1695,7 @@ describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () =>
     id, name: id, custom: true, connected: false, sources, models: [],
   });
   const preset = (id: string, webLogin: boolean, authTypes?: ('webLogin' | 'key')[]) => ({
-    id, name: id, defaultName: id, npm: '@ai-sdk/workbuddy', baseURL: 'https://wb.example',
+    id, name: id, defaultName: id, npm: 'workbuddy', baseURL: 'https://wb.example',
     custom: true, connected: false, webLogin, authTypes, sources: ['service'],
   });
   const catalogRows = async () => {

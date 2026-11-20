@@ -1,23 +1,25 @@
 /**
- * The npm SDK vocabulary — ONE table, served to the console over
- * `/api/admin/opencode/npm-vocabulary` so every UI surface (custom-provider
- * form dropdown, model-level npm editor, display-name mapping) renders the
+ * The OCR protocol vocabulary — ONE table, served to the console over
+ * `/api/admin/opencode/protocol-vocabulary` so every UI surface (custom-provider
+ * form dropdown, model-level protocol editor, display-name mapping) renders the
  * SAME list in the SAME order without keeping a second copy in frontend code.
  *
+ * OCR is decoupled from SDK packages: these are protocol ids. The opencode
+ * integration owns the separate SDK-package mapping table
+ * (`opencode/provider-package.ts`).
+ *
  * Consistency contracts (pinned by vocabulary.test.ts):
- *   - `wireFor(alias) === wireFor(package)` for every entry — the v1 alias and
- *     the opencode v2 package MUST resolve to the same wire;
- *   - every opencode v2 segment here is recognized by wire.ts's
- *     OPENCODE_V2_SEGMENT_WIRES (no invented segments);
- *   - `order` is the UI dropdown order: chat-wire majors first, the special
- *     wires (decision / SDK-side construction) after.
+ *   - every entry resolves through wire.ts (no invented wire kinds);
+ *   - `order` is the UI dropdown order: chat-wire majors first.
  */
 import { wireFor } from './wire.js';
+import { canonicalProtocol } from './protocol.js';
+import { claimedPluginWires } from './plugin-wires.js';
 
-export interface NpmVocabularyEntry {
-  /** The v1 alias users type (`@ai-sdk/<x>`). */
+export interface ProtocolVocabularyEntry {
+  /** Canonical protocol id (also the value rendered in the dropdown). */
   alias: string;
-  /** The opencode v2 `package` shape stored in the defs file (ADR-0010). */
+  /** Same id — kept so readers can address either field without a second map. */
   package: string;
   /** Resolved wire — informational for the UI, authoritative in wireFor(). */
   wire: string;
@@ -25,40 +27,71 @@ export interface NpmVocabularyEntry {
   order: number;
 }
 
-const RAW_ENTRIES: Omit<NpmVocabularyEntry, 'wire'>[] = [
-  { alias: '@ai-sdk/openai-compatible', package: '@opencode/ai/providers/openai-compatible', order: 10 },
-  { alias: '@ai-sdk/anthropic', package: '@opencode/ai/providers/anthropic', order: 20 },
-  { alias: '@ai-sdk/openai', package: '@opencode/ai/providers/openai', order: 30 },
-  { alias: '@ai-sdk/google', package: '@opencode/ai/providers/google', order: 40 },
-  // The TypeSafe decision alias is OFFERED. Its opencode v2 segment is real on
-  // the read side (wire.ts maps it to wire `systemone`), so a def authored from
-  // this npm keeps the decision wire end to end. The client copy is still made
-  // loadable by CLIENT_PACKAGE_FALLBACK (def-materialize.ts) — offering the
-  // alias must not depend on the client having shipped the segment.
-  { alias: '@ai-sdk/typesafe-ai', package: '@opencode/ai/providers/typesafe', order: 50 },
-  // Unroutable packages (@ai-sdk/azure, @ai-sdk/amazon-bedrock, …vertex, …bedrock
-  // — SDK-side URL construction / SigV4 signing, wire 'unroutable') are
-  // deliberately NOT offered: suggesting them would invite authoring a def the
-  // router can never serve. The write-side mapping in user-config.ts keeps
-  // normalizing existing defs that already use those aliases.
-  // Catalog-only chat packages (plain openai wire) — kept for the dropdown's
-  // offline fallback completeness; they carry no special wire semantics.
-  { alias: '@ai-sdk/xai', package: '@ai-sdk/xai', order: 80 },
-  { alias: '@ai-sdk/mistral', package: '@ai-sdk/mistral', order: 90 },
-
-  // Vendored Qoder wire (model-service plugin) — baseURL is the service
-  // gateway, key = the account token.
-  { alias: '@ai-sdk/qoder', package: '@opencode/ai/providers/qoder', order: 95 },
-  { alias: '@ai-sdk/workbuddy', package: '@opencode/ai/providers/workbuddy', order: 96 },
+const RAW_ENTRIES: Omit<ProtocolVocabularyEntry, 'wire'>[] = [
+  { alias: 'openai-chat', package: 'openai-chat', order: 10 },
+  { alias: 'anthropic-messages', package: 'anthropic-messages', order: 20 },
+  { alias: 'openai-responses', package: 'openai-responses', order: 30 },
+  { alias: 'google-gemini', package: 'google-gemini', order: 40 },
+  // The TypeSafe decision wire is OFFERED: a def authored with it keeps the
+  // decision wire end to end. The client copy is made loadable by
+  // CLIENT_PACKAGE_FALLBACK (def-materialize.ts) — offering the protocol must
+  // not depend on the client having shipped a matching SDK module.
+  { alias: 'systemone', package: 'systemone', order: 50 },
+  // Unroutable protocols (azure / bedrock / vertex — SDK-side URL construction
+  // / SigV4 signing, wire 'unroutable') are deliberately NOT offered:
+  // suggesting them would invite authoring a def the router can never serve.
+  //
+  // Plugin-owned protocols are NOT listed here: no core file names a vendor
+  // protocol, because the offering is derived from what an INSTALLED plugin
+  // claims (see `protocolVocabulary`).
 ];
 
-export const NPM_VOCABULARY: NpmVocabularyEntry[] = RAW_ENTRIES.map((e) => ({
-  ...e,
-  wire: wireFor(e.alias),
-}));
+/** First order value handed to plugin-owned protocols — after the last static
+ *  entry, so the kind split stays visible in the dropdown. */
+const PLUGIN_ORDER_BASE = 95;
 
-/** opencode v2 `package` (or passthrough npm) → the display v1 alias. */
-export function vocabularyAliasFor(npm: string): string {
-  const hit = NPM_VOCABULARY.find((e) => e.package === npm || e.alias === npm);
-  return hit ? hit.alias : npm;
+/**
+ * The offered protocol table, rebuilt per call.
+ *
+ * Static core protocols plus every wire a LOADED model-service plugin claims
+ * (bare protocol id = wire id). Deriving the plugin half from the live registry
+ * is what keeps the dropdown honest in both directions: a protocol nobody can
+ * execute is never suggested, and a newly installed plugin becomes selectable
+ * with no core edit. Uninstalling drops the rows back out.
+ */
+export function protocolVocabulary(): ProtocolVocabularyEntry[] {
+  const entries: ProtocolVocabularyEntry[] = RAW_ENTRIES.map((e) => ({
+    ...e,
+    wire: wireFor(e.alias),
+  }));
+  const taken = new Set(entries.map((e) => e.alias));
+  let order = PLUGIN_ORDER_BASE;
+  for (const wire of claimedPluginWires()) {
+    // A plugin wire is offered under its own protocol id and only when that id
+    // resolves to itself (a plugin cannot annex a core protocol).
+    if (taken.has(wire) || wireFor(wire) !== wire) continue;
+    taken.add(wire);
+    entries.push({ alias: wire, package: wire, wire, order: order++ });
+  }
+  return entries;
+}
+
+/**
+ * Protocol id that SPEAKS a resolved wire — the display inverse of `wireFor`.
+ * The playground's per-turn chip and the console's session column both name the
+ * OUTBOUND protocol, but execution only knows the wire; this maps it back
+ * through the same offered table so the two surfaces print one id.
+ *
+ * Fail-open: a wire with no offered protocol (a plugin wire whose plugin is not
+ * installed, `unroutable`) keeps its own id — a chip must never invent a
+ * protocol the gateway cannot execute.
+ */
+export function protocolForWire(wire: string): string {
+  // Old traces/configs stored the retired short wire spellings; normalize them
+  // so a legacy row still prints the SAME protocol id the current row would.
+  const canonical = canonicalProtocol(wire);
+  for (const entry of protocolVocabulary()) {
+    if (entry.wire === canonical) return entry.alias;
+  }
+  return wire;
 }

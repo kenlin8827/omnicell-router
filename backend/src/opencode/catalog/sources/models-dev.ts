@@ -1,5 +1,6 @@
 import { writeCacheFile, readCacheFile } from '../cache.js';
 import { CATALOG_USER_AGENT } from '../constants.js';
+import { protocolIdFromNpm } from '../../provider-package.js';
 import type { CatalogModel, CatalogProviderRecord, CatalogSourceState } from '../types.js';
 
 /**
@@ -28,7 +29,7 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
         models.push({
           id: mid,
           name: m.name || undefined,
-          // model-level SDK/protocol override (see CatalogModel.npm doc)
+          // model-level protocol override; SDK package names are translated below
           npm: m.provider && typeof m.provider === 'object' ? m.provider.npm || undefined : undefined,
           attachment: m.attachment === true || undefined,
           reasoning: m.reasoning === true || undefined,
@@ -80,7 +81,18 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
   }
 
   list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  return list;
+  return withProtocolIds(list);
+}
+
+/** SDK package strings on a catalog record become OCR protocol ids.
+ *  Idempotent: a record that already holds protocol ids is unchanged in value.
+ *  Cache replays call this too — those files skip normalizeModelsDev. */
+export function withProtocolIds(providers: CatalogProviderRecord[]): CatalogProviderRecord[] {
+  return providers.map((p) => ({
+    ...p,
+    npm: protocolIdFromNpm(p.npm),
+    models: p.models.map((m) => (m.npm ? { ...m, npm: protocolIdFromNpm(m.npm) } : m)),
+  }));
 }
 
 /**
@@ -97,7 +109,7 @@ export async function syncModelsDev(
   const fresh = cached && Date.now() - cached.fetchedAt < 24 * 3600 * 1000;
 
   if (!force && fresh && cached) {
-    return { origin: 'cache', providers: cached.data };
+    return { origin: 'cache', providers: withProtocolIds(cached.data) };
   }
 
   try {
@@ -110,7 +122,7 @@ export async function syncModelsDev(
     if (providers.length > 0) writeCacheFile(cacheName, providers);
     return { origin: providers.length > 0 ? 'network' : 'none', providers };
   } catch {
-    if (cached) return { origin: 'stale', providers: cached.data };
+    if (cached) return { origin: 'stale', providers: withProtocolIds(cached.data) };
     return { origin: 'none', providers: [] };
   }
 }

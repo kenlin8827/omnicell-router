@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream';
 import type { ModelAccessConfig } from '../config/types.js';
 import type { ProcessContext } from '../pipeline/orchestrator.js';
-import type { ChatCompletionChunk, ChatCompletionRequest } from '../types/openai.js';
+import type { CanonicalRequest, StreamEvent } from '../ir/types.js';
 import type { ExecutionResult } from '../types/router.js';
 
 /**
@@ -83,7 +83,8 @@ export interface TransportContext {
     stream: Readable;
   }): void;
   beginSse(headers: Record<string, string>): void;
-  writeSseChunk(chunk: string): void;
+  /** A Promise applies transport backpressure; void keeps in-memory test sinks synchronous. */
+  writeSseChunk(chunk: string): void | Promise<void>;
   endSse(): void;
   /**
    * Client-abort detection. Bun never fires req 'res''close'/'aborted'
@@ -118,7 +119,7 @@ export interface SurfacePathContext {
 
 /** Parse outcome: exactly one of `request` (valid) or `error` (400 message) is set. */
 export interface SurfaceParseResult {
-  request?: ChatCompletionRequest;
+  request?: CanonicalRequest;
   error?: string;
   /**
    * Stable machine code for the error envelope (`error.code`). Wires whose
@@ -155,7 +156,7 @@ export interface ChatChunkContext {
  * impossible to hand the orchestrator a FastifyRequest-shaped context.
  */
 export interface ChatSurface {
-  readonly wire: 'chat' | 'anthropic' | 'responses';
+  readonly wire: 'openai-chat' | 'anthropic-messages' | 'openai-responses';
   readonly exec: 'chat-pipeline';
   readonly capture: true;
   readonly routePath: string;
@@ -172,7 +173,7 @@ export interface ChatSurface {
    * even when its upstream could stream, because the pipeline only offers a
    * relay when the surface can encode chunks.
    */
-  encodeChunk?(chunk: ChatCompletionChunk, ctx: ChatChunkContext): string | null;
+  encodeChunk?(event: StreamEvent, ctx: ChatChunkContext): string | null;
   /** Runs BEFORE the first response byte on the buffered leg (responses: RespStore.append). */
   afterResult?(result: ExecutionResult, state: unknown): void;
   /**

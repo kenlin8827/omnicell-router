@@ -3,7 +3,7 @@ import { setPoolRefreshHook } from './providers/pool-refresh.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { refreshDirectPool } from './providers/boot-direct.js';
-import { DispatchingProvider } from './providers/dispatch.js';
+import { DispatchingProvider } from './providers/executors/dispatch.js';
 import { buildDirectPool } from './providers/boot-direct.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';

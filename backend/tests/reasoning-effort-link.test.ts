@@ -1,8 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAnthropicPayload } from '../src/providers/anthropic.js';
-import { buildGooglePayload } from '../src/providers/google.js';
-import { buildResponsesPayload } from '../src/providers/responses.js';
+import { buildAnthropicPayload, buildGooglePayload, buildResponsesPayload } from './helpers/ir.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
 import { ReasoningEffort } from '../src/types/router.js';
 

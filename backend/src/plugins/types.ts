@@ -1,7 +1,9 @@
 import type http from 'node:http';
 import type net from 'node:net';
 
-import type { LLMProvider, CallCredential } from '../providers/base.js';
+import type { CallCredential, UpstreamEventContext } from '../providers/base.js';
+import type { ModelRegistration } from '../config/types.js';
+import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import type { ClientAdapter } from '../cli/clients/base.js';
 import type { QuotaAdapterContext, QuotaProbeOutcome } from '../quota/types.js';
 import type { ProviderConfig } from '../config/types.js';
@@ -199,7 +201,14 @@ export interface PluginProviderPreset {
   providerId: string;
   /** Human label — plain string or locale map (same contract as description). */
   displayName: string | Record<string, string>;
-  npm: string;
+  /**
+   * OCR protocol id (`openai-chat`, `anthropic-messages`, `systemone`, or a bare
+   * plugin wire such as `qoder`). Never an SDK package. Older plugin builds
+   * may still send the retired spelling on `npm` below.
+   */
+  protocol: string;
+  /** Retired spelling of `protocol`, accepted from older plugin builds. */
+  npm?: string;
   baseUrl: string;
   description?: string;
   /** How-to hint shown above the key form in the console add-credential
@@ -216,9 +225,26 @@ export interface PluginProviderPreset {
  *  form always renders, the web tab appears after it when webLogin exists). */
 export type PluginAuthType = 'webLogin' | 'key';
 
+/** Chat is the versioned external plugin contract, never the core IR. */
+export interface ChatPluginProvider {
+  name: string;
+  createCompletion(
+    request: ChatCompletionRequest,
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential,
+  ): Promise<ChatCompletionResponse>;
+  createStream?(
+    request: ChatCompletionRequest,
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential,
+  ): Promise<AsyncIterable<ChatCompletionChunk>>;
+}
+
 export interface ModelServicePlugin {
-  /** Build the chat executor for one wire the plugin declared. */
-  createProvider(config: ProviderConfig): LLMProvider;
+  /** Build the versioned Chat executor for one declared plugin wire. */
+  createProvider(config: ProviderConfig): ChatPluginProvider;
   /** Model-catalog pull in PullResult shape (auto-pull.ts contract). */
   pullModels?(id: string, opts: { pattern?: string; ids?: string[]; dryRun?: boolean }): Promise<{
     httpStatus: number;
@@ -632,4 +658,4 @@ export interface PluginView {
   error?: string;
 }
 
-export type { LLMProvider, CallCredential };
+export type { CallCredential };

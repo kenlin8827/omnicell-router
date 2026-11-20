@@ -80,7 +80,7 @@ describe('OpenCode user-config (provider defs file)', () => {
     expect(fs.existsSync(getProviderDefsPath())).toBe(true);
 
     const parsed: any = readProviderDefsFile();
-    expect(parsed.providers['home-lab'].package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(parsed.providers['home-lab'].package).toBe('openai-chat');
     expect(parsed.providers['home-lab'].settings.baseURL).toBe('http://192.168.1.10:20180/v1');
     expect(parsed.providers['home-lab'].npm).toBeUndefined();
     // auth.json is never a sink on any binding.

@@ -7,6 +7,7 @@ import { RouterConfig } from '../src/config/types.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
 import type { ReasoningEffort } from '../src/types/router.js';
 import { injectWarnThrottle } from '../src/observability/warn-throttle.js';
+import { processIR } from './helpers/ir.js';
 
 // ---------------------------------------------------------------------------
 // End-to-end: orchestrator really rewires the request when the pool can't
@@ -32,7 +33,7 @@ function configWithEffortTiers(
       tier: m.tier,
       pricing: { input: 1, output: 2, cacheRead: 0.5 },
       supportedReasoningEfforts: m.supportedReasoningEfforts,
-      wire: 'openai',
+      wire: 'openai-chat',
     })),
   };
 }
@@ -51,7 +52,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
       messages: [{ role: 'user', content: 'explain something hard' }],
       reasoning_effort: 'xhigh',
     };
-    const result = await orch.process(req);
+    const result = await processIR(orch, req);
     assert.strictEqual(result.requestedEffort, 'xhigh');
     assert.strictEqual(result.actualEffort, 'high', 'must downgrade to the only supported level');
     assert.strictEqual(result.reasoningDegraded, true);
@@ -69,7 +70,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     const reg = new ProviderRegistry(cfg, true);
     const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
 
-    const result = await orch.process({
+    const result = await processIR(orch, {
       model: 'auto',
       messages: [{ role: 'user', content: 'plan a trip' }],
       reasoning_effort: 'high',
@@ -89,7 +90,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     ]);
     const reg = new ProviderRegistry(cfg, true);
     const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
-    const result = await orch.process({
+    const result = await processIR(orch, {
       model: 'auto',
       messages: [{ role: 'user', content: 'hi' }],
     } as ChatCompletionRequest);
@@ -108,7 +109,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     ]);
     const reg = new ProviderRegistry(cfg, true);
     const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
-    const result = await orch.process({
+    const result = await processIR(orch, {
       model: 'auto',
       messages: [{ role: 'user', content: 'hi' }],
       reasoning_effort: 'none',
@@ -128,7 +129,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     const reg = new ProviderRegistry(cfg, true);
     const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
 
-    const result = await orch.process({
+    const result = await processIR(orch, {
       model: 'auto',
       messages: [{ role: 'user', content: 'explain something hard' }],
       reasoning_effort: 'xhigh',
@@ -142,7 +143,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
 
     // An omitted reasoning_effort must stay absent on the trace too (never
     // synthesized as 'none' — the same distinction ExecutionResult keeps).
-    const plain = await orch.process({
+    const plain = await processIR(orch, {
       model: 'auto',
       messages: [{ role: 'user', content: 'hi there' }],
     } as ChatCompletionRequest);
@@ -164,7 +165,7 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     const reg = new ProviderRegistry(cfg, true);
     const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
 
-    const result = await orch.process({
+    const result = await processIR(orch, {
       model: 'pinned-high',
       messages: [{ role: 'user', content: 'test' }],
       reasoning_effort: 'xhigh',
@@ -195,7 +196,7 @@ describe('End-to-End: thinking-effort warn is throttled', () => {
     });
     try {
       for (let i = 0; i < 100; i++) {
-        await orch.process({
+        await processIR(orch, {
           model: 'auto',
           messages: [{ role: 'user', content: `request ${i}` }],
           reasoning_effort: 'xhigh',

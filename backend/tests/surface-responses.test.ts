@@ -4,8 +4,10 @@ import { responsesSurface } from '../src/surfaces/responses.js';
 import { runChatSurface } from '../src/surfaces/chat-pipeline.js';
 import { SURFACES } from '../src/surfaces/table.js';
 import type { TransportContext } from '../src/surfaces/types.js';
-import type { ChatCompletionRequest } from '../src/types/openai.js';
+import type { CanonicalRequest } from '../src/ir/types.js';
 import type { ExecutionResult } from '../src/types/router.js';
+import { responseIR } from './helpers/ir.js';
+import { IrUnsupportedError } from '../src/ir/errors.js';
 
 /**
  * Surface-level unit tests for the responses wire (contract step 3b):
@@ -52,9 +54,9 @@ function makeFakeTransport() {
   return { t, calls, ops: () => calls.map((c) => c.op), sent };
 }
 
-function stubResult(modelUsed: string, response: unknown, sessionId = 'sess-1'): ExecutionResult {
+function stubResult(modelUsed: string, response: ExecutionResult['response'], sessionId = 'sess-1'): ExecutionResult {
   return {
-    response: response as never,
+    response,
     tierUsed: 'lite',
     modelUsed,
     fallbackOccurred: false,
@@ -64,19 +66,12 @@ function stubResult(modelUsed: string, response: unknown, sessionId = 'sess-1'):
   };
 }
 
-const okResponse = {
-  id: 'chatcmpl-1',
-  object: 'chat.completion',
-  created: 1,
-  model: 'mock-1',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-};
+const okResponse = responseIR('ok', { id: 'resp-1', createdAt: 1, model: 'mock-1' });
 
 function makeStubOrchestrator(behavior: { result?: ExecutionResult; throw?: unknown } = {}) {
-  const processed: Array<{ request: ChatCompletionRequest }> = [];
+  const processed: Array<{ request: CanonicalRequest }> = [];
   const orchestrator = {
-    process: async (request: ChatCompletionRequest) => {
+    process: async (request: CanonicalRequest) => {
       processed.push({ request });
       if (behavior.throw !== undefined) throw behavior.throw;
       return behavior.result ?? stubResult('mock-1', okResponse);
@@ -88,9 +83,13 @@ function makeStubOrchestrator(behavior: { result?: ExecutionResult; throw?: unkn
 const sseData = (chunk: string): Record<string, unknown> =>
   JSON.parse(chunk.split('\n')[1]!.replace('data: ', ''));
 
+/** Protocol event frames only — buffered encodeStream trails an ocr-summary comment. */
+const sseEventChunks = (chunks: string[]): string[] =>
+  chunks.filter((chunk) => !chunk.startsWith(': ocr-summary'));
+
 describe('responses surface — metadata', () => {
   it('matches the contract §1 entry', () => {
-    assert.equal(responsesSurface.wire, 'responses');
+    assert.equal(responsesSurface.wire, 'openai-responses');
     assert.equal(responsesSurface.exec, 'chat-pipeline');
     assert.equal(responsesSurface.capture, true);
     assert.equal(responsesSurface.routePath, '/v1/responses');
@@ -100,7 +99,7 @@ describe('responses surface — metadata', () => {
 });
 
 describe('responses surface — parse 400 texts', () => {
-  it('missing input → exact text through the wire envelope (no code)', async () => {
+  it('missing input → exact text through the wire envelope', async () => {
     const { t, sent, ops } = makeFakeTransport();
     const { orchestrator, processed } = makeStubOrchestrator();
     await runChatSurface(t, responsesSurface, orchestrator, { model: 'auto' });
@@ -110,15 +109,111 @@ describe('responses surface — parse 400 texts', () => {
     assert.equal(send.status, 400);
     assert.equal(
       JSON.stringify(send.payload),
-      '{"error":{"message":"Invalid request: \\"input\\" is required.","type":"invalid_request_error"}}'
+      '{"error":{"message":"Invalid request: \\"input\\" is required.","type":"invalid_request_error","code":"unsupported_parameter"}}'
     );
     assert.equal(processed.length, 0);
   });
 
-  it('unknown item type throws through with its own message; empty resolution pinned', () => {
-    assert.equal(responsesSurface.parse({ model: 'auto', input: [{ type: 'bogus' }] }).error, 'Unsupported input item type: "bogus"');
-    assert.equal(responsesSurface.parse({ model: 'auto', input: [] }).error, 'Invalid request: "input" resolved to an empty message list.');
+  it('preserves unknown same-carrier items and pins empty resolution', () => {
+    const parsed = responsesSurface.parse({ model: 'auto', input: [{ type: 'bogus', value: 1 }] });
+    assert.equal(parsed.error, undefined);
+    assert.deepEqual(parsed.request?.input[0], { type: 'extension', protocol: 'openai-responses', payload: { type: 'bogus', value: 1 } });
+    assert.equal(responsesSurface.parse({ model: 'auto', input: [] }).error, 'Invalid request: "input" resolved to an empty item list.');
     assert.equal(responsesSurface.parse(null).error, 'Invalid request: "input" is required.');
+  });
+
+  it('forwards tools/tool_choice/parallel_tool_calls in canonical IR', () => {
+    const parsed = responsesSurface.parse({
+      model: 'auto',
+      input: 'go',
+      tools: [{ type: 'function', name: 'read', parameters: { type: 'object' }, strict: true }],
+      tool_choice: { type: 'function', name: 'read' },
+      parallel_tool_calls: false,
+    });
+    assert.equal(parsed.error, undefined);
+    const request = parsed.request!;
+    assert.deepEqual(request.tools?.[0], {
+      type: 'function', function: { name: 'read', parameters: { type: 'object' }, strict: true },
+    });
+    assert.deepEqual(request.toolChoice, { type: 'function', name: 'read' });
+    assert.equal(request.parallelToolCalls, false);
+  });
+
+  it('returns a parse error for a malformed file part instead of throwing', () => {
+    const parsed = responsesSurface.parse({
+      model: 'auto',
+      input: [{ role: 'user', content: [{ type: 'input_file' }] }],
+    });
+    assert.match(parsed.error ?? '', /input_file/);
+  });
+
+  it('preserves a built-in tool for capability validation at the provider boundary', () => {
+    const parsed = responsesSurface.parse({
+      model: 'auto',
+      input: 'go',
+      tools: [{ type: 'web_search_preview' }],
+    });
+    assert.equal(parsed.error, undefined);
+    assert.deepEqual(parsed.request?.tools?.[0], { type: 'builtin', kind: 'web_search_preview', config: {} });
+  });
+
+  it('emits the request echo and truncation status through encodeJson', () => {
+    const parsed = responsesSurface.parse({
+      model: 'auto',
+      input: 'go',
+      instructions: 'be terse',
+      temperature: 0.3,
+      max_output_tokens: 64,
+      tool_choice: 'required',
+      parallel_tool_calls: false,
+    });
+    assert.equal(parsed.error, undefined);
+    const response = responseIR('partial', {
+      id: 'resp-up', createdAt: 1, model: 'up', status: 'incomplete', reason: 'length',
+      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+    });
+    const body = responsesSurface.encodeJson(stubResult('served', response), parsed.state) as Record<string, unknown>;
+    assert.equal(body.instructions, 'be terse');
+    assert.equal(body.temperature, 0.3);
+    assert.equal(body.max_output_tokens, 64);
+    assert.equal(body.tool_choice, 'required');
+    assert.equal(body.parallel_tool_calls, false);
+    assert.equal(body.status, 'incomplete');
+    assert.deepEqual(body.incomplete_details, { reason: 'max_output_tokens' });
+    assert.equal(body.error, null);
+  });
+
+  it('maps text.format, metadata and service_tier into the canonical request', () => {
+    const parsed = responsesSurface.parse({
+      model: 'auto',
+      input: 'go',
+      text: { format: { type: 'json_schema', name: 'x', schema: { type: 'object' }, strict: true } },
+      metadata: { tenant: 'a' },
+      service_tier: 'flex',
+      prompt_cache_key: 'pk',
+      safety_identifier: 'sid',
+    });
+    assert.equal(parsed.error, undefined);
+    const request = parsed.request!;
+    assert.deepEqual(request.text?.format, {
+      type: 'json_schema', name: 'x', schema: { type: 'object' }, strict: true,
+    });
+    assert.deepEqual(request.metadata, { tenant: 'a' });
+    assert.equal(request.serviceTier, 'flex');
+    assert.equal(request.cache?.key, 'pk');
+    assert.equal(request.safetyIdentifier, 'sid');
+  });
+
+  it('emits a refusal output part and echoes request metadata', () => {
+    const parsed = responsesSurface.parse({ model: 'auto', input: 'go', metadata: { tenant: 'a' } });
+    assert.equal(parsed.error, undefined);
+    const response = responseIR('', {
+      id: 'resp-refusal', createdAt: 1, model: 'up',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', text: 'no' }] }],
+    });
+    const body = responsesSurface.encodeJson(stubResult('served', response), parsed.state) as Record<string, any>;
+    assert.deepEqual(body.output[0].content, [{ type: 'refusal', refusal: 'no' }]);
+    assert.deepEqual(body.metadata, { tenant: 'a' });
   });
 
   it('unknown previous_response_id → loud 400 WITH code previous_response_not_found', async () => {
@@ -181,37 +276,32 @@ describe('responses surface — state coupling (respId + shared store)', () => {
 
     assert.equal(sent2()[0]!.status, 200, 'the appended node is resolvable: no 400');
     const req = o2.processed[0]!.request;
-    assert.equal(req.router_options?.session_id, 'sess-abc', 'parent node session replayed via router_options');
-    // messages = [instructions] + rebuilt chain (user+assistant) + this delta
-    assert.equal(req.messages.length, 4);
-    assert.deepEqual(req.messages[0], { role: 'system', content: 'be terse' });
-    assert.equal(req.messages[1]!.role, 'user');
-    assert.equal(req.messages[1]!.content, 'parent turn');
-    assert.equal(req.messages[2]!.role, 'assistant');
-    assert.equal(req.messages[2]!.content, 'ok');
-    assert.equal(req.messages[3]!.content, 'child turn');
+    assert.equal(req.routerOptions?.sessionId, 'sess-abc', 'parent node session replayed via router options');
+    assert.equal(req.instructions, 'be terse');
+    assert.equal(req.input.length, 3);
+    assert.deepEqual(req.input.map((item) => item.type === 'message'
+      ? [item.role, item.content.map((part) => part.type === 'text' ? part.text : '').join('')]
+      : [item.type, '']), [
+      ['user', 'parent turn'],
+      ['assistant', 'ok'],
+      ['user', 'child turn'],
+    ]);
   });
 
-  it('a chain whose assistant turn called tools is repaired before the next user message', async () => {
-    const toolCallResponse = {
+  it('a chain whose assistant turn called tools preserves the call without inventing a result', async () => {
+    const toolCallResponse = responseIR('', {
       ...okResponse,
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: '',
-          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } }],
-        },
-        finish_reason: 'tool_calls',
-      }],
-    };
+      reason: 'tool_calls',
+      output: [
+        { type: 'message', role: 'assistant', content: [{ type: 'text', text: '' }] },
+        { type: 'tool_call', id: 'call_1', callId: 'call_1', name: 'read', arguments: '{}' },
+      ],
+    });
     const { t: t1, sent: sent1 } = makeFakeTransport();
     const o1 = makeStubOrchestrator({ result: stubResult('mock-1', toolCallResponse) });
     await runChatSurface(t1, responsesSurface, o1.orchestrator, { model: 'auto', input: 'read it' });
     const parentTurnId = String(sent1()[0]!.payload.id);
 
-    // The client cancels the tool call and asks something else: legal on the
-    // Responses wire, fatal on chat-completions without the repair.
     const { t: t2 } = makeFakeTransport();
     const o2 = makeStubOrchestrator();
     await runChatSurface(t2, responsesSurface, o2.orchestrator, {
@@ -220,16 +310,9 @@ describe('responses surface — state coupling (respId + shared store)', () => {
       input: 'never mind',
     });
 
-    const messages = o2.processed[0]!.request.messages;
-    assert.deepStrictEqual(
-      messages.map((m) => [m.role, m.tool_call_id ?? null]),
-      [
-        ['user', null],
-        ['assistant', null],
-        ['tool', 'call_1'],
-        ['user', null],
-      ]
-    );
+    const input = o2.processed[0]!.request.input;
+    assert.deepStrictEqual(input.map((item) => item.type), ['message', 'message', 'tool_call', 'message']);
+    assert.deepStrictEqual(input[2], { type: 'tool_call', id: 'call_1', callId: 'call_1', name: 'read', arguments: '{}' });
   });
 
   it('stream=true: response.created…completed carry the SAME minted id; no [DONE]', async () => {
@@ -238,12 +321,14 @@ describe('responses surface — state coupling (respId + shared store)', () => {
     await runChatSurface(t, responsesSurface, orchestrator, { model: 'auto', stream: true, input: 'sse turn' });
 
     const chunks = calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
-    assert.ok(chunks.length >= 4, 'created/in_progress + item + deltas + completed');
-    const createdId = (sseData(chunks[0]!).response as { id: string }).id;
-    const completed = sseData(chunks[chunks.length - 1]!).response as { id: string; status: string };
+    const events = sseEventChunks(chunks);
+    assert.ok(events.length >= 4, 'created/in_progress + item + deltas + completed');
+    const createdId = (sseData(events[0]!).response as { id: string }).id;
+    const completed = sseData(events[events.length - 1]!).response as { id: string; status: string };
     assert.match(createdId, /^resp_[0-9a-f]{24}$/);
     assert.equal(completed.id, createdId, 'one minted respId flows through every event (state coupling)');
     assert.equal(completed.status, 'completed');
+    assert.ok(chunks.some((c) => c.startsWith(': ocr-summary ')), 'buffered path trails ocr-summary');
     assert.ok(!chunks.some((c) => c.includes('[DONE]')), 'responses wire ends on response.completed');
 
     // The streamed id is store-resolvable: afterResult appended BEFORE the
@@ -270,6 +355,10 @@ describe('responses surface — state coupling (respId + shared store)', () => {
 describe('responses surface — error envelopes', () => {
   it('executionError: 4xx keeps status + invalid_request_error code; else 502 upstream_error with fallback', async () => {
     const cases: Array<[unknown, number, string, string]> = [
+      [new IrUnsupportedError('input_file', 'no file', 'openai-responses'), 400, 'no file', 'unsupported_parameter'],
+      [Object.assign(new Error('Explicit model did not serve. Last error: no file'), {
+        statusCode: 400, name: 'IrUnsupportedError', code: 'unsupported_parameter',
+      }), 400, 'Explicit model did not serve. Last error: no file', 'unsupported_parameter'],
       [Object.assign(new Error('unknown variant'), { statusCode: 404 }), 404, 'unknown variant', 'invalid_request_error'],
       [Object.assign(new Error('provider 503'), { statusCode: 503 }), 502, 'provider 503', 'upstream_error'],
       [new Error('plain'), 502, 'plain', 'upstream_error'],
@@ -329,7 +418,7 @@ describe('responses surface — store flag (OpenAI parity)', () => {
     await runChatSurface(t, responsesSurface, orchestrator, { model: 'auto', stream: true, store: false, input: 'x' });
 
     const chunks = calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
-    const created = chunks.map(sseData).find((p) => p.type === 'response.created')!;
+    const created = sseEventChunks(chunks).map(sseData).find((p) => p.type === 'response.created')!;
     assert.equal((created.response as { store?: boolean }).store, false);
   });
 });

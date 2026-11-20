@@ -10,6 +10,7 @@ import { RouterConfig } from '../src/config/types.js';
 import { createServer } from '../src/server.js';
 import type { SessionRow } from '../src/session/session-row.js';
 import { loadConfig } from '../src/config/index.js';
+import { registerTurn, resolveIR } from './helpers/ir.js';
 
 /**
  * Client conversation refs (ADR-0002 §1, "client conversation refs") — the
@@ -31,11 +32,11 @@ describe('Client conversation refs — resolution', () => {
   it('re-attaches by claim when the opening and the served bytes are both gone', () => {
     const manager = new SessionManager({ enabled: true, strategy: 'monotonic' });
     const opened = withRef([{ role: 'user', content: '你是谁' }], clientRef('conv_A'));
-    const first = manager.resolveSessionId(opened);
+    const first = resolveIR(manager, opened);
     assert.equal(first.lookupType, 'cold_start');
     assert.match(first.sessionId, /^sess_/, 'the gateway id stays the identity');
 
-    manager.registerCompletedTurn(first.sessionId, opened.messages, 'served reply');
+    registerTurn(manager, first.sessionId, opened.messages, 'served reply');
     // Client-side compaction: the opening question is gone AND the assistant
     // bytes were rewritten — no anchor, no conversation key, only the claim.
     const compacted = withRef(
@@ -45,19 +46,19 @@ describe('Client conversation refs — resolution', () => {
       ],
       clientRef('conv_A')
     );
-    const second = manager.resolveSessionId(compacted);
+    const second = resolveIR(manager, compacted);
     assert.equal(second.lookupType, 'client_ref');
     assert.equal(second.sessionId, first.sessionId, 'same gateway session for the client conversation');
   });
 
   it('lets content evidence win a conflict, and rebinds the alias to the winner', () => {
     const manager = new SessionManager({ enabled: true, strategy: 'monotonic' });
-    const claimed = manager.resolveSessionId(withRef([{ role: 'user', content: 'open claimed' }], clientRef('conv_X')));
+    const claimed = resolveIR(manager, withRef([{ role: 'user', content: 'open claimed' }], clientRef('conv_X')));
 
     // A different conversation, established without any claim.
     const opening = [{ role: 'user' as const, content: 'open by content' }];
-    const byContent = manager.resolveSessionId({ model: 'auto', messages: opening });
-    manager.registerCompletedTurn(byContent.sessionId, opening, 'served reply');
+    const byContent = resolveIR(manager, { model: 'auto', messages: opening });
+    registerTurn(manager, byContent.sessionId, opening, 'served reply');
     assert.notEqual(byContent.sessionId, claimed.sessionId);
 
     // Same claim, but the history anchors to the OTHER session: content wins.
@@ -69,7 +70,7 @@ describe('Client conversation refs — resolution', () => {
       ],
       clientRef('conv_X')
     );
-    const resolved = manager.resolveSessionId(continued);
+    const resolved = resolveIR(manager, continued);
     assert.equal(resolved.sessionId, byContent.sessionId, 'anchors outrank the client claim');
     assert.notEqual(resolved.lookupType, 'client_ref');
 
@@ -81,17 +82,17 @@ describe('Client conversation refs — resolution', () => {
       ],
       clientRef('conv_X')
     );
-    const rebound = manager.resolveSessionId(compacted);
+    const rebound = resolveIR(manager, compacted);
     assert.equal(rebound.lookupType, 'client_ref');
     assert.equal(rebound.sessionId, byContent.sessionId);
   });
 
   it('scopes aliases by API-key identity (two tenants may mint the same string)', () => {
     const manager = new SessionManager({ enabled: true, strategy: 'monotonic' });
-    const a = manager.resolveSessionId(withRef([{ role: 'user', content: 'tenant A' }], clientRef('conv_same')), {
+    const a = resolveIR(manager, withRef([{ role: 'user', content: 'tenant A' }], clientRef('conv_same')), {
       keyId: 'key-a',
     });
-    const b = manager.resolveSessionId(withRef([{ role: 'user', content: 'tenant B' }], clientRef('conv_same')), {
+    const b = resolveIR(manager, withRef([{ role: 'user', content: 'tenant B' }], clientRef('conv_same')), {
       keyId: 'key-b',
     });
     assert.notEqual(a.sessionId, b.sessionId);
@@ -101,13 +102,14 @@ describe('Client conversation refs — resolution', () => {
 
   it('keeps explicit ids above everything and binds the alias under them', () => {
     const manager = new SessionManager({ enabled: true, strategy: 'monotonic' });
-    const explicit = manager.resolveSessionId(withRef([{ role: 'user', content: 'hi' }], clientRef('conv_E')), {
+    const explicit = resolveIR(manager, withRef([{ role: 'user', content: 'hi' }], clientRef('conv_E')), {
       headers: { 'x-session-id': 'explicit-777' },
     });
     assert.equal(explicit.lookupType, 'explicit_header');
     assert.equal(explicit.sessionId, 'explicit-777');
 
-    const compacted = manager.resolveSessionId(
+    const compacted = resolveIR(
+      manager,
       withRef([{ role: 'assistant', content: 'rewritten' }, { role: 'user', content: 'next' }], clientRef('conv_E'))
     );
     assert.equal(compacted.lookupType, 'client_ref');
@@ -119,12 +121,13 @@ describe('Client conversation refs — resolution', () => {
     const snapshot = path.join(dir, 'sessions.json');
     try {
       const before = new SessionManager({ enabled: true, strategy: 'monotonic' }, snapshot);
-      const first = before.resolveSessionId(withRef([{ role: 'user', content: 'before restart' }], clientRef('conv_P')));
+      const first = resolveIR(before, withRef([{ role: 'user', content: 'before restart' }], clientRef('conv_P')));
       before.flushPersist();
       assert.ok(fs.existsSync(snapshot), 'binding must mark the snapshot dirty');
 
       const restored = new SessionManager({ enabled: true, strategy: 'monotonic' }, snapshot);
-      const after = restored.resolveSessionId(
+      const after = resolveIR(
+        restored,
         withRef(
           [{ role: 'assistant', content: 'rewritten' }, { role: 'user', content: 'after restart' }],
           clientRef('conv_P')

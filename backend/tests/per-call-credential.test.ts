@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { OpenAICompatibleProvider } from '../src/providers/openai-compatible.js';
-import { AnthropicProvider } from '../src/providers/anthropic.js';
-import { GoogleProvider } from '../src/providers/google.js';
-import { ResponsesProvider } from '../src/providers/responses.js';
-import { DispatchingProvider } from '../src/providers/dispatch.js';
+import { OpenAIChatProvider } from '../src/providers/executors/openai-chat.js';
+import { AnthropicMessagesProvider } from '../src/providers/executors/anthropic-messages.js';
+import { GoogleGeminiProvider } from '../src/providers/executors/google-gemini.js';
+import { OpenAIResponsesProvider } from '../src/providers/executors/openai-responses.js';
+import { DispatchingProvider } from '../src/providers/executors/dispatch.js';
 import { UpstreamError } from '../src/resilience/error-classifier.js';
 import type { LLMProvider } from '../src/providers/base.js';
 import type { CallCredential } from '../src/opencode/credentials/types.js';
@@ -65,6 +65,7 @@ const model = (wire: ModelRegistration['wire']): ModelRegistration => ({
 });
 
 import type { ChatCompletionRequest } from '../src/types/openai.js';
+import { toIR } from './helpers/ir.js';
 
 const request: ChatCompletionRequest = {
   model: 'p/m1',
@@ -82,7 +83,7 @@ const okChatBody = JSON.stringify({
 /** Run a completion expecting failure (400 → UpstreamError) — headers are captured BEFORE the throw. */
 async function expectUpstreamFailure(provider: LLMProvider, cred?: CallCredential): Promise<void> {
   try {
-    await provider.createCompletion(request, model(undefined), undefined, cred);
+    await provider.createCompletion(toIR(request), model(undefined), undefined, cred);
     throw new Error('expected UpstreamError was not thrown');
   } catch (err) {
     if (!(err instanceof UpstreamError)) throw err;
@@ -90,31 +91,31 @@ async function expectUpstreamFailure(provider: LLMProvider, cred?: CallCredentia
 }
 
 describe('(b) per-call credential overrides the baked key — all four wires', () => {
-  it('openai-compatible: Authorization carries the selected key on a SUCCESS call', async () => {
+  it('openai-chat: Authorization carries the selected key on a SUCCESS call', async () => {
     mockFetch(200, okChatBody);
-    const provider = new OpenAICompatibleProvider(config('p', 'openai-compatible'));
-    const res = await provider.createCompletion(request, model('openai'), undefined, credential);
-    expect(res.choices[0]?.message?.content).toBe('ok');
+    const provider = new OpenAIChatProvider(config('p', 'openai-chat'));
+    const res = await provider.createCompletion(toIR(request), model('openai'), undefined, credential);
+    expect(res.output[0]).toMatchObject({ type: 'message', content: [{ type: 'text', text: 'ok' }] });
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${PER_CALL}`);
   });
 
   it('anthropic: x-api-key carries the selected key', async () => {
     mockFetch();
-    const provider = new AnthropicProvider(config('p', 'anthropic'));
+    const provider = new AnthropicMessagesProvider(config('p', 'anthropic'));
     await expectUpstreamFailure(provider, credential);
     expect(captured[0]?.headers['x-api-key']).toBe(PER_CALL);
   });
 
   it('google: x-goog-api-key carries the selected key', async () => {
     mockFetch();
-    const provider = new GoogleProvider(config('p', 'google'));
+    const provider = new GoogleGeminiProvider(config('p', 'google'));
     await expectUpstreamFailure(provider, credential);
     expect(captured[0]?.headers['x-goog-api-key']).toBe(PER_CALL);
   });
 
   it('responses: Authorization carries the selected key', async () => {
     mockFetch();
-    const provider = new ResponsesProvider(config('p', 'responses'));
+    const provider = new OpenAIResponsesProvider(config('p', 'responses'));
     await expectUpstreamFailure(provider, credential);
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${PER_CALL}`);
   });
@@ -122,43 +123,43 @@ describe('(b) per-call credential overrides the baked key — all four wires', (
   it('DispatchingProvider threads the credential to the wire executor (completion + stream)', async () => {
     mockFetch();
     const dispatch = new DispatchingProvider(config('p', 'dispatch'), {
-      openai: 'https://upstream.invalid/v1',
+      'openai-chat': 'https://upstream.invalid/v1',
     });
     await expectUpstreamFailure(dispatch, credential);
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${PER_CALL}`);
 
     captured.length = 0;
     mockFetch(200, 'data: [DONE]\n\n');
-    await dispatch.createStream({ ...request, stream: true }, model('openai'), undefined, credential);
+    await dispatch.createStream(toIR({ ...request, stream: true }), model('openai-chat'), undefined, credential);
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${PER_CALL}`);
   });
 });
 
 describe('(c) no-credential path stays on the baked key (byte-identical)', () => {
-  it('openai-compatible: Authorization equals config.apiKey', async () => {
+  it('openai-chat: Authorization equals config.apiKey', async () => {
     mockFetch(200, okChatBody);
-    const provider = new OpenAICompatibleProvider(config('p', 'openai-compatible'));
-    await provider.createCompletion(request, model('openai'));
+    const provider = new OpenAIChatProvider(config('p', 'openai-chat'));
+    await provider.createCompletion(toIR(request), model('openai'));
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${BAKED}`);
   });
 
   it('anthropic: x-api-key equals config.apiKey', async () => {
     mockFetch();
-    const provider = new AnthropicProvider(config('p', 'anthropic'));
+    const provider = new AnthropicMessagesProvider(config('p', 'anthropic'));
     await expectUpstreamFailure(provider);
     expect(captured[0]?.headers['x-api-key']).toBe(BAKED);
   });
 
   it('google: x-goog-api-key equals config.apiKey', async () => {
     mockFetch();
-    const provider = new GoogleProvider(config('p', 'google'));
+    const provider = new GoogleGeminiProvider(config('p', 'google'));
     await expectUpstreamFailure(provider);
     expect(captured[0]?.headers['x-goog-api-key']).toBe(BAKED);
   });
 
   it('responses: Authorization equals config.apiKey', async () => {
     mockFetch();
-    const provider = new ResponsesProvider(config('p', 'responses'));
+    const provider = new OpenAIResponsesProvider(config('p', 'responses'));
     await expectUpstreamFailure(provider);
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${BAKED}`);
   });
@@ -166,9 +167,9 @@ describe('(c) no-credential path stays on the baked key (byte-identical)', () =>
   it('DispatchingProvider without a credential still bakes the config key', async () => {
     mockFetch(200, okChatBody);
     const dispatch = new DispatchingProvider(config('p', 'dispatch'), {
-      openai: 'https://upstream.invalid/v1',
+      'openai-chat': 'https://upstream.invalid/v1',
     });
-    await dispatch.createCompletion(request, model('openai'));
+    await dispatch.createCompletion(toIR(request), model('openai-chat'));
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${BAKED}`);
   });
 });

@@ -5,14 +5,13 @@ import { runChatSurface } from '../src/surfaces/chat-pipeline.js';
 import { responsesSurface, __resetResponsesSurfaceForTests } from '../src/surfaces/responses.js';
 import { applyStreamingPosture, streamingPosture } from '../src/pipeline/streaming-posture.js';
 import type { TransportContext } from '../src/surfaces/types.js';
-import type { ChatCompletionChunk, ChatCompletionResponse } from '../src/types/openai.js';
+import type { StreamEvent } from '../src/ir/types.js';
 import type { ExecutionResult } from '../src/types/router.js';
+import { responseIR } from './helpers/ir.js';
 
 /**
- * The gateway's half of true client-side streaming. Junie's Responses client
- * only renders token-by-token when `response.output_text.delta` events arrive
- * DURING generation; a buffered `chatToStreamEvents()` dump at the end keeps
- * ttfb ≈ total and defeats the whole point. These tests pin the relayed leg.
+ * Client-side Responses streaming: upstream canonical events are encoded as they
+ * arrive, while the completed IR remains available for persistence and usage.
  */
 
 function makeTransport() {
@@ -37,57 +36,88 @@ function makeTransport() {
 }
 
 type StubToolCall = { id: string; name: string; arguments: string };
+type StubDelta = { content: string | null; reasoning?: string; role?: string };
 
 function stubResult(text: string, toolCalls?: StubToolCall[]): ExecutionResult {
-  const message: Record<string, unknown> = { role: 'assistant', content: text };
-  if (toolCalls?.length) {
-    message.tool_calls = toolCalls.map((tc) => ({
-      id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.arguments },
-    }));
-  }
-  const response = {
-    id: 'chatcmpl-relay',
-    object: 'chat.completion',
-    created: 1,
+  const response = responseIR(text, {
+    id: 'resp_upstream',
     model: 'upstream-deployment-name',
-    choices: [{ index: 0, message, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
-  } as unknown as ChatCompletionResponse;
+    output: [
+      { type: 'message', role: 'assistant', content: [{ type: 'text', text }] },
+      ...(toolCalls ?? []).map((call) => ({
+        type: 'tool_call' as const, id: call.id, callId: call.id, name: call.name, arguments: call.arguments,
+      })),
+    ],
+    usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+  });
   return {
     response,
     tierUsed: 'lite',
     modelUsed: 'served-model',
     fallbackOccurred: false,
     latencyMs: 1,
+    ttftMs: 12,
+    genMs: 40,
     sessionId: 'sess-relay',
     requestId: 'trace-relay',
   };
 }
 
-function stubOrchestrator(chunks: ChatCompletionChunk[], text: string, toolCalls?: StubToolCall[]) {
+function stubOrchestrator(deltas: StubDelta[], text: string, toolCalls?: StubToolCall[]) {
   let relaySeen = false;
   const orchestrator = {
-    process: async (
-      _request: unknown,
-      _ctx: unknown,
-      relay?: { onChunk(c: ChatCompletionChunk): void },
-    ) => {
+    process: async (_request: unknown, _ctx: unknown, relay?: { onChunk(event: StreamEvent): void }) => {
       relaySeen = !!relay;
-      for (const chunk of chunks) relay?.onChunk(chunk);
+      const emit = (event: StreamEvent) => relay?.onChunk(event);
+      emit({ type: 'response.created', id: 'resp_upstream', model: 'upstream-deployment-name', createdAt: 1 });
+      let nextIndex = 0;
+      let messageIndex: number | undefined;
+      let reasoningIndex: number | undefined;
+      let fullText = '';
+      for (const delta of deltas) {
+        if (delta.reasoning !== undefined) {
+          if (reasoningIndex === undefined) {
+            reasoningIndex = nextIndex++;
+            emit({ type: 'response.output_item.added', index: reasoningIndex, item: { type: 'reasoning', text: '' } });
+          }
+          if (delta.reasoning) emit({ type: 'response.reasoning.delta', index: reasoningIndex, text: delta.reasoning });
+        }
+        if (delta.role === 'assistant' || typeof delta.content === 'string') {
+          if (messageIndex === undefined) {
+            messageIndex = nextIndex++;
+            emit({ type: 'response.output_item.added', index: messageIndex, item: { type: 'message', role: 'assistant', content: [] } });
+            emit({ type: 'response.content_part.added', index: messageIndex, partIndex: 0, part: { type: 'text', text: '' } });
+          }
+          if (delta.content) {
+            fullText += delta.content;
+            emit({ type: 'response.output_text.delta', index: messageIndex, partIndex: 0, text: delta.content });
+          }
+        }
+      }
+      if (messageIndex !== undefined) {
+        emit({ type: 'response.output_text.done', index: messageIndex, partIndex: 0, text: fullText });
+        emit({ type: 'response.output_item.done', index: messageIndex, item: { type: 'message', role: 'assistant', content: [{ type: 'text', text: fullText }] } });
+      }
+      if (reasoningIndex !== undefined) {
+        emit({ type: 'response.output_item.done', index: reasoningIndex, item: { type: 'reasoning', text: deltas.map((d) => d.reasoning ?? '').join('') } });
+      }
+      for (const call of toolCalls ?? []) {
+        const index = nextIndex++;
+        const item = { type: 'tool_call' as const, id: call.id, callId: call.id, name: call.name, arguments: call.arguments };
+        emit({ type: 'response.output_item.added', index, item });
+        emit({ type: 'response.function_call.arguments.delta', index, argumentsDelta: call.arguments });
+        emit({ type: 'response.function_call.arguments.done', index, arguments: call.arguments });
+        emit({ type: 'response.output_item.done', index, item });
+      }
+      emit({ type: 'response.usage', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } });
       return stubResult(text, toolCalls);
     },
   } as unknown as Parameters<typeof runChatSurface>[2];
   return { orchestrator, sawRelay: () => relaySeen };
 }
 
-function chunk(content: string | null, extra: Record<string, unknown> = {}): ChatCompletionChunk {
-  return {
-    id: 'c',
-    object: 'chat.completion.chunk',
-    created: 1,
-    model: 'upstream-deployment-name',
-    choices: [{ index: 0, delta: { content, ...extra }, finish_reason: null }],
-  } as unknown as ChatCompletionChunk;
+function chunk(content: string | null, extra: { reasoning_content?: string; role?: string } = {}): StubDelta {
+  return { content, reasoning: extra.reasoning_content, role: extra.role };
 }
 
 /** Every SSE frame on this wire is `event: <type>\ndata: <json>\n\n`. */
@@ -103,7 +133,9 @@ function eventsOf(frames: string[]): Array<Record<string, any>> {
 }
 
 function framesOf(calls: Array<{ op: string; args: unknown[] }>): string[] {
-  return calls.filter((c) => c.op === 'writeSseChunk').map((c) => c.args[0] as string);
+  return calls
+    .filter((c) => c.op === 'writeSseChunk')
+    .flatMap((c) => (c.args[0] as string).match(/event: [\s\S]*?\n\n/g) ?? []);
 }
 
 describe('responses wire — relayed (per-chunk) SSE', () => {
@@ -144,7 +176,14 @@ describe('responses wire — relayed (per-chunk) SSE', () => {
 
     const frames = framesOf(calls);
     assert.ok(!frames.some((f) => f.includes('[DONE]')), 'Responses SSE has no [DONE] sentinel');
-    assert.ok(!frames.some((f) => f.includes('ocr-summary')), 'the chat-only summary comment must not leak into this wire');
+    const summaryChunks = calls
+      .filter((c) => c.op === 'writeSseChunk')
+      .map((c) => c.args[0] as string)
+      .filter((chunk) => chunk.startsWith(': ocr-summary '));
+    assert.equal(summaryChunks.length, 1, 'completion facts follow the protocol terminal event');
+    const summary = JSON.parse(summaryChunks[0]!.slice(': ocr-summary '.length).trim()) as Record<string, string>;
+    assert.equal(summary['X-OCR-Gen-MS'], '40', 'the tok/s denominator rides the comment, not a protocol field');
+    assert.equal(summary['X-OCR-TTFT-MS'], '12');
 
     const events = eventsOf(frames);
     const types = events.map((e) => e.type);
@@ -157,13 +196,13 @@ describe('responses wire — relayed (per-chunk) SSE', () => {
     assert.equal(types[types.length - 1], 'response.completed', 'the turn closes on response.completed');
 
     const deltas = events.filter((e) => e.type === 'response.output_text.delta');
-    assert.equal(deltas.length, 2, 'exactly one delta per chunk carrying prose; empty/reasoning chunks are dropped');
+    assert.equal(deltas.length, 2, 'exactly one delta per chunk carrying prose; empty chunks emit no text delta');
     assert.equal(deltas.map((d) => d.delta).join(''), 'Hello', 'relayed text is not re-sliced or duplicated');
 
     const respIds = new Set(events.filter((e) => e.response?.id).map((e) => e.response.id as string));
     assert.equal(respIds.size, 1, 'created / in_progress / completed share ONE response id');
     const itemIds = new Set([
-      ...events.filter((e) => e.item?.id).map((e) => e.item.id as string),
+      ...events.filter((e) => e.item?.type === 'message').map((e) => e.item.id as string),
       ...deltas.map((d) => d.item_id as string),
     ]);
     assert.equal(itemIds.size, 1, 'output_item.added and every delta share ONE item id');
@@ -193,7 +232,9 @@ describe('responses wire — relayed (per-chunk) SSE', () => {
     assert.ok(second.ops().includes('sendJson'), 'continuation answers in JSON on a non-streamed turn');
     const sent = second.calls.find((c) => c.op === 'sendJson')!;
     assert.equal(sent.args[0], 200, 'the relayed turn registered its response id in the store');
-    assert.equal((sent.args[1] as { error?: unknown }).error, undefined, 'no previous_not_found error');
+    // The envelope ALWAYS carries `error` (null on success, per the Response
+    // schema) — only an error object means the chain id failed to resolve.
+    assert.equal((sent.args[1] as { error?: unknown }).error, null, 'no previous_not_found error');
   });
 
   it('a non-streamed turn keeps the original buffered/JSON shapes', async () => {

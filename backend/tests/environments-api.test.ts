@@ -424,9 +424,8 @@ describe('GET /api/admin/environments/:name/export', () => {
     expect(config).not.toContain('sk-live');
     expect(config).toContain('__REDACTED__');
     const inclRes = await a.inject({ method: 'GET', url: '/api/admin/environments/alpha/export?secrets=include' });
-    const incl = JSON.parse(strFromU8(unzipSync(new Uint8Array(inclRes.rawPayload!))['manifest.json']));
-    expect(incl.secrets).toBe('included');
-    expect(strFromU8(unzipSync(new Uint8Array(inclRes.rawPayload!))['config.yaml'])).toContain('sk-live');
+    expect(inclRes.statusCode).toBe(400);
+    expect(String(inclRes.body)).toMatch(/Plaintext secret export is disabled/i);
   });
 
   it('?include= selects a payload subset (unknown keys ignored)', async () => {

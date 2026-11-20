@@ -40,18 +40,18 @@ describe('anthropicMessagesUrl', () => {
 describe('baseForWire', () => {
   it('translates the Zen OpenAI-compatible mount to the Anthropic mount', () => {
     assert.strictEqual(
-      baseForWire('anthropic', 'https://zen.example/zen/v1'),
+      baseForWire('anthropic-messages', 'https://zen.example/zen/v1'),
       'https://zen.example/inference/anthropic/v1'
     );
   });
 
   it('rewrites an /openai mount to /anthropic only on the anthropic wire', () => {
     assert.strictEqual(
-      baseForWire('anthropic', 'https://gw.example/openai/v1'),
+      baseForWire('anthropic-messages', 'https://gw.example/openai/v1'),
       'https://gw.example/anthropic/v1'
     );
     assert.strictEqual(
-      baseForWire('openai', 'https://gw.example/openai/v1'),
+      baseForWire('openai-chat', 'https://gw.example/openai/v1'),
       'https://gw.example/openai/v1'
     );
   });
@@ -59,6 +59,6 @@ describe('baseForWire', () => {
 
 describe('wireFor base hint', () => {
   it('detects the anthropic wire from a baseURL containing /anthropic', () => {
-    assert.strictEqual(wireFor(undefined, 'https://api.minimax.cn/anthropic/v1'), 'anthropic');
+    assert.strictEqual(wireFor(undefined, 'https://api.minimax.cn/anthropic/v1'), 'anthropic-messages');
   });
 });

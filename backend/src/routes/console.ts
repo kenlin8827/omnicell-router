@@ -8,8 +8,8 @@ import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { getProviderTakedownStore } from '../providers/provider-takedown.js';
-import { NPM_VOCABULARY } from '../providers/vocabulary.js';
-import { getModelServicePlugin, pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
+import { protocolVocabulary } from '../providers/vocabulary.js';
+import { pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
 import { PluginAuthType, type TrafficExchange, type DissectedExchange } from '../plugins/types.js';
 import { listGateways, getGatewayById } from '../plugins/gateways.js';
 import { globMatchAny } from '../utils/glob.js';
@@ -59,7 +59,6 @@ import { CLASSIFIER_TAXONOMY } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
 import { maskSecret, isValidProviderId, PROVIDER_ID_RULE, getProviderNodeById } from '../opencode/user-config.js';
-import { isSelfBaseURL } from '../utils/self-url.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
   listApiKeys,
@@ -359,19 +358,19 @@ async function refreshProviderCredentialChain(
  */
 const withPoolSync =
   (registry: ProviderRegistry, handler: (req: any, reply: any) => Promise<unknown>) =>
-  async (req: any, reply: any) => {
-    const result = await handler(req, reply);
-    if (!reply.sent) {
-      try {
-        await refreshDirectPool(registry);
-      } catch (err) {
-        // Fail-open: the registry keeps serving, but a silent drift hides a
-        // failed mutation — log it so an operator can see it landed nowhere.
-        console.warn(`[console] pool resync after a def/credential mutation failed (registry may drift): ${(err as Error).message}`);
+    async (req: any, reply: any) => {
+      const result = await handler(req, reply);
+      if (!reply.sent) {
+        try {
+          await refreshDirectPool(registry);
+        } catch (err) {
+          // Fail-open: the registry keeps serving, but a silent drift hides a
+          // failed mutation — log it so an operator can see it landed nowhere.
+          console.warn(`[console] pool resync after a def/credential mutation failed (registry may drift): ${(err as Error).message}`);
+        }
       }
-    }
-    return result;
-  };
+      return result;
+    };
 /**
  * Idempotent connect (identity at the write seam): handing the store a
  * key it ALREADY holds for this provider is idempotent — the existing credential is
@@ -1216,7 +1215,7 @@ export function registerConsoleRoutes(
    *  rows an ISO string; 0 when unparsable (sorts to the oldest end). */
   const tsOf = (r: TimelineRow): number =>
     'ev' in r ? (r.ev as { ts?: number }).ts ?? 0 : Date.parse((r.ex as { ts?: string }).ts ?? '') || 0;
-    type TimelineRow =
+  type TimelineRow =
     | { source: 'proxy'; ev: Record<string, unknown> }
     | { source: string; ex: Record<string, unknown> };
   app.get('/api/admin/proxy-log', async (req) => {
@@ -1288,9 +1287,9 @@ export function registerConsoleRoutes(
         rows: slice.map((r) =>
           'ev' in r
             ? {
-                source: 'proxy' as const,
-                ev: { ...r.ev, reqBodyToken: bodyTokenOf(r.ev.reqBodyFile), resBodyToken: bodyTokenOf(r.ev.resBodyFile) },
-              }
+              source: 'proxy' as const,
+              ev: { ...r.ev, reqBodyToken: bodyTokenOf(r.ev.reqBodyFile), resBodyToken: bodyTokenOf(r.ev.resBodyFile) },
+            }
             : { source: r.source, ex: decoratePluginRow(r.source, r.ex) }
         ),
         total,
@@ -1758,8 +1757,8 @@ export function registerConsoleRoutes(
     // lose rules the operator typed.
     const rules = catchAll
       ? currentRules.map((r) =>
-          r?.match === '*' && r.ingress === 'intercept' ? { ...r, ingress: 'passthrough' as const } : r,
-        )
+        r?.match === '*' && r.ingress === 'intercept' ? { ...r, ingress: 'passthrough' as const } : r,
+      )
       : [...currentRules, { match: '*', ingress: 'passthrough' as const, egress }];
     const saved = saveConfig({ forwardProxy: { ...current, rules, intercept: DEFAULT_FORWARD_PROXY_INTERCEPT } });
     if (!saved.success) return reply.status(400).send(saved);
@@ -1797,10 +1796,10 @@ export function registerConsoleRoutes(
     const plan = prober?.getPlan();
     const coverage = plan
       ? Array.from(plan.byProvider.entries()).map(([providerId, target]) => ({
-          providerId,
-          kind: target.kind,
-          entryId: target.kind === 'dsl' ? target.entry.id : `adapter:${target.adapter.id}`,
-        }))
+        providerId,
+        kind: target.kind,
+        entryId: target.kind === 'dsl' ? target.entry.id : `adapter:${target.adapter.id}`,
+      }))
       : [];
     return {
       status: 'ok',
@@ -2610,7 +2609,7 @@ export function registerConsoleRoutes(
             : 'no rule matches a registered model';
         console.warn(
           `[Console] Tier '${tier}' has an EMPTY candidate pool (${cause}) — its requests will degrade to another tier. ` +
-            `Add models to tiers.${tier}.members on the /tiers page.`,
+          `Add models to tiers.${tier}.members on the /tiers page.`,
         );
       }
     }
@@ -2735,10 +2734,11 @@ export function registerConsoleRoutes(
       const result = await orchestrator.process(
         {
           model: tier,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
+          stream: false,
+          input: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          generation: { maxOutputTokens: 1 },
         },
-        { wire: 'chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
+        { wire: 'openai-chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
       );
       return {
         status: 'ok',
@@ -3044,10 +3044,11 @@ export function registerConsoleRoutes(
       const result = await orchestrator.process(
         {
           model: id,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
+          stream: false,
+          input: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          generation: { maxOutputTokens: 1 },
         },
-        { wire: 'chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
+        { wire: 'openai-chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
       );
       return {
         status: 'ok',
@@ -3126,8 +3127,8 @@ export function registerConsoleRoutes(
       const open = pairs.filter((s) => s.state === 'OPEN');
       const limitEntry = meta.keyHashPrefix
         ? limitOverlay.find(
-            (e) => (e.keyHashPrefix ?? '').toLowerCase() === meta.keyHashPrefix!.toLowerCase()
-          )
+          (e) => (e.keyHashPrefix ?? '').toLowerCase() === meta.keyHashPrefix!.toLowerCase()
+        )
         : undefined;
       const quota = quotaViewFor(providerId, meta.keyHashPrefix);
       return {
@@ -3140,27 +3141,23 @@ export function registerConsoleRoutes(
         openPairs: open.length,
         ...(open.length > 0
           ? {
-              cooldownUntilMs: Math.max(
-                ...open.map((s) => s.cooldownUntil ?? Date.now() + s.remainingCooldownMs)
-              ),
-            }
+            cooldownUntilMs: Math.max(
+              ...open.map((s) => s.cooldownUntil ?? Date.now() + s.remainingCooldownMs)
+            ),
+          }
           : {}),
       };
     });
   };
 
   const ocHandlers = {
-    /** The npm SDK vocabulary — ONE backend-owned table (providers/vocabulary.ts)
-     * served to every UI surface that renders npm choices or display names. */
-    npmVocabulary: async () => {
-      // Plugin-backed wires (qoder gRPC, workbuddy HTTP) are only OFFERED when
-      // the plugin is installed — suggesting the alias without the executor
-      // would invite authoring a def that fails on every call.
-      const entries = NPM_VOCABULARY.filter((e) => {
-        if (e.wire !== 'qoder' && e.wire !== 'workbuddy') return true;
-        return !!getModelServicePlugin(e.wire);
-      });
-      return { status: 'ok', entries };
+    /** The OCR protocol vocabulary — ONE backend-owned table (providers/vocabulary.ts)
+     * served to every UI surface that renders protocol choices or display names. */
+    protocolVocabulary: async () => {
+      // Plugin-owned protocols are listed only while a loaded plugin claims the
+      // wire — the table derives that half from the plugin registry, so this
+      // handler never filters by vendor name (providers/vocabulary.ts).
+      return { status: 'ok', entries: protocolVocabulary() };
     },
 
     list: async (req: FastifyRequest) => {
@@ -3369,22 +3366,33 @@ export function registerConsoleRoutes(
       // namespace (the form normalizes input live; direct API callers get the
       // rule stated back). Also keeps the catalog-shadow guard below exact:
       // 'OpenAI' can no longer bypass a covered 'openai' id.
-      const { isValidProviderId, PROVIDER_ID_RULE, upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { isValidProviderId, PROVIDER_ID_RULE, upsertProviderDef, getProviderNodeById, expandEnvTemplate } = await import('../opencode/user-config.js');
       if (!isValidProviderId(id)) {
         return reply.status(400).send({
           success: false,
           error: `Invalid provider id '${id}' - ${PROVIDER_ID_RULE}`,
         });
       }
-      // A baseURL pointing back at THIS gateway would make the gateway its own
-      // upstream (boot excludes it loudly as self_loop) — refuse at the door
-      // with the same wording. Pointing at a DIFFERENT instance (another
-      // port/host) is a legitimate federation upstream and passes. Criterion
-      // is the URL, never the id.
-      if (isSelfBaseURL(String(body.baseURL ?? ''), loadConfig().port)) {
-        return reply.status(409).send({
+      // Upstream URL admission (self-loop / metadata / insecure public http).
+      if (body.baseURL) {
+        try {
+          const { assertAllowedUpstream } = await import('../utils/upstream-url-guard.js');
+          const expandedBaseURL = expandEnvTemplate(String(body.baseURL)) || String(body.baseURL);
+          assertAllowedUpstream(expandedBaseURL, loadConfig().port);
+        } catch (err: any) {
+          return reply.status(409).send({
+            success: false,
+            reasonCode: err?.reasonCode || 'invalid_upstream_url',
+            error: err?.message || String(err),
+          });
+        }
+      }
+      // ADR-0006: credentials live in the bound store, never inline in defs.
+      if (body.apiKeyInline) {
+        return reply.status(400).send({
           success: false,
-          error: `baseURL (${body.baseURL}) points at this gateway itself — the gateway cannot be its own upstream`,
+          reasonCode: 'api_key_inline_forbidden',
+          error: 'apiKeyInline is disabled — connect the key through the bound credential store.',
         });
       }
       // An id covered by the remote catalog (opencode / models-dev) may NOT be
@@ -3489,20 +3497,31 @@ export function registerConsoleRoutes(
     update: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const body = req.body as any;
-      const { upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { upsertProviderDef, getProviderNodeById, expandEnvTemplate } = await import('../opencode/user-config.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const existing = getProviderNodeById(id);
       if (!existing) {
         return reply.status(404).send({ success: false, error: `Provider '${id}' not found in the provider defs file` });
       }
-      // Same door-guard as create: an update may SET a baseURL — or keep the
-      // existing one — pointing at the gateway itself. The fallback mirrors
-      // the upsert's `body.baseURL ?? existing.options?.baseURL` below.
       const effectiveBaseURL = body.baseURL ?? existing.options?.baseURL ?? '';
-      if (isSelfBaseURL(String(effectiveBaseURL), loadConfig().port)) {
-        return reply.status(409).send({
+      if (effectiveBaseURL) {
+        try {
+          const { assertAllowedUpstream } = await import('../utils/upstream-url-guard.js');
+          const expandedBaseURL = expandEnvTemplate(String(effectiveBaseURL)) || String(effectiveBaseURL);
+          assertAllowedUpstream(expandedBaseURL, loadConfig().port);
+        } catch (err: any) {
+          return reply.status(409).send({
+            success: false,
+            reasonCode: err?.reasonCode || 'invalid_upstream_url',
+            error: err?.message || String(err),
+          });
+        }
+      }
+      if (body.apiKeyInline === true) {
+        return reply.status(400).send({
           success: false,
-          error: `baseURL (${effectiveBaseURL}) points at this gateway itself — the gateway cannot be its own upstream`,
+          reasonCode: 'api_key_inline_forbidden',
+          error: 'apiKeyInline is disabled — connect the key through the bound credential store.',
         });
       }
       // B4: same implicit auth.json side-write as create (apiKey + !inline) —
@@ -3820,20 +3839,20 @@ export function registerConsoleRoutes(
         ? [upstreamId(body.modelId)]
         : defIds.length > 0
           ? (() => {
-              const textDefs = defIds.filter((k) => {
-                const cm = cat?.models.find((mm) => mm.id === upstreamId(k));
-                return !cm || isTextPair(cm.modalities);
-              });
-              const list = textDefs.length > 0 ? textDefs : [defIds[0]];
-              return list.slice(0, PROBE_CANDIDATE_CAP).map(upstreamId);
-            })()
+            const textDefs = defIds.filter((k) => {
+              const cm = cat?.models.find((mm) => mm.id === upstreamId(k));
+              return !cm || isTextPair(cm.modalities);
+            });
+            const list = textDefs.length > 0 ? textDefs : [defIds[0]];
+            return list.slice(0, PROBE_CANDIDATE_CAP).map(upstreamId);
+          })()
           : (() => {
-              const text = (cat?.models ?? [])
-                .filter((mm) => mm.disabled !== true && isTextPair(mm.modalities))
-                .map((mm) => mm.id);
-              const list = text.length > 0 ? text : (cat?.models ?? []).slice(0, 1).map((mm) => mm.id);
-              return list.slice(0, PROBE_CANDIDATE_CAP);
-            })();
+            const text = (cat?.models ?? [])
+              .filter((mm) => mm.disabled !== true && isTextPair(mm.modalities))
+              .map((mm) => mm.id);
+            const list = text.length > 0 ? text : (cat?.models ?? []).slice(0, 1).map((mm) => mm.id);
+            return list.slice(0, PROBE_CANDIDATE_CAP);
+          })();
       if (modelCandidates.length === 0) {
         return reply.status(400).send({ success: false, reasonCode: 'no_testable_model', provider: id });
       }
@@ -3886,11 +3905,32 @@ export function registerConsoleRoutes(
           error: `No API key for '${id}' (credential store or inline). For OAuth-based providers run: opencode auth login ${id}`,
         });
       }
-      // Same precedence as boot-direct pool construction (models.dev `api`
-      // before the daemon runtime hint) — test must hit what inference hits.
-      const baseURL = body.baseURL || def?.options?.baseURL || cat?.api || cat?.baseURL;
+      // Security S-03: refuse request-body baseURL overrides — a caller with
+      // only a credentialId could otherwise exfiltrate the stored key to an
+      // attacker URL. Test hits the same URL inference uses.
+      if (body.baseURL) {
+        return reply.status(400).send({
+          success: false,
+          reasonCode: 'base_url_override_forbidden',
+          provider: id,
+          error: 'body.baseURL is not accepted on test; configure the provider def (or catalog) baseURL instead.',
+        });
+      }
+      const rawBaseURL = def?.options?.baseURL || cat?.api || cat?.baseURL;
+      const baseURL = rawBaseURL ? expandEnvTemplate(String(rawBaseURL)) || String(rawBaseURL) : '';
       if (!baseURL) {
         return reply.status(400).send({ success: false, reasonCode: 'no_base_url', provider: id });
+      }
+      try {
+        const { assertAllowedUpstream } = await import('../utils/upstream-url-guard.js');
+        assertAllowedUpstream(String(baseURL), loadConfig().port);
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          reasonCode: err?.reasonCode || 'invalid_upstream_url',
+          provider: id,
+          error: err?.message || String(err),
+        });
       }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
       const { baseForWire } = await import('../providers/wire.js');
@@ -3928,7 +3968,13 @@ export function registerConsoleRoutes(
             model: modelId,
             provider: id,
             kind,
-            headers: sanitizeExtraHeaders(def?.options?.headers),
+            headers: sanitizeExtraHeaders(
+              def?.options?.headers
+                ? Object.fromEntries(
+                    Object.entries(def.options.headers).map(([k, v]) => [k, expandEnvTemplate(String(v))]),
+                  )
+                : undefined,
+            ),
           });
           if (result.ok) break probes;
           // Key-scoped refusal → this key is done, hand over to the next one.
@@ -4781,7 +4827,7 @@ export function registerConsoleRoutes(
     app.get(`${prefix}/credential-sync`, ocHandlers.credentialSyncStatus);
     app.post(`${prefix}/credential-sync/toggle`, ocHandlers.credentialSyncToggle);
     app.post(`${prefix}/credential-sync/run`, withPoolSync(registry, ocHandlers.credentialSyncRun));
-    app.get(`${prefix}/opencode/npm-vocabulary`, ocHandlers.npmVocabulary);
+    app.get(`${prefix}/opencode/protocol-vocabulary`, ocHandlers.protocolVocabulary);
     app.get(`${prefix}/opencode/providers`, ocHandlers.list);
     app.get(`${prefix}/opencode/catalog`, ocHandlers.catalog);
     app.get(`${prefix}/opencode/models`, ocHandlers.models);
@@ -4837,10 +4883,10 @@ export function registerConsoleRoutes(
       const ext = file.split('.').pop()?.toLowerCase();
       const mime =
         ext === 'png' ? 'image/png'
-        : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
-        : ext === 'webp' ? 'image/webp'
-        : ext === 'svg' ? 'image/svg+xml'
-        : undefined;
+          : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+            : ext === 'webp' ? 'image/webp'
+              : ext === 'svg' ? 'image/svg+xml'
+                : undefined;
       if (!mime) return reply.code(415).send({ status: 'error', error: 'unsupported logo format' });
       // Logos ship inside operator-installed packages: treat them as untrusted
       // content. SVG can carry scripts on direct navigation — lock it down;
@@ -4976,70 +5022,70 @@ export function registerConsoleRoutes(
       `${prefix}/plugins/install`,
       { bodyLimit: PLUGIN_PACKAGE_MAX_BYTES },
       async (req, reply) => {
-      const body = req.body as Buffer | string | undefined;
-      const bytes = typeof body === 'string' ? Buffer.from(body, 'binary') : body;
-      if (!bytes || bytes.length === 0) {
-        return reply.code(400).send({ status: 'error', error: 'empty body — send the plugin zip as application/octet-stream' });
-      }
-      if (bytes.length > PLUGIN_PACKAGE_MAX_BYTES) {
-        return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
-      }
-      try {
-        const { installPluginPackage, packageIdOf, pluginPackageZip, listInstalledPlugins: listing } =
-          await import('../plugins/host.js');
-        // Snapshot the version this upload is about to REPLACE (a packaged one
-        // — a dev-tree plugin is not ours to materialize here). A failed upgrade
-        // must not delete a working install.
-        let previous: Uint8Array | undefined;
+        const body = req.body as Buffer | string | undefined;
+        const bytes = typeof body === 'string' ? Buffer.from(body, 'binary') : body;
+        if (!bytes || bytes.length === 0) {
+          return reply.code(400).send({ status: 'error', error: 'empty body — send the plugin zip as application/octet-stream' });
+        }
+        if (bytes.length > PLUGIN_PACKAGE_MAX_BYTES) {
+          return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
+        }
         try {
-          const target = packageIdOf(new Uint8Array(bytes));
-          const existing = listing().find((p) => p.id === target);
-          if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
-        } catch {
-          // unreadable upload: installPluginPackage below reports it properly
-        }
-        const { id: installed, version: installedVersion, replacedVersion } = installPluginPackage(new Uint8Array(bytes));
-        const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
-        await loadInstalledPlugins();
-        const plugins = listInstalledPlugins();
-        const view = plugins.find((p) => p.id === installed && !p.disabled);
-        if (!view?.loaded) {
-          // a package that cannot load would re-fail every boot — discard it;
-          // discard BEFORE preset sync / pool refresh so a broken package
-          // registers nothing
-          const { discardPluginPackage } = await import('../plugins/host.js');
-          discardPluginPackage(installed);
-          // Roll BACK to the version that was working until this upload, so a
-          // bad upgrade is a no-op instead of a lost plugin.
-          if (previous) {
-            // A ROLLBACK is the one legitimate downgrade: the caller did not
-            // ask for it, the loader did — the version guard exists for
-            // uploads, and it must not block the recovery path.
-            installPluginPackage(previous, { allowDowngrade: true });
-            await loadInstalledPlugins();
-            return reply.code(422).send({
-              status: 'error',
-              error: `package rejected and discarded (${view?.error ?? 'unknown error'}); rolled back to the previously installed version`,
-              plugins: listInstalledPlugins(),
-            });
+          const { installPluginPackage, packageIdOf, pluginPackageZip, listInstalledPlugins: listing } =
+            await import('../plugins/host.js');
+          // Snapshot the version this upload is about to REPLACE (a packaged one
+          // — a dev-tree plugin is not ours to materialize here). A failed upgrade
+          // must not delete a working install.
+          let previous: Uint8Array | undefined;
+          try {
+            const target = packageIdOf(new Uint8Array(bytes));
+            const existing = listing().find((p) => p.id === target);
+            if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
+          } catch {
+            // unreadable upload: installPluginPackage below reports it properly
           }
-          // Reload AFTER the discard: otherwise the response would hand the
-          // console a row for a package that is no longer on disk (the list is
-          // the disk's truth, not the last failed import's).
+          const { id: installed, version: installedVersion, replacedVersion } = installPluginPackage(new Uint8Array(bytes));
+          const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
           await loadInstalledPlugins();
-          return reply
-            .code(422)
-            .send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins: listInstalledPlugins() });
+          const plugins = listInstalledPlugins();
+          const view = plugins.find((p) => p.id === installed && !p.disabled);
+          if (!view?.loaded) {
+            // a package that cannot load would re-fail every boot — discard it;
+            // discard BEFORE preset sync / pool refresh so a broken package
+            // registers nothing
+            const { discardPluginPackage } = await import('../plugins/host.js');
+            discardPluginPackage(installed);
+            // Roll BACK to the version that was working until this upload, so a
+            // bad upgrade is a no-op instead of a lost plugin.
+            if (previous) {
+              // A ROLLBACK is the one legitimate downgrade: the caller did not
+              // ask for it, the loader did — the version guard exists for
+              // uploads, and it must not block the recovery path.
+              installPluginPackage(previous, { allowDowngrade: true });
+              await loadInstalledPlugins();
+              return reply.code(422).send({
+                status: 'error',
+                error: `package rejected and discarded (${view?.error ?? 'unknown error'}); rolled back to the previously installed version`,
+                plugins: listInstalledPlugins(),
+              });
+            }
+            // Reload AFTER the discard: otherwise the response would hand the
+            // console a row for a package that is no longer on disk (the list is
+            // the disk's truth, not the last failed import's).
+            await loadInstalledPlugins();
+            return reply
+              .code(422)
+              .send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins: listInstalledPlugins() });
+          }
+          // presets register at install time (same contract as boot/reload) —
+          // after a verified successful load, BEFORE the pool refresh so the
+          // fresh defs are routable immediately
+          const registered = await syncPluginPresets();
+          await refreshDirectPool(registry);
+          return { status: 'ok', id: installed, version: installedVersion, replacedVersion, plugins, registered };
+        } catch (err) {
+          return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
         }
-        // presets register at install time (same contract as boot/reload) —
-        // after a verified successful load, BEFORE the pool refresh so the
-        // fresh defs are routable immediately
-        const registered = await syncPluginPresets();
-        await refreshDirectPool(registry);
-        return { status: 'ok', id: installed, version: installedVersion, replacedVersion, plugins, registered };
-      } catch (err) {
-        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
-      }
       },
     );
     // Per-credential credential writes (reorder / rename / disconnect).
@@ -5069,10 +5115,21 @@ export function registerConsoleRoutes(
   app.get('/api/admin/catalog/logo', handleCatalogLogo);
 
   // 9. Client API Keys Management (for external client access)
+  // List is always masked — plaintext leaves only via the reveal endpoint
+  // (Playground / copy flows). Defense in depth on top of the CORS tighten.
   const handleListApiKeys = async () => {
-    return { status: 'ok', keys: listApiKeys(false) };
+    return { status: 'ok', keys: listApiKeys(true) };
   };
   app.get('/api/admin/api-keys', handleListApiKeys);
+
+  const handleRevealApiKey = async (req: any, reply: any) => {
+    const { id } = req.params as { id: string };
+    const key = listApiKeys(false).find((k) => k.id === id);
+    if (!key) return reply.status(404).send({ success: false, error: `API key '${id}' not found` });
+    reply.header('Cache-Control', 'no-store');
+    return { status: 'ok', id: key.id, key: key.key };
+  };
+  app.post('/api/admin/api-keys/:id/reveal', handleRevealApiKey);
 
   const handleCreateApiKey = async (req: any, reply: any) => {
     const body = req.body as { name: string; key?: string; expiresAt?: string; description?: string; modelAccess?: unknown; limits?: unknown };
@@ -5794,7 +5851,7 @@ export function registerConsoleRoutes(
       let truncated = false;
       if (reader) {
         const dec = new TextDecoder();
-        for (;;) {
+        for (; ;) {
           const { done, value } = await reader.read();
           if (done) break;
           total += value.byteLength;

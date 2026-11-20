@@ -2,6 +2,8 @@ import { EffortMap, ModelPricing, ReasoningEffort, TierLevel } from '../types/ro
 
 import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
+import type { WireKind } from '../providers/wire.js';
+
 import type { QuotaProbeConfigEntry } from '../quota/types.js';
 
 /**
@@ -12,7 +14,20 @@ import type { QuotaProbeConfigEntry } from '../quota/types.js';
  */
 export interface ProviderConfig {
   name: string;
-  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'dispatch';
+  /** Protocol id the executor is built for (`providers/protocol.ts`), or the
+   *  `dispatch` sentinel for a per-model mixture. A protocol id is NOT a closed
+   *  enum: core shapes are listed for readers, and any other id is a
+   *  plugin-owned wire (`providers/plugin-wires.ts`) — a plugin protocol needs
+   *  no core edit to be constructible. */
+  type:
+    | 'openai-chat'
+    | 'openai-responses'
+    | 'anthropic-messages'
+    | 'google-gemini'
+    | 'systemone'
+    | 'unroutable'
+    | 'dispatch'
+    | (string & {});
   baseUrl: string;
   apiKey: string;
   organization?: string;
@@ -45,8 +60,10 @@ export interface ModelRegistration {
    */
   tier: TierLevel;
   pricing: ModelPricing;
-  /** resolved wire for direct execution (model-level npm beats provider npm). */
-  wire?: 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy';
+  /** Resolved wire for direct execution (model-level npm beats provider npm).
+   *  Core shapes plus PLUGIN-owned wire ids — the plugin half is open-ended,
+   *  filled from the loaded plugin manifests (`providers/plugin-wires.ts`). */
+  wire?: WireKind;
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
   /**
@@ -70,17 +87,29 @@ export interface ModelRegistration {
    */
   temperature?: boolean;
   /**
-   * Tri-state developer-role capability flag. The OpenAI `developer` role
-   * (introduced with the o1 series) is accepted by OpenAI official endpoints
-   * but rejected with a 400 by the long tail of OpenAI-compatible servers
-   * (DeepSeek, Qwen, Kimi, vLLM, llama.cpp, Gemini-compat, ...) — and no
-   * catalog source publishes role support. The SAFE DEFAULT is therefore
-   * conversion: undefined / false → the openai wire rewrites
-   * `role:'developer'` messages to `system` (semantically equivalent);
-   * true = passthrough verbatim, for upstreams that reject `system` or must
-   * see the role unmodified (declare via overrides.json).
+   * Developer-role capability flag, retained for config forward-compatibility.
+   * The OpenAI `developer` role (o1 series) is accepted by OpenAI official
+   * endpoints but rejected with a 400 by the long tail of OpenAI-compatible
+   * servers (DeepSeek, Qwen, Kimi, vLLM, llama.cpp, Gemini-compat, ...).
+   *
+   * CURRENTLY INERT: the canonical IR -> Chat projection folds every
+   * `instructions` + `system`/`developer` block into ONE `system` message so
+   * cross-provider failover cannot duplicate the prompt, so all three
+   * values (undefined / false / true) produce byte-identical payloads. Do not
+   * rely on this flag to preserve the native role; that would require an
+   * adapter-level opt-out from the folding contract instead.
    */
   supportsDeveloperRole?: boolean;
+  /**
+   * When false, OpenAIChatProvider omits `stream_options: { include_usage: true }`
+   * on streaming requests for legacy OpenAI-compatible servers that 400 on it.
+   */
+  supportsStreamOptions?: boolean;
+  /**
+   * Override token cap field on OpenAI Chat outbound payloads (`max_completion_tokens`
+   * vs `max_tokens`). Undefined auto-detects known o1/o3/o4/gpt-5 model ids.
+   */
+  usesMaxCompletionTokens?: boolean;
   /**
    * Model-default thinking level — pinned when the client OMITS
    * `reasoning_effort` entirely (explicit values, 'none' included, always
@@ -1011,10 +1040,9 @@ export interface CompressionConfig {
  * OFF by default (opt-in): captured bodies may contain sensitive data, and the
  * console /api/admin/* endpoints are auth-exempt — enable consciously.
  * Request header names are recorded; credential-shaped header VALUES are
- * redacted ([REDACTED]) by the exchange serializer. `redactSecrets: false`
- * opts OUT of that redaction — raw Authorization / api-key values (and
- * auth-by-query params) then persist in the archive. Default true; turning
- * it off is a conscious operator decision, never the shipped posture.
+ * redacted ([REDACTED]) by the exchange serializer. `redactSecrets` is
+ * always forced on at runtime (false is ignored) — live credentials must
+ * never land in the archive.
  *
  * The requestCapture tree (audit-log capture config).
  */
@@ -1038,13 +1066,9 @@ export interface RequestCaptureConfig {
    */
   storeMedia?: boolean;
   /**
-   * Credential redaction for captured headers and query strings (default
-   * true). When false, values matching the credential deny-list
-   * (authorization / api-key / cookie / token / ... — see
-   * `DENY_HEADER_SUBSTRINGS` in observability/http-exchange.ts) are written
-   * VERBATIM to the capture archive, including upstream provider keys.
-   * Useful to debug exactly what an upstream received; the archive then
-   * holds live credentials — protect it accordingly.
+   * Credential redaction for captured headers, query strings and bodies
+   * (always on). The key remains for forward-compat YAML; a false value is
+   * ignored at load/apply time.
    */
   redactSecrets?: boolean;
 }

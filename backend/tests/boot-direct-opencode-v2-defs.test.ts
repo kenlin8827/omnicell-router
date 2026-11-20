@@ -7,15 +7,14 @@ import path from 'node:path';
  * Opencode v2 provider-definition READ normalization.
  *
  * Two layers:
- *  1. wireFor/probeKindFor units: `@opencode/ai/providers/<segment>` opencode v2
- *     packages map to the same wire kinds as their `@ai-sdk/*` opencode v1
- *     counterparts; unknown segments are 'unroutable' (exclusion with a
- *     reason, never a crash, never a guessed wire).
+ *  1. wireFor/probeKindFor units: `@ai-sdk/*` npm aliases map to their wire
+ *     kinds; the retired `@opencode/ai/providers/<segment>` vocabulary is
+ *     'unroutable' (exclusion with a reason, never a crash, never a guess).
  *  2. end-to-end boot through the REAL user-config parser (no user-config
  *     mock): a mixed opencode v1+opencode v2 opencode.jsonc boots — opencode v2 `settings.baseURL`/
  *     top-level `headers`/`package` normalize, model-level
- *     `provider.package` feeds the npm precedence chain, and an unknown opencode v2
- *     package drops its provider with the unroutable reason.
+ *     `provider.package` feeds the npm precedence chain, and a retired opencode
+ *     v2 package drops its provider with the unroutable reason.
  *
  * The config surface is sandboxed per-test via XDG_* (user-config.test.ts:25-43
  * precedent, restored in afterEach); the credential side uses
@@ -29,60 +28,39 @@ import path from 'node:path';
 import { wireFor, unroutableInfo } from '../src/providers/wire.js';
 import { probeKindFor } from '../src/opencode/probe.js';
 
-describe('wireFor — opencode v2 @opencode/ai/providers/* forms', () => {
-  it('maps known v2 package segments to their wire kinds', () => {
-    expect(wireFor('@opencode/ai/providers/anthropic')).toBe('anthropic');
-    expect(wireFor('@opencode/ai/providers/google')).toBe('google');
-    expect(wireFor('@opencode/ai/providers/openai')).toBe('responses');
-    expect(wireFor('@opencode/ai/providers/openai-compatible')).toBe('openai');
+describe('wireFor — npm wire resolution (retired package vocabulary refused)', () => {
+  it('resolves @ai-sdk/* aliases to their wire kinds', () => {
+    expect(wireFor('@ai-sdk/anthropic')).toBe('anthropic-messages');
+    expect(wireFor('@ai-sdk/google')).toBe('google-gemini');
+    expect(wireFor('@ai-sdk/openai')).toBe('openai-responses');
+    expect(wireFor('@ai-sdk/openai-compatible')).toBe('openai-chat');
+    expect(wireFor('@ai-sdk/azure')).toBe('unroutable');
+    expect(wireFor('@AI-SDK/Azure')).toBe('unroutable');
   });
 
-  it('signing/URL-building v2 segments stay unroutable', () => {
-    expect(wireFor('@opencode/ai/providers/azure')).toBe('unroutable');
-    expect(wireFor('@opencode/ai/providers/vertex')).toBe('unroutable');
-    expect(wireFor('@opencode/ai/providers/google-vertex')).toBe('unroutable');
-    expect(wireFor('@opencode/ai/providers/bedrock')).toBe('unroutable');
-    expect(wireFor('@opencode/ai/providers/amazon-bedrock')).toBe('unroutable');
-  });
-
-  it('unknown opencode v2 segment → unroutable with a package-shaped code (never a guess)', () => {
-    expect(wireFor('@opencode/ai/providers/mystery')).toBe('unroutable');
-    // The console composes the wording; the backend owns the machine limb.
+  it('refuses every @opencode/ai/providers/* value at the wire layer (normalized earlier)', () => {
+    for (const pkg of [
+      '@opencode/ai/providers/openai',
+      '@opencode/ai/providers/anthropic',
+      '@opencode/ai/providers/azure',
+      '@opencode/ai/providers/mystery',
+    ]) {
+      expect(wireFor(pkg)).toBe('unroutable');
+    }
     expect(unroutableInfo('@opencode/ai/providers/mystery')).toEqual({
       code: 'unknownPackage',
       npm: '@opencode/ai/providers/mystery',
     });
-    // signing segments are a DIFFERENT code (dedicated endpoint construction)
-    expect(unroutableInfo('@opencode/ai/providers/azure')).toEqual({
-      code: 'dedicatedTransport',
-      npm: '@opencode/ai/providers/azure',
-    });
   });
 
-  it('prototype-member segments never masquerade as known wires (security P3-1)', () => {
-    // OPENCODE_V2_SEGMENT_WIRES is a plain object — without Object.hasOwn, 'constructor'
-    // resolves to Object's constructor function and the store would hand a
-    // Function to callers typed as WireKind.
-    expect(wireFor('@opencode/ai/providers/constructor')).toBe('unroutable');
-    expect(wireFor('@opencode/ai/providers/toString')).toBe('unroutable');
-    expect(wireFor('@opencode/ai/providers/prototype')).toBe('unroutable');
-    expect(typeof wireFor('@opencode/ai/providers/constructor')).toBe('string');
+  it('unknown packages keep the legacy heuristic fallback', () => {
+    expect(wireFor('some-random-sdk')).toBe('openai-chat');
+    expect(wireFor(undefined, 'https://api.anthropic.com')).toBe('anthropic-messages');
   });
 
-  it('internal @ai-sdk/* catalog names still resolve (the reader aliases package→npm)', () => {
-    expect(wireFor('@ai-sdk/anthropic')).toBe('anthropic');
-    expect(wireFor('@ai-sdk/google')).toBe('google');
-    expect(wireFor('@ai-sdk/openai')).toBe('responses');
-    expect(wireFor('@ai-sdk/openai-compatible')).toBe('openai');
-    expect(wireFor('@ai-sdk/azure')).toBe('unroutable');
-    expect(wireFor('some-random-sdk')).toBe('openai'); // legacy heuristic fallback preserved
-    expect(wireFor(undefined, 'https://api.anthropic.com')).toBe('anthropic');
-  });
-
-  it('probeKindFor delegates to wireFor for BOTH shapes (probe.ts:52-54)', () => {
-    expect(probeKindFor('https://v2.example.test/v1', '@opencode/ai/providers/anthropic')).toBe('anthropic');
-    expect(probeKindFor('https://v2.example.test/v1', '@opencode/ai/providers/openai-compatible')).toBe('openai');
-    expect(probeKindFor('https://v2.example.test/v1', '@ai-sdk/anthropic')).toBe('anthropic');
+  it('probeKindFor delegates to wireFor', () => {
+    expect(probeKindFor('https://v2.example.test/v1', '@ai-sdk/anthropic')).toBe('anthropic-messages');
+    expect(probeKindFor('https://v2.example.test/v1', '@ai-sdk/openai-compatible')).toBe('openai-chat');
     expect(probeKindFor('https://v2.example.test/v1', '@opencode/ai/providers/mystery')).toBe('unroutable');
   });
 });
@@ -210,7 +188,7 @@ describe('boot-direct — mixed valid / retired-shape nodes in the defs file (re
     expect(v2Instance!.config.baseUrl).toBe('https://v2.example.test/v1'); // settings.baseURL → options.baseURL
     expect(v2Instance!.config.apiKey).toBe('sk-opencode-v2-store'); // store segment (no inline in settings)
     expect(v2Instance!.config.headers).toEqual({ 'X-Tenant': 't2' }); // opencode v2 top-level headers → options.headers
-    expect(v2Instance!.wires.sort()).toEqual(['anthropic', 'openai']); // model-level provider.package honored
+    expect(v2Instance!.wires.sort()).toEqual(['anthropic-messages', 'openai-chat']); // model-level provider.package honored
 
     // Retired shape: not routed, and not silently either — the drop is reported with
     // the exact offending paths so the operator can migrate the node.

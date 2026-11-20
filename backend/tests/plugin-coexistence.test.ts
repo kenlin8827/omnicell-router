@@ -335,7 +335,7 @@ describe('install → uninstall lifecycle', () => {
             {
               presetId: 'life-cycle-preset',
               providerId: PROVIDER,
-              npm: '@ai-sdk/openai-compatible',
+              protocol: '@ai-sdk/openai-compatible',
               baseUrl: 'https://example.invalid/v1',
               displayName: 'Life Cycle',
             },
@@ -474,7 +474,7 @@ describe('install → uninstall lifecycle', () => {
           presets: providerIds.map((pid) => ({
             presetId: `${pid}-preset`,
             providerId: pid,
-            npm: '@ai-sdk/openai-compatible',
+            protocol: '@ai-sdk/openai-compatible',
             baseUrl: `https://${pid}.invalid/v1`,
             displayName: pid,
           })),

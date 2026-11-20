@@ -19,6 +19,7 @@ import { loadConfig } from '../src/config/index.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
+import { responseIR } from './helpers/ir.js';
 
 /**
  * Forward-proxy suite. NOTE: run per-file (`bun test tests/forward-proxy.test.ts`)
@@ -239,14 +240,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
       process: async (request: any, ctx: any) => {
         calls.push({ request, ctx });
         return {
-          response: {
-            id: 'mock-cmpl',
-            object: 'chat.completion',
-            created: 1,
-            model: 'mock-1',
-            choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
+          response: responseIR('hi', { id: 'resp-mock', createdAt: 1, model: 'mock-1' }),
           tierUsed: 'lite',
           modelUsed: 'mock-1',
           fallbackOccurred: false,
@@ -281,7 +275,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
     assert.equal(res.headers.get('x-ocr-model'), 'mock-1');
     assert.equal(res.headers.get('x-ocr-tier'), 'lite');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].ctx.wire, 'chat');
+    assert.equal(calls[0].ctx.wire, 'openai-chat');
 
     // 2) non-LLM path → not intercepted (transparent forward territory)
     const res2 = await fetch(`http://127.0.0.1:${port}/some/other/api`, { method: 'POST', body: 'x' });
@@ -338,11 +332,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
           },
         });
         return {
-          response: {
-            id: 'm', object: 'chat.completion', created: 1, model: 'mock-1',
-            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
+          response: responseIR('ok', { id: 'resp-m', createdAt: 1, model: 'mock-1' }),
           tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
           sessionId: 'sess-1', requestId: 'trace-1', latencyMs: 1,
         };
@@ -428,7 +418,11 @@ describe('forward-proxy: LLM protocol interceptor', () => {
         authorization: 'Bearer sk-real-upstream-secret',
         key: 'bare-key-secret',
       },
-      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: marker }] }),
+      body: JSON.stringify({
+        model: 'auto',
+        messages: [{ role: 'user', content: `@ocr-tier-up\n${marker}` }],
+        client_extension: { keep: true },
+      }),
     });
     assert.equal(res.status, 200);
     await res.text();
@@ -467,6 +461,11 @@ describe('forward-proxy: LLM protocol interceptor', () => {
     assert.equal(h.authorization, '[REDACTED]', 'authorization value redacted in the MITM capture');
     assert.equal(h.key, '[REDACTED]', 'bare `key` header redacted (A1 deny-list addition)');
     assert.equal(h['content-type'], 'application/json', 'non-credential header passes through untouched');
+    const capturedBody = JSON.parse(requestEvent.wire.requestBody);
+    assert.ok(Array.isArray(capturedBody.messages), 'MITM capture keeps the Chat protocol envelope');
+    assert.equal(capturedBody.input, undefined, 'MITM capture is not rewritten to IR');
+    assert.deepEqual(capturedBody.client_extension, { keep: true });
+    assert.ok(!requestEvent.wire.requestBody.includes('@ocr-'), 'directives stay scrubbed on the MITM leg');
     // Raw secrets must be nowhere in the archive (any event, any file).
     const all = readAllEvents().map((ev) => JSON.stringify(ev)).join('\n');
     assert.ok(!all.includes('sk-real-upstream-secret'), 'upstream secret never persists');
@@ -504,11 +503,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
         // Hold the handler open; the test kills the socket mid-flight.
         await new Promise<void>((r) => (releaseProcess = r));
         return {
-          response: {
-            id: 'm', object: 'chat.completion', created: 1, model: 'mock-1',
-            choices: [{ index: 0, message: { role: 'assistant', content: 'never' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
+          response: responseIR('never', { id: 'resp-m', createdAt: 1, model: 'mock-1' }),
           tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
           sessionId: 'sess-9', requestId: 'trace-9', latencyMs: 1,
         };
@@ -585,18 +580,14 @@ describe('forward-proxy: LLM protocol interceptor', () => {
     return { port, close: () => srv.close(), calls };
   }
 
-  const mitmChatCompletion = (content: string) => ({
-    response: {
-      id: 'mock-cmpl', object: 'chat.completion', created: 1, model: 'mock-1',
-      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-    },
+  const mitmExecutionResult = (content: string) => ({
+    response: responseIR(content, { id: 'resp-mock', createdAt: 1, model: 'mock-1' }),
     tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
     sessionId: 'sess-h', requestId: 'trace-h', latencyMs: 1,
   });
 
   it('MITM anthropic stream: full message_start…message_stop frame sequence', async () => {
-    const h = await mitmHarness(async () => mitmChatCompletion('hi'));
+    const h = await mitmHarness(async () => mitmExecutionResult('hi'));
     const res = await fetch(`http://127.0.0.1:${h.port}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -622,7 +613,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
 
   it('MITM responses wire: create → previous_response_id roundtrip + stream (C-2)', async () => {
     const stamp = Date.now();
-    const h = await mitmHarness(async () => mitmChatCompletion('ok'));
+    const h = await mitmHarness(async () => mitmExecutionResult('ok'));
 
     const t1 = await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
       method: 'POST',
@@ -644,15 +635,9 @@ describe('forward-proxy: LLM protocol interceptor', () => {
       body: JSON.stringify({ model: 'auto', previous_response_id: j1.id, input: `RESP-SECOND-${stamp}` }),
     });
     assert.equal(t2.status, 200, 'previous_response_id resolves — shared RespStore on MITM too');
-    const history: any[] = h.calls[1].request.messages;
-    assert.ok(
-      history.some((m) => String(m.content || '').includes(`RESP-FIRST-${stamp}`)),
-      'rebuilt history carries turn 1'
-    );
-    assert.ok(
-      history.some((m) => String(m.content || '').includes(`RESP-SECOND-${stamp}`)),
-      'delta carries turn 2'
-    );
+    const history = JSON.stringify(h.calls[1].request.input);
+    assert.ok(history.includes(`RESP-FIRST-${stamp}`), 'rebuilt history carries turn 1');
+    assert.ok(history.includes(`RESP-SECOND-${stamp}`), 'delta carries turn 2');
 
     const t3 = await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
       method: 'POST',
@@ -690,14 +675,7 @@ describe('forward-proxy: over-the-wire routing (interceptor + MITM combined)', (
   it('a proxied client POST /v1/chat/completions is routed through the orchestrator', async () => {
     const stub = {
       process: async () => ({
-        response: {
-          id: 'mock-cmpl-2',
-          object: 'chat.completion',
-          created: 1,
-          model: 'mock-2',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        },
+        response: responseIR('hi', { id: 'resp-mock-2', createdAt: 1, model: 'mock-2' }),
         tierUsed: 'plus',
         modelUsed: 'mock-2',
         fallbackOccurred: false,

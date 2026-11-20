@@ -20,6 +20,7 @@ import {
   type FailureEvent,
 } from '../src/observability/failure-events.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
+import { evaluateIR, processIR } from './helpers/ir.js';
 
 // ---------------------------------------------------------------------------
 // The failure_events ledger (observability plane): one event per failed
@@ -266,7 +267,7 @@ describe('Serving emitter — a real candidate-pool failure lands in the ledger'
     });
     try {
       const config = makeConfig(
-        [{ name: 'rl', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'rl', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'rl/m1', provider: 'rl', upstreamModel: 'm1', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { orchestrator, registry } = bootServer(config);
@@ -278,7 +279,7 @@ describe('Serving emitter — a real candidate-pool failure lands in the ledger'
       const req: ChatCompletionRequest = { model: 'rl/m1', messages: [{ role: 'user', content: 'hello' }] };
       // The chain has exactly one candidate: the attempt fails, the in-place
       // retry fails too, then the pool exhausts and process() throws.
-      await expect(orchestrator.process(req)).rejects.toBeTruthy();
+      await expect(processIR(orchestrator, req)).rejects.toBeTruthy();
 
       const rows = getFailureEventLog().list();
       expect(rows.length).toBe(1);
@@ -308,12 +309,12 @@ describe('Decision emitter — wire failure and deadline land as role=l2-decisio
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-fail', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-fail', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-fail/jev', provider: 'l2-fail', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
       registry.refreshCredentialChain('l2-fail', [toCallCredential('sk-test')]);
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-fail/jev', timeoutMs: 5000 },
         registry,
@@ -353,11 +354,11 @@ describe('Decision emitter — wire failure and deadline land as role=l2-decisio
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-slow', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
+        [{ name: 'l2-slow', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
         [{ id: 'l2-slow/jev', provider: 'l2-slow', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      const result = await Layer2Decision.evaluate(
+      const result = await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-slow/jev', timeoutMs: 150 },
         registry,
@@ -395,7 +396,7 @@ describe('GET /api/admin/failure-events — equality filters, newest first', () 
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-ep', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-ep', type: 'openai-chat', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-ep/jev', provider: 'l2-ep', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { app, registry } = bootServer(config);
@@ -422,7 +423,7 @@ describe('GET /api/admin/failure-events — equality filters, newest first', () 
       expect(byPair.json().events.map((e: FailureEvent) => e.model)).toEqual(['b/m2']);
 
       // Sanity: the decision layer path feeds the same ring (real emission, not seeding).
-      await Layer2Decision.evaluate(
+      await evaluateIR(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-ep/jev', timeoutMs: 5000 },
         registry

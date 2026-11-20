@@ -8,7 +8,7 @@ import type { SupportedClient } from '../types.js';
  * registry (`plugin-adapters.ts`) can ask "is this id reserved?" without
  * pulling the adapter classes themselves. Those classes import the config
  * loader, user-config and the credential store, and the plugin host sits under
- * `providers/dispatch.ts` — registering a package must not drag the whole
+ * `providers/executors/dispatch.ts` — registering a package must not drag the whole
  * Client Hub into every caller that merely resolves a provider.
  *
  * The keys are the SINGLE source: `CORE_ADAPTERS` is typed
