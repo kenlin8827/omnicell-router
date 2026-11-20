@@ -88,7 +88,7 @@ New module `backend/src/harness/` — one responsibility per file, no god-module
 | `types.ts` | `HarnessKind`, `HostId`, `CopyState`, `ArtifactSummary`, `ArtifactDetail`, `InstallPayload`, `SourceAdapter`, `Pin` | contain logic |
 | `hosts.ts` | host identity table (`HOSTS`: id + label, catalog order) | hold landing paths (they live in `adapters/`) |
 | `adapters/<host>.ts` | one file per host: skills dirs, MCP landing, plugin landing (each path once) | duplicate another host's path |
-| `adapters/declarative.ts` | the shared `defineHost` rules + capability interfaces + guards | hardcode a host-specific path |
+| `adapters/base.ts` | the shared `BaseHostAdapter` rules + capability interfaces + guards | hardcode a host-specific path |
 | `hash.ts` | hash normalization (LF, BOM strip, sorted paths, no mode) + content hashing | know about sources |
 | `paths.ts` | target path composition + containment checks (absolute, `..`, reserved names, 240-char cap) | touch the network |
 | `manifest.ts` | per-env manifest read/write, schema version gate (no migration), advisory lock | write files outside its root |

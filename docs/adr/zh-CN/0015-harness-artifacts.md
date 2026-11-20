@@ -38,7 +38,7 @@
 两个文件分担这张表，边界是硬性的：
 
 - `hosts.ts` 回答**有哪些宿主、顺序、叫什么**（`HOSTS`：只有 id + label）。
-- `adapters/<host>.ts` 回答**该运行时读什么、怎么写**——每宿主一个文件，每个落点路径只声明一次。共享规则（`defineHost` 与 `SkillsHost` / `McpHost` / `PluginHost` 构建器）在 `adapters/declarative.ts` 里，所以错路径是一个小文件的数据错误，错规则是一处实现错误。
+- `adapters/<host>.ts` 回答**该运行时读什么、怎么写**——每宿主一个文件，每个落点路径只声明一次。共享规则（`BaseHostAdapter` 与 `SkillsHost` / `McpHost` / `PluginHost` 规格）在 `adapters/base.ts` 里，所以错路径是一个小文件的数据错误，错规则是一处实现错误。
 
 能力是**彼此独立的接口**，不是每宿主九个方法：十六个宿主有技能落点，八个有经核实的 MCP 落点（四个文件合并、四个 CLI 物化），十二个有经核实的插件落点（任何已声明写入路径——本地 config、子进程或 marketplace 命令链；见宿主目录表）。不会 MCP 的宿主根本不实现 `McpHost`——"没有这个能力"是类型事实，而不是运行时抛 `unsupported`。
 

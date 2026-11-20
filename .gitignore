@@ -17,6 +17,7 @@ tmp-*.html
 .omp/
 .ocp/
 .workbuddy/memory/
+.workbuddy/reviews/
 # JetBrains project metadata (.idea/ + the root module file) is per-machine IDE
 # state, not project config — never shipped.
 .idea/

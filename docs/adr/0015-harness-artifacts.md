@@ -123,8 +123,8 @@ Two files share the table, with a hard split:
 
 - `hosts.ts` answers **which hosts exist, in which order, called what** (`HOSTS`: id + label only).
 - `adapters/<host>.ts` answers **what this runtime reads and how it is written** — one file per host,
-  every landing path spelled exactly once. `adapters/declarative.ts` holds the shared rules
-  (`defineHost` + the `SkillsHost` / `McpHost` / `PluginHost` builders), so a wrong path is one
+  every landing path spelled exactly once. `adapters/base.ts` holds the shared rules
+  (`BaseHostAdapter` + the `SkillsHost` / `McpHost` / `PluginHost` specs), so a wrong path is one
   small file's data bug and a wrong rule is one implementation bug.
 
 Capabilities are **separate interfaces**, not nine methods on every host: sixteen hosts have a skills
