@@ -404,7 +404,7 @@ export const zhCN: TranslationDict = {
     grpHarness: 'Harness增强',
     skills: '技能管理',
     mcp: 'MCP管理',
-    mcpBrowser: 'MCP探测',
+    mcpBrowser: 'MCP调试',
     plugins: '插件管理',
 
     grpSystem: '系统与配置',
@@ -3584,7 +3584,7 @@ export const zhCN: TranslationDict = {
     },
   },
   mcpBrowser: {
-    title: 'MCP 探测与调试台',
+    title: 'MCP 调试台',
     subtitle: '连接已配置或自定义的 MCP Server，浏览 Tools、Resources、Prompts 与参数 Schema，并在线发起调试调用。',
     modeHost: '从宿主读取',
     modeCustom: '自定义连接',

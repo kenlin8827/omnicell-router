@@ -414,7 +414,7 @@ export const enUS: TranslationDict = {
     grpHarness: 'Harness Enhancements',
     skills: 'Skills Management',
     mcp: 'MCP Management',
-    mcpBrowser: 'MCP Probe',
+    mcpBrowser: 'MCP Debug',
     plugins: 'Plugin Management',
 
     grpSystem: 'System & Settings',

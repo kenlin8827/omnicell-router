@@ -44,6 +44,7 @@ import {
 } from '../lib/api';
 import { Combobox, type ComboboxOption } from '../components/Combobox';
 import { Dialog } from '../components/Dialog';
+import { ProjectPicker, reconcileProjectSelection } from '../components/ProjectPicker';
 import { ResultViewer } from '../components/ResultViewer';
 import { SegGroup } from '../components/SegGroup';
 import { SuggestInput } from '../components/SuggestInput';
@@ -280,7 +281,7 @@ function schemaTypeLabel(prop: Record<string, unknown>): string {
   return 'any';
 }
 
-export const McpBrowserPage: React.FC = () => {
+export const McpDebugPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
@@ -845,15 +846,12 @@ export const McpBrowserPage: React.FC = () => {
     [t]
   );
 
-  const projectOptions: ComboboxOption[] = useMemo(
-    () =>
-      projects.map((p) => ({
-        value: p.id,
-        label: p.name || p.path,
-        meta: p.path,
-      })),
-    [projects]
-  );
+  const handleProjectsChange = useCallback((updatedProjects: ProjectItem[], updatedActiveId: string | null) => {
+    setProjects(updatedProjects);
+    setSelectedProjectId((prev) => reconcileProjectSelection(prev, updatedProjects, updatedActiveId));
+    setInstallProjectId((prev) => reconcileProjectSelection(prev, updatedProjects, updatedActiveId));
+    setInstallPlan(null);
+  }, []);
 
   const serverOptions: ComboboxOption[] = useMemo(
     () => hostServers.map((s) => ({ value: s, label: s })),
@@ -1302,12 +1300,13 @@ export const McpBrowserPage: React.FC = () => {
             </div>
 
             {scope === 'project' && (
-              <div style={{ minWidth: 180, flex: '1 1 220px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ minWidth: 200, flex: '1 1 240px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>{t('mcpBrowser.project')}</span>
-                <Combobox
+                <ProjectPicker
+                  projects={projects}
                   value={selectedProjectId}
                   onChange={setSelectedProjectId}
-                  options={projectOptions}
+                  onProjectsChange={handleProjectsChange}
                   placeholder={t('mcpBrowser.project')}
                 />
               </div>
@@ -2698,15 +2697,17 @@ export const McpBrowserPage: React.FC = () => {
                 />
               </div>
               {installScope === 'project' && (
-                <div style={{ flex: 1, minWidth: 180, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>{t('mcpBrowser.project')}</span>
-                  <Combobox
+                  <ProjectPicker
+                    projects={projects}
                     value={installProjectId}
                     onChange={(v) => {
                       setInstallProjectId(v);
                       setInstallPlan(null);
                     }}
-                    options={projectOptions}
+                    onProjectsChange={handleProjectsChange}
+                    placeholder={t('mcpBrowser.project')}
                   />
                 </div>
               )}

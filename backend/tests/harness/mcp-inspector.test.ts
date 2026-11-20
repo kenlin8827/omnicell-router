@@ -14,17 +14,21 @@ import {
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mcp-inspect-'));
 const serverScript = path.join(tmpDir, 'mock-mcp-server.mjs');
 
+// Resolved from this file, never from `process.cwd()`: the isolated runner starts every test
+// file inside its own sandbox directory, so a cwd-relative `node_modules` would not exist there.
+const repoNodeModules = path.resolve(import.meta.dir, '../../../node_modules');
+
 fs.writeFileSync(
   serverScript,
   `
 import { McpServer, ResourceTemplate } from ${JSON.stringify(
-    path.resolve(process.cwd(), 'node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js')
+    path.join(repoNodeModules, '@modelcontextprotocol/sdk/dist/esm/server/mcp.js')
   )};
 import { StdioServerTransport } from ${JSON.stringify(
-    path.resolve(process.cwd(), 'node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js')
+    path.join(repoNodeModules, '@modelcontextprotocol/sdk/dist/esm/server/stdio.js')
   )};
 import { z } from ${JSON.stringify(
-    path.resolve(process.cwd(), 'node_modules/zod/index.js')
+    path.join(repoNodeModules, 'zod/index.js')
   )};
 
 const server = new McpServer({ name: 'mock-mcp', version: '1.2.3' });
@@ -161,5 +165,50 @@ describe('mcp-inspector', () => {
         name: '__non_existent_mcp_server__',
       })
     ).rejects.toThrow();
+  });
+
+  test('refuses a header whose secret reference the gateway process cannot resolve', async () => {
+    // An unset `${VAR}` used to expand to '' and ship `Authorization: Bearer ` to the server,
+    // surfacing as an upstream 401 'missing or wrong bearer token'. Fail with the variable name.
+    const err = await inspectMcpServer({
+      mode: 'custom',
+      transport: 'streamable-http',
+      url: 'http://127.0.0.1:1/mcp',
+      headers: { Authorization: 'Bearer ${OCR_TEST_UNSET_BEARER_XYZ}' },
+    }).catch((e: unknown) => e as Error & { code?: string });
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error & { code?: string }).code).toBe('bad_request');
+    expect((err as Error).message).toContain('OCR_TEST_UNSET_BEARER_XYZ');
+    expect((err as Error).message).toContain("header 'Authorization'");
+  });
+
+  test('reports an auth rejection once instead of falling back to SSE', async () => {
+    // A 401 is transport-independent: retrying the legacy SSE endpoint buries the real cause.
+    const posts: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        posts.push(`${req.method} ${new URL(req.url).pathname}`);
+        return new Response('{"error":"missing or wrong bearer token"}', {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    try {
+      const err = await inspectMcpServer({
+        mode: 'custom',
+        transport: 'auto',
+        url: `http://127.0.0.1:${server.port}/mcp`,
+      }).catch((e: unknown) => e as Error);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('bearer token');
+      expect((err as Error).message).toContain('[diagnosis]');
+      expect((err as Error).message).not.toContain('trying SSE');
+      expect(posts.some((p) => p.includes('/mcp'))).toBe(true);
+      expect(posts.length).toBeLessThanOrEqual(2);
+    } finally {
+      server.stop(true);
+    }
   });
 });

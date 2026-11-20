@@ -160,24 +160,71 @@ const sessionIdByKey = new Map<string, string>();
 const OPENCODE_ENV_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const SHELL_ENV_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
-/** Expand `{env:KEY}` and `${KEY}` references against process.env on the server side. */
-function expandSecretRefs(value: string): string {
-  return value
-    .replace(OPENCODE_ENV_RE, (_m, key: string) => process.env[key] ?? '')
-    .replace(SHELL_ENV_RE, (_m, key: string) => process.env[key] ?? '');
+interface ResolvedMap {
+  map: Record<string, string>;
+  /** Header/env key -> referenced variable names that the gateway process environment does not carry. */
+  unresolved: Map<string, string[]>;
+}
+
+/**
+ * Expand `{env:KEY}` and `${KEY}` references against process.env on the server side.
+ *
+ * An unset variable expands to an empty string AND is reported back. Silently sending an empty
+ * placeholder is what turns a missing variable into an upstream 401 — `Authorization: Bearer `
+ * reaches the server as `missing or wrong bearer token`, which reads exactly like a bad credential
+ * and cannot be told apart from one by the operator.
+ */
+function expandSecretRefs(value: string): { value: string; missing: string[] } {
+  const missing = new Set<string>();
+  const lookup = (key: string): string => {
+    const raw = process.env[key];
+    if (raw === undefined || raw === '') {
+      missing.add(key);
+      return '';
+    }
+    return raw;
+  };
+  const out = value
+    .replace(OPENCODE_ENV_RE, (_m, key: string) => lookup(key))
+    .replace(SHELL_ENV_RE, (_m, key: string) => lookup(key));
+  return { value: out, missing: [...missing] };
+}
+
+function resolveStringMapDetailed(input: unknown): ResolvedMap {
+  const result: ResolvedMap = { map: {}, unresolved: new Map() };
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return result;
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      const { value, missing } = expandSecretRefs(v);
+      result.map[k] = value;
+      if (missing.length > 0) result.unresolved.set(k, missing);
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      result.map[k] = String(v);
+    }
+  }
+  return result;
 }
 
 function resolveStringMap(input: unknown): Record<string, string> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-    if (typeof v === 'string') {
-      out[k] = expandSecretRefs(v);
-    } else if (typeof v === 'number' || typeof v === 'boolean') {
-      out[k] = String(v);
-    }
-  }
-  return out;
+  return resolveStringMapDetailed(input).map;
+}
+
+/** One message naming every secret reference the gateway process could not resolve. */
+function unresolvedRefMessage(label: string, unresolved: Map<string, string[]>): string {
+  const parts = [...unresolved.entries()].map(
+    ([key, vars]) => `${label} '${key}' references ${vars.map((v) => `'${v}'`).join(', ')}`
+  );
+  return `${parts.join('; ')} — not set in the gateway process environment, so the parameter would be sent empty and the server answers 401 'missing or wrong bearer token'. Set it in the env archive (envs/<env>/env.json) and restart, or paste the literal value.`;
+}
+
+/** An auth rejection: the transport (and the fallback between transports) cannot fix it. */
+const AUTH_FAILURE_RE = /\b(401|403)\b|unauthori[sz]ed|forbidden|bearer token|invalid[_ ]token/i;
+
+function isAuthFailure(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  if (status === 401 || status === 403) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return AUTH_FAILURE_RE.test(msg);
 }
 
 function targetCacheKey(target: McpInspectTarget): string {
@@ -211,12 +258,16 @@ function resolveConnection(target: McpInspectTarget): { ok: true; conn: Resolved
     } catch {
       return { ok: false, code: 'bad_request', message: `invalid url '${rawUrl}'` };
     }
+    const headerMap = resolveStringMapDetailed(target.headers);
+    if (headerMap.unresolved.size > 0) {
+      return { ok: false, code: 'bad_request', message: unresolvedRefMessage('header', headerMap.unresolved) };
+    }
     return {
       ok: true,
       conn: {
         transport: target.transport,
         url: rawUrl,
-        headers: resolveStringMap(target.headers),
+        headers: headerMap.map,
       },
     };
   }
@@ -270,13 +321,24 @@ function resolveConnection(target: McpInspectTarget): { ok: true; conn: Resolved
     const rawType = typeof raw.type === 'string' ? raw.type.toLowerCase() : typeof raw.transport === 'string' ? raw.transport.toLowerCase() : 'auto';
     const transport: 'auto' | 'streamable-http' | 'sse' =
       rawType === 'sse' ? 'sse' : rawType === 'streamable-http' || rawType === 'http' ? 'streamable-http' : 'auto';
-    const headers = {
-      ...resolveStringMap(raw.http_headers),
-      ...resolveStringMap(raw.headers),
-    };
+    const httpHeaders = resolveStringMapDetailed(raw.http_headers);
+    const plainHeaders = resolveStringMapDetailed(raw.headers);
+    const headers: Record<string, string> = { ...httpHeaders.map, ...plainHeaders.map };
+    const unresolved = new Map([...httpHeaders.unresolved, ...plainHeaders.unresolved]);
+    if (unresolved.size > 0) {
+      return { ok: false, code: 'bad_request', message: unresolvedRefMessage('header', unresolved) };
+    }
     if (typeof raw.bearer_token_env_var === 'string' && raw.bearer_token_env_var.trim()) {
-      const token = process.env[raw.bearer_token_env_var.trim()];
-      if (token && !headers.Authorization && !headers.authorization) {
+      const envVar = raw.bearer_token_env_var.trim();
+      if (headers.Authorization === undefined && headers.authorization === undefined) {
+        const token = process.env[envVar];
+        if (token === undefined || token === '') {
+          return {
+            ok: false,
+            code: 'bad_request',
+            message: `bearer_token_env_var names '${envVar}', which is not set in the gateway process environment — no Authorization header would be sent and the server answers 401 'missing or wrong bearer token'. Set it in the env archive (envs/<env>/env.json) and restart.`,
+          };
+        }
         headers.Authorization = `Bearer ${token}`;
       }
     }
@@ -412,10 +474,18 @@ async function openSession(target: McpInspectTarget): Promise<ManagedSession> {
       } catch {
         // Ignore cleanup failure.
       }
+      const msg = err instanceof Error ? err.message : String(err);
+      const hint = isAuthFailure(err)
+        ? '\n[diagnosis] the server rejected the credentials. The inspector sends only the headers declared for this target — it never performs an OAuth login. Declare a non-empty `Authorization: Bearer <token>` header (or a bearer_token_env_var that the gateway process really has) and retry.'
+        : '';
       if (stderr.length > 0) {
         const tail = stderr.slice(-8).join('\n');
-        const msg = err instanceof Error ? err.message : String(err);
-        const enriched = new Error(`${msg}\n--- stderr ---\n${tail}`) as Error & { code?: string };
+        const enriched = new Error(`${msg}${hint}\n--- stderr ---\n${tail}`) as Error & { code?: string };
+        enriched.code = (err as { code?: string })?.code;
+        throw enriched;
+      }
+      if (hint) {
+        const enriched = new Error(`${msg}${hint}`) as Error & { code?: string };
         enriched.code = (err as { code?: string })?.code;
         throw enriched;
       }
@@ -473,15 +543,28 @@ async function openSession(target: McpInspectTarget): Promise<ManagedSession> {
     });
     return await connectWith('streamable-http', streamable);
   } catch (httpErr) {
+    // An auth rejection is transport-independent: the legacy SSE endpoint checks the same
+    // credentials, so a second attempt only buries the real cause under a second 401.
+    if (isAuthFailure(httpErr)) throw httpErr;
     appendStderr(
       stderr,
       `[auto-fallback] Streamable HTTP failed (${httpErr instanceof Error ? httpErr.message : String(httpErr)}), trying SSE…`
     );
-    const sse = new SSEClientTransport(url, {
-      ...(Object.keys(conn.headers).length > 0 ? { requestInit: { headers: conn.headers } } : {}),
-      ...(customFetch ? { fetch: customFetch } : {}),
-    });
-    return await connectWith('sse', sse);
+    try {
+      const sse = new SSEClientTransport(url, {
+        ...(Object.keys(conn.headers).length > 0 ? { requestInit: { headers: conn.headers } } : {}),
+        ...(customFetch ? { fetch: customFetch } : {}),
+      });
+      return await connectWith('sse', sse);
+    } catch (sseErr) {
+      const first = httpErr instanceof Error ? httpErr.message : String(httpErr);
+      const second = sseErr instanceof Error ? sseErr.message : String(sseErr);
+      const combined = new Error(
+        `both transports failed\nStreamable HTTP: ${first}\nSSE: ${second}`
+      ) as Error & { code?: string };
+      combined.code = (sseErr as { code?: string })?.code;
+      throw combined;
+    }
   }
 }
 

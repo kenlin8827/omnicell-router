@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, ChevronDown, Compass, FolderGit2, FolderCog, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
+import { Boxes, ChevronDown, Compass, FolderGit2, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
 import {
   api,
   type HarnessArtifactView,
@@ -20,7 +20,7 @@ import {
   type McpRuntimeStatus,
   type ProjectItem,
 } from '../lib/api';
-import { ProjectsDialog } from '../components/ProjectsDialog';
+import { ProjectPicker, reconcileProjectSelection } from '../components/ProjectPicker';
 import { SegGroup } from '../components/SegGroup';
 import { RadioGroup, type RadioGroupOption } from '../components/RadioGroup';
 import { Field, FormSection } from '../components/Form';
@@ -1187,7 +1187,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [, setActiveProjectId] = useState<string | null>(null);
   /** Project pick used when the URL carries no explicit one (see `selectedProjectId` below). */
   const [fallbackProjectId, setFallbackProjectId] = useState<string | null>(null);
-  const [projectsDialogOpen, setProjectsDialogOpen] = useState(false);
   const [installScope, setInstallScope] = useState<'global' | 'project'>('global');
   /** Per-profile plugin stores (DSH): the profile the open install sheet targets. */
   const [installProfile, setInstallProfile] = useState('');
@@ -1527,6 +1526,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, inventoryProjectId]);
+
+  const handleProjectsChange = (updatedProjects: ProjectItem[], updatedActiveId: string | null) => {
+    setProjects(updatedProjects);
+    setActiveProjectId(updatedActiveId);
+    setFallbackProjectId((prev) => reconcileProjectSelection(prev, updatedProjects, updatedActiveId) || null);
+    setInstallProjectId((prev) => reconcileProjectSelection(prev, updatedProjects, updatedActiveId) || null);
+    void load();
+  };
 
   useEffect(() => {
     localStorage.setItem(`harness.view.${kind}`, layout);
@@ -4554,7 +4561,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         className="btn btn-sm"
         disabled={installBusy}
         title={t('mcpBrowser.inspectAction')}
-        onClick={() => navigate(`/harness/mcp-browser?${params.toString()}`)}
+        onClick={() => navigate(`/harness/mcp-debug?${params.toString()}`)}
         style={{ flex: '0 0 auto' }}
       >
         <Compass size={11} />
@@ -4752,32 +4759,16 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             </span>
             {tab === 'project' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: '8px' }}>
-                {projects.length > 0 ? (
-                  <div style={{ minWidth: 160, maxWidth: 240 }}>
-                    <Combobox
-                      value={selectedProjectId ?? ''}
-                      onChange={(v) => setSelectedProjectId(v)}
-                      options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
-                      placeholder={t('harness.switchProject')}
-                      hideMetaInTrigger
-                      panelMinWidth={280}
-                    />
-                  </div>
-                ) : (
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                    {t('harness.noProjectsAvailable')}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => setProjectsDialogOpen(true)}
-                  title={t('harness.manageProjects')}
-                  style={{ height: HEADER_CONTROL_HEIGHT, padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                >
-                  <FolderCog size={13} />
-                  <span style={{ fontSize: 'var(--text-sm)' }}>{t('projects.title')}</span>
-                </button>
+                <ProjectPicker
+                  projects={projects}
+                  value={selectedProjectId ?? ''}
+                  onChange={(v) => setSelectedProjectId(v)}
+                  onProjectsChange={handleProjectsChange}
+                  placeholder={t('harness.switchProject')}
+                  showManageLabel
+                  comboboxContainerStyle={{ minWidth: 160, maxWidth: 240 }}
+                  buttonHeight={HEADER_CONTROL_HEIGHT}
+                />
                 {selectedProject && (
                   <span
                     style={{
@@ -5538,39 +5529,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
               {sheetScope === 'project' && (
                 <Field label={t('harness.targetProject')}>
-                  {projects.length === 0 ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => setProjectsDialogOpen(true)}
-                      >
-                        {t('projects.add')}
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <div style={{ flex: 1 }}>
-                        <Combobox
-                          value={installProjectId ?? ''}
-                          onChange={(v) => setInstallProjectId(v)}
-                          options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
-                          placeholder={t('harness.selectProjectPlaceholder')}
-                          hideMetaInTrigger
-                          panelMinWidth={280}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-ghost"
-                        onClick={() => setProjectsDialogOpen(true)}
-                        title={t('harness.manageProjects')}
-                      >
-                        <FolderCog size={13} />
-                      </button>
-                    </div>
-                  )}
+                  <ProjectPicker
+                    projects={projects}
+                    value={installProjectId ?? ''}
+                    onChange={(v) => setInstallProjectId(v)}
+                    onProjectsChange={handleProjectsChange}
+                    placeholder={t('harness.selectProjectPlaceholder')}
+                  />
                 </Field>
               )}
             </FormSection>
@@ -5883,40 +5848,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {mcpSheetScope === 'project' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
-                      {projects.length === 0 ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            onClick={() => setProjectsDialogOpen(true)}
-                            style={{ fontSize: 'var(--text-xs)', padding: '2px 8px' }}
-                          >
-                            {t('projects.add')}
-                          </button>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                          <div style={{ flex: 1 }}>
-                            <Combobox
-                              value={installProjectId ?? ''}
-                              onChange={(v) => setInstallProjectId(v)}
-                              options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
-                              placeholder={t('harness.selectProjectPlaceholder')}
-                              hideMetaInTrigger
-                              panelMinWidth={280}
-                            />
-                          </div>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            onClick={() => setProjectsDialogOpen(true)}
-                            title={t('harness.manageProjects')}
-                          >
-                            <FolderCog size={13} />
-                          </button>
-                        </div>
-                      )}
+                      <ProjectPicker
+                        projects={projects}
+                        value={installProjectId ?? ''}
+                        onChange={(v) => setInstallProjectId(v)}
+                        onProjectsChange={handleProjectsChange}
+                        placeholder={t('harness.selectProjectPlaceholder')}
+                      />
                     </div>
                   )}
                 </div>
@@ -6256,26 +6194,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           </div>
         </Dialog>
       )}
-          <ProjectsDialog
-        open={projectsDialogOpen}
-        onClose={() => setProjectsDialogOpen(false)}
-        onProjectsChange={(updatedProjects, updatedActiveId) => {
-          setProjects(updatedProjects);
-          setActiveProjectId(updatedActiveId);
-          if (updatedProjects.length > 0) {
-            setFallbackProjectId((prev) =>
-              prev && updatedProjects.some((p) => p.id === prev) ? prev : (updatedActiveId ?? updatedProjects[0].id)
-            );
-            setInstallProjectId((prev) =>
-              prev && updatedProjects.some((p) => p.id === prev) ? prev : (updatedActiveId ?? updatedProjects[0].id)
-            );
-          } else {
-            setFallbackProjectId(null);
-            setInstallProjectId(null);
-          }
-          void load();
-        }}
-      />
     </>
   );
 
