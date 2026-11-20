@@ -61,7 +61,10 @@ export function repairToolCallPairing(input: InputItem[]): ToolPairingRepair {
       if (index >= 0) {
         pending.splice(index, 1);
         out.push(item);
-        seenToolResult = true;
+        // Reset once the current batch is fully answered; otherwise a later
+        // turn's second parallel tool_call would see stale seenToolResult=true
+        // and falsely split the turn with a synthesized tool_result.
+        seenToolResult = pending.length > 0;
       } else if (item.callId && declared.has(item.callId)) duplicates += 1;
       else orphans += 1;
       continue;

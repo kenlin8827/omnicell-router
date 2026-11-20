@@ -84,6 +84,46 @@ describe('tool-pairing: repairToolCallPairing', () => {
     expect(repaired.input).toBe(clean);
     expect(repaired).toMatchObject({ synthesized: 0, duplicates: 0, orphans: 0 });
   });
+
+  it('preserves multi-turn parallel tool_calls with reasoning without splitting the second turn', () => {
+    const clean: InputItem[] = [
+      user('inspect files'),
+      { type: 'reasoning', text: 'turn 1 thinking' },
+      ...assistantCalls(['call_1', 'call_2']),
+      reply('R1', 'call_1'),
+      reply('R2', 'call_2'),
+      { type: 'reasoning', text: 'turn 2 thinking' },
+      ...assistantCalls(['call_3', 'call_4']),
+      reply('R3', 'call_3'),
+      reply('R4', 'call_4'),
+    ];
+    const repaired = repairToolCallPairing(clean);
+    expect(repaired.input).toBe(clean);
+    expect(repaired).toMatchObject({ synthesized: 0, duplicates: 0, orphans: 0 });
+  });
+
+  it('still flushes an abandoned parallel call from a partially answered turn when a new turn starts', () => {
+    const repaired = repairToolCallPairing([
+      user('go'),
+      ...assistantCalls(['call_1', 'call_2']),
+      reply('R1', 'call_1'),
+      ...assistantCalls(['call_3', 'call_4']),
+      reply('R3', 'call_3'),
+      reply('R4', 'call_4'),
+    ]);
+    expect(shape(repaired.input)).toEqual([
+      ['user', null],
+      ['tool_call', null],
+      ['tool_call', null],
+      ['tool_result', 'call_1'],
+      ['tool_result', 'call_2'],
+      ['tool_call', null],
+      ['tool_call', null],
+      ['tool_result', 'call_3'],
+      ['tool_result', 'call_4'],
+    ]);
+    expect(repaired).toMatchObject({ synthesized: 1, duplicates: 0, orphans: 0 });
+  });
 });
 
 describe('tool-pairing: the orchestrator repairs the forwarded payload', () => {
