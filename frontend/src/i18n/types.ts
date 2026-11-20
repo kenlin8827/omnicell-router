@@ -3780,6 +3780,7 @@ hiddenBadge: string;
     modeHost: string;
     modeCustom: string;
     host: string;
+    hostDetected: string;
     scope: string;
     scopeGlobal: string;
     scopeProject: string;

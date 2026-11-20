@@ -3610,6 +3610,7 @@ export const deDE: TranslationDict = {
     modeHost: 'From Host Config',
     modeCustom: 'Custom Target',
     host: 'Host',
+    hostDetected: 'erkannt',
     scope: 'Scope',
     scopeGlobal: 'Global',
     scopeProject: 'Project',

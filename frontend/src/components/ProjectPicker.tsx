@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { FolderCog } from 'lucide-react';
+import { FolderCog, Plus } from 'lucide-react';
 import type { ProjectItem } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { Combobox, type ComboboxOption } from './Combobox';
+import { InfoTip } from './InfoTip';
 import { ProjectsDialog } from './ProjectsDialog';
 
 export interface ProjectPickerProps {
@@ -67,18 +68,22 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   return (
     <>
       {projects.length === 0 ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: buttonHeight ?? 30 }}>
-          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>
-            {t('harness.noProjectsAvailable')}
-          </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: buttonHeight ?? 30 }}>
           <button
             type="button"
             className="btn btn-sm"
             onClick={openManage}
-            style={buttonHeight ? { height: buttonHeight } : undefined}
+            style={{
+              ...(buttonHeight ? { height: buttonHeight } : {}),
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
           >
-            {t('projects.add')}
+            <Plus size={13} />
+            <span>{t('projects.add')}</span>
           </button>
+          <InfoTip text={t('harness.noProjectsAvailable')} variant="warning" />
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>

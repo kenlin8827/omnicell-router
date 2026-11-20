@@ -3608,6 +3608,7 @@ export const jaJP: TranslationDict = {
     modeHost: 'From Host Config',
     modeCustom: 'Custom Target',
     host: 'Host',
+    hostDetected: '検出済み',
     scope: 'Scope',
     scopeGlobal: 'Global',
     scopeProject: 'Project',

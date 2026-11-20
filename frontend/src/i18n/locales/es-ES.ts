@@ -3607,6 +3607,7 @@ export const esES: TranslationDict = {
     modeHost: 'From Host Config',
     modeCustom: 'Custom Target',
     host: 'Host',
+    hostDetected: 'detectado',
     scope: 'Scope',
     scopeGlobal: 'Global',
     scopeProject: 'Project',

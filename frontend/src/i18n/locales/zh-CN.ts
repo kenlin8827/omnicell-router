@@ -3589,6 +3589,7 @@ export const zhCN: TranslationDict = {
     modeHost: '从宿主读取',
     modeCustom: '自定义连接',
     host: '宿主',
+    hostDetected: '已检测',
     scope: '作用域',
     scopeGlobal: '全局',
     scopeProject: '项目',

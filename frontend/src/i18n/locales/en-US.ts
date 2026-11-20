@@ -3633,6 +3633,7 @@ export const enUS: TranslationDict = {
     modeHost: 'From Host Config',
     modeCustom: 'Custom Target',
     host: 'Host',
+    hostDetected: 'detected',
     scope: 'Scope',
     scopeGlobal: 'Global',
     scopeProject: 'Project',

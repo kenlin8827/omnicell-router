@@ -3608,6 +3608,7 @@ export const koKR: TranslationDict = {
     modeHost: 'From Host Config',
     modeCustom: 'Custom Target',
     host: 'Host',
+    hostDetected: '감지됨',
     scope: 'Scope',
     scopeGlobal: 'Global',
     scopeProject: 'Project',

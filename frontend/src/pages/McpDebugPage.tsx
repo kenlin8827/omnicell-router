@@ -833,9 +833,9 @@ export const McpDebugPage: React.FC = () => {
       hosts.map((h) => ({
         value: h.id,
         label: h.label,
-        ...(h.detected ? { meta: 'detected' } : {}),
+        ...(h.detected ? { meta: t('mcpBrowser.hostDetected') } : {}),
       })),
-    [hosts]
+    [hosts, t]
   );
 
   const scopeOptions: ComboboxOption[] = useMemo(
@@ -1300,7 +1300,7 @@ export const McpDebugPage: React.FC = () => {
             </div>
 
             {scope === 'project' && (
-              <div style={{ minWidth: 200, flex: '1 1 240px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ minWidth: projects.length === 0 ? undefined : 180, flex: projects.length === 0 ? '0 0 auto' : '1 1 220px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>{t('mcpBrowser.project')}</span>
                 <ProjectPicker
                   projects={projects}
