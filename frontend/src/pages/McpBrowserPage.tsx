@@ -11,6 +11,7 @@ import {
   Copy,
   Download,
   FileText,
+  Globe,
   History,
   Maximize2,
   MessageSquare,
@@ -46,8 +47,11 @@ import { Dialog } from '../components/Dialog';
 import { ResultViewer } from '../components/ResultViewer';
 import { SegGroup } from '../components/SegGroup';
 import { SuggestInput } from '../components/SuggestInput';
+import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useI18n } from '../i18n/I18nContext';
+import { useTranslationCache, type TranslationItem } from '../hooks/useTranslationCache';
+import { TranslateButton, TranslationBadge } from '../components/TranslationControls';
 
 type TargetMode = 'host' | 'custom';
 type CustomTransport = 'stdio' | 'auto' | 'streamable-http' | 'sse';
@@ -279,7 +283,17 @@ function schemaTypeLabel(prop: Record<string, unknown>): string {
 export const McpBrowserPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [searchParams, setSearchParams] = useSearchParams();
+  const {
+    lang,
+    batch: translationBatch,
+    seed: seedTranslations,
+    translateOne: translateDesc,
+    translateAll: translateAllDescs,
+    toggleOriginal,
+    getDisplay: getTranslationDisplay,
+  } = useTranslationCache();
 
   // Target selection state
   const [mode, setMode] = useState<TargetMode>('host');
@@ -575,10 +589,10 @@ export const McpBrowserPage: React.FC = () => {
     setInstallName(defaultName);
     setInstallScope(scope);
     setInstallProjectId(selectedProjectId || projects[0]?.id || '');
-    setInstallHosts(hosts.filter((h) => h.detected).map((h) => h.id));
+    setInstallHosts([]);
     setInstallPlan(null);
     setInstallOpen(true);
-  }, [customNameHint, snapshot, scope, selectedProjectId, projects, hosts]);
+  }, [customNameHint, snapshot, scope, selectedProjectId, projects]);
 
   const submitInstall = async (confirm: boolean) => {
     const launch = buildCustomLaunch();
@@ -638,8 +652,6 @@ export const McpBrowserPage: React.FC = () => {
     }
     setSnapshot(null);
     setActiveTarget(null);
-    setConfigCollapsed(false);
-    setWorkspaceFullscreen(false);
     setConfigCollapsed(false);
     setWorkspaceFullscreen(false);
     setToolResult(null);
@@ -906,6 +918,109 @@ export const McpBrowserPage: React.FC = () => {
     [snapshot]
   );
 
+  const translationItems = useMemo<TranslationItem[]>(() => {
+    if (!snapshot) return [];
+    const items: TranslationItem[] = [];
+    if (snapshot.instructions) {
+      items.push({ key: 'server:instructions', text: snapshot.instructions });
+    }
+    for (const tool of snapshot.tools) {
+      if (tool.description) items.push({ key: `tool:${tool.name}`, text: tool.description });
+      const props = (tool.inputSchema?.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+      for (const [propKey, prop] of Object.entries(props)) {
+        if (prop && typeof prop.description === 'string' && prop.description) {
+          items.push({ key: `tool:${tool.name}:arg:${propKey}`, text: prop.description });
+        }
+      }
+    }
+    for (const res of snapshot.resources) {
+      if (res.description) items.push({ key: `resource:${res.uri}`, text: res.description });
+    }
+    for (const tpl of snapshot.resourceTemplates) {
+      if (tpl.description) items.push({ key: `template:${tpl.uriTemplate}`, text: tpl.description });
+    }
+    for (const prompt of snapshot.prompts) {
+      if (prompt.description) items.push({ key: `prompt:${prompt.name}`, text: prompt.description });
+      for (const arg of prompt.arguments ?? []) {
+        if (arg.description) items.push({ key: `prompt:${prompt.name}:arg:${arg.name}`, text: arg.description });
+      }
+    }
+    return items;
+  }, [snapshot]);
+
+  const pendingTranslationCount = useMemo(
+    () =>
+      translationItems.filter(
+        (item) => item.text && item.text.trim() && !getTranslationDisplay(item.key, item.text).translated
+      ).length,
+    [translationItems, getTranslationDisplay]
+  );
+
+  useEffect(() => {
+    if (translationItems.length === 0) return;
+    let cancelled = false;
+    void seedTranslations(translationItems, () => cancelled).catch(() => {
+      /* cache miss is silent */
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lang, translationItems, seedTranslations]);
+
+  const handleTranslateAll = () => {
+    if (pendingTranslationCount === 0) {
+      toast.success(t('harness.translateAllDone'));
+      return Promise.resolve();
+    }
+    return translateAllDescs(translationItems, (count) =>
+      confirmDialog({
+        title: t('harness.translateAll'),
+        description: `${t('harness.translateAllConfirm')} (${count})`,
+      })
+    );
+  };
+
+  /** Translate all descriptions belonging to the currently selected tool (main + every schema parameter). */
+  const selectedToolTranslationItems = useMemo<TranslationItem[]>(() => {
+    if (!selectedTool) return [];
+    const items: TranslationItem[] = [];
+    if (selectedTool.description) items.push({ key: `tool:${selectedTool.name}`, text: selectedTool.description });
+    const props = (selectedTool.inputSchema?.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+    for (const [propKey, prop] of Object.entries(props)) {
+      if (prop && typeof prop.description === 'string' && prop.description) {
+        items.push({ key: `tool:${selectedTool.name}:arg:${propKey}`, text: prop.description });
+      }
+    }
+    return items;
+  }, [selectedTool]);
+
+  const selectedToolPendingCount = useMemo(
+    () =>
+      selectedToolTranslationItems.filter(
+        (item) => item.text && item.text.trim() && !getTranslationDisplay(item.key, item.text).translated
+      ).length,
+    [selectedToolTranslationItems, getTranslationDisplay]
+  );
+
+  /** Translate all descriptions belonging to the currently selected prompt (main + every argument). */
+  const selectedPromptTranslationItems = useMemo<TranslationItem[]>(() => {
+    if (!selectedPrompt) return [];
+    const items: TranslationItem[] = [];
+    if (selectedPrompt.description) items.push({ key: `prompt:${selectedPrompt.name}`, text: selectedPrompt.description });
+    for (const arg of selectedPrompt.arguments ?? []) {
+      if (arg.description) items.push({ key: `prompt:${selectedPrompt.name}:arg:${arg.name}`, text: arg.description });
+    }
+    return items;
+  }, [selectedPrompt]);
+
+  const selectedPromptPendingCount = useMemo(
+    () =>
+      selectedPromptTranslationItems.filter(
+        (item) => item.text && item.text.trim() && !getTranslationDisplay(item.key, item.text).translated
+      ).length,
+    [selectedPromptTranslationItems, getTranslationDisplay]
+  );
+
   const renderSchemaField = (
     key: string,
     prop: Record<string, unknown>,
@@ -958,11 +1073,23 @@ export const McpBrowserPage: React.FC = () => {
             </span>
           )}
         </div>
-        {desc && (
-          <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-            {desc}
-          </div>
-        )}
+        {desc && (() => {
+          const argKey = `tool:${selectedToolName}:arg:${key}`;
+          const argDisplay = getTranslationDisplay(argKey, desc);
+          return (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+              <div style={{ flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                {argDisplay.text}
+              </div>
+              {argDisplay.translated && (
+                <TranslationBadge
+                  showingTranslation={argDisplay.showingTranslation}
+                  onToggle={() => toggleOriginal(argKey)}
+                />
+              )}
+            </div>
+          );
+        })()}
         {enumVals ? (
           <Combobox
             value={val !== undefined ? String(val) : ''}
@@ -1210,9 +1337,29 @@ export const McpBrowserPage: React.FC = () => {
                 {connecting ? t('mcpBrowser.connecting') : snapshot ? t('mcpBrowser.reconnect') : t('mcpBrowser.connect')}
               </button>
               {snapshot && (
-                <button type="button" className="btn btn-sm" onClick={() => void handleDisconnect()}>
-                  <Unplug size={12} /> {t('mcpBrowser.disconnect')}
-                </button>
+                <>
+                  <button type="button" className="btn btn-sm" onClick={() => void handleDisconnect()}>
+                    <Unplug size={12} /> {t('mcpBrowser.disconnect')}
+                  </button>
+                  {translationItems.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={translationBatch !== null}
+                      onClick={() => void handleTranslateAll()}
+                      title={t('harness.translateAll')}
+                    >
+                      <Globe size={12} aria-hidden />
+                      <span>
+                        {translationBatch
+                          ? `${translationBatch.done}/${translationBatch.total}`
+                          : pendingTranslationCount > 0
+                            ? `${t('harness.translateAll')} (${pendingTranslationCount})`
+                            : t('harness.translateAll')}
+                      </span>
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -1363,7 +1510,7 @@ export const McpBrowserPage: React.FC = () => {
                 {mode === 'custom' && (
                   <button
                     type="button"
-                    className="btn btn-sm"
+                    className="btn btn-primary btn-sm"
                     disabled={customTransport === 'stdio' ? !customCommand.trim() : !customUrl.trim()}
                     onClick={openInstallDialog}
                   >
@@ -1374,7 +1521,7 @@ export const McpBrowserPage: React.FC = () => {
                   <>
                     <button
                       type="button"
-                      className="btn btn-primary btn-sm"
+                      className={mode === 'custom' ? 'btn btn-sm' : 'btn btn-primary btn-sm'}
                       disabled={connecting}
                       onClick={() => {
                         const target = buildTarget();
@@ -1387,6 +1534,24 @@ export const McpBrowserPage: React.FC = () => {
                     <button type="button" className="btn btn-sm" onClick={() => void handleDisconnect()}>
                       <Unplug size={12} /> {t('mcpBrowser.disconnect')}
                     </button>
+                    {translationItems.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={translationBatch !== null}
+                        onClick={() => void handleTranslateAll()}
+                        title={t('harness.translateAll')}
+                      >
+                        <Globe size={12} aria-hidden />
+                        <span>
+                          {translationBatch
+                            ? `${translationBatch.done}/${translationBatch.total}`
+                            : pendingTranslationCount > 0
+                              ? `${t('harness.translateAll')} (${pendingTranslationCount})`
+                              : t('harness.translateAll')}
+                        </span>
+                      </button>
+                    )}
                   </>
                 )}
                 <button
@@ -1401,39 +1566,58 @@ export const McpBrowserPage: React.FC = () => {
               </div>
             </div>
 
-            {snapshot.instructions && (
-              <div>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  style={{ padding: '2px 6px', fontSize: 'var(--text-sm)' }}
-                  onClick={() => setInstructionsOpen((o) => !o)}
-                >
-                  {instructionsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                  {t('mcpBrowser.instructions')}
-                </button>
-                {instructionsOpen && (
-                  <div
-                    style={{
-                      margin: '6px 0 0',
-                      padding: '8px 10px',
-                      borderRadius: 8,
-                      background: 'var(--bg-elev)',
-                      border: '1px solid var(--card-border)',
-                      fontFamily: 'var(--font-sans)',
-                      fontSize: 'var(--text-md)',
-                      lineHeight: 1.55,
-                      color: 'var(--text-main)',
-                      whiteSpace: 'pre-wrap',
-                      maxHeight: 160,
-                      overflow: 'auto',
-                    }}
-                  >
-                    {snapshot.instructions}
+            {snapshot.instructions && (() => {
+              const instrDisplay = getTranslationDisplay('server:instructions', snapshot.instructions);
+              return (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ padding: '2px 6px', fontSize: 'var(--text-sm)' }}
+                      onClick={() => setInstructionsOpen((o) => !o)}
+                    >
+                      {instructionsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                      {t('mcpBrowser.instructions')}
+                    </button>
+                    {instructionsOpen && (
+                      instrDisplay.translated ? (
+                        <TranslationBadge
+                          showingTranslation={instrDisplay.showingTranslation}
+                          onToggle={() => toggleOriginal('server:instructions')}
+                        />
+                      ) : (
+                        <TranslateButton
+                          size={11}
+                          compact
+                          onClick={() => void translateDesc('server:instructions', snapshot.instructions)}
+                        />
+                      )
+                    )}
                   </div>
-                )}
-              </div>
-            )}
+                  {instructionsOpen && (
+                    <div
+                      style={{
+                        margin: '6px 0 0',
+                        padding: '8px 10px',
+                        borderRadius: 8,
+                        background: 'var(--bg-elev)',
+                        border: '1px solid var(--card-border)',
+                        fontFamily: 'var(--font-sans)',
+                        fontSize: 'var(--text-md)',
+                        lineHeight: 1.55,
+                        color: 'var(--text-main)',
+                        whiteSpace: 'pre-wrap',
+                        maxHeight: 160,
+                        overflow: 'auto',
+                      }}
+                    >
+                      {instrDisplay.text}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -1519,9 +1703,19 @@ export const McpBrowserPage: React.FC = () => {
                   <Clock size={11} />
                   {t('mcpBrowser.durationMs', { ms: snapshot.durationMs })}
                 </span>
+                {mode === 'custom' && (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={customTransport === 'stdio' ? !customCommand.trim() : !customUrl.trim()}
+                    onClick={openInstallDialog}
+                  >
+                    <Download size={12} /> {t('mcpBrowser.installToHost')}
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="btn btn-primary btn-sm"
+                  className={mode === 'custom' ? 'btn btn-sm' : 'btn btn-primary btn-sm'}
                   disabled={connecting}
                   onClick={() => {
                     const target = buildTarget();
@@ -1534,6 +1728,24 @@ export const McpBrowserPage: React.FC = () => {
                 <button type="button" className="btn btn-sm" onClick={() => void handleDisconnect()}>
                   <Unplug size={12} /> {t('mcpBrowser.disconnect')}
                 </button>
+                {translationItems.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={translationBatch !== null}
+                    onClick={() => void handleTranslateAll()}
+                    title={t('harness.translateAll')}
+                  >
+                    <Globe size={12} aria-hidden />
+                    <span>
+                      {translationBatch
+                        ? `${translationBatch.done}/${translationBatch.total}`
+                        : pendingTranslationCount > 0
+                          ? `${t('harness.translateAll')} (${pendingTranslationCount})`
+                          : t('harness.translateAll')}
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn btn-sm"
@@ -1558,700 +1770,791 @@ export const McpBrowserPage: React.FC = () => {
               gap: 12,
             }}
           >
-          {/* Left Panel: Capabilities List */}
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              borderRadius: 12,
-              border: '1px solid var(--card-border)',
-              background: 'var(--card-bg)',
-              minHeight: 0,
-              overflow: 'hidden',
-            }}
-          >
-            {/* Tabs */}
-            <div style={{ display: 'flex', borderBottom: '1px solid var(--card-border)', padding: '4px 6px 0', gap: 2, flexWrap: 'nowrap', overflowX: 'auto' }}>
-              {(
-                [
-                  { id: 'tools', label: t('mcpBrowser.tabTools'), count: snapshot.tools.length, icon: Wrench },
-                  {
-                    id: 'resources',
-                    label: t('mcpBrowser.tabResources'),
-                    count: snapshot.resources.length + snapshot.resourceTemplates.length,
-                    icon: FileText,
-                  },
-                  { id: 'prompts', label: t('mcpBrowser.tabPrompts'), count: snapshot.prompts.length, icon: MessageSquare },
-                  { id: 'logs', label: t('mcpBrowser.tabLogs'), count: snapshot.stderr.length, icon: Terminal },
-                ] as const
-              ).map((tab) => {
-                const Icon = tab.icon;
-                const active = activeTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setActiveTab(tab.id)}
-                    style={{
-                      flex: 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 4,
-                      padding: '7px 6px',
-                      fontSize: 'var(--text-sm)',
-                      fontWeight: active ? 600 : 400,
-                      color: active ? 'var(--text-main)' : 'var(--text-muted)',
-                      background: active ? 'var(--bg-elev)' : 'transparent',
-                      border: 'none',
-                      borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
-                      whiteSpace: 'nowrap',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Icon size={12} />
-                    <span>{tab.label}</span>
-                    <span style={{ fontSize: 'var(--text-xs)', opacity: 0.75 }}>({tab.count})</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Search */}
-            {activeTab !== 'logs' && (
-              <div style={{ padding: 8, borderBottom: '1px solid var(--card-border)', position: 'relative' }}>
-                <Search
-                  size={13}
-                  style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }}
-                />
-                <input
-                  className="input"
-                  style={{ paddingLeft: 28, width: '100%' }}
-                  placeholder={t('mcpBrowser.searchPlaceholder')}
-                  value={filterText}
-                  onChange={(e) => setFilterText(e.target.value)}
-                />
+            {/* Left Panel: Capabilities List */}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                borderRadius: 12,
+                border: '1px solid var(--card-border)',
+                background: 'var(--card-bg)',
+                minHeight: 0,
+                overflow: 'hidden',
+              }}
+            >
+              {/* Tabs */}
+              <div style={{ display: 'flex', borderBottom: '1px solid var(--card-border)', padding: '4px 6px 0', gap: 2, flexWrap: 'nowrap', overflowX: 'auto' }}>
+                {(
+                  [
+                    { id: 'tools', label: t('mcpBrowser.tabTools'), count: snapshot.tools.length, icon: Wrench },
+                    {
+                      id: 'resources',
+                      label: t('mcpBrowser.tabResources'),
+                      count: snapshot.resources.length + snapshot.resourceTemplates.length,
+                      icon: FileText,
+                    },
+                    { id: 'prompts', label: t('mcpBrowser.tabPrompts'), count: snapshot.prompts.length, icon: MessageSquare },
+                    { id: 'logs', label: t('mcpBrowser.tabLogs'), count: snapshot.stderr.length, icon: Terminal },
+                  ] as const
+                ).map((tab) => {
+                  const Icon = tab.icon;
+                  const active = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id)}
+                      style={{
+                        flex: 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 4,
+                        padding: '7px 6px',
+                        fontSize: 'var(--text-sm)',
+                        fontWeight: active ? 600 : 400,
+                        color: active ? 'var(--text-main)' : 'var(--text-muted)',
+                        background: active ? 'var(--bg-elev)' : 'transparent',
+                        border: 'none',
+                        borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                        whiteSpace: 'nowrap',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Icon size={12} />
+                      <span>{tab.label}</span>
+                      <span style={{ fontSize: 'var(--text-xs)', opacity: 0.75 }}>({tab.count})</span>
+                    </button>
+                  );
+                })}
               </div>
-            )}
 
-            {/* List Body */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {activeTab === 'tools' &&
-                (filteredTools.length === 0 ? (
-                  <div style={{ padding: 16, fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
-                    {t('mcpBrowser.noTools')}
+              {/* Search & Translate All */}
+              {activeTab !== 'logs' && (
+                <div style={{ padding: 8, borderBottom: '1px solid var(--card-border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                    <Search
+                      size={13}
+                      style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }}
+                    />
+                    <input
+                      className="input"
+                      style={{ paddingLeft: 28, width: '100%' }}
+                      placeholder={t('mcpBrowser.searchPlaceholder')}
+                      value={filterText}
+                      onChange={(e) => setFilterText(e.target.value)}
+                    />
                   </div>
-                ) : (
-                  filteredTools.map((tool) => {
-                    const selected = selectedToolName === tool.name;
-                    const propCount = Object.keys(
-                      (tool.inputSchema?.properties as Record<string, unknown> | undefined) ?? {}
-                    ).length;
-                    return (
-                      <button
-                        key={tool.name}
-                        type="button"
-                        onClick={() => setSelectedToolName(tool.name)}
-                        style={{
-                          textAlign: 'left',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: selected ? '1px solid var(--accent)' : '1px solid transparent',
-                          background: selected ? 'var(--bg-elev)' : 'transparent',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 5,
-                        }}
-                      >
-                        <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                          {tool.name}
-                        </code>
-                        {tool.description && (
-                          <div
-                            style={{
-                              fontSize: 'var(--text-sm)',
-                              color: 'var(--text-muted)',
-                              lineHeight: 1.45,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              display: '-webkit-box',
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: 'vertical',
-                            }}
-                          >
-                            {tool.description}
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 1 }}>
-                          <span
-                            style={{
-                              fontSize: 'var(--text-xs)',
-                              padding: '1px 7px',
-                              borderRadius: 999,
-                              background: selected ? 'var(--card-bg)' : 'var(--bg-elev)',
-                              border: '1px solid var(--card-border)',
-                              color: 'var(--text-muted)',
-                            }}
-                          >
-                            {t('mcpBrowser.paramCount', { n: propCount })}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: 'var(--text-xs)',
-                              padding: '1px 7px',
-                              borderRadius: 999,
-                              background: selected ? 'var(--card-bg)' : 'var(--bg-elev)',
-                              border: '1px solid var(--card-border)',
-                              color: 'var(--text-dim)',
-                            }}
-                          >
-                            {t('mcpBrowser.estTokens', { n: estimateTokens(tool) })}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })
-                ))}
-
-              {activeTab === 'resources' &&
-                (filteredResources.length === 0 && filteredTemplates.length === 0 ? (
-                  <div style={{ padding: 16, fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
-                    {t('mcpBrowser.noResources')}
-                  </div>
-                ) : (
-                  <>
-                    {filteredResources.map((res: McpResourceInfo) => {
-                      const selected = !selectedIsTemplate && selectedResourceUri === res.uri;
-                      return (
-                        <button
-                          key={res.uri}
-                          type="button"
-                          onClick={() => {
-                            setSelectedIsTemplate(false);
-                            setSelectedResourceUri(res.uri);
-                            setResourceUriDraft(res.uri);
-                            setResourceResult(null);
-                          }}
-                          style={{
-                            textAlign: 'left',
-                            padding: '8px 10px',
-                            borderRadius: 8,
-                            border: selected ? '1px solid var(--accent)' : '1px solid transparent',
-                            background: selected ? 'var(--bg-elev)' : 'transparent',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 2,
-                          }}
-                        >
-                          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)' }}>
-                            {res.title || res.name}
-                          </div>
-                          <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                            {res.uri}
-                          </code>
-                        </button>
-                      );
-                    })}
-
-                    {filteredTemplates.length > 0 && (
-                      <div style={{ padding: '6px 8px 2px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontWeight: 600 }}>
-                        {t('mcpBrowser.resourceTemplates')}
-                      </div>
-                    )}
-                    {filteredTemplates.map((tpl: McpResourceTemplateInfo) => {
-                      const selected = selectedIsTemplate && selectedResourceUri === tpl.uriTemplate;
-                      return (
-                        <button
-                          key={tpl.uriTemplate}
-                          type="button"
-                          onClick={() => {
-                            setSelectedIsTemplate(true);
-                            setSelectedResourceUri(tpl.uriTemplate);
-                            setResourceUriDraft(tpl.uriTemplate);
-                            setResourceResult(null);
-                          }}
-                          style={{
-                            textAlign: 'left',
-                            padding: '8px 10px',
-                            borderRadius: 8,
-                            border: selected ? '1px solid var(--accent)' : '1px solid transparent',
-                            background: selected ? 'var(--bg-elev)' : 'transparent',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 2,
-                          }}
-                        >
-                          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)' }}>
-                            {tpl.title || tpl.name}
-                          </div>
-                          <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                            {tpl.uriTemplate}
-                          </code>
-                        </button>
-                      );
-                    })}
-                  </>
-                ))}
-
-              {activeTab === 'prompts' &&
-                (filteredPrompts.length === 0 ? (
-                  <div style={{ padding: 16, fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
-                    {t('mcpBrowser.noPrompts')}
-                  </div>
-                ) : (
-                  filteredPrompts.map((p) => {
-                    const selected = selectedPromptName === p.name;
-                    return (
-                      <button
-                        key={p.name}
-                        type="button"
-                        onClick={() => setSelectedPromptName(p.name)}
-                        style={{
-                          textAlign: 'left',
-                          padding: '8px 10px',
-                          borderRadius: 8,
-                          border: selected ? '1px solid var(--accent)' : '1px solid transparent',
-                          background: selected ? 'var(--bg-elev)' : 'transparent',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 3,
-                        }}
-                      >
-                        <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)' }}>
-                          {p.name}
-                        </code>
-                        {p.description && (
-                          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{p.description}</div>
-                        )}
-                      </button>
-                    );
-                  })
-                ))}
-
-              {activeTab === 'logs' && (
-                <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-                    {snapshot.stderr.length > 0 && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => void handleCopy(snapshot.stderr.join('\n'))}
-                      >
-                        <Copy size={11} /> {t('common.copy')}
-                      </button>
-                    )}
+                  {translationItems.length > 0 && (
                     <button
                       type="button"
                       className="btn btn-sm"
-                      onClick={() => setSnapshot((prev) => (prev ? { ...prev, stderr: [] } : prev))}
+                      disabled={translationBatch !== null}
+                      onClick={() => void handleTranslateAll()}
+                      title={t('harness.translateAll')}
+                      style={{ flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
                     >
-                      {t('mcpBrowser.clearLogs')}
+                      <Globe size={12} aria-hidden />
+                      <span>{translationBatch ? `${translationBatch.done}/${translationBatch.total}` : t('harness.translateAll')}</span>
                     </button>
-                  </div>
-                  {snapshot.stderr.length === 0 ? (
-                    <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
-                      {t('mcpBrowser.noLogs')}
-                    </div>
-                  ) : (
-                    <pre
-                      style={{
-                        margin: 0,
-                        flex: 1,
-                        fontSize: 'var(--text-sm)',
-                        fontFamily: 'var(--font-mono)',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-all',
-                        color: 'var(--text-muted)',
-                      }}
-                    >
-                      {snapshot.stderr.join('\n')}
-                    </pre>
                   )}
                 </div>
               )}
-            </div>
-          </div>
 
-          {/* Right Panel: Inspector & Runner (split horizontally into Params | Result when result is open) */}
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'row',
-              borderRadius: 12,
-              border: '1px solid var(--card-border)',
-              background: 'var(--card-bg)',
-              minHeight: 0,
-              overflow: 'hidden',
-            }}
-          >
+              {/* List Body */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {activeTab === 'tools' &&
+                  (filteredTools.length === 0 ? (
+                    <div style={{ padding: 16, fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
+                      {t('mcpBrowser.noTools')}
+                    </div>
+                  ) : (
+                    filteredTools.map((tool) => {
+                      const selected = selectedToolName === tool.name;
+                      const propCount = Object.keys(
+                        (tool.inputSchema?.properties as Record<string, unknown> | undefined) ?? {}
+                      ).length;
+                      return (
+                        <button
+                          key={tool.name}
+                          type="button"
+                          onClick={() => setSelectedToolName(tool.name)}
+                          style={{
+                            textAlign: 'left',
+                            padding: '9px 10px',
+                            borderRadius: 8,
+                            border: selected ? '1px solid var(--accent)' : '1px solid transparent',
+                            background: selected ? 'var(--bg-elev)' : 'transparent',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 5,
+                          }}
+                        >
+                          <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)', wordBreak: 'break-all' }}>
+                            {tool.name}
+                          </code>
+                          {tool.description && (
+                            <div
+                              style={{
+                                fontSize: 'var(--text-sm)',
+                                color: 'var(--text-muted)',
+                                lineHeight: 1.45,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                display: '-webkit-box',
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: 'vertical',
+                              }}
+                            >
+                              {getTranslationDisplay(`tool:${tool.name}`, tool.description).text}
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 1 }}>
+                            <span
+                              style={{
+                                fontSize: 'var(--text-xs)',
+                                padding: '1px 7px',
+                                borderRadius: 999,
+                                background: selected ? 'var(--card-bg)' : 'var(--bg-elev)',
+                                border: '1px solid var(--card-border)',
+                                color: 'var(--text-muted)',
+                              }}
+                            >
+                              {t('mcpBrowser.paramCount', { n: propCount })}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 'var(--text-xs)',
+                                padding: '1px 7px',
+                                borderRadius: 999,
+                                background: selected ? 'var(--card-bg)' : 'var(--bg-elev)',
+                                border: '1px solid var(--card-border)',
+                                color: 'var(--text-dim)',
+                              }}
+                            >
+                              {t('mcpBrowser.estTokens', { n: estimateTokens(tool) })}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })
+                  ))}
+
+                {activeTab === 'resources' &&
+                  (filteredResources.length === 0 && filteredTemplates.length === 0 ? (
+                    <div style={{ padding: 16, fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
+                      {t('mcpBrowser.noResources')}
+                    </div>
+                  ) : (
+                    <>
+                      {filteredResources.map((res: McpResourceInfo) => {
+                        const selected = !selectedIsTemplate && selectedResourceUri === res.uri;
+                        return (
+                          <button
+                            key={res.uri}
+                            type="button"
+                            onClick={() => {
+                              setSelectedIsTemplate(false);
+                              setSelectedResourceUri(res.uri);
+                              setResourceUriDraft(res.uri);
+                              setResourceResult(null);
+                            }}
+                            style={{
+                              textAlign: 'left',
+                              padding: '8px 10px',
+                              borderRadius: 8,
+                              border: selected ? '1px solid var(--accent)' : '1px solid transparent',
+                              background: selected ? 'var(--bg-elev)' : 'transparent',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 2,
+                            }}
+                          >
+                            <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)' }}>
+                              {res.title || res.name}
+                            </div>
+                            <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                              {res.uri}
+                            </code>
+                          </button>
+                        );
+                      })}
+
+                      {filteredTemplates.length > 0 && (
+                        <div style={{ padding: '6px 8px 2px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontWeight: 600 }}>
+                          {t('mcpBrowser.resourceTemplates')}
+                        </div>
+                      )}
+                      {filteredTemplates.map((tpl: McpResourceTemplateInfo) => {
+                        const selected = selectedIsTemplate && selectedResourceUri === tpl.uriTemplate;
+                        return (
+                          <button
+                            key={tpl.uriTemplate}
+                            type="button"
+                            onClick={() => {
+                              setSelectedIsTemplate(true);
+                              setSelectedResourceUri(tpl.uriTemplate);
+                              setResourceUriDraft(tpl.uriTemplate);
+                              setResourceResult(null);
+                            }}
+                            style={{
+                              textAlign: 'left',
+                              padding: '8px 10px',
+                              borderRadius: 8,
+                              border: selected ? '1px solid var(--accent)' : '1px solid transparent',
+                              background: selected ? 'var(--bg-elev)' : 'transparent',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 2,
+                            }}
+                          >
+                            <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)' }}>
+                              {tpl.title || tpl.name}
+                            </div>
+                            <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                              {tpl.uriTemplate}
+                            </code>
+                          </button>
+                        );
+                      })}
+                    </>
+                  ))}
+
+                {activeTab === 'prompts' &&
+                  (filteredPrompts.length === 0 ? (
+                    <div style={{ padding: 16, fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
+                      {t('mcpBrowser.noPrompts')}
+                    </div>
+                  ) : (
+                    filteredPrompts.map((p) => {
+                      const selected = selectedPromptName === p.name;
+                      return (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() => setSelectedPromptName(p.name)}
+                          style={{
+                            textAlign: 'left',
+                            padding: '8px 10px',
+                            borderRadius: 8,
+                            border: selected ? '1px solid var(--accent)' : '1px solid transparent',
+                            background: selected ? 'var(--bg-elev)' : 'transparent',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 3,
+                          }}
+                        >
+                          <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-main)' }}>
+                            {p.name}
+                          </code>
+                          {p.description && (
+                            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+                              {getTranslationDisplay(`prompt:${p.name}`, p.description).text}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })
+                  ))}
+
+                {activeTab === 'logs' && (
+                  <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                      {snapshot.stderr.length > 0 && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => void handleCopy(snapshot.stderr.join('\n'))}
+                        >
+                          <Copy size={11} /> {t('common.copy')}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => setSnapshot((prev) => (prev ? { ...prev, stderr: [] } : prev))}
+                      >
+                        {t('mcpBrowser.clearLogs')}
+                      </button>
+                    </div>
+                    {snapshot.stderr.length === 0 ? (
+                      <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
+                        {t('mcpBrowser.noLogs')}
+                      </div>
+                    ) : (
+                      <pre
+                        style={{
+                          margin: 0,
+                          flex: 1,
+                          fontSize: 'var(--text-sm)',
+                          fontFamily: 'var(--font-mono)',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-all',
+                          color: 'var(--text-muted)',
+                        }}
+                      >
+                        {snapshot.stderr.join('\n')}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Panel: Inspector & Runner (split horizontally into Params | Result when result is open) */}
             <div
               style={{
-                flex: 1,
-                minHeight: 0,
-                overflowY: 'auto',
-                padding: 14,
                 display: 'flex',
-                flexDirection: 'column',
-                gap: 14,
+                flexDirection: 'row',
+                borderRadius: 12,
+                border: '1px solid var(--card-border)',
+                background: 'var(--card-bg)',
+                minHeight: 0,
+                overflow: 'hidden',
               }}
             >
-              {activeTab === 'tools' && selectedTool ? (
-                <>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                      <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-main)' }}>
-                        {selectedTool.name}
-                      </code>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
-                          {t('mcpBrowser.schemaChars', { n: JSON.stringify(selectedTool.inputSchema).length })} ·{' '}
-                          {t('mcpBrowser.estTokens', { n: estimateTokens(selectedTool) })}
-                        </span>
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  padding: 14,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 14,
+                }}
+              >
+                {activeTab === 'tools' && selectedTool ? (
+                  <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                        <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-main)' }}>
+                          {selectedTool.name}
+                        </code>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                            {t('mcpBrowser.schemaChars', { n: JSON.stringify(selectedTool.inputSchema).length })} ·{' '}
+                            {t('mcpBrowser.estTokens', { n: estimateTokens(selectedTool) })}
+                          </span>
+                          {selectedToolTranslationItems.length > 0 && selectedToolPendingCount > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              disabled={translationBatch !== null}
+                              onClick={() => void translateAllDescs(selectedToolTranslationItems)}
+                              title={t('harness.translate')}
+                            >
+                              <Globe size={12} aria-hidden />
+                              <span>
+                                {translationBatch
+                                  ? `${translationBatch.done}/${translationBatch.total}`
+                                  : t('harness.translate')}
+                              </span>
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    {selectedTool.description && (
-                      <p style={{ margin: 0, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                        {selectedTool.description}
-                      </p>
-                    )}
-                  </div>
-
-                {/* Input Mode & Action Bar */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <SegGroup
-                      value={inputMode}
-                      onChange={(v) => switchInputMode(v as InputMode)}
-                      size="sm"
-                      options={[
-                        { value: 'form', label: t('mcpBrowser.inputModeForm') },
-                        { value: 'json', label: t('mcpBrowser.inputModeJson') },
-                      ]}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => {
-                        const def = schemaDefaults(selectedTool.inputSchema);
-                        setToolFormValues(def);
-                        setToolJsonText(JSON.stringify(def, null, 2));
-                        setToolJsonError(null);
-                      }}
-                    >
-                      {t('mcpBrowser.fillDefaults')}
-                    </button>
-                    {inputMode === 'json' && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => {
-                          try {
-                            setToolJsonText(JSON.stringify(JSON.parse(toolJsonText || '{}'), null, 2));
-                            setToolJsonError(null);
-                          } catch {
-                            setToolJsonError(t('mcpBrowser.invalidJson'));
-                          }
-                        }}
-                      >
-                        {t('mcpBrowser.formatJson')}
-                      </button>
-                    )}
-                  </div>
-
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
-                    <input
-                      className="input"
-                      type="number"
-                      title={t('mcpBrowser.timeoutMs')}
-                      aria-label={t('mcpBrowser.timeoutMs')}
-                      style={{ width: 76, padding: '4px 6px', fontSize: 'var(--text-sm)', textAlign: 'right' }}
-                      value={timeoutMs}
-                      min={1000}
-                      max={120000}
-                      step={1000}
-                      onChange={(e) => setTimeoutMs(Number(e.target.value) || 30000)}
-                    />
-                    <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>ms</span>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      disabled={calling}
-                      onClick={() => void handleRunTool()}
-                    >
-                      <Play size={12} /> {calling ? t('mcpBrowser.running') : t('mcpBrowser.runTool')}
-                    </button>
-                    {toolResult && !resultOpen && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => setResultOpen(true)}
-                      >
-                        <span
-                          style={{
-                            width: 7,
-                            height: 7,
-                            borderRadius: '50%',
-                            background: toolResult.isError ? 'var(--accent-rose)' : 'var(--accent-emerald, #22c55e)',
-                          }}
-                        />
-                        {t('mcpBrowser.result')} ({t('mcpBrowser.durationMs', { ms: toolResult.durationMs })})
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                  {/* Form / Raw JSON */}
-                  {inputMode === 'form' ? (
-                    (() => {
-                      const props = (selectedTool.inputSchema?.properties ?? {}) as Record<string, Record<string, unknown>>;
-                      const requiredSet = new Set(
-                        Array.isArray(selectedTool.inputSchema?.required)
-                          ? (selectedTool.inputSchema.required as string[])
-                          : []
-                      );
-                      const rawKeys = Object.keys(props);
-                      const keys = [
-                        ...rawKeys.filter((k) => requiredSet.has(k)),
-                        ...rawKeys.filter((k) => !requiredSet.has(k)),
-                      ];
-                      if (keys.length === 0) {
+                      {selectedTool.description && (() => {
+                        const toolKey = `tool:${selectedTool.name}`;
+                        const toolDisplay = getTranslationDisplay(toolKey, selectedTool.description);
                         return (
-                          <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', padding: '8px 0' }}>
-                            {t('mcpBrowser.noParams')}
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                            <p style={{ margin: 0, flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                              {toolDisplay.text}
+                            </p>
+                            {toolDisplay.translated ? (
+                              <TranslationBadge
+                                showingTranslation={toolDisplay.showingTranslation}
+                                onToggle={() => toggleOriginal(toolKey)}
+                              />
+                            ) : (
+                              <TranslateButton size={12} compact onClick={() => void translateDesc(toolKey, selectedTool.description)} />
+                            )}
                           </div>
                         );
-                      }
-                      return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {keys.map((k) => renderSchemaField(k, props[k]!, requiredSet.has(k)))}
-                        </div>
-                      );
-                    })()
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <textarea
-                        className="input"
-                        rows={8}
-                        style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', resize: 'vertical' }}
-                        value={toolJsonText}
-                        onChange={(e) => {
-                          setToolJsonText(e.target.value);
-                          setToolJsonError(null);
-                        }}
-                      />
-                      {toolJsonError && (
-                        <span style={{ fontSize: 'var(--text-md)', color: 'var(--accent-rose)' }}>{toolJsonError}</span>
-                      )}
+                      })()}
                     </div>
-                  )}
 
-                  {/* History */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        <History size={12} /> {t('mcpBrowser.history')}
-                      </span>
-                      {toolHistory.length > 0 && (
+                    {/* Input Mode & Action Bar */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <SegGroup
+                          value={inputMode}
+                          onChange={(v) => switchInputMode(v as InputMode)}
+                          size="sm"
+                          options={[
+                            { value: 'form', label: t('mcpBrowser.inputModeForm') },
+                            { value: 'json', label: t('mcpBrowser.inputModeJson') },
+                          ]}
+                        />
                         <button
                           type="button"
                           className="btn btn-sm"
                           onClick={() => {
-                            if (!serverHistoryKey) return;
-                            const next = { ...historyMap };
-                            delete next[serverHistoryKey];
-                            setHistoryMap(next);
-                            writeHistoryMap(next);
+                            const def = schemaDefaults(selectedTool.inputSchema);
+                            setToolFormValues(def);
+                            setToolJsonText(JSON.stringify(def, null, 2));
+                            setToolJsonError(null);
                           }}
                         >
-                          {t('mcpBrowser.clearHistory')}
+                          {t('mcpBrowser.fillDefaults')}
                         </button>
-                      )}
-                    </div>
-                    {toolHistory.length === 0 ? (
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('mcpBrowser.noHistory')}</span>
-                    ) : (
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {toolHistory.map((item) => (
+                        {inputMode === 'json' && (
                           <button
-                            key={item.id}
                             type="button"
                             className="btn btn-sm"
-                            title={JSON.stringify(item.args, null, 2)}
                             onClick={() => {
-                              setToolFormValues(item.args);
-                              setToolJsonText(JSON.stringify(item.args, null, 2));
-                              setToolJsonError(null);
+                              try {
+                                setToolJsonText(JSON.stringify(JSON.parse(toolJsonText || '{}'), null, 2));
+                                setToolJsonError(null);
+                              } catch {
+                                setToolJsonError(t('mcpBrowser.invalidJson'));
+                              }
                             }}
                           >
-                            {t('mcpBrowser.applyHistory')} · {new Date(item.timestamp).toLocaleTimeString()}
+                            {t('mcpBrowser.formatJson')}
                           </button>
-                        ))}
+                        )}
+                      </div>
+
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                        <input
+                          className="input"
+                          type="number"
+                          title={t('mcpBrowser.timeoutMs')}
+                          aria-label={t('mcpBrowser.timeoutMs')}
+                          style={{ width: 76, padding: '4px 6px', fontSize: 'var(--text-sm)', textAlign: 'right' }}
+                          value={timeoutMs}
+                          min={1000}
+                          max={120000}
+                          step={1000}
+                          onChange={(e) => setTimeoutMs(Number(e.target.value) || 30000)}
+                        />
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>ms</span>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          disabled={calling}
+                          onClick={() => void handleRunTool()}
+                        >
+                          <Play size={12} /> {calling ? t('mcpBrowser.running') : t('mcpBrowser.runTool')}
+                        </button>
+                        {toolResult && !resultOpen && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => setResultOpen(true)}
+                          >
+                            <span
+                              style={{
+                                width: 7,
+                                height: 7,
+                                borderRadius: '50%',
+                                background: toolResult.isError ? 'var(--accent-rose)' : 'var(--accent-emerald, #22c55e)',
+                              }}
+                            />
+                            {t('mcpBrowser.result')} ({t('mcpBrowser.durationMs', { ms: toolResult.durationMs })})
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Form / Raw JSON */}
+                    {inputMode === 'form' ? (
+                      (() => {
+                        const props = (selectedTool.inputSchema?.properties ?? {}) as Record<string, Record<string, unknown>>;
+                        const requiredSet = new Set(
+                          Array.isArray(selectedTool.inputSchema?.required)
+                            ? (selectedTool.inputSchema.required as string[])
+                            : []
+                        );
+                        const rawKeys = Object.keys(props);
+                        const keys = [
+                          ...rawKeys.filter((k) => requiredSet.has(k)),
+                          ...rawKeys.filter((k) => !requiredSet.has(k)),
+                        ];
+                        if (keys.length === 0) {
+                          return (
+                            <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', padding: '8px 0' }}>
+                              {t('mcpBrowser.noParams')}
+                            </div>
+                          );
+                        }
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {keys.map((k) => renderSchemaField(k, props[k]!, requiredSet.has(k)))}
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <textarea
+                          className="input"
+                          rows={8}
+                          style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', resize: 'vertical' }}
+                          value={toolJsonText}
+                          onChange={(e) => {
+                            setToolJsonText(e.target.value);
+                            setToolJsonError(null);
+                          }}
+                        />
+                        {toolJsonError && (
+                          <span style={{ fontSize: 'var(--text-md)', color: 'var(--accent-rose)' }}>{toolJsonError}</span>
+                        )}
                       </div>
                     )}
-                  </div>
-                </>
-              ) : activeTab === 'resources' && selectedResourceUri ? (
-                <>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xl)', fontWeight: 700, wordBreak: 'break-all' }}>
-                      {selectedResourceUri}
-                    </code>
-                    {selectedIsTemplate && (
-                      <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>
-                        {t('mcpBrowser.templateUriHint')}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <input
-                      className="input"
-                      style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)' }}
-                      value={resourceUriDraft}
-                      onChange={(e) => setResourceUriDraft(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      disabled={readingResource || !resourceUriDraft.trim()}
-                      onClick={() => void handleReadResource()}
-                    >
-                      <Play size={12} /> {readingResource ? t('mcpBrowser.running') : t('mcpBrowser.readResource')}
-                    </button>
-                  </div>
-                  {resourceResult && (
-                    <ResultViewer
-                      data={resourceResult.contents}
-                      raw={resourceResult}
-                      headerLeft={
-                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
-                          {t('mcpBrowser.durationMs', { ms: resourceResult.durationMs })}
+
+                    {/* History */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          <History size={12} /> {t('mcpBrowser.history')}
                         </span>
-                      }
-                    />
-                  )}
-                </>
-              ) : activeTab === 'prompts' && selectedPrompt ? (
-                <>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xl)', fontWeight: 700 }}>{selectedPrompt.name}</code>
-                    {selectedPrompt.description && (
-                      <p style={{ margin: 0, fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>
-                        {selectedPrompt.description}
-                      </p>
+                        {toolHistory.length > 0 && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => {
+                              if (!serverHistoryKey) return;
+                              const next = { ...historyMap };
+                              delete next[serverHistoryKey];
+                              setHistoryMap(next);
+                              writeHistoryMap(next);
+                            }}
+                          >
+                            {t('mcpBrowser.clearHistory')}
+                          </button>
+                        )}
+                      </div>
+                      {toolHistory.length === 0 ? (
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('mcpBrowser.noHistory')}</span>
+                      ) : (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {toolHistory.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className="btn btn-sm"
+                              title={JSON.stringify(item.args, null, 2)}
+                              onClick={() => {
+                                setToolFormValues(item.args);
+                                setToolJsonText(JSON.stringify(item.args, null, 2));
+                                setToolJsonError(null);
+                              }}
+                            >
+                              {t('mcpBrowser.applyHistory')} · {new Date(item.timestamp).toLocaleTimeString()}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : activeTab === 'resources' && selectedResourceUri ? (
+                  <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xl)', fontWeight: 700, wordBreak: 'break-all' }}>
+                        {selectedResourceUri}
+                      </code>
+                      {selectedIsTemplate && (
+                        <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>
+                          {t('mcpBrowser.templateUriHint')}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input
+                        className="input"
+                        style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)' }}
+                        value={resourceUriDraft}
+                        onChange={(e) => setResourceUriDraft(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={readingResource || !resourceUriDraft.trim()}
+                        onClick={() => void handleReadResource()}
+                      >
+                        <Play size={12} /> {readingResource ? t('mcpBrowser.running') : t('mcpBrowser.readResource')}
+                      </button>
+                    </div>
+                    {resourceResult && (
+                      <ResultViewer
+                        data={resourceResult.contents}
+                        raw={resourceResult}
+                        headerLeft={
+                          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                            {t('mcpBrowser.durationMs', { ms: resourceResult.durationMs })}
+                          </span>
+                        }
+                      />
                     )}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {(selectedPrompt.arguments ?? []).length === 0 ? (
-                      <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>
-                        {t('mcpBrowser.noParams')}
-                      </span>
-                    ) : (
-                      [...(selectedPrompt.arguments ?? []).filter((a) => a.required), ...(selectedPrompt.arguments ?? []).filter((a) => !a.required)].map((arg) => (
-                        <div key={arg.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', fontWeight: 600 }}>{arg.name}</code>
-                            {arg.required && (
-                              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)', fontWeight: 600 }}>
-                                * {t('mcpBrowser.required')}
-                              </span>
+                  </>
+                ) : activeTab === 'prompts' && selectedPrompt ? (
+                  <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                        <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xl)', fontWeight: 700 }}>{selectedPrompt.name}</code>
+                        {selectedPromptTranslationItems.length > 0 && selectedPromptPendingCount > 0 && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={translationBatch !== null}
+                            onClick={() => void translateAllDescs(selectedPromptTranslationItems)}
+                            title={t('harness.translate')}
+                          >
+                            <Globe size={12} aria-hidden />
+                            <span>
+                              {translationBatch
+                                ? `${translationBatch.done}/${translationBatch.total}`
+                                : t('harness.translate')}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                      {selectedPrompt.description && (() => {
+                        const promptKey = `prompt:${selectedPrompt.name}`;
+                        const promptDisplay = getTranslationDisplay(promptKey, selectedPrompt.description);
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                            <p style={{ margin: 0, flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>
+                              {promptDisplay.text}
+                            </p>
+                            {promptDisplay.translated ? (
+                              <TranslationBadge
+                                showingTranslation={promptDisplay.showingTranslation}
+                                onToggle={() => toggleOriginal(promptKey)}
+                              />
+                            ) : (
+                              <TranslateButton size={12} compact onClick={() => void translateDesc(promptKey, selectedPrompt.description)} />
                             )}
                           </div>
-                          {arg.description && (
-                            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{arg.description}</span>
-                          )}
-                          <input
-                            className="input"
-                            value={promptArgs[arg.name] ?? ''}
-                            onChange={(e) => setPromptArgs((prev) => ({ ...prev, [arg.name]: e.target.value }))}
-                          />
-                        </div>
-                      ))
-                    )}
-                  </div>
-                  <div>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      disabled={gettingPrompt}
-                      onClick={() => void handleGetPrompt()}
-                    >
-                      <Play size={12} /> {gettingPrompt ? t('mcpBrowser.running') : t('mcpBrowser.getPrompt')}
-                    </button>
-                  </div>
-                  {promptResult && (
-                    <ResultViewer
-                      data={promptResult.messages}
-                      raw={promptResult}
-                      headerLeft={
-                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
-                          {t('mcpBrowser.durationMs', { ms: promptResult.durationMs })}
+                        );
+                      })()}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {(selectedPrompt.arguments ?? []).length === 0 ? (
+                        <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>
+                          {t('mcpBrowser.noParams')}
                         </span>
-                      }
-                    />
-                  )}
-                </>
-              ) : (
-                <div style={{ margin: 'auto', fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
-                  {t('mcpBrowser.selectItemHint')}
+                      ) : (
+                        [...(selectedPrompt.arguments ?? []).filter((a) => a.required), ...(selectedPrompt.arguments ?? []).filter((a) => !a.required)].map((arg) => {
+                          const argKey = `prompt:${selectedPrompt.name}:arg:${arg.name}`;
+                          const argDisplay = arg.description ? getTranslationDisplay(argKey, arg.description) : null;
+                          return (
+                            <div key={arg.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)', fontWeight: 600 }}>{arg.name}</code>
+                                {arg.required && (
+                                  <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)', fontWeight: 600 }}>
+                                    * {t('mcpBrowser.required')}
+                                  </span>
+                                )}
+                              </div>
+                              {arg.description && argDisplay && (
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                  <span style={{ flex: 1, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{argDisplay.text}</span>
+                                  {argDisplay.translated && (
+                                    <TranslationBadge
+                                      showingTranslation={argDisplay.showingTranslation}
+                                      onToggle={() => toggleOriginal(argKey)}
+                                    />
+                                  )}
+                                </div>
+                              )}
+                              <input
+                                className="input"
+                                value={promptArgs[arg.name] ?? ''}
+                                onChange={(e) => setPromptArgs((prev) => ({ ...prev, [arg.name]: e.target.value }))}
+                              />
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={gettingPrompt}
+                        onClick={() => void handleGetPrompt()}
+                      >
+                        <Play size={12} /> {gettingPrompt ? t('mcpBrowser.running') : t('mcpBrowser.getPrompt')}
+                      </button>
+                    </div>
+                    {promptResult && (
+                      <ResultViewer
+                        data={promptResult.messages}
+                        raw={promptResult}
+                        headerLeft={
+                          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                            {t('mcpBrowser.durationMs', { ms: promptResult.durationMs })}
+                          </span>
+                        }
+                      />
+                    )}
+                  </>
+                ) : (
+                  <div style={{ margin: 'auto', fontSize: 'var(--text-md)', color: 'var(--text-muted)', textAlign: 'center' }}>
+                    {t('mcpBrowser.selectItemHint')}
+                  </div>
+                )}
+              </div>
+
+              {/* Side-by-Side Tool Result Pane */}
+              {activeTab === 'tools' && selectedTool && toolResult && resultOpen && (
+                <div
+                  style={{
+                    width: '44%',
+                    minWidth: 280,
+                    borderLeft: '1px solid var(--card-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0,
+                  }}
+                >
+                  <ResultViewer
+                    fill
+                    data={toolResult.structuredContent ?? toolResult.content}
+                    raw={toolResult}
+                    headerLeft={
+                      <>
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: 'var(--text-sm)',
+                            fontWeight: 600,
+                            color: toolResult.isError ? 'var(--accent-rose)' : 'var(--accent-emerald, #22c55e)',
+                          }}
+                        >
+                          {toolResult.isError ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
+                          {toolResult.isError ? t('mcpBrowser.statusToolError') : t('mcpBrowser.statusOk')}
+                        </span>
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                          {t('mcpBrowser.durationMs', { ms: toolResult.durationMs })}
+                        </span>
+                      </>
+                    }
+                    headerRight={
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        style={{ padding: '3px 6px' }}
+                        onClick={() => setResultOpen(false)}
+                        aria-label={t('mcpBrowser.cancel')}
+                      >
+                        <X size={12} />
+                      </button>
+                    }
+                  />
                 </div>
               )}
             </div>
-
-            {/* Side-by-Side Tool Result Pane */}
-            {activeTab === 'tools' && selectedTool && toolResult && resultOpen && (
-              <div
-                style={{
-                  width: '44%',
-                  minWidth: 280,
-                  borderLeft: '1px solid var(--card-border)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  minHeight: 0,
-                }}
-              >
-                <ResultViewer
-                  fill
-                  data={toolResult.structuredContent ?? toolResult.content}
-                  raw={toolResult}
-                  headerLeft={
-                    <>
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                          fontSize: 'var(--text-sm)',
-                          fontWeight: 600,
-                          color: toolResult.isError ? 'var(--accent-rose)' : 'var(--accent-emerald, #22c55e)',
-                        }}
-                      >
-                        {toolResult.isError ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
-                        {toolResult.isError ? t('mcpBrowser.statusToolError') : t('mcpBrowser.statusOk')}
-                      </span>
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
-                        {t('mcpBrowser.durationMs', { ms: toolResult.durationMs })}
-                      </span>
-                    </>
-                  }
-                  headerRight={
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      style={{ padding: '3px 6px' }}
-                      onClick={() => setResultOpen(false)}
-                      aria-label={t('mcpBrowser.cancel')}
-                    >
-                      <X size={12} />
-                    </button>
-                  }
-                />
-              </div>
-            )}
-          </div>
           </div>
         </div>
       )}
@@ -2290,15 +2593,25 @@ export const McpBrowserPage: React.FC = () => {
                     toast.error(t('mcpBrowser.importJsonFailed'));
                     return;
                   }
+                  if (snapshot) {
+                    void handleDisconnect();
+                  }
+                  setConfigCollapsed(false);
                   setCustomTransport(res.transport);
                   if (res.transport === 'stdio') {
                     setCustomCommand(res.command ?? '');
                     setCustomArgs(res.args ?? '');
                     setCustomCwd(res.cwd ?? '');
                     setCustomEnvRows(res.envRows ?? []);
+                    setCustomUrl('');
+                    setCustomHeaderRows([]);
                   } else {
                     setCustomUrl(res.url ?? '');
                     setCustomHeaderRows(res.headerRows ?? []);
+                    setCustomCommand('');
+                    setCustomArgs('');
+                    setCustomCwd('');
+                    setCustomEnvRows([]);
                   }
                   setImportOpen(false);
                   setImportDraft('');
@@ -2400,7 +2713,24 @@ export const McpBrowserPage: React.FC = () => {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>{t('mcpBrowser.installTargets')}</span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)' }}>{t('mcpBrowser.installTargets')}</span>
+                {hosts.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ padding: '1px 7px', fontSize: 'var(--text-xs)' }}
+                    onClick={() => {
+                      setInstallPlan(null);
+                      setInstallHosts((prev) =>
+                        prev.length === hosts.length ? [] : hosts.map((h) => h.id)
+                      );
+                    }}
+                  >
+                    {installHosts.length === hosts.length ? t('captures.clearAll') : t('captures.selectAll')}
+                  </button>
+                )}
+              </div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {hosts.map((h) => {
                   const checked = installHosts.includes(h.id);

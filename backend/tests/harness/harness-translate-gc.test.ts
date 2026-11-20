@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import fastify from 'fastify';
 import { harnessEnvDir } from '../../src/harness/host/manifest.js';
-import { pruneTranslationStore, readCachedTranslations } from '../../src/harness/translation.js';
-import { registerHarnessRoutes } from '../../src/routes/harness.js';
+import { pruneTranslationStore, readCachedTranslations, translationStoreDir } from '../../src/translation/index.js';
+import { registerTranslationRoutes } from '../../src/routes/translation.js';
 
 /**
  * Housekeeping on the derived translation store.
@@ -21,8 +21,10 @@ const DAY = 24 * 60 * 60 * 1000;
 /** Every case starts from an empty store: the budget tests are meaningless over a shared directory. */
 beforeEach(() => {
   for (const kind of ['descriptions', 'readme', 'segments']) {
+    fs.rmSync(path.join(translationStoreDir(), kind), { recursive: true, force: true });
     fs.rmSync(path.join(harnessEnvDir(), 'i18n', kind), { recursive: true, force: true });
   }
+  fs.rmSync(path.join(translationStoreDir(), 'descriptions.json'), { force: true });
   fs.rmSync(path.join(harnessEnvDir(), 'i18n', 'descriptions.json'), { force: true });
 });
 
@@ -137,7 +139,7 @@ describe('translation cache routes', () => {
     expect(readCachedTranslations([doc], 'zh')[doc]).toBeUndefined();
 
     const app = fastify();
-    registerHarnessRoutes(app);
+    registerTranslationRoutes(app);
     await app.ready();
     const res = await app.inject({
       method: 'POST',
@@ -157,7 +159,7 @@ describe('translation cache routes', () => {
     expect(readCachedTranslations([doc], 'zh', 'readme')[doc]?.text).toBe(`译文 ${doc}`);
 
     const app = fastify();
-    registerHarnessRoutes(app);
+    registerTranslationRoutes(app);
     await app.ready();
     const res = await app.inject({
       method: 'POST',
@@ -173,7 +175,7 @@ describe('translation cache routes', () => {
   it('exposes a manual prune that accepts an age budget', async () => {
     const file = seed('readme', 'manual prune page', 'zh', 10 * DAY);
     const app = fastify();
-    registerHarnessRoutes(app);
+    registerTranslationRoutes(app);
     await app.ready();
     const res = await app.inject({
       method: 'POST',

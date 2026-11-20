@@ -12,8 +12,8 @@ import {
   translateDescription,
   translateMarkdown,
   translationChain,
-} from '../../src/harness/translation.js';
-import { registerHarnessRoutes } from '../../src/routes/harness.js';
+} from '../../src/translation/index.js';
+import { registerTranslationRoutes } from '../../src/routes/translation.js';
 import { currentYaml } from '../helpers/current-config.js';
 
 /**
@@ -279,7 +279,7 @@ describe('translation probe route', () => {
       );
     }) as unknown as typeof fetch;
     const app = fastify();
-    registerHarnessRoutes(app);
+    registerTranslationRoutes(app);
     await app.ready();
     try {
       const res = await app.inject({ method: 'POST', url: '/api/admin/harness/translations/probe', payload: {} });
@@ -310,7 +310,7 @@ describe('README re-translate', () => {
       );
     }) as unknown as typeof fetch;
     const app = fastify();
-    registerHarnessRoutes(app);
+    registerTranslationRoutes(app);
     await app.ready();
     const translate = (refresh?: boolean) =>
       app.inject({
@@ -519,7 +519,7 @@ describe('translate-stream route', () => {
       return originalFetch(url as Parameters<typeof fetch>[0], init);
     }) as unknown as typeof fetch;
     const app = fastify();
-    registerHarnessRoutes(app);
+    registerTranslationRoutes(app);
     await app.listen({ port: 0, host: '127.0.0.1' });
     try {
       // A bound TCP listener reports an AddressInfo; the cast only names that library shape.

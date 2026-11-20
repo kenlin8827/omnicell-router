@@ -3,32 +3,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { defaultGatewayPort } from '../cli/clients/base.js';
+import { getEnvRootDir } from '../config/env.js';
 import { loadConfig } from '../config/index.js';
 import { INTERNAL_SESSION_PREFIX } from '../session/session-manager.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
-import { harnessEnvDir } from './host/manifest.js';
 
 /**
- * Description translation cache (ADR-0015 follow-up).
+ * Shared translation service and derived cache.
  *
- * Third-party `description` text is CONTENT, not UI copy: it can never live in the i18n tables. It is
- * translated on demand into the console's CURRENT language and cached as DERIVED data — deleting the
- * cache loses nothing, re-translating restores it. Keyed by `sha256(text):lang`, so an upstream edit
- * invalidates the entry by construction (no timestamps, no manual busting).
+ * Third-party descriptions and documentation are CONTENT, not UI copy: they can never live in the
+ * static i18n tables. Text is translated on demand into the target language and cached as DERIVED
+ * data — deleting the cache loses nothing, re-translating restores it. Keyed by `sha256(text):lang`,
+ * so an upstream edit invalidates the entry by construction (no timestamps, no manual busting).
  *
  * The model call goes through this gateway's own OpenAI-compatible surface on loopback: translation
  * is just another routed request, so tiering/fallback/quotas apply instead of a second LLM client.
- * Only the description string leaves the process — never the skill body.
+ *
+ * Callers can optionally override `apiKey`, `sessionId`, and `cache` (e.g., for a future public
+ * `/v1/translate` surface that bills the caller's own key/session without persisting payloads).
  */
 
-/** Mirrors the console's UI languages (frontend i18n/languages.ts): the harness
- *  page translates third-party descriptions into the language the console is
- *  currently rendering, so a UI language ships → it becomes a target here in
- *  the same change. */
+/** Mirrors the console's UI languages (frontend i18n/languages.ts): any console language can be
+ *  used as a target language here. */
 export type TranslationLang = 'zh' | 'en' | 'es' | 'fr' | 'de' | 'ja' | 'ko' | 'pt';
 
 const SUPPORTED: TranslationLang[] = ['zh', 'en', 'es', 'fr', 'de', 'ja', 'ko', 'pt'];
-
 
 /**
  * Target languages, labeled in English for the translation prompt (the model
@@ -57,28 +56,53 @@ interface CacheEntry {
 
 /** One directory per KIND of translation. A README body and a one-line description must never share
  *  a store: they have different sizes, different lifetimes and different reasons to be dropped. */
-type CacheKind = 'descriptions' | 'readme' | 'segments';
+export type CacheKind = 'descriptions' | 'readme' | 'segments';
+
+/** Root directory of the shared derived translation store (`<envDir>/i18n`). */
+export function translationStoreDir(): string {
+  return path.join(getEnvRootDir(), 'i18n');
+}
+
+/** Pre-extraction location (`<envDir>/harness/i18n`), kept for lazy read-through migration. */
+function legacyHarnessI18nDir(): string {
+  return path.join(getEnvRootDir(), 'harness', 'i18n');
+}
 
 /**
  * The derived translation store: ONE FILE PER ENTRY, not one blob.
  *
- * The single `descriptions.json` this replaces was rewritten IN FULL on every write, so a 20 000-
- * character README made each later description translation carry a whole document; one corrupt byte
- * cost every language; and "drop this one page" meant hand-editing the blob. Entries are therefore
- * page-granular — `<sha256(text)>.<lang>.json` under the kind's directory — each written atomically
- * (temp + rename), so a crash costs at most the entry being written and nothing else.
+ * Entries are page-granular — `<sha256(text)>.<lang>.json` under the kind's directory — each
+ * written atomically (temp + rename), so a crash costs at most the entry being written and nothing
+ * else.
  */
-function entryPath(kind: CacheKind, hash: string, lang: string): string {
-  return path.join(harnessEnvDir(), 'i18n', kind, `${hash}.${lang}.json`);
+function entryPath(kind: CacheKind, hash: string, lang: string, rootDir = translationStoreDir()): string {
+  return path.join(rootDir, kind, `${hash}.${lang}.json`);
 }
 
-function readEntry(kind: CacheKind, hash: string, lang: string): CacheEntry | null {
+function readEntryFrom(rootDir: string, kind: CacheKind, hash: string, lang: string): CacheEntry | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(entryPath(kind, hash, lang), 'utf8')) as CacheEntry;
+    const parsed = JSON.parse(fs.readFileSync(entryPath(kind, hash, lang, rootDir), 'utf8')) as CacheEntry;
     return parsed && typeof parsed.text === 'string' ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function readEntry(kind: CacheKind, hash: string, lang: string): CacheEntry | null {
+  const hit = readEntryFrom(translationStoreDir(), kind, hash, lang);
+  if (hit) return hit;
+
+  // Lazy one-way promotion from the pre-extraction harness/i18n directory.
+  const legacyHit = readEntryFrom(legacyHarnessI18nDir(), kind, hash, lang);
+  if (legacyHit && !legacyHit.truncated) {
+    try {
+      writeEntry(kind, hash, lang, legacyHit);
+    } catch {
+      // Best-effort promotion; return the hit even if disk write fails.
+    }
+    return legacyHit;
+  }
+  return null;
 }
 
 function writeEntry(kind: CacheKind, hash: string, lang: string, entry: CacheEntry): void {
@@ -105,13 +129,23 @@ let legacyBlob: Record<string, CacheEntry> | null | undefined;
  */
 function legacyEntry(kind: CacheKind, hash: string, lang: string): CacheEntry | null {
   if (legacyBlob === undefined) {
-    try {
-      const parsed = JSON.parse(
-        fs.readFileSync(path.join(harnessEnvDir(), 'i18n', 'descriptions.json'), 'utf8')
-      ) as { entries?: Record<string, CacheEntry> };
-      legacyBlob = parsed?.entries ?? null;
-    } catch {
-      legacyBlob = null;
+    const candidates = [
+      path.join(translationStoreDir(), 'descriptions.json'),
+      path.join(legacyHarnessI18nDir(), 'descriptions.json'),
+    ];
+    legacyBlob = null;
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8')) as {
+          entries?: Record<string, CacheEntry>;
+        };
+        if (parsed?.entries) {
+          legacyBlob = parsed.entries;
+          break;
+        }
+      } catch {
+        // try next candidate
+      }
     }
   }
   if (!legacyBlob) return null;
@@ -122,7 +156,7 @@ function legacyEntry(kind: CacheKind, hash: string, lang: string): CacheEntry | 
   return hit;
 }
 
-/** Newest source of truth first, then the legacy blob. Never calls a model, never writes. */
+/** Newest source of truth first, then the legacy blob. Never calls a model. */
 function lookup(kind: CacheKind, text: string, lang: string): CacheEntry | null {
   const hash = hashText(text);
   return readEntry(kind, hash, lang) ?? legacyEntry(kind, hash, lang);
@@ -174,8 +208,8 @@ interface StoredFile {
   mtimeMs: number;
 }
 
-function kindDir(kind: CacheKind): string {
-  return path.join(harnessEnvDir(), 'i18n', kind);
+function kindDir(kind: CacheKind, rootDir = translationStoreDir()): string {
+  return path.join(rootDir, kind);
 }
 
 function remove(file: string): boolean {
@@ -187,11 +221,11 @@ function remove(file: string): boolean {
   }
 }
 
-function listStore(): StoredFile[] {
+function listStoreFrom(rootDir: string): StoredFile[] {
   const out: StoredFile[] = [];
   const now = Date.now();
   for (const kind of KINDS) {
-    const dir = kindDir(kind);
+    const dir = kindDir(kind, rootDir);
     let names: string[];
     try {
       names = fs.readdirSync(dir);
@@ -218,21 +252,29 @@ function listStore(): StoredFile[] {
   return out;
 }
 
+function listStore(): StoredFile[] {
+  return [...listStoreFrom(translationStoreDir()), ...listStoreFrom(legacyHarnessI18nDir())];
+}
+
 /**
  * The pre-split blob is only a migration SOURCE now — nothing writes it, so its mtime is the last
  * write of the build that still did. Once that is older than the age budget it is exactly as stale
  * as the entries the same policy already drops; leaving it would let it outlive every entry it
  * produced.
  */
-function sweepLegacyBlob(maxAgeMs: number, now: number): boolean {
-  if (maxAgeMs <= 0) return false;
-  const file = path.join(harnessEnvDir(), 'i18n', 'descriptions.json');
-  try {
-    if (now - fs.statSync(file).mtimeMs <= maxAgeMs) return false;
-  } catch {
-    return false;
+function sweepLegacyBlob(maxAgeMs: number, now: number): number {
+  if (maxAgeMs <= 0) return 0;
+  let removed = 0;
+  for (const dir of [translationStoreDir(), legacyHarnessI18nDir()]) {
+    const file = path.join(dir, 'descriptions.json');
+    try {
+      if (now - fs.statSync(file).mtimeMs <= maxAgeMs) continue;
+    } catch {
+      continue;
+    }
+    if (remove(file)) removed += 1;
   }
-  return remove(file);
+  return removed;
 }
 
 /**
@@ -246,8 +288,7 @@ export function pruneTranslationStore(opts: { maxAgeMs?: number; maxBytes?: numb
   const maxAgeMs = opts.maxAgeMs ?? GC_MAX_AGE_MS;
   const maxBytes = opts.maxBytes ?? GC_MAX_BYTES;
   const now = Date.now();
-  let removed = 0;
-  if (sweepLegacyBlob(maxAgeMs, now)) removed += 1;
+  let removed = sweepLegacyBlob(maxAgeMs, now);
 
   let survivors = listStore().filter((entry) => {
     if (maxAgeMs > 0 && now - entry.mtimeMs > maxAgeMs) {
@@ -321,6 +362,17 @@ export type TranslateError = {
   message: string;
 };
 
+/**
+ * Execution policy for a translation call. Admin/console callers omit this to use the gateway's
+ * internal key, reserved internal session, and shared derived disk cache. A future public `/v1`
+ * surface can pass the caller's own key/session and disable disk caching.
+ */
+export interface TranslationCallOptions {
+  apiKey?: string;
+  sessionId?: string;
+  cache?: boolean;
+}
+
 /** First enabled gateway API key, for the gateway's own loopback calls (translation, probes). */
 export function firstEnabledKey(): string | null {
   try {
@@ -333,9 +385,9 @@ export function firstEnabledKey(): string | null {
 }
 
 const SYSTEM_PROMPT =
-  'You translate short software-skill descriptions. Reply with the translation ONLY — no quotes, no ' +
+  'You translate short software descriptions (skills, MCP tools, prompts, and UI metadata). Reply with the translation ONLY — no quotes, no ' +
   'explanations, no markdown. Preserve product names, code identifiers and file names verbatim. ' +
-  'Keep it to one or two sentences.';
+  'Keep it concise and faithful to the source.';
 
 /**
  * Long-form copy needs a DIFFERENT contract: a README is a document, not a sentence. Asking the
@@ -370,7 +422,6 @@ const MD_CALL_TIMEOUT_MS = 30_000;
  *  loss: every verified segment was already stored, so the next attempt resumes instead of
  *  re-paying. */
 const MD_TOTAL_TIMEOUT_MS = 5 * 60_000;
-
 
 /**
  * Tag verification, the cheap half of a CAT tool's QA pass: a translated segment must carry the same
@@ -407,7 +458,6 @@ function segmentDefect(source: string, translated: string): string | null {
   return null;
 }
 
-
 /**
  * Translation is a cheap, non-critical internal call, and WHICH model spends that quota is an
  * operator cost decision: `defaultModels.translation` (any gateway-visible modelRef — a tier alias
@@ -416,10 +466,6 @@ function segmentDefect(source: string, translated: string): string | null {
  * have unbounded spend — a configured model that fails degrades to `lite`, and a failing `lite`
  * errors honestly instead of hunting for a pricier worker. An operator who explicitly writes
  * `auto` accepts that cost; config is the operator's own decision and is honored verbatim.
- *
- * The retry is a SECOND request with a different model ref — deliberately not a routing-level
- * cross-tier downgrade, which ADR-0014 forbids (a forced tier is a contract: the pipeline fails over
- * inside the tier, never jumps to another one). Retrying here keeps that contract intact.
  */
 const TAIL_MODEL = 'lite';
 
@@ -453,10 +499,8 @@ export function translationChain(): string[] {
 
 /**
  * Model refs whose upstream refused the thinking pin. Keyed by the ref the
- * operator configured (a physical id is exact; a tier alias is a safe
- * over-approximation — one member rejecting it costs the pool a latency
- * optimization, never a translation). The first call pays one 400 and
- * learns; later calls never send the pin again.
+ * operator configured. The first call pays one 400 and learns; later calls
+ * never send the pin again.
  */
 const effortPinRejectedModels = new Set<string>();
 
@@ -480,16 +524,6 @@ async function callGateway(
   /** Per-round-trip ceiling; the document deadline hands a shorter one to the last attempts. */
   timeoutMs: number = MD_CALL_TIMEOUT_MS
 ): Promise<{ text: string; model: string } | { error: string }> {
-  // Thinking pin. Translation is a mechanical internal call — a thinking model
-  // must not burn reasoning tokens on a two-sentence answer, and this WAS the
-  // reported slowness: the configured translator (deepseek-v4-flash) thought by
-  // default because the request sent no effort at all, so the vendor's default
-  // (high-ish) ran before every answer. 'low' rather than 'none': the chain may
-  // name a model whose effort enum lacks 'none' (e.g. low|high|max) and an
-  // invalid level would 400 into the lite fallback — slower than thinking
-  // briefly. The gateway's own machinery (effortMap, capability clamp) still
-  // applies, and a vendor that refuses the field outright is handled below:
-  // the pin is an optimization, never a reason to lose the translation.
   const post = (pinEffort: boolean): Promise<Response> =>
     fetch(`http://127.0.0.1:${defaultGatewayPort()}/v1/chat/completions`, {
       method: 'POST',
@@ -502,9 +536,6 @@ async function callGateway(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Target language: ${LANG_LABEL[lang as TranslationLang]}\n\n${text}` },
         ],
-        // Pin the reserved internal-session namespace (ADR-0015) so these
-        // loopback calls share one session instead of minting a fresh
-        // cold_start session per call — the id IS the internal marker.
         ...(sessionId ? { router_options: { session_id: sessionId } } : {}),
       }),
       signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
@@ -518,13 +549,7 @@ async function callGateway(
   }
 
   if (!response.ok) {
-    // The upstream body often names the real cause (unknown modelRef, empty tier pool, auth) —
-    // carry a short snippet so a failing leg stays actionable instead of a bare status code.
     const detail = await errorSnippet(response);
-    // A vendor may refuse the pin itself: its enum can lack 'low', and a model
-    // with no thinking axis is clamped to 'none' by the gateway — which the
-    // openai wire forwards verbatim, and strict vendors 400 on that. Re-ask
-    // ONCE without the pin and remember the refusal for this ref.
     const pinRejected = (response.status === 400 || response.status === 422) && /reasoning_effort/i.test(detail);
     if (!pinRejected) {
       return { error: `${model}: gateway returned HTTP ${response.status}${detail ? ` — ${detail}` : ''}` };
@@ -547,37 +572,44 @@ async function callGateway(
   const choice = payload.choices?.[0];
   const translated = choice?.message?.content?.trim();
   if (!translated) return { error: `${model}: empty translation from gateway` };
-  // A cut answer is worse than a failed one: storing it would put a page that ends mid-sentence
-  // behind a cache key that claims the whole document. The caller retries (or errors honestly).
   if (choice?.finish_reason === 'length') {
     return { error: `${model}: output hit the provider's token limit — the translation was cut` };
   }
   return { text: translated, model: payload.model || model };
 }
 
-/** Translate one description into `lang`; hits the cache first, then the gateway's own routing. */
-export async function translateDescription(text: string, lang: string): Promise<TranslateResult | TranslateError> {
+/** Translate one description into `lang`; hits the cache first (when enabled), then the gateway's own routing. */
+export async function translateDescription(
+  text: string,
+  lang: string,
+  opts: TranslationCallOptions = {}
+): Promise<TranslateResult | TranslateError> {
   if (!isSupportedLang(lang)) {
     return { code: 'unsupported_lang', message: `unsupported language '${lang}'` };
   }
-  const cached = getCachedTranslation(text, lang);
-  if (cached) return { text: cached.text, cached: true, model: cached.model };
+  const useCache = opts.cache !== false;
+  if (useCache) {
+    const cached = getCachedTranslation(text, lang);
+    if (cached) return { text: cached.text, cached: true, model: cached.model };
+  }
 
-  const key = firstEnabledKey();
+  const key = opts.apiKey ?? firstEnabledKey();
   if (!key) {
     return { code: 'no_api_key', message: 'no enabled gateway API key — create one before translating' };
   }
 
-  // Configured model (or the lite alias) first, then the single lite retry.
+  const sessionId = opts.sessionId ?? SESSION_TRANSLATION;
   const attempts = translationChain();
   const failures: string[] = [];
   for (const model of attempts) {
-    const result = await callGateway(key, model, text, lang, SYSTEM_PROMPT, SESSION_TRANSLATION);
+    const result = await callGateway(key, model, text, lang, SYSTEM_PROMPT, sessionId);
     if ('error' in result) {
       failures.push(result.error);
       continue;
     }
-    store('descriptions', text, lang, result.text, result.model);
+    if (useCache) {
+      store('descriptions', text, lang, result.text, result.model);
+    }
     return { text: result.text, cached: false, model: result.model };
   }
 
@@ -610,7 +642,6 @@ export function splitMarkdownRuns(markdown: string): MarkdownRun[] {
     }
   };
   for (const line of markdown.split('\n')) {
-    // A fence opens and closes with the same marker at up to three spaces of indentation.
     const fence = /^\s{0,3}(```|~~~)/.test(line);
     if (inFence) {
       code.push(line);
@@ -629,7 +660,6 @@ export function splitMarkdownRuns(markdown: string): MarkdownRun[] {
     }
     prose.push(line);
   }
-  // An unclosed fence runs to the end of the document; it is still code and still copied verbatim.
   if (code.length > 0) runs.push({ text: code.join('\n'), code: true });
   flushProse();
   return runs;
@@ -667,29 +697,12 @@ export interface MarkdownTranslateResult {
 /**
  * Translate a Markdown document (a README) IN FULL: every prose run goes through the gateway chunk by
  * chunk, fenced code and blank lines are copied verbatim, and the pieces are rejoined in document
- * order. Segmentation exists because one gateway call holds a 30 s deadline and a whole README does
- * not fit in it — not because a tail is expendable.
- *
- * Two caches answer a repeat: the DOCUMENT entry (`i18n/readme/<sha256>.<lang>.json`, keyed by the
- * whole body) short-circuits the call, and the per-SEGMENT entries let a failed or timed-out run
- * resume from the chunks it already paid for. Either way, re-opening a dialog costs nothing.
- *
- * `refresh` is the operator saying the cached rendering is not good enough (a bad model answer):
- * skip the read and overwrite the entry on success. A failed run leaves the old entry untouched, so
- * a retry never costs them the translation they already have.
- *
- * `onProgress(done, total)` fires once with `(0, total)` when the chunk plan is known and after every
- * completed chunk. A README takes tens of seconds, so a caller with a UI to draw uses it; the plain
- * route ignores it.
- *
- * `timeoutMs` is the WHOLE-document ceiling (default `MD_TOTAL_TIMEOUT_MS`): chunks stop being
- * dispatched once it passes, in-flight calls get the remaining budget as their abort timeout, and
- * the run answers `code: 'timeout'`. Verified segments are already stored, so a retry resumes.
+ * order.
  */
 export async function translateMarkdown(
   markdown: string,
   lang: string,
-  opts: {
+  opts: TranslationCallOptions & {
     refresh?: boolean;
     onProgress?: (done: number, total: number) => void;
     timeoutMs?: number;
@@ -700,18 +713,14 @@ export async function translateMarkdown(
   if (!isSupportedLang(lang)) {
     return { code: 'unsupported_lang', message: `unsupported language '${lang}'` };
   }
+  const useCache = opts.cache !== false;
   const runs = splitMarkdownRuns(markdown);
 
-  // A legacy partial entry (written by the old budgeted translator) is a MISS: its key is the whole
-  // document, so answering it would present an opening-third rendering as a finished translation.
-  const hit = opts.refresh ? null : lookup('readme', markdown, lang);
+  const hit = useCache && !opts.refresh ? lookup('readme', markdown, lang) : null;
   if (hit && !hit.truncated) {
     return { text: hit.text, cached: true, model: hit.model };
   }
 
-  // Every prose run is planned; each is one or more gateway-sized chunks cut on paragraph
-  // boundaries. A run is all-or-nothing: a failure rejects the whole document (an error the operator
-  // can retry) rather than storing a rendering with one paragraph silently left in the source.
   const plan = new Map<number, string[]>();
   for (let index = 0; index < runs.length; index += 1) {
     const run = runs[index]!;
@@ -721,16 +730,15 @@ export async function translateMarkdown(
   }
 
   if (plan.size === 0) {
-    // Nothing translatable (a pure code block): the document IS the answer.
     return { text: markdown, cached: true, model: '' };
   }
 
-  const key = firstEnabledKey();
+  const key = opts.apiKey ?? firstEnabledKey();
   if (!key) {
     return { code: 'no_api_key', message: 'no enabled gateway API key — create one before translating' };
   }
 
-  // Flatten to chunk tasks so every worker stays busy; results are keyed by (run, chunk) position.
+  const sessionId = opts.sessionId ?? SESSION_TRANSLATION;
   const tasks: { run: number; chunk: number; text: string }[] = [];
   for (const [run, chunks] of plan) {
     chunks.forEach((text, chunk) => tasks.push({ run, chunk, text }));
@@ -751,39 +759,31 @@ export async function translateMarkdown(
         done += 1;
         opts.onProgress?.(done, tasks.length);
       };
-      // `refresh` means the operator rejected the rendering: segment memory must not answer with the
-      // same text; the fresh chunks overwrite it below. Otherwise this is segment memory (the TM half
-      // of the professional pipeline): a chunk translated by an earlier run — including one that
-      // LATER failed on another chunk — is reused instead of paid for again. `readEntry`, not
-      // `lookup`: the legacy description blob must never answer for README prose. Like a CAT tool's
-      // memory, the key is the SOURCE text alone (no prompt version): a prompt improvement reuses
-      // what was already approved until `refresh` re-translates the page over it.
-      const segment = opts.refresh ? null : readEntry('segments', hashText(task.text), lang);
+      const segment = useCache && !opts.refresh ? readEntry('segments', hashText(task.text), lang) : null;
       if (segment && !segment.truncated) {
         translated.set(`${task.run}:${task.chunk}`, segment.text);
         remember();
         continue;
       }
-      // A transport reset or a throttled upstream must not throw away the other chunks' work: retry
-      // the chunk (the translation is idempotent) before failing the document. The whole call still
-      // fails after the last attempt — a page with one paragraph silently in the source is worse.
       let result: { text: string; model: string } | { error: string } = { error: 'not attempted' };
       for (let attempt = 1; attempt <= MD_CHUNK_ATTEMPTS; attempt += 1) {
-        // The whole-document deadline is enforced HERE, not by a single outer timer: a worker that
-        // would start a fresh 30 s round-trip past the ceiling stops instead, and the calls already
-        // in flight are cut with the remaining budget.
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
           failures.push('translation deadline exceeded');
           timedOut = true;
           return;
         }
-        result = await callGatewayOnce(key, task.text, lang, Math.min(MD_CALL_TIMEOUT_MS, remaining));
+        result = await callGatewayOnce(
+          key,
+          task.text,
+          lang,
+          Math.min(MD_CALL_TIMEOUT_MS, remaining),
+          sessionId
+        );
         if ('error' in result) {
           if (attempt < MD_CHUNK_ATTEMPTS) await delay(MD_CHUNK_RETRY_MS * attempt);
           continue;
         }
-        // Tag verification: a segment that lost markup is not a translation of this source.
         const defect = segmentDefect(task.text, result.text);
         if (!defect) break;
         result = { error: `segment ${task.run}:${task.chunk} failed verification — ${defect}` };
@@ -793,10 +793,9 @@ export async function translateMarkdown(
         failures.push(result.error);
         return;
       }
-      // Store the verified segment IMMEDIATELY: a later chunk's failure must not lose this work.
-      store('segments', task.text, lang, result.text, result.model);
-      // First writer wins: chunks may span tiers (primary vs lite), and the run's reported model is
-      // then the one that actually answered first instead of whichever worker finished last.
+      if (useCache) {
+        store('segments', task.text, lang, result.text, result.model);
+      }
       if (!model) model = result.model;
       translated.set(`${task.run}:${task.chunk}`, result.text);
       remember();
@@ -817,13 +816,14 @@ export async function translateMarkdown(
       const chunks = plan.get(index);
       if (!chunks) return run.text;
       const parts = chunks.map((_, chunk) => translated.get(`${index}:${chunk}`));
-      // Unreachable after the failure check above; keeping the run whole beats emitting a hole.
       if (parts.some((part) => part === undefined)) return run.text;
       return (parts as string[]).join('\n\n');
     })
     .join('\n');
 
-  store('readme', markdown, lang, out, model);
+  if (useCache) {
+    store('readme', markdown, lang, out, model);
+  }
   return { text: out, cached: false, model };
 }
 
@@ -832,11 +832,12 @@ async function callGatewayOnce(
   key: string,
   text: string,
   lang: string,
-  timeoutMs: number
+  timeoutMs: number,
+  sessionId?: string
 ): Promise<{ text: string; model: string } | { error: string }> {
   const failures: string[] = [];
   for (const model of translationChain()) {
-    const result = await callGateway(key, model, text, lang, MARKDOWN_SYSTEM_PROMPT, SESSION_TRANSLATION, timeoutMs);
+    const result = await callGateway(key, model, text, lang, MARKDOWN_SYSTEM_PROMPT, sessionId, timeoutMs);
     if (!('error' in result)) return result;
     failures.push(result.error);
   }
@@ -868,11 +869,7 @@ export interface TranslationProbe {
  * Fire the REAL translation chain over a one-line payload — the power behind the console's
  * default-model "test" button. Same key resolution, same gateway round-trip, same attempt order
  * as a live translation; the ONLY difference is that the answer is never cached (a probe is a
- * diagnostic, not a translation). An explicit click is the explicit one-call spend.
- *
- * `overrideModel` carries the PICKER'S PENDING value so the operator tests BEFORE saving: given
- * → that value is the primary (an empty string = "as if unset" → the plain `lite` tail); omitted
- * → the chain comes from the saved config.
+ * diagnostic, not a translation).
  */
 export async function probeTranslationChain(lang = 'en', overrideModel?: string): Promise<TranslationProbe> {
   const chain = overrideModel === undefined ? translationChain() : chainFor(overrideModel);

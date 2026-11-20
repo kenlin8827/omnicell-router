@@ -4302,7 +4302,7 @@ export const api = {
    * (long-form only) re-translates a document that already has a cached rendering, replacing it on
    * success.
    */
-  async harnessTranslate(body: {
+  async translate(body: {
     text: string;
     lang: string;
     format?: 'markdown';
@@ -4313,7 +4313,7 @@ export const api = {
     cached: boolean;
     model: string;
   }> {
-    const res = await fetch('/api/admin/harness/translate', {
+    const res = await fetch('/api/admin/translate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -4332,11 +4332,11 @@ export const api = {
    * (completed chunks, total) while the README is translated, then exactly one `result` or `error`.
    * Resolves with the final rendering; a streamed error rejects like the plain route does.
    */
-  async harnessTranslateStream(
+  async translateStream(
     body: { text: string; lang: string; refresh?: boolean },
     onProgress: (done: number, total: number) => void
   ): Promise<{ text: string; cached: boolean; model: string }> {
-    const res = await fetch('/api/admin/harness/translate-stream', {
+    const res = await fetch('/api/admin/translate-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...body, format: 'markdown' }),
@@ -4370,12 +4370,12 @@ export const api = {
   },
 
   /** Batch translation, one chunk per call (the page walks the list in chunks). */
-  async harnessTranslateBatch(body: { lang: string; texts: string[] }): Promise<{
+  async translateBatch(body: { lang: string; texts: string[] }): Promise<{
     status: string;
     results: Record<string, { text: string; model: string; cached: boolean }>;
     errors: { text: string; code: string; message: string }[];
   }> {
-    const res = await fetch('/api/admin/harness/translate-batch', {
+    const res = await fetch('/api/admin/translate-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -4389,14 +4389,13 @@ export const api = {
     return data;
   },
 
-  /** Cache-only batch lookup: re-seeds the console with translations from previous visits. */
   /** Cache-only translation lookup (never calls a model). `format: 'markdown'` reads the README
    *  store instead of the description one, so a page translated yesterday opens translated. */
-  async harnessTranslations(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
+  async translationsLookup(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
     status: string;
     translations: Record<string, { text: string; model: string }>;
   }> {
-    const res = await fetch('/api/admin/harness/translations', {
+    const res = await fetch('/api/admin/translations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -4416,7 +4415,7 @@ export const api = {
     attempts: { model: string; ok: boolean; error?: string }[];
     code?: 'no_api_key' | 'unsupported_lang' | 'upstream';
   }> {
-    const res = await fetch('/api/admin/harness/translations/probe', {
+    const res = await fetch('/api/admin/translations/probe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lang, ...(model !== undefined ? { model } : {}) }),

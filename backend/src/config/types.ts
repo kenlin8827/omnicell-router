@@ -1206,7 +1206,7 @@ export interface RateLimitConfig {
 export interface DefaultModelsConfig {
   /**
    * ModelRef for the console's internal description/README translations
-   * (harness/translation.ts). Accepts any gateway-visible modelRef: a tier
+   * (translation/index.ts). Accepts any gateway-visible modelRef: a tier
    * alias ('lite' | 'plus' | 'pro' | 'ultra') or a registered model id.
    * Unset = the `lite` alias. The chain never escalates to `auto` ON ITS OWN
    * (an internal, non-critical call must not have unbounded spend): a

@@ -3654,7 +3654,7 @@ export const zhCN: TranslationDict = {
     applyHistory: '回填',
     noHistory: '暂无调用历史',
     schemaChars: '{n} 字符',
-    inspectAction: '浏览调试',
+    inspectAction: '调试',
     clearLogs: '清空',
     timeoutMs: '超时 (ms)',
     noParams: '该项无需传入参数。',

@@ -2,8 +2,13 @@ import { describe, expect, it } from 'bun:test';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { harnessEnvDir } from '../../src/harness/host/manifest.js';
-import { getCachedTranslation, splitMarkdownRuns, chunkProse, translateMarkdown } from '../../src/harness/translation.js';
+import {
+  getCachedTranslation,
+  splitMarkdownRuns,
+  chunkProse,
+  translateMarkdown,
+  translationStoreDir,
+} from '../../src/translation/index.js';
 
 /**
  * Long-form translation (a README) is split into prose and fenced-code runs. Everything here is
@@ -16,7 +21,7 @@ import { getCachedTranslation, splitMarkdownRuns, chunkProse, translateMarkdown 
 /** Seed one entry in the derived translation store, exactly as a previous run would have left it. */
 function seedEntry(kind: 'descriptions' | 'readme', source: string, lang: string, text: string): void {
   const hash = crypto.createHash('sha256').update(source).digest('hex');
-  const file = path.join(harnessEnvDir(), 'i18n', kind, `${hash}.${lang}.json`);
+  const file = path.join(translationStoreDir(), kind, `${hash}.${lang}.json`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ text, model: 'seeded/model', at: new Date().toISOString() }), 'utf8');
 }

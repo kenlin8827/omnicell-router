@@ -653,13 +653,13 @@ plugin table.
   non-thinking model clamped to `none` that a strict OpenAI-compatible vendor 400s on), the same
   model is re-asked ONCE without it and the refusal is memoized per model ref, so a refused pin can
   never cost the lite fallback. The console's
-  default-model picker carries a chain probe (`POST /api/admin/harness/translations/probe`): it
+  default-model picker carries a chain probe (`POST /api/admin/translations/probe`): it
   fires this real chain over a one-line payload — the PICKER'S PENDING value, so the operator
   tests BEFORE saving (an empty selection tests the plain `lite` tail) — reports which model
   served, and never writes the cache; an explicit click is the explicit one-call spend.
   The store is SWEPT: entries expire at 90 days, then the oldest are trimmed until the whole store
   fits a 32 MiB budget — at most once an hour after a write, on demand via
-  `POST /api/admin/harness/translations/prune`, and a crashed write's temp file is removed after an
+  `POST /api/admin/translations/prune`, and a crashed write's temp file is removed after an
   hour. The pre-split blob goes too once IT passes the same age budget (its mtime is the last write of
   the old build; leaving it would let it outlive every entry it produced). Re-opening a previously translated page reads its entry through the cache-only batch
   endpoint (`format: 'markdown'`), so the dialog opens translated without a click and without a model
@@ -669,7 +669,7 @@ plugin table.
   by hand, and a failed refresh leaves the old entry intact rather than costing the operator the
   translation they already had. The button draws LIVE PROGRESS while the run is in flight: the
   console reads
-  `POST /api/admin/harness/translate-stream` (NDJSON — a `progress` event with completed chunks /
+  `POST /api/admin/translate-stream` (NDJSON — a `progress` event with completed chunks /
   total after the plan is known and after every chunk, then exactly one `result` or `error`), because
   a README is tens of seconds of model output and a button that only says "translating…" looks stuck.
   The stream shares the cache, the `refresh` flag and the failure rules with the plain route; only the
@@ -974,11 +974,14 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
   `fetchWithRetry` / `MARKET_RETRY` / `OPTIONAL_READ_RETRY`: the one place a read retries, so no
   reader carries its own attempt count, backoff or budget (the optional policy is the shorter one an
   enrichment may use without holding the answer).
-- `backend/src/harness/{detail,tree,translation,spi,hash,lang}.ts` — the long-form half of one market
-  row (including the README's localized-edition pick), git tree filtering, the derived description +
-  README + segment caches, the source-adapter contract, hashing, and script-based language evidence.
+- `backend/src/harness/{detail,tree,spi,hash,lang}.ts` — the long-form half of one market
+  row (including the README's localized-edition pick), git tree filtering, the source-adapter
+  contract, hashing, and script-based language evidence (the shared derived translation service and
+  store were extracted to `backend/src/translation/index.ts`).
 - `backend/src/routes/harness.ts` — the admin surface (`sources`, `hosts`, `applies`, `inventory`,
-  `plan`, `apply`, `browse`, `detail`, `install`, `translate*`), all under the existing
+  `plan`, `apply`, `browse`, `detail`, `install`), and `backend/src/routes/translation.ts` — the
+  shared translation admin surface (`/api/admin/translate*`, `/api/admin/translations*`, with
+  `/api/admin/harness/translate*` kept as compatibility aliases), all under the existing
   `/api/admin/*` auth gate.
 - `frontend/src/pages/HarnessPage.tsx` — one page per kind, a harness rail where a landing exists, the
   installed/market tabs, per-target install gating, the removal picker, and the market row's native

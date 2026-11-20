@@ -14,6 +14,7 @@ import { getFailureEventLog } from './observability/failure-events.js';
 import { registerEnvironmentRoutes } from './routes/environments.js';
 import { registerHarnessRoutes } from './routes/harness.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import { registerTranslationRoutes } from './routes/translation.js';
 import { MarketplaceRescanScheduler } from './harness/common/marketplace-rescan-scheduler.js';
 import { allHostProbes, probeOptionsFor } from './harness/plugin/adapters/index.js';
 import { INFERENCE_ROUTE_PATHS, SURFACES } from './surfaces/table.js';
@@ -843,8 +844,9 @@ export function createServer(
   });
 
   // Harness domain (ADR-0015) — source registry, host catalog, inventory, market browse/detail,
-  // install + remove writers, and the derived-translation store.
+  // and install + remove writers.
   registerHarnessRoutes(app);
+  registerTranslationRoutes(app);
   registerProjectRoutes(app);
 
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)

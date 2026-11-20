@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { harnessEnvDir } from '../../src/harness/host/manifest.js';
-import { getCachedTranslation, translateMarkdown } from '../../src/harness/translation.js';
+import { getCachedTranslation, translateMarkdown, translationStoreDir } from '../../src/translation/index.js';
 
 /**
  * The derived translation store used to be ONE `i18n/descriptions.json` blob. It is now one file per
@@ -37,13 +37,13 @@ describe('legacy descriptions.json migration', () => {
 
     expect(getCachedTranslation(description, 'zh')?.text).toBe('迁移过来的描述译文');
     expect(
-      fs.existsSync(path.join(harnessEnvDir(), 'i18n', 'descriptions', `${descriptionHash}.zh.json`))
+      fs.existsSync(path.join(translationStoreDir(), 'descriptions', `${descriptionHash}.zh.json`))
     ).toBe(true);
 
     const result = await translateMarkdown(readme, 'zh');
     if ('code' in result) throw new Error(`expected the migrated README, got ${result.code}`);
     expect(result.text).toBe('# 旧页面\n\n迁移过来的正文');
     expect(result.cached).toBe(true);
-    expect(fs.existsSync(path.join(harnessEnvDir(), 'i18n', 'readme', `${readmeHash}.zh.json`))).toBe(true);
+    expect(fs.existsSync(path.join(translationStoreDir(), 'readme', `${readmeHash}.zh.json`))).toBe(true);
   });
 });
