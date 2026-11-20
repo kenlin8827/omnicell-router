@@ -119,11 +119,16 @@ describe('review proof: Chat upstream → Anthropic live SSE', () => {
     expect(types.indexOf('content_block_stop')).toBeLessThan(types.indexOf('message_stop'));
   });
 
-  it('puts cache_read_input_tokens on message_start when usage arrives after content', () => {
-    const wire = encodeAnthropicLive(chatTextLiveEvents());
-    const start = wire.find((frame) => frame.type === 'message_start');
-    expect(start).toBeTruthy();
-    expect(start!.message.usage).toMatchObject({
+  it('streams content immediately without waiting for trailing usage, and reports cache_read_input_tokens on message_delta', () => {
+    const encoder = new AnthropicMessagesEventEncoder();
+    const events = chatTextLiveEvents();
+    const firstChunk = events.slice(0, 3).flatMap((ev) => encoder.encode(ev, 'served-model'));
+    expect(firstChunk.map((f) => f.type)).toEqual(['message_start', 'content_block_start']);
+
+    const rest = events.slice(3).flatMap((ev) => encoder.encode(ev, 'served-model'));
+    const delta = [...firstChunk, ...rest].find((frame) => frame.type === 'message_delta');
+    expect(delta).toBeTruthy();
+    expect(delta!.usage).toMatchObject({
       input_tokens: 20,
       cache_read_input_tokens: 100,
     });
@@ -1371,5 +1376,111 @@ describe('review proof: goal pass-5 opencode def materialization, package normal
       { type: 'reasoning', text: 'kept thought' },
       { type: 'message', role: 'user', content: [{ type: 'text', text: 'follow-up' }] },
     ]);
+  });
+});
+
+describe('ttftTimeoutMs watchdog', () => {
+  it('aborts a stream that keeps sending SSE keep-alive comments past ttftTimeoutMs without emitting output', async () => {
+    const originalFetch = globalThis.fetch;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(': PROCESSING\n\n'));
+          timer = setInterval(() => {
+            try {
+              controller.enqueue(encoder.encode(': PROCESSING\n\n'));
+            } catch {
+              if (timer) clearInterval(timer);
+            }
+          }, 25);
+          init?.signal?.addEventListener('abort', () => {
+            if (timer) clearInterval(timer);
+            try { controller.error(new DOMException('Aborted', 'AbortError')); } catch { /* ignore */ }
+          }, { once: true });
+        },
+        cancel() {
+          if (timer) clearInterval(timer);
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const stream = await postProviderStream({
+        url: 'https://api.anthropic.com/v1/messages',
+        headers: { 'x-api-key': 'sk-test', 'content-type': 'application/json' },
+        payload: {},
+        model: { id: 'anth/m', provider: 'anth', upstreamModel: 'm', tier: 'plus', pricing: { inputPer1M: 1, outputPer1M: 1 } } as never,
+        provider: 'anth',
+        label: 'anthropic',
+        timeoutMs: 5000,
+        idleTimeoutMs: 500,
+        ttftTimeoutMs: 80,
+        createDecoder: () => new AnthropicMessagesStreamDecoder(),
+        parseBuffered: () => ({ status: 'completed', output: [], usage: { inputTokens: 0, outputTokens: 0 } }),
+      });
+      let caught: unknown;
+      try {
+        for await (const _ev of stream) {
+          /* drain */
+        }
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain('TTFT exceeded 80ms');
+    } finally {
+      if (timer) clearInterval(timer);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('disarms ttftTimeoutMs once a substantive content event arrives', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            'data: {"type":"message_start","message":{"id":"msg_ttft","model":"m","usage":{"input_tokens":5,"output_tokens":0}}}\n\n'
+            + 'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+            + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
+          ));
+          setTimeout(() => {
+            controller.enqueue(encoder.encode(
+              'data: {"type":"content_block_stop","index":0}\n\n'
+              + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n'
+              + 'data: {"type":"message_stop"}\n\n',
+            ));
+            controller.close();
+          }, 150);
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const stream = await postProviderStream({
+        url: 'https://api.anthropic.com/v1/messages',
+        headers: { 'x-api-key': 'sk-test', 'content-type': 'application/json' },
+        payload: {},
+        model: { id: 'anth/m', provider: 'anth', upstreamModel: 'm', tier: 'plus', pricing: { inputPer1M: 1, outputPer1M: 1 } } as never,
+        provider: 'anth',
+        label: 'anthropic',
+        timeoutMs: 5000,
+        idleTimeoutMs: 500,
+        ttftTimeoutMs: 80,
+        createDecoder: () => new AnthropicMessagesStreamDecoder(),
+        parseBuffered: () => ({ status: 'completed', output: [], usage: { inputTokens: 0, outputTokens: 0 } }),
+      });
+      const events = [];
+      for await (const ev of stream) events.push(ev);
+      expect(events.some((e) => e.type === 'response.output_text.delta' && e.text === 'hi')).toBe(true);
+      expect(events.some((e) => e.type === 'response.completed')).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

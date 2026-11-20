@@ -65,6 +65,7 @@ export class GoogleGeminiProvider implements LLMProvider {
       label: 'google',
       timeoutMs: this.config.streamTimeoutMs || DEFAULT_STREAM_TIMEOUT_MS,
       idleTimeoutMs: this.config.streamIdleTimeoutMs || DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+      ttftTimeoutMs: this.config.ttftTimeoutMs,
       upstreamEventContext,
       createDecoder: () => new GoogleGeminiStreamDecoder(),
       parseBuffered: (body) => googleResponseToIR(body),

@@ -68,6 +68,7 @@ export class AnthropicMessagesProvider implements LLMProvider {
       label: 'anthropic',
       timeoutMs: this.config.streamTimeoutMs || DEFAULT_STREAM_TIMEOUT_MS,
       idleTimeoutMs: this.config.streamIdleTimeoutMs || DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+      ttftTimeoutMs: this.config.ttftTimeoutMs,
       upstreamEventContext,
       createDecoder: () => new AnthropicMessagesStreamDecoder(),
       parseBuffered: (body) => anthropicResponseToIR(body),

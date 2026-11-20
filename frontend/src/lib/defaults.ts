@@ -109,3 +109,11 @@ export const CREDENTIAL_WEIGHT_MAX = 100;
  *  vendor CLI would reject, instead of sending the install and showing its error. Update both in
  *  the same commit. */
 export const DSH_PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Buffered provider timeout (ms) — mirrors backend `DEFAULT_PROVIDER_TIMEOUT_MS`
+ *  (backend/src/config/defaults.ts). Update both in the same commit. */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Streamed idle watchdog timeout (ms) — mirrors backend `DEFAULT_STREAM_IDLE_TIMEOUT_MS`
+ *  (backend/src/config/defaults.ts). Update both in the same commit. */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;

@@ -43,6 +43,14 @@ export interface ProviderConfig {
    * Ignored by buffered calls (they have no progress signal).
    */
   streamIdleTimeoutMs?: number;
+  /**
+   * Optional stream first-token (TTFT) watchdog (ms). When set (> 0), aborts
+   * the stream if the upstream fails to emit a substantive output/tool event
+   * within this budget — even if the server keeps sending SSE keep-alive
+   * comments (such as `: PROCESSING`) that refresh `streamIdleTimeoutMs`.
+   * Disabled when unset.
+   */
+  ttftTimeoutMs?: number;
 }
 
 export interface ModelRegistration {

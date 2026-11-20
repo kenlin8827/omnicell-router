@@ -166,6 +166,7 @@ export async function postProviderStream(options: {
   label: string;
   timeoutMs: number;
   idleTimeoutMs: number;
+  ttftTimeoutMs?: number;
   upstreamEventContext?: UpstreamEventContext;
   createDecoder: () => ProviderStreamDecoder;
   parseBuffered: (body: unknown) => CanonicalResponse;
@@ -185,6 +186,7 @@ export async function postProviderStream(options: {
   const controller = new AbortController();
   let totalTripped = false;
   let idleTripped = false;
+  let ttftTripped = false;
   let consumed = false;
   let res: Response | undefined;
   const totalTimer = setTimeout(() => {
@@ -194,6 +196,31 @@ export async function postProviderStream(options: {
       try { void res?.body?.cancel().catch(() => {}); } catch { /* ignore */ }
     }
   }, options.timeoutMs);
+  const ttftMs = typeof options.ttftTimeoutMs === 'number'
+    && Number.isFinite(options.ttftTimeoutMs)
+    && options.ttftTimeoutMs > 0
+    ? options.ttftTimeoutMs
+    : undefined;
+  let ttftSettled = ttftMs === undefined;
+  let ttftTimer: ReturnType<typeof setTimeout> | undefined;
+  const ttftMessage = (): string => `Upstream ${provider} stream TTFT exceeded ${ttftMs}ms — aborted`;
+  const disarmTtft = (): void => {
+    ttftSettled = true;
+    if (ttftTimer !== undefined) {
+      clearTimeout(ttftTimer);
+      ttftTimer = undefined;
+    }
+  };
+  if (ttftMs !== undefined) {
+    ttftTimer = setTimeout(() => {
+      if (ttftSettled) return;
+      ttftTripped = true;
+      controller.abort();
+      if (!consumed) {
+        try { void res?.body?.cancel().catch(() => {}); } catch { /* ignore */ }
+      }
+    }, ttftMs);
+  }
   const idleMessage = (): string => `Upstream ${provider} stream idle for ${options.idleTimeoutMs}ms — aborted`;
   /**
    * One I/O wait, bounded by the idle budget. The deadline is a RACE, not just
@@ -264,6 +291,8 @@ export async function postProviderStream(options: {
     }
   } catch (err) {
     clearTimeout(totalTimer);
+    disarmTtft();
+    if (ttftTripped) throw new Error(ttftMessage(), { cause: err });
     throw err;
   }
 
@@ -326,7 +355,10 @@ export async function postProviderStream(options: {
       };
       const decodeFrame = function* (data: string): Generator<StreamEvent, boolean> {
         if (data.trim() === '[DONE]') {
-          for (const ev of decoder.finish()) yield sanitizeStreamEvent(ev);
+          for (const ev of decoder.finish()) {
+            disarmTtft();
+            yield sanitizeStreamEvent(ev);
+          }
           finished = true;
           return true;
         }
@@ -337,11 +369,19 @@ export async function postProviderStream(options: {
         } catch {
           throw new Error(`Upstream ${provider} sent malformed JSON in an SSE data frame.`);
         }
-        for (const ev of decoder.push(payload)) yield sanitizeStreamEvent(ev);
+        for (const ev of decoder.push(payload)) {
+          if (!ttftSettled && ev.type !== 'response.created' && ev.type !== 'response.usage') {
+            disarmTtft();
+          }
+          yield sanitizeStreamEvent(ev);
+        }
         return false;
       };
       try {
         if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream')) {
+          // Non-SSE replies deliver the full JSON body at once, so TTFT has no
+          // incremental meaning here — hand off to total/idle timeouts.
+          disarmTtft();
           let json = '';
           const appendJson = (chunk: string): void => {
             json += chunk;
@@ -405,6 +445,11 @@ export async function postProviderStream(options: {
         if (!finished) yield* decoder.finish();
         finished = true;
       } catch (err: any) {
+        if (ttftTripped) {
+          const message = ttftMessage();
+          capture(message);
+          throw new Error(message, { cause: err });
+        }
         if (idleTripped) {
           const message = idleMessage();
           capture(message);
@@ -419,6 +464,7 @@ export async function postProviderStream(options: {
         throw err;
       } finally {
         clearTimeout(totalTimer);
+        disarmTtft();
         if (!finished) {
           controller.abort();
         }

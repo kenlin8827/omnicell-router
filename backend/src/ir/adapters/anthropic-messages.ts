@@ -693,16 +693,6 @@ export class AnthropicMessagesEventEncoder {
   private sawToolCall = false;
   private nextBlock = 0;
   private readonly blocks = new Map<string, number>();
-  /**
-   * Live path: hold content frames up to a bounded window until usage (or
-   * terminal) so `message_start` carries `cache_read_input_tokens`. Native
-   * Anthropic emits usage right after `created`; Chat/Responses emit it at the
-   * end. If a long stream exceeds the bounded buffer, flush immediately so
-   * memory stays strictly bounded and long generations stream incrementally.
-   */
-  private static readonly MAX_PENDING_EVENTS = 256;
-  private usageReady = false;
-  private readonly pending: import('../types.js').StreamEvent[] = [];
 
   public encode(event: import('../types.js').StreamEvent, model: string, finalResponse?: CanonicalResponse): Wire[] {
     assertCanonicalStreamEventSupported(event, PROTOCOL);
@@ -712,38 +702,19 @@ export class AnthropicMessagesEventEncoder {
       this.id = event.id ?? this.id;
       if (finalResponse) {
         this.usage = finalResponse.usage;
-        this.usageReady = true;
         return this.start();
       }
+      // Hold `message_start` only across `response.created` so native Anthropic
+      // streams (where `response.usage` follows immediately) still carry
+      // `cache_read_input_tokens` on `message_start`. Any content event flushes
+      // `message_start` immediately with zero added TTFT.
       return [];
     }
     if (event.type === 'response.usage') {
       this.usage = event.usage;
-      this.usageReady = true;
-      return [...this.start(), ...this.flushPending(model, finalResponse)];
-    }
-    if (
-      !this.usageReady
-      && event.type !== 'response.completed'
-      && event.type !== 'response.incomplete'
-      && event.type !== 'response.failed'
-      && event.type !== 'error'
-    ) {
-      this.pending.push(event);
-      if (this.pending.length >= AnthropicMessagesEventEncoder.MAX_PENDING_EVENTS) {
-        this.usageReady = true;
-        return [...this.start(), ...this.flushPending(model, finalResponse)];
-      }
-      return [];
+      return this.started ? [] : this.start();
     }
     return this.encodeReady(event, model, finalResponse);
-  }
-
-  private flushPending(model: string, finalResponse?: CanonicalResponse): Wire[] {
-    const parked = this.pending.splice(0);
-    const frames: Wire[] = [];
-    for (const event of parked) frames.push(...this.encodeReady(event, model, finalResponse));
-    return frames;
   }
 
   private encodeReady(event: import('../types.js').StreamEvent, model: string, finalResponse?: CanonicalResponse): Wire[] {
@@ -815,8 +786,6 @@ export class AnthropicMessagesEventEncoder {
     if (event.type === 'response.completed' || event.type === 'response.incomplete' || event.type === 'response.failed') {
       if (this.terminal) return [];
       this.terminal = true;
-      this.usageReady = true;
-      const flushed = this.flushPending(model, finalResponse);
       const reason = event.type === 'response.completed' ? undefined : event.reason;
       const effectiveReason = reason ?? (this.sawToolCall ? 'tool_calls' : undefined);
       const response: CanonicalResponse = finalResponse ?? {
@@ -827,7 +796,7 @@ export class AnthropicMessagesEventEncoder {
         output: [], usage: this.usage,
       };
       if (event.type === 'response.failed') {
-        return [...flushed, {
+        return [{
           type: 'error',
           error: { type: 'api_error', message: response.error?.message ?? response.reason ?? 'Upstream stream failed.' },
         }];
@@ -838,7 +807,6 @@ export class AnthropicMessagesEventEncoder {
         .sort((a, b) => a[1] - b[1])
         .flatMap(([key]) => this.stopBlock(key));
       return [
-        ...flushed,
         ...this.start(),
         ...dangling,
         {
@@ -852,9 +820,7 @@ export class AnthropicMessagesEventEncoder {
     if (event.type === 'error') {
       if (this.terminal) return [];
       this.terminal = true;
-      this.usageReady = true;
-      const flushed = this.flushPending(model, finalResponse);
-      return [...flushed, { type: 'error', error: { type: 'api_error', message: event.message } }];
+      return [{ type: 'error', error: { type: 'api_error', message: event.message } }];
     }
     return [];
   }

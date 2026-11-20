@@ -26,6 +26,7 @@ import ReactMarkdown from 'react-markdown';
 import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, Clock, Copy, Eraser, Expand, Eye, EyeOff, GitBranch, ImagePlus, Link2, Loader2, Pencil, RotateCcw, SlidersHorizontal, Sparkles, Undo2, Wrench, Maximize2, MessagesSquare, Minimize2, Plus, Save, Send, Shrink, Square, Trash2, User, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api, type ApiKeyItem } from '../lib/api';
+import { DEFAULT_PROVIDER_TIMEOUT_MS, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from '../lib/defaults';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { InfoTip } from '../components/InfoTip';
@@ -426,6 +427,12 @@ const loadChatStore = (): { active: string; conversations: PgChatConversation[] 
           protocol: asChatProtocolId(c.protocol),
           params: sanitizeChatParams(c.params),
           keyId: typeof c.keyId === 'string' ? c.keyId : undefined,
+          // A reload or Vite HMR while a stream is in flight leaves
+          // `pending: true` in storage with no live fetch behind it; clear it on
+          // restore so the bubble never stays stuck on "Waiting for response...".
+          turns: Array.isArray(c.turns)
+            ? c.turns.map(t => (t.pending ? { ...t, pending: false } : t))
+            : [],
         }))
       : [];
     return { active: typeof parsed.active === 'string' ? parsed.active : '', conversations: list };
@@ -440,7 +447,11 @@ const saveChatStore = (active: string, conversations: PgChatConversation[]) => {
     // (setItem throws, and the catch below would silently discard the write).
     const storable = trimmed.map(c => ({
       ...c,
-      turns: c.turns.map(t => (t.images?.length ? { ...t, images: elideImagePayloads(t.images) } : t)),
+      turns: c.turns.map(t => {
+        const cleaned = t.images?.length ? { ...t, images: elideImagePayloads(t.images) } : t;
+        // `pending` is an in-memory streaming flag; never persist it to storage.
+        return cleaned.pending ? { ...cleaned, pending: false } : cleaned;
+      }),
     }));
     localStorage.setItem(PG_CHAT_KEY, JSON.stringify({ active, conversations: storable }));
   } catch { /* best-effort */ }
@@ -1142,6 +1153,15 @@ const TurnBubble: React.FC<{
   // squeezes long markdown or reasoning. Local to the row — the dialog is the
   // shared shell, so Esc/backdrop behaviour matches every other dialog.
   const [messageOpen, setMessageOpen] = useState(false);
+  // Auto-expand reasoning while the model is actively thinking before answer
+  // text arrives, then fold it back once content/completion lands unless the
+  // user toggled it manually.
+  const isThinkingLive = Boolean(turn.pending && turn.reasoning && !turn.content);
+  const [reasoningOpen, setReasoningOpen] = useState(isThinkingLive);
+  const reasoningUserToggled = useRef(false);
+  useEffect(() => {
+    if (!reasoningUserToggled.current) setReasoningOpen(isThinkingLive);
+  }, [isThinkingLive]);
   const [rowHover, setRowHover] = useState(false);
   /** Copy affordance of the EXPANDED message: the dialog is the reading surface
    *  for a long reply, so taking the text out of it belongs there — that is what
@@ -1253,8 +1273,15 @@ const TurnBubble: React.FC<{
         }}
       >
         {turn.reasoning && (
-          <details style={{ marginBottom: turn.content ? 8 : 0 }}>
-            <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+          <details open={reasoningOpen} style={{ marginBottom: turn.content ? 8 : 0 }}>
+            <summary
+              onClick={(e) => {
+                e.preventDefault();
+                reasoningUserToggled.current = true;
+                setReasoningOpen((v) => !v);
+              }}
+              style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
+            >
               {t('chat.thinkingLabel')}
             </summary>
             <pre
@@ -1288,6 +1315,8 @@ const TurnBubble: React.FC<{
           </div>
         ) : turn.pending ? (
           <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('chat.pending')}</span>
+        ) : !turn.reasoning && !turn.error && !(turn.toolCalls && turn.toolCalls.length > 0) ? (
+          <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('chat.aborted')}</span>
         ) : null}
 
         {!isUser && turn.toolCalls && turn.toolCalls.length > 0 && (
@@ -2482,6 +2511,26 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
   ): Promise<{ content: string; calls: WireToolCall[] } | null> => {
     const isCurrent = () => abortRef.current === controller;
     const body = buildRequestBody(messages, systemPrompt.trim());
+    // Client-side watchdog slightly wider than the backend budget so the
+    // gateway owns normal timeouts, while a half-open proxy or killed backend
+    // never leaves the bubble stuck forever.
+    const watchdogMs = (stream ? DEFAULT_STREAM_IDLE_TIMEOUT_MS : DEFAULT_PROVIDER_TIMEOUT_MS) + 15_000;
+    let timedOut = false;
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    const armWatchdog = () => {
+      if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+      watchdogTimer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, watchdogMs);
+    };
+    const clearWatchdog = () => {
+      if (watchdogTimer !== undefined) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = undefined;
+      }
+    };
+    armWatchdog();
     try {
       const res = await fetch(wire.path, {
         method: 'POST',
@@ -2490,6 +2539,7 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
         signal: controller.signal,
       });
       if (!isCurrent()) return null;
+      armWatchdog();
       const facts = readFacts((n) => res.headers.get(n) ?? undefined, res.status);
 
       if (!res.ok) {
@@ -2581,6 +2631,7 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
         const { value, done } = await reader.read();
         if (!isCurrent()) return null;
         if (done) break;
+        armWatchdog();
         // Normalize CRLF on the concatenated buffer so a `\r\n\r\n` frame
         // boundary split across chunks (`...\r\n\r` + `\n`) stays intact.
         buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n');
@@ -2624,9 +2675,15 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
       const aborted = (err as Error)?.name === 'AbortError';
       patchTurn(assistantId, {
         pending: false,
-        error: aborted ? t('chat.aborted') : String((err as Error)?.message ?? err),
+        error: timedOut
+          ? `Request idle timeout (${Math.round(watchdogMs / 1000)}s)`
+          : aborted
+            ? t('chat.aborted')
+            : String((err as Error)?.message ?? err),
       });
       return null;
+    } finally {
+      clearWatchdog();
     }
   };
 
