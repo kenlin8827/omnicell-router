@@ -817,8 +817,14 @@ export class PipelineOrchestrator {
       // Fail fast instead of silently degrading to classifier routing: the
       // combo is still advertised via /v1/models, so routing it as `auto`
       // would be invisible billing/model drift.
-      throw new Error(
-        `Combo '${comboByName}' has no registered member models — sync the member providers' model lists (console provider pull) or fix the ids in config.combos; boot logs name every provider excluded for zero models.`
+      // 404 like the disabled branch above: the combo is not currently
+      // routable (no member registered) — an operator-config gap must not
+      // read as an upstream 502.
+      throw Object.assign(
+        new Error(
+          `Combo '${comboByName}' has no registered member models — sync the member providers' model lists (console provider pull) or fix the ids in config.combos; boot logs name every provider excluded for zero models.`
+        ),
+        { statusCode: 404 }
       );
     }
     const comboId = comboByName ?? undefined;
