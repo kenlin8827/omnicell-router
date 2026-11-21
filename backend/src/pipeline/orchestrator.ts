@@ -818,7 +818,7 @@ export class PipelineOrchestrator {
       // combo is still advertised via /v1/models, so routing it as `auto`
       // would be invisible billing/model drift.
       throw new Error(
-        `Combo '${comboByName}' has no registered member models — check that every id in config.combos exists in config.models.`
+        `Combo '${comboByName}' has no registered member models — sync the member providers' model lists (console provider pull) or fix the ids in config.combos; boot logs name every provider excluded for zero models.`
       );
     }
     const comboId = comboByName ?? undefined;

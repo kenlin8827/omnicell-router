@@ -1081,6 +1081,13 @@ export function createServer(
       ultra: { id: 'ultra', description: 'Force Ultra frontier-tier layer (~$60+/M)', ...ultraM },
     };
     for (const c of registry.getCombos()) {
+      // A combo whose members resolve to nothing is NOT advertised: the
+      // routing path fail-fasts it loudly (orchestrator), so listing it here
+      // would hand clients an id they can pick but never route — the exact
+      // drift the fail-fast exists to prevent. Disabled combos are hidden by
+      // the same symmetry. A later provider-def sync re-registers members and
+      // the id reappears (refreshDirectPool reconciles without a restart).
+      if (registry.resolveCombo(c.id).length === 0) continue;
       virtualModels[c.id] = {
         id: c.id,
         description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
