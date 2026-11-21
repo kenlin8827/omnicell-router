@@ -162,6 +162,58 @@ const PERCEIVED_STALL_MS = 1000;
  * `committed` is permanently false: in-place retries and failover stay legal
  * (re-issuing upstream duplicates no output the client has seen).
  */
+/**
+ * Upstream status code carried on an arbitrary thrown error, if any — `in`
+ * narrowing instead of an unchecked cast, since `lastError` is untyped.
+ */
+function statusCodeOf(err: unknown): number | undefined {
+  if (err && typeof err === 'object' && 'statusCode' in err && typeof err.statusCode === 'number') {
+    return err.statusCode;
+  }
+  return undefined;
+}
+
+/**
+ * Gateway-authored error for an exhausted candidate pool. The upstream
+ * verdict (402/401/429/5xx) is the GATEWAY's routing state, never the
+ * client's problem: agent clients auto-retry 429 but hard-stop on 402, so
+ * forwarding an upstream "insufficient balance" wastes models that are
+ * still healthy. Two shapes:
+ *   - `remaining` non-empty → status 429 when the failure class is
+ *     routing-fixable (the client's own backoff retry re-peeks the pool and
+ *     lands on a healthy model); other classes keep their truthful status
+ *     (a 400 is the request's fault — retries cannot fix it);
+ *   - `remaining` empty → truthful status, operator-directed message
+ *     (breaker cooldowns are 12h for quota — retrying now cannot help).
+ * `remaining` is computed by the caller with a FRESH peek, so trips that
+ * happened during the run itself are counted.
+ */
+function routeExhaustedError(
+  routeLabel: string,
+  failoverPath: string[],
+  lastErr: unknown,
+  remaining: ModelRegistration[]
+): Error {
+  const attemptedPath = failoverPath.join(' → ') || 'none attempted';
+  const lastMsg = lastErr instanceof Error ? lastErr.message : 'unknown';
+  if (remaining.length > 0) {
+    const status = statusCodeOf(lastErr) ?? 0;
+    const routingFixable = [401, 402, 429].includes(status) || status >= 500;
+    return Object.assign(
+      new Error(
+        `Route exhausted after ${failoverPath.length} candidate(s) on ${routeLabel} (${attemptedPath}) — last upstream error: ${lastMsg}. ${remaining.length} model(s) on this route are still available; a retry routes to one of them automatically.`
+      ),
+      { statusCode: routingFixable ? 429 : (statusCodeOf(lastErr) ?? 502) }
+    );
+  }
+  return Object.assign(
+    new Error(
+      `Every model on ${routeLabel} is cooling down (tried: ${attemptedPath}) — last upstream error: ${lastMsg}. Clear the cooldowns in the console breaker panel or add credentials; retrying will not help until then.`
+    ),
+    { statusCode: statusCodeOf(lastErr) ?? 502 }
+  );
+}
+
 const UPSTREAM_SINK_RELAY: StreamRelay = {
   stageRouting: () => { },
   onChunk: () => { },
@@ -1671,7 +1723,17 @@ export class PipelineOrchestrator {
               { statusCode: 403 }
             );
           }
-          throw plusResult.lastError || new Error(`Plus escalation failed for tier '${escalateTier}'`);
+          const escErr = plusResult.lastError;
+          if (escErr instanceof IrUnsupportedError) throw escErr;
+          const accessPolicy = context?.modelAccess;
+          const escRemaining = this.registry
+            .getCandidateModelsForTier(escalateTier, true)
+            .filter(
+              (m) =>
+                !plusResult.failoverPath.includes(m.id) &&
+                (!accessPolicy || isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m))),
+            );
+          throw routeExhaustedError(`escalation tier '${escalateTier}'`, plusResult.failoverPath, escErr, escRemaining);
         }
 
         finalResponse = plusResult.response;
@@ -1824,19 +1886,45 @@ export class PipelineOrchestrator {
           // asked for exactly this model and deserves to know it did not
           // serve, not a generic tier-level message (mirrors policyDenied).
           const lastErr = execResult.lastError;
-          const lastStatus = lastErr && typeof (lastErr as { statusCode?: number }).statusCode === 'number' ? (lastErr as { statusCode: number }).statusCode : undefined;
           const unsupported = lastErr instanceof IrUnsupportedError;
           throw Object.assign(
             new Error(
               `Explicit model '${explicitModel.id}' did not serve the request (a named model is never substituted; opt in per request with router_options.failover to allow tier-pool failover). Last error: ${lastErr?.message ?? 'unknown'}`
             ),
             {
-              statusCode: lastStatus ?? 502,
+              statusCode: statusCodeOf(lastErr) ?? 502,
               ...(unsupported ? { name: 'IrUnsupportedError', code: 'unsupported_parameter' } : {}),
             }
           );
         }
-        throw execResult.lastError || new Error(`Execution failed for tier '${actualTier}'`);
+        // Pool exhausted with a non-policy failure. The upstream verdict is
+        // the GATEWAY's routing state, never the client's problem: agent
+        // clients auto-retry 429 but hard-stop on 402, so a forwarded
+        // "insufficient balance" wastes models that are still healthy.
+        // Two gateway-authored shapes:
+        //   - untried healthy models remain  → 429: the client's own backoff
+        //     retry re-peeks the pool and lands on one of them, no user
+        //     action needed (only routing-fixable classes remap — a 400 is
+        //     the request's fault and retries cannot fix it);
+        //   - every candidate is cooling down → keep the truthful status,
+        //     say what the operator must do (console breaker panel /
+        //     credentials).
+        // Remaining = the executed CHAIN (covers combo member lists that span
+        // tiers, where a tier-peek would read the wrong pool) minus the
+        // attempted path, gated by the non-consuming per-model breaker peek —
+        // so trips that happened during this very run are counted — and by
+        // the key's model-access policy, which the pool filter applied
+        // inside executeCandidatePool.
+        const lastErr = execResult.lastError;
+        if (lastErr instanceof IrUnsupportedError) throw lastErr;
+        const accessPolicy = context?.modelAccess;
+        const remaining = chain.filter(
+          (m) =>
+            !execResult.failoverPath.includes(m.id) &&
+            this.getCircuitBreakerManager().isAvailable(m.id) &&
+            (!accessPolicy || isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m))),
+        );
+        throw routeExhaustedError(comboId ? `combo '${comboId}'` : `tier '${actualTier}'`, execResult.failoverPath, lastErr, remaining);
       }
 
       finalResponse = execResult.response;
