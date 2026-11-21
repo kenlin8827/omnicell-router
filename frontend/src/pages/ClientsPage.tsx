@@ -658,7 +658,7 @@ export const ClientsPage: React.FC = () => {
    *  the link-table toggle. Written into the ACTIVE environment's config.yaml
    *  (book-set scoped — switching envs switches the memory too). memRef keeps
    *  two rapid commits from clobbering each other via a stale snapshot. */
-  const rememberDraft = (clientName: string) => {
+  const rememberDraft = (clientName: string, appliedContextWindow?: number) => {
     const ms = modelSel[clientName] || {};
     const ds = bindSel[clientName] || {};
     const roleRows = isRoleTableClient(clientName) || clientName === 'opencode';
@@ -673,10 +673,12 @@ export const ClientsPage: React.FC = () => {
         : isRoleTableClient(clientName)
           ? { main: ms.main || 'auto' }
           : ms,
-      extraModels: extraSel[clientName] || [],
-      virtualModels: virtualSel[clientName],
       modelMode: modeSel[clientName] ?? 'default',
       apiKeyId: apiKeySel[clientName] || '',
+      // The window this setup actually applied; when the payload omitted it
+      // (resync with no prior memory), the previous value stays on file and
+      // the memory carries it forward.
+      contextWindow: appliedContextWindow ?? (memRef.current || mem || {})[clientName]?.contextWindow,
       linksOn: linksOn[clientName],
     };
     // Pure updater required: computing `next` (and firing the POST) inside the
@@ -862,7 +864,9 @@ export const ClientsPage: React.FC = () => {
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
         ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
-        contextWindow: ctxSel[clientName] ? Number(ctxSel[clientName]) : opts.resync ? undefined : 262144,
+        contextWindow: ctxSel[clientName]
+          ? Number(ctxSel[clientName])
+          : (memRef.current || mem || {})[clientName]?.contextWindow ?? (opts.resync ? undefined : 262144),
         extraModels: extras,
         ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
@@ -917,7 +921,7 @@ export const ClientsPage: React.FC = () => {
         api.getProxyCaTrust().then(setCaTrust).catch(() => {});
         // Write-through: the memory mirrors the drafts this setup just
         // applied — the same selections the payload was built from.
-        rememberDraft(clientName);
+        rememberDraft(clientName, Number(ctxSel[clientName]) || undefined);
       }
       // Refresh the agent inventory cache and drop the link draft so the
       // table re-seeds from the committed config (the lazy-load effect

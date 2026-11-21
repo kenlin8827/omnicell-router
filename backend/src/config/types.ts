@@ -1157,6 +1157,10 @@ export interface ClientProfileMemoryEntry {
    *  re-seeds the picker from this id, and a stale id (key deleted since)
    *  seeds nothing. */
   apiKeyId?: string;
+  /** Context window (tokens) the last setup applied for this client. A
+   *  re-apply (resync / repeated takeover) reuses it so a written window
+   *  never silently decays to the 256K default. UI-only. */
+  contextWindow?: number;
   /** Agent/role link table visibility (opencode, pi). OFF = the form declares
    *  "not configuring subagents": the table hides and setup OMITS the agent
    *  payload entirely (no sweep, no writes — existing overrides survive).

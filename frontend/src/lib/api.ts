@@ -162,6 +162,9 @@ export interface ClientProfileMemoryEntry {
   /** Last-written gateway key id (apiKeys[].id); a stale id (deleted key)
    *  seeds nothing. Mirrors backend. */
   apiKeyId?: string;
+  /** Context window (tokens) the last setup applied (see backend
+   *  ClientProfileMemoryEntry) — re-applied on resync/re-takeover. */
+  contextWindow?: number;
   /** Agent/role link table visibility (opencode, pi). OFF = table hidden and
    *  setup omits the agent payload entirely. Absent = seed from whether
    *  links exist. Mirrors backend. */
