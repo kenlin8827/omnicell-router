@@ -3065,6 +3065,7 @@ export const frFR: TranslationDict = {
     warnEmptyId: 'L’id du combo ne doit pas être vide',
     warnDupId: 'Id de combo en double',
     warnNoMembers: 'Un combo a besoin d’au moins un membre',
+    warnAllUnregistered: 'Aucun membre enregistré — ce combo n’est pas routable (retirer les listes de modèles des fournisseurs ?)',
     warnEmptyMember: 'Une ligne de membre n’a pas de modèle sélectionné',
     warnDupMember: 'Modèle membre en double',
     showMoreMembers: '+{count} de plus',

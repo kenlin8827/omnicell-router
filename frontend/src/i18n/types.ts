@@ -3210,6 +3210,9 @@ hiddenBadge: string;
     warnEmptyId: string;
     warnDupId: string;
     warnNoMembers: string;
+    /** Every configured member failed the registration probe — the routing
+     *  path fail-fasts this combo; the card names the provider re-pull fix. */
+    warnAllUnregistered: string;
     warnEmptyMember: string;
     warnDupMember: string;
     showMoreMembers: string;

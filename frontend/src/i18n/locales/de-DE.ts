@@ -3046,6 +3046,7 @@ export const deDE: TranslationDict = {
     warnEmptyId: 'Die Combo-ID darf nicht leer sein',
     warnDupId: 'Doppelte Combo-ID',
     warnNoMembers: 'Eine Combo braucht mindestens ein Mitglied',
+    warnAllUnregistered: 'Kein Mitglied registriert — diese Combo ist nicht routbar (Modelle der Anbieter neu ziehen?)',
     warnEmptyMember: 'Eine Mitgliederzeile hat kein Modell gewählt',
     warnDupMember: 'Doppeltes Mitgliedermodell',
     showMoreMembers: '+{count} weitere',

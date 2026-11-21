@@ -3043,6 +3043,7 @@ export const esES: TranslationDict = {
     warnEmptyId: 'El id del combo no debe estar vacío',
     warnDupId: 'Id de combo duplicado',
     warnNoMembers: 'Un combo necesita al menos un miembro',
+    warnAllUnregistered: 'Ningún miembro registrado — este combo no es enrutable (¿vuelve a extraer las listas de modelos de los proveedores?)',
     warnEmptyMember: 'Una fila de miembro no tiene modelo seleccionado',
     warnDupMember: 'Modelo miembro duplicado',
     showMoreMembers: '+{count} más',

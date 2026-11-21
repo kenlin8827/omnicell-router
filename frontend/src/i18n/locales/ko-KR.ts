@@ -3044,6 +3044,7 @@ export const koKR: TranslationDict = {
     warnEmptyId: '콤보 id 는 비워 둘 수 없습니다',
     warnDupId: '콤보 id 중복',
     warnNoMembers: '콤보에는 최소 한 명의 멤버가 필요합니다',
+    warnAllUnregistered: '등록된 멤버가 없습니다 — 이 콤보는 라우팅할 수 없습니다(멤버 공급자의 모델 목록을 다시 가져오세요)',
     warnEmptyMember: '멤버 행에 모델이 선택되지 않았습니다',
     warnDupMember: '멤버 모델 중복',
     showMoreMembers: '+{count} 더',

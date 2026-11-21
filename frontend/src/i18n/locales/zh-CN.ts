@@ -3025,6 +3025,7 @@ export const zhCN: TranslationDict = {
     warnEmptyId: '组合 id 不能为空',
     warnDupId: '组合 id 重复',
     warnNoMembers: '组合至少需要一个成员',
+    warnAllUnregistered: '没有任何成员注册 —— 该组合不可路由（请重新拉取成员供应商的模型列表）',
     warnEmptyMember: '存在未选择模型的成员行',
     warnDupMember: '成员模型重复',
     showMoreMembers: '＋{count} 个成员',

@@ -3045,6 +3045,7 @@ export const ptBR: TranslationDict = {
     warnEmptyId: 'O id do combo não pode estar vazio',
     warnDupId: 'Id de combo duplicado',
     warnNoMembers: 'Um combo precisa de pelo menos um membro',
+    warnAllUnregistered: 'Nenhum membro registrado — este combo não é roteável (extraia novamente as listas de modelos dos provedores)',
     warnEmptyMember: 'Uma linha de membro não tem modelo selecionado',
     warnDupMember: 'Modelo de membro duplicado',
     showMoreMembers: '+{count} mais',

@@ -3044,6 +3044,7 @@ export const jaJP: TranslationDict = {
     warnEmptyId: 'コンボ id は空にできません',
     warnDupId: 'コンボ id が重複しています',
     warnNoMembers: 'コンボには最低 1 メンバーが必要です',
+    warnAllUnregistered: 'メンバーが 1 つも登録されていません — このコンボはルーティングできません（プロバイダーのモデル一覧を再取得してください）',
     warnEmptyMember: 'メンバー行にモデルが選ばれていません',
     warnDupMember: 'メンバーモデルが重複しています',
     showMoreMembers: '+{count} 件',

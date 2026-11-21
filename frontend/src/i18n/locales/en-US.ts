@@ -3069,6 +3069,7 @@ export const enUS: TranslationDict = {
     warnEmptyId: 'Combo id must not be empty',
     warnDupId: 'Duplicate combo id',
     warnNoMembers: 'A combo needs at least one member',
+    warnAllUnregistered: 'No member registered — this combo is unroutable (re-pull the member providers\' model lists?)',
     warnEmptyMember: 'A member row has no model selected',
     warnDupMember: 'Duplicate member model',
     showMoreMembers: '+{count} more',
