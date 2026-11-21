@@ -633,6 +633,19 @@ export const ClientsPage: React.FC = () => {
       return next;
     });
 
+    // Context window: seed the picker from the last APPLIED value so the
+    // number the form displays is the number the next setup writes — an
+    // untouched picker must not display 256K while the payload silently
+    // carries the remembered window from an earlier setup.
+    setCtxSel(prev => {
+      const next = { ...prev };
+      for (const c of clients) {
+        if (next[c.name] !== undefined) continue;
+        const cw = mem[c.name]?.contextWindow;
+        if (cw) next[c.name] = String(cw);
+      }
+      return next;
+    });
     // Extras: the committed snapshot wins over the echo seed on first
     // hydration (loadClients already claimed the slot from the config echo).
     // A ref marks each client hydrated so late effect re-runs (apiKeys or
