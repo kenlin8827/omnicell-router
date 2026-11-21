@@ -20,6 +20,10 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(appVersion),
   },
   server: {
+    // Bind ALL interfaces: the default `localhost` binding can land on ::1
+    // only (Windows resolves localhost to IPv4 first in some resolvers),
+    // leaving 127.0.0.1:5173 refused and the console blank.
+    host: true,
     port: 5173,
     proxy: {
       // Dev API target = the gateway the dev stack started. scripts/dev.ts
