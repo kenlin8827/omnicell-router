@@ -2216,6 +2216,8 @@ export const koKR: TranslationDict = {
     none: '없음',
     teardownBtn: '해체 (원본 복원)',
     setupBtn: '인수 (OCR 에 연결)',
+    resyncModels: '연결 다시 적용',
+    resyncModelsTitle: '기억된 폼 초안으로 설정을 다시 실행합니다: 따라가기 모드에서는 키의 모델 목록을 다시 스냅샷하고 별칭 메타데이터를 게이트웨이에서 다시 확인합니다. 컨텍스트 윈도우는 변경하지 않습니다.',
     launcherTeardownBtn: '런처 삭제',
     launcherSetupBtn: '런처 생성',
     launcherHookedBadge: '✓ 런처 준비됨',

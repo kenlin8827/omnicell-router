@@ -2240,6 +2240,8 @@ export const enUS: TranslationDict = {
     none: 'None',
     teardownBtn: 'Teardown (Restore Original)',
     setupBtn: 'Takeover (Hook into OCR)',
+    resyncModels: 'Re-apply Hook',
+    resyncModelsTitle: 'Re-run setup from the remembered form draft: follow mode re-snapshots the key\'s model list and alias metadata is re-resolved from the gateway. The context window is left untouched.',
     launcherTeardownBtn: 'Delete Launcher',
     launcherSetupBtn: 'Generate Launcher',
     launcherHookedBadge: '✓ Launcher ready',

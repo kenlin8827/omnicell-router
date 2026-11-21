@@ -2235,6 +2235,8 @@ export const frFR: TranslationDict = {
     none: 'Aucun',
     teardownBtn: 'Démonter (restaurer l’original)',
     setupBtn: 'Prendre le contrôle (brancher sur OCR)',
+    resyncModels: 'Réappliquer le branchement',
+    resyncModelsTitle: 'Relancer la configuration depuis le brouillon mémorisé : en mode suivre, la liste de modèles de la clé est reprise et les métadonnées d’alias sont re-résolues depuis la passerelle. La fenêtre de contexte reste inchangée.',
     launcherTeardownBtn: 'Supprimer le lanceur',
     launcherSetupBtn: 'Générer le lanceur',
     launcherHookedBadge: '✓ Lanceur prêt',

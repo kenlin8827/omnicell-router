@@ -2218,6 +2218,8 @@ export const deDE: TranslationDict = {
     none: 'Keine',
     teardownBtn: 'Abbau (Original wiederherstellen)',
     setupBtn: 'Übernahme (an OCR ankoppeln)',
+    resyncModels: 'Ankopplung erneut ausführen',
+    resyncModelsTitle: 'Setup mit dem gemerkten Formularstand wiederholen: Im Folgen-Modus wird die Modellliste des Schlüssels neu eingelesen, Alias-Metadaten erneut vom Gateway aufgelöst. Das Kontextfenster bleibt unverändert.',
     launcherTeardownBtn: 'Launcher löschen',
     launcherSetupBtn: 'Launcher erzeugen',
     launcherHookedBadge: '✓ Launcher bereit',

@@ -2329,6 +2329,11 @@ hiddenBadge: string;
     none: string;
     teardownBtn: string;
     setupBtn: string;
+    /** Per-card resync action: re-run setup from the remembered draft so a
+     *  written model list (follow snapshot / alias metadata) picks up new
+     *  gateway models without teardown. */
+    resyncModels: string;
+    resyncModelsTitle: string;
     /** Launcher hooks (cursor/qoder) only publish a start script — no client
      *  state is taken over until `ocr <client>` actually launches it. Their
      *  buttons and status badge use these launcher-scoped labels instead of

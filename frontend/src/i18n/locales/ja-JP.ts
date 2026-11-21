@@ -2216,6 +2216,8 @@ export const jaJP: TranslationDict = {
     none: 'なし',
     teardownBtn: 'ティアダウン（元に戻す）',
     setupBtn: '引き継ぎ (OCR に接続)',
+    resyncModels: '接続を再適用',
+    resyncModelsTitle: '記憶したフォーム内容でセットアップを再実行します：フォローモードではキーのモデル一覧を取り込み直し、エイリアスのメタデータをゲートウェイから再解決します。コンテキストウィンドウは変更しません。',
     launcherTeardownBtn: 'ランチャーを削除',
     launcherSetupBtn: 'ランチャーを生成',
     launcherHookedBadge: '✓ ランチャー準備完了',

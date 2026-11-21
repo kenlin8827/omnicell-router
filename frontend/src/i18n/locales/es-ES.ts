@@ -2215,6 +2215,8 @@ export const esES: TranslationDict = {
     none: 'Ninguno',
     teardownBtn: 'Desmontar (restaurar original)',
     setupBtn: 'Tomar control (conectar a OCR)',
+    resyncModels: 'Reaplicar conexión',
+    resyncModelsTitle: 'Reejecutar la configuración con el borrador recordado: en modo seguir se vuelve a tomar la lista de modelos de la clave y los metadatos de alias se resuelven de nuevo desde la pasarela. La ventana de contexto no se modifica.',
     launcherTeardownBtn: 'Eliminar lanzador',
     launcherSetupBtn: 'Generar lanzador',
     launcherHookedBadge: '✓ Lanzador listo',

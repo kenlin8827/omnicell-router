@@ -2217,6 +2217,8 @@ export const ptBR: TranslationDict = {
     none: 'Nenhum',
     teardownBtn: 'Desmonte (restaurar original)',
     setupBtn: 'Tomar controle (conectar ao OCR)',
+    resyncModels: 'Reaplicar conexão',
+    resyncModelsTitle: 'Reexecuta a configuração com o rascunho memorizado: no modo seguir, a lista de modelos da chave é refeita e os metadados de alias são resolvidos novamente pelo gateway. A janela de contexto permanece inalterada.',
     launcherTeardownBtn: 'Excluir launcher',
     launcherSetupBtn: 'Gerar launcher',
     launcherHookedBadge: '✓ Launcher pronto',

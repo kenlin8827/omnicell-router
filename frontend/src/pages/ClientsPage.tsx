@@ -746,7 +746,7 @@ export const ClientsPage: React.FC = () => {
     clientName: string,
     action: 'setup' | 'teardown',
     product?: string,
-    opts: { acknowledgeRunning?: boolean } = {},
+    opts: { acknowledgeRunning?: boolean; resync?: boolean } = {},
   ) => {
     // Every refusal below fires while the card may still be collapsed — the fix
     // (key picker, model mode, context form) lives inside the panel, so reveal
@@ -811,8 +811,11 @@ export const ClientsPage: React.FC = () => {
             revealCard();
             return;
           }
-          const view = keyModels[k.id] || (await api.getKeyModels(k.id));
-          setKeyModels(prev => (prev[k.id] ? prev : { ...prev, [k.id]: view }));
+          const view = opts.resync || !keyModels[k.id] ? await api.getKeyModels(k.id) : keyModels[k.id];
+          // A forced resync must always overwrite the cache: the follow
+          // preview chips on the card show the snapshot that was just
+          // written, never the stale one the page loaded with.
+          setKeyModels(prev => (opts.resync || !prev[k.id] ? { ...prev, [k.id]: view } : prev));
           extras = view.models.filter(m => !m.virtual && m.allowed).map(m => m.id);
           virtuals = view.models.filter(m => m.virtual && m.allowed).map(m => m.id);
         } else {
@@ -859,7 +862,7 @@ export const ClientsPage: React.FC = () => {
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
         ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
-        contextWindow: Number(ctxSel[clientName] || '262144'),
+        contextWindow: ctxSel[clientName] ? Number(ctxSel[clientName]) : opts.resync ? undefined : 262144,
         extraModels: extras,
         ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
@@ -944,7 +947,7 @@ export const ClientsPage: React.FC = () => {
           cancelLabel: t('common.cancel'),
         });
         if (proceed) {
-          await handleToggle(clientName, action, product, { acknowledgeRunning: true });
+          await handleToggle(clientName, action, product, { ...opts, acknowledgeRunning: true });
           return;
         }
         revealCard();
@@ -1680,8 +1683,10 @@ export const ClientsPage: React.FC = () => {
     );
   };
 
-  /** Primary takeover/teardown button; `stretched` fills the form's action row. */
-  const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
+  /** Primary takeover/teardown button; `stretched` fills the form's action row.
+   *  `compact` (collapsed card header) renders the resync action icon-only —
+   *  the header row never wraps and already carries the long teardown label. */
+  const renderActionButtons = (c: ClientStatus, stretched: boolean, compact = false) => {
     // A proxy client's launcher only exists to feed its gateway plugin.
     // Hooking without a loaded plugin would proxy every request transparently
     // while the UI claims OCR is active — block the setup, never the teardown.
@@ -1694,15 +1699,29 @@ export const ClientsPage: React.FC = () => {
     // would imply a persistent modification that never happened.
     const isLauncher = c.hookKind === 'launcher';
     return c.hooked ? (
-      <button
-        className="btn btn-danger btn-sm"
-        style={stretched ? { flex: 1 } : undefined}
-        onClick={e => { e.stopPropagation(); handleToggle(c.name, 'teardown'); }}
-        disabled={loading}
-      >
-        <Undo2 size={12} />
-        <span>{t(isLauncher ? 'clients.launcherTeardownBtn' : 'clients.teardownBtn')}</span>
-      </button>
+      <>
+        <button
+          className="btn btn-danger btn-sm"
+          style={stretched ? { flex: 1 } : undefined}
+          onClick={e => { e.stopPropagation(); handleToggle(c.name, 'teardown'); }}
+          disabled={loading}
+        >
+          <Undo2 size={12} />
+          <span>{t(isLauncher ? 'clients.launcherTeardownBtn' : 'clients.teardownBtn')}</span>
+        </button>
+        {supportsExtraModels(c.name) && (
+          <button
+            className="btn btn-sm"
+            title={t('clients.resyncModelsTitle')}
+            disabled={loading}
+            aria-label={t('clients.resyncModels')}
+            onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup', undefined, { resync: true }); }}
+          >
+            <RefreshCw size={12} />
+            {!compact && <span>{t('clients.resyncModels')}</span>}
+          </button>
+        )}
+      </>
     ) : (
       <button
         className="btn btn-primary btn-sm"
@@ -1926,7 +1945,7 @@ export const ClientsPage: React.FC = () => {
                       v{c.version.current}
                     </span>
                   )}
-                  {!open && !c.products?.length && renderActionButtons(c, false)}
+                  {!open && !c.products?.length && renderActionButtons(c, false, true)}
                 </div>
 
                 {open && (

@@ -2197,6 +2197,8 @@ export const zhCN: TranslationDict = {
     none: '暂无',
     teardownBtn: '拆除接管 (恢复原配置)',
     setupBtn: '一键接管接入 OCR',
+    resyncModels: '重新接入',
+    resyncModelsTitle: '按记住的表单草稿重新执行一次接入：follow 模式重新抓取该 API key 的有效模型列表，别名元数据从网关重新解析。不改写上下文窗口。',
     launcherTeardownBtn: '删除启动器',
     launcherSetupBtn: '生成启动器',
     launcherHookedBadge: '✓ 启动器就绪',
