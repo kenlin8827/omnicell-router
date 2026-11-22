@@ -27,7 +27,7 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, PLUGIN_PACKAGE_MAX_BYTES, DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { registerMihomoRoutes } from './mihomo.js';
 import { reconcileMihomoSidecar } from '../proxy/mihomo-sidecar.js';
@@ -1535,10 +1535,12 @@ export function registerConsoleRoutes(
   // environment-book-set switch (ADR-0007) and may change under a live server.
   const trafficRoot = (): string => path.join(getOcrHomeDir(), 'plugins', 'traffic');
   const TRAFFIC_TAIL = 500;
-  /** Per-side DISPLAY window handed to the dissector (and the hex preview).
-   *  Capture is full fidelity on disk; only this read is bounded. */
-  const TRAFFIC_DISSECT_WINDOW = 32 * 1024;
-  /** Inline hex preview length (the drawer's hex fallback). */
+  /** Per-side DISPLAY window handed to the dissector. Capture is full fidelity
+   *  on disk; only this read is bounded, per row on every poll — the drawer's
+   *  own render cap is DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES. */
+  const TRAFFIC_DISSECT_WINDOW = DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES;
+  /** Inline hex preview length — first paint only. The drawer replaces it with
+   *  the token-addressed body, so keeping it small keeps every poll cheap. */
   const TRAFFIC_HEX_PREVIEW = 1024;
   /** Strict sidecar ref: `<YYYYMMDD>/<id>-<side>.bin`, no traversal. */
   const TRAFFIC_BODY_REF_RE = /^\d{8}\/[A-Za-z0-9._-]+\.bin$/;
@@ -1569,8 +1571,13 @@ export function registerConsoleRoutes(
       try {
         const fd = fs.openSync(abs, 'r');
         try {
-          const buf = Buffer.alloc(TRAFFIC_DISSECT_WINDOW);
-          const read = fs.readSync(fd, buf, 0, TRAFFIC_DISSECT_WINDOW, 0);
+          // Allocate the bytes the file actually has, not the window: a
+          // 500-row tail decorates ~1000 sides per poll, and a full-window
+          // buffer per side is the dominant cost (window × rows), while most
+          // bodies are kilobytes.
+          const take = Math.min(fs.fstatSync(fd).size, TRAFFIC_DISSECT_WINDOW);
+          const buf = Buffer.allocUnsafe(take);
+          const read = fs.readSync(fd, buf, 0, take, 0);
           return buf.subarray(0, read);
         } finally {
           fs.closeSync(fd);

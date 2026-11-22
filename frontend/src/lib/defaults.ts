@@ -23,6 +23,14 @@ export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
 
 /** `forwardProxy.accessLog.bodyBytes` backend default (per-side inline cap, 1 MiB). */
 export const DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES = 1_048_576;
+
+/** Traffic feed drawers render at most this many bytes of a token-addressed
+ *  body — mirrors backend `DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES`
+ *  (backend/src/config/defaults.ts, 1 MiB). The backend's DISSECTOR window is
+ *  a separate number (`DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES`, 256 KiB) and
+ *  allocates only `min(fileSize, window)` per side, so it is a ceiling rather
+ *  than a fixed per-row cost. Update both copies in the same commit. */
+export const DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES = 1_048_576;
 /** `persistDays` clamp bounds — mirrors backend
  *  `PROXY_ACCESS_LOG_PERSIST_DAYS_MIN/MAX` (backend/src/config/defaults.ts). */
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;

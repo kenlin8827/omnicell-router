@@ -122,6 +122,21 @@ export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
  * persistence is on, so the default costs no captured bytes.
  */
 export const DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES = 1_048_576;
+/**
+ * Traffic feed display windows. TWO numbers, two different costs:
+ * - DISSECT — the per-side prefix the read path hands the plugin dissector.
+ *   The route allocates only `min(fileSize, window)` per side, so the cost
+ *   tracks the bodies actually on disk (most rows are kilobytes), not the
+ *   window itself; 256 KiB is the compromise between protocol visibility and
+ *   the per-row read the 500-row tail pays on every poll.
+ * - BODY PREVIEW — the most the console renders of a body it loads through
+ *   the opaque token. Paid once, on drawer open, and the row payload never
+ *   carries it, so it can be generous (1 MiB — the proxy log's inline budget).
+ * Bodies beyond either window are one download away
+ * (`/api/admin/traffic-body/:token`).
+ */
+export const DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES = 262_144;
+export const DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES = 1_048_576;
 /** Day-file retention clamp bounds (config input is clamped into this range). */
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
