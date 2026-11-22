@@ -2680,7 +2680,7 @@ export class PipelineOrchestrator {
         !capabilitiesFor(protocolForWire(candidate.wire ?? 'openai-chat')).reasoningSignature &&
         candidateReq.input.some((item) => item.type === 'reasoning' && (item.signature !== undefined || item.encrypted !== undefined))
       ) {
-        const strippedInput = candidateReq.input.flatMap((item) => {
+        const strippedInput = candidateReq.input.flatMap((item): InputItem[] => {
           if (item.type !== 'reasoning' || (item.signature === undefined && item.encrypted === undefined)) return [item];
           const { signature: _sig, encrypted: _enc, ...rest } = item;
           return rest.text || rest.summary ? [rest] : [];
