@@ -36,7 +36,7 @@ import { clientDefNodes } from '../provider-def-adapters.js';
  *  - opencode-v2: read pulls the v2 db (readonly sqlite) into the OCR file;
  *    write pushes through the v2 HTTP management API (never raw sqlite).
  *  - opencode-v1: read pulls the legacy auth.json snapshot into the OCR file;
- *    write merges the chain-head api key back into auth.json — api-shaped
+ *    write merges the default credential's api key back into auth.json — api-shaped
  *    entries only, oauth/wellknown entries preserved untouched, one key per
  *    provider (the v1 file shape), no delete propagation.
  *
@@ -510,7 +510,7 @@ async function pullV2IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
       // Chain-head authority runs the OTHER way on the pull: the OCR file is the
       // single truth (the push converges the client toward it), so an existing
       // OCR head is NEVER overwritten here — that would make a pull undo the
-      // operator's "set as chain head" whenever auto-write is off, the classic
+      // operator's "set as default credential" whenever auto-write is off, the classic
       // two-directions-fight. The client's head only fills a VOID: a provider
       // whose OCR rows all lost their active flag (the head row was
       // disconnected) adopts the client's head instead of leaving routing on
@@ -548,7 +548,7 @@ async function pullV2IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
 // ---------------------------------------------------------------------------
 
 /**
- * opencode v1: merge the chain-head api key of every local provider into
+ * opencode v1: merge the default credential's api key of every local provider into
  * auth.json. Rails: api-shaped entries only (an existing oauth/wellknown
  * entry is preserved and reported as skipped), ONE key per provider (the v1
  * file shape — the active head wins), no delete propagation, and the file is
@@ -799,7 +799,7 @@ async function pushOcrIntoV2(ocr: CredentialStore, overrides: SyncOverrides): Pr
       // credential the ACTIVE one (verified live on 2.0.15: adding a second
       // key demotes the working row) and has no credential ordering beyond
       // `active` — so pushing a newly added FALLBACK key would silently
-      // re-point the client at it while OCR keeps routing the chain head. The
+      // re-point the client at it while OCR keeps routing the default credential. The
       // head is therefore re-activated after the provider's keys have landed,
       // every run (deduped keys included): a client whose active row drifted is
       // self-healed by the next push, and an already-correct head costs one
@@ -813,7 +813,7 @@ async function pushOcrIntoV2(ocr: CredentialStore, overrides: SyncOverrides): Pr
           const target = rows.find((r) => r.routable && r.keyHashPrefix === headPrefix);
           if (target) {
             await v2.activate(target.id);
-            log.info(`${LOG_PREFIX} v2 write: ${id} active chain head restored (key ${headPrefix})`);
+            log.info(`${LOG_PREFIX} v2 write: ${id} active default credential restored (key ${headPrefix})`);
           }
         }
       } catch (e) {

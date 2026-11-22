@@ -1,5 +1,6 @@
-import type { CaptureKeyIdentity, CaptureRecorder, HttpExchangeEvent } from '../capture/recorder.js';
+import type { CaptureKeyIdentity, CaptureRecorder, CaptureEvent } from '../capture/recorder.js';
 import { emitUpstreamRequest, emitUpstreamResponse } from './http-exchange.js';
+import type { TurnIdentity } from '../capture/turn-boundary.js';
 
 /**
  * Event-stream upstream context shared by the provider adapters. The shape
@@ -10,7 +11,7 @@ import { emitUpstreamRequest, emitUpstreamResponse } from './http-exchange.js';
  */
 export interface UpstreamEventContext {
   sessionId: string;
-  /** Caller correlation value, when it sent one (see HttpExchangeEvent). */
+  /** Caller correlation value, when it sent one (see CaptureEvent). */
   clientRequestId?: string;
   /** Gateway turn id (ADR-0021) — the capture turn-join key. */
   requestId: string;
@@ -25,7 +26,7 @@ export interface UpstreamEventContext {
   apiKey?: CaptureKeyIdentity;
   /**
    * Deterministic conversation key of the owning turn (content-addressed,
-   * see HttpExchangeEvent.conversationKey) forwarded onto every event emitted
+   * see CaptureEvent.conversationKey) forwarded onto every event emitted
    * through this context.
    */
   conversationKey?: string;
@@ -35,7 +36,10 @@ export interface UpstreamEventContext {
    * the archive can tell it apart from candidate-execution events sharing the
    * SAME requestId/sessionId (the outer request's identity).
    */
-  purpose?: HttpExchangeEvent['purpose'];
+  purpose?: CaptureEvent['purpose'];
+  /** Write-time turn identity, allocated once at the admission gate and
+   *  copied onto every event of this request. */
+  turn?: TurnIdentity;
 }
 
 /** Returns the exchangeId minted by `emitUpstreamRequest`, or undefined when the context is absent (capture off / mock mode / tests). */
@@ -65,6 +69,7 @@ export function emitUpstreamRequestOnce(
     model: args.model ?? ctx.model,
     proxy: args.proxy,
     purpose: ctx.purpose,
+    turn: ctx.turn,
     apiKey: ctx.apiKey,
     conversationKey: ctx.conversationKey,
   });
@@ -102,6 +107,7 @@ export function emitUpstreamResponseOnce(
     model: args.model ?? ctx.model,
     exchangeId: args.exchangeId,
     purpose: ctx.purpose,
+    turn: ctx.turn,
     apiKey: ctx.apiKey,
     conversationKey: ctx.conversationKey,
   });
@@ -146,6 +152,7 @@ export function emitUpstreamFailureOnce(
     exchangeId: args.exchangeId,
     error: args.error,
     purpose: ctx.purpose,
+    turn: ctx.turn,
     apiKey: ctx.apiKey,
     conversationKey: ctx.conversationKey,
   });

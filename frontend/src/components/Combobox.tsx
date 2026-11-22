@@ -274,6 +274,8 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
     }
   };
 
+  // No `title` on the trigger: a native tooltip repeating the visible label is
+  // pure noise, and on Windows it pops over the list as soon as the mouse moves.
   return (
     <>
       <button
@@ -285,7 +287,6 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         aria-haspopup="listbox"
         aria-invalid={invalid || undefined}
         disabled={disabled}
-        title={selected?.label}
         onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}
         onKeyDown={onTriggerKeyDown}
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}

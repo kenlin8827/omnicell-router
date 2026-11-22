@@ -1298,6 +1298,10 @@ fn boot(app: &tauri::App) -> Result<(), String> {
             .env("OCR_HOME", &home)
             .env("PORT", PORT.to_string())
             .env("HOST", "127.0.0.1");
+        // No plugin packages are staged here: plugins are OPTIONAL and never
+        // distributed (ADR-0032). The installer carries the gateway sidecar and
+        // the console assets only; the operator installs what they need from
+        // the Plugins page, so OCR_HOME stays the sole plugin source of truth.
         // GUI-parented chains freeze PATH at logon; merge the platform's
         // canonical tool dirs so the opencode CLI resolves (credential-store
         // write capability depends on it).

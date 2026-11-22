@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
-import { createPortal } from 'react-dom';
-import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Trash2, AlertTriangle, Activity, Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Pencil, Trash2, AlertTriangle, Activity, Loader2 } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo, type ComboView, type TierTestResult } from '../lib/api';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { Dialog } from '../components/Dialog';
 import { ProviderLogo } from '../components/ProviderLogo';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
-import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
 import { globMatch } from '../lib/glob';
 import { fmtLatency } from '../lib/format';
@@ -119,45 +118,101 @@ const REASON_LABEL_KEY: Record<string, string> = {
   exclude: 'tierPolicy.reasonExclude',
 };
 
+/** Uniform height for every small button/input on this page. Heights are
+ *  content-derived (padding × 2 + font-size × line-height), and this page
+ *  mixes line-height 1 (icon+text buttons, keeps the glyph on the text's
+ *  visual center) with the inherited 1.6 (icon-only buttons, inputs) — so
+ *  otherwise identically-styled controls land ~6–8px apart in the same row.
+ *  Pin them all and let flex center the content. The height matches the global
+ *  `.btn-sm` floor (30px) so this page's controls are the same size as every
+ *  other compact button in the console; `minHeight` must repeat the height —
+ *  the `.btn` floor (34px in shell.css) beats an inline `height` alone, which
+ *  made a primary sibling grow 4px past the secondary one. */
+const CTRL_H = { height: 30, minHeight: 30, boxSizing: 'border-box' as const };
+
 export const RulesPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
-  const [forms, setForms] = useState<Record<Tier, TierPolicyForm>>({
+  const navigate = useNavigate();
+  // Committed (on-disk) tier policies — the view-mode baseline. Editing never
+  // mutates these; edits go into `drafts` and only a successful save copies a
+  // draft back over the committed entry.
+  const [committed, setCommitted] = useState<Record<Tier, TierPolicyForm>>({
     lite: defaultFormFor(),
     plus: defaultFormFor(),
     pro: defaultFormFor(),
     ultra: defaultFormFor(),
   });
+  // Per-tier edit-mode draft. `null` = VIEW mode (read-only card showing the
+  // committed policy); a form object = EDIT mode for that card. Each card
+  // flips independently — the unsaved state IS the edit state, so it cannot
+  // be overlooked the way an implicit dirty form could.
+  const [drafts, setDrafts] = useState<Record<Tier, TierPolicyForm | null>>({
+    lite: null,
+    plus: null,
+    pro: null,
+    ultra: null,
+  });
+  // The policy a card actually renders: its live draft while editing, else
+  // the committed state. Kept as a memo so all existing `forms[...]` readers
+  // (pool preview, chain positions, pickers) see the displayed policy.
+  const forms = useMemo<Record<Tier, TierPolicyForm>>(
+    () => ({
+      lite: drafts.lite ?? committed.lite,
+      plus: drafts.plus ?? committed.plus,
+      pro: drafts.pro ?? committed.pro,
+      ultra: drafts.ultra ?? committed.ultra,
+    }),
+    [drafts, committed],
+  );
   // tiers.exclude (GLOBAL denylist) has no card on this page — it is edited on
-  // the raw-YAML page. It is still round-tripped here because the backend
-  // replaces the whole `tiers` object on save (omitting it would wipe it).
+  // the raw-YAML page and via the pool modal's exclude actions. It is still
+  // round-tripped here because the backend replaces the whole `tiers` object
+  // on save (omitting it would wipe it). `committedExclude` is its on-disk
+  // baseline for dirty tracking: modal exclude edits are drafts too until a
+  // tier save commits them.
   const [globalExclude, setGlobalExclude] = useState('');
+  const [committedExclude, setCommittedExclude] = useState('');
   const [loading, setLoading] = useState(true);
   const [savingTier, setSavingTier] = useState<Tier | null>(null);
   const [pendingSaveTier, setPendingSaveTier] = useState<Tier | null>(null);
-  const [savingAll, setSavingAll] = useState(false);
-  const [pendingSaveAll, setPendingSaveAll] = useState(false);
   const [memberDrafts, setMemberDrafts] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   const [mapTarget, setMapTarget] = useState<{ tier: Tier; index: number } | null>(null);
   const [saveWarnings, setSaveWarnings] = useState<
     { kind: string; tier?: string; pattern?: string }[] | null
   >(null);
-  const mapTargetBackdrop = useBackdropDismiss(() => setMapTarget(null));
-  const saveWarningsBackdrop = useBackdropDismiss(() => setSaveWarnings(null));
+  // Modal dismissal (Escape / backdrop press+release / ×) is owned by the
+  // shared <Dialog> — the page supplies onClose only. Stacked modals block
+  // the layers beneath via `closeDisabled` (see the edit Dialog below).
   const [memberFilters, setMemberFilters] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   // Per-tier end-to-end test (POST /api/admin/tiers/:tier/test): latest result
   // per tier card + in-flight markers. Result shows inline (✓ms / ✗) with the
   // full detail on hover, mirroring the combo test button.
   const [tierTests, setTierTests] = useState<Partial<Record<Tier, TierTestResult>>>({});
   const [testingTiers, setTestingTiers] = useState<Set<Tier>>(new Set());
-  // HTML5 drag-sort: armedDrag = `${tier}:${i}` while the grip is held (the
-  // row becomes draggable only then, so inputs/buttons keep normal pointer
-  // behaviour); dragMember tracks the in-flight row for live reorder.
-  const [armedDrag, setArmedDrag] = useState<string | null>(null);
-  const [dragMember, setDragMember] = useState<{ tier: Tier; index: number } | null>(null);
+  // Pointer-based drag-sort. `drag` holds the in-flight row (tier + REAL
+  // member index) and drives row styling; `dragRef` mirrors it so the
+  // pointermove handler always reads the CURRENT position without waiting
+  // for a re-render. This replaces the old armed-drag HTML5 DnD, which broke
+  // mid-drag: `draggable` was armed by index at grip-mousedown and went stale
+  // after the first live swap, and dragover swapped without a midpoint rule,
+  // so the row oscillated back and forth.
+  const [drag, setDrag] = useState<{ tier: Tier; index: number } | null>(null);
+  const dragRef = useRef<{ tier: Tier; index: number } | null>(null);
+  // Per-tier member-list containers: drop targets are resolved by measuring
+  // their `[data-mrow]` children, and flash-scroll / drag edge-scrolling
+  // need the live scroll position.
+  const listRefs = useRef<Partial<Record<Tier, HTMLDivElement | null>>>({});
+  // Flash highlight for the row that was just added (or, for a duplicate
+  // input, the EXISTING twin the input pointed at) — cleared after the
+  // animation so the same row can flash again.
+  const [flash, setFlash] = useState<{ tier: Tier; key: string } | null>(null);
   const [gatewayModels, setGatewayModels] = useState<GatewayModelRow[]>([]);
   const [comboCatalog, setComboCatalog] = useState<ComboView[]>([]);
+  // Both picker catalogs fetched? Distinguishes "still loading" (stay quiet)
+  // from "loaded and genuinely empty" (show the picker-empty hint).
+  const [catalogReady, setCatalogReady] = useState(false);
   const [pools, setPools] = useState<Record<string, TierPoolInfo>>({});
   const [poolsLive, setPoolsLive] = useState<Record<string, TierPoolInfo>>({});
   const [poolsError, setPoolsError] = useState<string | null>(null);
@@ -168,7 +223,6 @@ export const RulesPage: React.FC = () => {
   const [poolsLoadingMode, setPoolsLoadingMode] = useState<'preview' | 'live' | null>(null);
   const [poolsAt, setPoolsAt] = useState<number | null>(null);
   const [poolsLiveAt, setPoolsLiveAt] = useState<number | null>(null);
-  useBodyScrollLock(!!poolModalTier || !!mapTarget || !!saveWarnings);
 
   const buildTiersPayload = useCallback((): Record<string, unknown> => {
     const tiers: Record<string, unknown> = {};
@@ -243,19 +297,27 @@ export const RulesPage: React.FC = () => {
       try {
         const cfg = await api.getConfig();
         const tiers = cfg?.tiers || {};
-        setForms({
+        const committedForms = {
           lite: formFromPolicy(tiers.lite),
           plus: formFromPolicy(tiers.plus),
           pro: formFromPolicy(tiers.pro),
           ultra: formFromPolicy(tiers.ultra),
-        });
-        setGlobalExclude((tiers.exclude || []).join('\n'));
+        };
+        setCommitted(committedForms);
+        // Fresh load discards any in-flight drafts (initial mount: no-ops).
+        setDrafts({ lite: null, plus: null, pro: null, ultra: null });
+        const ex = (tiers.exclude || []).join('\n');
+        setGlobalExclude(ex);
+        setCommittedExclude(ex);
         await loadPools();
         await loadLivePools();
         // Member-picker catalogs (registered models + combos); non-blocking,
-        // failures just leave the lists empty.
-        api.listGatewayModels().then(setGatewayModels).catch(() => {});
-        api.getCombos().then((r) => setComboCatalog(r.combos || [])).catch(() => {});
+        // failures just leave the lists empty (and ready=true so the picker
+        // can explain itself instead of looking broken).
+        Promise.allSettled([
+          api.listGatewayModels().then(setGatewayModels),
+          api.getCombos().then((r) => setComboCatalog(r.combos || [])),
+        ]).finally(() => setCatalogReady(true));
       } catch (err: any) {
         toast.error(t('common.failed') + err.message);
       } finally {
@@ -265,31 +327,148 @@ export const RulesPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const updateForm = (tier: Tier, patch: Partial<TierPolicyForm>) =>
-    setForms((prev) => ({ ...prev, [tier]: { ...prev[tier], ...patch } }));
+  /* ─── edit/view mode + dirty tracking ─────────────────────── */
 
-  /* ─── member-list editing ─────────────────────────────────── */
+  /** Patch the edit-mode draft of one tier; no-op in view mode. Draft rows
+   *  share structure with the committed form but every mutation path copies
+   *  (spread) — so a draft can safely reference committed rows until edited. */
+  const updateDraft = (tier: Tier, patch: Partial<TierPolicyForm>) =>
+    setDrafts((prev) => (prev[tier] ? { ...prev, [tier]: { ...prev[tier]!, ...patch } } : prev));
 
-  const addMember = (tier: Tier) => {
-    const pattern = memberDrafts[tier].trim();
-    if (!pattern) return;
-    setForms((prev) => ({
-      ...prev,
-      [tier]: { ...prev[tier], members: [...prev[tier].members, { pattern, effortMap: {} }] },
-    }));
+  const patchDraftMembers = (tier: Tier, fn: (members: MemberRow[]) => MemberRow[]) =>
+    setDrafts((prev) => {
+      const d = prev[tier];
+      return d ? { ...prev, [tier]: { ...d, members: fn(d.members) } } : prev;
+    });
+
+  /** Policy-equality signature: buildTierPolicy normalizes (trims patterns,
+   *  drops empty weights/maps), so a draft that round-trips to the same
+   *  policy JSON is NOT dirty (e.g. typing weight 1 = the default). */
+  const policySig = (f: TierPolicyForm) => JSON.stringify(buildTierPolicy(f));
+  const draftDirty = (tier: Tier) => drafts[tier] !== null && policySig(drafts[tier]!) !== policySig(committed[tier]);
+  const excludeDirty = splitPatterns(globalExclude).join('\n') !== splitPatterns(committedExclude).join('\n');
+  const isDirty = TIERS.some(({ key }) => draftDirty(key)) || excludeDirty;
+
+  const startEdit = (tier: Tier) => {
+    setDrafts((prev) => ({ ...prev, [tier]: committed[tier] }));
+    // Clean slate for the editing chrome (filter / manual-input draft).
+    setMemberFilters((prev) => ({ ...prev, [tier]: '' }));
+    setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
+  };
+
+  const cancelEdit = async (tier: Tier) => {
+    if (draftDirty(tier)) {
+      const meta = TIERS.find((x) => x.key === tier);
+      const ok = await confirmDialog({
+        title: t('tierPolicy.discardConfirmTitle'),
+        description: t('tierPolicy.discardConfirmDesc', { tier: meta ? t(meta.labelKey) : tier }),
+        danger: true,
+        confirmLabel: t('tierPolicy.discardConfirmBtn'),
+      });
+      if (!ok) return;
+    }
+    if (drag?.tier === tier) endDrag();
+    setDrafts((prev) => ({ ...prev, [tier]: null }));
+    setMemberFilters((prev) => ({ ...prev, [tier]: '' }));
+    setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
+  };
+
+  // Warn before closing / refreshing the tab while any draft is unsaved.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  // Intercept in-app navigation while dirty. Sidebar links are plain anchors
+  // (BrowserRouter has no useBlocker without a data router), so a capture-
+  // phase click listener catches the intent before the router acts on it:
+  // confirm first, navigate only on explicit "leave & discard".
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: MouseEvent) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.defaultPrevented) return;
+      const anchor = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      if (anchor.target && anchor.target !== '_self') return;
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('#')) return;
+      const url = new URL(href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Strip the router basename (vite base '/admin/') — navigate() re-adds it.
+      const bare = import.meta.env.BASE_URL.replace(/\/$/, '');
+      const path = bare && url.pathname.startsWith(`${bare}/`) ? url.pathname.slice(bare.length) : url.pathname;
+      void confirmDialog({
+        title: t('tierPolicy.leaveConfirmTitle'),
+        description: t('tierPolicy.leaveConfirmDesc'),
+        danger: true,
+        confirmLabel: t('tierPolicy.leaveConfirmBtn'),
+      }).then((ok) => {
+        if (ok) navigate(path + url.search + url.hash);
+      });
+    };
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [isDirty, confirmDialog, navigate, t]);
+
+  /* ─── member-list editing (draft-only; edit mode is the gate) ── */
+
+  /** The ONE append path for both the picker and the manual input.
+   *  Rules match case-insensitively (glob), so duplicates are detected the
+   *  same way: a duplicate is NOT appended — instead the EXISTING row is
+   *  flashed and scrolled into view, so "re-adding" gives honest feedback
+   *  instead of a silent twin. New rows append at the end, the tier's member
+   *  filter is cleared (guaranteeing the new row is actually rendered — the
+   *  old behavior could hide it behind an active filter or the 5-row scroll
+   *  fold, which read as "add did nothing"), and the row flashes. */
+  const appendMembers = (tier: Tier, patterns: string[]) => {
+    const draft = drafts[tier];
+    if (!draft) return;
+    const clean = [...new Set(patterns.map((p) => p.trim()).filter(Boolean))];
+    if (clean.length === 0) return;
+    const current = draft.members;
+    const members = [...current];
+    let flashKey: string | null = null;
+    for (const p of clean) {
+      const dupIdx = members.findIndex((m) => m.pattern.toLowerCase() === p.toLowerCase());
+      if (dupIdx >= 0) {
+        // Duplicate: flash + scroll to the existing twin (occurrence-stable key, same as the row's React key).
+        const occ = members.slice(0, dupIdx).filter((m) => m.pattern === members[dupIdx].pattern).length;
+        flashKey = `${members[dupIdx].pattern}#${occ}`;
+        continue;
+      }
+      members.push({ pattern: p, effortMap: {} });
+      const occ = members.slice(0, -1).filter((m) => m.pattern === p).length;
+      flashKey = `${p}#${occ}`;
+    }
+    if (members.length === current.length && !flashKey) return;
+    updateDraft(tier, { members });
+    setMemberFilters((prev) => ({ ...prev, [tier]: '' }));
+    if (flashKey) setFlash({ tier, key: flashKey });
+  };
+
+  const addMemberFromDraft = (tier: Tier) => {
+    appendMembers(tier, [memberDrafts[tier]]);
     setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
   };
 
   /** Change a member rule's weight: ≥ 2 is stored; 1 / blank = default (not written). */
   const updateWeight = (tier: Tier, index: number, raw: string) => {
     const n = Math.round(Number(raw));
-    setForms((prev) => {
-      const members = [...prev[tier].members];
-      if (!members[index]) return prev;
-      members[index] = { ...members[index] };
-      if (!Number.isFinite(n) || n <= 1) delete members[index].weight;
-      else members[index].weight = n;
-      return { ...prev, [tier]: { ...prev[tier], members } };
+    patchDraftMembers(tier, (members) => {
+      if (!members[index]) return members;
+      const next = [...members];
+      next[index] = { ...next[index] };
+      if (!Number.isFinite(n) || n <= 1) delete next[index].weight;
+      else next[index].weight = n;
+      return next;
     });
   };
 
@@ -361,26 +540,14 @@ export const RulesPage: React.FC = () => {
     return EFFORT_LEVELS.filter((lvl) => declared.has(lvl));
   };
 
-  const addMemberRules = (tier: Tier, ids: string[]) =>
-    setForms((prev) => {
-      const additions = ids
-        .filter((id) => !prev[tier].members.some((x) => x.pattern === id))
-        .map((id) => ({ pattern: id, effortMap: {} }));
-      if (additions.length === 0) return prev;
-      return { ...prev, [tier]: { ...prev[tier], members: [...prev[tier].members, ...additions] } };
-    });
-
   const removeMember = (tier: Tier, index: number) =>
-    setForms((prev) => ({
-      ...prev,
-      [tier]: { ...prev[tier], members: prev[tier].members.filter((_, i) => i !== index) },
-    }));
+    patchDraftMembers(tier, (members) => members.filter((_, i) => i !== index));
 
   /** Clear ALL member rules of one tier (draft-only, like removeMember):
       useful as a "reset this tier" action. Still requires Save to commit —
       the empty list IS the intent (explicit `[]` clears the tier's pool). */
   const clearMembers = async (tier: Tier) => {
-    if (forms[tier].members.length === 0) return;
+    if (!drafts[tier] || drafts[tier]!.members.length === 0) return;
     const meta = TIERS.find((x) => x.key === tier);
     const ok = await confirmDialog({
       title: t('tierPolicy.clearMembersConfirmTitle', { tier: meta ? t(meta.labelKey) : tier }),
@@ -389,58 +556,138 @@ export const RulesPage: React.FC = () => {
       confirmLabel: t('tierPolicy.clearMembers'),
     });
     if (!ok) return;
-    updateForm(tier, { members: [] });
+    updateDraft(tier, { members: [] });
   };
 
   const moveMember = (tier: Tier, index: number, dir: -1 | 1) =>
-    setForms((prev) => {
-      const members = [...prev[tier].members];
+    patchDraftMembers(tier, (members) => {
       const to = index + dir;
-      if (to < 0 || to >= members.length) return prev;
-      [members[index], members[to]] = [members[to], members[index]];
-      return { ...prev, [tier]: { ...prev[tier], members } };
+      if (to < 0 || to >= members.length) return members;
+      const next = [...members];
+      [next[index], next[to]] = [next[to], next[index]];
+      return next;
     });
 
   const reorderMember = (tier: Tier, from: number, to: number) =>
-    setForms((prev) => {
-      const members = [...prev[tier].members];
-      if (from === to || to < 0 || to >= members.length) return prev;
-      const [row] = members.splice(from, 1);
-      members.splice(to, 0, row);
-      return { ...prev, [tier]: { ...prev[tier], members } };
+    patchDraftMembers(tier, (members) => {
+      if (from === to || to < 0 || to >= members.length) return members;
+      const next = [...members];
+      const [row] = next.splice(from, 1);
+      next.splice(to, 0, row);
+      return next;
     });
 
   const moveMemberTop = (tier: Tier, index: number) =>
-    setForms((prev) => {
-      const members = [...prev[tier].members];
-      if (index <= 0) return prev;
-      const [row] = members.splice(index, 1);
-      members.unshift(row);
-      return { ...prev, [tier]: { ...prev[tier], members } };
+    patchDraftMembers(tier, (members) => {
+      if (index <= 0) return members;
+      const next = [...members];
+      const [row] = next.splice(index, 1);
+      next.unshift(row);
+      return next;
     });
 
+  /* ─── pointer drag-sort ───────────────────────────────────── */
+
+  /** Live-swap the dragged row with the visible row at REAL index `to`.
+   *  Splice-based (not ±1), so it is also correct while a member filter is
+   *  active: the next visible neighbor may sit several real indices away. */
+  const dragSwap = (tier: Tier, to: number) => {
+    const d = dragRef.current;
+    if (!d || d.tier !== tier || d.index === to) return;
+    reorderMember(tier, d.index, to);
+    const nd = { tier, index: to };
+    dragRef.current = nd;
+    setDrag(nd);
+  };
+
+  const startDrag = (tier: Tier, index: number, e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0) return;
+    // No text selection, no native button drag-ghost. Capture keeps move/up
+    // events flowing to the grip even when the pointer leaves the row — and
+    // across reorders, because stable row keys let React MOVE the grip's
+    // DOM node instead of remounting it (capture travels with the node).
+    e.preventDefault();
+    const d = { tier, index };
+    dragRef.current = d;
+    setDrag(d);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Pointer capture is a nicety, not a requirement.
+    }
+  };
+
+  const moveDrag = (tier: Tier, e: React.PointerEvent<HTMLButtonElement>) => {
+    const d = dragRef.current;
+    if (!d || d.tier !== tier) return;
+    const container = listRefs.current[tier];
+    if (!container) return;
+    // Edge auto-scroll: riding the top/bottom fold of the internal scroll
+    // area keeps long pools reachable while dragging.
+    const cr = container.getBoundingClientRect();
+    if (e.clientY < cr.top + 28) container.scrollTop -= 12;
+    else if (e.clientY > cr.bottom - 28) container.scrollTop += 12;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-mrow]'));
+    const dragRow = rows.find((r) => Number(r.dataset.idx) === d.index);
+    if (!dragRow) return;
+    const pos = rows.indexOf(dragRow);
+    // Swap only with the ADJACENT VISIBLE row and only once the pointer has
+    // crossed that row's vertical midpoint: after a swap the dragged row
+    // sits under the pointer, so the same threshold cannot re-fire — this is
+    // exactly the oscillation the old dragover swap suffered from.
+    const next = rows[pos + 1];
+    const prev = rows[pos - 1];
+    if (next) {
+      const r = next.getBoundingClientRect();
+      if (e.clientY > r.top + r.height / 2) {
+        dragSwap(tier, Number(next.dataset.idx));
+        return;
+      }
+    }
+    if (prev) {
+      const r = prev.getBoundingClientRect();
+      if (e.clientY < r.top + r.height / 2) dragSwap(tier, Number(prev.dataset.idx));
+    }
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+    setDrag(null);
+  };
+
+  // Flash feedback: after the (possibly batched) add/filter render, scroll
+  // the flashed row into view and let the one-shot animation fade it out.
+  useEffect(() => {
+    if (!flash) return;
+    const el = listRefs.current[flash.tier]?.querySelector<HTMLElement>(`[data-mkey="${CSS.escape(flash.key)}"]`);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const timer = setTimeout(() => setFlash(null), 1400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flash]);
+
   const updateEffortMap = (tier: Tier, index: number, level: string, value: string) =>
-    setForms((prev) => {
-      const members = [...prev[tier].members];
-      if (!members[index]) return prev;
-      const effortMap = { ...members[index].effortMap };
+    patchDraftMembers(tier, (members) => {
+      if (!members[index]) return members;
+      const next = [...members];
+      const effortMap = { ...next[index].effortMap };
       if (value) effortMap[level] = value;
       else delete effortMap[level];
-      members[index] = { ...members[index], effortMap };
-      return { ...prev, [tier]: { ...prev[tier], members } };
+      next[index] = { ...next[index], effortMap };
+      return next;
     });
 
   const clearEffortMap = (tier: Tier, index: number) =>
-    setForms((prev) => {
-      const members = [...prev[tier].members];
-      if (!members[index]) return prev;
-      members[index] = { ...members[index], effortMap: {} };
-      return { ...prev, [tier]: { ...prev[tier], members } };
+    patchDraftMembers(tier, (members) => {
+      if (!members[index]) return members;
+      const next = [...members];
+      next[index] = { ...next[index], effortMap: {} };
+      return next;
     });
 
   /** One real minimal completion through the production pipeline, pinned to
    * the tier via the auto-<tier> virtual entry — the same force_tier path a
-   * client's request takes. Only the SELECTED member (chain head / weighted
+   * client's request takes. Only the SELECTED member (default credential / weighted
    * pick) is exercised, never the whole pool; an empty tier lands on its
    * degraded fallback model, which modelUsed surfaces verbatim. Precondition
    * failures (unknown tier) localize via the reasonCode. */
@@ -482,13 +729,16 @@ export const RulesPage: React.FC = () => {
   );
 
   /** Save ONE tier only: merge over the LATEST disk state so other tiers'
-   *  unsaved drafts are never committed by a single-tier save. */
+   *  edit drafts are never committed by a single-tier save. On success the
+   *  draft becomes the committed baseline and the card flips back to view
+   *  mode; the global denylist riding along in the same payload is baseline'd
+   *  too (its own dirty flag clears as well). */
   const doSaveTier = async (tier: Tier) => {
     setSavingTier(tier);
     try {
       const latest = await api.getConfig();
       const tiersPayload: Record<string, unknown> = { ...(latest?.tiers || {}) };
-      tiersPayload[tier] = buildTierPolicy(forms[tier]);
+      tiersPayload[tier] = buildTierPolicy(drafts[tier] ?? committed[tier]);
       const ex = splitPatterns(globalExclude);
       if (ex.length) tiersPayload.exclude = ex;
       else delete tiersPayload.exclude;
@@ -496,6 +746,10 @@ export const RulesPage: React.FC = () => {
       const meta = TIERS.find((x) => x.key === tier);
       toast.success(t('tierPolicy.savedTier', { tier: meta ? t(meta.labelKey) : tier }));
       setSaveWarnings(null);
+      // Commit: draft → baseline, card back to view mode.
+      setCommitted((prev) => (drafts[tier] ? { ...prev, [tier]: drafts[tier]! } : prev));
+      setDrafts((prev) => ({ ...prev, [tier]: null }));
+      setCommittedExclude(globalExclude);
       await loadPools();
       await loadLivePools();
     } catch (err: any) {
@@ -521,49 +775,11 @@ export const RulesPage: React.FC = () => {
     const warnings = await runCheck();
     setSavingTier(null);
     if (warnings.length > 0) {
-      setPendingSaveAll(false);
       setPendingSaveTier(tier);
       setSaveWarnings(warnings);
       return;
     }
     await doSaveTier(tier);
-  };
-
-  /** Save ALL tiers at once: every tier's draft is committed (explicit empty
-   *  lists included — a cleared list IS the intent), merged over the LATEST
-   *  disk state for any fields this page does not own. */
-  const doSaveAll = async () => {
-    setSavingAll(true);
-    try {
-      const latest = await api.getConfig();
-      const tiersPayload: Record<string, unknown> = { ...(latest?.tiers || {}) };
-      for (const { key } of TIERS) tiersPayload[key] = buildTierPolicy(forms[key]);
-      const ex = splitPatterns(globalExclude);
-      if (ex.length) tiersPayload.exclude = ex;
-      else delete tiersPayload.exclude;
-      await api.saveConfig({ tiers: tiersPayload });
-      toast.success(t('tierPolicy.savedAll'));
-      setSaveWarnings(null);
-      await loadPools();
-      await loadLivePools();
-    } catch (err: any) {
-      toast.error(t('common.saveFailed') + err.message);
-    } finally {
-      setSavingAll(false);
-    }
-  };
-
-  const saveAll = async () => {
-    setSavingAll(true);
-    const warnings = await runCheck();
-    setSavingAll(false);
-    if (warnings.length > 0) {
-      setPendingSaveTier(null);
-      setPendingSaveAll(true);
-      setSaveWarnings(warnings);
-      return;
-    }
-    await doSaveAll();
   };
 
   const openPoolModal = (tier: Tier) => {
@@ -609,14 +825,18 @@ export const RulesPage: React.FC = () => {
     modalPool?.pool.filter((m) => !modalQ || m.id.toLowerCase().includes(modalQ) || m.provider.toLowerCase().includes(modalQ)) ?? [];
   const modalVisibleExcluded = modalPool?.excluded.filter((e) => !modalQ || e.id.toLowerCase().includes(modalQ)) ?? [];
 
-  // Virtual scroll: row height is fixed (row style below uses 6px+12px+1px = 38px).
+  // Virtual scroll: row height is fixed (every pool row pins its height to ROW_H).
   // 50+ row pools would otherwise mount ~50 logos + buttons; viewport render
   // keeps DOM work proportional to visible rows regardless of pool size.
   //
   // Layout (C-style pure flow, no sticky): list-header sits above the scroll
   // container, status bar below it — both are flex-shrink:0 siblings of the
   // scroll container, never overlap rows, never need to reserve pixel space.
-  const ROW_H = 38;
+  // 44 (not 38): the 26px exclude button needs ~8px of visible air above/below —
+  // at 38 the content box (25px) is SMALLER than the button, which read as the
+  // button being stuffed to the row edges ("not centered"). Also the
+  // virtualization unit: padTop/padBottom and scroll math derive from it.
+  const ROW_H = 44;
   const OVERSCAN = 10;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -653,7 +873,7 @@ export const RulesPage: React.FC = () => {
               <button
                 key={navTier}
                 className="btn"
-                style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', color: navColor }}
+                style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', color: navColor, ...CTRL_H }}
                 onClick={() => document.getElementById(`tier-card-${navTier}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               >
                 <NavIcon size={12} />
@@ -662,20 +882,11 @@ export const RulesPage: React.FC = () => {
             ))}
           </div>
         </div>
-        {/* Page-level commit action shares the description row — desc left,
-            save-all right (deliberately out of the nav-chip row: navigation
-            and "commit everything" are different intents). */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginTop: '8px' }}>
-          <p style={{ flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: 0, whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
-          <button
-            className="btn btn-primary"
-            style={{ padding: '5px 14px', fontSize: 'var(--text-xs)', flexShrink: 0, marginTop: '2px' }}
-            disabled={loading || savingAll}
-            onClick={() => void saveAll()}
-          >
-            <Save size={12} />
-            <span>{savingAll ? t('common.loading') : t('tierPolicy.saveAllBtn')}</span>
-          </button>
+        {/* Page description. Saving is per-card: each tier card carries its
+            own edit → save/cancel cycle, so there is no page-level commit
+            action here anymore. */}
+        <div style={{ marginTop: '8px' }}>
+          <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: 0, whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
         </div>
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '6px' }}>{t('tierPolicy.defaultsHint')}</div>
       </div>
@@ -703,84 +914,127 @@ export const RulesPage: React.FC = () => {
       >
         {TIERS.map(({ key: tier, labelKey, descKey, icon: Icon, color }) => {
           const f = forms[tier];
+          const editing = drafts[tier] !== null;
           const pos = chainPositions(tier);
-          // Card footer = EPHEMERAL preview from the current form (debounced
-          // 500ms via loadPools). Updates as the user edits, so the count
-          // reflects "what would happen if I saved now" — not the committed
-          // state. For the committed (post-save) state, use the detail modal
-          // and switch to the live tab.
-          const poolInfo = pools[tier] ?? poolsLive[tier];
+          const pickOptions = memberPickOptions(tier);
+          // Card footer pool numbers are mode-dependent: VIEW mode shows the
+          // COMMITTED (live) projection — the single source of truth for what
+          // routing uses; EDIT mode shows the ephemeral preview computed from
+          // the draft ("what would happen if I saved now"). The preview's
+          // ephemeral nature stays explicit in the detail modal.
+          const poolInfo = editing ? pools[tier] ?? poolsLive[tier] : poolsLive[tier] ?? pools[tier];
           const testRes = tierTests[tier];
           const isTesting = testingTiers.has(tier);
-          return (
+          // Tier title: ONE source for both surfaces — the view card's header
+          // row and the edit Dialog's title slot. A <span> (not <div>) so it
+          // stays valid inside the Dialog's <h3>.
+          const tierTitleEl = (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color, minWidth: 0 }}>
+              <Icon size={16} />
+              <span>{t(labelKey)}</span>
+              {/* Dirty marker: only exists while the card is in edit mode
+                  with a draft that differs from the committed policy —
+                  the unsaved state is always visible at its source. */}
+              {editing && draftDirty(tier) && (
+                <span
+                  style={{
+                    fontSize: 'var(--text-3xs)',
+                    fontWeight: 'var(--font-bold)',
+                    padding: '1px 7px',
+                    borderRadius: 999,
+                    flexShrink: 0,
+                    color: 'var(--accent-amber, var(--accent))',
+                    border: '1px solid color-mix(in srgb, var(--accent-amber, var(--accent)) 45%, transparent)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {t('tierPolicy.unsavedBadge')}
+                </span>
+              )}
+            </span>
+          );
+          const cardEl = (
             <div
-              key={tier}
               id={`tier-card-${tier}`}
               style={{
-                background: 'var(--card-bg)',
-                border: '1px solid var(--card-border)',
-                // Tier identity: 2px accent top bar + border lightly tinted with
-                // the tier color — separates adjacent cards and makes each
-                // tier's silhouette self-identifying at a glance.
-                borderTop: `2px solid ${color}`,
-                borderColor: `color-mix(in srgb, ${color} 25%, var(--card-border))`,
-                borderRadius: '10px',
-                boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
-                padding: '18px',
+                // Dialog mode strips the card chrome: the shared <Dialog>
+                // owns the surface (bg / border / shadow / padding / scroll
+                // cap), so what remains here is the bare editing body.
+                ...(editing
+                  ? { minWidth: 0 }
+                  : {
+                      background: 'var(--card-bg)',
+                      border: '1px solid var(--card-border)',
+                      // Tier identity: 2px accent top bar + border lightly tinted with
+                      // the tier color — separates adjacent cards and makes each
+                      // tier's silhouette self-identifying at a glance.
+                      borderTop: `2px solid ${color}`,
+                      borderColor: `color-mix(in srgb, ${color} 25%, var(--card-border))`,
+                      borderRadius: '10px',
+                      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
+                      padding: '18px',
+                    }),
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '14px',
               }}
             >
+              {/* Header row exists only on the view card — the edit Dialog
+                  carries the title in its own chrome. */}
+              {!editing && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color }}>
-                  <Icon size={16} />
-                  <span>{t(labelKey)}</span>
-                </div>
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' }}>
-                  {testRes && (
-                    <span
-                      style={{
-                        fontFamily: FONT_MONO,
-                        fontSize: 'var(--text-2xs)',
-                        whiteSpace: 'nowrap',
-                        color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                      }}
-                      title={
-                        testRes.ok
-                          ? `${testRes.modelUsed || '—'}${
-                              testRes.failoverOccurred && testRes.failoverPath?.length
-                                ? ` (${testRes.failoverPath.join(' → ')})`
-                                : ''
-                            }${testRes.servedCredentialPrefix ? ` · ${testRes.servedCredentialPrefix}` : ''} — ${testRes.latencyMs ?? 0} ms`
-                          : testRes.error
-                      }
-                    >
-                      {testRes.ok ? `✓${fmtLatency(testRes.latencyMs ?? NaN)}` : '✗'}
-                    </span>
+                {tierTitleEl}
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
+                  {/* Dialog mode: commit actions move to the footer bar
+                      (modal convention) — the header carries only the title
+                      and the unsaved badge. */}
+                  {!editing && (
+                    <>
+                      {testRes && (
+                        <span
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 'var(--text-2xs)',
+                            whiteSpace: 'nowrap',
+                            color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                          }}
+                          title={
+                            testRes.ok
+                              ? `${testRes.modelUsed || '—'}${
+                                  testRes.failoverOccurred && testRes.failoverPath?.length
+                                    ? ` (${testRes.failoverPath.join(' → ')})`
+                                    : ''
+                                }${testRes.servedCredentialPrefix ? ` · ${testRes.servedCredentialPrefix}` : ''} — ${testRes.latencyMs ?? 0} ms`
+                              : testRes.error
+                          }
+                        >
+                          {testRes.ok ? `✓${fmtLatency(testRes.latencyMs ?? NaN)}` : '✗'}
+                        </span>
+                      )}
+                      <button
+                        className="btn btn-sm"
+                        style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                        title={t('tierPolicy.testBtnHint')}
+                        disabled={isTesting}
+                        onClick={() => void handleTierTest(tier)}
+                      >
+                        {isTesting ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Activity size={11} />}
+                        <span>{t('tierPolicy.testBtn')}</span>
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                        disabled={loading}
+                        onClick={() => startEdit(tier)}
+                      >
+                        <Pencil size={11} />
+                        <span>{t('tierPolicy.editBtn')}</span>
+                      </button>
+                    </>
                   )}
-                  <button
-                    className="btn btn-sm"
-                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
-                    title={t('tierPolicy.testBtnHint')}
-                    disabled={isTesting}
-                    onClick={() => void handleTierTest(tier)}
-                  >
-                    {isTesting ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Activity size={11} />}
-                    <span>{t('tierPolicy.testBtn')}</span>
-                  </button>
-                  <button
-                    className="btn btn-primary"
-                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
-                    disabled={savingTier !== null || loading}
-                    onClick={() => void saveTier(tier)}
-                  >
-                    <Save size={11} />
-                    <span>{savingTier === tier ? t('common.loading') : t('tierPolicy.saveTierBtn')}</span>
-                  </button>
                 </div>
-                
               </div>
+              )}
 
               {/* Single line + ellipsis (full text on hover): every card shows
                   exactly one desc line, so member sections stay aligned without
@@ -803,23 +1057,22 @@ export const RulesPage: React.FC = () => {
 
               {/* Member list — the ONLY pool-membership source. List order =
                   priority chain; higher weight overrides the order. */}
-              {/* Members section = the card's FLEXIBLE MIDDLE (flex:'1 1 auto'
-                  so its content still drives row height): header/desc stay on
-                  top, add-input/strategy/footer anchor the bottom, and ALL
-                  slack flows into the list below — a short pool next to a tall
-                  sibling grows its list box instead of a dead gap above the
-                  footer. basis:auto (not 0) keeps long pools tall; minHeight:0
-                  lets it shrink inside the stretched card. */}
-              <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
+              {/* Members section = the grid card's FLEXIBLE MIDDLE: slack
+                  flows into the list so a short pool next to a tall sibling
+                  grows its list box instead of a dead gap above the footer.
+                  In the EDIT DIALOG there are no sibling cards to align with,
+                  so the section hugs its content — growing here would punch
+                  a hole between the rows and the add-controls below. */}
+              <div style={{ display: 'flex', flexDirection: 'column', ...(editing ? { flex: '0 0 auto' } : { flex: '1 1 auto', minHeight: 0 }) }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                   <label style={{ ...labelStyle, marginBottom: 0 }}>{t('tierPolicy.membersTitle')}</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                     <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
-                    {f.members.length > 0 && (
+                    {editing && f.members.length > 0 && (
                       <button
                         className="btn"
                         data-tip={t('tierPolicy.clearMembersHint')}
-                        style={{ padding: '3px 6px', flexShrink: 0 }}
+                        style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                         disabled={savingTier !== null || loading}
                         onClick={() => void clearMembers(tier)}
                       >
@@ -829,30 +1082,39 @@ export const RulesPage: React.FC = () => {
                     )}
                   </div>
                 </div>
-                {/* Always rendered (not just >8 members): keeps the pre-list
-                    stack identical across all four cards so sections align.
-                    Filtering still works for short lists, it's just a no-op. */}
-                <input
-                  type="text"
-                  className="input"
-                  style={{ marginTop: '6px', fontSize: 'var(--text-xs)', padding: '4px 8px' }}
-                  placeholder={t('tierPolicy.filterPlaceholder')}
-                  value={memberFilters[tier]}
-                  onChange={(e) => setMemberFilters((prev) => ({ ...prev, [tier]: e.target.value }))}
-                />
+                {/* Member filter is edit-mode chrome (view mode has no
+                    controls on the list). */}
+                {editing && (
+                  <input
+                    type="text"
+                    className="input"
+                    style={{ marginTop: '6px', fontSize: 'var(--text-xs)', padding: '4px 8px', ...CTRL_H }}
+                    placeholder={t('tierPolicy.filterPlaceholder')}
+                    value={memberFilters[tier]}
+                    onChange={(e) => setMemberFilters((prev) => ({ ...prev, [tier]: e.target.value }))}
+                  />
+                )}
                 {/* The list flex-grows (basis auto) so a short pool next to a
                     tall sibling still fills its card — capped at EXACTLY 5
                     rows: rows are pinned to 40px + 6px gap, so maxHeight =
                     5*40 + 4*6 = 224px. Longer pools scroll internally. */}
                 <div
+                  ref={(el) => {
+                    listRefs.current[tier] = el;
+                  }}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '6px',
                     marginTop: '6px',
-                    flex: '1 1 auto',
-                    minHeight: '120px',
-                    maxHeight: 'calc(5 * 40px + 4 * 6px)',
+                    // Dialog mode: hug the rows (no flex growth, no min-height
+                    // padding) — slack must not open a hole above the picker.
+                    ...(editing
+                      ? { flex: '0 0 auto' as const }
+                      : { flex: '1 1 auto' as const, minHeight: '120px' }),
+                    // Dialog mode gives the list real room; the grid card
+                    // stays capped at 5 rows so all four cards align.
+                    maxHeight: editing ? '45vh' : 'calc(5 * 40px + 4 * 6px)',
                     overflowY: 'auto',
                     paddingRight: visibleMembers(tier).length > 5 ? '4px' : undefined,
                   }}
@@ -871,10 +1133,11 @@ export const RulesPage: React.FC = () => {
                     </div>
                   )}
                   {/* Stable row keys (pattern + occurrence, NOT index): index
-                      keys remount every shifted row on live reorder, detaching
-                      the dragged DOM node mid-drag so `dragend` never fires and
-                      the row stays dimmed. Occurrence-stable keys let React MOVE
-                      the same node instead, keeping dragend alive. */}
+                      keys remount every shifted row on live reorder, which
+                      used to detach the dragged DOM node mid-drag. Occurrence-
+                      stable keys let React MOVE the same node instead — which
+                      is also what keeps the drag grip's pointer capture (and
+                      its keydown focus) alive across swaps. */}
                   {(() => {
                     const seen = new Map<string, number>();
                     return visibleMembers(tier).map(({ m, idx: i }) => {
@@ -882,51 +1145,158 @@ export const RulesPage: React.FC = () => {
                       seen.set(m.pattern, occ + 1);
                       const mapped = Object.values(m.effortMap).filter(Boolean).length;
                       const isComboRef = m.pattern.startsWith('combo:');
+                      const rowKey = `${m.pattern}#${occ}`;
+                      const isDragging = drag?.tier === tier && drag.index === i;
+                      const isFlashed = flash?.tier === tier && flash.key === rowKey;
+                      /* VIEW mode: the same row, minus every control — chain
+                         position, pattern (+combo badge), and quiet weight /
+                         effort-map summaries as plain text. */
+                      if (!editing) {
+                        return (
+                          <div
+                            key={rowKey}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              height: '40px',
+                              padding: '0 8px',
+                              border: '1px solid var(--card-border)',
+                              borderRadius: 8,
+                              flexShrink: 0,
+                            }}
+                          >
+                            <span
+                              data-tip={t('tierPolicy.memberWeightHint')}
+                              style={{
+                                minWidth: '22px',
+                                flexShrink: 0,
+                                fontSize: 'var(--text-2xs)',
+                                fontFamily: FONT_MONO,
+                                color: 'var(--text-dim)',
+                                textAlign: 'right',
+                              }}
+                            >
+                              #{pos.get(i) ?? ''}
+                            </span>
+                            <span
+                              data-tip={m.pattern}
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                fontFamily: FONT_MONO,
+                                fontSize: 'var(--text-sm)',
+                                fontWeight: 'var(--font-semibold)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                              }}
+                            >
+                              {isComboRef && (
+                                <span
+                                  style={{
+                                    fontSize: 'var(--text-2xs)',
+                                    fontWeight: 'var(--font-bold)',
+                                    flexShrink: 0,
+                                    padding: '0 6px',
+                                    borderRadius: 999,
+                                    color: 'var(--accent-violet)',
+                                    border: '1px solid color-mix(in srgb, var(--accent-violet) 45%, transparent)',
+                                  }}
+                                >
+                                  {t('tierPolicy.comboBadge')}
+                                </span>
+                              )}
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {isComboRef ? m.pattern.slice('combo:'.length) : m.pattern}
+                              </span>
+                            </span>
+                            {m.weight != null && (
+                              <span
+                                data-tip={t('tierPolicy.memberWeightHint')}
+                                style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}
+                              >
+                                ×{m.weight}
+                              </span>
+                            )}
+                            {mapped > 0 && (
+                              <span style={{ flexShrink: 0, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>
+                                {t('tierPolicy.effortMapBtn')} {mapped}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }
                       return (
                       <div
-                        key={`${m.pattern}#${occ}`}
-                        draggable={armedDrag === `${tier}:${i}`}
-                        onDragStart={(e) => {
-                          setDragMember({ tier, index: i });
-                          e.dataTransfer.effectAllowed = 'move';
-                          e.dataTransfer.setData('text/plain', m.pattern);
-                        }}
-                        onDragOver={(e) => {
-                          if (!dragMember || dragMember.tier !== tier || dragMember.index === i) return;
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = 'move';
-                          reorderMember(tier, dragMember.index, i);
-                          setDragMember({ tier, index: i });
-                        }}
-                        onDrop={(e) => e.preventDefault()}
-                        onDragEnd={() => {
-                          setArmedDrag(null);
-                          setDragMember(null);
-                        }}
-                        onMouseUp={() => setArmedDrag(null)}
+                        key={rowKey}
+                        data-mrow
+                        data-idx={i}
+                        data-mkey={rowKey}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '6px',
+                          // 10px (not the view row's 6px): the right-side control
+                          // cluster (weight / effort-map / 4 icon buttons) needs
+                          // visible seams or it reads as one merged blob.
+                          gap: '10px',
                           height: '40px',
                           padding: '0 8px',
-                          border: '1px solid var(--card-border)',
+                          // Dragged row = dimmed + accent outline; the flashed
+                          // row plays the one-shot ocr-flash highlight
+                          // (index.css). Text selection stays possible for the
+                          // id, except while a drag is in flight.
+                          border: `1px solid ${isDragging ? 'var(--accent)' : 'var(--card-border)'}`,
                           borderRadius: 8,
                           flexShrink: 0,
-                          opacity: dragMember?.tier === tier && dragMember.index === i ? 0.4 : undefined,
+                          opacity: isDragging ? 0.45 : undefined,
+                          animation: isFlashed ? 'ocr-flash 1.2s ease-out 1' : undefined,
+                          userSelect: drag ? 'none' : undefined,
                         }}
                       >
                         {/* grip + index in a tight sub-group: the parent row's
                             6px gap plus the right-aligned index's empty left
-                            space made them look disconnected (~16px apart) */}
+                            space made them look disconnected (~16px apart).
+                            The grip is the drag handle (pointer capture) AND
+                            the keyboard-reorder handle (focus + arrows). */}
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
-                          <span
-                            onMouseDown={() => setArmedDrag(`${tier}:${i}`)}
+                          <button
+                            type="button"
                             data-tip={t('tierPolicy.dragSort')}
-                            style={{ cursor: 'grab', color: 'var(--text-dim)', display: 'inline-flex', flexShrink: 0 }}
+                            aria-label={t('tierPolicy.dragSort')}
+                            onPointerDown={(e) => startDrag(tier, i, e)}
+                            onPointerMove={(e) => moveDrag(tier, e)}
+                            onPointerUp={endDrag}
+                            onPointerCancel={endDrag}
+                            onLostPointerCapture={endDrag}
+                            onKeyDown={(e) => {
+                              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                moveMember(tier, i, e.key === 'ArrowUp' ? -1 : 1);
+                              } else if (e.key === 'Home') {
+                                e.preventDefault();
+                                moveMemberTop(tier, i);
+                              } else if (e.key === 'End') {
+                                e.preventDefault();
+                                if (i < f.members.length - 1) reorderMember(tier, i, f.members.length - 1);
+                              }
+                            }}
+                            style={{
+                              cursor: isDragging ? 'grabbing' : 'grab',
+                              color: 'var(--text-dim)',
+                              display: 'inline-flex',
+                              flexShrink: 0,
+                              background: 'transparent',
+                              border: 'none',
+                              padding: 0,
+                              touchAction: 'none',
+                            }}
                           >
                             <GripVertical size={12} />
-                          </span>
+                          </button>
                           <span
                             data-tip={t('tierPolicy.memberWeightHint')}
                             style={{
@@ -983,23 +1353,27 @@ export const RulesPage: React.FC = () => {
                             step={1}
                             className="input"
                             data-tip={t('tierPolicy.memberWeightHint')}
-                            style={{ width: '52px', padding: '3px 6px', fontSize: 'var(--text-xs)', textAlign: 'center', flexShrink: 0 }}
+                            style={{ width: '52px', padding: '3px 6px', fontSize: 'var(--text-xs)', textAlign: 'center', flexShrink: 0, ...CTRL_H }}
                             value={m.weight ?? 1}
                             onChange={(e) => updateWeight(tier, i, e.target.value)}
                           />
                         )}
                         <button
                           className="btn"
-                          style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                          style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)', lineHeight: 'var(--leading-none)', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0, ...CTRL_H }}
                           data-tip={t('tierPolicy.effortMapHint')}
                           onClick={() => setMapTarget({ tier, index: i })}
                         >
                           <ArrowRightLeft size={10} />
                           <span>{mapped > 0 ? `${t('tierPolicy.effortMapBtn')} ${mapped}` : t('tierPolicy.effortMapBtn')}</span>
                         </button>
+                        {/* One-click reorder nudges — kept even though the
+                            grip drag is now reliable: for a ±1 hop a single
+                            click beats starting a drag. The grip also still
+                            supports keyboard (↑/↓/Home/End) for a11y. */}
                         <button
                           className="btn"
-                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                           disabled={i === 0}
                           data-tip={t('tierPolicy.moveTop')}
                           onClick={() => moveMemberTop(tier, i)}
@@ -1008,7 +1382,7 @@ export const RulesPage: React.FC = () => {
                         </button>
                         <button
                           className="btn"
-                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                           disabled={i === 0}
                           data-tip={t('tierPolicy.moveUp')}
                           onClick={() => moveMember(tier, i, -1)}
@@ -1017,7 +1391,7 @@ export const RulesPage: React.FC = () => {
                         </button>
                         <button
                           className="btn"
-                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                           disabled={i === f.members.length - 1}
                           data-tip={t('tierPolicy.moveDown')}
                           onClick={() => moveMember(tier, i, 1)}
@@ -1026,7 +1400,7 @@ export const RulesPage: React.FC = () => {
                         </button>
                         <button
                           className="btn"
-                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                           data-tip={t('tierPolicy.removeMember')}
                           onClick={() => removeMember(tier, i)}
                         >
@@ -1041,46 +1415,59 @@ export const RulesPage: React.FC = () => {
                   )}
                 </div>
                 {/* Picker first (high-frequency, error-proof path), manual
-                    wildcard input second (advanced fallback). */}
+                    wildcard input second (advanced fallback). Edit mode only:
+                    view mode renders a purely read-only member list. */}
+                {editing && (
                 <Combobox
                   value=""
                   onChange={(v) => {
                     // combo:<id> options store the ref verbatim — the backend
                     // expands it at every commit point (pools follow combo edits)
-                    if (v) addMemberRules(tier, [v]);
+                    if (v) appendMembers(tier, [v]);
                   }}
-                  options={memberPickOptions(tier)}
+                  options={pickOptions}
                   placeholder={t('tierPolicy.pickModelBtn')}
                   panelMinWidth={320}
                   forceFilter
                   style={{ width: '100%', fontSize: 'var(--text-xs)', padding: '4px 8px', marginTop: '6px' }}
                 />
+                )}
+                {editing && catalogReady && pickOptions.length === 0 && (
+                  <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
+                    {t('tierPolicy.pickEmptyHint')}
+                  </div>
+                )}
+                {editing && (
                 <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
                   <input
                     type="text"
                     className="input"
-                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', padding: '4px 8px' }}
+                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', padding: '4px 8px', ...CTRL_H }}
                     placeholder={t('tierPolicy.addMemberPlaceholder')}
                     value={memberDrafts[tier]}
                     onChange={(e) => setMemberDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
-                        addMember(tier);
+                        addMemberFromDraft(tier);
                       }
                     }}
                   />
-                  <button className="btn" style={{ padding: '4px 10px', fontSize: 'var(--text-xs)' }} onClick={() => addMember(tier)}>
+                  <button className="btn" style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', ...CTRL_H }} onClick={() => addMemberFromDraft(tier)}>
                     <Plus size={11} />
                     <span>{t('tierPolicy.addMemberBtn')}</span>
                   </button>
                 </div>
+                )}
+                {editing && (
                 <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)', marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
+                )}
               </div>
 
               {/* Selection strategy (weight comes from the member rules) */}
               <div>
                 <label style={labelStyle}>{t('tierPolicy.selection')}</label>
+                {editing ? (
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {(['priority', 'weighted', 'round_robin'] as SelectionStrategy[]).map((s) => (
                     <button
@@ -1092,23 +1479,37 @@ export const RulesPage: React.FC = () => {
                         fontSize: 'var(--text-xs)',
                         padding: '5px 8px',
                         flex: 1,
+                        lineHeight: 'var(--leading-none)',
+                        ...CTRL_H,
                         // Selected = accent-tinted outline, not a primary fill:
                         // this is a toggle, not a call-to-action. Same quiet
                         // pattern as the JSON toggle in CatalogSourcesPage.
                         ...(f.selection === s ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}),
                       }}
-                      onClick={() => updateForm(tier, { selection: s })}
+                      onClick={() => updateDraft(tier, { selection: s })}
                     >
                       {t(s === 'priority' ? 'tierPolicy.selPriority' : s === 'weighted' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
                     </button>
                   ))}
                 </div>
+                ) : (
+                /* View mode: the committed strategy as plain text — no toggle
+                   chrome on a read-only surface. */
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-main)' }}>
+                  {t(f.selection === 'priority' ? 'tierPolicy.selPriority' : f.selection === 'weighted' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
+                </div>
+                )}
+                {editing && (
                 <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
+                )}
               </div>
 
               {/* Candidate pool summary → opens the detail modal.
                   marginTop:auto pins it to the card bottom so the footers of
-                  all four tier cards align regardless of member-list length. */}
+                  all four tier cards align regardless of member-list length.
+                  Dialog mode hides it entirely: the pool's live state isn't
+                  part of the editing surface. */}
+              {!editing && (
               <div
                 style={{
                   borderTop: '1px solid var(--divider)',
@@ -1137,59 +1538,86 @@ export const RulesPage: React.FC = () => {
                       ? `${t('tierPolicy.poolTitle')} ${poolInfo.pool.length} · ${t('tierPolicy.excludedTitle')} ${poolInfo.excluded.length}`
                       : `${t('tierPolicy.poolTitle')} …`}
                 </span>
-                <button className="btn" style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }} onClick={() => openPoolModal(tier)}>
+                <button className="btn" style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }} onClick={() => openPoolModal(tier)}>
                   <Eye size={11} />
                   <span>{t('tierPolicy.viewPool')}</span>
                 </button>
               </div>
+              )}
             </div>
           );
+          // Dialog footer: the commit bar. Modal convention puts the primary
+          // actions bottom-right — the shared <Dialog> footerRight slot owns
+          // the bar (borderTop / spacing included), so the card proper no
+          // longer renders a footer row while editing.
+          const editFooterEl = (
+            <>
+              <button
+                className="btn"
+                style={{ padding: '3px 14px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                disabled={savingTier !== null}
+                onClick={() => void cancelEdit(tier)}
+              >
+                <X size={11} />
+                <span>{t('tierPolicy.cancelEdit')}</span>
+              </button>
+              <button
+                className="btn btn-primary"
+                style={{ padding: '3px 14px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                disabled={savingTier !== null || loading || !draftDirty(tier)}
+                onClick={() => void saveTier(tier)}
+              >
+                <Save size={11} />
+                <span>{savingTier === tier ? t('common.loading') : t('tierPolicy.saveTierBtn')}</span>
+              </button>
+            </>
+          );
+          // Edit mode: the shared <Dialog> owns ALL modal chrome (overlay,
+          // Escape, backdrop press+release, scroll lock, footer bar).
+          // closeDisabled: while a stacked modal (pool / effort-map /
+          // warnings) covers this dialog, every dismissal path of THIS
+          // layer is blocked — one Escape press must not close two layers.
+          // onClose = cancelEdit, which already asks before discarding a
+          // dirty draft.
+          if (editing) {
+            return (
+              <Dialog
+                key={tier}
+                title={tierTitleEl}
+                onClose={() => void cancelEdit(tier)}
+                closeLabel={t('common.close')}
+                closeDisabled={!!poolModalTier || !!mapTarget || !!saveWarnings}
+                width={680}
+                footerRight={editFooterEl}
+              >
+                {cardEl}
+              </Dialog>
+            );
+          }
+          return <React.Fragment key={tier}>{cardEl}</React.Fragment>;
         })}
       </div>
 
-      {/* Candidate pool detail modal — portal to body (page-level modal, z-index 100) */}
-      {poolModalTier &&
-        createPortal(
-          <>
-            <style>{`@keyframes ocr-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }`}</style>
-            <div
-              style={{
-                position: 'fixed',
-                inset: 0,
-                background: 'var(--scrim)',
-              zIndex: 100,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '16px',
-            }}
-          >
-            <div
-              className="card"
-              style={{
-                width: '100%',
-                maxWidth: '860px',
-                maxHeight: '80vh',
-                overflow: 'hidden',
-                padding: '24px',
-                boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '14px',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-                <h3 style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  {modalTierMeta && <modalTierMeta.icon size={15} color={modalTierMeta.color} />}
-                  <span>
-                    {modalTierMeta ? t(modalTierMeta.labelKey) : ''} ·{' '}
-                    {t('tierPolicy.poolTitleBase', {
-                      mode: t(poolMode === 'live' ? 'tierPolicy.poolTabLive' : 'tierPolicy.poolTabPreview'),
-                    })}
-                  </span>
-                </h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ display: 'flex', gap: 0, border: '1px solid var(--card-border)', borderRadius: 6, padding: 2 }}>
+      {/* Candidate pool detail modal — shared <Dialog>: headerActions holds
+          the mode toggle / refreshed-at / counts / refresh; the body holds
+          search + the virtualized table. */}
+      {poolModalTier && (
+        <Dialog
+          title={
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+              {modalTierMeta && <modalTierMeta.icon size={15} color={modalTierMeta.color} />}
+              <span>
+                {modalTierMeta ? t(modalTierMeta.labelKey) : ''} ·{' '}
+                {t('tierPolicy.poolTitleBase', {
+                  mode: t(poolMode === 'live' ? 'tierPolicy.poolTabLive' : 'tierPolicy.poolTabPreview'),
+                })}
+              </span>
+            </span>
+          }
+          headerActions={
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 0, border: '1px solid var(--card-border)', borderRadius: 6, padding: 2, height: 30, minHeight: 30, boxSizing: 'border-box' }}>
                     {(['preview', 'live'] as const).map((m) => (
                       <button
                         key={m}
@@ -1200,7 +1628,7 @@ export const RulesPage: React.FC = () => {
                           else void loadPools();
                         }}
                         className={poolMode === m ? 'btn btn-primary' : 'btn'}
-                        style={{ padding: '2px 10px', fontSize: 'var(--text-xs)', borderRadius: 4 }}
+                        style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', borderRadius: 4, height: 24, minHeight: 24, boxSizing: 'border-box', flexShrink: 0, border: 'none' }}
                         data-tip={t(m === 'preview' ? 'tierPolicy.poolTabPreviewHint' : 'tierPolicy.poolTabLiveHint')}
                       >
                         {t(m === 'preview' ? 'tierPolicy.poolTabPreview' : 'tierPolicy.poolTabLive')}
@@ -1238,8 +1666,8 @@ export const RulesPage: React.FC = () => {
                     </span>
                   )}
                   <button
-                    className="btn"
-                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', opacity: poolsLoadingMode === poolMode ? 0.7 : 1 }}
+                    className="btn btn-sm"
+                    style={{ lineHeight: 'var(--leading-none)', opacity: poolsLoadingMode === poolMode ? 0.7 : 1, flexShrink: 0, ...CTRL_H }}
                     data-tip={t('tierPolicy.refreshHint')}
                     disabled={poolsLoadingMode !== null}
                     onClick={() => void (poolMode === 'live' ? loadLivePools() : loadPools())}
@@ -1250,14 +1678,13 @@ export const RulesPage: React.FC = () => {
                     />
                     <span>{t('tierPolicy.refresh')}</span>
                   </button>
-                  <button
-                    onClick={() => setPoolModalTier(null)}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer' }}
-                  >
-                    ✕
-                  </button>
-                </div>
               </div>
+            </>
+          }
+          onClose={() => setPoolModalTier(null)}
+          closeLabel={t('common.close')}
+          width={860}
+        >
 
               <div style={{ position: 'relative', flexShrink: 0 }}>
                 <Search
@@ -1296,7 +1723,7 @@ export const RulesPage: React.FC = () => {
                   </span>
                   <button
                     className="btn"
-                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', flexShrink: 0 }}
+                    style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                     disabled={poolsLoadingMode !== null}
                     onClick={() => void loadPools()}
                   >
@@ -1329,14 +1756,14 @@ export const RulesPage: React.FC = () => {
                       {t('tierPolicy.colInput')} / {t('tierPolicy.colOutput')} · {t('tierPolicy.colWeight')}
                       {modalStrategy !== 'priority' ? ` · ${t('tierPolicy.colShare')}` : ''}
                     </span>
-                    <span style={{ width: 172, flexShrink: 0, textAlign: 'right' }}>{t('tierPolicy.colActions')}</span>
+                    <span style={{ width: 96, flexShrink: 0, textAlign: 'right' }}>{t('tierPolicy.colActions')}</span>
                   </div>
 
                   <div
                     key={poolModalTier ?? 'closed'}
                     ref={scrollRef}
                     onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-                    style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+                    style={{ overflowY: 'auto', flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}
                   >
                     {modalVisiblePool.length === 0 ? (
                       <div style={{ padding: '10px 8px', fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>
@@ -1411,13 +1838,17 @@ export const RulesPage: React.FC = () => {
                               <span style={{ flexShrink: 0, fontFamily: FONT_MONO, color: 'var(--text-muted)' }}>
                                 {segs}
                               </span>
-                              <span style={{ width: 172, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                              {/* alignItems: center matters — a flex wrapper's
+                                  default (stretch) falls back to flex-start for
+                                  a child with a definite height, pinning the
+                                  button to the row's top edge. */}
+                              <span style={{ width: 96, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
                                 {splitPatterns(globalExclude).includes(m.id) ? (
                                   <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('tierPolicy.alreadyExcluded')}</span>
                                 ) : (
                                   <button
                                     className="btn"
-                                    style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)' }}
+                                    style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)', lineHeight: 'var(--leading-none)', ...CTRL_H }}
                                     data-tip={t('tierPolicy.excludeBtnHint')}
                                     onClick={() => addToExclude(m.id)}
                                   >
@@ -1532,11 +1963,8 @@ export const RulesPage: React.FC = () => {
                   )}
                 </>
               )}
-              </div>
-            </div>
-          </>,
-          document.body
-        )}
+        </Dialog>
+      )}
 
       {/* thinking-level map editor — one row per client level. */}
       {mapTarget &&
@@ -1553,45 +1981,29 @@ export const RulesPage: React.FC = () => {
             { value: '', label: t('tierPolicy.effortPassthrough') },
             ...effortOptionList(t, targetLevels).filter((o) => o.value !== EFFORT_UNSET),
           ];
-          return createPortal(
-            <div
-              style={{
-                position: 'fixed',
-                inset: 0,
-                background: 'var(--scrim)',
-                zIndex: 100,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '16px',
-              }}
-              {...mapTargetBackdrop}
+          return (
+            <Dialog
+              title={t('tierPolicy.effortMapEditTitle')}
+              subtitle={t('tierPolicy.effortMapHint')}
+              onClose={() => setMapTarget(null)}
+              closeLabel={t('common.close')}
+              width={460}
+              footerLeft={
+                <button
+                  className="btn"
+                  style={{ padding: '5px 12px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', ...CTRL_H }}
+                  onClick={() => clearEffortMap(mapTarget.tier, mapTarget.index)}
+                >
+                  <X size={11} />
+                  <span>{t('tierPolicy.clearEffortMap')}</span>
+                </button>
+              }
+              footerRight={
+                <button className="btn btn-primary" style={{ padding: '5px 14px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', ...CTRL_H }} onClick={() => setMapTarget(null)}>
+                  {t('common.confirm')}
+                </button>
+              }
             >
-              <div
-                className="card"
-                style={{
-                  width: '100%',
-                  maxWidth: '460px',
-                  padding: '22px',
-                  boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                  <h3 style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', margin: 0 }}>
-                    {t('tierPolicy.effortMapEditTitle')}
-                  </h3>
-                  <button
-                    onClick={() => setMapTarget(null)}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer', lineHeight: 'var(--leading-none)', flexShrink: 0 }}
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('tierPolicy.effortMapHint')}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {/* Table header band: left = owning tier, right = model id
                       (moved here from the dialog title so the header carries
@@ -1672,99 +2084,49 @@ export const RulesPage: React.FC = () => {
                     </div>
                   ))}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '4px' }}>
-                  <button
-                    className="btn"
-                    style={{ padding: '5px 12px', fontSize: 'var(--text-xs)' }}
-                    onClick={() => clearEffortMap(mapTarget.tier, mapTarget.index)}
-                  >
-                    <X size={11} />
-                    <span>{t('tierPolicy.clearEffortMap')}</span>
-                  </button>
-                  <button className="btn btn-primary" style={{ padding: '5px 14px', fontSize: 'var(--text-xs)' }} onClick={() => setMapTarget(null)}>
-                    {t('common.confirm')}
-                  </button>
-                </div>
-              </div>
-            </div>,
-            document.body,
+            </Dialog>
           );
         })()}
 
       {/* Pre-save check warnings  — non-blocking, user decides. */}
-      {saveWarnings &&
-        createPortal(
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'var(--scrim)',
-              zIndex: 100,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '16px',
-            }}
-            {...saveWarningsBackdrop}
-          >
-            <div
-              className="card"
-              style={{
-                width: '100%',
-                maxWidth: '560px',
-                maxHeight: '70vh',
-                overflowY: 'auto',
-                padding: '22px',
-                boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-extrabold)', color: 'var(--text-main)', margin: 0 }}>{t('tierPolicy.saveCheckTitle')}</h3>
-                <button
-                  onClick={() => setSaveWarnings(null)}
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: 'var(--text-2xl)', cursor: 'pointer', lineHeight: 'var(--leading-none)' }}
-                >
-                  ✕
-                </button>
-              </div>
-              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{t('tierPolicy.saveCheckIntro')}</div>
-              <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {saveWarnings.map((w, i) => (
-                  <li key={i} style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-amber, var(--accent))', lineHeight: 'var(--leading-snug)' }}>
-                    {w.kind === 'deadCombo'
-                      ? t('tierPolicy.saveCheckDeadCombo', { tier: w.tier ?? '', combo: (w.pattern ?? '').slice('combo:'.length) })
-                      : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
-                  </li>
-                ))}
-              </ul>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
-                <button className="btn" style={{ padding: '5px 14px', fontSize: 'var(--text-sm)' }} onClick={() => setSaveWarnings(null)}>
-                  {t('tierPolicy.saveCheckBack')}
-                </button>
-                <button
-                  className="btn btn-primary"
-                  style={{ padding: '5px 14px', fontSize: 'var(--text-sm)' }}
-                  onClick={() => {
-                    const tier = pendingSaveTier;
-                    const all = pendingSaveAll;
-                    setSaveWarnings(null);
-                    setPendingSaveTier(null);
-                    setPendingSaveAll(false);
-                    if (all) void doSaveAll();
-                    else if (tier) void doSaveTier(tier);
-                  }}
-                >
-                  {t('tierPolicy.saveCheckContinue')}
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {saveWarnings && (
+        <Dialog
+          title={t('tierPolicy.saveCheckTitle')}
+          onClose={() => setSaveWarnings(null)}
+          closeLabel={t('common.close')}
+          width={560}
+          footerRight={
+            <>
+              <button className="btn" style={{ padding: '5px 14px', fontSize: 'var(--text-sm)' }} onClick={() => setSaveWarnings(null)}>
+                {t('tierPolicy.saveCheckBack')}
+              </button>
+              <button
+                className="btn btn-primary"
+                style={{ padding: '5px 14px', fontSize: 'var(--text-sm)' }}
+                onClick={() => {
+                  const tier = pendingSaveTier;
+                  setSaveWarnings(null);
+                  setPendingSaveTier(null);
+                  if (tier) void doSaveTier(tier);
+                }}
+              >
+                {t('tierPolicy.saveCheckContinue')}
+              </button>
+            </>
+          }
+        >
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{t('tierPolicy.saveCheckIntro')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {saveWarnings.map((w, i) => (
+              <li key={i} style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-amber, var(--accent))', lineHeight: 'var(--leading-snug)' }}>
+                {w.kind === 'deadCombo'
+                  ? t('tierPolicy.saveCheckDeadCombo', { tier: w.tier ?? '', combo: (w.pattern ?? '').slice('combo:'.length) })
+                  : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
+              </li>
+            ))}
+          </ul>
+        </Dialog>
+      )}
     </div>
   );
 };

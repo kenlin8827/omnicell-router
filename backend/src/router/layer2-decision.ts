@@ -1,4 +1,4 @@
-import { ChatCompletionRequest } from '../types/openai.js';
+import type { CanonicalRequest } from '../ir/types.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, ReasonParams } from '../types/router.js';
 import { Layer2DecisionConfig } from '../config/types.js';
 import { DEFAULT_LAYER2_TIMEOUT_MS } from '../config/defaults.js';
@@ -93,6 +93,7 @@ export class Layer2Decision {
 
   private static readonly EFFORT_CRITERIA: Record<ReasoningEffort, string> = {
     none: 'no thinking needed — direct answer suffices (greeting, lookup, trivial rewrite)',
+    minimal: 'minimal reasoning — straightforward tasks needing a brief sanity check',
     low: 'light reasoning — simple Q&A, basic translation, shallow extraction',
     medium: 'moderate reasoning — typical coding, summarization with judgment calls',
     high: 'deep reasoning — system design, multi-step debugging, nuanced analysis',
@@ -207,7 +208,7 @@ export class Layer2Decision {
    * zero behavior change when the flag is off.
    */
   public static async evaluate(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     config: Layer2DecisionConfig | undefined,
     registry: ProviderRegistry,
     defaultModel?: string,
@@ -245,25 +246,20 @@ export class Layer2Decision {
       return null;
     }
 
-    // ADR-0012: the effort question rides the same call only when the gate
-    // is on AND the client omitted `reasoning_effort` (an explicit client
-    // value is never second-guessed — asking would be a wasted answer).
-    const askEffort = config.effortDecision === true && request.reasoning_effort === undefined;
-
-    // Extract recent conversational context for multi-turn awareness (last 4 turns)
-    const messages = request.messages || [];
-    const recentMessages = messages.length > 4 ? messages.slice(-4) : messages;
-    const userText = recentMessages
-      .map((m) => {
-        const role = m.role || 'user';
-        const content = typeof m.content === 'string'
-          ? m.content
-          : Array.isArray(m.content)
-            ? m.content.map((p) => p.text || '').join(' ')
-            : '';
-        return `${role}: ${content}`;
-      })
-      .join('\n');
+    const askEffort = config.effortDecision === true && request.reasoning?.effort === undefined;
+    const recent = request.input.slice(-4);
+    const userText = recent.map((item) => {
+      if (item.type === 'message') {
+        const content = item.content.map((part) => part.type === 'text' || part.type === 'refusal' ? part.text : '').join(' ');
+        return `${item.role}: ${content}`;
+      }
+      if (item.type === 'tool_result') {
+        return `tool: ${item.content.map((part) => part.type === 'text' ? part.text : '').join(' ')}`;
+      }
+      if (item.type === 'tool_call') return `assistant: [tool_call ${item.name}] ${item.arguments}`;
+      if (item.type === 'reasoning') return `assistant: ${item.text ?? ''}`;
+      return '';
+    }).filter(Boolean).join('\n');
     // The cache key must describe EXACTLY what the model will see, otherwise two
     // requests that differ only past the cut-off collide in the model but not
     // in the cache (pointless upstream calls).

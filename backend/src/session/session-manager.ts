@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ChatCompletionRequest } from '../types/openai.js';
+import type { CanonicalRequest, InputItem, MessageItem, OutputItem } from '../ir/types.js';
 import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
 import { SessionConfig } from '../config/types.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
+import { classifyTurnBoundary, type TurnAssignment } from '../capture/turn-boundary.js';
 
 /**
  * RESERVED session-id namespace for the gateway's OWN loopback calls
@@ -32,7 +33,7 @@ export interface ConversationSession {
   pinnedProvider: string;
   createdAt: number;
   lastActiveAt: number;
-  turnCount: number;
+  requestCount: number;
   historyTiers: TierLevel[];
   /** Birth metadata — attached once on the first turn, immutable afterwards. */
   origin?: {
@@ -101,16 +102,6 @@ export interface SessionIdentity {
   clientRef?: ClientConversationRef;
 }
 
-/**
- * The assistant echo registered after a completed turn. The orchestrator
- * passes the served response message (content + tool_calls); a bare string is
- * accepted for content-only registrations (tests, legacy callers).
- */
-export interface AssistantEcho {
-  content?: unknown;
-  tool_calls?: unknown;
-}
-
 // Memory/safety bounds — intentionally NOT config-exposed: they tune memory,
 // not product behavior.
 const TAIL_WINDOW = 8;             // messages per registered tail window
@@ -121,6 +112,7 @@ const MAX_TAIL_ENTRIES = 100_000;
 const MAX_CONVKEY_ENTRIES = 50_000;
 const MAX_BYPASS_ENTRIES = 10_000; // combo turn counters — aligns with the default session capacity
 const MAX_CLIENTREF_ENTRIES = 50_000; // client conversation refs -> session ids
+const MAX_TURN_COUNTER_ENTRIES = 10_000; // (sessionId) -> write-time turn high-water
 const CANDIDATE_CAP = 3;           // sessions a single conversation key may claim
 const ANCHOR_HEX = 20;             // anchor digest length
 const CONVERSATION_KEY_HEX = 24;   // conversation-key digest length
@@ -144,9 +136,16 @@ const PERSIST_SAVE_DEBOUNCE_MS = 2_000;
  *      or the 2.x JSON payload {"device_id":...,"account_uuid":...,
  *      "session_id":"<uuid>"}; the inner UUID is a client-minted conversation
  *      id that survives gateway restarts for free. Both shapes share the cc_
- *      prefix (same conversation-uuid namespace).
- *   3. Raw request.user (OpenAI end-user field; NOTE: user-scoped, not
- *      conversation-scoped — kept for backward compatibility).
+ *      prefix (same conversation-uuid namespace). NOTE THE DISTINCTION: this is
+ *      the ONLY user-field shape promoted to an id, and only because the value
+ *      it extracts IS a per-conversation UUID — NOT a user identity. A user
+ *      identifier (OpenAI end-user semantics) must never name a session; it is
+ *      user-scoped while a session is conversation-scoped.
+ *   3. REMOVED — bare request.user is user-scoped, not conversation-scoped.
+ *      A constant value (Junie sends `user: "primary"`, its agent role) merged
+ *      every conversation and every turn into one session. The value is never
+ *      adopted as an id now; all other layers are content- or header-derived.
+ *      `request_user` remains readable in historical traces only.
  *   4. Chain anchors — exact hash of the current history's head prefixes that
  *      end at an assistant message (turn 2+ fast path; also matches branched /
  *      regenerated histories sharing the head). Serialized in CANONICAL form
@@ -219,7 +218,14 @@ export class SessionManager {
   private chainAnchors = new Map<string, string>();  // 'C'-salted head-prefix hash -> sessionId
   private tailAnchors = new Map<string, string>();   // 'T'-salted trailing-window hash -> sessionId
   private convKeys = new Map<string, string[]>();    // conversation key -> candidate session ids, newest first
-  private bypassTurns = new Map<string, number>();   // combo/bypass sessionId -> recorded turn count (display-only)
+  private bypassTurns = new Map<string, number>();   // combo/bypass sessionId -> recorded request count (display-only)
+  /**
+   * Write-time turn high-water per session (ADR-0024 R2.3). This is the
+   * ONLY runtime source of `turnIndex`; retained traces are a seed for a
+   * missing/corrupt snapshot, never a fallback on the hot path.
+   * OBSERVATIONAL: never keys rate-limit budgets, billing or quota.
+   */
+  private turnCounters = new Map<string, { highWater: number; lastMessageCount?: number }>();
   /** Alias key (kind, API-key identity, client conversation id) -> sessionId. */
   private clientRefs = new Map<string, string>();
   private readonly ttlMs: number;
@@ -259,96 +265,82 @@ export class SessionManager {
    *     arguments on resend, so raw JSON.stringify of the whole object would
    *     miss every tool-call boundary on the next turn.
    */
-  private static serializeMessage(m: any): string {
-    const role = m.role || 'user';
-    let extra = '';
-    if (m.name) extra += `|name:${m.name}`;
-    if (m.tool_call_id) extra += `|tcid:${m.tool_call_id}`;
-    if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-      extra += `|tcs:${SessionManager.toolCallsText(m.tool_calls)}`;
+  private static serializeMessage(item: InputItem | OutputItem): string {
+    if (item.type === 'message') {
+      const name = 'name' in item ? item.name : undefined;
+      // Exclude transport-level `cache` breakpoints: clients like Claude Code
+      // slide cache_control forward on every turn.
+      return `message:${item.role}:${name ?? ''}:${SessionManager.contentText(item.content)}`;
     }
-    return `${role}:${SessionManager.contentText(m.content)}${extra}`;
-  }
-
-  /** Normalized text form of a message content field (string / parts / null). */
-  private static contentText(content: unknown): string {
-    if (typeof content === 'string') return content;
-    if (content === null || content === undefined) return '';
-    if (Array.isArray(content)) {
-      return content.map((p: any) => {
-        if (p && typeof p === 'object') {
-          return typeof p.text === 'string'
-            ? `text:${p.text}`
-            : `${p.type || 'part'}:${JSON.stringify(p)}`;
-        }
-        return String(p ?? '');
-      }).join(' ');
+    if (item.type === 'tool_call') {
+      return `tool_call:${item.callId ?? item.id}\u0000${item.name}\u0000${SessionManager.canonicalToolArgs(item.arguments)}\u0000${item.signature ?? ''}`;
     }
-    return JSON.stringify(content);
-  }
-
-  private static toolCallsText(toolCalls: any[]): string {
-    return toolCalls
-      .map(tc => {
-        const fn = tc?.function ?? {};
-        return `${String(tc?.id ?? '')}\u0000${String(fn.name ?? '')}\u0000${SessionManager.canonicalToolArgs(fn.arguments)}`;
-      })
-      .join('\u0001');
-  }
-
-  /** Re-compact a JSON arguments string; non-JSON strings trim, others stringify. */
-  private static canonicalToolArgs(a: unknown): string {
-    if (typeof a === 'string') {
-      try {
-        return JSON.stringify(JSON.parse(a));
-      } catch {
-        return a.trim();
-      }
+    if (item.type === 'tool_result') {
+      return `tool_result:${item.callId}:${SessionManager.contentText(item.content)}:${item.isError === true}`;
     }
-    if (a && typeof a === 'object') return JSON.stringify(a);
-    return '';
-  }
-
-  /**
-   * Salted hash of a message window. Salt isolates the anchor families from
-   * each other so the same message slice can never cross-match.
-   */
-  public static hashWindow(messages: any[], salt: string): string {
-    const h = crypto.createHash('sha256');
-    h.update(salt);
-    for (const m of messages) {
-      h.update(SessionManager.serializeMessage(m));
-      h.update('\n---\n');
+    if (item.type === 'reasoning') {
+      return `reasoning:${item.text ?? ''}:${JSON.stringify(item.summary ?? [])}:${item.signature ?? ''}:${item.encrypted ?? ''}`;
     }
-    return h.digest('hex').slice(0, ANCHOR_HEX);
+    return `${item.type}:${JSON.stringify(item)}`;
   }
 
-  /**
-   * Deterministic conversation key: apiKey identity (or '' for key-less legs)
-   * + FULL first user message (no truncation — prefix cuts of boilerplate
-   * first messages were a collision source). No transport IP: it adds nothing
-   * on a local gateway and IPv4/IPv6 flapping actively broke re-anchoring.
-   * Returns null when the history carries no first user text (nothing to key
-   * on — resolution then rides the anchors / mint path alone).
-   */
-  public static conversationKey(messages: any[], keyId?: string): string | null {
-    const firstUser = (messages || []).find((m: any) => m?.role === 'user');
+  private static contentText(content: MessageItem['content']): string {
+    return content.map((part) => {
+      if (part.type === 'text' || part.type === 'refusal') return `${part.type}:${part.text}`;
+      // Strip transport-level cache breakpoints from non-text parts (image, file, audio)
+      // so sliding cache_control across turns does not break multimodal session anchors.
+      const { cache: _cache, ...rest } = part as typeof part & { cache?: unknown };
+      return `${part.type}:${JSON.stringify(rest)}`;
+    }).join(' ');
+  }
+
+  private static canonicalToolArgs(value: unknown): string {
+    if (typeof value === 'string') {
+      try { return JSON.stringify(JSON.parse(value)); } catch { return value.trim(); }
+    }
+    return value && typeof value === 'object' ? JSON.stringify(value) : '';
+  }
+
+  /** One canonical string per item: no content-tree clone on the request path. */
+  public static serializeInput(input: readonly InputItem[]): string[] {
+    // Exclude reasoning items: most clients omit prior reasoning on resend.
+    return input
+      .filter((item) => item.type !== 'reasoning')
+      .map((item) => SessionManager.serializeMessage(item));
+  }
+
+  private static hashSerializedWindow(input: readonly string[], salt: string): string {
+    const hash = crypto.createHash('sha256');
+    hash.update(salt);
+    for (const item of input) {
+      hash.update(item);
+      hash.update('\n---\n');
+    }
+    return hash.digest('hex').slice(0, ANCHOR_HEX);
+  }
+
+  public static hashWindow(input: readonly InputItem[], salt: string): string {
+    return SessionManager.hashSerializedWindow(SessionManager.serializeInput(input), salt);
+  }
+
+  public static conversationKey(input: InputItem[], keyId?: string): string | null {
+    const firstUser = input.find((item): item is MessageItem => item.type === 'message' && item.role === 'user');
     if (!firstUser) return null;
     const text = SessionManager.contentText(firstUser.content).trim();
     if (!text) return null;
-    return crypto
-      .createHash('sha256')
-      .update(`K\u0000${keyId ?? ''}\u0000${text}`)
-      .digest('hex')
-      .slice(0, CONVERSATION_KEY_HEX);
+    return crypto.createHash('sha256').update(`K\u0000${keyId ?? ''}\u0000${text}`)
+      .digest('hex').slice(0, CONVERSATION_KEY_HEX);
   }
 
-  private static assistantIndices(messages: any[]): number[] {
-    const idx: number[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      if (messages[i]?.role === 'assistant') idx.push(i);
+  private static assistantIndices(input: InputItem[]): number[] {
+    const indices: number[] = [];
+    for (let index = 0; index < input.length; index++) {
+      const item = input[index]!;
+      if ((item.type === 'message' && item.role === 'assistant') || item.type === 'tool_call' || item.type === 'reasoning') {
+        indices.push(index);
+      }
     }
-    return idx;
+    return indices;
   }
 
   /**
@@ -367,9 +359,9 @@ export class SessionManager {
    * The whole shape must match: a loose "_session_" suffix match would
    * promote ordinary user-level ids that merely contain that marker to
    * session level, falsely merging every conversation of that user. False
-   * exclusion is the safe direction — such ids fall through to the
-   * user-level layer and the chain anchors re-acquire the conversation from
-   * turn 2 (self-healing false split).
+   * exclusion is the safe direction — such ids fall through to a cold-start
+   * mint, and the chain anchors re-acquire the conversation from turn 2
+   * (self-healing false split). Bare user values are never an id at all now.
    */
   private static extractEmbeddedSessionId(user?: unknown): string | null {
     if (!user || typeof user !== 'string') return null;
@@ -383,7 +375,7 @@ export class SessionManager {
           return `cc_${parsed.session_id}`;
         }
       } catch {
-        /* not JSON — fall through to the user-level layers */
+        /* not a JSON session payload — no embedded id */
       }
     }
     return null;
@@ -458,8 +450,8 @@ export class SessionManager {
    * hands the same value to the resolver and the trace, so the console's alias
    * and the session it names can never disagree.
    */
-  public static clientRefOf(request: ChatCompletionRequest): ClientConversationRef | null {
-    return SessionManager.normalizeClientRef(request.router_options?.client_ref);
+  public static clientRefOf(request: CanonicalRequest): ClientConversationRef | null {
+    return SessionManager.normalizeClientRef(request.routerOptions?.clientRef);
   }
 
   /**
@@ -469,7 +461,7 @@ export class SessionManager {
    * evidence contradicts).
    */
   public resolveSessionId(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     identity?: SessionIdentity
   ): SessionResolveResult {
     const clientRef = identity?.clientRef ?? SessionManager.clientRefOf(request);
@@ -479,7 +471,7 @@ export class SessionManager {
   }
 
   private resolveIdentity(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     identity: SessionIdentity | undefined,
     clientRef: ClientConversationRef | null
   ): SessionResolveResult {
@@ -495,23 +487,26 @@ export class SessionManager {
       return { sessionId: id.trim(), lookupType: 'explicit_header' };
     }
 
-    // 1 (cont.) Explicit router_options.session_id
-    if (request.router_options?.session_id) {
-      return { sessionId: request.router_options.session_id.trim(), lookupType: 'explicit_header' };
+    if (request.routerOptions?.sessionId) {
+      return { sessionId: request.routerOptions.sessionId.trim(), lookupType: 'explicit_header' };
     }
 
-    // 2. Embedded client session UUID (Claude Code metadata.user_id)
+    // 2. Embedded client session UUID (Claude Code metadata.user_id). The ONLY
+    // user-field shape that is an id — the extracted value is a conversation
+    // UUID, not a user identity. Bare user values are never an id (step 3).
     const embedded = SessionManager.extractEmbeddedSessionId(request.user);
     if (embedded) {
       return { sessionId: embedded, lookupType: 'embedded_user_id' };
     }
 
-    // 3. OpenAI Native request.user Probe
-    if (request.user && typeof request.user === 'string' && request.user.trim()) {
-      return { sessionId: request.user.trim(), lookupType: 'request_user' };
-    }
+    // 3. (REMOVED) Bare request.user is deliberately NOT an identity. It is the
+    // OpenAI end-user field — user-scoped, not conversation-scoped — and clients
+    // send constants (Junie: `user: "primary"`), which collapsed every
+    // conversation into one session. Content anchors / conv key below own turn
+    // 2+; an unmatched turn 1 cold-starts. `request_user` survives only as a
+    // readable value in traces written before this layer was removed.
 
-    const messages = request.messages || [];
+    const messages = request.input;
     const priorHistory = messages.slice(0, -1);
     const key = SessionManager.conversationKey(messages, identity?.keyId);
     // Vendor header: names an otherwise-minted cold start (historical
@@ -527,7 +522,7 @@ export class SessionManager {
     // distinct id (two conversations sharing a byte-identical first message
     // must not false-merge — the split self-heals from turn 2 when the
     // branches get their own anchors).
-    if (messages.length < 2 || !priorHistory.some(m => m?.role === 'assistant')) {
+    if (messages.length < 2 || SessionManager.assistantIndices(priorHistory).length === 0) {
       if (alias) {
         if (key) this.claimConvKey(key, alias);
         return { sessionId: alias, lookupType: 'client_ref' };
@@ -716,7 +711,7 @@ export class SessionManager {
           pinnedProvider: dummyModel.provider,
           createdAt: Date.now(),
           lastActiveAt: Date.now(),
-          turnCount: 1,
+          requestCount: 1,
           historyTiers: [proposedDecision.targetTier],
         },
         ratchetApplied: false,
@@ -736,7 +731,7 @@ export class SessionManager {
         pinnedProvider: initialModel.provider,
         createdAt: now,
         lastActiveAt: now,
-        turnCount: 1,
+        requestCount: 1,
         historyTiers: [proposedDecision.targetTier],
       };
       this.sessions.set(sessionId, session);
@@ -759,7 +754,7 @@ export class SessionManager {
     const intercept = opts?.allowIntercept !== false;
 
     if (this.config.strategy === 'sticky') {
-      session.turnCount++;
+      session.requestCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
@@ -791,7 +786,7 @@ export class SessionManager {
       const upgradedModel = resolveModelForTier(session.maxTier);
       session.pinnedModel = upgradedModel.id;
       session.pinnedProvider = upgradedModel.provider;
-      session.turnCount++;
+      session.requestCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
@@ -808,7 +803,7 @@ export class SessionManager {
     } else {
       // 3B. Downgrade intercepted
       const isDowngradeAttempt = proposedRank < currentMaxRank;
-      session.turnCount++;
+      session.requestCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
@@ -837,64 +832,56 @@ export class SessionManager {
   }
 
   /**
-   * Post-turn registration. Builds two anchor families over the completed
-   * chain (requestMessages + the served assistant echo; the orchestrator
-   * passes the PRE-compression fingerprint so keys are derived from original
-   * client bytes — see orchestrator step 2B):
-   *
-   * - Chain anchors: hash of every head prefix ending at an assistant
-   *   message. One chained-hashing pass (copy() per boundary).
-   * - Tail anchors: every length-2..TAIL_WINDOW window of the trailing
-   *   TAIL_WINDOW messages that ends at an assistant message. These are what
-   *   let a truncated history (client dropped old turns) find its way back.
-   *
-   * The assistant echo keeps tool_calls (in canonical serialization) —
-   * dropping them made every tool-call boundary of an agent loop unmatchable.
+   * Register anchors from the pre-compression serialized request plus the
+   * served output items. The caller serializes once; no message/content tree is
+   * cloned or re-serialized for the full chain on the completion path.
    */
   public registerCompletedTurn(
     sessionId: string,
-    requestMessages: any[],
-    assistant: string | AssistantEcho | null | undefined
+    requestItems: readonly string[],
+    assistant: readonly OutputItem[],
   ): void {
     if (!this.config.enabled || this.config.strategy === 'stateless') return;
 
     try {
-      const echo: any =
-        typeof assistant === 'string' || assistant == null
-          ? { role: 'assistant', content: assistant ?? '' }
-          : { role: 'assistant', content: assistant.content ?? '', tool_calls: assistant.tool_calls };
-      const chain = [...(requestMessages || []), echo];
+      const chain = [
+        ...requestItems,
+        ...assistant
+          .filter((item) => item.type !== 'reasoning')
+          .map((item) => SessionManager.serializeMessage(item)),
+      ];
+      const isAssistantBoundary = (item: string | undefined): boolean =>
+        item !== undefined && (
+          item.startsWith('message:assistant:') ||
+          item.startsWith('tool_call:')
+        );
 
-      // Chain anchors — single pass with per-boundary copy().
       const hasher = crypto.createHash('sha256');
       hasher.update('C');
-      for (let i = 0; i < chain.length; i++) {
-        hasher.update(SessionManager.serializeMessage(chain[i]));
+      for (const item of chain) {
+        hasher.update(item);
         hasher.update('\n---\n');
-        if (chain[i]?.role === 'assistant') {
+        if (isAssistantBoundary(item)) {
           const digest = hasher.copy().digest('hex').slice(0, ANCHOR_HEX);
           this.setBounded(this.chainAnchors, digest, sessionId, MAX_CHAIN_ENTRIES);
         }
       }
 
-      // Tail anchors — suffix windows (length 3..TAIL_WINDOW, always ending
-      // at an assistant boundary) of the trailing TAIL_WINDOW messages.
       const tail = chain.slice(-TAIL_WINDOW);
-      for (const end of SessionManager.assistantIndices(tail)) {
+      for (let end = 0; end < tail.length; end++) {
+        if (!isAssistantBoundary(tail[end])) continue;
         const startMin = Math.max(0, end - TAIL_WINDOW + 1);
-        for (let s = end - 2; s >= startMin; s--) {
-          const hash = SessionManager.hashWindow(tail.slice(s, end + 1), 'T');
+        for (let start = end - 2; start >= startMin; start--) {
+          const hash = SessionManager.hashSerializedWindow(tail.slice(start, end + 1), 'T');
           this.setBounded(this.tailAnchors, hash, sessionId, MAX_TAIL_ENTRIES);
         }
       }
 
       this.markDirty();
       const session = this.sessions.get(sessionId);
-      if (session) {
-        session.lastActiveAt = Date.now();
-      }
+      if (session) session.lastActiveAt = Date.now();
     } catch {
-      // Graceful error handling: session tracking must never break routing.
+      // Session tracking must never break routing.
     }
   }
 
@@ -961,6 +948,45 @@ export class SessionManager {
    * anchors snapshot so numbering survives restarts (the live session
    * entities intentionally rebuild fresh — see loadPersisted).
    */
+  /**
+   * Allocate the request's write-time turn identity (ADR-0024 R2.1-R2.3).
+   * Called ONCE at the inbound admission gate, after the final session
+   * binding and before execution. Re-entries, failover hops, internal
+   * retries and the Layer-2 decision leg copy the returned value; they never
+   * call this again.
+   *
+   * `seed` is `max(turnIndex)` over retained traces for this session, used
+   * ONLY when the snapshot has no counter for it. The boundary rule is
+   * structural (message roles / content parts), never display text.
+   */
+  public allocateTurnIndex(
+    sessionId: string,
+    messages: Parameters<typeof classifyTurnBoundary>[0],
+    seed = 0
+  ): TurnAssignment {
+    const state = this.turnCounters.get(sessionId) ?? { highWater: Math.max(0, seed) };
+    const verdict = classifyTurnBoundary(messages, state.lastMessageCount);
+    if (verdict.isPromptStart) state.highWater += 1;
+    // A continuation always belongs to a turn. If a session opens with one
+    // (no preceding prompt in the retained window), start its sequence at 1
+    // rather than leaking a second meaning for `null`.
+    if (verdict.turnDecision !== 'no_prompt' && state.highWater === 0) state.highWater = 1;
+    state.lastMessageCount = verdict.messageCount;
+    this.setBounded(this.turnCounters, sessionId, state, MAX_TURN_COUNTER_ENTRIES);
+    this.markDirty();
+    return {
+      turnIndex: verdict.turnDecision === 'no_prompt' ? null : state.highWater,
+      isPromptStart: verdict.isPromptStart,
+      turnDecision: verdict.turnDecision,
+      messageCount: verdict.messageCount,
+    };
+  }
+
+  /** Seed helper: highest `turnIndex` retained for a session (0 when none). */
+  public turnHighWaterOf(sessionId: string): number {
+    return this.turnCounters.get(sessionId)?.highWater ?? 0;
+  }
+
   public recordBypassTurn(sessionId: string): number {
     const next = (this.bypassTurns.get(sessionId) ?? 0) + 1;
     this.setBounded(this.bypassTurns, sessionId, next, MAX_BYPASS_ENTRIES);
@@ -975,6 +1001,7 @@ export class SessionManager {
   public deleteSession(sessionId: string): boolean {
     const existed = this.sessions.delete(sessionId);
     this.bypassTurns.delete(sessionId);
+    this.turnCounters.delete(sessionId);
     // Purge anchor keys pointing at the deleted session. Scans are O(map) but
     // deletes are rare (manual UI delete / eviction at maxSessions capacity).
     for (const map of [this.chainAnchors, this.tailAnchors]) {
@@ -1007,12 +1034,24 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * Bulk sibling of `deleteSession`: EVERY session-keyed map goes, not just
+   * the ones that hold routing state. `bypassTurns` / `turnCounters` are
+   * keyed by sessionId too — leaving them behind would (a) keep counters for
+   * sessions that no longer exist in memory, (b) write those orphans into the
+   * `v: 3` snapshot on the next flush so "clear" does not survive as a clean
+   * state file, and (c) hand a stale request count / turn high-water to any
+   * session that re-mints the same id (a Responses `previous_response_id`
+   * chain rebinds its parent's sessionId after a clear).
+   */
   public clear(): void {
     this.sessions.clear();
     this.chainAnchors.clear();
     this.tailAnchors.clear();
     this.convKeys.clear();
     this.clientRefs.clear();
+    this.bypassTurns.clear();
+    this.turnCounters.clear();
     this.markDirty();
   }
 
@@ -1043,21 +1082,21 @@ export class SessionManager {
   /* ------------------------------------------------------------ persist */
 
   /**
-   * Load anchors + conversation keys + client-ref aliases + bypass turn
-   * counters written by a previous run (per-environment JSON snapshot).
+   * Load anchors + conversation keys + client-ref aliases + bypass request
+   * counters + turn high-water counters written by a previous run.
    * Fail-open: a broken/missing file starts empty; a capture or persistence
    * problem must never break routing.
    *
-   * `v: 1` snapshots (pre-client-refs) load their four maps and simply start
-   * with no aliases — the alias is additive continuity, never a migration
-   * gate.
+   * `v: 1` / `v: 2` snapshots load their maps and simply start with no
+   * aliases / no turn counters — both are additive continuity, never a
+   * migration gate. `v: 3` adds `turnCounters`; every flush writes v3.
    */
   private loadPersisted(): void {
     if (!this.persistPath) return;
     try {
       const raw = fs.readFileSync(this.persistPath, 'utf8');
       const data = JSON.parse(raw);
-      if (data?.v !== 1 && data?.v !== 2) return;
+      if (data?.v !== 1 && data?.v !== 2 && data?.v !== 3) return;
       if (data.chainAnchors && typeof data.chainAnchors === 'object') {
         for (const [k, v] of Object.entries(data.chainAnchors)) {
           if (typeof k === 'string' && typeof v === 'string') this.setBounded(this.chainAnchors, k, v, MAX_CHAIN_ENTRIES);
@@ -1087,6 +1126,18 @@ export class SessionManager {
         for (const [k, v] of Object.entries(data.clientRefs)) {
           if (typeof k === 'string' && typeof v === 'string') {
             this.setBounded(this.clientRefs, k, v, MAX_CLIENTREF_ENTRIES);
+          }
+        }
+      }
+      if (data.turnCounters && typeof data.turnCounters === 'object') {
+        for (const [k, v] of Object.entries(data.turnCounters)) {
+          const c = v as { highWater?: unknown; lastMessageCount?: unknown };
+          if (typeof k === 'string' && typeof c?.highWater === 'number' &&
+            Number.isInteger(c.highWater) && c.highWater >= 0) {
+            this.setBounded(this.turnCounters, k, {
+              highWater: c.highWater,
+              ...(typeof c.lastMessageCount === 'number' ? { lastMessageCount: c.lastMessageCount } : {}),
+            }, MAX_TURN_COUNTER_ENTRIES);
           }
         }
       }
@@ -1130,13 +1181,14 @@ export class SessionManager {
     }
     try {
       const data = {
-        v: 2,
+        v: 3,
         savedAt: Date.now(),
         chainAnchors: Object.fromEntries(this.chainAnchors),
         tailAnchors: Object.fromEntries(this.tailAnchors),
         convKeys: Object.fromEntries(this.convKeys),
         bypassTurns: Object.fromEntries(this.bypassTurns),
         clientRefs: Object.fromEntries(this.clientRefs),
+        turnCounters: Object.fromEntries(this.turnCounters),
       };
       fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
       const tmp = `${this.persistPath}.tmp`;

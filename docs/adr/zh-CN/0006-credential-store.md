@@ -29,7 +29,7 @@ auth.json 依旧永不是管理写入的汇（控制台凭证写永不触碰它�
   - **写（推送）**：OCR 文件 → v2 托管服务 HTTP API（`connectKey`；服务发现与目标策略 `loopback | remote_tls | insecure_remote` 拒绝不变）。去重键为（provider 大小写不敏感 × keyHash 前缀）对活 db。
 - **opencode-v1**（legacy auth.json 味道）：
   - **读（拉取）**：auth.json 的 api 条目 → OCR 文件；oauth/wellknown 永不过界；畸形条目响亮失败。该客户端只存在于 **v1 味道**的机器——auth.json 存在且**没有** v2 证据（无 `opencode.db`、无 v2 版本钉）：在 v2 机器上 auth.json 按定义是一份过期的一次性迁移快照，永不被拉取或写入。
-  - **写（推送）**：把每个本地 provider 的链首 api 密钥合并进 auth.json——每 provider 一把密钥（v1 文件形状；活跃链首优先）、仅 api 形状条目（已有的 oauth/wellknown 条目原样保留并记为 `skipped`）、无删除传播、无法解析的 auth.json 拒绝合并而非覆写。客户端不存在的机器上绝不凭空捏造该文件。
+  - **写（推送）**：把每个本地 provider 的默认凭证 api 密钥合并进 auth.json——每 provider 一把密钥（v1 文件形状；活跃的默认凭证优先）、仅 api 形状条目（已有的 oauth/wellknown 条目原样保留并记为 `skipped`）、无删除传播、无法解析的 auth.json 拒绝合并而非覆写。客户端不存在的机器上绝不凭空捏造该文件。
 
 两个客户端共用的写方向不变式：**本地 OCR 条目永远保留**——推送让客户端向 OCR 文件收敛，绝不反向；与单一真相模型配套的「验证收敛后删除本地副本」行为一并退役。
 
@@ -66,7 +66,7 @@ reconcile 闸（auth.json→v2 推送 + `authWriteDisabled` marker——被 §2 
 
 ## 修订案 —— key 删除永不传播（因此拉取会重新导入）
 
-两个客户端的写入方向都是**只增/轮换**：v2 逐个 `connectKey`，从不调用删除路由；v1 按 provider 合并链头 api key，从不移除 provider 节点。后果直说：**只在 OCR 文件里删除的凭证，会在下一次读同步（手动或自动读轮询）时被重新导入**，只要客户端仍持有它。这是读方向的契约——pull 导入客户端持有的东西，而 store 不保留"这是操作员有意删除"的记忆，所以"客户端有一把 OCR 没有的 key"与"操作员刚删掉那把 key"在观测上是同一件事。操作规则：**要让删除生效，必须在客户端侧一并删除**（控制台的拉取按钮提示已写明这一点）。
+两个客户端的写入方向都是**只增/轮换**：v2 逐个 `connectKey`，从不调用删除路由；v1 按 provider 合并默认凭证 api key，从不移除 provider 节点。后果直说：**只在 OCR 文件里删除的凭证，会在下一次读同步（手动或自动读轮询）时被重新导入**，只要客户端仍持有它。这是读方向的契约——pull 导入客户端持有的东西，而 store 不保留"这是操作员有意删除"的记忆，所以"客户端有一把 OCR 没有的 key"与"操作员刚删掉那把 key"在观测上是同一件事。操作规则：**要让删除生效，必须在客户端侧一并删除**（控制台的拉取按钮提示已写明这一点）。
 
 **控制台的 DELETE 是吊销（revocation），不是本地清理**，因此复用上面已有的机制，而不是再造一本账：
 
@@ -86,32 +86,32 @@ v1 适配器是**fixture 级验证，不是二进制级验证**：参考机上�
 
 **没有 v1 二进制就无法验证、因此不得声称已证**的部分：真实 v1 运行时会接受合并后的文件；Windows 上 0600 的意图是否被遵守/忽略；v1 是否真的从 `auth.json` 路由（两个方向的前提）；纯 v1 机器上是否存在 `installed.version`（既无 pin 又无 `auth.json` 时读作 absent —— 适配器保持惰性，而不是猜）。字段词汇已与安装在机上的 v2 二进制里内嵌的 v1 导入器字符串交叉核对（`account_id`、`methodID`、`wellknown`、`integration_id`）——这是证据，不是证明。
 
-## 修订案 —— 凭证同步中的链头权威
+## 修订案 —— 凭证同步中的默认凭证权威
 
-写方向本来就是按 provider 推送**整条链**（v1 因文件形状只推链头）。之前未处理的是客户端**用哪把 key 路由**：opencode v2 会把新连入的凭证置为 ACTIVE（2.0.15 实测——加第二把 key 会把正在工作的行降级），而凭证层面除了 `active` 没有任何顺序字段。现在这条边界由三条规则约束：
+写方向本来就是按 provider 推送**整条链**（v1 因文件形状只推默认凭证）。之前未处理的是客户端**用哪把 key 路由**：opencode v2 会把新连入的凭证置为 ACTIVE（2.0.15 实测——加第二把 key 会把正在工作的行降级），而凭证层面除了 `active` 没有任何顺序字段。现在这条边界由三条规则约束：
 
-- **推送恢复 OCR 链头。** 一个 provider 的 key 落齐之后，只要客户端的 active 行与 OCR 链头（按 `keyHashPrefix` 匹配）不一致，写路径就把它重新激活。每次推送都执行（全 dedup 的推送也算），所以客户端 active 漂移会被自愈；本来就正确时只多一次视图读取、不发 HTTP 请求。这是控制台 connect 路由 `headPreserved` 防护在同步路径上的镜像——没有它，推送一把新加的**备选** key 会在 OCR 仍路由链头的情况下悄悄把 opencode 指向那把 key。
-- **拉取永不覆盖 OCR 链头。** OCR 文件是唯一真相，拉取是只增的，所以客户端侧的一次激活不能把链头降级；否则在 auto-write 关闭时，一次拉取就会把操作员"设为链头"的操作抹掉（本 ADR 在别处明确拒绝的双向互斗）。客户端链头只填**空缺**：某 provider 的 OCR 行全部失去 active 标记（链头行被断开）时，采纳客户端链头，而不是让路由退化成按最近更新时间挑。
-- **非 active 备选之间的相对顺序**不同步，这是刻意的。v2 不暴露顺序字段（行按 `active DESC, time_updated DESC` 读取），拉取又用拉取时刻给导入行打时间戳，所以客户端的备选先后不会在 OCR 文件里复现，反向亦然。跨边界的权威只有 ACTIVE 链头；备选之间的顺序是客户端本地的读取顺序，不是路由契约。要改这一点需要在 OCR 侧引入真正的顺序表示（schema 版本升级），而不是继续玩时间戳。
+- **推送恢复 OCR 的默认凭证。** 一个 provider 的 key 落齐之后，只要客户端的 active 行与 OCR 的默认凭证（按 `keyHashPrefix` 匹配）不一致，写路径就把它重新激活。每次推送都执行（全 dedup 的推送也算），所以客户端 active 漂移会被自愈；本来就正确时只多一次视图读取、不发 HTTP 请求。这是控制台 connect 路由 `headPreserved` 防护在同步路径上的镜像——没有它，推送一把新加的**备选** key 会在 OCR 仍路由默认凭证的情况下悄悄把 opencode 指向那把 key。
+- **拉取永不覆盖 OCR 的默认凭证。** OCR 文件是唯一真相，拉取是只增的，所以客户端侧的一次激活不能把默认凭证降级；否则在 auto-write 关闭时，一次拉取就会把操作员"设为默认凭证"的操作抹掉（本 ADR 在别处明确拒绝的双向互斗）。客户端的默认凭证只填**空缺**：某 provider 的 OCR 行全部失去 active 标记（默认凭证行被断开）时，采纳客户端的默认凭证，而不是让路由退化成按最近更新时间挑。
+- **非 active 备选之间的相对顺序**不同步，这是刻意的。v2 不暴露顺序字段（行按 `active DESC, time_updated DESC` 读取），拉取又用拉取时刻给导入行打时间戳，所以客户端的备选先后不会在 OCR 文件里复现，反向亦然。跨边界的权威只有 ACTIVE 的默认凭证；备选之间的顺序是客户端本地的读取顺序，不是路由契约。要改这一点需要在 OCR 侧引入真正的顺序表示（schema 版本升级），而不是继续玩时间戳。
 
-测试：`credentials-sync` 两个方向都钉住了——推备选不会抢链头、全 dedup 的推送会治愈漂移的链头、拉取保留已有 OCR 链头、只有当 OCR 链没有 active 行时才采纳客户端链头。
+测试：`credentials-sync` 两个方向都钉住了——推备选不会抢默认凭证、全 dedup 的推送会治愈漂移的默认凭证、拉取保留 OCR 已有的默认凭证、只有当 OCR 链没有 active 行时才采纳客户端的默认凭证。
 
 ## 修订——凭证链热刷新（2026-10-28）
 
-路由链（`registry.credentialChains`）过去是**仅启动时**的快照：`buildDirectPool` → `registerProvider` 是唯一写入点，因此通过控制台加入的凭证（connect / activate / disconnect）或由凭证同步落地的 key，在下一次网关重启前对 `pipeline/credential-selection.ts` 不可见。多凭证 provider 的新会话散布会一直塌缩到启动时的链上——运营表现就是「所有请求永远用第一把凭证」——因为选择器看到 `chain.length === 1` 而退化为链头。
+路由链（`registry.credentialChains`）过去是**仅启动时**的快照：`buildDirectPool` → `registerProvider` 是唯一写入点，因此通过控制台加入的凭证（connect / activate / disconnect）或由凭证同步落地的 key，在下一次网关重启前对 `pipeline/credential-selection.ts` 不可见。多凭证 provider 的新会话散布会一直塌缩到启动时的链上——运营表现就是「所有请求永远用第一把凭证」——因为选择器看到 `chain.length === 1` 而退化为默认凭证。
 
 链现在是**热的**：`registry.refreshCredentialChain(name, chain)` 整体换入条目（Bun 单线程下 Map 写入原子；在途请求继续用旧数组引用服务），并在每个 store 变更缝隙被调用：
 
 - 控制台 **connect**（`connectKeyIdempotent`——覆盖 create / setKey / connect 路由），
-- 控制台 **activate**（链会**重排**——链头 = active 行），
+- 控制台 **activate**（链会**重排**——默认凭证 = active 行），
 - 控制台 **disconnect**（被移除的 key 立即离开运行时链），
 - **凭证同步运行**（一次拉取可能在多个 provider 上落 key；刷新所有已连接 provider 的链）。
 
-操作员 disable/enable 刻意**不是**重建触发器：被禁用的行保留在链里，由选择期的 `isPairOut` 过滤（下架优先于一切运行时信号；链成员资格与此正交）。空链会删除条目——provider 退化到链头烘焙路径（`config.apiKey`），保持链头 === 烘焙 key 的不变式。
+操作员 disable/enable 刻意**不是**重建触发器：被禁用的行保留在链里，由选择期的 `isPairOut` 过滤（下架优先于一切运行时信号；链成员资格与此正交）。空链会删除条目——provider 退化到默认凭证的烘焙路径（`config.apiKey`），保持默认凭证 === 烘焙 key 的不变式。
 
 RAW key 仍然只在注册表内存中（永不序列化）。重建时的 store 读取失败被吞掉——旧链继续服务（fail-open）。`console.ts` 里「重复 connect 会增长链」的陈旧描述对应一个已不存在的机制；那里的 dedup 保护的是 store 的 keyHash 身份，不是链长。
 
-测试：`credentials-console-routes` 钉住热路径——connect 让运行时链增长、activate 重排链头、disconnect 移除该行，全程无需重启。
+测试：`credentials-console-routes` 钉住热路径——connect 让运行时链增长、activate 重排默认凭证、disconnect 移除该行，全程无需重启。
 
 ## 修订——单凭证散布权重（2026-10-29）
 
@@ -123,3 +123,18 @@ RAW key 仍然只在注册表内存中（永不序列化）。重建时的 store
 - **热链**：权重走 `CallCredential.weight` 全链路（`resolveKeyChain` → 启动/`refreshProviderCredentialChain`），设权重后下一次落位即生效，无需重启。
 
 测试：`credential-selection.test.ts` 钉住加权散布（全 1 向后兼容、槽位映射、比例冒烟、故障转移链序优先）；`credentials-ocr-store.test.ts` 钉住 set/clamp/消毒与链/meta 透传；`credentials-console-routes.test.ts` 钉住路由（200 形态、非法 body 400、未知 id 404、仅掩码线上契约）。
+
+## 修订——控制台连通探测在启用链上轮换（2026-12）
+
+控制台的「测试连通」（`POST …/opencode/providers/:id/test`）过去只解析**一把** key——默认凭证（`enabledChain[0]`）——并把这把 key 的判定当作整个服务商的判定。于是当默认凭证被吊销、而同服务的另一把 key 完全健康时，服务商读作 DOWN，操作者唯一的出路是逐行测试每条凭证。
+
+现在探测遍历**启用链**（同一 `resolveKeyChain` 顺序，剔除被操作者下线覆盖层停用的行，比对身份仍是路由用的 `keyHashPrefix`），并报告**第一把给出应答的 key**。任何一把启用 key 给出应答即证明「服务商可用」；在 2 号 key 正常的情况下报告默认凭证的 401，描述的是一个并不存在的路由故障。
+
+- **key 顺序**（优先级未变，只是变成了列表）：寻址的 `credentialId`（逐行测试——恰好一把 key，绝不轮换）→ 请求体 `apiKey`（内联试算）→ 服务商内联 `{env:VAR}` / `options.apiKey` → 启用链。前三者按构造只有一次尝试。
+- **双层循环、一个绿即停**：对每把 key，逐个候选模型探测（模型轮换沿用路由注释里的既有契约——model-scoped 404/400 继续换模型，上限 `PROBE_CANDIDATE_CAP`）。`modelScoped` 失败同样是**按 key** 的（上游把模型挂在 key 的套餐/等级之下），因此它继续换下一把凭证，模型列表从头再试。
+- **轮换 vs. 终止**：`authFailed`（401/403）与 `rateLimited`（429）是 key 级的——这把 key 已废，下一把接手。**挂载**失败则直接结束探测：传输错误、无法路由的包、5xx 与 HTML 网关都是 `baseURL` 的属性，而 `baseURL` 被该服务商的每一把凭证共享，轮换只会换把 key 重复同一个错误。
+- **下线行不是被测对象**：被禁用的凭证已停服，探测它会报出路由永远不会产生的失败。因此被停用的行绝不参与探测；当**所有**存储行都被禁用时，路由在任何探测之前就回 400 `no_enabled_credential`，而不是回那个误导性的「无 key / OAuth」提示——**除非**该服务商带内联 `{env:VAR}` / `options.apiKey`。内联 key 不是被停用的行：boot 会把它烘焙成链首，路由也优先用它（Decision 1），所以探测继续采样它，判定仍然描述路由实际会做的事。
+- **线上契约**：响应带 `credential`（产出判定那行的掩码回显——寻址的行、给出应答的 key，或全失败时最后试的那行），且仅当试过多于一行时带 `triedCredentials`（掩码、按顺序）。任何响应字段都不出现原始 key 材料；key 只作为上游探测头离开。
+- **控制台**：服务商卡片会写出应答的凭证（`model · latency · credential`）；探测始终没绿时，把轮换轨迹并进失败文案；模型维护弹框的凭证选择器钉住一行（寻址 → 单把 key），不钉选则让轮换运行。
+
+测试：`credentials-console-routes.test.ts` 钉住轮换（默认凭证已废 → 后备 key 转绿，回显 `credential`/`triedCredentials` 且线上无原始 key）、全 key 失败的判定与完整轮换轨迹、寻址探测绝不轮换、被禁用的默认凭证被跳过、以及全行禁用时 400 且零探测的路径（带内联 key 的情形是文档化的例外）。

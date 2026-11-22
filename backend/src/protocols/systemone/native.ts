@@ -15,7 +15,7 @@
  * `Authorization: Bearer TYPESAFE_AI_API_KEY`; usage rides
  * `input_tokens` / `output_tokens`.
  *
- * Capture/error discipline mirrors providers/openai-compatible.ts: request
+ * Capture/error discipline mirrors providers/executors/openai-chat.ts: request
  * event before fetch, paired response/failure event after the body arrives,
  * UpstreamError on a non-2xx head.
  */
@@ -50,7 +50,7 @@ export async function nativeSystemoneDecision(
     throw err;
   }
   const url = `${config.baseUrl.replace(/\/+$/, '')}/systemone`;
-  // No explicit selector on the decision surface → the chain head, which IS
+  // No explicit selector on the decision surface → the leading model, which IS
   // the boot-baked key (registry invariant) — the same default registry.execute
   // uses when no credential is passed.
   const credential = registry.getCredentialChain(model.provider)?.[0];

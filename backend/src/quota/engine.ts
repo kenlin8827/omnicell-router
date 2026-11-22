@@ -234,7 +234,7 @@ export interface RunProbeOpts {
   key: string;
   providerId: string;
   /** Display-safe prefix supplied by the caller (chain entry or the
-   *  chain-head degeneracy) — the identity every snapshot hangs on. */
+   *  default-credential degeneracy) — the identity every snapshot hangs on. */
   prefix: string;
   fetchImpl?: typeof fetch;
   now?: () => number;

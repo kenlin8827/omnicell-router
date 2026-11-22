@@ -1,9 +1,9 @@
 /**
  * Conversation replay for the capture archive — renders the selected session
- * as harness-style ROUNDS: one user prompt opens a round (header), the HTTP
- * turns it drove (tool-call hops, thinking, results) are the collapsible
- * middle, and the converged answer is the tail. Reconstructed from the turn
- * wire bodies by lib/transcript; each step links to its raw wire drawer.
+ * as user-prompt TURNS: one user prompt opens a turn (header), the HTTP
+ * requests it drove (tool-call hops, thinking, results) are the collapsible
+ * middle, and the converged answer is the tail. Turn membership is read from
+ * the archive's write-time `turnIndex`; each step links to its raw wire drawer.
  */
 import React, { useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -12,21 +12,21 @@ import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { BackToTop, ScrollToBottom } from './BackToTop';
 import { Prose } from './Prose';
-import type { CaptureTurn } from '../lib/api';
+import type { CaptureRequestView } from '../lib/api';
 import {
   buildTranscript,
   collapseMediaTokens,
-  groupIntoRounds,
+  groupIntoTurns,
   isInjectionMessage,
   messageText,
   splitMediaTokens,
   unwrapHarnessText,
   type TranscriptMedia,
   type TranscriptMessage,
-  type TranscriptRound,
-  type TranscriptToolCall,
   type TranscriptTurn,
-  type TurnOutput,
+  type TranscriptToolCall,
+  type TranscriptStep,
+  type RequestOutput,
 } from '../lib/transcript';
 import { shortId, fmtDur, fmtLatency } from '../lib/format';
 import { FONT_MONO } from '../lib/fonts';
@@ -75,7 +75,7 @@ const ImageChip: React.FC<{ media: TranscriptMedia; date?: string }> = ({ media,
         alt={media.info}
         loading="lazy"
         onClick={e => {
-          // The round header is a click-to-toggle surface — never let a
+          // The turn header is a click-to-toggle surface — never let a
           // thumbnail click collapse the card while opening the full view.
           e.stopPropagation();
           window.open(url, '_blank', 'noopener');
@@ -136,7 +136,7 @@ const prettyArgs = (args: string): string => {
 
 const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
   const { t } = useI18n();
-  // Args collapsed by default: a tool-heavy round stays a readable waterfall;
+  // Args collapsed by default: a tool-heavy turn stays a readable waterfall;
   // the name row is the toggle.
   const [open, setOpen] = useSectionOpen('toolCall');
   return (
@@ -241,7 +241,7 @@ const ExpandMenu: React.FC<{
     context: t('captures.injectedContext'),
     system: t('captures.msgSystem'),
     answer: t('captures.answerSection'),
-    finalAnswer: t('captures.roundTailLabel'),
+    finalAnswer: t('captures.turnTailLabel'),
   };
   return (
     <div ref={ref} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
@@ -421,7 +421,7 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
   );
 };
 
-const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
+const OutputView: React.FC<{ out: RequestOutput }> = ({ out }) => {
   const { t } = useI18n();
   const [thinkOpen, setThinkOpen] = useSectionOpen('thinking');
   const [ansOpen, setAnsOpen] = useSectionOpen('answer');
@@ -475,19 +475,19 @@ const Note: React.FC<{ tone: 'warn' | 'dim'; text: string; title?: string }> = (
 );
 
 const TranscriptBlock: React.FC<{
-  st: TranscriptTurn;
+  st: TranscriptStep;
   label: string;
   date?: string;
   first?: boolean;
-  /** The round's prompt message — already shown at the round top; skipped here. */
+  /** The turn's prompt message — already shown at the turn top; skipped here. */
   skipPrompt?: TranscriptMessage | null;
-  onOpenTurn: (idx: number) => void;
-}> = ({ st, label, date, first, skipPrompt, onOpenTurn }) => {
+  onOpenRequest: (idx: number) => void;
+}> = ({ st, label, date, first, skipPrompt, onOpenRequest }) => {
   const { t } = useI18n();
-  const { turn } = st;
+  const { request } = st;
   const err =
-    turn.upstreamResponse?.status === 'error' || turn.gatewayResponse?.status === 'error' || !!turn.error;
-  const upstreamModel = turn.upstreamRequest?.model ?? turn.upstreamResponse?.model;
+    request.upstreamResponse?.status === 'error' || request.clientResponse?.status === 'error' || !!request.error;
+  const upstreamModel = request.upstreamRequest?.model ?? request.upstreamResponse?.model;
   const input = skipPrompt ? st.input.filter(m => m !== skipPrompt) : st.input;
   // Consecutive harness-injection messages fold into one run → one chip.
   const runs: Array<{ ctx: boolean; msgs: TranscriptMessage[] }> = [];
@@ -509,7 +509,7 @@ const TranscriptBlock: React.FC<{
         borderTop: first ? undefined : '1px solid var(--divider)',
       }}
     >
-      {/* Turn header — same chip language as the timeline row; click opens the wire drawer. */}
+      {/* Request header — same chip language as the timeline row; click opens the wire drawer. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: silent && !err ? 0 : 6 }}>
         <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)' }}>#{label}</span>
         {st.ts !== undefined && (
@@ -519,18 +519,18 @@ const TranscriptBlock: React.FC<{
           {err ? t('captures.statusError') : t('captures.statusOk')}
         </span>
         <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)' }}>
-          {turn.model}
-          {upstreamModel && upstreamModel !== turn.model && (
+          {request.model}
+          {upstreamModel && upstreamModel !== request.model && (
             <span style={{ fontWeight: 'var(--font-regular)', color: 'var(--text-dim)' }}> → {upstreamModel}</span>
           )}
         </span>
-        {turn.gatewayLatencyMs !== undefined && (
-          <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(turn.gatewayLatencyMs)}</span>
+        {request.gatewayLatencyMs !== undefined && (
+          <span title={`${request.gatewayLatencyMs} ms`} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(request.gatewayLatencyMs)}</span>
         )}
-        {turn.decisionRequest && (
+        {request.decisionRequest && (
           <span
             className="badge"
-            title={`${t('captures.decisionBadge')} · ${turn.decisionRequest.model}${turn.decisionLatencyMs !== undefined ? ` · ${turn.decisionLatencyMs} ms` : ''}`}
+            title={`${t('captures.decisionBadge')} · ${request.decisionRequest.model}${request.decisionLatencyMs !== undefined ? ` · ${request.decisionLatencyMs} ms` : ''}`}
             style={{
               background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
               color: 'var(--accent)',
@@ -541,8 +541,8 @@ const TranscriptBlock: React.FC<{
           >
             <Scale size={10} style={{ verticalAlign: '-1px', marginRight: '3px' }} />
             {t('captures.decisionBadge')}
-            {turn.decisionLatencyMs !== undefined && ` · ${fmtLatency(turn.decisionLatencyMs)}`}
-            {turn.decisionRequest.model !== turn.model && ` · ${turn.decisionRequest.model}`}
+            {request.decisionLatencyMs !== undefined && ` · ${fmtLatency(request.decisionLatencyMs)}`}
+            {request.decisionRequest.model !== request.model && ` · ${request.decisionRequest.model}`}
           </span>
         )}
         {st.reqTruncated && (
@@ -554,10 +554,10 @@ const TranscriptBlock: React.FC<{
         <button
           className="btn btn-sm"
           style={{ marginLeft: 'auto' }}
-          onClick={() => onOpenTurn(st.idx)}
-          title={t('captures.turnRawBtn')}
+          onClick={() => onOpenRequest(st.idx)}
+          title={t('captures.requestRawBtn')}
         >
-          {t('captures.turnRawBtn')}
+          {t('captures.requestRawBtn')}
         </button>
       </div>
 
@@ -584,7 +584,7 @@ const TranscriptBlock: React.FC<{
 
       {silent && (
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: err ? 4 : 0 }}>
-          {err && turn.error ? String(turn.error).slice(0, 200) : t('captures.nothingNote')}
+          {err && request.error ? String(request.error).slice(0, 200) : t('captures.nothingNote')}
         </div>
       )}
     </div>
@@ -592,7 +592,7 @@ const TranscriptBlock: React.FC<{
 };
 
 /**
- * The round's converged tail answer — a persistent footer under the card
+ * The turn's converged tail answer — a persistent footer under the card
  * in BOTH states (collapsed: directly under the header; expanded: below the
  * step panel, outside it), and after the steps in the focus overlay. Falls
  * back to the final reasoning (DeepSeek-style thinking-only answers), else
@@ -603,9 +603,9 @@ const TranscriptBlock: React.FC<{
  * EDGE: place that edge on the surrounding assistant rail and the label, the
  * prose well and the rail all land on the assistant's own columns.
  */
-const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
+const TurnTail: React.FC<{ turn: TranscriptTurn }> = ({ turn }) => {
   const { t } = useI18n();
-  const hasAnswer = !!(round.finalText || round.finalReasoning);
+  const hasAnswer = !!(turn.finalText || turn.finalReasoning);
   // The tail answer joins the bulk-expand vocabulary: the focus overlay's
   // menu can force-open every "final answer" at once (the pane keeps a
   // private toggle — ctx is null there).
@@ -617,35 +617,35 @@ const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
         paddingLeft: 10,
       }}
     >
-      {round.finalText ? (
+      {turn.finalText ? (
         <>
-          <RoleLabel label={t('captures.roundTailLabel')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
+          <RoleLabel label={t('captures.turnTailLabel')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
           <Prose
-            text={round.finalText}
+            text={turn.finalText}
             clamp={6}
             markdown
             open={tailOpen}
             onOpenChange={setTailOpen}
-            viewTitle={t('captures.roundTailLabel')}
+            viewTitle={t('captures.turnTailLabel')}
           />
-          {round.finalToolCalls.length > 0 && (
+          {turn.finalToolCalls.length > 0 && (
             <div style={{ marginTop: 4 }}>
-              <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+              <Note tone="dim" text={t('captures.turnUnconvergedNote')} />
             </div>
           )}
         </>
-      ) : round.finalReasoning ? (
+      ) : turn.finalReasoning ? (
         <>
           <RoleLabel label={t('captures.msgThinking')} color="var(--text-muted)" />
-          <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" mono={false} />
+          <Prose text={turn.finalReasoning} clamp={6} color="var(--text-muted)" mono={false} />
           <div style={{ marginTop: 4 }}>
-            <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+            <Note tone="dim" text={t('captures.turnUnconvergedNote')} />
           </div>
         </>
       ) : (
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-          {round.hasError || round.toolCallsIssued > 0
-            ? t('captures.roundUnconvergedNote')
+          {turn.hasError || turn.toolCallsIssued > 0
+            ? t('captures.turnUnconvergedNote')
             : t('captures.nothingNote')}
         </div>
       )}
@@ -654,35 +654,35 @@ const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
 };
 
 /**
- * One by-prompt round. Header band: bare disclosure triangle leads on the
+ * One by-prompt turn. Header band: bare disclosure triangle leads on the
  * LEFT (tree convention); the title row is ONE inline line — meta chips,
  * prompt (1-line ellipsis, expandable in place), step count. Collapsed
  * (default): header + tail answer — the Q→A skim. Expanded: the waterfall
- * of HTTP turns the prompt drove, held in an independent inset panel
+ * of HTTP requests the prompt drove, held in an independent inset panel
  * (.sub-card language) that owns its own scrollbar capped at 60vh — an
- * expanded round never blows up the session scroll. The tail answer is a
+ * expanded turn never blows up the session scroll. The tail answer is a
  * persistent footer OUTSIDE the panel in both states — it closes the card
  * below the steps and stays within one short scroll.
  */
-const RoundCard: React.FC<{
-  round: TranscriptRound;
+const TurnCard: React.FC<{
+  turn: TranscriptTurn;
   ordinal: number;
   date?: string;
-  /** First round in the list — no hairline rule above it. */
+  /** First turn in the list — no hairline rule above it. */
   first?: boolean;
-  /** Fullscreen reading opens every round; the pane default stays skim-mode. */
+  /** Fullscreen reading opens every turn; the pane default stays skim-mode. */
   defaultOpen?: boolean;
   /** Renders the ⛶ header button (absent inside the focus overlay itself). */
   onFocus?: () => void;
-  onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, date, first, defaultOpen, onFocus, onOpenTurn }) => {
+  onOpenRequest: (idx: number) => void;
+}> = ({ turn, ordinal, date, first, defaultOpen, onFocus, onOpenRequest }) => {
   const { t } = useI18n();
-  // All rounds collapsed by default — the Q→A skim (header + tail answer)
+  // All turns collapsed by default — the Q→A skim (header + tail answer)
   // covers the whole session; steps open on demand. In fullscreen reading
   // the point IS the steps, so they start open (still individually
   // collapsible — this only seeds the initial state).
   const [open, setOpen] = useState(defaultOpen ?? false);
-  // Round title row: ONE inline line — meta chips, the prompt (1-line
+  // Turn title row: ONE inline line — meta chips, the prompt (1-line
   // ellipsis, full text on hover title), its expand toggle, step count.
   // Overflow is MEASURED horizontally (ResizeObserver), not guessed from
   // char counts — the pane is splitter-resizable and CJK wraps differently.
@@ -693,9 +693,9 @@ const RoundCard: React.FC<{
   // in place. Scrubbed media tokens collapse to a short chip — the
   // thumbnail lives in the step view.
   const excerpt = useMemo(() => {
-    if (!round.prompt) return '';
+    if (!turn.prompt) return '';
     return collapseMediaTokens(
-      round.prompt.blocks
+      turn.prompt.blocks
         .filter(b => b.kind === 'text')
         .map(b => unwrapHarnessText(b.text))
         .join('\n')
@@ -703,7 +703,7 @@ const RoundCard: React.FC<{
         .trim(),
       t('captures.mediaChip')
     );
-  }, [round.prompt, t]);
+  }, [turn.prompt, t]);
 
   useEffect(() => {
     // Only the collapsed inline span needs measuring; while expanded the
@@ -721,8 +721,8 @@ const RoundCard: React.FC<{
   return (
     <div
       style={{
-        // Flat section, not a box: rounds divide by one hairline rule (the
-        // step rows' list-group language) — a bordered card per round read
+        // Flat section, not a box: turns divide by one hairline rule (the
+        // step rows' list-group language) — a bordered card per turn read
         // as a stack of pillowy wide-flat boxes inside the page column's
         // own frame (triple nesting). Breathing room comes from the header
         // and tail paddings around the rule.
@@ -760,7 +760,7 @@ const RoundCard: React.FC<{
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Title row — one inline line: dot · round · time · prompt
+          {/* Title row — one inline line: dot · turn · time · prompt
               (ellipsis) · toggle · steps. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 26 }}>
             <span
@@ -769,18 +769,18 @@ const RoundCard: React.FC<{
                 height: 8,
                 borderRadius: '50%',
                 flexShrink: 0,
-                background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
+                background: turn.hasError ? '#ef4444' : 'var(--accent-emerald)',
               }}
             />
-            <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', flexShrink: 0 }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
-            {round.startTs !== undefined && (
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(round.startTs)}</span>
+            <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', flexShrink: 0 }}>{t('captures.turnOrdinal', { n: ordinal })}</span>
+            {turn.startTs !== undefined && (
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(turn.startTs)}</span>
             )}
             {excerpt && !promptOpen && (
               <span
                 ref={promptRef}
                 title={excerpt}
-                className="round-prompt-excerpt"
+                className="turn-prompt-excerpt"
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -818,8 +818,8 @@ const RoundCard: React.FC<{
               </button>
             )}
             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: excerpt ? 0 : 'auto', flexShrink: 0 }}>
-              {t('captures.roundStepsUnit', { n: round.steps.length })}
-              {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
+              {t('captures.turnStepsUnit', { n: turn.steps.length })}
+              {turn.totalLatencyMs > 0 ? ` · ${fmtDur(turn.totalLatencyMs)}` : ''}
             </span>
             {onFocus && (
               <button
@@ -827,7 +827,7 @@ const RoundCard: React.FC<{
                   e.stopPropagation();
                   onFocus();
                 }}
-                title={t('captures.roundFocus')}
+                title={t('captures.turnFocus')}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -859,7 +859,7 @@ const RoundCard: React.FC<{
             </div>
           ) : !excerpt ? (
             <div style={{ marginTop: 5, color: 'var(--text-dim)', fontSize: 'var(--text-xs)' }}>
-              {t('captures.roundMidOpenNote')}
+              {t('captures.turnMidOpenNote')}
             </div>
           ) : null}
         </div>
@@ -882,64 +882,64 @@ const RoundCard: React.FC<{
             overscrollBehavior: 'contain',
           }}
         >
-          {/* Per-round truncation reminder — the gap is only visible inside
+          {/* Per-turn truncation reminder — the gap is only visible inside
               the waterfall, so the explanation lives here (short line; the
               full capture-era note rides the hover title). */}
-          {round.toolResultsSeen < round.toolCallsIssued && (
+          {turn.toolResultsSeen < turn.toolCallsIssued && (
             <div style={{ padding: '4px 2px 2px' }}>
               <Note tone="warn" text={t('captures.resultsMissingShort')} title={t('captures.resultsMissingNote')} />
             </div>
           )}
-          {round.steps.map((st, i) => (
+          {turn.steps.map((st, i) => (
             <TranscriptBlock
-              key={`${st.turn.requestId}-${st.idx}`}
+              key={`${st.request.requestId}-${st.idx}`}
               st={st}
               label={`${ordinal}-${i + 1}`}
               date={date}
               first={i === 0}
-              skipPrompt={round.prompt}
-              onOpenTurn={onOpenTurn}
+              skipPrompt={turn.prompt}
+              onOpenRequest={onOpenRequest}
             />
           ))}
         </div>
       )}
       {/* Tail answer — persistent card footer in BOTH states, outside the
-          waterfall panel. RoundTail draws its own assistant rail, so this is
+          waterfall panel. TurnTail draws its own assistant rail, so this is
           only the block's LEFT EDGE: collapsed it sits on the prompt column
           (12 + 26 + 10 = 48); expanded it sits on the assistant rail inside
           the panel (panel inset 23 = margin 12 + border 1 + padding 10, plus
           the step row's own padding 2) — never on the panel's content edge,
           which would leave the conclusion 14px left of every assistant row. */}
       <div style={{ padding: open ? '0 23px 10px 25px' : '8px 12px 10px 48px' }}>
-        <RoundTail round={round} />
+        <TurnTail turn={turn} />
       </div>
     </div>
   );
 };
 
 /**
- * Dedicated view for the focus overlay — deliberately NOT a wrapped RoundCard.
+ * Dedicated view for the focus overlay — deliberately NOT a wrapped TurnCard.
  * The pane card's header band exists to toggle collapse and to skim a list;
- * a focused round needs neither: the meta line is static, the prompt shows in
+ * a focused turn needs neither: the meta line is static, the prompt shows in
  * full (media renders as thumbnails, not the list's collapsed chip), and the
  * steps flow into the overlay's single scroll layer — no nested card frame,
  * no second 60vh viewport.
  */
-const FocusRoundView: React.FC<{
-  round: TranscriptRound;
+const FocusTurnView: React.FC<{
+  turn: TranscriptTurn;
   ordinal: number;
   date?: string;
-  onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, date, onOpenTurn }) => {
+  onOpenRequest: (idx: number) => void;
+}> = ({ turn, ordinal, date, onOpenRequest }) => {
   const { t } = useI18n();
   const promptText = useMemo(() => {
-    if (!round.prompt) return '';
-    return round.prompt.blocks
+    if (!turn.prompt) return '';
+    return turn.prompt.blocks
       .filter(b => b.kind === 'text')
       .map(b => unwrapHarnessText(b.text))
       .join('\n\n')
       .trim();
-  }, [round.prompt]);
+  }, [turn.prompt]);
   return (
     <div style={{ fontSize: 'var(--text-sm)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -949,19 +949,19 @@ const FocusRoundView: React.FC<{
             height: 8,
             borderRadius: '50%',
             flexShrink: 0,
-            background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
+            background: turn.hasError ? '#ef4444' : 'var(--accent-emerald)',
           }}
         />
-        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)' }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
-        {round.startTs !== undefined && (
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(round.startTs)}</span>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)' }}>{t('captures.turnOrdinal', { n: ordinal })}</span>
+        {turn.startTs !== undefined && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(turn.startTs)}</span>
         )}
-        {round.endTs !== undefined && round.endTs !== round.startTs && (
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO }}>→ {fmtTime(round.endTs)}</span>
+        {turn.endTs !== undefined && turn.endTs !== turn.startTs && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO }}>→ {fmtTime(turn.endTs)}</span>
         )}
         <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: 'auto' }}>
-          {t('captures.roundStepsUnit', { n: round.steps.length })}
-          {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
+          {t('captures.turnStepsUnit', { n: turn.steps.length })}
+          {turn.totalLatencyMs > 0 ? ` · ${fmtDur(turn.totalLatencyMs)}` : ''}
         </span>
       </div>
       {promptText ? (
@@ -971,22 +971,22 @@ const FocusRoundView: React.FC<{
         </div>
       ) : (
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 10 }}>
-          {t('captures.roundMidOpenNote')}
+          {t('captures.turnMidOpenNote')}
         </div>
       )}
-      {round.toolResultsSeen < round.toolCallsIssued && (
+      {turn.toolResultsSeen < turn.toolCallsIssued && (
         <div style={{ marginBottom: 8 }}>
           <Note tone="warn" text={t('captures.resultsMissingShort')} title={t('captures.resultsMissingNote')} />
         </div>
       )}
-      {round.steps.map((st, i) => (
+      {turn.steps.map((st, i) => (
         <TranscriptBlock
-          key={`${st.turn.requestId}-${st.idx}`}
+          key={`${st.request.requestId}-${st.idx}`}
           st={st}
           label={`${ordinal}-${i + 1}`}
           date={date}
-          skipPrompt={round.prompt}
-          onOpenTurn={onOpenTurn}
+          skipPrompt={turn.prompt}
+          onOpenRequest={onOpenRequest}
         />
       ))}
       {/* Conclusion — plain in-flow tail of the waterfall, right after the
@@ -995,7 +995,7 @@ const FocusRoundView: React.FC<{
           floating bar and hid where the page actually ends). The hairline top
           rule keeps the visual break from the steps; no opaque background is
           needed anymore — nothing scrolls past it. paddingLeft 2 puts the
-          rail RoundTail draws on the steps' rails. It still owns the 20px
+          rail TurnTail draws on the steps' rails. It still owns the 20px
           bottom gap (its own padding — the page frame and the scroll
           container both end with 0, so the two never stack). */}
       <div
@@ -1007,66 +1007,60 @@ const FocusRoundView: React.FC<{
           borderTop: '1px solid var(--divider)',
         }}
       >
-        <RoundTail round={round} />
+        <TurnTail turn={turn} />
       </div>
     </div>
   );
 };
 
-// Progressive round rendering: paint the first page immediately, then pull
-// in the next page whenever the sentinel below the last painted round
+// Progressive turn rendering: paint the first page immediately, then pull
+// in the next page whenever the sentinel below the last painted turn
 // approaches the viewport. Long sessions never block on one giant render —
 // the list loads in steps while the user reads downward.
-const ROUNDS_PAGE = 20;
+const TURNS_PAGE = 20;
 
 export const SessionTranscript: React.FC<{
-  turns: CaptureTurn[];
+  requests: CaptureRequestView[];
   fileTruncated: boolean;
   /** Archive date dir (YYYY-MM-DD) — builds the media read URLs for chips. */
   date?: string;
-  /** Fullscreen reading seeds every round open (pane default: collapsed). */
+  /** Fullscreen reading seeds every turn open (pane default: collapsed). */
   expandAll?: boolean;
-  /**
-   * Absolute archive ordinal of the first rendered round minus one. A caller
-   * that narrows `turns` to one prompt round passes its archive ordinal so
-   * local enumeration does not restart at 1 and contradict the selector.
-   */
-  roundOffset?: number;
-  onOpenTurn: (idx: number) => void;
-}> = ({ turns, fileTruncated, date, expandAll, roundOffset = 0, onOpenTurn }) => {
+  onOpenRequest: (idx: number) => void;
+}> = ({ requests, fileTruncated, date, expandAll, onOpenRequest }) => {
   const { t } = useI18n();
   // Transcript parsing (one JSON.parse per wire body) is the heaviest CPU
-  // step of the lens — run it against the deferred turns so a session switch
+  // step of the lens — run it against the deferred requests so a session switch
   // paints the pane shell before the parse lands.
-  const deferredTurns = useDeferredValue(turns);
-  const items = useMemo(() => buildTranscript(deferredTurns), [deferredTurns]);
-  const rounds = useMemo(() => groupIntoRounds(items), [items]);
-  const [visibleRounds, setVisibleRounds] = useState(ROUNDS_PAGE);
+  const deferredRequests = useDeferredValue(requests);
+  const items = useMemo(() => buildTranscript(deferredRequests), [deferredRequests]);
+  const turns = useMemo(() => groupIntoTurns(items), [items]);
+  const [visibleTurns, setVisibleTurns] = useState(TURNS_PAGE);
   useEffect(() => {
-    setVisibleRounds(ROUNDS_PAGE);
-  }, [turns]);
-  const shown = useMemo(() => rounds.slice(0, visibleRounds), [rounds, visibleRounds]);
+    setVisibleTurns(TURNS_PAGE);
+  }, [requests]);
+  const shown = useMemo(() => turns.slice(0, visibleTurns), [turns, visibleTurns]);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = sentinelRef.current;
-    if (!el || visibleRounds >= rounds.length) return;
+    if (!el || visibleTurns >= turns.length) return;
     if (typeof IntersectionObserver === 'undefined') {
-      setVisibleRounds(rounds.length);
+      setVisibleTurns(turns.length);
       return;
     }
     const io = new IntersectionObserver(
       entries => {
         if (entries.some(e => e.isIntersecting)) {
-          setVisibleRounds(c => Math.min(c + ROUNDS_PAGE, rounds.length));
+          setVisibleTurns(c => Math.min(c + TURNS_PAGE, turns.length));
         }
       },
       { rootMargin: '600px 0px' }
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [visibleRounds, rounds.length]);
-  // Single-round focus: one card owns the viewport, open by default. Index
-  // into `rounds`; transient like the whole-session fullscreen (never
+  }, [visibleTurns, turns.length]);
+  // Single-turn focus: one card owns the viewport, open by default. Index
+  // into `turns`; transient like the whole-session fullscreen (never
   // persisted, resets when the archive changes underneath us).
   const [focusIdx, setFocusIdx] = useState<number | null>(null);
   // Bulk-expand menu (focus overlay only): committing a change bumps `secRev`,
@@ -1094,7 +1088,7 @@ export const SessionTranscript: React.FC<{
   useBodyScrollLock(focusIdx !== null);
   useEffect(() => {
     setFocusIdx(null);
-  }, [turns]);
+  }, [requests]);
   useEffect(() => {
     if (focusIdx === null) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1111,7 +1105,7 @@ export const SessionTranscript: React.FC<{
     s => s.input.length > 0 || s.output || s.reqTruncated || s.reqUnparsed || s.diverged || s.hasResponseBody
   );
   // The missing-results reminder is NOT a session-level banner — it lives on
-  // the affected rounds' waterfalls, where the gap is actually visible.
+  // the affected turns' waterfalls, where the gap is actually visible.
 
   return (
     <div style={{ fontSize: 'var(--text-sm)' }}>
@@ -1130,25 +1124,25 @@ export const SessionTranscript: React.FC<{
           <span>{t('captures.fileTruncatedHint')}</span>
         </div>
       )}
-      {rounds.length === 0 || !anyContent ? (
+      {turns.length === 0 || !anyContent ? (
         <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
           {t('captures.chatEmpty')}
         </div>
       ) : (
         shown.map((r, i) => (
-          <RoundCard
-            key={`${r.steps[0]?.turn.requestId ?? 'r'}-${i}`}
-            round={r}
-            ordinal={i + 1 + roundOffset}
+          <TurnCard
+            key={`${r.steps[0]?.request.requestId ?? 'r'}-${i}`}
+            turn={r}
+            ordinal={r.turnIndex}
             date={date}
             first={i === 0}
             defaultOpen={expandAll}
             onFocus={() => setFocusIdx(i)}
-            onOpenTurn={onOpenTurn}
+            onOpenRequest={onOpenRequest}
           />
         ))
       )}
-      {visibleRounds < rounds.length && (
+      {visibleTurns < turns.length && (
         <div
           ref={sentinelRef}
           style={{
@@ -1158,11 +1152,11 @@ export const SessionTranscript: React.FC<{
             fontSize: 'var(--text-xs)',
           }}
         >
-          {t('captures.loadingMoreRounds')}
+          {t('captures.loadingMoreTurns')}
         </div>
       )}
       {focusIdx !== null &&
-        rounds[focusIdx] &&
+        turns[focusIdx] &&
         createPortal(
           <div
             style={{
@@ -1186,7 +1180,7 @@ export const SessionTranscript: React.FC<{
               }}
             >
               <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)' }}>
-                {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 + roundOffset })}
+                {t('captures.turnFocus')} · {t('captures.turnOrdinal', { n: turns[focusIdx]?.turnIndex ?? focusIdx + 1 })}
               </span>
               <ExpandMenu open={secOpen} onToggle={toggleSec} onAll={allSec} />
               <button
@@ -1212,7 +1206,7 @@ export const SessionTranscript: React.FC<{
               }}
             >
               {/* Cap the reading column — full viewport WIDTH for a single
-                  round would stretch every prose line past comfortable
+                  turn would stretch every prose line past comfortable
                   measure; the win here is height + no competing cards.
                   The column is a visible PAGE: frame + elevated fill give
                   the reading area left/right edge lines — borderless, the
@@ -1223,7 +1217,7 @@ export const SessionTranscript: React.FC<{
                     width: '100%',
                     maxWidth: 980,
                     margin: '0 auto',
-                    // Fill the scrollport even for short rounds (frame spans
+                    // Fill the scrollport even for short turns (frame spans
                     // the whole visible page) and GROW past it for long ones
                     // — flex-stretch pinned the box to viewport height and
                     // the steps leaked below its own bottom border.
@@ -1235,11 +1229,11 @@ export const SessionTranscript: React.FC<{
                     padding: '14px 18px 0',
                   }}
                 >
-                  <FocusRoundView
-                    round={rounds[focusIdx]}
-                    ordinal={focusIdx + 1 + roundOffset}
+                  <FocusTurnView
+                    turn={turns[focusIdx]}
+                    ordinal={turns[focusIdx]?.turnIndex ?? focusIdx + 1}
                     date={date}
-                    onOpenTurn={onOpenTurn}
+                    onOpenRequest={onOpenRequest}
                   />
                 </div>
               </ExpandCtx.Provider>

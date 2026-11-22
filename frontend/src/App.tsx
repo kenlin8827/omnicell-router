@@ -7,10 +7,12 @@ import { KeysPage } from './pages/KeysPage';
 import { ModelsPage } from './pages/ModelsPage';
 import { CatalogSourcesPage } from './pages/CatalogSourcesPage';
 import { ProxyPage } from './pages/ProxyPage';
+import { MihomoPage } from './pages/MihomoPage';
+import { ProxyPatternsPage } from './pages/ProxyPatternsPage';
 import { ProxyAccessPage } from './pages/ProxyAccessPage';
+import { ProxyLogPage } from './pages/ProxyLogPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
-import { PlaygroundPage } from './pages/PlaygroundPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
 import { BreakerRulesPage } from './pages/BreakerRulesPage';
 import { SessionsPage } from './pages/SessionsPage';
@@ -26,15 +28,16 @@ import { SettingsPage } from './pages/SettingsPage';
 import { PluginsManagePage } from './pages/PluginsManagePage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
-import { ModelProfilesPage } from './pages/ModelProfilesPage';
 import { RouteEntriesPage } from './pages/RouteEntriesPage';
 import { YamlPage } from './pages/YamlPage';
 import { HarnessPage } from './pages/HarnessPage';
+import { McpDebugPage } from './pages/McpDebugPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
 import { TooltipProvider } from './components/TooltipProvider';
 import { LoginPage } from './pages/LoginPage';
 import { api } from './lib/api';
+import { SESSION_EXPIRED_EVENT } from './lib/sessionGuard';
 
 type AuthGateState = 'checking' | 'ok' | 'locked';
 
@@ -42,6 +45,10 @@ export const App: React.FC = () => {
   // Console-auth gate: on boot, ask the gateway whether the webAuth console
   // login is active and whether this browser already holds a session cookie.
   const [authState, setAuthState] = useState<AuthGateState>('checking');
+  /** Set when the gate was reached by an EXPIRY, not by a fresh boot: the
+   *  login form then says why it reappeared instead of looking like a reload
+   *  dropped the session for no reason. */
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -60,11 +67,31 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  /** Any 401 from the admin surface re-locks the console (lib/sessionGuard
+   *  patches fetch and fires this event). Deduplicated by the state itself:
+   *  a burst of parallel requests all failing produces one lock. */
+  useEffect(() => {
+    const onExpired = () => {
+      setSessionExpired(true);
+      setAuthState((s) => (s === 'locked' ? s : 'locked'));
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
+
   if (authState === 'checking') {
     return <div style={{ minHeight: '100vh' }} />;
   }
   if (authState === 'locked') {
-    return <LoginPage onSuccess={() => setAuthState('ok')} />;
+    return (
+      <LoginPage
+        expired={sessionExpired}
+        onSuccess={() => {
+          setSessionExpired(false);
+          setAuthState('ok');
+        }}
+      />
+    );
   }
 
   return (
@@ -78,16 +105,24 @@ export const App: React.FC = () => {
         <Route path="route-entries" element={<RouteEntriesPage />} />
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
-        <Route path="model-profiles" element={<ModelProfilesPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
-        <Route path="playground" element={<PlaygroundPage />} />
+        {/* The playground is rendered by Layout OUTSIDE this outlet so it stays
+            mounted across navigation (a running stream, the transcript and the
+            form state must survive leaving the page). The route only claims the
+            path; see Layout's persistent host. */}
+        <Route path="playground" element={null} />
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="catalog" element={<CatalogSourcesPage />} />
         <Route path="proxy-upstream" element={<ProxyPage />} />
+        <Route path="proxy-clash" element={<MihomoPage />} />
+        {/* The pre-split address (`/proxy-mihomo`) keeps a redirect so saved bookmarks still resolve. */}
+        <Route path="proxy-mihomo" element={<Navigate to="/proxy-clash" replace />} />
+        <Route path="proxy-patterns" element={<ProxyPatternsPage />} />
         <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />
+        <Route path="proxy-log" element={<ProxyLogPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
         <Route path="breaker-rules" element={<BreakerRulesPage />} />
         <Route path="sessions" element={<SessionsPage />} />
@@ -104,6 +139,8 @@ export const App: React.FC = () => {
         <Route path="harness/plugins" element={<HarnessPage kind="plugin" />} />
         <Route path="harness/skills" element={<HarnessPage kind="skill" />} />
         <Route path="harness/mcp" element={<HarnessPage kind="mcp" />} />
+        <Route path="harness/mcp-debug" element={<McpDebugPage />} />
+        <Route path="harness/mcp-browser" element={<Navigate to="/harness/mcp-debug" replace />} />
         {/* Same page, landing harness in the URL: for a kind that WRITES into a client (a
             plugin package, an MCP server config) the runtime is part of the artifact's identity,
             so it must survive reload, bookmark and Back/Forward. The bare routes above redirect

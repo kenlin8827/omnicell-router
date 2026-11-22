@@ -87,6 +87,25 @@ export const formatCostCompact = (usd: number): string =>
   });
 
 /**
+ * Locale-formatted wall-clock label for a timestamp a peer reported (ISO
+ * string or epoch ms). Returns '' when there is no usable time: absent, not
+ * parseable, or a non-positive instant.
+ *
+ * The non-positive rule is about protocol zero values, not epochs — Go's
+ * `time.Time` marshals "never happened" as `0001-01-01T00:00:00Z`, which
+ * parses fine and is a huge NEGATIVE epoch. Rendering it verbatim ("updated
+ * 0001-01-01T00:00:00Z") is exactly the bug this helper exists to prevent, so
+ * callers hide the whole label on ''. Pair with the raw value as a `title`
+ * when the exact instant matters.
+ */
+export const formatTimestamp = (value: string | number | null | undefined): string => {
+  if (value === null || value === undefined || value === '') return '';
+  const ms = typeof value === 'number' ? value : Date.parse(value);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  return new Date(ms).toLocaleString();
+};
+
+/**
  * Smart-unit latency label for stats displays: sub-second stays in ms,
  * seconds keep one decimal (7020 → "7.0s", 13526 → "13.5s"), then m s / h m.
  * Callers keep the exact raw ms in a title tooltip since the label rounds.

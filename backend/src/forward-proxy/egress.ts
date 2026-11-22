@@ -1,15 +1,16 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import type { ForwardProxyConfig, ForwardProxyRule } from '../config/types.js';
+import type { InterceptPosture, ForwardProxyConfig, ForwardProxyRule } from '../config/types.js';
+import { DEFAULT_FORWARD_PROXY_INTERCEPT } from '../config/defaults.js';
+import { listGatewayHosts } from '../plugins/gateways.js';
 import { resolveHost, type RuleDecision } from './rules.js';
 import { outboundProxyUrl } from '../utils/proxy.js';
 
 /**
  * Shared egress plumbing for everything that forwards bytes to an ORIGINAL
  * dial target: the forward-proxy's forwarders and tunnels (server.ts,
- * h2-forward.ts) and the pipeline's direct-forward relay
- * (surfaces/direct-forward.ts).
+ * h2-forward.ts) and the client-gateway relay (`relayUpstream`).
  *
  * `transitProxyFor` turns a rule decision into the outbound proxy URL. The table
  * itself (ADR-0018) is read through `transitEgressFor`, which consults the LIVE
@@ -21,14 +22,17 @@ import { outboundProxyUrl } from '../utils/proxy.js';
 let liveForwardProxy: (() => ForwardProxyConfig | undefined) | undefined;
 /** Boot snapshot of the rule table (the live reader wins per request). */
 let bootRules: ForwardProxyRule[] | undefined;
+/** Boot snapshot of the interception posture (same fallback order). */
+let bootIntercept: InterceptPosture = DEFAULT_FORWARD_PROXY_INTERCEPT;
 
 export function setLiveForwardProxy(reader: (() => ForwardProxyConfig | undefined) | undefined): void {
   liveForwardProxy = reader;
 }
 
-/** Boot snapshot of the rule table — only one forward proxy exists per process. */
-export function setBootRules(rules: ForwardProxyRule[] | undefined): void {
+/** Boot snapshot of the rule table + posture — only one forward proxy exists per process. */
+export function setBootRules(rules: ForwardProxyRule[] | undefined, intercept?: InterceptPosture): void {
   bootRules = rules;
+  bootIntercept = intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT;
 }
 
 /** The rule table in force for this request (live config first, boot snapshot second). */
@@ -36,12 +40,25 @@ export function currentRules(): ForwardProxyRule[] | undefined {
   return liveForwardProxy?.()?.rules ?? bootRules;
 }
 
+/** The interception posture in force for this request (live config first, boot snapshot second). */
+export function currentInterceptPosture(): InterceptPosture {
+  return liveForwardProxy?.()?.intercept ?? bootIntercept;
+}
+
 /**
  * The full decision for one host. Every leg and the console preview call this
  * (directly or through the thin helpers below), so they cannot disagree.
+ *
+ * Claims are read from the LIVE plugin registry on every call (the host swaps it
+ * atomically on install/uninstall/disable, ADR-0017), and the posture comes from
+ * the live config ref — so neither a plugin install nor a console save needs a
+ * restart.
  */
 export function ruleDecision(host: string): RuleDecision {
-  return resolveHost(host, currentRules());
+  return resolveHost(host, currentRules(), {
+    claimed: listGatewayHosts(),
+    intercept: currentInterceptPosture(),
+  });
 }
 
 /**

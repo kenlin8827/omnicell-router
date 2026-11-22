@@ -190,7 +190,7 @@ location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 12 with a p
 | grok | √ | √ (CLI) | √ | `grok mcp add … [-s user\|project]` → `~/.grok/config.toml` / project `.grok/config.toml` (TOML, read-only); `grok plugin install {url} --trust` |
 | openclaw | √ | √ (CLI) | √ | `openclaw mcp add …` → `~/.openclaw/openclaw.json` (JSON5, read-only, global-only); `openclaw plugins install <spec> --force` |
 
-`opencode-proxy` never appears: it is a hook mode of `opencode`, not a separate host. The same
+`opencode-gateway` never appears: proxy mode is a hook mode of `opencode`, not a separate host. The same
 holds for `cursor-proxy` — its harness host is `cursor`, the artifact landing, not the traffic hook
 (Qoder has no harness host yet). Hosts are **not** `SupportedClient`: VS Code/Zed/Windsurf remain
 artifact hosts only, and welding the two vocabularies would pollute the traffic domain (ADR-0015 §D2).
@@ -499,7 +499,9 @@ split back into runner + package on open.
 The parameter table itself is the shared `ScrollTable` (`frontend/src/components/ScrollTable.tsx`):
 its head is a NORMAL ROW outside the scrolling body — never `position: sticky` — so only the body
 scrolls and rows never slide under a floating head. Column widths are measured from the body's
-first row, which keeps the head aligned whether the body lays out to content or to declared widths.
+first row, which keeps the head aligned whether the body lays out to content or to declared widths;
+the head's scrollable width is then taken from the body's own scroll range, so content that
+overflows its track (a long badge) cannot leave the head scrolling short of the body's far right.
 The name column is the narrow one (a flag is short) and the value column takes the remainder, so a
 DSN is not squeezed into a sliver; a value that is still too long opens in a stacked, full-width
 editor from the expand button in its cell, and only Save writes it back to the row. The width split

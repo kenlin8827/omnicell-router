@@ -5,6 +5,7 @@ import { applyEdits, modify, parse, type JSONPath, type ParseError } from 'jsonc
 import {
   ClientAdapter,
   restoreBackup,
+  describeBackup,
   defaultGatewayPort,
 } from './base.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
@@ -180,8 +181,8 @@ export class OpenClawClientAdapter implements ClientAdapter {
       : [...VIRTUAL_AUTO_IDS];
     const rawExtras = (options?.extraModels || []).map(id => (id || '').trim()).filter(Boolean);
     const concreteExtras = [...new Set(rawExtras.filter(id => !VIRTUAL_AUTO_IDS.has(id)))];
-    // List order mirrors the gateway's /v1/models view exactly: tiers first,
-    // then combos + registered rows in the key's effective order. The main
+    // List order mirrors the gateway's /v1/models view exactly: virtual
+    // models first, then combos + registered rows in the key's effective order. The main
     // slot pins `model.primary` and does NOT jump the list — the client's
     // switcher should read like the console's model catalog. Custom mode is
     // the exception: when the user's chip list contains tier entries, their
@@ -255,9 +256,7 @@ export class OpenClawClientAdapter implements ClientAdapter {
     patch(configPath, edits);
     writeMeta(configPath, { previousModel, previousUtility, previousDecision });
 
-    const backupNote = fs.existsSync(`${configPath}.bak.ocr`)
-      ? ` Backup saved to ${configPath}.bak.ocr`
-      : '';
+    const backupNote = describeBackup(configPath);
     return {
       success: true,
       message: `OpenClaw configured to route via OCR (${targetUrl}, ${ids.length} model entr${ids.length === 1 ? 'y' : 'ies'}, primary: ${primaryRef}).${backupNote}`,

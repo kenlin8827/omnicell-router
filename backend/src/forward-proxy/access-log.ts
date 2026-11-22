@@ -138,20 +138,27 @@ export function clearProxyAccessLog(): void {
 }
 
 /**
- * Delete EXACTLY these events (the console's "clear the rows I can see" when a
- * filter is active): ring, their day-JSONL lines and their body sidecars.
+ * Delete EXACTLY these PERSISTED events: their day-JSONL lines and body
+ * sidecars. The ring is deliberately untouched — history is a SCOPE over the
+ * files, so a history delete must not punch holes in the live view (ADR-0017
+ * §5: the same row can still exist in the other scope until it ages out).
  *
  * The console sends the ids it is displaying instead of a predicate, so the
  * filter logic stays in ONE place (the frontend) — a predicate copy here would
  * be a drift twin that silently deletes more than the operator sees. The
  * read-filter-write runs in one synchronous block: `persistEvent` appends
  * synchronously too, so no concurrent append can be lost inside the rewrite.
+ *
+ * Body sidecars are collected from the day lines being dropped: a history
+ * delete addresses rows the 300-slot ring no longer holds, and their
+ * `<day>/<id>-<side>.bin` files would otherwise be orphaned (the row is gone
+ * from the console while the bytes stay on disk forever).
  */
-export function deleteProxyAccessEvents(ids: string[]): number {
+export function deletePersistedProxyEvents(ids: string[]): number {
   const drop = new Set(ids);
   if (drop.size === 0) return 0;
-  const removed = listProxyAccessEvents().filter((e) => drop.has(e.id));
-  for (const id of drop) ring.remove(id);
+  const dropped = new Set<string>();
+  const bodyRefs = new Set<string>();
   if (persistDir) {
     for (const f of persistedFiles(persistDir)) {
       let text: string;
@@ -164,15 +171,18 @@ export function deleteProxyAccessEvents(ids: string[]): number {
       let touched = false;
       for (const line of text.split(/\r?\n/)) {
         if (!line) continue;
-        let id: unknown;
+        let ev: ProxyAccessEvent | undefined;
         try {
-          id = (JSON.parse(line) as { id?: unknown }).id;
+          ev = JSON.parse(line) as ProxyAccessEvent;
         } catch {
           kept.push(line); // a torn line is not ours to judge
           continue;
         }
-        if (typeof id === 'string' && drop.has(id)) {
+        if (typeof ev.id === 'string' && drop.has(ev.id)) {
           touched = true;
+          dropped.add(ev.id);
+          if (ev.reqBodyFile) bodyRefs.add(ev.reqBodyFile);
+          if (ev.resBodyFile) bodyRefs.add(ev.resBodyFile);
           continue;
         }
         kept.push(line);
@@ -182,12 +192,24 @@ export function deleteProxyAccessEvents(ids: string[]): number {
         if (kept.length === 0) fs.unlinkSync(f);
         else fs.writeFileSync(f, kept.join('\n') + '\n');
       } catch {
-        // Best effort: the ring already dropped them and will not resurface.
+        // Best effort: the file stays, the operator can retry the delete.
       }
     }
   }
-  removeBodyFiles(removed.flatMap((e) => [e.reqBodyFile, e.resBodyFile]));
-  return removed.length;
+  removeBodyFiles([...bodyRefs]);
+  return dropped.size;
+}
+
+/**
+ * Drop these rows from the LIVE ring only — the live view's "clear". Day
+ * files, body sidecars and the history scope stay intact; the caller records
+ * the matching tombstones (observability/traffic-live-hidden.ts) so the rows
+ * are not served again by the live read (including after a ring replay).
+ */
+export function forgetProxyAccessRingEvents(ids: string[]): number {
+  let removed = 0;
+  for (const id of ids) if (ring.remove(id)) removed++;
+  return removed;
 }
 
 function append(ev: ProxyAccessEvent): void {

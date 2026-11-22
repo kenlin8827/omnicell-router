@@ -1,4 +1,4 @@
-import { ResponseFormat } from '../types/openai.js';
+import type { TextConfig } from '../ir/types.js';
 
 export interface ValidationResult {
   valid: boolean;
@@ -43,14 +43,13 @@ export class SchemaAssertion {
   /**
    * Fast static schema & syntax assertion
    */
-  public static validate(rawText: string, responseFormat?: ResponseFormat): ValidationResult {
+  public static validate(rawText: string, format?: TextConfig['format']): ValidationResult {
     if (!rawText || rawText.trim().length === 0) {
       return { valid: false, error: 'Empty output received from model' };
     }
 
     const jsonStr = this.extractJsonString(rawText);
 
-    // 1. JSON Syntax Check (SyntaxError)
     let parsed: any;
     try {
       parsed = JSON.parse(jsonStr);
@@ -61,8 +60,7 @@ export class SchemaAssertion {
       };
     }
 
-    // 2. If no specific schema is declared, basic type and null check
-    if (!responseFormat || responseFormat.type !== 'json_schema' || !responseFormat.json_schema?.schema) {
+    if (format?.type !== 'json_schema') {
       if (typeof parsed !== 'object' || parsed === null) {
         return {
           valid: false,
@@ -72,9 +70,7 @@ export class SchemaAssertion {
       return { valid: true, parsed };
     }
 
-    // 3. Schema-based assertions (Required keys, Types, Enums)
-    const schema = responseFormat.json_schema.schema;
-    const schemaErr = this.checkSchemaCompliance(parsed, schema);
+    const schemaErr = this.checkSchemaCompliance(parsed, format.schema);
     if (schemaErr) {
       return { valid: false, error: schemaErr, parsed };
     }
@@ -82,10 +78,56 @@ export class SchemaAssertion {
     return { valid: true, parsed };
   }
 
+  private static schemaAllowsNull(schema: Record<string, any> | undefined): boolean {
+    if (!schema || typeof schema !== 'object') return false;
+    if (schema.type === 'null') return true;
+    if (Array.isArray(schema.type) && schema.type.includes('null')) return true;
+    if (Array.isArray(schema.enum) && schema.enum.includes(null)) return true;
+    if (Array.isArray(schema.anyOf) && schema.anyOf.some((sub: any) => this.schemaAllowsNull(sub))) return true;
+    if (Array.isArray(schema.oneOf) && schema.oneOf.some((sub: any) => this.schemaAllowsNull(sub))) return true;
+    return false;
+  }
+
   /**
    * Lightweight validator for JSON Schema properties, required fields, and enums
    */
   private static checkSchemaCompliance(data: any, schema: Record<string, any>, path = ''): string | null {
+    if (!schema || typeof schema !== 'object') return null;
+
+    if (Array.isArray(schema.anyOf)) {
+      const branches = schema.anyOf.filter((b: any) => b && typeof b === 'object');
+      if (branches.length > 0 && !branches.some((b: any) => this.checkSchemaCompliance(data, b, path) === null)) {
+        return `Field '${path || 'root'}' did not match anyOf schema branches`;
+      }
+    }
+    if (Array.isArray(schema.oneOf)) {
+      const branches = schema.oneOf.filter((b: any) => b && typeof b === 'object');
+      if (branches.length > 0 && !branches.some((b: any) => this.checkSchemaCompliance(data, b, path) === null)) {
+        return `Field '${path || 'root'}' did not match oneOf schema branches`;
+      }
+    }
+
+    if (Array.isArray(schema.type)) {
+      if (data === null && schema.type.includes('null')) return null;
+      const nonNullTypes = schema.type.filter((t: unknown) => typeof t === 'string' && t !== 'null');
+      if (nonNullTypes.length > 0) {
+        const matched = nonNullTypes.some(
+          (t: string) => this.checkSchemaCompliance(data, { ...schema, type: t }, path) === null,
+        );
+        if (!matched) {
+          return `Field '${path || 'root'}' must match one of [${schema.type.join(', ')}]`;
+        }
+      }
+      return null;
+    }
+
+    if (schema.type === 'null') {
+      if (data !== null) {
+        return `Field '${path || 'root'}' must be null`;
+      }
+      return null;
+    }
+
     if (schema.type === 'object') {
       if (typeof data !== 'object' || data === null || Array.isArray(data)) {
         return `Field '${path || 'root'}' must be an object`;
@@ -94,7 +136,9 @@ export class SchemaAssertion {
       // Check required fields
       if (Array.isArray(schema.required)) {
         for (const reqKey of schema.required) {
-          if (!(reqKey in data) || data[reqKey] === undefined || data[reqKey] === null) {
+          const propSchema = schema.properties?.[reqKey];
+          const nullAllowed = this.schemaAllowsNull(propSchema);
+          if (!(reqKey in data) || data[reqKey] === undefined || (data[reqKey] === null && !nullAllowed)) {
             return `Missing required key '${path ? `${path}.${reqKey}` : reqKey}'`;
           }
         }

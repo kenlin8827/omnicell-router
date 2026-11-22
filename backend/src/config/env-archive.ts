@@ -23,7 +23,8 @@ configure({ useWebWorkers: false });
  * everything else (book-set intuition: export carries KNOWLEDGE, not state).
  *
  * Redaction (default): values at the admin key, apiKeys[*].key, credentialed
- * proxy.url and opencode.password become the sentinel '__REDACTED__' and
+ * proxy.url, the mihomo controller secret, subscription URLs and
+ * opencode.password become the sentinel '__REDACTED__' and
  * their paths are listed in redactedPaths. Both the v1 grouped layout
  * (client.adminKey / upstream.proxy.url / …) and the legacy flat v0 shape
  * (adminApiKey / proxy.url / …) are covered. `?secrets=include` exports real
@@ -198,6 +199,34 @@ export function buildEnvelope(
     // opencode connector password (P2-1b).
     redactAt(parsed, 'opencode.password');
     redactAt(parsed, 'ops.opencode.password');
+    // Mihomo external-controller secret and subscription URLs (ADR-0022).
+    // A subscription URL routinely embeds a long-lived token. Both disk
+    // shapes are covered: flat runtime and the v1 upstream.proxy group.
+    for (const secretPath of ['proxy.mihomo.controllerSecret', 'upstream.proxy.mihomo.controllerSecret']) {
+      redactAt(parsed, secretPath);
+    }
+    for (const listPath of ['proxy.mihomo.subscriptions', 'upstream.proxy.mihomo.subscriptions']) {
+      const list = at(parsed, listPath);
+      if (Array.isArray(list)) {
+        list.forEach((item: any, i: number) => redact(item, 'url', `${listPath}[${i}].url`));
+      }
+    }
+    // Manual nodes carry a password (ss/trojan/hysteria2/http/socks5) or a
+    // uuid (vmess/vless) — both are credentials, neither belongs in an archive.
+    // A raw pasted mapping holds the same secrets inside YAML text, so the
+    // whole mapping is redacted rather than parsed key-by-key.
+    for (const listPath of ['proxy.mihomo.manualNodes', 'upstream.proxy.mihomo.manualNodes']) {
+      const list = at(parsed, listPath);
+      if (Array.isArray(list)) {
+        list.forEach((item: any, i: number) => {
+          redact(item, 'password', `${listPath}[${i}].password`);
+          redact(item, 'uuid', `${listPath}[${i}].uuid`);
+          // hysteria2 obfuscation password: a credential like the rest.
+          redact(item, 'obfsPassword', `${listPath}[${i}].obfsPassword`);
+          redact(item, 'yaml', `${listPath}[${i}].yaml`);
+        });
+      }
+    }
     redactAt(parsed, 'adminApiKey');
     redactAt(parsed, 'client.adminKey');
     for (const listPath of ['apiKeys', 'client.apiKeys']) {

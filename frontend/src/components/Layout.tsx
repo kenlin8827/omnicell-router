@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowLeftRight,
-  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, ClipboardList, CloudDownload, Cpu,
-  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, LogOut, Menu,
+  BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, CloudDownload, Compass, Cpu,
+  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
   MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
   ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
@@ -26,6 +26,7 @@ import { WindowControls } from './WindowControls';
 import { DownloadCenter } from './DownloadCenter';
 import { copyToClipboard } from '../lib/clipboard';
 import { GITHUB_REPO_URL } from '../lib/links';
+import { PlaygroundPage } from '../pages/PlaygroundPage';
 import { STAR_REMINDER_CHANGED_EVENT, isStarNudgeDone } from '../lib/starReminder';
 
 /** Latest release the operator dismissed; a NEWER release prompts again. */
@@ -56,21 +57,39 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
     { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
     { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone },
-    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
   ] },
   { id: 'grp-upstream', headingKey: 'nav.grpUpstream', shortKey: 'nav.shortUpstream', icon: Server, items: [
     { to: '/providers', labelKey: 'nav.providers', icon: Plug },
     { to: '/models', labelKey: 'nav.models', icon: Cpu },
     { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
-    { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+    { to: '/proxy-patterns', labelKey: 'nav.proxyPatterns', icon: ListFilter },
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
   ] },
+  /** Proxy capability home (ADR-0018/0022 axis): the inbound forward-proxy
+   *  rule table and the outbound endpoint live together, away from the model
+   *  vocabulary — the model-side reference (include/exclude globs) stays in the
+   *  Upstream group on the Proxy Patterns page. Inbound leads: a request enters
+   *  here before any egress decision is made, and its traffic lands on the log
+   *  page right next to the rules that admitted it. */
+  { id: 'grp-proxy', headingKey: 'nav.grpProxy', shortKey: 'nav.shortProxy', icon: Globe, items: [
+    { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
+    { to: '/proxy-log', labelKey: 'nav.proxyLog', icon: ScrollText },
+    { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+    { to: '/proxy-clash', labelKey: 'nav.proxyMihomo', icon: Cpu },
+  ] },
+  /** The name-resolution chain, in the order the pipeline walks it (ADR-0003):
+   *  combos and tiers are the exact-match stages, auto is the smart cascade,
+   *  route-entries the explicit overrides, each an exact-match or override
+   *  stage of the name-resolution chain.
+   *  There is deliberately NO terminal "unresolved name" page any more: the
+   *  fallback mechanism was deleted outright (ADR-0026), and a name that
+   *  survives none of these stages moves that answer to whoever owns the
+   *  traffic — the gateway plugin that answered the request. */
   { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
     { to: '/combos', labelKey: 'nav.combos', icon: Layers },
     { to: '/tiers', labelKey: 'nav.rules', icon: Network },
     { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
-    { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
     { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
@@ -89,6 +108,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
     { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
     { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
+    { to: '/harness/mcp-debug', labelKey: 'nav.mcpBrowser', icon: Compass },
   ] },
   { id: 'grp-system', headingKey: 'nav.grpSystem', shortKey: 'nav.shortSystem', icon: Settings, items: [
     { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
@@ -104,7 +124,6 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/route-entries': { groupKey: 'nav.grpTraffic', titleKey: 'nav.routeEntries' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
-  '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/playground': { groupKey: 'nav.grpAccess', titleKey: 'nav.playground' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
@@ -113,10 +132,14 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/harness/plugins': { groupKey: 'nav.grpHarness', titleKey: 'nav.plugins' },
   '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
-  '/proxy-upstream': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
+  '/harness/mcp-debug': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcpBrowser' },
+  '/proxy-upstream': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxy' },
+  '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
+  '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
+  '/proxy-log': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyLog' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
-  '/proxy-access': { groupKey: 'nav.grpAccess', titleKey: 'nav.proxyAccess' },
+  '/proxy-access': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyAccess' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
   '/breaker-rules': { groupKey: 'nav.grpSafety', titleKey: 'nav.breakerRules' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
@@ -163,6 +186,18 @@ export const Layout: React.FC = () => {
   // Empty-query ordering for the command palette (see lib/navRecent).
   const [recentRoutes, setRecentRoutes] = useState<string[]>(readRecentRoutes);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => resolveThemePreference(localStorage.getItem(THEME_STORAGE_KEY)));
+  /** The playground keeps its component state across navigation: a running
+   *  chat stream, the transcript, the selected tab and the form fields must
+   *  survive a trip to another page. React Router unmounts an outlet page, so
+   *  the page is hosted HERE instead — mounted on first visit and thereafter
+   *  only hidden (`display: none`), with the outlet's canvas hidden in turn.
+   *  Lazy on purpose: a console session that never opens the playground never
+   *  mounts its effects. */
+  const isPlayground = location.pathname === '/playground';
+  const [playgroundMounted, setPlaygroundMounted] = useState(isPlayground);
+  useEffect(() => {
+    if (isPlayground) setPlaygroundMounted(true);
+  }, [isPlayground]);
 
   /** Once the operator used the star CTA, the header repository button drops
    *  its "star us" tooltip — it stays a plain repo link. Re-read on the shared
@@ -400,7 +435,7 @@ export const Layout: React.FC = () => {
       {mobileOpen && <button className="sidebar-scrim" type="button" aria-label={t('common.close')} onClick={() => setMobileOpen(false)} />}
       <aside className={`app-sidebar is-${navStyle}${railCollapsed ? ' is-compact' : ''}${railLabels ? ' has-rail-labels' : ''}${denseRows ? ' is-dense' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}>
         {/* First level: one glyph per group. The rail is the stable anchor —
-            its eight buttons never move, so muscle memory survives whatever
+            its group buttons never move, so muscle memory survives whatever
             the panel is showing. Only the rail style has one. */}
         {navStyle === 'rail' && <div className="app-rail">
           <NavLink to="/" className="brand-mark-link" aria-label="OmniCellRouter">
@@ -570,7 +605,16 @@ export const Layout: React.FC = () => {
             onDismiss={dismissUpdate}
           />
         )}
-        <main className="app-main"><div className="page-canvas"><Outlet context={{ status, statusError, refreshStatus }} /></div></main>
+        <main className="app-main">
+          <div className="page-canvas" style={isPlayground ? { display: 'none' } : undefined}>
+            <Outlet context={{ status, statusError, refreshStatus }} />
+          </div>
+          {playgroundMounted && (
+            <div className="page-canvas" style={isPlayground ? undefined : { display: 'none' }}>
+              <PlaygroundPage active={isPlayground} />
+            </div>
+          )}
+        </main>
       </div>
       <CommandPalette open={paletteOpen} items={commandItems} recent={recentRoutes} onClose={() => setPaletteOpen(false)} onSelect={(to) => navigate(to)} />
     </div>

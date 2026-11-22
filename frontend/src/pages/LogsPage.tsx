@@ -106,7 +106,7 @@ export const LogsPage: React.FC = () => {
             <span>{t('logs.clear')}</span>
           </button>
           <button className="btn btn-sm" onClick={loadData} disabled={loading}>
-            <RefreshCw size={12} />
+            <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('logs.refresh')}</span>
           </button>
         </div>

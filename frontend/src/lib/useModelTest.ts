@@ -63,6 +63,13 @@ export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
   if (r.upstreamBody) s += ` | ${r.upstreamBody}`;
   if (r.triedModels && r.triedModels.length > 1)
     s += ` (${t('op.testRotated', { n: r.triedModels.length, models: r.triedModels.join(', ') })})`;
+  if (r.triedCredentials && r.triedCredentials.length > 1)
+    s += ` (${t('op.testRotatedCredentials', {
+      n: r.triedCredentials.length,
+      credentials: r.triedCredentials
+        .map((c) => c.label?.trim() || t('op.credentialUnnamed'))
+        .join(', '),
+    })})`;
   return s;
 };
 
@@ -94,7 +101,7 @@ export interface ModelTestTarget {
   key: string;
   providerId: string;
   modelId?: string;
-  /** Pin the probe to ONE credential row (KeysPage credential list); default = provider head. */
+  /** Pin the probe to ONE credential row (KeysPage credential list); default = let the provider-level probe rotate the enabled chain. */
   credentialId?: string;
 }
 
@@ -106,6 +113,10 @@ export interface ModelTestOutcome {
   error?: string;
   /** Card-row classification only — keeps long upstream bodies out of the grid. */
   errorShort?: string;
+  /** Masked echo of the credential that produced the verdict: the pinned row
+   *  (addressed probe) or the chain entry that answered (provider-level probe,
+   *  which rotates the enabled chain until one key works). */
+  credential?: { id: string; label?: string };
 }
 
 const CONCURRENCY = 4;

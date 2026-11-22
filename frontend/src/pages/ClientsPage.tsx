@@ -1,20 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search, AlertTriangle } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
-import { ProfileLinkTable } from '../components/ProfileLinkTable';
-import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
+import { AgentRowsTable } from '../components/AgentRowsTable';
+import { SmartAssignDialog, type SmartAssignTarget } from '../components/SmartAssignDialog';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
-import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse, type PluginConfigFieldInfo, type PluginConfigSectionInfo } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
-import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, type GatewayCfgDraft } from '../lib/plugin-config';
+import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, pickLocaleText, SHARED_GATEWAY_CARD_KEYS, type GatewayCfgDraft } from '../lib/plugin-config';
+import { pluginWarningText } from '../lib/warnings';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { FONT_MONO } from '../lib/fonts';
 import { copyToClipboard } from '../lib/clipboard';
 /**
@@ -45,6 +47,7 @@ const CLIENT_REASON_KEY: Record<string, string> = {
   cursor_not_found: 'clients.cursorErrNotFound',
   qoder_not_found: 'clients.qoderErrNotFound',
   not_active: 'clients.clientErrNotActive',
+  takeover_lost: 'clients.clientErrTakeoverLost',
   proxy_credential_required: 'clients.gatewayKeyRequired',
   remove_failed: 'clients.cursorErrRemoveFailed',
 };
@@ -64,7 +67,7 @@ const clientActionErrorText = (err: unknown, t: TFn): string => {
 /**
  * Clients whose non-main slots are ROLE rows (pi's subagent roles, omp's
  * modelRoles): main lives in modelSel, roles in the link-table draft
- * (bindSel) with `slot:<key>` profile tags — see piLinkPayload/applySmartAssignments.
+ * (bindSel) — see piLinkPayload/applySmartAssignments.
  */
 const isRoleTableClient = (name: string): boolean => name === 'pi' || name === 'omp';
 
@@ -73,13 +76,13 @@ const MODEL_CHIP_LIMIT = 12;
 
 /** The gateway's virtual tier namespace (bare alias + tier aliases), canonical order —
  *  mirrors backend VIRTUAL_AUTO_IDS (cli/types.ts). */
-const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
+const VIRTUAL_MODEL_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 
 /** Adapter default virtual block when a custom-mode setup omits `virtualModels`:
  *  opencode/dsh/pi/omp/kimi/workbuddy/openclaw inject the full block, grok
  *  injects none (its own historical default). Keep in sync with the adapters. */
 const virtualDefaultFor = (clientName: string): string[] =>
-  clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
+  clientName === 'grok' ? [] : [...VIRTUAL_MODEL_IDS];
 
 /** A gateway plugin's model surface lives in its plugin config but is edited
  *  HERE (client card), not on the Plugins page: the model list is part of "how
@@ -93,26 +96,16 @@ function sameModelSelection(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
 }
 
-/** Proxy clients whose model surface is owned by a client-gateway plugin. */
-const GATEWAY_PLUGIN_BY_CLIENT: Record<string, string> = {
-  'cursor-proxy': 'cursor-gateway',
-  'qoder-proxy': 'qoder-gateway',
-};
-
 /**
- * The `ocr` launch verb per launcher client — the actionable start command
- * once a launcher is ready. Declared once here (not in i18n): the command IS
- * the product surface and must never drift from the CLI's passthrough verbs
- * (`ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli`).
+ * The `ocr <verb>` launch commands a hook publishes (`ClientHookStatus.launch`).
+ * The FIRST verb is the primary start command, the rest are alternates. No
+ * table here: a packaged hook's verbs (`cursor`, `qoder-cli`, …) arrive with
+ * its status row, exactly like a built-in hook's.
  */
-const LAUNCH_COMMANDS: Record<string, { primary: string; alt: string }> = {
-  'cursor-proxy': { primary: 'ocr cursor', alt: 'ocr cursor-agent' },
-  'qoder-proxy': { primary: 'ocr qoder', alt: 'ocr qoder-cli' },
-};
-
-const CLIENT_BY_GATEWAY_PLUGIN: Record<string, string> = Object.fromEntries(
-  Object.entries(GATEWAY_PLUGIN_BY_CLIENT).map(([client, plugin]) => [plugin, client]),
-);
+const launchCommandsOf = (c: ClientStatus): { primary: string; alt?: string } | null =>
+  c.launch?.length
+    ? { primary: `ocr ${c.launch[0]}`, ...(c.launch[1] ? { alt: `ocr ${c.launch[1]}` } : {}) }
+    : null;
 
 interface GatewayPluginState {
   installed: boolean;
@@ -123,10 +116,15 @@ interface GatewayPluginState {
 }
 
 export const ClientsPage: React.FC = () => {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [clients, setClients] = useState<ClientStatus[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Roster refresh in flight (getStatus reload). Separate from `loading`:
+   *  setup/teardown actions keep the cards interactive-looking and must not
+   *  collapse the list into a spinner — only a roster (re)load does. */
+  const [refreshing, setRefreshing] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   /** Per-client per-slot model selection ('auto' = intelligent routing default) */
   const [modelSel, setModelSel] = useState<Record<string, Record<string, string>>>({});
@@ -134,9 +132,9 @@ export const ClientsPage: React.FC = () => {
   const [models, setModels] = useState<{ id: string; tier?: string; kind?: string; members?: number }[]>([]);
   /** Gateway API keys (Claude auth token writer) */
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
-  /** Per-client selected API key (raw key token) — setup ALWAYS writes the
-   *  picked key into the client config (client config backups cover regrets);
-   *  the picker is mandatory. */
+  /** Per-client selected API key id — setup resolves the plaintext secret via
+   *  api.revealApiKey before writing into the client config (client config
+   *  backups cover regrets); the picker is mandatory. */
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
   /** Clients whose key picker is flagged by a refused setup: red trigger + a
    *  scroll-to/focus. Cleared when a key is picked, another action starts, the
@@ -158,6 +156,16 @@ export const ClientsPage: React.FC = () => {
    *  card. Keyed by PLUGIN id (the config owner). */
   const [gatewayCfg, setGatewayCfg] = useState<Record<string, GatewayCfgDraft>>({});
   const [gatewayCfgBusy, setGatewayCfgBusy] = useState<Record<string, boolean>>({});
+  /** Edits to `placement: 'card'` fields, keyed by PLUGIN id then config key.
+   *  Holds only the touched keys; display falls back to the committed plugin
+   *  values, so an empty map shows exactly what the plugin holds. Cleared by a
+   *  successful save — the response's values are the new committed baseline. */
+  const [cardEdits, setCardEdits] = useState<Record<string, Record<string, string>>>({});
+  /** Schema + sections of each gateway plugin, kept so the card renders its
+   *  `placement: 'card'` fields from the plugin's own declaration (no console
+   *  knowledge of plugin keys). */
+  const [gatewaySchema, setGatewaySchema] = useState<Record<string, PluginConfigFieldInfo[]>>({});
+  const [gatewaySections, setGatewaySections] = useState<Record<string, PluginConfigSectionInfo[]>>({});
   /** Post-save hint per plugin id: the catalog is live in the gateway already,
    *  but the CLIENT caches its own model list — point at an app restart instead
    *  of a hook teardown, which never refreshes that list. */
@@ -166,6 +174,12 @@ export const ClientsPage: React.FC = () => {
    *  installed, but the client sees no OCR catalog: the card must say so instead
    *  of advertising a model list that does not exist. */
   const [gatewayPlugins, setGatewayPlugins] = useState<Record<string, GatewayPluginState>>({});
+  /** Advisory texts each package declares in its manifest (`warningLabels`),
+   *  refreshed with the same plugin read: a plugin-owned warning code renders
+   *  from the plugin's own wording, never from a core i18n key. */
+  const [pluginWarnLabels, setPluginWarnLabels] = useState<
+    Record<string, Record<string, string | Record<string, string>>>
+  >({});
   /** In-place plugin settings drawer. It edits only the protocol/runtime keys —
    *  the model surface stays in the card editor — so opening it never navigates
    *  away or drops this card's draft. */
@@ -178,17 +192,19 @@ export const ClientsPage: React.FC = () => {
   const [virtualSel, setVirtualSel] = useState<Record<string, string[] | undefined>>({});
   /** Expanded/collapsed state of long model-chip walls (follow/custom lists). */
   const [extrasOpen, setExtrasOpen] = useState<Record<string, boolean>>({});
-  /** Per-client model-list source: 'none' (default) exposes no concrete
-   *  models, 'follow' mirrors the selected API key's effective access,
+  /** Family cards: which IDE tab is selected, keyed by client name → product id.
+   *  The tab row carries every IDE's hook/CA state, so selecting one is about
+   *  showing ITS files/actions, never about discovering which IDE is broken.
+   *  Falls back to the first product when unset or when a stale id survives a
+   *  status refresh. One selection per family card, unlike the card accordion. */
+  const [activeProduct, setActiveProduct] = useState<Record<string, string>>({});
+  /** Per-client model-list source: 'default' exposes no concrete models (the
+   *  console renders it as the "Default" tab — the adapter's own virtual-entry
+   *  block applies), 'follow' mirrors the selected API key's effective access,
    *  'custom' keeps the manual picker. */
-  const [modeSel, setModeSel] = useState<Record<string, 'none' | 'custom' | 'follow'>>({});
+  const [modeSel, setModeSel] = useState<Record<string, 'default' | 'custom' | 'follow'>>({});
   /** keyId → effective-model view cache (follow mode, lazy-loaded) */
   const [keyModels, setKeyModels] = useState<Record<string, Awaited<ReturnType<typeof api.getKeyModels>>>>({});
-  /** Model profiles (config.yaml `modelProfiles`) for the opencode agent binding UI */
-  const [profiles, setProfiles] = useState<ModelProfileView[]>([]);
-  /** Profiles fetch settled — the seed effect must not compare memory against a
-   *  list that is merely still loading (empty ≠ none). */
-  const [profilesReady, setProfilesReady] = useState(false);
   /** OpenCode agent inventory (lazy: loaded when the opencode form expands) */
   const [agents, setAgents] = useState<OpenCodeAgentView[] | null>(null);
   /** Inventory fetch failed. `agents` deliberately STAYS null: the setup
@@ -196,9 +212,7 @@ export const ClientsPage: React.FC = () => {
    *  an empty-list fallback here would let a plain Apply sweep every binding
    *  off the config. Retry re-arms the lazy-load effect. */
   const [agentsError, setAgentsError] = useState(false);
-  /** Selected profile id per client ('' = no profile / un-apply) */
-  const [profileSel, setProfileSel] = useState<Record<string, string>>({});
-  /** Per-client agent-name → slot-key bindings (model profile application) */
+  /** Per-client agent/role draft: name → gateway model ref ('' = inherit). */
   const [bindSel, setBindSel] = useState<Record<string, Record<string, string>>>({});
   /** Agent/role link table visibility (opencode, pi). OFF = the form declares
    *  "not configuring subagents": the table hides and the setup payload omits
@@ -215,16 +229,12 @@ export const ClientsPage: React.FC = () => {
    *  hydration must happen exactly once, never on late effect re-runs. */
   const extrasSeeded = useRef<Set<string>>(new Set());
   /** Smart-assign dialog target: client name + the sub-agent rows built from
-   *  the CURRENT draft state, the candidate list, and whether assignments are
-   *  profile slot links (follows the page's current profile selection). */
+   *  the CURRENT draft state, plus the gateway-model candidate basis. */
   const [smartFor, setSmartFor] = useState<{
     name: string;
     targets: SmartAssignTarget[];
-    /** Profile-mode only: the linked profile's slot keys (+ model note). */
-    candidates?: SmartAssignCandidate[];
-    profileMode: boolean;
-    /** No-profile candidate basis: gateway models, permission-scoped to the
-     *  client's selected API key when one is picked. */
+    /** Candidate basis: gateway models, permission-scoped to the client's
+     *  selected API key when one is picked. */
     basis: { id: string; kind?: string; members?: number; wire?: string }[];
     scopeHint: string;
   } | null>(null);
@@ -266,27 +276,31 @@ export const ClientsPage: React.FC = () => {
    *  names it before the operator hooks a launcher and discovers TLS failures
    *  only at use time. */
   const [caTrust, setCaTrust] = useState<CaTrustResponse | null>(null);
-  const loadClients = async () => {
+  /** `refresh=true` (manual button / after a hook flip) bypasses the backend
+   *  roster SWR cache; plain mounts serve the fresh-window snapshot. */
+  const loadClients = async (refresh = false) => {
+    setRefreshing(true);
     try {
-      const data = await api.getStatus();
+      // Roster (the slow half — subprocess version probes) and the lightweight
+      // status shell load in PARALLEL from their split endpoints; the 3s-polled
+      // status no longer carries the roster (backend GET /api/admin/clients).
+      const [roster, data] = await Promise.all([api.getClients(refresh), api.getStatus()]);
+      const list = roster.clients || [];
       // ONE normalization point: every filter/card below reads `hookKind`
       // unconditionally, and a gateway predating the field must classify as
       // 'config' (keeps the API-key gate) rather than as a keyless proxy hook.
-      setClients((data.clients || []).map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
+      setClients(list.map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
       if (data.port) setPort(String(data.port));
       setFpEnabled(data.forwardProxy ? data.forwardProxy.enabled : null);
       setFpRunning(data.forwardProxy ? data.forwardProxy.running : null);
       // Seed selections from the client config's current slot values (don't clobber unsaved edits)
       setModelSel(prev => {
         const next = { ...prev };
-        for (const c of data.clients || []) {
+        for (const c of list) {
           if (next[c.name] === undefined) {
             const slots: Record<string, string> = {};
-            // Profile-link echo re-tags non-main slots as `slot:<key>` drafts —
-            // the picker shows the link entry instead of the resolved ref.
-            const tags = c.profile?.bindings || {};
             for (const s of clientSlots(c)) {
-              slots[s.key] = s.key !== 'main' && tags[s.key] ? `slot:${tags[s.key]}` : (s.value || s.default || 'auto');
+              slots[s.key] = s.value || s.default || 'auto';
             }
             next[c.name] = slots;
           }
@@ -299,7 +313,13 @@ export const ClientsPage: React.FC = () => {
       opencodeApi.listPlugins()
         .then((res) => {
           const next: Record<string, GatewayPluginState> = {};
-          for (const id of new Set(Object.values(GATEWAY_PLUGIN_BY_CLIENT))) {
+          // Which packages own a client's model surface is DECLARED by the
+          // hooks themselves (`catalogPlugin`), so this refresh covers every
+          // gateway-backed client without naming one.
+          const catalogIds = new Set(
+            list.map((c) => c.catalogPlugin).filter((id): id is string => !!id),
+          );
+          for (const id of catalogIds) {
             const plugin = (res.plugins || []).find((p) => p.id === id);
             next[id] = {
               installed: !!plugin,
@@ -309,20 +329,21 @@ export const ClientsPage: React.FC = () => {
             };
           }
           setGatewayPlugins(next);
+          const labels: Record<string, Record<string, string | Record<string, string>>> = {};
+          for (const p of res.plugins || []) if (p.warningLabels) labels[p.id] = p.warningLabels;
+          setPluginWarnLabels(labels);
         })
         .catch(err => console.error('gateway plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
-      // seeded from the slot echo (bare ref / native pin verbatim), then the
-      // profile-link echo re-tags linked roles to `slot:<key>`.
+      // seeded from the slot echo (bare ref / native pin verbatim).
       setBindSel(prev => {
         const next = { ...prev };
-        for (const c of data.clients || []) {
+        for (const c of list) {
           if (!isRoleTableClient(c.name) || next[c.name] !== undefined) continue;
-          const tags = c.profile?.bindings || {};
           const rows: Record<string, string> = {};
           for (const s of clientSlots(c)) {
             if (s.key === 'main') continue;
-            rows[s.key] = tags[s.key] ? `slot:${tags[s.key]}` : (s.value || '');
+            rows[s.key] = s.value || '';
           }
           next[c.name] = rows;
         }
@@ -330,15 +351,15 @@ export const ClientsPage: React.FC = () => {
       });
       setExtraSel(prev => {
         const next = { ...prev };
-        for (const c of data.clients || []) {
+        for (const c of list) {
           if (next[c.name] === undefined) next[c.name] = c.extraModels || [];
         }
         return next;
       });
-      // Profile selections seed from a dedicated effect (applied echo wins,
-      // then the environment memory) — both sources must be loaded first.
     } catch (err) {
       console.error(err);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -346,13 +367,33 @@ export const ClientsPage: React.FC = () => {
     loadClients();
     api.listGatewayModels().then(setModels).catch(() => {});
     api.getApiKeys().then(r => setApiKeys((r.keys || []).filter(k => k.enabled))).catch(() => {});
-    api.getModelProfiles().then(p => { setProfiles(p); setProfilesReady(true); }).catch(() => setProfilesReady(true));
     api.getClientProfileMemory().then(m => { memRef.current = m; setMem(m); }).catch(() => { memRef.current = {}; setMem({}); });
     api.getProxyCaMeta().then(m => setCaPath(m.path)).catch(() => {});
     api.getProxyCaTrust().then(setCaTrust).catch(() => {});
   }, []);
 
-  const expandedPluginId = expanded ? GATEWAY_PLUGIN_BY_CLIENT[expanded] : undefined;
+  // The proxy-tab prerequisite banner reads a mount-time snapshot, but the
+  // forward proxy can come up AFTER this page loaded (gateway restart with
+  // forwardProxy.enabled, or a re-enable). While the proxy tab is the active
+  // view, poll JUST the forward-proxy state (same 4s cadence as the Proxy
+  // Access page) so a banner that no longer matches reality clears itself;
+  // switching tabs stops the poll — no standing background traffic.
+  useEffect(() => {
+    if (activeTab !== 'proxy') return;
+    let alive = true;
+    const tick = () => api.getStatus()
+      .then(s => {
+        if (!alive) return;
+        setFpEnabled(s.forwardProxy ? s.forwardProxy.enabled : null);
+        setFpRunning(s.forwardProxy ? s.forwardProxy.running : null);
+      })
+      .catch(() => {});
+    tick();
+    const iv = setInterval(tick, 4000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [activeTab]);
+
+  const expandedPluginId = expanded ? clients.find((c) => c.name === expanded)?.catalogPlugin : undefined;
 
   // A gateway client's model surface is plugin config, not the launcher
   // adapter. Load it only when the card is opened AND the plugin is loaded; a
@@ -368,6 +409,8 @@ export const ClientsPage: React.FC = () => {
         if (!alive) return;
         const parsed = parseGatewayCfg(cfg.values ?? {}, gatewayVocabulary(cfg.schema ?? []));
         setGatewayCfg((prev) => ({ ...prev, [expandedPluginId]: parsed }));
+        setGatewaySchema((prev) => ({ ...prev, [expandedPluginId]: cfg.schema ?? [] }));
+        setGatewaySections((prev) => ({ ...prev, [expandedPluginId]: cfg.sections ?? [] }));
 
       })
       .catch((err) => { if (alive) console.error(`${expandedPluginId} plugin config:`, err); })
@@ -384,8 +427,8 @@ export const ClientsPage: React.FC = () => {
     const pending = new Set<string>();
     for (const [pluginId, draft] of Object.entries(gatewayCfg)) {
       if (draft.modelListMode !== 'follow') continue;
-      const clientName = CLIENT_BY_GATEWAY_PLUGIN[pluginId];
-      const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+      const clientName = clients.find((c) => c.catalogPlugin === pluginId)?.name ?? '';
+      const picked = apiKeys.find((k) => k.id === (apiKeySel[clientName] || ''));
       if (picked && !keyModels[picked.id]) pending.add(picked.id);
     }
     for (const keyId of pending) {
@@ -402,10 +445,10 @@ export const ClientsPage: React.FC = () => {
     if (!expandedPluginId) return;
     const parsed = gatewayCfg[expandedPluginId];
     if (!parsed?.boundKeyId) return;
-    const clientName = CLIENT_BY_GATEWAY_PLUGIN[expandedPluginId];
+    const clientName = clients.find((c) => c.catalogPlugin === expandedPluginId)?.name ?? '';
     const bound = apiKeys.find((k) => k.id === parsed.boundKeyId);
     if (!bound) return;
-    setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.key }));
+    setApiKeySel((prev) => (prev[clientName] ? prev : { ...prev, [clientName]: bound.id }));
   }, [expandedPluginId, gatewayCfg, apiKeys]);
 
   /** Catalog-relevant draft fields differ from the committed values — after
@@ -434,8 +477,8 @@ export const ClientsPage: React.FC = () => {
     // Every OCR-routed completion is charged to this key (ADR-0017): limits,
     // model access and usage attribution all hang on it, so the card cannot
     // save an unbound gateway.
-    const clientName = CLIENT_BY_GATEWAY_PLUGIN[pluginId];
-    const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+    const clientName = clients.find((c) => c.catalogPlugin === pluginId)?.name ?? '';
+    const picked = apiKeys.find((k) => k.id === (apiKeySel[clientName] || ''));
     if (!picked) {
       toast.error(t('clients.apiKeyRequired'));
       return false;
@@ -463,25 +506,36 @@ export const ClientsPage: React.FC = () => {
       const model = draft.model;
       const values = {
         ...draft.values,
+        // `placement: 'card'` fields are edited on this card; carry the overlay
+        // through takeover-driven saves exactly like the explicit Save button.
+        ...(cardEdits[pluginId] ?? {}),
         model,
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
         catalogPrefix: draft.catalogPrefix,
-        // Persist the plugin's own unset spelling — `none` is UI vocabulary.
+        // Persist the plugin's own unset spelling — `default` is UI vocabulary.
         modelListMode: gatewayModeValue(draft, draft.modelListMode),
         models,
         ...(draft.keyField ? { [draft.keyField]: picked.id } : {}),
       };
       const res = await opencodeApi.putPluginConfig(pluginId, values);
       setGatewayCfg((prev) => ({ ...prev, [pluginId]: parseGatewayCfg(res.values ?? values, draft) }));
+      // The response values are the new committed baseline; the card-owned
+      // overlay has nothing left to shadow. A FAILED save keeps it for retry.
+      setCardEdits((prev) => (prev[pluginId] ? { ...prev, [pluginId]: {} } : prev));
       // Only a catalog-shaped save needs the client to re-read its list; a
       // dropped value (warning) means the advertised list did NOT change.
       setGatewaySavedNotice((prev) => ({ ...prev, [pluginId]: catalogChanged && res.warnings.length === 0 }));
       // The backend drops keys the running plugin build does not declare (a
       // gateway started before the manifest listed them), so a plain success
       // toast would report a save that silently lost the model choice.
+      const failedSurfaces = (res.surfaces ?? []).filter((surface) => !surface.ok);
       if (res.warnings.length > 0) {
         toast.warning(t('clients.gatewaySaveDropped', { warnings: res.warnings.join('; ') }));
+      } else if (failedSurfaces.length > 0) {
+        // The catalog is saved, but a client picker it feeds could not be
+        // re-materialized — say so instead of a clean success.
+        toast.warning(failedSurfaces.map((surface) => surface.message).join('; '));
       } else {
         toast.success(t('pluginPage.configSaved'));
       }
@@ -500,7 +554,10 @@ export const ClientsPage: React.FC = () => {
   const gatewayDraftDirty = (draft: GatewayCfgDraft | undefined, clientName: string): boolean => {
     if (!draft) return false;
     const base = parseGatewayCfg(draft.values ?? {}, draft);
-    const pickedId = apiKeySel[clientName] ? keyIdOf(apiKeySel[clientName]) : '';
+    const pickedId = apiKeySel[clientName] || '';
+    // Card-owned edits must dirty the card too: a takeover without this check
+    // would hook the client and leave the operator's card rows unsaved.
+    const cardPluginId = clients.find((cl) => cl.name === clientName)?.catalogPlugin ?? '';
     return (
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
@@ -508,18 +565,17 @@ export const ClientsPage: React.FC = () => {
       draft.catalogPrefix !== base.catalogPrefix ||
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
-      draft.boundKeyId !== pickedId
+      draft.boundKeyId !== pickedId ||
+      Object.keys(cardEdits[cardPluginId] ?? {}).length > 0
     );
   };
 
-  /** Seed selections once BOTH sources are in: the committed form memory
-   *  (the full snapshot the last setup applied — see rememberDraft) wins —
-   *  the form restores what the user last hooked, not external drift — and
-   *  the live echo fills what memory cannot express (foreign pins, installs
-   *  made outside this console).
+  /** Seed selections once the committed form memory is in: the full snapshot
+   *  the last setup applied (see rememberDraft) wins — the form restores what
+   *  the user last hooked, not external drift.
    *  Per-client undefined guard never clobbers in-page edits. */
   useEffect(() => {
-    if (mem === null || !profilesReady) return;
+    if (mem === null) return;
     // API-key form memory: the last-written key re-seeds the picker (resolved
     // by stable id, never the raw token). A stale id (deleted/disabled key)
     // seeds nothing — setup then demands a fresh pick. Gateway clients are
@@ -529,21 +585,10 @@ export const ClientsPage: React.FC = () => {
     setApiKeySel(prev => {
       const next = { ...prev };
       for (const c of clients) {
-        if (next[c.name] !== undefined || GATEWAY_PLUGIN_BY_CLIENT[c.name]) continue;
+        if (next[c.name] !== undefined || c.catalogPlugin) continue;
         const id = mem[c.name]?.apiKeyId;
         const k = id ? apiKeys.find(x => x.id === id) : undefined;
-        if (k) next[c.name] = k.key;
-      }
-      return next;
-    });
-    setProfileSel(prev => {
-      const next = { ...prev };
-      for (const c of clients) {
-        if (next[c.name] !== undefined) continue;
-        // Stale-memory defense: an id pointing at a DELETED profile restores as
-        // "no profile" — the combobox must never seed a non-existent option.
-        const candidate = mem[c.name]?.profile || c.profile?.id || '';
-        next[c.name] = candidate && profiles.some(p => p.id === candidate) ? candidate : '';
+        if (k) next[c.name] = k.id;
       }
       return next;
     });
@@ -552,27 +597,15 @@ export const ClientsPage: React.FC = () => {
       for (const c of clients) {
         if (c.name !== 'opencode' && !isRoleTableClient(c.name)) continue;
         if (next[c.name] !== undefined) continue;
-        // Persisted choice wins; absent → ON iff links already exist (echo or
-        // memory) — a linked client must not wake up looking unconfigured,
+        // Persisted choice wins; absent → ON iff agent picks already exist in
+        // memory — a configured client must not wake up looking unconfigured,
         // a fresh one stays collapsed.
         const memEntry = mem[c.name];
         if (memEntry?.linksOn !== undefined) {
           next[c.name] = memEntry.linksOn;
           continue;
         }
-        const tagCount = Object.keys(c.profile?.bindings || memEntry?.bindings || {}).length;
-        next[c.name] = tagCount > 0;
-      }
-      return next;
-    });
-    setBindSel(prev => {
-      const next = { ...prev };
-      for (const c of clients) {
-        // opencode seeds from the live agent inventory; pi/omp seed from their
-        // role slots (see loadClients) — their draft values carry slot links,
-        // not just refs.
-        if (c.name === 'opencode' || isRoleTableClient(c.name)) continue;
-        if (next[c.name] === undefined) next[c.name] = mem[c.name]?.bindings || c.profile?.bindings || {};
+        next[c.name] = Object.keys(memEntry?.agentModels || {}).length > 0;
       }
       return next;
     });
@@ -580,10 +613,10 @@ export const ClientsPage: React.FC = () => {
       const next = { ...prev };
       for (const c of clients) {
         // Seeding heuristic: memory wins; an already-hooked client WITH extra
-        // models falls back to 'custom' (never default a live list to 'none' —
-        // that would silently wipe it on the next setup); empty config → 'none'.
+        // models falls back to 'custom' (never default a live list to 'default' —
+        // that would silently wipe it on the next setup); empty config → 'default'.
         if (next[c.name] === undefined) {
-          next[c.name] = mem[c.name]?.modelMode || (c.extraModels && c.extraModels.length > 0 ? 'custom' : 'none');
+          next[c.name] = mem[c.name]?.modelMode || (c.extraModels && c.extraModels.length > 0 ? 'custom' : 'default');
         }
       }
       return next;
@@ -600,10 +633,23 @@ export const ClientsPage: React.FC = () => {
       return next;
     });
 
+    // Context window: seed the picker from the last APPLIED value so the
+    // number the form displays is the number the next setup writes — an
+    // untouched picker must not display 256K while the payload silently
+    // carries the remembered window from an earlier setup.
+    setCtxSel(prev => {
+      const next = { ...prev };
+      for (const c of clients) {
+        if (next[c.name] !== undefined) continue;
+        const cw = mem[c.name]?.contextWindow;
+        if (cw) next[c.name] = String(cw);
+      }
+      return next;
+    });
     // Extras: the committed snapshot wins over the echo seed on first
     // hydration (loadClients already claimed the slot from the config echo).
     // A ref marks each client hydrated so late effect re-runs (apiKeys or
-    // profiles arriving) never clobber in-page edits.
+    // memory arriving) never clobber in-page edits.
     const freshExtras = clients.filter(c => !extrasSeeded.current.has(c.name));
     for (const c of freshExtras) extrasSeeded.current.add(c.name);
     setExtraSel(prev => {
@@ -614,50 +660,38 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
-  }, [clients, mem, profilesReady, profiles, apiKeys]);
-
-  /** Slot-key tags behind a client's drafts — the `slot:<key>` values only.
-   *  opencode keeps them in the agent-table draft (bindSel); pi/omp keep them
-   *  in the role-link table draft (bindSel — loadClients seeds it, the table
-   *  renders it). Memory persists tags so links survive reloads. */
-  const linkTagsOf = (draft: Record<string, string> | undefined): Record<string, string> =>
-    Object.fromEntries(
-      Object.entries(draft || {})
-        .filter(([k, v]) => k !== 'main' && typeof v === 'string' && v.startsWith('slot:'))
-        .map(([a, v]) => [a, v.slice(5)])
-    );
+  }, [clients, mem, apiKeys]);
 
   /** COMMIT-POINT form memory: called ONLY when a setup APPLIED something —
    *  never on mid-form edits (draft fiddling must not overwrite the memory of
    *  the last applied configuration; it would also storm the config-write
    *  path with whole-config POSTs per pick). Snapshots the FULL form state
-   *  the setup applied: link tags, manual role/agent refs (native pins
-   *  included), pi/omp main pick, slot drafts, the custom model-list draft,
-   *  mode, key id and the link-table toggle. Written into the ACTIVE
-   *  environment's config.yaml (book-set scoped — switching envs switches
-   *  the memory too). memRef keeps two rapid commits from clobbering each
-   *  other via a stale snapshot. */
-  const rememberDraft = (clientName: string) => {
+   *  the setup applied: manual role/agent refs (native pins included), pi/omp
+   *  main pick, slot drafts, the custom model-list draft, mode, key id and
+   *  the link-table toggle. Written into the ACTIVE environment's config.yaml
+   *  (book-set scoped — switching envs switches the memory too). memRef keeps
+   *  two rapid commits from clobbering each other via a stale snapshot. */
+  const rememberDraft = (clientName: string, appliedContextWindow?: number) => {
     const ms = modelSel[clientName] || {};
     const ds = bindSel[clientName] || {};
     const roleRows = isRoleTableClient(clientName) || clientName === 'opencode';
     const entry: ClientProfileMemoryEntry = {
-      profile: profileSel[clientName] || '',
-      // Link tags plus the raw manual refs verbatim (native pins included) —
-      // the snapshot must reproduce the rows exactly as the form showed them.
-      bindings: linkTagsOf(ds),
+      // The raw manual refs verbatim (native pins included) — the snapshot
+      // must reproduce the rows exactly as the form showed them.
       agentModels: roleRows
-        ? Object.fromEntries(Object.entries(ds).filter(([, v]) => v && v !== 'auto' && !v.startsWith('slot:')))
+        ? Object.fromEntries(Object.entries(ds).filter(([, v]) => v && v !== 'auto'))
         : undefined,
       models: clientName === 'opencode'
         ? undefined
         : isRoleTableClient(clientName)
           ? { main: ms.main || 'auto' }
           : ms,
-      extraModels: extraSel[clientName] || [],
-      virtualModels: virtualSel[clientName],
-      modelMode: modeSel[clientName] ?? 'none',
-      apiKeyId: keyIdOf(apiKeySel[clientName] || ''),
+      modelMode: modeSel[clientName] ?? 'default',
+      apiKeyId: apiKeySel[clientName] || '',
+      // The window this setup actually applied; when the payload omitted it
+      // (resync with no prior memory), the previous value stays on file and
+      // the memory carries it forward.
+      contextWindow: appliedContextWindow ?? (memRef.current || mem || {})[clientName]?.contextWindow,
       linksOn: linksOn[clientName],
     };
     // Pure updater required: computing `next` (and firing the POST) inside the
@@ -668,14 +702,9 @@ export const ClientsPage: React.FC = () => {
     api.saveClientProfileMemory(next).catch(e => console.warn('profile memory save failed:', e));
   };
 
-  /** Gateway key id behind a selected key token ('' = nothing picked) — the
-   *  form memory stores the STABLE id, never the raw token. */
-  const keyIdOf = (keyValue: string): string =>
-    apiKeys.find(k => k.key === keyValue)?.id || '';
-
   /** The key object behind a client's apiKey selection (undefined = nothing picked). */
   const followKeyOf = (clientName: string): ApiKeyItem | undefined =>
-    apiKeys.find(k => k.key === (apiKeySel[clientName] || ''));
+    apiKeys.find(k => k.id === (apiKeySel[clientName] || ''));
 
   /** The key's allowed model view (follow preview): virtual tier entries the
    *  policy admits (injected by the adapters per the same verdict) plus the
@@ -684,7 +713,7 @@ export const ClientsPage: React.FC = () => {
     (keyModels[k.id]?.models || []).filter(m => m.allowed).map(m => m.id);
 
   /** Flip the model-list source (draft only — the setup commit persists it). */
-  const setModelMode = (clientName: string, mode: 'none' | 'custom' | 'follow') => {
+  const setModelMode = (clientName: string, mode: 'default' | 'custom' | 'follow') => {
     setModeSel(prev => ({ ...prev, [clientName]: mode }));
   };
 
@@ -708,29 +737,32 @@ export const ClientsPage: React.FC = () => {
 
   /** Seed opencode's agent-link draft once the inventory loads: each row
    *  mirrors the config's current agent model (router-owned values arrive
-   *  stripped to the bare ref; native pins verbatim), then the profile-link
-   *  echo/memory re-tags linked rows to `slot:<key>` so they keep following
-   *  the profile. One draft per inventory load — after an apply the cache is
-   *  dropped (setAgents(null)) and the draft entry is cleared so the fresh
-   *  committed truth re-seeds; the guard keeps in-page edits alive across
-   *  unrelated clients-load refreshes. */
+   *  stripped to the bare ref; native pins verbatim). One draft per inventory
+   *  load — after an apply the cache is dropped (setAgents(null)) and the
+   *  draft entry is cleared so the fresh committed truth re-seeds; the guard
+   *  keeps in-page edits alive across unrelated clients-load refreshes. */
   useEffect(() => {
     if (agents === null) return;
-    const c = clients.find(x => x.name === 'opencode');
-    if (!c) return;
     setBindSel(prev => {
       if (prev['opencode'] !== undefined) return prev; // in-page edits win until the next apply commit
-      const tags = c.profile?.bindings || mem?.['opencode']?.bindings || {};
       const next: Record<string, string> = {};
       for (const a of agents) next[a.name] = a.model || '';
-      for (const [agent, slotKey] of Object.entries(tags)) {
-        if (typeof slotKey === 'string' && slotKey && agent in next) next[agent] = `slot:${slotKey}`;
-      }
       return { ...prev, opencode: next };
     });
-  }, [agents, clients, mem]);
+  }, [agents]);
 
-  const handleToggle = async (clientName: string, action: 'setup' | 'teardown') => {
+  /**
+   * `product` narrows a family card's action to ONE product (JetBrains IDEs).
+   * `acknowledgeRunning` carries the operator's consent for acting on a client
+   * that is running right now: the backend refuses with `ide_running` first, the
+   * dialog below asks, and only the SECOND call carries the flag.
+   */
+  const handleToggle = async (
+    clientName: string,
+    action: 'setup' | 'teardown',
+    product?: string,
+    opts: { acknowledgeRunning?: boolean; resync?: boolean } = {},
+  ) => {
     // Every refusal below fires while the card may still be collapsed — the fix
     // (key picker, model mode, context form) lives inside the panel, so reveal
     // it alongside the toast instead of making the operator find the row again.
@@ -758,12 +790,12 @@ export const ClientsPage: React.FC = () => {
       // or the hook lands with the plugin still on its old list (the classic
       // "picked follow, still only auto + tiers" report). The explicit Save
       // button keeps the same contract; this only mirrors it.
-      const gatewayPluginId = GATEWAY_PLUGIN_BY_CLIENT[clientName];
+      const gatewayPluginId = clients.find((c) => c.name === clientName)?.catalogPlugin;
       if (action === 'setup' && gatewayPluginId) {
         // Every OCR-routed turn is charged to the bound key; a takeover without
         // one produces a hooked client that 401s on every OCR model. Refuse it
         // here instead of letting setup succeed half-configured.
-        const picked = apiKeys.find((k) => k.key === (apiKeySel[clientName] || ''));
+        const picked = apiKeys.find((k) => k.id === (apiKeySel[clientName] || ''));
         const expiry = picked?.expiresAt ? Date.parse(picked.expiresAt) : NaN;
         if (!picked || picked.enabled === false || (!Number.isNaN(expiry) && expiry <= Date.now())) {
           toast.error(t('clients.gatewayKeyRequired'));
@@ -777,9 +809,9 @@ export const ClientsPage: React.FC = () => {
       let extras = extraSel[clientName] || [];
       let virtuals: string[] | undefined;
       if (action === 'setup' && supportsExtraModels(clientName)) {
-        const mode = modeSel[clientName] ?? 'none';
-        if (mode === 'none') {
-          // Explicit 'none': no concrete extras; the virtual block stays at the
+        const mode = modeSel[clientName] ?? 'default';
+        if (mode === 'default') {
+          // Explicit 'default': no concrete extras; the virtual block stays at the
           // adapter default (full auto* block for the JSON clients, none for grok).
           extras = [];
         } else if (mode === 'follow') {
@@ -794,8 +826,11 @@ export const ClientsPage: React.FC = () => {
             revealCard();
             return;
           }
-          const view = keyModels[k.id] || (await api.getKeyModels(k.id));
-          setKeyModels(prev => (prev[k.id] ? prev : { ...prev, [k.id]: view }));
+          const view = opts.resync || !keyModels[k.id] ? await api.getKeyModels(k.id) : keyModels[k.id];
+          // A forced resync must always overwrite the cache: the follow
+          // preview chips on the card show the snapshot that was just
+          // written, never the stale one the page loaded with.
+          setKeyModels(prev => (opts.resync || !prev[k.id] ? { ...prev, [k.id]: view } : prev));
           extras = view.models.filter(m => !m.virtual && m.allowed).map(m => m.id);
           virtuals = view.models.filter(m => m.virtual && m.allowed).map(m => m.id);
         } else {
@@ -812,47 +847,86 @@ export const ClientsPage: React.FC = () => {
       // render the key picker.
       const hookKind = clients.find(c => c.name === clientName)?.hookKind ?? 'config';
       const keyless = hookKind !== 'config';
-      if (action === 'setup' && !keyless && !(apiKeySel[clientName] || '')) {
+      const selectedKeyId = apiKeySel[clientName] || '';
+      if (action === 'setup' && !keyless && !selectedKeyId) {
         toast.error(t('clients.apiKeyRequired'));
         flagKeyError();
         return;
       }
+      let resolvedApiKey: string | undefined;
+      if (action === 'setup' && !(keyless && !gatewayPluginId) && selectedKeyId) {
+        try {
+          const { key: plainKey } = await api.revealApiKey(selectedKeyId);
+          if (!plainKey) {
+            toast.error(t('common.failed'));
+            revealCard();
+            return;
+          }
+          resolvedApiKey = plainKey;
+        } catch (err: any) {
+          toast.error(err?.message || t('common.failed'));
+          revealCard();
+          return;
+        }
+      }
       const piPayload = piLinkPayload(clientName);
       const agentPayload = opencodeAgentPayload(clientName);
+      // Consent only ever rides the SECOND call: the first one must be able to
+      // come back with `ide_running` and let the dialog below ask.
+      const acknowledge = opts.acknowledgeRunning === true ? { acknowledgeRunning: true } : {};
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
-        ...(keyless && !gatewayPluginId ? {} : { apiKey: apiKeySel[clientName] }),
-        contextWindow: Number(ctxSel[clientName] || '262144'),
+        ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
+        contextWindow: ctxSel[clientName]
+          ? Number(ctxSel[clientName])
+          : (memRef.current || mem || {})[clientName]?.contextWindow ?? (opts.resync ? undefined : 262144),
         extraModels: extras,
         ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
-        profile: piPayload.profile,
         ...agentPayload,
-      } : undefined);
+        ...(product ? { product } : {}),
+        ...acknowledge,
+      } : { ...(product ? { product } : {}), ...acknowledge });
       // Proxy-mode notices are backend prose — show a localized one-liner instead
       // (the long hints live in the expanded card).
       setActionNotice(
-        clientName === 'opencode-proxy'
+        clientName === 'opencode-gateway'
           ? t(action === 'setup' ? 'clients.proxySetupOk' : 'clients.proxyTeardownOk')
           : clientName === 'cursor-proxy'
             ? t(action === 'setup' ? 'clients.cursorSetupOk' : 'clients.cursorTeardownOk')
             : clientName === 'qoder-proxy'
               ? t(action === 'setup' ? 'clients.qoderSetupOk' : 'clients.qoderTeardownOk')
-              : (res.message || 'Updated')
+              : clientName === 'jetbrains-proxy'
+                ? t(action === 'setup' ? 'clients.jetbrainsSetupOk' : 'clients.jetbrainsTeardownOk')
+                : (res.message || 'Updated')
       );
       // Setup succeeded, but the hooked client can still fail at USE time
       // (untrusted CA, proxy not listening). Advise, never block: the CA is
       // routinely imported right after hooking.
       if (action === 'setup' && res.warnings?.length) {
         // Show ALL advisories: a listener warning must not hide the CA one.
-        toast.warning(res.warnings.map(warn => t(
-          warn.code === 'ca_not_trusted'
-            ? 'clients.warnCaNotTrusted'
-            : warn.code === 'ca_trust_unknown'
-              ? 'clients.warnCaTrustUnknown'
-              : 'clients.warnProxyNotRunning',
-          warn.params,
-        )).join(' '));
+        // Core codes keep core copy; any other code is the owning package's —
+        // its text comes from that package's manifest (`warningLabels`), so the
+        // plugin owns the wording and the console only picks a locale + params.
+        const warnKey: Record<string, string> = {
+          ca_not_trusted: 'clients.warnCaNotTrusted',
+          ca_trust_unknown: 'clients.warnCaTrustUnknown',
+          proxy_not_running: 'clients.warnProxyNotRunning',
+          ide_running: 'clients.warnIdeRunning',
+          ide_truststore_readonly: 'clients.warnIdeTruststoreReadonly',
+        };
+        const hookPluginId = clients.find(c => c.name === clientName)?.pluginId;
+        const labels = hookPluginId ? pluginWarnLabels[hookPluginId] : undefined;
+        toast.warning(
+          res.warnings
+            .map(warn =>
+              warnKey[warn.code]
+                ? t(warnKey[warn.code], warn.params)
+                : pluginWarningText(labels, warn.code, warn.params, lang) ??
+                  t('clients.warnUndeclaredAdvisory', { code: warn.code })
+            )
+            .join(' ')
+        );
       }
       if (action === 'setup') {
         // The hook's forced probe just refreshed the backend cache; mirror it so
@@ -860,7 +934,7 @@ export const ClientsPage: React.FC = () => {
         api.getProxyCaTrust().then(setCaTrust).catch(() => {});
         // Write-through: the memory mirrors the drafts this setup just
         // applied — the same selections the payload was built from.
-        rememberDraft(clientName);
+        rememberDraft(clientName, Number(ctxSel[clientName]) || undefined);
       }
       // Refresh the agent inventory cache and drop the link draft so the
       // table re-seeds from the committed config (the lazy-load effect
@@ -872,9 +946,30 @@ export const ClientsPage: React.FC = () => {
           return rest;
         });
       }
-      await loadClients();
+      await loadClients(true);
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
+      // A running client is a CONSENT stop, not a failure: the backend wrote
+      // nothing yet and hands back what it detected. Ask, then re-run the SAME
+      // action with `acknowledgeRunning` — the write is fine, it is just undone
+      // when the app exits and rewrites its settings from memory.
+      if (err?.reasonCode === 'ide_running' && !opts.acknowledgeRunning) {
+        const proceed = await confirmDialog({
+          title: t('clients.ideRunningTitle'),
+          description: t(action === 'setup' ? 'clients.ideRunningSetup' : 'clients.ideRunningTeardown', {
+            products: err.params?.products ?? '',
+          }),
+          warning: true,
+          confirmLabel: t('clients.ideRunningContinue'),
+          cancelLabel: t('common.cancel'),
+        });
+        if (proceed) {
+          await handleToggle(clientName, action, product, { ...opts, acknowledgeRunning: true });
+          return;
+        }
+        revealCard();
+        return;
+      }
       toast.error(clientActionErrorText(err, t));
       revealCard();
     } finally {
@@ -885,8 +980,6 @@ export const ClientsPage: React.FC = () => {
   /**
    * Agent-binding payload for the opencode setup call. Draft row values:
    *  - '' / 'auto'         → omitted (inherit the default model);
-   *  - `slot:<key>`        → profile-linked row: tag travels via `profile.bindings`
-   *                          and resolves server-side against the profile's slots;
    *  - a gateway-known ref → manual row, sent via `agentModels`;
    *  - anything else       → a native (non-router) pin echoed from the config —
    *                          never re-sent (re-sending would re-route it through
@@ -894,26 +987,20 @@ export const ClientsPage: React.FC = () => {
    * Omitted entirely until the agent inventory has loaded: a stale/absent draft
    * must never touch the agent node.
    */
-  const opencodeAgentPayload = (clientName: string): { agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+  const opencodeAgentPayload = (clientName: string): { agentModels?: Record<string, string> } => {
     // agents === null: inventory not loaded — a stale/absent draft must never
     // touch the agent node. Switch OFF: the form declares "not configuring" —
     // the payload is omitted entirely (no sweep; existing overrides survive).
     if (clientName !== 'opencode' || agents === null || linksOn[clientName] === false) return {};
     const known = new Set(models.map(m => m.id));
     const manual: Record<string, string> = {};
-    const tags: Record<string, string> = {};
     for (const [agent, raw] of Object.entries(bindSel[clientName] || {})) {
       const v = (raw || '').trim();
       if (!v || v === 'auto') continue;
-      if (v.startsWith('slot:')) {
-        const k = v.slice(5);
-        if (k) tags[agent] = k;
-        continue;
-      }
       if (!known.has(v)) continue;
       manual[agent] = v;
     }
-    return { agentModels: manual, profile: { id: profileSel[clientName] || '', bindings: tags } };
+    return { agentModels: manual };
   };
 
   /** Restore the form drafts to the remembered form state (the write-through
@@ -927,55 +1014,49 @@ export const ClientsPage: React.FC = () => {
   const handleResetModel = (clientName: string) => {
     const c = clients.find(x => x.name === clientName);
     const m = mem?.[clientName];
-    const memTags = m?.bindings || {};
     const memModels = m?.models || {};
     const memAgent = m?.agentModels || {};
-    // Slot drafts: memory link tags re-tag linked slots; the committed ref
-    // snapshot restores manual picks; the slot's role default is the last
-    // resort — the live echo is deliberately NOT consulted.
+    // Slot drafts: the committed ref snapshot restores manual picks; the
+    // slot's role default is the last resort — the live echo is deliberately
+    // NOT consulted.
     const slots: Record<string, string> = {};
     for (const s of clientSlots(c)) {
-      const tag = memTags[s.key];
-      slots[s.key] = s.key !== 'main' && tag ? `slot:${tag}` : (memModels[s.key] || s.default || 'auto');
+      slots[s.key] = memModels[s.key] || s.default || 'auto';
     }
     setModelSel(prev => ({ ...prev, [clientName]: slots }));
     setExtraSel(prev => ({ ...prev, [clientName]: m?.extraModels ? [...m.extraModels] : [] }));
     setVirtualSel(prev => ({ ...prev, [clientName]: m?.virtualModels }));
-    const candidate = m?.profile || '';
-    setProfileSel(prev => ({ ...prev, [clientName]: candidate && profiles.some(p => p.id === candidate) ? candidate : '' }));
     if (isRoleTableClient(clientName)) {
       // pi/omp role drafts live in bindSel (loadClients seeds them there and
-      // the link table renders from it): memory link tags re-link the role,
-      // the committed agentModels restore manual refs, everything else blanks.
+      // the link table renders from it): the committed agentModels restore
+      // manual refs, everything else blanks.
       setBindSel(prev => {
         const draft: Record<string, string> = {};
         for (const s of clientSlots(c)) {
           if (s.key === 'main') continue;
-          draft[s.key] = memTags[s.key] ? `slot:${memTags[s.key]}` : (memAgent[s.key] || '');
+          draft[s.key] = memAgent[s.key] || '';
         }
         return { ...prev, [clientName]: draft };
       });
     } else if (clientName === 'opencode') {
-      // Memory tags re-link agents, remembered agentModels restore manual refs
-      // verbatim; agents the user never picked stay unselected (blank — the
-      // mirror records what the form showed, it never invents an 'auto' pick).
+      // Remembered agentModels restore manual refs verbatim; agents the user
+      // never picked stay unselected (blank — the mirror records what the form
+      // showed, it never invents an 'auto' pick).
       setBindSel(prev => {
         const draft: Record<string, string> = {};
-        for (const a of agents || []) draft[a.name] = memTags[a.name] ? `slot:${memTags[a.name]}` : (memAgent[a.name] || '');
+        for (const a of agents || []) draft[a.name] = memAgent[a.name] || '';
         return { ...prev, [clientName]: draft };
       });
-    } else {
-      setBindSel(prev => ({ ...prev, [clientName]: { ...memTags } }));
     }
-    setModeSel(prev => ({ ...prev, [clientName]: m?.modelMode || 'none' }));
+    setModeSel(prev => ({ ...prev, [clientName]: m?.modelMode || 'default' }));
     setApiKeySel(prev => {
       const next = { ...prev };
       const k = m?.apiKeyId ? apiKeys.find(x => x.id === m.apiKeyId) : undefined;
-      next[clientName] = k ? k.key : '';
+      next[clientName] = k ? k.id : '';
       return next;
     });
     if (clientName === 'opencode' || isRoleTableClient(clientName)) {
-      setLinksOn(prev => ({ ...prev, [clientName]: m?.linksOn ?? Object.keys(memTags).length > 0 }));
+      setLinksOn(prev => ({ ...prev, [clientName]: m?.linksOn ?? Object.keys(memAgent).length > 0 }));
     }
   };
 
@@ -1011,54 +1092,34 @@ export const ClientsPage: React.FC = () => {
   };
 
   /** pi/omp payload: main stays a plain model pick; the role-link table's
-   *  drafts split into manual refs (agentModels) and profile-link tags
-   *  (`slot:<key>`, resolved server-side). Native pins echoed verbatim are
+   *  drafts become manual refs (agentModels). Native pins echoed verbatim are
    *  never re-sent. Other clients pass their slot map through unchanged. */
-  const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+  const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string> } => {
     if (!isRoleTableClient(clientName)) return { models: modelSel[clientName] || {} };
     // Switch OFF = "not configuring roles": main still applies, the role
     // payload is omitted entirely (no sweep; existing overrides survive).
     if (linksOn[clientName] === false) return { models: { main: modelSel[clientName]?.main || 'auto' } };
     const known = new Set(models.map(m => m.id));
     const manual: Record<string, string> = {};
-    const tags: Record<string, string> = {};
     for (const [role, raw] of Object.entries(bindSel[clientName] || {})) {
       const v = (raw || '').trim();
       if (!v || v === 'auto') continue;
-      if (v.startsWith('slot:')) {
-        const k = v.slice(5);
-        if (k) tags[role] = k;
-        continue;
-      }
       if (!known.has(v)) continue;
       manual[role] = v;
     }
     return {
       models: { main: modelSel[clientName]?.main || 'auto' },
       agentModels: manual,
-      profile: { id: profileSel[clientName] || '', bindings: tags },
     };
   };
 
   /** Slot/agent rows the smart-assign decider fills — built from the CURRENT
-   *  draft state (never the saved config). Main/primary rows are included in
-   *  plain mode (the decider assigns a direct model ref verbatim). In profile
-   *  mode pi's `main` is EXCLUDED: main is never a profile link (see
-   *  `linkTagsOf`/`piLinkPayload`), and a `slot:<key>` wrap would write an
-   *  illegal draft into pi's main model pick. Candidate semantics follow the
-   *  page's CURRENT profile selection: a picked profile means assignments are
-   *  its SLOT KEYS (linked as `slot:<key>` drafts, candidates annotated with
-   *  the slot's model); no profile means direct gateway model refs. */
+   *  draft state (never the saved config). Assignments are direct gateway
+   *  model refs written into the drafts verbatim. */
   const openSmartAssign = async (c: ClientStatus) => {
-    const profileId = profileSel[c.name] || '';
-    const profile = profiles.find(p => p.id === profileId);
-    const profileMode = !!profile;
     let targets: SmartAssignTarget[];
     if (isRoleTableClient(c.name)) {
       targets = clientSlots(c)
-        // Profile mode: skip `main` — it stays a plain model pick, never a
-        // profile-link tag (`slot:<key>` would corrupt the primary model).
-        .filter(s => !profileMode || s.key !== 'main')
         .map(s => ({
           key: s.key,
           label: slotLabels[s.key] || s.key,
@@ -1073,11 +1134,10 @@ export const ClientsPage: React.FC = () => {
       targets = clientSlots(c).map(s => ({ key: s.key, label: slotLabels[s.key] || s.key, role: s.description, current: modelSel[c.name]?.[s.key] }));
     }
     if (targets.length === 0) return;
-    if (profileMode && Object.keys(profile!.slots || {}).length === 0) return;
 
     // Permission scoping: the client's traffic will carry its selected API
-    // key, so plain-mode candidates only make sense within that key's model
-    // access. No key picked yet = show everything but say so (the setup will
+    // key, so candidates only make sense within that key's model access.
+    // No key picked yet = show everything but say so (the setup will
     // demand a key before anything is written).
     let basis = models;
     let scopeHint = t('clients.smartScopeNone');
@@ -1091,15 +1151,13 @@ export const ClientsPage: React.FC = () => {
         scopeHint = t('clients.smartScopeKey');
       }
     }
-    if (!profileMode && basis.length === 0) {
+    if (basis.length === 0) {
       toast.error(t('clients.smartScopeEmpty'));
       return;
     }
     setSmartFor({
       name: c.name,
       targets,
-      candidates: profileMode ? Object.entries(profile!.slots || {}).map(([k, ref]) => ({ id: k, note: ref })) : undefined,
-      profileMode,
       basis,
       scopeHint,
     });
@@ -1107,29 +1165,24 @@ export const ClientsPage: React.FC = () => {
 
   /** Write decider assignments back into the page's DRAFT state (never
    *  config). pi's `main` is a slot pick (modelSel), not a link-table row —
-   *  split it off; everything else goes to the link-table draft. Profile mode
-   *  wraps each value as a `slot:<key>` link tag; plain mode writes the model
-   *  ref verbatim. `main` never arrives wrapped: profile mode excludes it
-   *  from the targets, and plain mode assigns a bare model ref. */
-  const applySmartAssignments = (clientName: string, assignments: Record<string, string>, profileMode: boolean) => {
-    const wrap = (v: string) => (profileMode ? `slot:${v}` : v);
-    const apply = (draft: Record<string, string>) =>
-      Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, wrap(v)]));
+   *  split it off; everything else goes to the link-table draft. Values are
+   *  model refs written verbatim. */
+  const applySmartAssignments = (clientName: string, assignments: Record<string, string>) => {
     if (isRoleTableClient(clientName)) {
       const { main, ...roles } = assignments;
-      if (main) setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), main: wrap(main) } }));
+      if (main) setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), main } }));
       if (Object.keys(roles).length > 0) {
-        setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(roles) } }));
+        setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...roles } }));
         setLinksOn(prev => ({ ...prev, [clientName]: true }));
       }
       return;
     }
     if (clientName === 'opencode') {
-      setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
+      setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...assignments } }));
       setLinksOn(prev => ({ ...prev, [clientName]: true }));
       return;
     }
-    setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
+    setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...assignments } }));
   };
 
   /** Multi-select toggle → route the next set into the two drafts: virtual
@@ -1137,8 +1190,8 @@ export const ClientsPage: React.FC = () => {
    *  when the set actually changes — an untouched draft keeps the payload
    *  absent), everything else into the concrete extras draft. */
   const applyModelDraft = (clientName: string, next: string[]) => {
-    const virtualNext = next.filter(id => VIRTUAL_TIER_IDS.includes(id));
-    setExtraSel(prev => ({ ...prev, [clientName]: next.filter(id => !VIRTUAL_TIER_IDS.includes(id)) }));
+    const virtualNext = next.filter(id => VIRTUAL_MODEL_IDS.includes(id));
+    setExtraSel(prev => ({ ...prev, [clientName]: next.filter(id => !VIRTUAL_MODEL_IDS.includes(id)) }));
     setVirtualSel(prev => {
       const effective = prev[clientName] ?? virtualDefaultFor(clientName);
       const changed = virtualNext.length !== effective.length || virtualNext.some(id => !effective.includes(id));
@@ -1147,7 +1200,7 @@ export const ClientsPage: React.FC = () => {
   };
 
   const removeExtraModel = (clientName: string, id: string) => {
-    if (VIRTUAL_TIER_IDS.includes(id)) {
+    if (VIRTUAL_MODEL_IDS.includes(id)) {
       // Removing a default-present virtual entry materializes the draft
       // (adapter default minus this id); an already-materialized draft just
       // drops the id. Untouched drafts keep the payload absent.
@@ -1233,7 +1286,7 @@ export const ClientsPage: React.FC = () => {
    *  (mode / snapshot / replace / default / force), while the Plugins drawer
    *  holds the protocol/runtime keys. Same contract for every gateway client. */
   const renderGatewayCatalog = (c: ClientStatus) => {
-    const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
+    const pluginId = c.catalogPlugin;
     if (!pluginId) return null;
     const plugin = gatewayPlugins[pluginId];
     const draft = gatewayCfg[pluginId];
@@ -1255,20 +1308,25 @@ export const ClientsPage: React.FC = () => {
         ) : draft ? (
           (() => {
             const mode = draft.modelListMode;
-            const followKey = apiKeys.find((key) => key.key === (apiKeySel[c.name] || ''));
+            const followKey = apiKeys.find((key) => key.id === (apiKeySel[c.name] || ''));
             const followView = followKey ? keyModels[followKey.id] : undefined;
-            const listed = mode === 'none'
-              // "Unset" is gateway-defined: `all` advertises the whole
-              // registry, the tier-only spelling advertises auto*.
-              ? draft.unsetMode === 'all'
-                ? models.map((model) => model.id)
-                : VIRTUAL_TIER_IDS
+            // Default = no list set: every shipped gateway then advertises its
+            // built-in virtual entries only. The unset spelling is the
+            // manifest's own (never inferred here — ADR-0017: it is not
+            // contract), so the preview is the built-in block, not the registry.
+            const listed = mode === 'default'
+              ? VIRTUAL_MODEL_IDS
               : mode === 'custom'
                 ? draft.models
                 : followView
                   ? followView.models.filter((model) => model.allowed).map((model) => model.id)
                   : draft.models;
             const visible = [...new Set(listed)];
+            // Manifest declarations for this plugin: the card renders its own
+            // `placement` choices instead of branching on the plugin id.
+            const schema = gatewaySchema[pluginId] ?? [];
+            const sections = gatewaySections[pluginId] ?? [];
+            const hideDefaultModel = schema.find((field) => field.key === 'model')?.placement === 'none';
             const defaultOptions = [...new Set([
               draft.model,
               ...visible,
@@ -1301,7 +1359,7 @@ export const ClientsPage: React.FC = () => {
                     clearKeyError(c.name);
                   }}
                   options={apiKeys.map((key) => ({
-                    value: key.key,
+                    value: key.id,
                     label: key.name,
                     meta: key.key.length > 12 ? `${key.key.slice(0, 8)}…${key.key.slice(-4)}` : undefined,
                   }))}
@@ -1319,7 +1377,7 @@ export const ClientsPage: React.FC = () => {
                 <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayModelList')}</span>
                 <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    {(['none', 'custom', 'follow'] as const).map((uiMode) => {
+                    {(['default', 'custom', 'follow'] as const).map((uiMode) => {
                       const active = mode === uiMode;
                       return (
                         <button
@@ -1334,8 +1392,8 @@ export const ClientsPage: React.FC = () => {
                             ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
                             : undefined}
                         >
-                          {t(uiMode === 'none'
-                            ? 'clients.modelModeNone'
+                          {t(uiMode === 'default'
+                            ? 'clients.modelModeDefault'
                             : uiMode === 'custom'
                               ? 'clients.modelModeCustom'
                               : 'clients.modelModeFollow')}
@@ -1384,7 +1442,7 @@ export const ClientsPage: React.FC = () => {
                     </>
                   )}
 
-                  {mode === 'none' && (
+                  {mode === 'default' && (
                     <>
                       {renderModelChips(
                         c.name,
@@ -1396,7 +1454,7 @@ export const ClientsPage: React.FC = () => {
                         { marginBottom: 0 },
                       )}
                       <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
-                        {t(draft.unsetMode === 'all' ? 'clients.modelModeAllHint' : 'clients.modelModeNoneHint')}
+                        {t('clients.modelModeUnsetHint')}
                       </div>
                     </>
                   )}
@@ -1426,26 +1484,107 @@ export const ClientsPage: React.FC = () => {
                   )}
                 </div>
 
-                <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
-                <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
-                  <Combobox
-                    style={{ minWidth: 0 }}
-                    value={draft.model}
-                    onChange={(model) => update({ model })}
-                    options={defaultOptions.map((id) => ({ value: id, label: id }))}
-                    placeholder={t('clients.gatewayDefaultModel')}
-                    panelMinWidth={320}
-                  />
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.forceModel}
-                      disabled={busy}
-                      onChange={(e) => update({ forceModel: e.target.checked })}
-                    />
-                    {t('clients.gatewayForceModel')}
-                  </label>
-                </div>
+                {/* The gateway routing default (`model` / `forceModel`) is a
+                    RELAY concept. A hook whose client always names its model
+                    declares that field `placement: 'none'` — the card then
+                    skips the row instead of offering dead config. */}
+                {!hideDefaultModel && (
+                  <>
+                    <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
+                    <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                      <Combobox
+                        style={{ minWidth: 0 }}
+                        value={draft.model}
+                        onChange={(model) => update({ model })}
+                        options={defaultOptions.map((id) => ({ value: id, label: id }))}
+                        placeholder={t('clients.gatewayDefaultModel')}
+                        panelMinWidth={320}
+                      />
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-dim)' }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.forceModel}
+                          disabled={busy}
+                          onChange={(e) => update({ forceModel: e.target.checked })}
+                        />
+                        {t('clients.gatewayForceModel')}
+                      </label>
+                    </div>
+                  </>
+                )}
+
+                {(() => {
+                  // Card-owned fields come from the plugin's OWN declaration:
+                  // `placement: 'card'` minus the keys the shared catalog
+                  // editor above already renders (core gateway vocabulary).
+                  // Titles, hints and defaults are the manifest's locale maps,
+                  // so a plugin adds a card row without touching the console.
+                  const fields = schema.filter(
+                    (field) => field.placement === 'card' && SHARED_GATEWAY_CARD_KEYS[field.key] !== true
+                  );
+                  if (!fields.length) return null;
+                  const edits = cardEdits[pluginId] ?? {};
+                  const committed = draft.values ?? {};
+                  const valueOf = (field: PluginConfigFieldInfo): string => {
+                    if (field.key in edits) return String(edits[field.key]);
+                    const raw = committed[field.key];
+                    if (typeof raw === 'string') return raw;
+                    return typeof field.default === 'string' ? field.default : '';
+                  };
+                  const setCard = (key: string, value: string): void => {
+                    setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
+                    setCardEdits((prev) => ({ ...prev, [pluginId]: { ...(prev[pluginId] ?? {}), [key]: value } }));
+                  };
+                  const listed = [...new Set(visible.map((id) => id.replace(/^ocr\//, '')))];
+                  const groups = new Map<string, PluginConfigFieldInfo[]>();
+                  for (const field of fields) {
+                    const id = field.section ?? '';
+                    groups.set(id, [...(groups.get(id) ?? []), field]);
+                  }
+                  return [...groups].map(([sectionId, sectionFields]) => {
+                    const section = sections.find((entry) => entry.id === sectionId);
+                    const heading = pickLocaleText(section?.title, lang);
+                    const hint = pickLocaleText(section?.desc, lang);
+                    return (
+                      <React.Fragment key={sectionId || 'card'}>
+                        {heading && (
+                          <div style={{ gridColumn: '1 / -1', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-dim)' }}>
+                            {heading} {hint ? <InfoTip text={hint} /> : null}
+                          </div>
+                        )}
+                        {sectionFields.map((field) => {
+                          const label = pickLocaleText(field.title, lang) ?? field.key;
+                          const value = valueOf(field);
+                          return (
+                            <React.Fragment key={field.key}>
+                              <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{label}</span>
+                              {field.control === 'model' ? (
+                                <Combobox
+                                  style={{ gridColumn: 2, minWidth: 0 }}
+                                  value={value}
+                                  clearable
+                                  disabled={busy}
+                                  onChange={(v) => setCard(field.key, v ?? '')}
+                                  options={[...new Set([value, ...listed])].filter(Boolean).map((id) => ({ value: id, label: id }))}
+                                  placeholder={label}
+                                />
+                              ) : (
+                                <input
+                                  className="input"
+                                  style={{ gridColumn: 2, minWidth: 0 }}
+                                  value={value}
+                                  disabled={busy}
+                                  onChange={(e) => setCard(field.key, e.target.value)}
+                                  placeholder={label}
+                                />
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  });
+                })()}
 
                 <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {/* The clickable actions own one row; the auto-save note is a
@@ -1515,7 +1654,7 @@ export const ClientsPage: React.FC = () => {
    */
   const renderLaunchCommands = (c: ClientStatus) => {
     if (!c.hooked || c.hookKind !== 'launcher') return null;
-    const cmds = LAUNCH_COMMANDS[c.name];
+    const cmds = launchCommandsOf(c);
     if (!cmds) return null;
     const copy = (text: string) =>
       copyToClipboard(text).then((ok) =>
@@ -1552,7 +1691,7 @@ export const ClientsPage: React.FC = () => {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, max-content)', columnGap: '10px', rowGap: '8px', alignItems: 'center' }}>
           {row(t('clients.launchCmdDesktop'), cmds.primary)}
-          {row(t('clients.launchCmdAlt'), cmds.alt)}
+          {cmds.alt ? row(t('clients.launchCmdAlt'), cmds.alt) : null}
         </div>
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
           {t('clients.launchCmdQuit', { client: c.displayName })}
@@ -1561,12 +1700,14 @@ export const ClientsPage: React.FC = () => {
     );
   };
 
-  /** Primary takeover/teardown button; `stretched` fills the form's action row. */
-  const renderActionButtons = (c: ClientStatus, stretched: boolean) => {
+  /** Primary takeover/teardown button; `stretched` fills the form's action row.
+   *  `compact` (collapsed card header) renders the resync action icon-only —
+   *  the header row never wraps and already carries the long teardown label. */
+  const renderActionButtons = (c: ClientStatus, stretched: boolean, compact = false) => {
     // A proxy client's launcher only exists to feed its gateway plugin.
     // Hooking without a loaded plugin would proxy every request transparently
     // while the UI claims OCR is active — block the setup, never the teardown.
-    const pluginId = GATEWAY_PLUGIN_BY_CLIENT[c.name];
+    const pluginId = c.catalogPlugin;
     const gatewayPlugin = pluginId ? gatewayPlugins[pluginId] : undefined;
     const pluginBlocked = !!pluginId && gatewayPlugin !== undefined && !gatewayPlugin.loaded;
     // A launcher hook only publishes a start script — no client state is taken
@@ -1575,15 +1716,29 @@ export const ClientsPage: React.FC = () => {
     // would imply a persistent modification that never happened.
     const isLauncher = c.hookKind === 'launcher';
     return c.hooked ? (
-      <button
-        className="btn btn-danger btn-sm"
-        style={stretched ? { flex: 1 } : undefined}
-        onClick={e => { e.stopPropagation(); handleToggle(c.name, 'teardown'); }}
-        disabled={loading}
-      >
-        <Undo2 size={12} />
-        <span>{t(isLauncher ? 'clients.launcherTeardownBtn' : 'clients.teardownBtn')}</span>
-      </button>
+      <>
+        <button
+          className="btn btn-danger btn-sm"
+          style={stretched ? { flex: 1 } : undefined}
+          onClick={e => { e.stopPropagation(); handleToggle(c.name, 'teardown'); }}
+          disabled={loading}
+        >
+          <Undo2 size={12} />
+          <span>{t(isLauncher ? 'clients.launcherTeardownBtn' : 'clients.teardownBtn')}</span>
+        </button>
+        {supportsExtraModels(c.name) && (
+          <button
+            className="btn btn-sm"
+            title={t('clients.resyncModelsTitle')}
+            disabled={loading}
+            aria-label={t('clients.resyncModels')}
+            onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup', undefined, { resync: true }); }}
+          >
+            <RefreshCw size={12} />
+            {!compact && <span>{t('clients.resyncModels')}</span>}
+          </button>
+        )}
+      </>
     ) : (
       <button
         className="btn btn-primary btn-sm"
@@ -1618,8 +1773,8 @@ export const ClientsPage: React.FC = () => {
               );
             })()}
           </div>
-          <button className="btn btn-sm" onClick={loadClients} disabled={loading}>
-            <RefreshCw size={12} />
+          <button className="btn btn-sm" onClick={() => loadClients(true)} disabled={loading || refreshing}>
+            <RefreshCw size={12} style={refreshing ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('clients.refresh')}</span>
           </button>
         </div>
@@ -1690,8 +1845,23 @@ export const ClientsPage: React.FC = () => {
           </div>
         )}
         {/* Accordion: one full-width row per client — collapsed shows identity + status +
-            quick action, expanding reveals the progressive setup form. */}
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'stretch' }}>
+            quick action, expanding reveals the progressive setup form. The roster's
+            own refresh feedback lives HERE, over the list: a first load (no data
+            yet) shows a centered placeholder; a re-load keeps the cards visible
+            under a translucent spinner veil instead of collapsing them. */}
+        <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          {refreshing && activeTab !== 'manual' && clients.length > 0 && (
+            <div style={{ position: 'absolute', inset: 0, zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'color-mix(in srgb, var(--bg-main) 60%, transparent)', borderRadius: '10px', pointerEvents: 'none' }}>
+              <RefreshCw size={18} style={{ animation: 'ocr-spin 0.8s linear infinite', color: 'var(--text-dim)' }} />
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'stretch' }}>
+          {activeTab !== 'manual' && refreshing && clients.length === 0 && (
+            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
+              <RefreshCw size={16} style={{ animation: 'ocr-spin 0.8s linear infinite', verticalAlign: '-3px', marginRight: 8 }} />
+              {t('common.loading')}
+            </div>
+          )}
           {clients.filter(c => activeTab === 'proxy'
             ? c.hookKind !== 'config'
             : activeTab === 'hook'
@@ -1734,29 +1904,42 @@ export const ClientsPage: React.FC = () => {
                     style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: open ? 'rotate(180deg)' : 'none' }}
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>
-                    <BrandIcon name={c.name.replace(/-proxy$/, '')} size={18} />
-                    {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
+                    <BrandIcon name={c.icon ?? c.name} size={18} />
+                    {c.shortName ?? c.displayName}
                   </span>
-                  <span
-                    title={c.configPath}
-                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  >
-                    {c.configPath}
-                  </span>
+                  {c.products?.length ? (
+                    // A family card has no single config file to show — the paths
+                    // live in the per-product panels below.
+                    <span style={{ flex: 1 }} />
+                  ) : (
+                    <span
+                      title={c.configPath}
+                      style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {c.configPath}
+                    </span>
+                  )}
+                  {/* Family card: how many products this machine actually has.
+                      One row per product lives inside the expanded body. */}
+                  {!!c.products && c.products.length > 1 && (
+                    <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
+                      {t('clients.jetbrainsProductCount', { n: c.products.length })}
+                    </span>
+                  )}
                   {/* Collapsed launcher row: the start command is the one thing
                       worth seeing without expanding — a plain double-click of
                       the app would silently stay un-proxied. Clicking the chip
                       copies; the row's own click (expand) is stopped. */}
-                  {!open && c.hooked && c.hookKind === 'launcher' && LAUNCH_COMMANDS[c.name] && (
+                  {!open && c.hooked && c.hookKind === 'launcher' && launchCommandsOf(c) && (
                     <code
                       role="button"
                       tabIndex={0}
                       title={t('clients.manualCopied')}
-                      onClick={e => { e.stopPropagation(); void copyToClipboard(LAUNCH_COMMANDS[c.name].primary).then((ok) => ok && toast.success(t('clients.manualCopied'))); }}
-                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void copyToClipboard(LAUNCH_COMMANDS[c.name].primary).then((ok) => ok && toast.success(t('clients.manualCopied'))); } }}
+                      onClick={e => { e.stopPropagation(); void copyToClipboard(launchCommandsOf(c)?.primary ?? '').then((ok) => ok && toast.success(t('clients.manualCopied'))); }}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void copyToClipboard(launchCommandsOf(c)?.primary ?? '').then((ok) => ok && toast.success(t('clients.manualCopied'))); } }}
                       style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', padding: '3px 8px', cursor: 'copy' }}
                     >
-                      {LAUNCH_COMMANDS[c.name].primary}
+                      {launchCommandsOf(c)?.primary}
                     </code>
                   )}
                   {c.hooked ? (
@@ -1779,11 +1962,165 @@ export const ClientsPage: React.FC = () => {
                       v{c.version.current}
                     </span>
                   )}
-                  {!open && renderActionButtons(c, false)}
+                  {!open && !c.products?.length && renderActionButtons(c, false, true)}
                 </div>
 
                 {open && (
                   <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {/* The gateway's model surface describes the WHOLE client, so
+                        it leads the expanded body — above the product rows that
+                        only its members carry. */}
+                    {renderGatewayCatalog(c)}
+
+                    {/* Family products: a HORIZONTAL tab strip replaces the old
+                        vertical stack of nested panels. Each IDE is still taken
+                        over (and restored) on its own config root, JBR truststore
+                        and ACP directory, so its files, trust state and action
+                        stay together. Only the selected IDE's detail body mounts
+                        — one clear focus instead of a tall wall of open panels.
+                        Status deliberately lives in the detail, not as a dot on
+                        the tab: an unlabelled 7px dot needs a hover to decode and
+                        reads as noise, while the detail states it in plain text. */}
+                    {!!c.products?.length && (() => {
+                      const chosenId = activeProduct[c.name];
+                      const selected = c.products.find(p => p.id === chosenId) ?? c.products[0];
+                      const tabStyle = (active: boolean): React.CSSProperties => ({
+                        display: 'inline-flex', alignItems: 'center', gap: 7,
+                        padding: '6px 11px', borderRadius: 8,
+                        border: '1px solid ' + (active ? 'var(--accent)' : 'var(--card-border)'),
+                        background: active ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'var(--btn-bg)',
+                        color: active ? 'var(--accent)' : 'var(--text-main)',
+                        fontSize: 'var(--text-xs)', fontWeight: active ? 'var(--font-semibold)' : 'var(--font-medium)',
+                        cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none',
+                      });
+                      const panels = (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {/* Tab strip — names only; hook/CA state is stated in the
+                              detail body. `role=tablist` keeps it keyboard
+                              discoverable; clicking a tab never bubbles to the card. */}
+                          <div role="tablist" aria-label={t('clients.jetbrainsProductCount', { n: c.products.length })} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {c.products.map(p => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={p.id === selected.id}
+                                onClick={e => { e.stopPropagation(); setActiveProduct(prev => ({ ...prev, [c.name]: p.id })); }}
+                                style={tabStyle(p.id === selected.id)}
+                              >
+                                <BrandIcon name={p.icon ?? p.id} size={14} />
+                                <span>{p.displayName}</span>
+                              </button>
+                            ))}
+                          </div>
+                          {/* Detail panel for the selected IDE only. */}
+                          <div role="tabpanel" style={{ border: '1px solid var(--card-border)', borderRadius: '10px', background: 'var(--well-bg)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            {(() => {
+                              const p = selected;
+                              return (
+                                <>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 'var(--font-bold)' }}>
+                                      <BrandIcon name={p.icon ?? p.id} size={16} />
+                                      {p.displayName}
+                                    </span>
+                                    {/* Long build numbers (Android Studio's AI-xxx…)
+                                        belong in the detail header, never on the
+                                        tab — one of them blew a tab to ~300px. */}
+                                    {p.version && (
+                                      <span
+                                        title={p.version}
+                                        style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                      >
+                                        {p.version}
+                                      </span>
+                                    )}
+                                    <span style={{ flex: 1 }} />
+                                    {p.hooked ? (
+                                      <span className="badge badge-success">{t('overview.hooked')}</span>
+                                    ) : (
+                                      <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>{t('overview.notHooked')}</span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
+                                    {t('clients.configPath')}
+                                    {/* The artifacts list already starts with the
+                                        settings file; the raw path is the fallback
+                                        for a product the IDE never ran. */}
+                                    {p.artifacts.length ? p.artifacts.map(renderArtifact) : (
+                                      <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
+                                        {p.configPath}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      {p.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                                      <span>{t('clients.fileExists')} {p.exists ? t('clients.yes') : t('clients.no')}</span>
+                                    </span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                      {p.caTrusted === true ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color={p.caTrusted === false && p.hooked ? 'var(--accent-rose)' : 'var(--text-dim)'} />}
+                                      {/* Trust is per IDE install (JBR reads its own cacerts,
+                                          not the OS store), so an UNHOOKED IDE legitimately
+                                          lacks the alias — setup imports it. A hooked IDE's
+                                          absence is fixed by re-running setup for THAT
+                                          product (idempotent); the proxy-access wizard's
+                                          OS-store instructions would never reach JBR. */}
+                                      {!p.hooked && p.caTrusted !== true ? (
+                                        <span>{t('clients.jetbrainsCa')} {t('clients.jetbrainsCaNotHooked')}</span>
+                                      ) : p.caTrusted === false ? (
+                                        <>
+                                          <span style={{ color: 'var(--accent-rose)' }}>{t('clients.jetbrainsCa')} {t('clients.jetbrainsCaAbsent')}</span>
+                                          <button
+                                            className="btn btn-sm"
+                                            style={{ gap: '5px' }}
+                                            disabled={loading}
+                                            onClick={e => { e.stopPropagation(); void handleToggle(c.name, 'setup', p.id); }}
+                                          >
+                                            <RefreshCw size={11} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+                                            <span>{t('clients.jetbrainsCaReimport')}</span>
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <span>
+                                          {t('clients.jetbrainsCa')}{' '}
+                                          {p.caTrusted === true ? t('clients.jetbrainsCaImported') : t('clients.jetbrainsCaUnknown')}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      {p.agent ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                                      <span>{p.agent ? `${p.agent.name} ${p.agent.version}` : t('clients.none')}</span>
+                                    </span>
+                                  </div>
+                                  {/* Backup is reversible state, not a metric: only its
+                                      ABSENCE under a live takeover is actionable — teardown
+                                      could no longer restore the operator's own file. */}
+                                  {p.hooked && !p.backupExists && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>
+                                      <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+                                      <span>{t('clients.backupMissingWarn')}</span>
+                                    </div>
+                                  )}
+                                  <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button
+                                      className={p.hooked ? 'btn btn-danger btn-sm' : 'btn btn-primary btn-sm'}
+                                      style={{ flex: 1 }}
+                                      onClick={e => { e.stopPropagation(); handleToggle(c.name, p.hooked ? 'teardown' : 'setup', p.id); }}
+                                      disabled={loading}
+                                    >
+                                      {p.hooked ? <Undo2 size={12} /> : <ArrowUpRight size={12} />}
+                                      <span>{p.hooked ? t('clients.teardownBtn') : t('clients.setupBtn')}</span>
+                                    </button>
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      );
+                      return panels;
+                    })()}
                     {c.hookKind === 'launcher' ? (
                       // Launcher hooks own scripts, not a config file: every
                       // launcher setup writes is listed with its own existence
@@ -1793,7 +2130,7 @@ export const ClientsPage: React.FC = () => {
                         {t('clients.launcherPaths')}
                         {[{ path: c.configPath, exists: c.exists }, ...(c.artifacts ?? [])].map(renderArtifact)}
                       </div>
-                    ) : (
+                    ) : c.products?.length ? null : (
                       <>
                         <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
                           {t('clients.configPath')}
@@ -1803,16 +2140,19 @@ export const ClientsPage: React.FC = () => {
                           {c.artifacts?.map(renderArtifact)}
                         </div>
 
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                            <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {c.backupExists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
-                            <span>{t('clients.backupExists')} {c.backupExists ? t('clients.ready') : t('clients.none')}</span>
-                          </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                          {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
+                          <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
                         </div>
+                        {/* Same rule as the product rows: no backup metric, only the
+                            anomaly that makes teardown unrecoverable. Config-rewrite
+                            hooks only — launcher/service-env hooks never write a backup. */}
+                        {c.hookKind === 'config' && c.hooked && !c.backupExists && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>
+                            <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+                            <span>{t('clients.backupMissingWarn')}</span>
+                          </div>
+                        )}
                         {c.name === 'workbuddy' && (
                           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
                             {t('clients.workbuddyHint')}
@@ -1825,11 +2165,12 @@ export const ClientsPage: React.FC = () => {
 
                     {(c.hookKind !== 'config') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
-                        {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
+                        {/* Per-client hint, NEVER the shared one: `proxyHint` is
+                            written for opencode's env-var hook and reads as
+                            nonsense on a client that has no such hook. */}
+                        {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : c.name === 'jetbrains-proxy' ? 'clients.jetbrainsHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
                       </div>
                     )}
-
-                    {renderGatewayCatalog(c)}
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
                 {(c.hookKind === 'config') && (
@@ -1841,7 +2182,7 @@ export const ClientsPage: React.FC = () => {
                         setApiKeySel(prev => ({ ...prev, [c.name]: v }));
                         clearKeyError(c.name);
                       }}
-                      options={apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined }))}
+                      options={apiKeys.map(k => ({ value: k.id, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined }))}
                       placeholder={t('clients.apiKeySelect')}
                       invalid={!!keyError[c.name]}
                       triggerRef={el => { keyPickerRefs.current[c.name] = el; }}
@@ -1887,7 +2228,7 @@ export const ClientsPage: React.FC = () => {
                         </div>
                       ))}
                 {supportsExtraModels(c.name) && (() => {
-                        const mode = modeSel[c.name] ?? 'none';
+                        const mode = modeSel[c.name] ?? 'default';
                         const follow = mode === 'follow';
                         const fk = follow ? followKeyOf(c.name) : undefined;
                         const followLoaded = !!fk && !!keyModels[fk.id];
@@ -1897,7 +2238,7 @@ export const ClientsPage: React.FC = () => {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
                             <div style={{ display: 'inline-flex', gap: '4px' }}>
-                              {(['none', 'custom', 'follow'] as const).map(m => (
+                              {(['default', 'custom', 'follow'] as const).map(m => (
                                 <button
                                   key={m}
                                   className="btn btn-sm"
@@ -1907,7 +2248,7 @@ export const ClientsPage: React.FC = () => {
                                     ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
                                     : undefined}
                                 >
-                                  <span>{t(m === 'none' ? 'clients.modelModeNone' : m === 'custom' ? 'clients.modelModeCustom' : 'clients.modelModeFollow')}</span>
+                                  <span>{t(m === 'default' ? 'clients.modelModeDefault' : m === 'custom' ? 'clients.modelModeCustom' : 'clients.modelModeFollow')}</span>
                                 </button>
                               ))}
                             </div>
@@ -1929,8 +2270,8 @@ export const ClientsPage: React.FC = () => {
                                 </>
                               )}
                             </>
-                          ) : mode === 'none' ? (
-                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.modelModeNoneHint')}</div>
+                          ) : mode === 'default' ? (
+                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.modelModeDefaultBlockHint')}</div>
                           ) : (
                             <>
                               {(() => {
@@ -1978,12 +2319,9 @@ export const ClientsPage: React.FC = () => {
 
                 {isRoleTableClient(c.name) && (
                   <div style={{ gridColumn: '1 / -1' }}>
-                    <ProfileLinkTable
+                    <AgentRowsTable
                       rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
-                      emptyText={t('clients.profileAgentsEmpty')}
-                      profileId={profileSel[c.name] || ''}
-                      profiles={profiles}
-                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      emptyText={t('clients.rowsEmpty')}
                       headerAction={
                         <button
                           type="button"
@@ -1999,15 +2337,14 @@ export const ClientsPage: React.FC = () => {
                       }
                       gatewayOptions={modelOptions}
                       drafts={bindSel[c.name] || {}}
-                      appliedTags={c.profile?.bindings || {}}
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                      hint={t(c.name === 'pi' ? 'clients.profileApplyHintPi' : 'clients.profileApplyHintOmp')}
-                      label={t('clients.profileRowsLabel')}
+                      hint={t(c.name === 'pi' ? 'clients.rowsHintPi' : 'clients.rowsHintOmp')}
+                      label={t('clients.rowsLabel')}
                       on={linksOn[c.name]}
                       // Toggle is draft-only — the setup commit persists linksOn.
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
-                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
+                      linkedCount={Object.values(bindSel[c.name] || {}).filter(Boolean).length}
                     />
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '8px' }}>
                       {t(c.name === 'pi' ? 'clients.piMetaHint' : 'clients.ompMetaHint')}
@@ -2018,15 +2355,12 @@ export const ClientsPage: React.FC = () => {
 
                 {c.name === 'opencode' && (
                   <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>
-                    <ProfileLinkTable
+                    <AgentRowsTable
                       rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model || a.effective }))}
                       loading={agents === null}
                       error={agentsError}
                       onRetry={() => setAgentsError(false)}
-                      emptyText={t('clients.profileAgentsEmpty')}
-                      profileId={profileSel[c.name] || ''}
-                      profiles={profiles}
-                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      emptyText={t('clients.rowsEmpty')}
                       headerAction={
                         <button
                           type="button"
@@ -2042,22 +2376,23 @@ export const ClientsPage: React.FC = () => {
                       }
                       gatewayOptions={modelOptions}
                       drafts={bindSel[c.name] || {}}
-                      appliedTags={c.profile?.bindings || {}}
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                      hint={t('clients.profileApplyHint')}
-                      label={t('clients.profileRowsLabel')}
+                      hint={t('clients.rowsHint')}
+                      label={t('clients.rowsLabel')}
                       on={linksOn[c.name]}
                       // Toggle is draft-only — the setup commit persists linksOn.
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
-                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
+                      linkedCount={Object.values(bindSel[c.name] || {}).filter(Boolean).length}
                       showSort
                     />
                   </div>
                 )}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  {renderActionButtons(c, true)}
+                  {/* Family cards act per PRODUCT (nested panels) — a family-wide
+                      setup/teardown button would claim a state that does not exist. */}
+                  {!c.products?.length && renderActionButtons(c, true)}
                   {clientSlots(c).length > 0 && (
                     <button className="btn btn-sm" onClick={() => handleResetModel(c.name)} disabled={loading} title={t('clients.reset')}>
                       <RotateCcw size={12} />
@@ -2075,12 +2410,10 @@ export const ClientsPage: React.FC = () => {
             <SmartAssignDialog
               clientName={smartFor.name}
               targets={smartFor.targets}
-              candidates={smartFor.candidates}
-              profileMode={smartFor.profileMode}
               models={smartFor.basis}
               scopeHint={smartFor.scopeHint}
               onClose={() => setSmartFor(null)}
-              onApply={a => applySmartAssignments(smartFor.name, a, smartFor.profileMode)}
+              onApply={a => applySmartAssignments(smartFor.name, a)}
             />
           )}
 
@@ -2190,10 +2523,12 @@ export const ClientsPage: React.FC = () => {
           </div>
           )}
         </div>
+        </div>
       </div>
       {advancedPlugin ? (
         <PluginConfigDrawer
           plugin={advancedPlugin}
+          cardClientName={clients.find((c) => c.catalogPlugin === advancedPlugin.id)?.displayName}
           onClose={() => setAdvancedPlugin(null)}
           showClientsGuide={false}
         />

@@ -1,5 +1,6 @@
 import { ProxyConfig } from '../config/types.js';
 import { globMatch } from './glob.js';
+import { nodeProxiedFetch } from './proxy-node.js';
 
 /**
  * Outbound proxy resolution for upstream HTTP calls.
@@ -20,8 +21,10 @@ import { globMatch } from './glob.js';
  * unlisted: a non-empty includes list sends them direct, otherwise proxy.url applies.
  *
  * proxiedFetch passes the resolved proxy via Bun's fetch `proxy` option
- * (verified on bun 1.3.14); under Node the option is simply ignored and the
- * call behaves like plain fetch.
+ * (verified on bun 1.3.14). Node's fetch ignores that option, so the Node
+ * path opens the proxy itself (absolute-form HTTP, CONNECT for HTTPS) —
+ * see utils/proxy-node.ts. In `mihomo` mode the endpoint is the local
+ * mixed-port; loopback targets, including the controller, stay direct.
  */
 
 let activeConfig: ProxyConfig | undefined;
@@ -60,8 +63,25 @@ function patternHits(pattern: string, match?: { provider?: string; model?: strin
 
 let warnedInvalidProxyUrl = false;
 
+/** True when this process's fetch understands the Bun `proxy` option. */
+export function isBunRuntime(): boolean {
+  return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+}
+
+/**
+ * The endpoint `proxy.enabled` actually dials, with no include/exclude gate.
+ * `manual` uses `proxy.url`. `mihomo` uses the loopback mixed-port (ADR-0022)
+ * and ignores `proxy.url`.
+ */
 function globalProxyUrl(): string | undefined {
-  const url = (activeConfig?.url || '').trim();
+  const cfg = activeConfig;
+  if (cfg?.mode === 'mihomo') {
+    const port = cfg.mihomo?.mixedPort;
+    const controller = cfg.mihomo?.controllerPort;
+    if (!Number.isInteger(port) || port! < 1 || port! > 65535 || port === controller) return undefined;
+    return `http://127.0.0.1:${port}`;
+  }
+  const url = (cfg?.url || '').trim();
   if (!url) return undefined;
   // Fail-safe: an unparseable / non-http(s) proxy URL would break every upstream
   // call at fetch time — warn once and fall back to direct instead.
@@ -135,5 +155,9 @@ export async function proxiedFetch(
   match?: { provider?: string; model?: string }
 ): Promise<Response> {
   const proxy = resolveProxyUrl(url, match);
-  return proxy ? fetch(url, { ...init, proxy } as RequestInit & { proxy: string }) : fetch(url, init);
+  if (!proxy) return fetch(url, init);
+  if (isBunRuntime()) {
+    return fetch(url, { ...init, proxy } as RequestInit & { proxy: string });
+  }
+  return nodeProxiedFetch(url, init, proxy);
 }

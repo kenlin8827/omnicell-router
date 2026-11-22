@@ -3,13 +3,14 @@ import { setPoolRefreshHook } from './providers/pool-refresh.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { refreshDirectPool } from './providers/boot-direct.js';
-import { DispatchingProvider } from './providers/dispatch.js';
+import { DispatchingProvider } from './providers/executors/dispatch.js';
 import { buildDirectPool } from './providers/boot-direct.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
+import { reconcileMihomoSidecar } from './proxy/mihomo-sidecar.js';
 import { isRestartSupervisorProcess, runRestartSupervisor, takeRestartSelfRegisterFlag, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
@@ -24,6 +25,7 @@ import { keyHashPrefix, type CredentialStore } from './opencode/credentials/type
 import { expandEnvTemplate, getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
+import { closeAllMcpInspectSessions } from './harness/host/mcp-inspector.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
 import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
@@ -125,6 +127,22 @@ async function main() {
 
   const config = loadConfig();
   initProxyConfig(config.proxy);
+
+  // Mihomo sidecar (ADR-0022): when outbound proxy mode is mihomo and the
+  // master switch is on, adopt a healthy local controller or spawn mihomo.
+  // Fire-and-forget — a missing binary is logged, never a boot failure, and
+  // the download helper stays opt-in (POST /api/admin/proxy/mihomo/install).
+  if (config.proxy?.enabled === true && config.proxy.mode === 'mihomo') {
+    void reconcileMihomoSidecar(config.proxy)
+      .then((r) => {
+        if (r.ok) console.log(`[OCR] clash sidecar ${r.action}${r.pid ? ` (pid ${r.pid})` : ''}`);
+        else console.warn(`[OCR] clash sidecar ${r.action} failed: ${r.error}`);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[OCR] mihomo sidecar auto-start threw: ${message}`);
+      });
+  }
 
   // Headroom sidecar association (opt-in compression.headroom.autoStart):
   // probe <url>/health → adopt a running instance, else detached-spawn one.
@@ -411,6 +429,12 @@ async function main() {
     console.log(`👉 Sessions Inspect : http://127.0.0.1:${config.port}/api/admin/sessions`);
     console.log('============================================================\n');
 
+    // Warm the client-roster version probes in the background (fire-and-forget):
+    // the subprocess spawns are the one cold-blocking cost of GET
+    // /api/admin/clients — paying them at boot keeps the Clients page instant
+    // even before its first refresh. Failures cache like successes.
+    void import('./cli/clients/index.js').then(m => m.getAllClientStatuses()).catch(() => {});
+
     // Inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server) — opt-in.
     // Fault-tolerance contract: started WITHOUT awaiting the boot path — a
     // failing / slow proxy must never block or crash the gateway. Failures are
@@ -448,6 +472,7 @@ async function main() {
     // (the store debounces; a graceful exit should not lose the last cycles).
     getQuotaProber()?.stop();
     getQuotaStore().flush();
+    void closeAllMcpInspectSessions();
     // Health prober: same contract — stop the sweep before exit.
     orchestrator.stopProber();
     // Rate-limit windows: flush the last checkpoint so a controlled restart

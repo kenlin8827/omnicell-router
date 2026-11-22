@@ -228,7 +228,7 @@ export interface CredentialStore {
   /**
    * Reorder a provider's credential chain to exactly `orderedIds` (a
    * permutation of the provider's credential ids — anything else throws). The
-   * chain head becomes orderedIds[0]; `active` follows position 0. The
+   * default credential becomes orderedIds[0]; `active` follows position 0. The
    * operator surface (console reorder route); the internal head primitive
    * stays `activate`.
    */

@@ -67,7 +67,7 @@ export interface MatrixLabels {
 /**
  * The card's own truth is ITS tuple breaker — pure breaker state. Operator
  * takedowns (DISABLED/SUSPECT) are a SEPARATE dimension (a management action,
- * not a breaker transition): they surface as the 已停用 badge + the dedicated
+ * not a breaker transition): they surface as the takedown badge + the dedicated
  * filter tab, never folded into the trip state. The derived model fold never
  * paints onto the card: a model-scope trip already lands on every tuple, so
  * a tripped card IS tripped, and a healthy card stays healthy even when a
@@ -175,7 +175,7 @@ export function buildPairCards(
   }
   // Orphan pair breakers: the model left the registry, or the prefix belongs
   // to a serving key the store roster does not list (the inline config-baked
-  // chain head — boot-direct unshifts it outside the store). Identify the
+  // default credential — boot-direct unshifts it outside the store). Identify the
   // latter through the runtime credential directory before falling back to a
   // bare #hash + unmatched explanation.
   for (const p of pairBreakers) {

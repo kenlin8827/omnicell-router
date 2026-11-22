@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, ChevronDown, FolderGit2, FolderCog, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
+import { Boxes, ChevronDown, Compass, FolderGit2, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
 import {
   api,
   type HarnessArtifactView,
@@ -20,7 +20,7 @@ import {
   type McpRuntimeStatus,
   type ProjectItem,
 } from '../lib/api';
-import { ProjectsDialog } from '../components/ProjectsDialog';
+import { ProjectPicker, reconcileProjectSelection } from '../components/ProjectPicker';
 import { SegGroup } from '../components/SegGroup';
 import { RadioGroup, type RadioGroupOption } from '../components/RadioGroup';
 import { Field, FormSection } from '../components/Form';
@@ -36,6 +36,8 @@ import { ReadmeMarkdown, readmeBaseHref } from '../lib/readme-markdown';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useI18n } from '../i18n/I18nContext';
+import { useTranslationCache } from '../hooks/useTranslationCache';
+import { TranslateButton, TranslationBadge } from '../components/TranslationControls';
 import { HarnessSourcesDrawer } from '../components/HarnessSourcesDrawer';
 import { BrandIcon } from '../components/BrandIcons';
 import { FONT_MONO } from '../lib/fonts';
@@ -1185,7 +1187,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [, setActiveProjectId] = useState<string | null>(null);
   /** Project pick used when the URL carries no explicit one (see `selectedProjectId` below). */
   const [fallbackProjectId, setFallbackProjectId] = useState<string | null>(null);
-  const [projectsDialogOpen, setProjectsDialogOpen] = useState(false);
   const [installScope, setInstallScope] = useState<'global' | 'project'>('global');
   /** Per-profile plugin stores (DSH): the profile the open install sheet targets. */
   const [installProfile, setInstallProfile] = useState('');
@@ -1448,18 +1449,21 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  iterates `activeCatalogSources`, so a newly added `mp-` chip must exist before the refetch. */
   const [marketRefreshTick, setMarketRefreshTick] = useState(0);
   const [busy, setBusy] = useState(false);
-  /** Translated text, keyed by row/item id. `src` pins the exact original it was produced from —
-   *  re-downloading a skill whose description changed must not resurface the previous translation. */
-  const [tr, setTr] = useState<Record<string, { src: string; text: string; model: string }>>({});
-  const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
+  const {
+    entries: tr,
+    batch,
+    seed: seedTranslations,
+    translateOne: translateText,
+    translateAll: translateAllItems,
+    toggleOriginal,
+    getDisplay: getTranslationDisplay,
+  } = useTranslationCache();
   const [hostFilter, setHostFilter] = useState('');
   /** Hide the rows that live in the shared `.agents` tree — ON by default. The shared set is the SAME
    *  under every rail entry (fifteen runtimes read it), so leading a pinned page with it hides the one
    *  thing that page exists to answer: what was installed for THIS runtime. The rail cannot express
    *  that complement, and the switch is one tick away for anyone who wants the full list back. */
   const [hideShared, setHideShared] = useState(true);
-  /** Batch progress; null when idle. `failed` accumulates across chunks. */
-  const [batch, setBatch] = useState<{ done: number; total: number; failed: number } | null>(null);
   /** Pagination is a view concern: filters and translation always act on the whole list. */
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -1522,6 +1526,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, inventoryProjectId]);
+
+  const handleProjectsChange = (updatedProjects: ProjectItem[], updatedActiveId: string | null) => {
+    setProjects(updatedProjects);
+    setActiveProjectId(updatedActiveId);
+    setFallbackProjectId((prev) => reconcileProjectSelection(prev, updatedProjects, updatedActiveId) || null);
+    setInstallProjectId((prev) => reconcileProjectSelection(prev, updatedProjects, updatedActiveId) || null);
+    void load();
+  };
 
   useEffect(() => {
     localStorage.setItem(`harness.view.${kind}`, layout);
@@ -1670,7 +1682,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   );
 
   /** The hosts the ONE-CLICK integration covers — a frontend mirror of the
-   *  harness host set, not the client ids (`opencode-proxy` folds to `opencode`).
+   *  harness host set, not the client ids (`opencode-gateway` folds to `opencode`).
    *  Hosts OUTSIDE this set are never admitted by default, however installed they are. */
   const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true, openclaw: true };
 
@@ -2065,7 +2077,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     setDetailTrBusy(true);
     setDetailProgress(null);
     try {
-      const res = await api.harnessTranslateStream({ text: body, lang, refresh }, (done, total) => {
+      const res = await api.translateStream({ text: body, lang, refresh }, (done, total) => {
         // A late event from a dialog that moved on must not repaint the new row's button.
         if (detailReqRef.current === req) setDetailProgress({ done, total });
       });
@@ -2107,7 +2119,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     const req = detailReqRef.current;
     let cancelled = false;
     void api
-      .harnessTranslations({ lang, texts: [body], format: 'markdown' })
+      .translationsLookup({ lang, texts: [body], format: 'markdown' })
       .then(({ translations }) => {
         const hit = translations[body];
         if (cancelled || !hit || detailReqRef.current !== req) return;
@@ -2358,14 +2370,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     if (landing) setHostFilter('');
   }, [landing]);
 
-  // The translation target IS the console language — translating into the language you already read
-  // is the only target a picker ever offered. Switching the UI language drops derived text and
-  // re-seeds from the cache for the new language.
-  useEffect(() => {
-    setTr({});
-    setShowOriginal({});
-  }, [lang]);
-
   // Any narrowing resets to page 1: staying on page 4 of a 1-page result reads as an empty table.
   useEffect(() => {
     setPage(1);
@@ -2373,59 +2377,33 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   // Re-seed what previous visits already translated (cache-only lookup — no model call, no spend).
   useEffect(() => {
-    const texts = [...new Set(rows.map((r) => r.description).filter((d): d is string => !!d))];
-    if (texts.length === 0) return;
     let cancelled = false;
-    void api
-      .harnessTranslations({ lang, texts })
-      .then(({ translations }) => {
-        if (cancelled) return;
-        setTr((prev) => {
-          const next = { ...prev };
-          for (const row of rows) {
-            const hit = row.description ? translations[row.description] : undefined;
-            const stale = next[row.key]?.src !== (row.description ?? '');
-            if (hit && stale) next[row.key] = { src: row.description ?? '', text: hit.text, model: hit.model };
-          }
-          return next;
-        });
-      })
-      .catch(() => {
-        /* a cache miss is not an error the operator needs to see */
-      });
+    void seedTranslations(
+      rows.map((r) => ({ key: r.key, text: r.description })),
+      () => cancelled
+    ).catch(() => {
+      /* a cache miss is not an error the operator needs to see */
+    });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lang, inventory, filter, kind]);
+  }, [lang, inventory, filter, kind, seedTranslations]);
 
   // Same cache-first pass for the marketplace: anything translated on a previous visit (or on the
   // global tab, before the skill was uninstalled) shows in the target language straight away.
   useEffect(() => {
-    const texts = [...new Set(marketItems.map((i) => i.description).filter((d): d is string => !!d))];
-    if (texts.length === 0) return;
     let cancelled = false;
-    void api
-      .harnessTranslations({ lang, texts })
-      .then(({ translations }) => {
-        if (cancelled) return;
-        setTr((prev) => {
-          const next = { ...prev };
-          for (const item of marketItems) {
-            const hit = item.description ? translations[item.description] : undefined;
-            const stale = next[item.id]?.src !== (item.description ?? '');
-            if (hit && stale) next[item.id] = { src: item.description ?? '', text: hit.text, model: hit.model };
-          }
-          return next;
-        });
-      })
-      .catch(() => {
-        /* a cache miss is not an error the operator needs to see */
-      });
+    void seedTranslations(
+      marketItems.map((i) => ({ key: i.id, text: i.description })),
+      () => cancelled
+    ).catch(() => {
+      /* a cache miss is not an error the operator needs to see */
+    });
     return () => {
       cancelled = true;
     };
-  }, [lang, marketItems]);
+  }, [lang, marketItems, seedTranslations]);
 
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(page, pageCount);
@@ -4288,89 +4266,21 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     setPicker({ row, picked: new Set(picked.map((c) => c.path)) });
   };
 
-  const translateText = async (key: string, description: string | null) => {
-    if (!description) return;
-    setTr((prev) => ({ ...prev, [key]: { src: description, text: '…', model: '' } }));
-    try {
-      const res = await api.harnessTranslate({ text: description, lang });
-      setTr((prev) => ({ ...prev, [key]: { src: description, text: res.text, model: res.model } }));
-    } catch (e) {
-      setTr((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-      toast.error(`${t('harness.translateFailed')}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-
   /**
    * Translate every row still showing its original text, in chunks of 8.
    *
    * Chunked rather than one big request: a slow tier can't stall a single call for a minute, and the
    * backend cache makes an interrupted run resumable — pressing the button again picks up the rest.
    */
-  const translateAll = async () => {
-    // Only rows whose CURRENT description has no translation yet — a stale entry is not a hit.
-    const pending = rows.filter((row) => row.description && tr[row.key]?.src !== row.description);
-    if (pending.length === 0) return;
-    const ok = await confirmDialog({
-      title: t('harness.translateAll'),
-      description: `${t('harness.translateAllConfirm')} (${pending.length})`,
-    });
-    if (!ok) return;
-
-    // One description can back several rows; translate it once and fill them all.
-    const keysByText = new Map<string, string[]>();
-    for (const row of pending) {
-      const text = row.description as string;
-      const list = keysByText.get(text) ?? [];
-      list.push(row.key);
-      keysByText.set(text, list);
-    }
-    const texts = [...keysByText.keys()];
-    const CHUNK = 8;
-    let done = 0;
-    let failed = 0;
-    let aborted = false;
-    setBatch({ done: 0, total: texts.length, failed: 0 });
-
-    try {
-      for (let i = 0; i < texts.length; i += CHUNK) {
-        const chunk = texts.slice(i, i + CHUNK);
-        try {
-          const res = await api.harnessTranslateBatch({ lang, texts: chunk });
-          setTr((prev) => {
-            const next = { ...prev };
-            for (const [text, translated] of Object.entries(res.results)) {
-              for (const key of keysByText.get(text) ?? []) {
-                next[key] = { src: text, text: translated.text, model: translated.model };
-              }
-            }
-            return next;
-          });
-          failed += res.errors.length;
-        } catch (e) {
-          failed += chunk.length;
-          const err = e as Error & { code?: string };
-          toast.error(`${t('harness.translateFailed')}: ${err.message}`);
-          // A missing key fails every remaining chunk identically — stop instead of spamming.
-          if (err.code === 'no_api_key') {
-            aborted = true;
-            break;
-          }
-        }
-        done += chunk.length;
-        setBatch({ done: Math.min(done, texts.length), total: texts.length, failed });
-      }
-    } finally {
-      setBatch(null);
-      if (!aborted) {
-        if (failed > 0) toast.error(`${t('harness.translateAllPartial')}: ${failed}/${texts.length}`);
-        else toast.success(t('harness.translateAllDone'));
-      }
-    }
-  };
+  const translateAll = () =>
+    translateAllItems(
+      rows.map((row) => ({ key: row.key, text: row.description })),
+      (count) =>
+        confirmDialog({
+          title: t('harness.translateAll'),
+          description: `${t('harness.translateAllConfirm')} (${count})`,
+        })
+    );
 
   /** Execute the picked locations: one plan for this row, one transaction. */
   const removePicked = async () => {
@@ -4433,10 +4343,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const descCell = (row: { key: string; description: string | null }, block = false) => {
     // A translation is valid only for the exact source it was made from (`tr.src`); otherwise a
     // rescan that reworded the description would keep showing the previous wording forever.
-    const entry = tr[row.key];
-    const translated = entry && entry.src === (row.description ?? '') ? entry : undefined;
-    const showingTranslation = !!translated && !showOriginal[row.key];
-    const text = showingTranslation ? translated.text : (row.description ?? '');
+    const { text, translated, showingTranslation } = getTranslationDisplay(row.key, row.description);
     // Nothing to show is shown as nothing — an em dash in an otherwise empty cell is punctuation
     // pretending to be data.
     if (!text) return null;
@@ -4472,38 +4379,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           {text}
         </span>
         {translated && (
-          /* A titled button in every row shouted louder than the content it annotates. A micro
-             badge carries the same state, and the tooltip still spells it out. */
-          <button
-            className="badge"
-            onClick={() => setShowOriginal((prev) => ({ ...prev, [row.key]: !prev[row.key] }))}
-            title={showingTranslation ? t('harness.showOriginal') : t('harness.translated')}
-            aria-pressed={showingTranslation}
-            style={{
-              flex: '0 0 auto',
-              fontSize: 'var(--text-2xs)',
-              padding: '0 5px',
-              letterSpacing: 'var(--tracking-normal)',
-              lineHeight: 'var(--leading-15)',
-              cursor: 'pointer',
-              border: '1px solid var(--divider)',
-              background: 'transparent',
-              color: showingTranslation ? 'var(--text-dim)' : 'var(--accent-emerald)',
-            }}
-          >
-            {showingTranslation ? t('harness.mtBadge') : t('harness.origBadge')}
-          </button>
+          <TranslationBadge
+            showingTranslation={showingTranslation}
+            onToggle={() => toggleOriginal(row.key)}
+          />
         )}
         {row.description && !translated && (
-          <button
-            className="btn btn-sm"
-            onClick={() => void translateText(row.key, row.description)}
-            title={t('harness.translate')}
-            aria-label={t('harness.translate')}
-            style={{ flex: '0 0 auto' }}
-          >
-            <Globe size={12} aria-hidden />
-          </button>
+          <TranslateButton onClick={() => void translateText(row.key, row.description)} />
         )}
       </div>
     );
@@ -4666,6 +4548,28 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * unreadable file answers a toast instead of opening a form over it. A row entirely claimed by
    * another environment is refused up front — the write would only fail after the gate.
    */
+  const inspectMcpButton = (row: Row) => {
+    if (kind !== 'mcp' || !harness || !row.hosts.includes(harness)) return null;
+    if (!hosts.some((host) => host.id === harness && host.hasMcp)) return null;
+    const inspectScope = tab === 'project' ? 'project' : 'global';
+    const params = new URLSearchParams({ host: harness, scope: inspectScope, name: row.name });
+    if (inspectScope === 'project' && selectedProjectId) {
+      params.set('projectId', selectedProjectId);
+    }
+    return (
+      <button
+        className="btn btn-sm"
+        disabled={installBusy}
+        title={t('mcpBrowser.inspectAction')}
+        onClick={() => navigate(`/harness/mcp-debug?${params.toString()}`)}
+        style={{ flex: '0 0 auto' }}
+      >
+        <Compass size={11} />
+        <span>{t('mcpBrowser.inspectAction')}</span>
+      </button>
+    );
+  };
+
   const editMcpButton = (row: Row) => {
     if (kind !== 'mcp' || !harness || !row.hosts.includes(harness)) return null;
     if (!hosts.some((host) => host.id === harness && host.hasMcp)) return null;
@@ -4770,12 +4674,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       : t('harness.detailTranslate');
 
   /** One-line description, translated when the shared cache already has it (same rule as `descCell`). */
-  const detailDescEntry = detailSubject ? tr[detailSubject.key] : undefined;
-  const detailDesc = detailSubject?.description
-    ? detailDescEntry && detailDescEntry.src === detailSubject.description && !showOriginal[detailSubject.key]
-      ? detailDescEntry.text
-      : detailSubject.description
+  const detailDescDisplay = detailSubject?.description
+    ? getTranslationDisplay(detailSubject.key, detailSubject.description)
     : null;
+  const detailDescEntry = detailDescDisplay?.translated;
+  const detailDesc = detailDescDisplay ? detailDescDisplay.text : null;
 
   /** Everything inside the frame is identical for every kind — the rail only changes the frame
    *  around it, so skills/MCP cannot drift from the plugin page. */
@@ -4856,32 +4759,16 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             </span>
             {tab === 'project' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: '8px' }}>
-                {projects.length > 0 ? (
-                  <div style={{ minWidth: 160, maxWidth: 240 }}>
-                    <Combobox
-                      value={selectedProjectId ?? ''}
-                      onChange={(v) => setSelectedProjectId(v)}
-                      options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
-                      placeholder={t('harness.switchProject')}
-                      hideMetaInTrigger
-                      panelMinWidth={280}
-                    />
-                  </div>
-                ) : (
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                    {t('harness.noProjectsAvailable')}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => setProjectsDialogOpen(true)}
-                  title={t('harness.manageProjects')}
-                  style={{ height: HEADER_CONTROL_HEIGHT, padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                >
-                  <FolderCog size={13} />
-                  <span style={{ fontSize: 'var(--text-sm)' }}>{t('projects.title')}</span>
-                </button>
+                <ProjectPicker
+                  projects={projects}
+                  value={selectedProjectId ?? ''}
+                  onChange={(v) => setSelectedProjectId(v)}
+                  onProjectsChange={handleProjectsChange}
+                  placeholder={t('harness.switchProject')}
+                  showManageLabel
+                  comboboxContainerStyle={{ minWidth: 160, maxWidth: 240 }}
+                  buttonHeight={HEADER_CONTROL_HEIGHT}
+                />
                 {selectedProject && (
                   <span
                     style={{
@@ -5218,6 +5105,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       {showStateColumn && <td style={TD_CENTER}>{stateBadge(row)}</td>}
                       <td style={TD_CENTER}>
                         <div style={{ display: 'inline-flex', gap: '6px' }}>
+                          {inspectMcpButton(row)}
                           {editMcpButton(row)}
                           {removeButton(row)}
                         </div>
@@ -5272,6 +5160,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       >
                         <span style={{ color: 'var(--text-muted)' }}>{t('harness.detailChannel')}:</span> {channelLabel(row)}
                       </span>
+                      {inspectMcpButton(row)}
                       {editMcpButton(row)}
                       {removeButton(row)}
                     </div>
@@ -5640,39 +5529,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
               {sheetScope === 'project' && (
                 <Field label={t('harness.targetProject')}>
-                  {projects.length === 0 ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => setProjectsDialogOpen(true)}
-                      >
-                        {t('projects.add')}
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <div style={{ flex: 1 }}>
-                        <Combobox
-                          value={installProjectId ?? ''}
-                          onChange={(v) => setInstallProjectId(v)}
-                          options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
-                          placeholder={t('harness.selectProjectPlaceholder')}
-                          hideMetaInTrigger
-                          panelMinWidth={280}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-ghost"
-                        onClick={() => setProjectsDialogOpen(true)}
-                        title={t('harness.manageProjects')}
-                      >
-                        <FolderCog size={13} />
-                      </button>
-                    </div>
-                  )}
+                  <ProjectPicker
+                    projects={projects}
+                    value={installProjectId ?? ''}
+                    onChange={(v) => setInstallProjectId(v)}
+                    onProjectsChange={handleProjectsChange}
+                    placeholder={t('harness.selectProjectPlaceholder')}
+                  />
                 </Field>
               )}
             </FormSection>
@@ -5985,40 +5848,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {mcpSheetScope === 'project' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
-                      {projects.length === 0 ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            onClick={() => setProjectsDialogOpen(true)}
-                            style={{ fontSize: 'var(--text-xs)', padding: '2px 8px' }}
-                          >
-                            {t('projects.add')}
-                          </button>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                          <div style={{ flex: 1 }}>
-                            <Combobox
-                              value={installProjectId ?? ''}
-                              onChange={(v) => setInstallProjectId(v)}
-                              options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
-                              placeholder={t('harness.selectProjectPlaceholder')}
-                              hideMetaInTrigger
-                              panelMinWidth={280}
-                            />
-                          </div>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            onClick={() => setProjectsDialogOpen(true)}
-                            title={t('harness.manageProjects')}
-                          >
-                            <FolderCog size={13} />
-                          </button>
-                        </div>
-                      )}
+                      <ProjectPicker
+                        projects={projects}
+                        value={installProjectId ?? ''}
+                        onChange={(v) => setInstallProjectId(v)}
+                        onProjectsChange={handleProjectsChange}
+                        placeholder={t('harness.selectProjectPlaceholder')}
+                      />
                     </div>
                   )}
                 </div>
@@ -6297,16 +6133,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 {/* The description travels the same translation path as the table cells; the README
                     below has its own long-form pass. */}
                 {detailSubject.description && !detailDescEntry && (
-                  <button
-                    type="button"
-                    className="btn btn-sm"
+                  <TranslateButton
+                    size={11}
+                    compact
                     onClick={() => void translateText(detailSubject.key, detailSubject.description)}
-                    title={t('harness.translate')}
-                    aria-label={t('harness.translate')}
-                    style={{ flex: '0 0 auto', height: 22, padding: '0 6px' }}
-                  >
-                    <Globe size={11} aria-hidden />
-                  </button>
+                  />
                 )}
               </div>
             )}
@@ -6363,26 +6194,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           </div>
         </Dialog>
       )}
-          <ProjectsDialog
-        open={projectsDialogOpen}
-        onClose={() => setProjectsDialogOpen(false)}
-        onProjectsChange={(updatedProjects, updatedActiveId) => {
-          setProjects(updatedProjects);
-          setActiveProjectId(updatedActiveId);
-          if (updatedProjects.length > 0) {
-            setFallbackProjectId((prev) =>
-              prev && updatedProjects.some((p) => p.id === prev) ? prev : (updatedActiveId ?? updatedProjects[0].id)
-            );
-            setInstallProjectId((prev) =>
-              prev && updatedProjects.some((p) => p.id === prev) ? prev : (updatedActiveId ?? updatedProjects[0].id)
-            );
-          } else {
-            setFallbackProjectId(null);
-            setInstallProjectId(null);
-          }
-          void load();
-        }}
-      />
     </>
   );
 

@@ -1,4 +1,4 @@
-import { ChatMessage, ChatMessageContentPart } from '../types/openai.js';
+import type { CacheBreakpoint, ContentPart, InputItem, Role } from '../ir/types.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, TIER_RANK, downgradeReasoning } from '../types/router.js';
 import { DEFAULT_DIRECTIVE_PREFIX } from '../config/defaults.js';
 
@@ -156,153 +156,195 @@ function regexesFor(prefix: string): PrefixRegexes {
 export interface DirectiveHit {
   token: string;
   action: DirectiveAction;
-  /** Index in the ORIGINAL message array (survives message drops). */
+  /** Index in the ORIGINAL input array (survives item drops). */
   messageIndex: number;
-  role: ChatMessage['role'];
+  role: Role | 'tool';
 }
 
 export interface UnknownDirective {
   token: string;
   messageIndex: number;
-  role: ChatMessage['role'];
+  role: Role | 'tool';
 }
 
 export interface DirectiveScan {
-  /** Scrubbed copy of the chain; directive-only messages are dropped. */
-  messages: ChatMessage[];
-  /** The namespace in force for this scan (absent when disabled). */
+  input: InputItem[];
+  instructions?: string;
   prefix?: string;
-  /** False when `directives.enabled` is off: the chain is returned untouched. */
   active: boolean;
-  /** Hits from the LAST user message only — the only ones that take effect. */
   effective: DirectiveHit[];
-  /** Every hit found, including scrub-only ones (audit). */
   all: DirectiveHit[];
-  /** Reserved tokens outside the known vocabulary (scrubbed, never applied). */
   unknown: UnknownDirective[];
-  /** Messages removed because nothing but directives was left in them. */
   droppedMessages: number;
-  /**
-   * True when the LAST user message was such a drop — the turn is a pure
-   * "continue" and carries no prompt of its own. Callers must not attribute
-   * experience/ledger prompt identity to it.
-   */
   lastUserDropped: boolean;
-}
-
-/** True when the message carries no text and no non-text part at all. */
-function isEmptyMessage(msg: ChatMessage): boolean {
-  if (Array.isArray(msg.content)) return msg.content.length === 0;
-  return (msg.content ?? '').trim() === '';
 }
 
 /**
  * Strip every reserved token from one text block. A line that becomes blank
- * ONLY because of the removal is dropped entirely — that is what makes
- * "directive on its own line" collapse to the same bytes as never writing it.
+ * ONLY because of the removal is dropped entirely.
  */
 function scrubText(text: string, regexes: PrefixRegexes, onHit: (token: string) => void): string {
   if (!regexes.probe.test(text)) return text;
-  const lines = text.split('\n');
   const kept: string[] = [];
-  for (const line of lines) {
+  for (const line of text.split('\n')) {
     if (!regexes.probe.test(line)) {
       kept.push(line);
       continue;
     }
-    const replaced = line.replace(regexes.scan, (token: string) => {
-      onHit(token);
-      return '';
-    });
-    // Collapse the gap the removal left behind, then decide the line's fate.
-    // Convergence is intentionally local (directive-touched lines only), so
-    // byte-equivalence is approximate for prose that already carried double
-    // spaces on such a line — accepted, never applied to untouched lines.
+    const replaced = line.replace(regexes.scan, (token: string) => { onHit(token); return ''; });
     const tidied = replaced.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/g, '').trimStart();
     if (tidied.trim() !== '') kept.push(tidied);
   }
   return kept.join('\n');
 }
 
-/**
- * Scrub + classify in one pass. Pure: inputs are never mutated (a fresh
- * message array is returned). `prefix === null` means the directive surface is
- * DISABLED — the chain passes through untouched (tokens become ordinary text).
- */
+function canCarryCache(
+  part: ContentPart | undefined,
+): part is Exclude<ContentPart, { type: 'refusal' | 'extension' }> {
+  return Boolean(part && part.type !== 'refusal' && part.type !== 'extension');
+}
+
+function scrubParts(
+  content: ContentPart[],
+  regexes: PrefixRegexes,
+  onHit: (token: string) => void,
+): ContentPart[] {
+  let changed = false;
+  const next: ContentPart[] = [];
+  let pendingCache: CacheBreakpoint | undefined;
+  for (const part of content) {
+    let current = part;
+    if (part.type === 'text' && regexes.probe.test(part.text)) {
+      const text = scrubText(part.text, regexes, onHit);
+      if (text !== part.text) {
+        changed = true;
+        current = { ...part, text };
+      }
+    }
+    if (current.type === 'text' && current.text.trim() === '') {
+      changed = true;
+      if (current.cache) {
+        const prev = next[next.length - 1];
+        if (canCarryCache(prev) && !prev.cache) {
+          next[next.length - 1] = { ...prev, cache: current.cache };
+        } else if (!pendingCache) {
+          pendingCache = current.cache;
+        }
+      }
+      continue;
+    }
+    if (pendingCache && canCarryCache(current) && !current.cache) {
+      current = { ...current, cache: pendingCache };
+      pendingCache = undefined;
+    }
+    next.push(current);
+  }
+  return changed || next.length !== content.length ? next : content;
+}
+
+/** Pure one-pass scrub over canonical messages, tool results, and optional instructions. */
 export function scanDirectives(
-  messages: readonly ChatMessage[],
-  prefix: string | null = DEFAULT_DIRECTIVE_PREFIX
+  input: readonly InputItem[],
+  prefix: string | null = DEFAULT_DIRECTIVE_PREFIX,
+  instructions?: string,
 ): DirectiveScan {
   if (prefix === null) {
     return {
-      messages: [...messages],
-      active: false,
-      effective: [],
-      all: [],
-      unknown: [],
-      droppedMessages: 0,
-      lastUserDropped: false,
+      input: [...input],
+      ...(instructions !== undefined ? { instructions } : {}),
+      active: false, effective: [], all: [], unknown: [],
+      droppedMessages: 0, lastUserDropped: false,
     };
   }
   const namespace = resolveDirectivePrefix(prefix);
   const regexes = regexesFor(namespace);
   const all: DirectiveHit[] = [];
   const unknown: UnknownDirective[] = [];
-  const scrubbed: ChatMessage[] = [];
-  let lastUserIndex = -1;
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === 'user') lastUserIndex = i;
-  }
-
-  let droppedMessages = 0;
-  const droppedIndices: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    const onHit = (token: string) => {
+  let scrubbedInstructions = instructions;
+  if (instructions !== undefined && regexes.probe.test(instructions)) {
+    const onInstructionHit = (token: string): void => {
       const lower = token.toLowerCase();
       const action = actionOfSuffix(lower.slice(namespace.length));
-      if (action) all.push({ token: lower, action, messageIndex: i, role: msg.role });
-      else unknown.push({ token: lower, messageIndex: i, role: msg.role });
+      if (action) all.push({ token: lower, action, messageIndex: -1, role: 'system' });
+      else unknown.push({ token: lower, messageIndex: -1, role: 'system' });
     };
-
-    let content: ChatMessage['content'];
-    if (typeof msg.content === 'string') {
-      content = scrubText(msg.content, regexes, onHit);
-    } else if (Array.isArray(msg.content)) {
-      const parts: ChatMessageContentPart[] = msg.content.map((part) =>
-        part.type === 'text' && typeof part.text === 'string'
-          ? { ...part, text: scrubText(part.text, regexes, onHit) }
-          : part
-      );
-      // A text part emptied by scrubbing is residue; drop it.
-      content = parts.filter((p) => !(p.type === 'text' && (p.text ?? '').trim() === ''));
-    } else {
-      content = msg.content;
+    scrubbedInstructions = scrubText(instructions, regexes, onInstructionHit);
+  }
+  const scrubbed: InputItem[] = [];
+  let lastUserIndex = -1;
+  for (let index = 0; index < input.length; index++) {
+    const item = input[index]!;
+    if (item.type === 'message' && item.role === 'user') lastUserIndex = index;
+  }
+  let droppedMessages = 0;
+  const droppedIndices: number[] = [];
+  for (let index = 0; index < input.length; index++) {
+    const item = input[index]!;
+    if (item.type !== 'message' && item.type !== 'tool_result') {
+      scrubbed.push(item);
+      continue;
     }
-
-    const next: ChatMessage = { ...msg, content };
-    // Directive-only messages ("just continue") leave nothing to send. Drop
-    // them so the upstream chain never carries an empty user turn.
-    if (next.role === 'user' && isEmptyMessage(next)) {
-      droppedMessages++;
-      droppedIndices.push(i);
+    if (!item.content.some((part) => part.type === 'text' && regexes.probe.test(part.text))) {
+      scrubbed.push(item);
+      continue;
+    }
+    const role: Role | 'tool' = item.type === 'tool_result' ? 'tool' : item.role;
+    const onHit = (token: string): void => {
+      const lower = token.toLowerCase();
+      const action = actionOfSuffix(lower.slice(namespace.length));
+      if (action) all.push({ token: lower, action, messageIndex: index, role });
+      else unknown.push({ token: lower, messageIndex: index, role });
+    };
+    const next = { ...item, content: scrubParts(item.content, regexes, onHit) };
+    if (next.type === 'message' && next.role === 'user' && next.content.length === 0) {
+      droppedMessages += 1;
+      droppedIndices.push(index);
       continue;
     }
     scrubbed.push(next);
   }
-
-  const effective = all.filter((h) => h.messageIndex === lastUserIndex && h.role === 'user');
-  const lastUserDropped = lastUserIndex >= 0 && droppedIndices.includes(lastUserIndex);
+  const effective = all.filter((hit) => hit.messageIndex === lastUserIndex && hit.role === 'user');
   return {
-    messages: scrubbed,
-    prefix: namespace,
-    active: true,
-    effective,
-    all,
-    unknown,
-    droppedMessages,
-    lastUserDropped,
+    input: scrubbed,
+    ...(scrubbedInstructions !== undefined ? { instructions: scrubbedInstructions } : {}),
+    prefix: namespace, active: true, effective, all, unknown, droppedMessages,
+    lastUserDropped: lastUserIndex >= 0 && droppedIndices.includes(lastUserIndex),
   };
+}
+
+/**
+ * Scrub a parsed JSON wire body without changing its protocol envelope.
+ * Capture uses this projection so the archive keeps the client's own fields
+ * while reserved tokens still cannot reach disk. Objects and arrays are
+ * copied only when a descendant changes; the execution request is untouched.
+ */
+export function scrubWireDirectives<T>(value: T, prefix: string | null = DEFAULT_DIRECTIVE_PREFIX): T {
+  if (prefix === null) return value;
+  const regexes = regexesFor(resolveDirectivePrefix(prefix));
+  const visit = (current: unknown): unknown => {
+    if (typeof current === 'string') return scrubText(current, regexes, () => {});
+    if (Array.isArray(current)) {
+      let changed = false;
+      const next = current.map((entry) => {
+        const scrubbed = visit(entry);
+        if (scrubbed !== entry) changed = true;
+        return scrubbed;
+      });
+      return changed ? next : current;
+    }
+    if (current && typeof current === 'object') {
+      let changed = false;
+      const next: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(current)) {
+        const scrubbed = visit(entry);
+        next[key] = scrubbed;
+        if (scrubbed !== entry) changed = true;
+      }
+      return changed ? next : current;
+    }
+    return current;
+  };
+  return visit(value) as T;
 }
 
 /** Net signed SUM of one axis's tokens: each up counts +1, each down counts -1. */

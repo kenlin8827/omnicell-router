@@ -68,11 +68,15 @@ export interface TranslationDict {
     saveFailed: string;
     confirm: string;
     cancel: string;
+    save: string;
     delete: string;
     noResults: string;
     clear: string;
+    refresh: string;
     close: string;
     copy: string;
+    copied: string;
+    copyFailed: string;
     dismissToast: string;
     requiredFields: string;
   };
@@ -94,7 +98,6 @@ export interface TranslationDict {
   chat: {
     title: string;
     tabChat: string;
-    subtitle: string;
     keyLabel: string;
     keyConfigured: string;
     keyManual: string;
@@ -112,8 +115,24 @@ export interface TranslationDict {
     decisionBlocked: string;
     streamLabel: string;
     paramsLabel: string;
+    settingsLabel: string;
+    settingsTip: string;
+    /** Tooltip/aria-label of the setup collapse chevron (key/model/stream row). */
+    setupCollapse: string;
+    setupExpand: string;
     temperatureLabel: string;
-    maxTokensLabel: string;
+    effortLabel: string;
+    effortPlaceholder: string;
+    effortNone: string;
+    promptPresetLabel: string;
+    promptPresetManage: string;
+    promptPresetSave: string;
+    promptPresetDelete: string;
+    promptPresetName: string;
+    promptPresetEmpty: string;
+    promptPresetSaved: string;
+    promptPresetDeleted: string;
+    promptPresetNameRequired: string;
     systemLabel: string;
     systemPlaceholder: string;
     send: string;
@@ -137,18 +156,25 @@ export interface TranslationDict {
     emptyTitle: string;
     emptyHint: string;
     composerPlaceholder: string;
+    attachImage: string;
+    imageUrlToggle: string;
+    imageUrlPlaceholder: string;
+    imageUrlInvalid: string;
+    imageRemove: string;
+    imageAlt: string;
+    imageTooLarge: string;
+    imageTooMany: string;
+    imageUnreadable: string;
+    imageNotStored: string;
     pending: string;
     aborted: string;
     noKey: string;
     factModel: string;
     factTier: string;
-    factLayer: string;
-    /** Tooltip: what layer0 / entry / layer2 mean for this turn. */
-    factLayerTip: string;
-    /** Friendly chip values for the wire's layer enum. */
-    layer0: string;
-    layerEntry: string;
-    layer2: string;
+    /** OUTBOUND protocol id of the served attempt (the provider protocol). */
+    factProtocol: string;
+    /** Tooltip: outbound protocol vs the inbound surface the page called. */
+    factProtocolTip: string;
     factLatency: string;
     /** Decode-TPS chip label (the value is the formatted rate only). */
     factRate: string;
@@ -159,14 +185,79 @@ export interface TranslationDict {
     factBreaker: string;
     factRequest: string;
     factSession: string;
+    /** Tooltip: the session chip links to /sessions pre-filtered on this id. */
+    factSessionTip: string;
     factTokens: string;
+    factTokensUnknown: string;
+    toolsLabel: string;
+    toolChoiceLabel: string;
+    toolChoiceAuto: string;
+    toolChoiceRequired: string;
+    toolChoiceNone: string;
+    toolAutoRun: string;
+    toolSandboxReset: string;
+    toolSandboxResetDone: string;
+    toolSandboxHint: string;
+    toolSandboxHintTip: string;
+    /** Shown when the tool selection is empty — the request then carries no
+     *  `tools` field at all, which is a real state, not a neutral one. */
+    toolNoneHint: string;
+    toolSelectAll: string;
+    toolClearAll: string;
+    toolRan: string;
+    regenerate: string;
+    toolNotRun: string;
+    /** Send blocked: last assistant turn still has tool calls with no results. */
+    toolPendingBlock: string;
+    /** Tool card whose result is an `error: ...` string — the failed leg. */
+    toolFailed: string;
+    /** Turn-level bulk action for a long tool loop. */
+    toolsExpandAll: string;
+    toolsCollapseAll: string;
+    historyTitle: string;
+    historyNew: string;
+    historyEmpty: string;
+    /** Toast after adopting another conversation from the history dialog. */
+    historySwitched: string;
+    historyDelete: string;
+    historyUntitled: string;
+    /** History row: manual rename of a conversation. */
+    historyRename: string;
+    /** History row: regenerate the title from a summary of the conversation. */
+    historyRetitle: string;
+    /** Rename dialog header. */
+    titleDialogTitle: string;
+    titlePlaceholder: string;
+    /** Manual title regeneration failed (the old title stays). */
+    titleGenFailed: string;
+    cardTitle: string;
+    wide: string;
+    narrow: string;
+    expand: string;
+    collapse: string;
+    expandMessage: string;
+    /** Bubble action: copy this turn and everything before it into a NEW
+     *  conversation (the source transcript stays untouched). */
+    forkFrom: string;
+    /** Toast after a fork — names the branch it switched to. */
+    forkCreated: string;
+    /** Appended to the copied title so the two history rows stay tellable
+     *  apart once the branch has a title of its own. */
+    forkTitleSuffix: string;
+    /** Bubble action: keep everything up to this turn and drop the rest. */
+    revertTo: string;
+    revertConfirmTitle: string;
+    /** `{count}` is the number of turns about to be dropped. */
+    revertConfirmDesc: string;
+    /** Expanded-message header: copies the message TEXT (markdown source for an
+     *  assistant reply, the typed text for a user turn). */
+    copyMessageText: string;
   };
   /** Decision wire tab (`POST /v1/systemone`): one state evaluated against
    *  typed questions, answered with values + probabilities. */
   decision: {
     title: string;
     tabDecision: string;
-    subtitle: string;
     stateLabel: string;
     statePlaceholder: string;
     stateRequired: string;
@@ -201,6 +292,11 @@ export interface TranslationDict {
     send: string;
     presetLabel: string;
     presetHint: string;
+    historyTitle: string;
+    historyNew: string;
+    historyEmpty: string;
+    historyDelete: string;
+    historyUntitled: string;
   };
 
   /** Ready-to-run System One use cases for the playground (per language). */
@@ -230,24 +326,36 @@ export interface TranslationDict {
     yaml: string;
     auto: string;
     combos: string;
-    modelProfiles: string;
     proxy: string;
+    /** Nav label: the Upstream group's model-scoped proxy pattern page. */
+    proxyPatterns: string;
+    /** Nav label: the built-in Clash panel under Proxy Management. */
+    proxyMihomo: string;
+    /** Nav label: the inbound proxy's traffic log page (the observation half
+     *  of the inbound capability; the settings page owns the rules). Kept to
+     *  one short word pair — the card header carries the full name. */
+    proxyLog: string;
     tokenSaver: string;
     catalogSources: string;
     grpOverview: string;
     grpTraffic: string;
     grpUpstream: string;
     grpAccess: string;
+    /** Heading of the Proxy Management first-level group (capability home). */
+    grpProxy: string;
     grpSafety: string;
     grpObservability: string;
     grpHarness: string;
     skills: string;
     mcp: string;
+    mcpBrowser: string;
     plugins: string;
     grpSystem: string;
     shortOverview: string;
     shortAccess: string;
     shortUpstream: string;
+    /** Rail caption (<= 76px) for the Proxy Management group. */
+    shortProxy: string;
     shortTraffic: string;
     shortSafety: string;
     shortObservability: string;
@@ -351,6 +459,20 @@ export interface TranslationDict {
     desc: string;
     saveTierBtn: string;
     savedTier: string;
+    /** View-mode → edit-mode entry point (per tier card). */
+    editBtn: string;
+    /** Edit-mode exit without saving. */
+    cancelEdit: string;
+    /** Amber chip on a tier card whose draft differs from the committed policy. */
+    unsavedBadge: string;
+    /** Confirm discarding a dirty draft on cancel-edit. {tier} = tier label. */
+    discardConfirmTitle: string;
+    discardConfirmDesc: string;
+    discardConfirmBtn: string;
+    /** Confirm leaving the page with unsaved drafts (in-app nav guard). */
+    leaveConfirmTitle: string;
+    leaveConfirmDesc: string;
+    leaveConfirmBtn: string;
     testBtn: string;
     testBtnHint: string;
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
@@ -435,9 +557,8 @@ export interface TranslationDict {
     membersCount: string;
     filterPlaceholder: string;
     memberWeightHint: string;
-    saveAllBtn: string;
-    savedAll: string;
     pickModelBtn: string;
+    pickEmptyHint: string;
     comboBadge: string;
     comboMemberCount: string;
     saveCheckDeadCombo: string;
@@ -499,6 +620,10 @@ export interface TranslationDict {
     probeDetailCopied: string;
     testAllBtn: string;
     testAllRunning: string;
+    /** Probe credential pin (models dialog): trigger placeholder = "gateway default". */
+    pmTestCredentialDefault: string;
+    /** Tooltip on the batch-test button once a credential is pinned ({credential} = masked label). */
+    pmTestCredentialTip: string;
     testAllDone: string;
     testAllConfirmTitle: string;
     testAllConfirmDesc: string;
@@ -517,6 +642,7 @@ export interface TranslationDict {
     probeUnroutableUnknownPkg: string;
     probeUnroutableDedicated: string;
     testRotated: string;
+    testRotatedCredentials: string;
     /** Test-route 400 precondition reasonCodes. */
     reasonNoTestableModel: string;
     reasonNoBaseUrl: string;
@@ -743,7 +869,7 @@ export interface TranslationDict {
     /** Per-credential drill-down (KeysPage provider cards). */
     credentialSoleServingTip: string;
     /** Chain head = opencode's own key + failover priority head, not the only serving row. */
-    credentialChainHeadTip: string;
+    credentialDefaultTip: string;
     /** Tip for the pin-to-top affordance (credential reorder). */
     credentialPinTip: string;
     /** Under-list line: several credentials DO serve at once (per-session spread). */
@@ -805,9 +931,9 @@ export interface TranslationDict {
     credentialPrefixTip: string;
     /** Button: move this credential to the head of the chain (reorder). */
     credentialPin: string;
-    /** Toast: credential was pinned to the chain head. */
+    /** Toast: credential was pinned to the default credential position. */
     credentialPinned: string;
-    /** Per-credential connectivity probe (multi-credential: the provider-level Test only ever hits the head row). */
+    /** Per-credential connectivity probe (multi-credential: the provider-level Test rotates the enabled chain instead of stopping at the head row). */
     credentialTest: string;
     credentialTestTip: string;
     credentialRename: string;
@@ -820,7 +946,7 @@ export interface TranslationDict {
     credentialLabelCleared: string;
     /** Fallback sink name when the bound store is unknown (status endpoint failed). */
     credentialStoreNeutral: string;
-    /** Adding a key must not steal the chain head (opencode's own active credential). */
+    /** Adding a key must not steal the default credential slot (opencode's own active credential). */
     headPreserved: string;
     credentialDisconnect: string;
     credentialDisconnected: string;
@@ -1216,7 +1342,24 @@ hiddenBadge: string;
     /** Detail-grid thinking-level column: header + cell tooltip. */
     colThink: string;
     colPrompt: string;
+    /** Transport-map column header + its tooltip: client shape → the shape the
+     *  provider leg actually ran on (`JSON→SSE`, `SSE→SSE`, em dash = unknown). */
+    colStream: string;
+    colStreamTip: string;
+    /** Protocol-map column header (inbound surface → outbound wireKind). */
+    colProtocol: string;
     promptFallbackTip: string;
+    /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
+    inboundStreamTip: string;
+    /** Stream-tag tooltip (outbound / provider leg): SSE vs buffered call. */
+    outboundStreamTip: string;
+    /** Protocol-map tooltip (inbound surface → outbound wireKind). */
+    protocolTip: string;
+    /** Summary-card row: first request's protocol + transport map. */
+    firstRequestTip: string;
+    firstRequestLabel: string;
+    protocolMixed: string;
+    protocolMixedTip: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;
@@ -1269,6 +1412,11 @@ hiddenBadge: string;
     apiKeyAll: string;
     hideInternal: string;
     hideInternalTip: string;
+    /** Toggle: hide sessions that carry a single request (client helper calls). */
+    hideOneShot: string;
+    hideOneShotTip: string;
+    /** Table empty state while {@link hideOneShot} hides every visible row. */
+    emptyOneShotHidden: string;
     /** Row badge on an internal session, shown only while the filter is off. */
     internalBadge: string;
     /** Badge tooltip — the reserved `ocr-internal:` prefix explains the classification. */
@@ -1623,25 +1771,25 @@ hiddenBadge: string;
     sessionDeleted: string;
     emptySessions: string;
     pickSession: string;
-    turnsTitle: string;
-    refreshTurnsHint: string;
+    detailTitle: string;
+    refreshRequestsHint: string;
     /** Detail-pane auto-refresh toggle label + title hint. */
     autoRefresh: string;
     autoRefreshHint: string;
     /** Detail header: user-prompt round count and client-request count are
      *  separate axes and must never share a label. */
-    roundsUnit: string;
+    turnsUnit: string;
     requestsUnit: string;
     /** Prompt-round navigator: "all rounds" option + labels. */
-    roundAll: string;
-    roundNoPrompt: string;
-    roundSteps: string;
+    turnAll: string;
+    turnNoPrompt: string;
+    turnRequests: string;
     /** Header tally tooltip: page requests vs the archive-wide exact count. */
     requestsCountHint: string;
     /** Header tally tooltip: user-prompt rounds over the whole archive. */
-    roundsCountHint: string;
+    turnsCountHint: string;
     /** Row tooltips explaining the two independent numbering axes. */
-    roundSeqHint: string;
+    turnSeqHint: string;
     requestSeqHint: string;
     /** Timeline header summary: total gateway latency over the displayed turns. */
     totalTime: string;
@@ -1665,7 +1813,7 @@ hiddenBadge: string;
     inboundModel: string;
     outboundModel: string;
     tabClientRequest: string;
-    tabGatewayResponse: string;
+    tabClientResponse: string;
     /** Tooltip of the caller correlation id chip in the capture drawer (ADR-0021). */
     clientRequestId: string;
     tabUpstreamRequest: string;
@@ -1725,7 +1873,7 @@ hiddenBadge: string;
     viewChat: string;
     chatFullscreen: string;
     chatExitFullscreen: string;
-    roundFocus: string;
+    turnFocus: string;
     expand: string;
     collapse: string;
     msgSystem: string;
@@ -1742,18 +1890,18 @@ hiddenBadge: string;
     msgTool: string;
     msgThinking: string;
     toolCallLabel: string;
-    turnRawBtn: string;
+    requestRawBtn: string;
     chatEmpty: string;
-    turnLoading: string;
-    turnOutOfRange: string;
-    loadingMoreRounds: string;
-    roundMidOpenNote: string;
-    roundStepsUnit: string;
-    roundOrdinal: string;
-    roundTailLabel: string;
+    requestLoading: string;
+    requestOutOfRange: string;
+    loadingMoreTurns: string;
+    turnMidOpenNote: string;
+    turnStepsUnit: string;
+    turnOrdinal: string;
+    turnTailLabel: string;
     view: string;
     answerSection: string;
-    roundUnconvergedNote: string;
+    turnUnconvergedNote: string;
     resultsMissingShort: string;
     resultsMissingNote: string;
     divergedNote: string;
@@ -2175,13 +2323,17 @@ hiddenBadge: string;
      *  launcher path (primary + CLI) under this label. */
     launcherPaths: string;
     fileExists: string;
-    backupExists: string;
+    backupMissingWarn: string;
     yes: string;
     no: string;
-    ready: string;
     none: string;
     teardownBtn: string;
     setupBtn: string;
+    /** Per-card resync action: re-run setup from the remembered draft so a
+     *  written model list (follow snapshot / alias metadata) picks up new
+     *  gateway models without teardown. */
+    resyncModels: string;
+    resyncModelsTitle: string;
     /** Launcher hooks (cursor/qoder) only publish a start script — no client
      *  state is taken over until `ocr <client>` actually launches it. Their
      *  buttons and status badge use these launcher-scoped labels instead of
@@ -2230,6 +2382,7 @@ hiddenBadge: string;
     cursorSetupOk: string;
     cursorTeardownOk: string;
     clientErrNotActive: string;
+    clientErrTakeoverLost: string;
     cursorErrRemoveFailed: string;
     gatewayModels: string;
     gatewayModelsInfo: string;
@@ -2250,12 +2403,36 @@ hiddenBadge: string;
     gatewayPluginDisabled: string;
     gatewayPluginNotLoaded: string;
     gatewayPluginRequired: string;
+    jetbrainsHint: string;
+    jetbrainsSetupOk: string;
+    jetbrainsTeardownOk: string;
+    /** Family card: "N IDEs" badge on the collapsed row. */
+    jetbrainsProductCount: string;
     qoderErrNotFound: string;
     qoderHint: string;
     qoderSetupOk: string;
     warnCaNotTrusted: string;
+    jetbrainsCa: string;
+    jetbrainsCaImported: string;
+    jetbrainsCaAbsent: string;
+    jetbrainsCaUnknown: string;
+    jetbrainsCaNotHooked: string;
+    jetbrainsCaReimport: string;
+    warnIdeRunning: string;
+    /** Consent dialog title: a client is running while the operator asks to hook/unhook it. */
+    ideRunningTitle: string;
+    /** Dialog body for setup: the hook lands but the app rewrites its settings on exit. */
+    ideRunningSetup: string;
+    /** Dialog body for teardown: the restore can be undone the same way. */
+    ideRunningTeardown: string;
+    /** Confirm button on that dialog ("hook anyway"). */
+    ideRunningContinue: string;
     warnCaTrustUnknown: string;
     warnProxyNotRunning: string;
+    /** IDE install's truststore is read-only: the CA lives in a copy its vmoptions point at. */
+    warnIdeTruststoreReadonly: string;
+    /** A plugin-owned advisory code with no text declared in its package. */
+    warnUndeclaredAdvisory: string;
     qoderTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;
@@ -2263,11 +2440,11 @@ hiddenBadge: string;
     modelsInfo: string;
     addModel: string;
     modelAuto: string;
-    modelModeNone: string;
+    modelModeDefault: string;
     modelModeFollow: string;
     modelModeCustom: string;
-    modelModeNoneHint: string;
-    modelModeAllHint: string;
+    modelModeDefaultBlockHint: string;
+    modelModeUnsetHint: string;
     followNoKey: string;
     gatewayApiKey: string;
     gatewayApiKeyHint: string;
@@ -2303,55 +2480,44 @@ hiddenBadge: string;
     smartScopeNone: string;
     smartScopeEmpty: string;
     proxyHint: string;
-    nameOpencodeProxy: string;
-    nameOpencode: string;
     /** Hook-tab roster filter placeholder */
     filterPh: string;
     /** Proxy-tab prerequisite banners (inbound forward proxy off / not running) */
     fpPrereqOff: string;
     fpPrereqDown: string;
-    profileNone: string;
-    profileEmpty: string;
-    profileManage: string;
-    /** Shown while a profile is linked: save-time write-through notice. */
-    profileLinkedHint: string;
-    profileAgentsLoading: string;
+    /** Agent inventory fetch in flight (opencode). */
+    rowsLoading: string;
     /** Inventory fetch failed: explanatory line + retry button. */
-    profileAgentsError: string;
-    profileAgentsRetry: string;
-    profileAgentsEmpty: string;
-    profileBindNone: string;
-    /** Row picker far-right chip marking a profile-slot link entry. */
-    profileSlotBadge: string;
-    /** Profile switch carry-over: slot missing on the row + summary line. */
-    profileSlotMissing: string;
-    profileSlotCarry: string;
+    rowsError: string;
+    rowsRetry: string;
+    rowsEmpty: string;
+    rowsNone: string;
     /** Binding table ergonomics (25+ agents): filter box + mode groups. */
-    profileFilter: string;
-    profileClearBindings: string;
-    profileClearBindingsHint: string;
-    profileGroupPrimary: string;
-    profileGroupSubagent: string;
-    profileGroupAll: string;
-    profileAgentsNoMatch: string;
+    rowsFilter: string;
+    rowsClear: string;
+    rowsClearHint: string;
+    rowsGroupPrimary: string;
+    rowsGroupSubagent: string;
+    rowsGroupAll: string;
+    rowsNoMatch: string;
     /** Row-order button group: by agent name, or cluster rows by the name's last / first hyphen segment. */
-    profileSortLabel: string;
-    profileSortName: string;
-    profileSortSuffix: string;
-    profileSortPrefix: string;
-    profileSortHint: string;
-    profileCurrentModel: string;
-    profileApplyHint: string;
-    /** pi variant: write-through lands in settings.json agentOverrides; presets are the default. */
-    profileApplyHintPi: string;
-    profileApplyHintOmp: string;
+    rowsSortLabel: string;
+    rowsSortName: string;
+    rowsSortSuffix: string;
+    rowsSortPrefix: string;
+    rowsSortHint: string;
+    rowsCurrentModel: string;
+    rowsHint: string;
+    /** pi variant: picks land in settings.json agentOverrides; presets are the default. */
+    rowsHintPi: string;
+    rowsHintOmp: string;
     /** pi form hint: models.json entries are written with full model metadata. */
     piMetaHint: string;
     ompMetaHint: string;
     /** Short header-row label naming what the table binds (Subagent). */
-    profileRowsLabel: string;
+    rowsLabel: string;
     /** Switch-OFF explanatory line. */
-    profileRowsOffHint: string;
+    rowsOffHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
     tabHook: string;
     tabProxy: string;
@@ -2498,18 +2664,272 @@ hiddenBadge: string;
     submitting: string;
     failed: string;
     locked: string;
+    /** Shown when the gate re-appears because a live session died (401). */
+    expired: string;
   };
+  /** The model-scoped proxy pattern page (Upstream group): proxyPatterns.* */
+  proxyPatterns: {
+    title: string;
+    hint: string;
+    endpoint: string;
+    endpointHint: string;
+    endpointManage: string;
+    disabled: string;
+    saveHint: string;
+  };
+  /** The inbound forward-proxy ACCESS page (ProxyAccessPage): CA trust, the
+   *  setup wizard and the OS-proxy controls. Rule-table keys live under
+   *  `forwardProxy`. */
   proxy: {
     title: string;
     saveBtn: string;
     savedNotice: string;
+    unsaved: string;
+    saveHintMode: string;
+    saveHintCore: string;
     enable: string;
+    stateOn: string;
+    stateOff: string;
     hint: string;
     url: string;
     includes: string;
     excludes: string;
     addPattern: string;
     pattern: string;
+    /** Index line at the foot of the outbound page: the sibling pages that own the
+     *  rest of this capability. Link labels are taken from `nav.*`, never re-worded
+     *  here, so the index cannot drift from the sidebar. */
+    relatedPages: string;
+    /** Core card: run policy, orthogonal to the outbound mode. */
+    mihomoAutoStart: string;
+    mihomoAutoStartHint: string;
+    tabGeneral: string;
+    tabSettings: string;
+    tabMihomo: string;
+    reinstall: string;
+    alreadyRunning: string;
+    stopFirst: string;
+    mihomoModeOff: string;
+    tabSubscriptions: string;
+    tabNodes: string;
+    tabTest: string;
+    mode: string;
+    modeManual: string;
+    modeMihomo: string;
+    modeHint: string;
+    statusTitle: string;
+    installed: string;
+    notInstalled: string;
+    running: string;
+    stopped: string;
+    version: string;
+    pid: string;
+    mixedPort: string;
+    controllerPort: string;
+    start: string;
+    stop: string;
+    restart: string;
+    install: string;
+    installing: string;
+    installingPct: string;
+    installingSize: string;
+    errDisabled: string;
+    errPortCollision: string;
+    errBinaryMissing: string;
+    errStart: string;
+    errReload: string;
+    errNotReady: string;
+    errSpawnExited: string;
+    errKillFailed: string;
+    errPidUnknown: string;
+    errUnauthorized: string;
+    nodeNotFound: string;
+    errInstall: string;
+    errUnsupported: string;
+    errUnpack: string;
+    portsLocked: string;
+    pacLabel: string;
+    pacHint: string;
+    outboundSection: string;
+    clientAccess: string;
+    pacOpen: string;
+    pacSummary: string;
+    nodeAllSources: string;
+    nodeAllTypes: string;
+    tabRules: string;
+    rulesNoCore: string;
+    rulesEmpty: string;
+    rulesCustomTitle: string;
+    rulesCustomHint: string;
+    rulesAdd: string;
+    rulesApply: string;
+    rulesCustomEmpty: string;
+    rulesMoveUp: string;
+    rulesMoveDown: string;
+    rulesDelete: string;
+    rulesPayloadRequired: string;
+    rulesImport: string;
+    rulesImportTitle: string;
+    rulesImportSubtitle: string;
+    rulesImportSource: string;
+    rulesImportSourceSub: string;
+    rulesImportSourceText: string;
+    rulesImportPickSub: string;
+    rulesImportText: string;
+    rulesImportMapTarget: string;
+    rulesImportRun: string;
+    rulesImportResult: string;
+    rulesImportSkipped: string;
+    rulesSelected: string;
+    rulesSetTarget: string;
+    rulesSelectAll: string;
+    rulesSelectRow: string;
+    rulesClearSel: string;
+    errImport: string;
+    rulesImportCacheNote: string;
+    rulesImportNetNote: string;
+    rulesImportPreview: string;
+    rulesImportNone: string;
+    rulesImportCommit: string;
+    rulesImportAdded: string;
+    rulesSource: string;
+    rulesSourceAll: string;
+    rulesSourceManual: string;
+    rulesShown: string;
+    rulesViewEdit: string;
+    rulesViewLive: string;
+    rulesFilterPlaceholder: string;
+    rulesFilterEmpty: string;
+    rulesCount: string;
+    rulesEffective: string;
+    rulesType: string;
+    rulesPayload: string;
+    rulesTarget: string;
+    routingModeLabel: string;
+    routingRule: string;
+    routingGlobal: string;
+    routingDirect: string;
+    routingHint: string;
+    routingNotApplied: string;
+    routingLiveMismatch: string;
+    groupTypeLabel: string;
+    groupSelect: string;
+    groupUrlTest: string;
+    groupFallback: string;
+    groupHint: string;
+    groupInterval: string;
+    groupIntervalHint: string;
+    groupTolerance: string;
+    nodePickAuto: string;
+    nodeAutoBadge: string;
+    secretSet: string;
+    secretMissing: string;
+    subName: string;
+    subUrl: string;
+    subInterval: string;
+    subAutoEvery: string;
+    subIntervalHint: string;
+    subEnabled: string;
+    subDisabled: string;
+    subEnabledHint: string;
+    subAdd: string;
+    subEdit: string;
+    subDelete: string;
+    subRefresh: string;
+    subRefreshAll: string;
+    subEmpty: string;
+    subNodes: string;
+    subUpdated: string;
+    subNever: string;
+    /** Partial failure of a refresh-all: `{ok}` refreshed, `{failed}` failed. */
+    subRefreshPartial: string;
+    /** Delay-test timeout: the node did not answer the controller's probe. */
+    nodeTestTimeout: string;
+    group: string;
+    nodeSearch: string;
+    nodeEmpty: string;
+    nodeSelect: string;
+    nodeSelected: string;
+    nodeCurrent: string;
+    nodeNone: string;
+    nodeTest: string;
+    nodeTestAll: string;
+    nodeTestConn: string;
+    nodeTesting: string;
+    nodeTestOk: string;
+    nodeTestFail: string;
+    nodeTestUrl: string;
+    nodeTestUrlHint: string;
+    nodeDelay: string;
+    nodeSortDelay: string;
+    nodeType: string;
+    nodeOffline: string;
+    nodeError: string;
+    nodeAdd: string;
+    nodeEdit: string;
+    nodeDelete: string;
+    nodeSource: string;
+    nodeSourceManual: string;
+    nodeSourceBuiltin: string;
+    nodeHint: string;
+    nodeServer: string;
+    nodePort: string;
+    nodeCipher: string;
+    nodePassword: string;
+    nodeUuid: string;
+    nodeAlterId: string;
+    nodeNetwork: string;
+    nodeTls: string;
+    nodeSni: string;
+    nodeFlow: string;
+    nodeWsPath: string;
+    nodeWsHost: string;
+    nodeSkipCertVerify: string;
+    nodeUsername: string;
+    nodeModeForm: string;
+    nodeModeYaml: string;
+    nodeYamlHint: string;
+    nodeRawFormHint: string;
+    nodeUdp: string;
+    nodeVmessCipher: string;
+    nodeGrpcService: string;
+    nodeRealityPublicKey: string;
+    nodeRealityShortId: string;
+    nodeAlpn: string;
+    nodeFingerprint: string;
+    nodePlugin: string;
+    nodeOptionNone: string;
+    nodePluginMode: string;
+    nodePluginHost: string;
+    nodePluginPath: string;
+    nodeObfs: string;
+    nodeObfsPassword: string;
+    nodeUp: string;
+    nodeDown: string;
+    nodeTfo: string;
+    nodeIpVersion: string;
+    nodeH2Host: string;
+    nodeH2Path: string;
+    nodePluginTls: string;
+    nodePorts: string;
+    nodeFieldInvalid: string;
+    nodeUnmodeled: string;
+    testUrlBtn: string;
+    testCurrentNode: string;
+    testCurrentUrl: string;
+    testChangeUrl: string;
+    testUse: string;
+    testInUse: string;
+    testCustomLabel: string;
+    testCustomHint: string;
+    testUrlTimeout: string;
+    testUrlAllNodes: string;
+    testUrlBatch: string;
+    /** {done} of {n} endpoints probed so far. */
+    testUrlBatchRunning: string;
+    coreHint: string;
+    notRunning: string;
+    direct: string;
   };
   forwardProxy: {
     secListener: string;
@@ -2520,6 +2940,8 @@ hiddenBadge: string;
     savedHotNotice: string;
     enable: string;
     requireCredential: string;
+    stateOn: string;
+    stateOff: string;
     requireCredentialHint: string;
     hint: string;
     port: string;
@@ -2547,10 +2969,23 @@ hiddenBadge: string;
     ruleProxyOff: string;
     ruleUpstreamInsecure: string;
     ruleNoCatchAll: string;
+    ruleCatchAllIntercepts: string;
+    ruleTighten: string;
+    ruleTightenDone: string;
+    interceptAll: string;
+    interceptAllHint: string;
+    interceptAllWarning: string;
+    ruleClaimsBtn: string;
+    ruleClaimsTitle: string;
+    ruleClaimsHint: string;
+    ruleClaimsColHost: string;
+    ruleClaimsColPlugin: string;
+    ruleClaimsEmpty: string;
     ruleProbe: string;
     ruleProbeRule: string;
     ruleProbeLoopback: string;
     ruleProbeFallback: string;
+    ruleProbeClaim: string;
     ruleInvalid: string;
     ruleUnreachable: string;
     maxConnections: string;
@@ -2569,20 +3004,19 @@ hiddenBadge: string;
     caTrustOpenWizard: string;
     caHint: string;
     hostNote: string;
-    unresolvedTitle: string;
-    unresolvedHint: string;
-    unresolvedOnMiss: string;
-    unresolvedHosts: string;
-    unresolvedHostPlaceholder: string;
-    unresolvedModeFail: string;
-    unresolvedModeDirect: string;
-    addHost: string;
+    /** Wizard heading (trust the CA → configure clients → verify). */
     helpTitle: string;
     wizardPrev: string;
     wizardNext: string;
     wizardDisabledHint: string;
     helpStep2: string;
     helpStep2Code: string;
+    /** Trust-route sub-tab labels (step 1): store install for shell clients
+     *  vs process-env injection for code clients. */
+    trustTabShell: string;
+    trustTabCode: string;
+    /** One-line note under the code tab: what the env route does. */
+    trustTabCodeHint: string;
     sysInstallTitle: string;
     sysInstallWinCmd: string;
     sysInstallWinHint: string;
@@ -2595,6 +3029,9 @@ hiddenBadge: string;
     sysRemoveMacHint: string;
     sysRemoveLinuxCmd: string;
     sysRemoveNote: string;
+    /** Wizard step 2 client-routing sub-tabs: env vars (default) / OS proxy (optional). */
+    clientTabEnv: string;
+    clientTabOs: string;
     helpStep3: string;
     helpStep3Code: string;
     helpStep4: string;
@@ -2627,7 +3064,8 @@ hiddenBadge: string;
     modeLive: string;
     modeHistory: string;
     histEmpty: string;
-    clearScopeNote: string;
+    clearLiveNote: string;
+    clearLiveDone: string;
     rpcMethodHint: string;
     encProto: string;
     encJson: string;
@@ -2661,7 +3099,8 @@ hiddenBadge: string;
     title: string;
     hint: string;
     tabConfig: string;
-    tabLog: string;
+    /** Link label in the settings page's log section: opens the log page. */
+    openLog: string;
     onChip: string;
     switch: string;
     switchHint: string;
@@ -2675,14 +3114,16 @@ hiddenBadge: string;
     sysStateStale: string;
     sysStateUnsupported: string;
     sysStaleHint: string;
+    /** Config-tab warning when the forward proxy is off but the OS proxy still
+     *  points at OCR (or a snapshot is pending): badge / hint / direct restore. */
+    sysRestoreBarTitle: string;
+    sysRestoreBarHint: string;
+    sysRestoreBarBtn: string;
     sysEnableBtn: string;
     sysDisableBtn: string;
     sysRestoreBtn: string;
     sysOverrideLabel: string;
     sysEnvBtn: string;
-    sysCopyBtn: string;
-    sysCopied: string;
-    sysCopyFailed: string;
     sysUnsupportedNote: string;
     autoHint: string;
     refresh: string;
@@ -2769,6 +3210,9 @@ hiddenBadge: string;
     warnEmptyId: string;
     warnDupId: string;
     warnNoMembers: string;
+    /** Every configured member failed the registration probe — the routing
+     *  path fail-fasts this combo; the card names the provider re-pull fix. */
+    warnAllUnregistered: string;
     warnEmptyMember: string;
     warnDupMember: string;
     showMoreMembers: string;
@@ -2779,37 +3223,6 @@ hiddenBadge: string;
     testOkFailover: string;
     testFailed: string;
     testInactive: string;
-  };
-  modelProfiles: {
-    title: string;
-    hint: string;
-    empty: string;
-    newProfile: string;
-    edit: string;
-    delete: string;
-    deleteTitle: string;
-    saveBtn: string;
-    cancel: string;
-    savedNotice: string;
-    profileName: string;
-    nameFieldPlaceholder: string;
-    slots: string;
-    slotKeyPlaceholder: string;
-    slotRefPlaceholder: string;
-    addSlot: string;
-    deleteSlot: string;
-    moveUp: string;
-    moveDown: string;
-    noteLabel: string;
-    notePlaceholder: string;
-    warnBadId: string;
-    warnDupId: string;
-    warnEmptyName: string;
-    warnDupName: string;
-    warnNoSlots: string;
-    warnEmptySlot: string;
-    warnDupSlot: string;
-    warnEmptyRef: string;
   };
   pluginPage: {
     title: string;
@@ -2852,6 +3265,7 @@ hiddenBadge: string;
     enableFail: string;
     typeModelService: string;
     typeClientGateway: string;
+    typeClientAdapter: string;
     settings: string;
     configTitle: string;
     configSave: string;
@@ -2862,8 +3276,8 @@ hiddenBadge: string;
     configWarnings: string;
     configEmpty: string;
     configAddModel: string;
-    configAdvancedShow: string;
-    configAdvancedHide: string;
+    configModeQuick: string;
+    configModeAdvanced: string;
     configExpand: string;
   };
   downloads: {
@@ -3367,5 +3781,100 @@ hiddenBadge: string;
       versionUnsupported: string;
       archiveInvalid: string;
     };
+  };
+  mcpBrowser: {
+    title: string;
+    subtitle: string;
+    modeHost: string;
+    modeCustom: string;
+    host: string;
+    hostDetected: string;
+    scope: string;
+    scopeGlobal: string;
+    scopeProject: string;
+    project: string;
+    server: string;
+    selectServerPlaceholder: string;
+    noServersFound: string;
+    transport: string;
+    transportStdio: string;
+    transportAuto: string;
+    transportStreamableHttp: string;
+    transportSse: string;
+    command: string;
+    commandPlaceholder: string;
+    args: string;
+    argsPlaceholder: string;
+    cwd: string;
+    cwdPlaceholder: string;
+    envVars: string;
+    headers: string;
+    url: string;
+    urlPlaceholder: string;
+    keyPlaceholder: string;
+    valuePlaceholder: string;
+    addRow: string;
+    connect: string;
+    connecting: string;
+    reconnect: string;
+    disconnect: string;
+    connected: string;
+    disconnected: string;
+    serverInfo: string;
+    instructions: string;
+    estTokens: string;
+    tabTools: string;
+    tabResources: string;
+    tabPrompts: string;
+    tabLogs: string;
+    searchPlaceholder: string;
+    noTools: string;
+    noResources: string;
+    noPrompts: string;
+    noLogs: string;
+    selectItemHint: string;
+    inputModeForm: string;
+    inputModeJson: string;
+    fillDefaults: string;
+    formatJson: string;
+    invalidJson: string;
+    required: string;
+    runTool: string;
+    running: string;
+    readResource: string;
+    getPrompt: string;
+    templateUriHint: string;
+    result: string;
+    rawResult: string;
+    statusOk: string;
+    statusToolError: string;
+    durationMs: string;
+    history: string;
+    clearHistory: string;
+    applyHistory: string;
+    noHistory: string;
+    schemaChars: string;
+    inspectAction: string;
+    clearLogs: string;
+    timeoutMs: string;
+    noParams: string;
+    resourceTemplates: string;
+    importJson: string;
+    importJsonPlaceholder: string;
+    importJsonApply: string;
+    importJsonSuccess: string;
+    importJsonFailed: string;
+    cancel: string;
+    installToHost: string;
+    installTitle: string;
+    installName: string;
+    installNamePlaceholder: string;
+    installTargets: string;
+    installPreview: string;
+    installConfirm: string;
+    installPlanTitle: string;
+    installSuccess: string;
+    installNoHosts: string;
+    paramCount: string;
   };
 }

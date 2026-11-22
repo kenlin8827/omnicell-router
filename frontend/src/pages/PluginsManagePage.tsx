@@ -175,7 +175,7 @@ export function PluginsManagePage(): React.ReactElement {
             {installing ? t('pluginPage.installing') : t('pluginPage.install')}
           </button>
           <button className="btn" onClick={() => void reload()} disabled={reloading}>
-            <RefreshCw size={13} aria-hidden className={reloading ? 'spin' : undefined} />
+            <RefreshCw size={13} aria-hidden style={reloading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             {t('pluginPage.reload')}
           </button>
         </div>
@@ -259,7 +259,19 @@ export function PluginsManagePage(): React.ReactElement {
             </td>
             <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)' }}>{p.version}</td>
             <td style={CELL}>
-              {p.type === 'client-gateway' ? t('pluginPage.typeClientGateway') : t('pluginPage.typeModelService')}
+              {/* One label per part (ADR-0028): a package that is both an
+                  ingress hook and a gateway must say so here, because the two
+                  halves are enabled and observed in different places. */}
+              {(p.types?.length ? p.types : [p.type]).map((type, i) => (
+                <span key={type}>
+                  {i > 0 && <span style={{ color: 'var(--text-dim)' }}>{' + '}</span>}
+                  {type === 'client-gateway'
+                    ? t('pluginPage.typeClientGateway')
+                    : type === 'client-adapter'
+                      ? t('pluginPage.typeClientAdapter')
+                      : t('pluginPage.typeModelService')}
+                </span>
+              ))}
               {/* Folded in from its own column: `wires` is set for model-service plugins
                   only, so a dedicated 120px track sat empty on every client-gateway row. */}
               {p.wires.length > 0 && (

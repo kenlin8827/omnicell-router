@@ -9,7 +9,7 @@ import {
   Terminal,
   ArrowRight,
 } from 'lucide-react';
-import { api, type GatewayStatusResponse, type UsageStatsResponse } from '../lib/api';
+import { api, type ClientStatus, type GatewayStatusResponse, type UsageStatsResponse } from '../lib/api';
 import { decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
@@ -31,6 +31,17 @@ export const OverviewPage: React.FC = () => {
   const { status, statusError } = useOutletContext<{ status: GatewayStatusResponse | null; statusError: boolean }>();
   const { t } = useI18n();
   const metrics = status?.metrics;
+  // Roster lives on its own endpoint now (GET /api/admin/clients) — the
+  // 3s-polled status no longer carries it. Loaded once per mount; the card
+  // is a directory view, not a live monitor.
+  const [clients, setClients] = useState<ClientStatus[]>([]);
+  useEffect(() => {
+    let alive = true;
+    api.getClients()
+      .then(r => { if (alive) setClients(r.clients || []); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // All four header cards report TRACE-WINDOWED raw counts from
   // /api/admin/usage (requests / input tokens / output tokens / avg
@@ -185,7 +196,7 @@ export const OverviewPage: React.FC = () => {
             <Link to="/clients" className="btn btn-sm">{t('overview.manage')}</Link>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {status?.clients?.map(c => (
+            {clients.map(c => (
               <div
                 key={c.name}
                 style={{
@@ -199,9 +210,12 @@ export const OverviewPage: React.FC = () => {
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                  <BrandIcon name={c.name.replace(/-proxy$/, '')} size={18} />
+                  <BrandIcon name={c.icon ?? c.name} size={18} />
                   <div>
-                    <div style={{ fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-md)' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
+                    {/* One flat list, so the two OpenCode rows (config hook vs proxy
+                        mode) need the qualifier here — /clients keeps it implicit in
+                        the tab and shows the hook's `shortName`. */}
+                    <div style={{ fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-md)' }}>{c.displayName}</div>
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                       {c.configPath}
                     </div>

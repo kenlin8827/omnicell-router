@@ -12,18 +12,16 @@ export type CliAction =
   | 'uninstall-shims'
   /** Machine-readable shim state for the desktop tray toggle (JSON + exit code). */
   | 'shims-status'
-  /** Passthrough launch verbs — the argument after `ocr` names the TARGET
-   *  tool, not a hook id. Never fold these into `SupportedClient`: the hooks
-   *  are `cursor-proxy` / `qoder-proxy`. */
-  | 'cursor'
-  | 'cursor-agent'
-  | 'qoder'
-  | 'qoder-cli'
   | 'env'
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy';
+/** Every client id the console and CLI can ADDRESS: the hooks this build ships
+ *  plus the documented package hooks (`cursor-proxy`, `qoder-proxy`,
+ *  `jetbrains-proxy`, `opencode-gateway` — their adapters arrive with the
+ *  package, see ADR-0030). Listing an id here claims nothing about where it
+ *  lives; `CORE_ADAPTERS` is the build's own set. */
+export type SupportedClient = 'opencode' | 'opencode-gateway' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy' | 'jetbrains-proxy';
 
 export interface CliOptions {
   action: CliAction;
@@ -47,10 +45,13 @@ export interface DaemonInfo {
 }
 
 /** How an adapter applies its hook. `config` rewrites the client's own config
- *  file; `launcher` publishes proxy launch scripts; `service-env` sets a
- *  managed service's environment. The last two are forward-proxy hooks: they
- *  write no API key and route traffic through the inbound proxy. */
-export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+ *  file to point at the gateway; `launcher` publishes proxy launch scripts;
+ *  `service-env` sets a managed service's environment; `proxy-config` rewrites
+ *  the client's own config file to point at the inbound forward proxy (no API
+ *  key, no launcher script — the file IS the takeover, undone on teardown).
+ *  The last three are forward-proxy hooks: no key is written, traffic rides the
+ *  inbound proxy. */
+export type ClientHookKind = 'config' | 'launcher' | 'service-env' | 'proxy-config';
 
 export interface ClientHookStatus {
   name: SupportedClient;
@@ -58,6 +59,25 @@ export interface ClientHookStatus {
   /** Where the hook lands, stamped by the registry from `ClientAdapter.hookKind`
    *  (`getStatus` does not produce it). */
   hookKind: ClientHookKind;
+  /** Brand asset key for the console's logo (`ClientAdapter.icon`); absent =
+   *  the client id is the asset name. */
+  icon?: string;
+  /** Bare product name for a context that implies the variant
+   *  (`ClientAdapter.shortName`); absent = `displayName`. */
+  shortName?: string;
+  /**
+   * The package that PROVIDES this hook — absent for a hook this build ships.
+   * Stamped by the registry, never by the adapter: only the registry knows
+   * which install the row came from, and the console needs the id to point at
+   * that package (enable it, open its settings, explain why it is missing).
+   */
+  pluginId?: string;
+  /** Package id that owns this client's model surface (`client-gateway`
+   *  catalog editor); absent = the client has no gateway-owned catalog. */
+  catalogPlugin?: string;
+  /** Passthrough launch verbs this hook publishes (`['cursor','cursor-agent']`)
+   *  — the console renders `ocr <verb>`; absent = nothing to launch. */
+  launch?: string[];
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -77,30 +97,53 @@ export interface ClientHookStatus {
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
 
-  /** Last-linked model profile (opencode, pi), echoed from the OCR sidecar
-   * meta: profile id + the agent-name → modelRef map actually written into the
-   * config ('' id = no profile; the bindings are informational echo — the
-   * config's agent node is the live truth).
-   */
-  profile?: ModelProfileBinding;
-
   /** Additional files this adapter owns beyond `configPath` — Cursor publishes
    *  a second launcher for the `cursor-agent` CLI. `exists` is probed at status
    *  time so the console can list every artifact without a second round-trip.
    *  Absent for single-artifact adapters. */
   artifacts?: ClientArtifact[];
+
+  /** Family adapters only: the product instances this machine actually has,
+   *  each with its own takeover state. Absent for single-product adapters —
+   *  the console then renders the card row exactly as before. */
+  products?: ClientProductStatus[];
+}
+
+/**
+ * One product instance inside a FAMILY adapter — one installed JetBrains IDE,
+ * say. Status is per instance because each product owns its own config root
+ * and truststore, so "hooked" is never a family-wide verdict: IDEA can be
+ * taken over while GoLand is untouched on the same machine.
+ */
+export interface ClientProductStatus {
+  /** Stable product key (`intellij-idea`, `goland`) — the console's row key and the `--product`/`product` action target. */
+  id: string;
+  displayName: string;
+  /** Brand asset key for the product row (`idea`, `goland`); absent = the id is
+   *  the asset name. Declared by the hook, never derived by the console. */
+  icon?: string;
+  /** Build version the install reports (`product-info.json`), when one was found. */
+  version: string | null;
+  /** The file this product's takeover lands in. */
+  configPath: string;
+  exists: boolean;
+  hooked: boolean;
+  backupExists: boolean;
+  /** Is the MITM root trusted where THIS product's JBR reads it — its own store
+   *  or the vmoptions copy? `unknown` when the probe cannot run. */
+  caTrusted: boolean | 'unknown';
+  /** The ACP agent this hook provisioned for the product, if any. `name` is the
+   *  agent's own identity supplied by the hook — core never names a vendor. */
+  agent: { name: string; version: string } | null;
+  /** The files this product owns (settings, per-product agents dir) — the
+   *  `.ocr-backup` snapshot is reversible state, never an artifact. */
+  artifacts: ClientArtifact[];
 }
 
 /** A file an adapter owns besides its primary `configPath` (status echo only). */
 export interface ClientArtifact {
   path: string;
   exists: boolean;
-}
-
-/** Sidecar echo of the last-applied model profile: which profile filled which agent with which modelRef. */
-export interface ModelProfileBinding {
-  id: string;
-  bindings: Record<string, string>;
 }
 
 /** Installed-version probe result: current CLI version vs the adapter's minimum-compatible floor. */

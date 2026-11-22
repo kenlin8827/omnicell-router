@@ -1,97 +1,54 @@
 import type http from 'node:http';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { detectSurface } from '../surfaces/table.js';
+import { createBuiltinModelGateway } from '../plugins/builtin/model-gateway.js';
 import { findGateway } from '../plugins/gateways.js';
-import { dispatchSurface } from '../surfaces/dispatch.js';
-import { createNodeHttpTransport, readRequestBody, sendPreDispatchError } from '../surfaces/transport-node-http.js';
 import { proxyCallerOf, runWithProxyCaller } from './caller-context.js';
 
 /**
- * Content-level LLM interception for the forward proxy.
+ * Decrypted-request dispatch for the forward proxy, in exactly TWO outcomes
+ * (ADR-0026 revision 2):
  *
- * Runs on DECRYPTED requests (MITM'd HTTPS or plain HTTP). Only canonical LLM
- * endpoints are intercepted — path detection is TABLE-DRIVEN
- * (surfaces/table.ts, the same registry the Fastify routes register from),
- * so anything unmatched returns false → transparent forward.
+ *   1. a GATEWAY accepts this request — an exact SNI host claim, an installed
+ *      wildcard claim, or last of all the built-in universal gateway — and
+ *      owns it from there;
+ *   2. nothing accepted it: this is not model traffic, return false and let
+ *      the caller forward it transparently, byte-for-byte.
  *
- * Matched traffic goes through the SAME dispatchSurface pipelines as the
- * native /v1 endpoints (one shared surface dispatch, contract §1): identical
- * parse-400 texts, error envelopes, X-OCR header set, RespStore statefulness
- * across legs, and capture pairing. This file holds NO protocol logic
- * anymore — transport primitives live in surfaces/transport-node-http.ts.
+ * There is deliberately no third branch any more. Model service is not
+ * something this file does; it is something a gateway does, and the built-in
+ * row (`plugins/builtin/model-gateway.ts`) is merely the default occupant of
+ * that slot. Installing a package that claims the wildcard takes over with no
+ * core change; disabling it hands the traffic straight back.
  *
- * POLICY: the native intercepted surfaces stay exempt — their wire carries no
- * gateway key (authoritative note in surfaces/transport-node-http.ts; do NOT
- * invent key headers here). Gateway-plugin completions are the exception:
- * they inherit the CONNECT credential bound by `caller-context.ts` (ADR-0017).
+ * POLICY: intercepted traffic carries NO gateway key — the authoritative note
+ * lives in `surfaces/transport-node-http.ts` (the node-http transport); do NOT
+ * invent key headers here. Gateway-plugin completions are the exception: they
+ * inherit the CONNECT credential bound by `caller-context.ts` (ADR-0017).
  */
-
 export function createProxyInterceptor(
   orchestrator: PipelineOrchestrator
 ): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
+  // The built-in row needs the live orchestrator, and this factory is the one
+  // place that has it. It is captured HERE rather than stored in the gateway
+  // registry: two interceptors can exist in one process, and a shared slot
+  // would let the later factory re-point the earlier server's model traffic.
+  const builtin = createBuiltinModelGateway(orchestrator);
+
   return async function intercept(req, res): Promise<boolean> {
-    // Client-gateway plugins (ADR-0017) claim whole SNI hosts: they see the
-    // decrypted request first and own its lifecycle — h1 native req/res and
-    // the h2 compatibility API both land here.
-    const gateway = findGateway(req);
-    if (gateway) {
-      try {
-        await runWithProxyCaller(proxyCallerOf(req), () => gateway.handle(req, res));
-      } catch {
-        if (!res.headersSent) {
-          try {
-            res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ error: { message: 'Gateway handler failed' } }));
-          } catch {}
-        }
-      }
-      return true;
-    }
-    if (req.method !== 'POST') return false;
-    const surface = detectSurface(req.url || '');
-    if (!surface) return false;
-    // Every table entry dispatches here now (chat family + the decision
-    // surface wired in step 4) — no per-exec guard lives in this file.
+    const gateway = findGateway(req, builtin);
+    if (!gateway) return false;
 
-    let raw: Buffer;
     try {
-      raw = await readRequestBody(req);
-    } catch (err) {
-      sendPreDispatchError(res, surface, 413, err instanceof Error ? err.message : 'Request body too large');
-      return true;
-    }
-
-    let body: unknown;
-    try {
-      body = JSON.parse(raw.toString('utf8'));
+      await runWithProxyCaller(proxyCallerOf(req), () => gateway.handle(req, res));
     } catch {
-      sendPreDispatchError(res, surface, 400, 'Invalid JSON body');
-      return true;
-    }
-    if (!body || typeof body !== 'object') {
-      sendPreDispatchError(res, surface, 400, 'Invalid JSON body');
-      return true;
-    }
-
-
-    // surface.capture is the PROTOCOL-LEVEL capture policy (chat family:
-    // always true; the decision surface wires capture in its pipeline only
-    // behind the requestCapture.enabled master).
-    const t = createNodeHttpTransport(req, res, surface.capture);
-    try {
-      await dispatchSurface(t, surface, orchestrator, body);
-    } catch (err) {
-      // Terminal sends inside the pipeline never throw (each is individually
-      // guarded in the transport) and the pipeline's own catch covers
-      // execution errors — reaching HERE means dispatch threw before any
-      // terminal send (e.g. a disk-corrupt config re-read inside the
-      // orchestrator). Without a fallback the MITM client would hang until
-      // socket timeout, so answer with the surface's 500 envelope — but ONLY
-      // while nothing has been written yet (headersSent ⇒ a partial/buggy
-      // send already owns the wire; adding bytes would double-answer).
-      t.logError(err, 'Forward-proxy interception failed');
+      // The built-in row answers its own failures in the surface envelope; a
+      // plugin that throws past its own error handling gets the proxy's
+      // generic refusal rather than a hung socket.
       if (!res.headersSent) {
-        sendPreDispatchError(res, surface, 500, 'Internal Router Error');
+        try {
+          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: { message: 'Gateway handler failed' } }));
+        } catch {}
       }
     }
     return true;

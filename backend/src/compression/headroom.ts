@@ -2,9 +2,10 @@
  * headroom sidecar whole-context compression
  * (https://github.com/headroomlabs-ai/headroom).
  *
- * The gateway's canonical request shape is OpenAI, which headroom's
- * POST /v1/compress endpoint consumes natively — messages go straight
- * through with no wire-format translation.
+ * Headroom's POST /v1/compress endpoint consumes OpenAI Chat messages. The
+ * gateway projects Canonical IR to Chat only at this optional external-service
+ * boundary; execution remains Canonical IR end to end. Features the sidecar
+ * cannot represent fail open before any request input is replaced.
  *
  * Prefix-cache safety: when the caller supplies a sessionId it is forwarded
  * as config.session_id, enabling headroom's session mode — headroom records
@@ -17,6 +18,7 @@
  * original messages flow upstream unchanged.
  */
 import { ChatMessage } from '../types/openai.js';
+import { DEFAULT_HEADROOM_TIMEOUT_MS } from '../config/defaults.js';
 
 export interface HeadroomOptions {
   enabled?: boolean;
@@ -33,8 +35,6 @@ export interface HeadroomResult {
   compressionRatio: number;
   sessionReplayed: boolean;
 }
-
-const DEFAULT_TIMEOUT_MS = 3000;
 
 function buildCompressEndpoint(url: string): string | null {
   try {
@@ -68,7 +68,7 @@ export async function compressWithHeadroom(
   const timeoutMs =
     typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
       ? opts.timeoutMs
-      : DEFAULT_TIMEOUT_MS;
+      : DEFAULT_HEADROOM_TIMEOUT_MS;
 
   const config: Record<string, unknown> = {};
   if (sessionId) {

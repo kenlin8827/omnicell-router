@@ -32,7 +32,7 @@ import {
  * allowed with a badge, write-side proliferation is not.
  *
  * Schema version 2: { version: 2, providers: Record<providerId, [OcrCredential]> }.
- * The ROW-ARRAY ORDER is the authoritative chain order (index 0 = chain head);
+ * The ROW-ARRAY ORDER is the authoritative chain order (index 0 = the default credential);
  * `active` always follows position 0 (rows[0].active === true). Version 1
  * files (order was DERIVED: active rows first, then !active by timeUpdated
  * DESC) are normalized IN MEMORY to that legacy derived order on read — array
@@ -276,7 +276,7 @@ export class OcrStore implements CredentialStore {
   /**
    * Operator reorder: `orderedIds` MUST be a permutation of the provider's
    * credential ids (missing id → CredentialNotFoundError; duplicates/length
-   * mismatch → Error). The chain head becomes orderedIds[0]; `active` follows
+   * mismatch → Error). The default credential becomes orderedIds[0]; `active` follows
    * position 0 (rows[0].active === true), the head's timeUpdated is bumped,
    * and the reordered array is saved as version 2.
    */

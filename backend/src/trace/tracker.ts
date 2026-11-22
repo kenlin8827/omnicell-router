@@ -4,6 +4,7 @@ import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { ClientConversationRef } from '../session/session-manager.js';
 import { mintRequestId } from '../observability/request-identity.js';
+import type { TurnDecision } from '../capture/turn-boundary.js';
 import { openTraceStore, type TraceStore } from './persist.js';
 import { percentile } from '../utils/percentile.js';
 
@@ -31,7 +32,16 @@ export interface ExecutionTrace {
    * can coincide with a client string; it is still the resolved entity id.
    */
   sessionId: string;
-  turnNumber: number;
+  requestNumber: number;
+  /**
+   * Write-time turn identity (ADR-0024): the immutable, session-scoped turn
+   * ordinal and the structural verdict that allocated it. Copied verbatim
+   * onto every capture event of this request; `turnIndex: null` means the
+   * request carried no user prompt and belongs to no turn.
+   */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: TurnDecision;
   timestamp: number;
   /**
    * Client API-key identity (`config.apiKeys` entry) that authenticated this
@@ -42,11 +52,13 @@ export interface ExecutionTrace {
   apiKey?: CaptureKeyIdentity;
   request: {
     model: string;
+    /** Display-only prompt text, blank unless `isPromptStart` is true. It
+     *  NEVER decides a turn boundary — `turnIndex` does. */
     userPromptSummary: string;
     /**
      * The session's FIRST user message — console session title. Unlike
-     * `userPromptSummary` (the last user message of THIS turn, blanked on
-     * tool-result continuations), this names the whole conversation: it is
+     * `userPromptSummary` (blank on request continuations), this names the
+     * whole conversation: it is
      * derived on the opening turn and then re-stamped verbatim on every later
      * trace, so the trace ring evicting the birth record cannot blank the
      * title, and a row rebuilt from traces alone — after a restart, or for a
@@ -58,6 +70,22 @@ export interface ExecutionTrace {
     messageCount: number;
     hasSystemPrompt: boolean;
     hasToolsOrSchema: boolean;
+    /**
+     * INBOUND stream tag: the response shape actually written to the client
+     * (client `stream === true` after the C-3 normalization, or
+     * `streaming.client.mode: always`). Forgiving forward-compat: traces
+     * replayed from disk before this field existed deserialize as
+     * `undefined`, which the console renders as no tag.
+     */
+    clientStream?: boolean;
+    /**
+     * INBOUND protocol id the client addressed (`openai-chat` =
+     * chat/completions, `anthropic-messages`, `openai-responses`). Legacy
+     * rows are normalized at the SQLite read boundary (`persist.ts`).
+     * Absent on traces written before the field existed and on internal calls
+     * that carry no surface.
+     */
+    inboundWire?: 'openai-chat' | 'anthropic-messages' | 'openai-responses';
     /**
      * Non-sensitive subset of inbound request headers. Three categories:
      *   - userAgent / acceptLanguage: client fingerprint.
@@ -105,7 +133,7 @@ export interface ExecutionTrace {
     // trace plane does not carry a second, unpopulated copy.
     /**
      * Display-safe sha256 prefix of the credential that SERVED this turn
-     * (same chain-head degeneracy as the ratelimit credential subject, so a
+     * (same default-credential degeneracy as the ratelimit credential subject, so a
      * single-credential provider carries attribution too). Quota tracking
      * aggregates per (provider × prefix) on this field. Forgiving
      * forward-compat: traces replayed from disk before this field existed
@@ -129,6 +157,23 @@ export interface ExecutionTrace {
      * alongside ttftMs for non-streamed turns.
      */
     genMs?: number;
+    /**
+     * OUTBOUND stream tag: the provider leg of the served attempt
+     * (`'sse'` = the upstream SSE reader ran, `'buffered'` = one buffered
+     * call). `'sse'` with `clientStream: false` is accumulate mode
+     * (`streaming.upstream.mode: stream` on a JSON client). Absent on traces
+     * written before the tag existed and on mock execution.
+     */
+    upstreamStream?: 'sse' | 'buffered';
+    /**
+     * OUTBOUND protocol wire the served attempt executed on (the model's
+     * resolved canonical protocol id: `openai-chat` / `anthropic-messages` /
+     * `google-gemini` / `openai-responses` / plugin wire). Distinct from
+     * `request.inboundWire` — the client's protocol and the provider's protocol
+     * only coincide on a passthrough. Absent on traces written before the field
+     * existed and on mock execution.
+     */
+    wireKind?: string;
     /**
      * Perceived stall time: total time the committed attempt's stream spent in
      * gaps of ≥1 s between two consecutive chunks the client received with

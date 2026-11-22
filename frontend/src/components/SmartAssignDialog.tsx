@@ -13,8 +13,7 @@ import { FONT_MONO } from '../lib/fonts';
 /** One slot/role the decider must fill — built by the caller from the page's
  *  CURRENT draft state (unsaved edits included; the drafts are the truth).
  *  May include the main/primary slot — the CALLER decides what an assignment
- *  for it means (profile mode never targets it, since a main slot link is
- *  illegal). */
+ *  for it means. */
 export interface SmartAssignTarget {
   key: string;
   label?: string;
@@ -22,8 +21,8 @@ export interface SmartAssignTarget {
   current?: string;
 }
 
-/** One legal assignment value. `note` (e.g. the model a profile slot resolves
- *  to) contextualizes the choice but only `id` is ever assigned back. */
+/** One legal assignment value. `note` contextualizes the choice but only
+ *  `id` is ever assigned back. */
 export interface SmartAssignCandidate {
   id: string;
   note?: string;
@@ -32,10 +31,6 @@ export interface SmartAssignCandidate {
 interface SmartAssignDialogProps {
   clientName: string;
   targets: SmartAssignTarget[];
-  /** Profile-mode candidates: the linked profile's slot keys (+ model note).
-   *  Absent/falsy `profileMode` → candidates derive from `models` + filter. */
-  candidates?: SmartAssignCandidate[];
-  profileMode: boolean;
   models: { id: string; kind?: string; members?: number; wire?: string }[];
   /** Why the candidate list looks the way it does (key-permission scoping). */
   scopeHint?: string;
@@ -57,16 +52,12 @@ const DEFAULT_DECIDER = 'plus';
 /**
  * "Smart assign" dialog: pick a decider model (remembered across visits; with
  * no usable memory the caller's cascade supplies one) and let the backend run
- * ONE decider call over the frontend-supplied targets/candidates. What the
- * candidates ARE — and what an assignment means (a profile slot link vs a
- * direct model ref) — is decided by the caller from the page's current profile
- * selection. Nothing is persisted here.
+ * ONE decider call over the frontend-supplied targets and the gateway-model
+ * candidates. Nothing is persisted here.
  */
 export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
   clientName,
   targets,
-  candidates: profileCandidates,
-  profileMode,
   models,
   scopeHint,
   onClose,
@@ -76,7 +67,7 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
   const toast = useToast();
   const [decider, setDecider] = useState(() => localStorage.getItem(DECIDER_MEMORY_KEY) || DEFAULT_DECIDER);
   const [busy, setBusy] = useState(false);
-  /** Candidate category filter (no-profile mode only): all | tier aliases | combos | concrete models. */
+  /** Candidate category filter: all | tier aliases | combos | concrete models. */
   const [filter, setFilter] = useState<'all' | 'tier' | 'combo' | 'model'>('all');
 
   /** Every pickable decider, ordered by the SHARED model-picker ordering
@@ -137,27 +128,28 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
     };
   }, [decider]);
 
-  /** No-profile candidates: gateway ids filtered by category. `tier` = the
+  /** Candidates: gateway ids filtered by category. `tier` = the
    *  bare tier aliases (auto excluded — it is the routing-default entry, not a
    *  tier; still available under 'all'); `model` = registered + variants.
    *  `systemone`-wire models are dropped everywhere: they answer ONLY the
    *  decision protocol, so assigning one to a chat/agent role would break that
    *  role (ADR-0008 — the chat pool never sees them). */
-  const candidates: SmartAssignCandidate[] = useMemo(() => {
-    if (profileMode) return profileCandidates || [];
-    const filtered = models
-      .filter(m => m.wire !== 'systemone')
-      .filter(m =>
-        filter === 'all'
-          ? true
-          : filter === 'tier'
-            ? m.kind === 'tier'
-            : filter === 'combo'
-              ? m.kind === 'combo'
-              : m.kind === 'model' || m.kind === 'variant'
-      );
-    return filtered.map(m => ({ id: m.id }));
-  }, [profileMode, profileCandidates, models, filter]);
+  const candidates: SmartAssignCandidate[] = useMemo(
+    () =>
+      models
+        .filter(m => m.wire !== 'systemone')
+        .filter(m =>
+          filter === 'all'
+            ? true
+            : filter === 'tier'
+              ? m.kind === 'tier'
+              : filter === 'combo'
+                ? m.kind === 'combo'
+                : m.kind === 'model' || m.kind === 'variant'
+        )
+        .map(m => ({ id: m.id })),
+    [models, filter]
+  );
 
   const confirm = async () => {
     if (!decider || busy) return;
@@ -246,22 +238,20 @@ export const SmartAssignDialog: React.FC<SmartAssignDialogProps> = ({
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {t('clients.smartCandidates', { n: candidates.length })}
             </div>
-            {!profileMode && (
-              <div style={{ display: 'inline-flex', gap: 4 }}>
-                {(['all', 'tier', 'combo', 'model'] as const).map(f => (
-                  <button
-                    key={f}
-                    type="button"
-                    className="btn btn-sm"
-                    style={{ fontSize: 'var(--text-xs)', padding: '2px 8px', ...(filter === f ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}) }}
-                    onClick={() => setFilter(f)}
-                    disabled={busy}
-                  >
-                    <span>{t(`clients.smartFilter${f[0].toUpperCase()}${f.slice(1)}`)}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <div style={{ display: 'inline-flex', gap: 4 }}>
+              {(['all', 'tier', 'combo', 'model'] as const).map(f => (
+                <button
+                  key={f}
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ fontSize: 'var(--text-xs)', padding: '2px 8px', ...(filter === f ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}) }}
+                  onClick={() => setFilter(f)}
+                  disabled={busy}
+                >
+                  <span>{t(`clients.smartFilter${f[0].toUpperCase()}${f.slice(1)}`)}</span>
+                </button>
+              ))}
+            </div>
           </div>
           {scopeHint && (
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: 6 }}>{scopeHint}</div>

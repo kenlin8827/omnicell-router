@@ -1,16 +1,30 @@
+import { currentProtocol } from './protocol.js';
+import { isPluginWire, nativeBaseHintWire } from './plugin-wires.js';
 /**
  * Canonical wire-shape decision, ONE source of truth shared by the
  * execution dispatchers and the console probe. Rationale: protocol truth lives
- * in DATA (models.dev `provider.npm`, provider-level and model-level), not in
- * daemon behavior; any place that maps npm → wire must call this function so
- * test and inference can never diverge again.
+ * in DATA — the catalog `npm` slot holds an OCR protocol id (models.dev's SDK
+ * package string is translated at ingest), at provider level and model level —
+ * not in daemon behavior. Any place that maps that slot to a wire must call
+ * this function so test and inference can never diverge.
  *
  * Precedence at call sites: model-level provider.npm > config-node npm >
  * catalog provider npm; `baseHint` (api/baseURL) only breaks ties when no npm
  * is known.
  */
 
-export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'unroutable';
+/** Wire shapes the CORE executes. Everything else is plugin-provided, so the
+ *  wire vocabulary is open: `plugin-wires.ts` owns the plugin half and the
+ *  plugin host fills it from the loaded manifests — never a vendor name in a
+ *  core table. */
+export type CoreWireKind =
+  | 'openai-chat'
+  | 'openai-responses'
+  | 'anthropic-messages'
+  | 'google-gemini'
+  | 'systemone'
+  | 'unroutable';
+export type WireKind = CoreWireKind | (string & {});
 
 /**
  * Npm packages that need SDK-side URL construction or request signing beyond a
@@ -20,88 +34,50 @@ export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'system
  */
 function isUnroutable(npm: string): boolean {
   return (
+    npm === 'azure' ||
     npm.includes('vertex') ||
     npm.includes('bedrock') ||
-    npm.includes('@ai-sdk/azure') ||
     npm.includes('amazon-mantle') // AWS Mantle hosted models (SigV4)
   );
 }
 
-/**
- * Opencode v2 SDK package form: `@opencode/ai/providers/<segment>`
- * replaces the opencode v1 `@ai-sdk/<x>` npm strings. Known segments map to the SAME
- * wire kinds as their opencode v1 counterparts; an unknown segment is 'unroutable' —
- * never fire a guessed wire at an unprobed SDK. probe.ts probeKindFor
- * delegates here, so the console probe inherits both shapes automatically.
- */
-const OPENCODE_V2_PACKAGE_RE = /@opencode\/ai\/providers\/([a-z0-9._-]+)/;
-const OPENCODE_V2_SEGMENT_WIRES: Record<string, WireKind> = {
-  openai: 'responses', // @ai-sdk/openai (NOT -compatible) = Responses API wire
-  'openai-compatible': 'openai',
-  anthropic: 'anthropic',
-  google: 'google',
-  azure: 'unroutable', // SDK-side URL construction — parity with '@ai-sdk/azure'
-  vertex: 'unroutable', // rawPredict + project/location signing
-  'google-vertex': 'unroutable',
-  bedrock: 'unroutable', // SigV4
-  'amazon-bedrock': 'unroutable',
-  // TypeSafe decision protocol (@ai-sdk/typesafe-ai): the SDK exposes ONLY a
-  // decisionModel on POST {baseURL}/systemone — languageModel throws
-  // NoSuchModelError — so this wire serves the /v1/systemone decision surface
-  // natively and is NEVER a chat-pool member (ADR-0008 §7).
-  typesafe: 'systemone',
-  // Vendored Qoder wire (model-service plugin) — the def's baseURL is the
-  // service gateway; the transport details live inside the plugin.
-  qoder: 'qoder',
-  // Vendored WorkBuddy wire (model-service plugin) — the def's baseURL is the
-  // platform origin (region = which origin); the transport details (Bearer
-  // auth, forced stream, system-first normalization) live inside the plugin.
-  workbuddy: 'workbuddy',
-};
-
-/** opencode v2 package segment of an npm string, or null when it is not opencode-v2 shaped. */
-function opencodeV2Segment(npm: string): string | null {
-  const m = OPENCODE_V2_PACKAGE_RE.exec(npm);
-  return m ? m[1] : null;
-}
-
-/**
- * True when the string is already in opencode v2 `@opencode/ai/providers/<segment>` shape.
- * Exported for the provider-def WRITE side (user-config opencodeV2PackageFor) so the
- * package vocabulary has exactly ONE regex owner.
- */
-export function isOpencodeV2Package(npm: string): boolean {
-  return OPENCODE_V2_PACKAGE_RE.test(npm || '');
-}
-
 export function wireFor(npm?: string, baseHint?: string): WireKind {
-  const n = (npm || '').toLowerCase();
+  const n = currentProtocol((npm || '').trim().toLowerCase());
   if (n) {
-    const seg = opencodeV2Segment(n);
-    if (seg !== null) {
-      // opencode v2 packages are matched by segment EXACTLY — a fuzzy fallback here
-      // would silently route an unprobed provider package onto a guessed wire.
-      // Security P3-1: Object.hasOwn — prototype members ('constructor',
-      // 'toString') must never masquerade as a known wire kind.
-      const known: WireKind | undefined = Object.hasOwn(OPENCODE_V2_SEGMENT_WIRES, seg) ? OPENCODE_V2_SEGMENT_WIRES[seg] : undefined;
-      return known ?? 'unroutable';
-    }
+    // A retired spelling was already translated above; anything still carrying
+    // the opencode-v2 prefix or a path-like `/name` is unknown and refused,
+    // never guessed.
+    if (n.includes('@opencode/ai/') || n.startsWith('/')) return 'unroutable';
+
     if (isUnroutable(n)) return 'unroutable';
-    if (n.includes('typesafe')) return 'systemone';
-    if (n.includes('qoder')) return 'qoder';
-    if (n.includes('workbuddy')) return 'workbuddy';
-    if (n.includes('anthropic')) return 'anthropic';
-    if (n.includes('google')) return 'google';
-    // `@ai-sdk/openai` (NOT -compatible) = OpenAI Responses API wire.
-    if (n.includes('openai') && !n.includes('compatible')) return 'responses';
-    return 'openai';
+    if (n === 'systemone' || n.includes('typesafe')) return 'systemone';
+    // currentProtocol() has already canonicalized known ids and legacy bare
+    // spellings, so an exact core id IS its own wire (ADR-0033). The substring
+    // branches below catch SDK-derived tokens that carry a core name but were
+    // not an exact alias — they resolve to that core's canonical id.
+    if (
+      n === 'openai-responses' ||
+      n === 'openai-chat' ||
+      n === 'anthropic-messages' ||
+      n === 'google-gemini'
+    ) return n;
+    // Plugin-owned protocols are matched AFTER the core shapes (a plugin never
+    // overrides a core wire) and BEFORE the chat fallback: an id a plugin
+    // serves resolves to itself, and an OCR-native id resolves even while its
+    // plugin is absent, so the failure lands on dispatch with a truthful
+    // "plugin not installed" instead of a silent wrong-upstream 400.
+    if (isPluginWire(n)) return n;
+    if (n.includes('anthropic')) return 'anthropic-messages';
+    if (n.includes('google')) return 'google-gemini';
+    if (n.includes('openai') && !n.includes('compatible') && !n.includes('chat')) return 'openai-responses';
+    return 'openai-chat';
   }
   const a = (baseHint || '').toLowerCase();
-  if (a.includes('anthropic')) return 'anthropic';
-  if (a.includes('qoder.sh') || a.includes('qoder.com.cn')) return 'qoder';
-  if (a.includes('copilot.tencent.com') || a.includes('workbuddy.ai')) return 'workbuddy';
-  if (a.includes('google')) return 'google';
-  return 'openai';
+  if (a.includes('anthropic')) return 'anthropic-messages';
+  const native = nativeBaseHintWire(a);
+  if (native) return native;
+  if (a.includes('google')) return 'google-gemini';
+  return 'openai-chat';
 }
 
 /** Machine classification of an unroutable wire — the console localizes the
@@ -109,13 +85,7 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
 export type UnroutableCode = 'unknownPackage' | 'dedicatedTransport';
 export function unroutableInfo(npm?: string): { code: UnroutableCode; npm: string } {
   const n = (npm || '').toLowerCase();
-  const seg = opencodeV2Segment(n);
-  if (seg !== null) {
-    // P3-1: Object.hasOwn parity with wireFor (prototype-member segments are
-    // unknown, never a wire kind).
-    const known: WireKind | undefined = Object.hasOwn(OPENCODE_V2_SEGMENT_WIRES, seg) ? OPENCODE_V2_SEGMENT_WIRES[seg] : undefined;
-    if (known === undefined) return { code: 'unknownPackage', npm: npm || '' };
-  }
+  if (n.includes('@opencode/ai/')) return { code: 'unknownPackage', npm: npm || '' };
   return { code: 'dedicatedTransport', npm: npm || '' };
 }
 
@@ -124,10 +94,10 @@ export function unroutableInfo(npm?: string): { code: UnroutableCode; npm: strin
  * (usually the OpenAI-compatible mount), but gateways often serve the Anthropic
  * Messages wire on a sibling mount — Zen: /zen/v1 → /inference/anthropic/v1
  * (verified 2026-10-08: /zen/v1/messages 404s while /inference/anthropic/v1/messages
- * returns 200). Applied at boot when wire === 'anthropic'.
+ * returns 200). Applied at boot when wire === 'anthropic-messages'.
  */
 export function baseForWire(wire: WireKind, base: string): string {
-  if (wire !== 'anthropic') return base;
+  if (wire !== 'anthropic-messages') return base;
   if (base.includes('/zen/v1')) return base.replace('/zen/v1', '/inference/anthropic/v1');
   if (base.includes('/openai')) return base.replace('/openai', '/anthropic');
   return base;
@@ -146,4 +116,4 @@ export function anthropicMessagesUrl(base: string): string {
  * `data:<mime>;base64,<payload>` image URL — shared by the Anthropic and
  * Google payload builders (both inline base64 data URLs as image blocks).
  */
-export const DATA_URL_RE = /^data:(.+?);base64,(.*)$/;
+export { DATA_URL_RE } from '../ir/media.js';

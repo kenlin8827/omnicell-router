@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2, X } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency } from '../lib/format';
@@ -236,6 +236,52 @@ const DETAIL_TD_CENTER: React.CSSProperties = {
   fontSize: 'var(--text-xs)',
   whiteSpace: 'nowrap',
 };
+
+/** Compact per-request transport map in its own narrow track: `client shape →
+ *  the shape actually handed to the provider`. One badge per turn, because the
+ *  only fact the row needs is the mapping — two same-looking protocol chips made
+ *  the reader compare them to find out whether the gateway converted anything.
+ *
+ *  The arrow is a MAPPING between the two legs (observation vocabulary is
+ *  `client | upstream`, never a vector, ADR-0024): left is the client leg, right
+ *  is the provider leg. `JSON→JSON` = forwarded verbatim, `JSON→SSE` = the
+ *  gateway streamed a client that asked for one shot. A missing side (pre-tag
+ *  archive, partial record) renders an em dash rather than inventing a shape.
+ *
+ *  No word labels: `sessions.tokenIn` / `tokenOut` are the token-volume column
+ *  labels, and borrowing them made a transport tag read as a token count. Words
+ *  live in the tooltip. */
+const STREAM_TAG_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  background: 'var(--chip-bg)',
+  border: '1px solid var(--divider)',
+  color: 'var(--text-dim)',
+  fontFamily: FONT_MONO,
+  fontSize: 'var(--text-2xs)',
+  whiteSpace: 'nowrap',
+};
+/** `inbound surface → outbound protocol` using unambiguous canonical protocol ids
+ *  (legacy rows are normalized at the backend read boundary). */
+const ProtocolMap: React.FC<{ inbound?: string; outbound?: string; tip: string }> = ({ inbound, outbound, tip }) => (
+  <span
+    className="badge"
+    title={`${tip}
+${inbound ?? '—'} → ${outbound ?? '—'}`}
+    style={STREAM_TAG_STYLE}
+  >
+    {inbound ?? '—'}
+    <span style={{ margin: '0 3px', color: 'var(--text-dim)', opacity: 0.7 }}>→</span>
+    {outbound ?? '—'}
+  </span>
+);
+
+const StreamMap: React.FC<{ client?: boolean; upstream?: boolean; tip: string }> = ({ client, upstream, tip }) => (
+  <span className="badge" title={tip} style={STREAM_TAG_STYLE}>
+    {client === undefined ? '—' : client ? 'SSE' : 'JSON'}
+    <span style={{ margin: '0 3px', color: 'var(--text-dim)', opacity: 0.7 }}>→</span>
+    {upstream === undefined ? '—' : upstream ? 'SSE' : 'JSON'}
+  </span>
+);
 const ModelRefCell: React.FC<{
   model: string | null;
   provider?: string | null;
@@ -750,20 +796,27 @@ export const SessionsPage: React.FC = () => {
   // per modal open.
   const [detailFull, setDetailFull] = useState(false);
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
-  const [filterInput, setFilterInput] = useState('');
+  // Seeded from the URL so a cross-page jump (the playground's session chip)
+  // arrives pre-filtered, on the same convention as `?apiKey=` below.
+  const [searchParams] = useSearchParams();
+  const urlQuery = searchParams.get('q') || '';
+  const [filterInput, setFilterInput] = useState(urlQuery);
   const [filter, setFilter] = useState('');
   // Per-application selector (server-side ?apiKey=, same semantics as the
   // captures page): '' = all apps, otherwise a client API-key id. Initialized
   // from the URL so /usage row clicks arrive pre-filtered.
-  const [searchParams] = useSearchParams();
   const [apiKeyFilter, setApiKeyFilter] = useState(searchParams.get('apiKey') || '');
   const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
   // Gateway-internal rows (console translation/probe loopback calls, reserved
-  // `ocr-internal:` session ids) — server-side filter, ON by default: these
-  // sessions are noise for inspecting client traffic and stay one click away.
-  // The checkbox lives on the description line below, not in the action
-  // toolbar (see the description block).
-  const [hideInternal, setHideInternal] = useState(true);
+  // `ocr-internal:` session ids) — server-side filter, ON by default. Disabled
+  // when arriving with a `?q=` deep link (the playground's session chip) so the
+  // searched id is never hidden behind a default exclusion.
+  const [hideInternal, setHideInternal] = useState(!urlQuery);
+  // Single-request rows — a client's own helper calls (title / step summary /
+  // classification) carry no session identity, so ADR-0002 §1 mints one
+  // session per call and one agent turn can emit dozens. Server-side filter,
+  // ON by default — disabled with `?q=` for the same reason as above.
+  const [hideOneShot, setHideOneShot] = useState(!urlQuery);
 
   // Combobox options: the configured client keys (id + application name).
   // Best-effort — a console session without /api-keys visibility just shows
@@ -796,7 +849,14 @@ export const SessionsPage: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getSessions(pageSize, (page - 1) * pageSize, filter || undefined, apiKeyFilter || undefined, hideInternal);
+      const res = await api.getSessions(
+        pageSize,
+        (page - 1) * pageSize,
+        filter || undefined,
+        apiKeyFilter || undefined,
+        hideInternal,
+        hideOneShot
+      );
       setSessions(res.sessions);
       setTotal(res.total);
     } catch (err) {
@@ -804,7 +864,7 @@ export const SessionsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, filter, apiKeyFilter, hideInternal]);
+  }, [page, pageSize, filter, apiKeyFilter, hideInternal, hideOneShot]);
 
   useEffect(() => {
     loadData();
@@ -995,46 +1055,77 @@ export const SessionsPage: React.FC = () => {
               value={filterInput}
               onChange={e => setFilterInput(e.target.value)}
               placeholder={t('sessions.filterPlaceholder')}
-              style={{ fontSize: 'var(--text-sm)', padding: '5px 8px 5px 24px', width: '100%' }}
+              style={{ fontSize: 'var(--text-sm)', padding: filterInput ? '5px 26px 5px 24px' : '5px 8px 5px 24px', width: '100%' }}
             />
+            {filterInput && (
+              <button
+                type="button"
+                className="input-clear"
+                aria-label={t('common.clear')}
+                title={t('common.clear')}
+                onClick={() => setFilterInput('')}
+              >
+                <X size={11} strokeWidth={2.5} />
+              </button>
+            )}
           </div>
           <button className="btn btn-sm" onClick={clearAll} disabled={loading || total === 0}>
             <Trash2 size={12} />
             <span>{t('sessions.clearAll')}</span>
           </button>
           <button className="btn btn-sm" onClick={loadData} disabled={loading}>
-            <RefreshCw size={12} />
+            <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('sessions.refresh')}</span>
           </button>
         </div>
       </div>
-      {/* The row filter for gateway-internal sessions sits HERE, next to the
-          copy it explains, instead of in the action toolbar — the toolbar
-          keeps the list-wide controls (app filter, search, clear, refresh).
-          Server-side filter, ON by default (ADR-0015 D6b).
-          flexWrap + `marginLeft: 'auto'` on the label: the paragraph shrinks
-          first (it reflows), and only when even that is too narrow does the
-          checkbox drop to its own right-aligned row instead of squeezing the
-          copy to a column of single words. */}
+      {/* The row filters sit HERE, next to the copy they explain, instead of in
+          the action toolbar — the toolbar keeps the list-wide controls (app
+          filter, search, clear, refresh).
+          `Hide internal` is a server-side filter, ON by default (ADR-0015 D6b);
+          `Hide one-shot` is the console's own default for the single-request
+          helper rows (ADR-0002 §1 — the gateway keeps minting them, the console
+          stops showing them by default).
+          flexWrap + `marginLeft: 'auto'` on the label group: the paragraph
+          shrinks first (it reflows), and only when even that is too narrow do
+          the checkboxes drop to their own right-aligned row instead of squeezing
+          the copy to a column of single words. */}
       <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16, margin: '0 0 12px 0' }}>
         <p style={{ flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: 0 }}>
           {t('sessions.sessionsDesc')}
         </p>
-        <label
-          style={{ display: 'flex', alignItems: 'center', gap: 5, paddingTop: 2, flexShrink: 0, marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
-          title={t('sessions.hideInternalTip')}
-        >
-          <input
-            type="checkbox"
-            checked={hideInternal}
-            onChange={(e) => {
-              setHideInternal(e.target.checked);
-              setPage(1);
-            }}
-            style={{ accentColor: 'var(--accent)' }}
-          />
-          {t('sessions.hideInternal')}
-        </label>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2, flexShrink: 0, marginLeft: 'auto' }}>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            title={t('sessions.hideInternalTip')}
+          >
+            <input
+              type="checkbox"
+              checked={hideInternal}
+              onChange={(e) => {
+                setHideInternal(e.target.checked);
+                setPage(1);
+              }}
+              style={{ accentColor: 'var(--accent)' }}
+            />
+            {t('sessions.hideInternal')}
+          </label>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            title={t('sessions.hideOneShotTip')}
+          >
+            <input
+              type="checkbox"
+              checked={hideOneShot}
+              onChange={(e) => {
+                setHideOneShot(e.target.checked);
+                setPage(1);
+              }}
+              style={{ accentColor: 'var(--accent)' }}
+            />
+            {t('sessions.hideOneShot')}
+          </label>
+        </div>
       </div>
 
       {/* ScrollTable (repo standard for a scrolling table): the head is a
@@ -1075,7 +1166,13 @@ export const SessionsPage: React.FC = () => {
         ]}
         minWidth={colMinWidth}
         headCellStyle={{ padding: '10px 12px' }}
-        empty={filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
+        empty={
+          filter
+            ? t('sessions.filterEmpty')
+            : hideOneShot
+              ? t('sessions.emptyOneShotHidden')
+              : t('sessions.emptySessions')
+        }
       >
             {sessions.map(s => (
                 <tr key={s.id} style={{ borderBottom: '1px solid var(--divider)' }}>
@@ -1737,7 +1834,11 @@ export const SessionsPage: React.FC = () => {
           // 10% viewport margin on all sides (90vw × 90vh) instead of the
           // viewport-filling `full` mode.
           width={1080}
-          maxSize={detailFull ? { width: '90vw', height: '90vh' } : undefined}
+          // BOTH modes are fixed-height: the detail card flex-fills the body
+          // and the table viewport is the ONE scroller (pager sits inside the
+          // card, always at the dialog's bottom edge). Expand only widens —
+          // never changes the scrolling mechanism.
+          maxSize={detailFull ? { width: '90vw', height: '90vh' } : { height: '88vh' }}
           headerActions={
             <button
               type="button"
@@ -1902,6 +2003,63 @@ export const SessionsPage: React.FC = () => {
                             {timeline.session.turnCount.toLocaleString()}
                           </span>
                         ),
+                      },
+                      {
+                        key: 'protocol',
+                        label: t('sessions.colProtocol'),
+                        title: t('sessions.firstRequestTip'),
+                        span: 2,
+                        children: (() => {
+                          const first = detailDesc
+                            ? timeline.traces[timeline.traces.length - 1]
+                            : timeline.traces[0];
+                          // A conversation may switch protocol mid-flight (the
+                          // playground does exactly that on one session), so the
+                          // first-request badge must never imply the whole session.
+                          const wires = [...new Set(timeline.traces.map((tr) => tr.request?.inboundWire))];
+                          const wireCount = wires.filter((w) => w !== undefined).length;
+                          const hasWire =
+                            first?.request?.inboundWire !== undefined || first?.execution.wireKind !== undefined;
+                          const hasStream =
+                            first?.request?.clientStream !== undefined || first?.execution.upstreamStream !== undefined;
+                          if (!first || (!hasWire && !hasStream)) {
+                            return <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>—</span>;
+                          }
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              {hasStream && (
+                                <StreamMap
+                                  client={first.request?.clientStream}
+                                  upstream={
+                                    first.execution.upstreamStream === undefined
+                                      ? undefined
+                                      : first.execution.upstreamStream === 'sse'
+                                  }
+                                  tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
+                                />
+                              )}
+                              {hasWire && (
+                                <ProtocolMap
+                                  inbound={first.request?.inboundWire}
+                                  outbound={first.execution.wireKind}
+                                  tip={t('sessions.protocolTip')}
+                                />
+                              )}
+                              {wireCount > 1 && (
+                                <span
+                                  title={`${t('sessions.protocolMixedTip')}
+${wires.filter((w) => w !== undefined).join(' · ')}`}
+                                  style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)' }}
+                                >
+                                  {t('sessions.protocolMixed')}
+                                </span>
+                              )}
+                              <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)' }}>
+                                {t('sessions.firstRequestLabel')}
+                              </span>
+                            </div>
+                          );
+                        })(),
                       },
                       {
                         key: 'tokens',
@@ -2225,23 +2383,20 @@ export const SessionsPage: React.FC = () => {
                 cost. Third card in the same shell as the two above — a
                 separated block, so the dialog reads as three stacked panels
                 instead of one panel plus two loose sections. */}
-            {timeline.traces.length > 0 && (
+            {timeline.traces.length > 0 && (<>
               <div style={{
                 border: '1px solid var(--divider)',
-                borderRadius: 8,
                 background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
                 overflow: 'hidden',
-                // Expanded: this card fills the Dialog body's remaining height
-                // so the request table scrolls internally — ScrollTable keeps
-                // its head OUTSIDE that scroller (no floating/sticky header)
-                // while the Dialog chrome (title, folds, pager) stays put.
-                // Collapsed: content-sized.
+                // detailOpen: this card flex-fills the Dialog body's FIXED
+                // height (both modes are fixed-height now) so the request
+                // table scrolls internally — ScrollTable keeps its head
+                // OUTSIDE that scroller, and the pager below the table is
+                // therefore always at the dialog's bottom edge. Collapsed:
+                // content-sized.
                 display: 'flex',
                 flexDirection: 'column',
-                // Expanded: fill the remaining height so the table scrolls
-                // inside. Collapsed (or windowed): content height — a shrinkable
-                // card would let `overflow: hidden` clip the last row.
-                flex: detailFull ? '1 1 0' : '0 0 auto',
+                flex: timeline.detailOpen ? '1 1 0' : '0 0 auto',
                 minHeight: 0,
               }}>
                 <div
@@ -2297,12 +2452,13 @@ export const SessionsPage: React.FC = () => {
                 </div>
                 {timeline.detailOpen && (
                 <ScrollTable
-                  // Expanded: the body is the section's flex-fill scroll
-                  // region (ScrollTable keeps the head OUTSIDE it, so rows
-                  // never slide under a floating header — the hand-rolled grid
-                  // this replaced put the header inside its own scroller and
-                  // lost it as soon as the list scrolled).
-                  fill={detailFull}
+                  // Open: the body is this card's flex-fill scroll region —
+                  // the ONE scroller in the dialog (vertical AND horizontal).
+                  // ScrollTable keeps the head OUTSIDE it, so rows never slide
+                  // under a floating header — the hand-rolled grid this
+                  // replaced put the header inside its own scroller and lost
+                  // it as soon as the list scrolled.
+                  fill={timeline.detailOpen}
                   columns={[
                     { key: 'n', label: '#', width: 34 },
                     { key: 'start', label: t('sessions.colStart'), width: 66 },
@@ -2322,13 +2478,38 @@ export const SessionsPage: React.FC = () => {
                     { key: 'toks', label: t('usage.thToks'), width: 60 },
                     { key: 'stallRatio', label: t('sessions.speedStallRatio'), width: 62 },
                     { key: 'ms', label: t('sessions.colMs'), width: 52 },
+                    // Its own declared track, not a badge riding the prompt's
+                    // right edge: a header makes the mapping self-describing
+                    // (no hover needed) and puts every turn's transport in one
+                    // scannable vertical, which is how an accidental buffering
+                    // shows up. 104px = the widest badge (`JSON → JSON` at
+                    // `--text-2xs` mono, ~88px) plus the cell padding: a badge
+                    // wider than its track spills over the next column.
+                    {
+                      key: 'stream',
+                      label: <span title={t('sessions.colStreamTip')}>{t('sessions.colStream')}</span>,
+                      width: 104,
+                      align: 'center',
+                    },
+                    // Own track too, sized the same way: the pair runs up to
+                    // `UNROUTABLE → WORKBUDDY` / `RESPONSES → ANTHROPIC`
+                    // (~158px at `--text-2xs` mono), so the track takes that
+                    // worst case plus padding instead of letting the badge ride
+                    // into the neighbouring column.
+                    {
+                      key: 'protocol',
+                      label: <span title={t('sessions.protocolTip')}>{t('sessions.colProtocol')}</span>,
+                      width: 176,
+                      align: 'center',
+                    },
                   ]}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 968 = the 13 declared tracks (34+66+66+210+92+62+58+66+
-                  // 88+52+60+62+52); + 220 for the elastic prompt column.
-                  minWidth={968 + 220}
+                  // 1248 = the 15 declared tracks (34+66+66+210+92+62+58+66+
+                  // 88+52+60+62+52+104+176); + 220 for the elastic prompt
+                  // column.
+                  minWidth={1248 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
@@ -2352,7 +2533,7 @@ export const SessionsPage: React.FC = () => {
                         : undefined;
                     return (
                     <tr key={tr.requestId} style={{ borderBottom: '1px solid var(--divider)' }}>
-                      <td style={DETAIL_TD_CENTER}>#{tr.turnNumber}</td>
+                      <td style={DETAIL_TD_CENTER}>#{tr.requestNumber}</td>
                       <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</td>
                       <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>
                         {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
@@ -2423,6 +2604,31 @@ export const SessionsPage: React.FC = () => {
                         {fmtStallRatio(stallShare)}
                       </td>
                       <td style={DETAIL_TD_CENTER} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Transport map of THIS turn (ADR-0008 §1): client shape
+                            → the shape the provider leg actually ran on. Renders
+                            nothing when the trace carries neither tag (legacy
+                            rows), so the cell stays blank instead of claiming a
+                            shape it does not know. */}
+                        {(tr.request?.clientStream !== undefined || tr.execution.upstreamStream !== undefined) && (
+                          <StreamMap
+                            client={tr.request?.clientStream}
+                            upstream={tr.execution.upstreamStream === undefined ? undefined : tr.execution.upstreamStream === 'sse'}
+                            tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
+                          />
+                        )}
+                      </td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Protocol map (inbound surface → outbound wire);
+                            renders nothing on legacy rows. */}
+                        {(tr.request?.inboundWire !== undefined || tr.execution.wireKind !== undefined) && (
+                          <ProtocolMap
+                            inbound={tr.request?.inboundWire}
+                            outbound={tr.execution.wireKind}
+                            tip={t('sessions.protocolTip')}
+                          />
+                        )}
+                      </td>
                     </tr>
                     );
                       });
@@ -2435,8 +2641,21 @@ export const SessionsPage: React.FC = () => {
                   const safePage = Math.min(detailPage, maxPage);
                   // Guarded by detailOpen: a collapsed card must not strand a
                   // pager under a fold that shows nothing to page through.
+                  // INSIDE the card on purpose: the card flex-fills the
+                  // fixed-height dialog body, so this footer sits at the
+                  // dialog's bottom edge in BOTH modes — no sticky, no bleed,
+                  // no second scroller. The table viewport above is the one
+                  // and only scrollbar (vertical and horizontal).
                   return sorted.length > detailPageSize ? (
-                    <div style={{ padding: '0 12px 12px' }}>
+                    // No top padding on purpose: Pagination carries its own
+                    // `margin-top: 12px` — stacking the two was the ~22px
+                    // whitespace band the operator flagged.
+                    // flex + marginTop override: Pagination's built-in
+                    // margin-top: 12px plus wrapper padding were compounding
+                    // into a 32px gap. We zero both and add only 4px top
+                    // (visual clearance from the table border) + 8px bottom
+                    // so the pager hugs the table tightly.
+                    <div style={{ padding: '0 12px 8px', flex: '0 0 auto' }}>
                       <Pagination
                         page={safePage}
                         pageSize={detailPageSize}
@@ -2445,12 +2664,13 @@ export const SessionsPage: React.FC = () => {
                         showSummary
                         pageSizeOptions={PAGE_SIZES}
                         onPageSizeChange={(s) => { setDetailPageSize(s); setDetailPage(1); }}
+                        style={{ marginTop: 0 }}
                       />
                     </div>
                   ) : null;
                 })()}
               </div>
-            )}
+            </>)}
         </Dialog>
       )}
     </div>

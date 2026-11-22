@@ -5,8 +5,13 @@ import { App } from './App';
 import { I18nProvider } from './i18n/I18nContext';
 import { resolveStoredTheme, THEME_STORAGE_KEY } from './lib/theme';
 import { installExternalOpenInterceptor } from './lib/openExternal';
+import { installSessionGuard } from './lib/sessionGuard';
 // Self-hosted fonts (no external CDN dependency: works offline / intranet / mainland China)
 
+import '@fontsource/inter/400.css';
+import '@fontsource/inter/500.css';
+import '@fontsource/inter/600.css';
+import '@fontsource/inter/700.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/600.css';
@@ -27,6 +32,10 @@ document.documentElement.setAttribute(
   resolveStoredTheme(localStorage.getItem(THEME_STORAGE_KEY)),
 );
 installExternalOpenInterceptor();
+// Below the API client and above the first request: every 401 from
+// /api/admin/* (dead session) then re-locks the console instead of each page
+// rendering its own "HTTP 401" failure.
+installSessionGuard();
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <I18nProvider>

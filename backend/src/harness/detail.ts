@@ -7,7 +7,7 @@ import {
 } from './net.js';
 import { scriptLanguage } from './lang.js';
 import { SLOW_CACHE_TTL_MS } from './common/market.js';
-import type { TranslationLang } from './translation.js';
+import type { TranslationLang } from '../translation/index.js';
 import { fetchClawHubSkill } from './skill/clawhub.js';
 
 /**

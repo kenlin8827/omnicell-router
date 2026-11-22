@@ -47,3 +47,48 @@ describe('useBackdropDismiss', () => {
     expect(onDismiss).not.toHaveBeenCalled();
   });
 });
+
+/** Two stacked overlays (provider dialog + its nested add/edit form), each
+ *  with an independent guard. This is the exact shape that regressed when the
+ *  nested form used a plain `onClick`: selecting text in a field and letting
+ *  go on the scrim dismissed the form. */
+function NestedProbe({ onOuter, onInner }: { onOuter: () => void; onInner: () => void }) {
+  const outer = useBackdropDismiss(onOuter);
+  const inner = useBackdropDismiss(onInner);
+  return (
+    <div data-testid="outer-overlay" {...outer}>
+      <div data-testid="inner-overlay" {...inner}>
+        <div data-testid="field">field</div>
+      </div>
+    </div>
+  );
+}
+
+describe('useBackdropDismiss — nested overlays', () => {
+  it('drag from an inner field out onto the inner scrim closes NEITHER overlay', async () => {
+    const user = userEvent.setup();
+    const onOuter = vi.fn();
+    const onInner = vi.fn();
+    render(<NestedProbe onOuter={onOuter} onInner={onInner} />);
+    await user.pointer([
+      { keys: '[MouseLeft>]', target: screen.getByTestId('field') },
+      { keys: '[/MouseLeft]', target: screen.getByTestId('inner-overlay') },
+    ]);
+    expect(onInner).not.toHaveBeenCalled();
+    expect(onOuter).not.toHaveBeenCalled();
+  });
+
+  it('a deliberate press+release on the inner scrim closes ONLY the inner overlay', async () => {
+    const user = userEvent.setup();
+    const onOuter = vi.fn();
+    const onInner = vi.fn();
+    render(<NestedProbe onOuter={onOuter} onInner={onInner} />);
+    const innerOverlay = screen.getByTestId('inner-overlay');
+    await user.pointer([
+      { keys: '[MouseLeft>]', target: innerOverlay },
+      { keys: '[/MouseLeft]', target: innerOverlay },
+    ]);
+    expect(onInner).toHaveBeenCalledTimes(1);
+    expect(onOuter).not.toHaveBeenCalled();
+  });
+});

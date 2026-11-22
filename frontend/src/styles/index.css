@@ -11,6 +11,12 @@
   --card-border-hover: rgba(45, 212, 191, 0.35);
   --divider: rgba(169, 190, 204, 0.09);
   --input-bg: #0f151b;
+  /* Terminal well — the surface every typed command sits on (wizard
+     snippets, trust-store commands, env-var rows). Sits at the theme's
+     inset-surface level (same family as --input-bg / --sidebar-bg): one
+     step deeper than the card so it reads inset, but never so dark that
+     it merges into the page background. */
+  --term-bg: #10161c;
   --accent: #2dd4bf;
   --accent-glow: rgba(45, 212, 191, 0.2);
   --accent-star: #fbbf24;
@@ -56,6 +62,10 @@
   --card-border-hover: rgba(15, 118, 110, 0.38);
   --divider: rgba(34, 64, 73, 0.1);
   --input-bg: #fbfdfd;
+  /* Terminal well — light scheme keeps the panel a PAPER tint (dark text on
+     a light ground): the block reads as inset code without punching a dark
+     slab into a paper console. */
+  --term-bg: #eef1f3;
   --accent: #0f766e;
   --accent-glow: rgba(15, 118, 110, 0.18);
   --accent-star: #b45309;
@@ -222,6 +232,125 @@ td, th {
    The old inline pattern used a white overlay invisible on the white card
    surface of light themes; --bg-elev carries the theme tint. Pages must use
    this class (or var(--bg-elev)) instead of duplicating the 4-property style. */
+/* In-page section rail — one page's sub-sections as a vertical menu, NOT a
+   second tab strip stacked under the page's primary tabs (two adjacent tab rows
+   read as one broken control). One surface, two panes: the rail is a tinted
+   column of the SAME panel as the section body, divided by a hairline. Two
+   floating cards read as two competing widgets, and a short card stranded
+   beside a tall one looks like a layout accident rather than a menu. */
+.page-split {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-height: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--shell-radius);
+  overflow: hidden;
+}
+.page-split-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  /* The pane owns the padding AND the scroll; the section inside stays plain. */
+  padding: 22px;
+  overflow-y: auto;
+}
+/* Inner sections keep their `card` class for their own layout styles, but the
+   surface is already the pane — a framed card inside a framed pane is one frame
+   too many. */
+.page-split-body > .card {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.page-subnav {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  width: 196px;
+  padding: 18px 12px;
+  /* One step warmer than --well-bg: the pane tint must be readable as a pane,
+     not as a hover state. */
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+  border-right: 1px solid var(--card-border);
+}
+.page-subnav .nav-item {
+  /* `.nav-item` is styled for the shell's <NavLink> rows; these are <button>s,
+     so the anchor-only defaults (transparent ground, pointer cursor,
+     left-aligned label, full-width row) are restored here. Hover/active paint
+     still comes from shell.css, which loads after this file. */
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  min-height: 42px;
+  padding: 10px 12px;
+  /* Same size as the shell's own nav rows. At --text-sm (12px) this rail read
+     as a footnote next to the 14px sidebar directly to its left, and CJK
+     labels (基本设置 / 连通测试) lose their counters at 12px. These are
+     navigation targets, not annotations. */
+  font-size: var(--text-base);
+}
+@media (max-width: 900px) {
+  .page-split { flex-direction: column; }
+  .page-subnav {
+    flex-direction: row;
+    width: 100%;
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--card-border);
+    overflow-x: auto;
+  }
+  .page-split-body { padding: 16px; }
+}
+/* A pane section whose fields scroll while its action row stays at the pane's
+   bottom edge (ProxyPage's Mihomo general tab). The negative side/bottom
+   margins cancel .page-split-body's own padding so the footer is flush with
+   the pane instead of hovering 22px above it; the scroll area restores that
+   padding for its content, which keeps the fields aligned with every other
+   tab. Only the scroll area scrolls, so content can never slide under the
+   footer and the footer needs no opaque backdrop of its own. */
+.pane-section {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  margin: 0 -22px -22px;
+}
+.pane-section-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding: 0 22px;
+  overflow-y: auto;
+}
+.pane-section-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 22px;
+  border-top: 1px solid var(--divider);
+  background: var(--card-bg);
+}
+
+@media (max-width: 900px) {
+  .pane-section { margin: 0 -16px -16px; }
+  .pane-section-scroll { padding: 0 16px; }
+  .pane-section-footer { padding: 12px 16px; }
+}
+
+
 .sub-card {
   background: var(--bg-elev);
   border: 1px solid var(--card-border);
@@ -315,6 +444,18 @@ details.sub-card > summary {
   user-select: none;
 }
 details.sub-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Playground tool call (a <details> in the transcript): the summary row carries
+   the tool name, a one-line argument digest and the outcome, so a long agent
+   loop folds to one line per call. The page draws its own chevron. */
+details.tool-call > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+details.tool-call > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -469,6 +610,12 @@ details.sub-card > summary::-webkit-details-marker {
   padding: 3px 8px;
   text-align: left;
 }
+/* First column is the row's KEY — model names, tool names, flags. Wrapping it
+   mid-word (`rea` / `d`) destroys scanability; the table block scrolls
+   horizontally instead, so a long key never overflows the column either. */
+.md-well th:first-child, .md-well td:first-child {
+  white-space: nowrap;
+}
 .md-well th { background: var(--chip-bg); font-weight: var(--font-bold); }
 .md-well a { color: var(--accent); }
 .md-well hr { border: none; border-top: 1px solid var(--divider); margin: 10px 0; }
@@ -615,6 +762,71 @@ details.sub-card > summary::-webkit-details-marker {
   font-size: var(--text-xs);
 }
 
+/* Action living INSIDE a finding note (`EgressNote`'s `action` slot). It is TEXT,
+   not a control box, and that is a layout constraint rather than a taste:
+   the note sets 11px/1.5, so its line box is 16.5px. Any inline box tall enough
+   to read as a button (>= 20px, and stock `btn-sm` is 28.5px) is taller than
+   that line box, so the line it sits on grows and ONLY that line's leading
+   changes — the paragraph reads as if it had a gap punched in it. Styled like
+   the sentence it lives in: same font, inherited color (`currentColor` derives
+   from the note's tone, so warn = red and info = dim without a second class),
+   underline for affordance, zero vertical padding, no border, no shadow. */
+.btn-note {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: 3px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.btn-note:hover {
+  color: inherit;
+  filter: brightness(1.25);
+}
+.btn-note:focus-visible {
+  outline: 2px solid color-mix(in srgb, currentColor 60%, transparent);
+  outline-offset: 2px;
+}
+.btn-note:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
+
+/* Quiet cross-page link: the "the rest of this lives over there" affordance.
+   Deliberately not `.btn` — inside a settings column a bordered button reads as
+   the next step to take *here*, and two of them out-shouted the Save button
+   beneath them. Accent text is the house link colour (see ClientsPage), so this
+   needs no chrome to read as clickable.
+   The glyph is an ARROW, not a chevron: two chevrons side by side
+   ("Clash面板 › 代理分流 ›") parse as one breadcrumb trail, i.e. as a path the
+   reader is already on, while an arrow terminates and says "goes there". */
+.link-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  font-size: inherit;
+  line-height: var(--leading-tight);
+  text-decoration: none;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+.link-quiet:hover { text-decoration: underline; text-underline-offset: 3px; }
+.link-quiet:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+.link-quiet svg { transition: transform 140ms ease; }
+.link-quiet:hover svg { transform: translateX(2px); }
+
 /* Toggle chip for multi-select option rows (thinking-effort ladder,
    capability pickers, filter pills). Rendered by components/Chip.tsx as a
    real <button> carrying `aria-pressed`, so the unselected state must still
@@ -659,6 +871,73 @@ details.sub-card > summary::-webkit-details-marker {
   flex-direction: column;
   gap: 10px;
 }
+/* Collapsible group panel (PluginConfigDrawer): every declared config section
+   is ONE CARD — a full-width toggle header plus a padded body. The header
+   drops the `.form-section-title` hairline (the card border already separates
+   the group) and promotes the title to body text so the card reads as a unit,
+   not a form legend. `advanced` groups start collapsed (their manifest says
+   so), the rest open. */
+.form-section-card {
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  transition: border-color 0.2s ease;
+}
+.form-section-card:hover {
+  border-color: color-mix(in srgb, var(--text-main) 22%, var(--card-border));
+}
+.form-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 13px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-dim);
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.form-section-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text-main);
+}
+/* The header paints its own hover band, so it carries the card's top corners.
+   NO `overflow: hidden` on the card itself — Combobox panels (model / key
+   pickers) render inside it and a clipped ancestor would swallow the popover. */
+.form-section-card .form-section-toggle {
+  border-radius: 9px 9px 0 0;
+}
+.form-section-card-closed .form-section-toggle {
+  border-radius: 9px;
+}
+.form-section-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.form-section-card .form-section-title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-main);
+}
+.form-section-card .form-section-title::after {
+  display: none;
+}
+/* The hairline under the header is what separates heading from fields — the
+   card's own hierarchy, not another decorative rule. */
+.form-section-card-body {
+  padding: 16px;
+  border-top: 1px solid var(--divider);
+}
+/* Inside a card the label is the PRIMARY line and the hint the secondary one:
+   promote labels to body color so a long field list scans by name first. */
+.form-section-card .form-label {
+  color: var(--text-main);
+}
+
 .form-label {
   display: block;
   font-size: var(--text-xs);
@@ -1181,6 +1460,58 @@ input[type='number'] {
   transform: translateX(12px);
 }
 
+/* Toggle setting row: label + switch framed as one obvious control. A bare
+   text label with a small pill at the far edge reads as plain copy — users
+   miss both the affordance and the current state. The row frame gives the
+   switch a visible hit area; the tinted "on" variant + state chip (dot +
+   on/off text) make the state readable without parsing the pill. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--well-bg);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.toggle-row:hover {
+  border-color: var(--card-border-hover);
+  background: var(--surface-hover);
+}
+.toggle-row.on {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+.switch-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.switch-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.5;
+}
+.switch-state.on {
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+.switch-state.on::before {
+  background: var(--accent);
+  opacity: 1;
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
 /* Native checkboxes (bulk-select rows, proxy bypass, modality picker) — the
    UA default look clashes with the dark theme. Styled like .switch above:
    native input kept for label/keyboard/form semantics, visuals via theme
@@ -1247,6 +1578,70 @@ input[type='checkbox']:not(.switch):indeterminate:focus-visible {
 input[type='checkbox']:not(.switch):disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* Sortable table-head label: a button that inherits the head cell's dim
+   uppercase typography and adds only a caret, so a sortable column never looks
+   like a link or a toolbar control. Generic on purpose — any ScrollTable column
+   can pass one as its `label`. */
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.th-sort:hover {
+  color: var(--text-main);
+}
+.th-sort:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 3px;
+}
+
+/* "Current node" pill in the page header: a micro-label, not a settings row.
+   Clicking it anchors to that row in the node list. */
+.current-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 460px;
+  min-width: 0;
+  padding: 5px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+  color: var(--text-main);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.current-node:hover {
+  border-color: var(--accent);
+}
+
+.current-node .node-name {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The row the group is currently routing through, matched by the accent pill in
+   its state cell. Tint only — the accent rail lives on the name cell. */
+tbody tr.is-current,
+.is-current > td {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .badge {
@@ -1391,6 +1786,12 @@ input[type='checkbox']:not(.switch):disabled {
 @keyframes ocr-slide-in-right {
   from { transform: translateX(48px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
+}
+/* One-shot highlight for a freshly added / duplicate-flagged member row
+   (RulesPage member lists) — fades back to the row's normal transparent bg. */
+@keyframes ocr-flash {
+  from { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); }
+  to { background: transparent; }
 }
 
 /* ---- Loading skeleton rows (CapturesPage TurnsSkeleton) ---- */

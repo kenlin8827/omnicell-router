@@ -2,6 +2,8 @@ import { EffortMap, ModelPricing, ReasoningEffort, TierLevel } from '../types/ro
 
 import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
+import type { WireKind } from '../providers/wire.js';
+
 import type { QuotaProbeConfigEntry } from '../quota/types.js';
 
 /**
@@ -12,12 +14,43 @@ import type { QuotaProbeConfigEntry } from '../quota/types.js';
  */
 export interface ProviderConfig {
   name: string;
-  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'dispatch';
+  /** Protocol id the executor is built for (`providers/protocol.ts`), or the
+   *  `dispatch` sentinel for a per-model mixture. A protocol id is NOT a closed
+   *  enum: core shapes are listed for readers, and any other id is a
+   *  plugin-owned wire (`providers/plugin-wires.ts`) — a plugin protocol needs
+   *  no core edit to be constructible. */
+  type:
+    | 'openai-chat'
+    | 'openai-responses'
+    | 'anthropic-messages'
+    | 'google-gemini'
+    | 'systemone'
+    | 'unroutable'
+    | 'dispatch'
+    | (string & {});
   baseUrl: string;
   apiKey: string;
   organization?: string;
   headers?: Record<string, string>;
+  /** Wall-clock cap for a BUFFERED provider call. Default 30 min. */
   timeoutMs?: number;
+  /** Wall-clock cap for the STREAMED provider leg. Default 60 min. */
+  streamTimeoutMs?: number;
+  /**
+   * SSE idle watchdog for the streamed leg: abort after this long with no
+   * bytes at all. Default 5 min (`DEFAULT_STREAM_IDLE_TIMEOUT_MS`); keep-alive
+   * comments / `ping` frames count as progress, so long thinking survives.
+   * Ignored by buffered calls (they have no progress signal).
+   */
+  streamIdleTimeoutMs?: number;
+  /**
+   * Optional stream first-token (TTFT) watchdog (ms). When set (> 0), aborts
+   * the stream if the upstream fails to emit a substantive output/tool event
+   * within this budget — even if the server keeps sending SSE keep-alive
+   * comments (such as `: PROCESSING`) that refresh `streamIdleTimeoutMs`.
+   * Disabled when unset.
+   */
+  ttftTimeoutMs?: number;
 }
 
 export interface ModelRegistration {
@@ -35,8 +68,10 @@ export interface ModelRegistration {
    */
   tier: TierLevel;
   pricing: ModelPricing;
-  /** resolved wire for direct execution (model-level npm beats provider npm). */
-  wire?: 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy';
+  /** Resolved wire for direct execution (model-level npm beats provider npm).
+   *  Core shapes plus PLUGIN-owned wire ids — the plugin half is open-ended,
+   *  filled from the loaded plugin manifests (`providers/plugin-wires.ts`). */
+  wire?: WireKind;
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
   /**
@@ -60,17 +95,29 @@ export interface ModelRegistration {
    */
   temperature?: boolean;
   /**
-   * Tri-state developer-role capability flag. The OpenAI `developer` role
-   * (introduced with the o1 series) is accepted by OpenAI official endpoints
-   * but rejected with a 400 by the long tail of OpenAI-compatible servers
-   * (DeepSeek, Qwen, Kimi, vLLM, llama.cpp, Gemini-compat, ...) — and no
-   * catalog source publishes role support. The SAFE DEFAULT is therefore
-   * conversion: undefined / false → the openai wire rewrites
-   * `role:'developer'` messages to `system` (semantically equivalent);
-   * true = passthrough verbatim, for upstreams that reject `system` or must
-   * see the role unmodified (declare via overrides.json).
+   * Developer-role capability flag, retained for config forward-compatibility.
+   * The OpenAI `developer` role (o1 series) is accepted by OpenAI official
+   * endpoints but rejected with a 400 by the long tail of OpenAI-compatible
+   * servers (DeepSeek, Qwen, Kimi, vLLM, llama.cpp, Gemini-compat, ...).
+   *
+   * CURRENTLY INERT: the canonical IR -> Chat projection folds every
+   * `instructions` + `system`/`developer` block into ONE `system` message so
+   * cross-provider failover cannot duplicate the prompt, so all three
+   * values (undefined / false / true) produce byte-identical payloads. Do not
+   * rely on this flag to preserve the native role; that would require an
+   * adapter-level opt-out from the folding contract instead.
    */
   supportsDeveloperRole?: boolean;
+  /**
+   * When false, OpenAIChatProvider omits `stream_options: { include_usage: true }`
+   * on streaming requests for legacy OpenAI-compatible servers that 400 on it.
+   */
+  supportsStreamOptions?: boolean;
+  /**
+   * Override token cap field on OpenAI Chat outbound payloads (`max_completion_tokens`
+   * vs `max_tokens`). Undefined auto-detects known o1/o3/o4/gpt-5 model ids.
+   */
+  usesMaxCompletionTokens?: boolean;
   /**
    * Model-default thinking level — pinned when the client OMITS
    * `reasoning_effort` entirely (explicit values, 'none' included, always
@@ -149,28 +196,6 @@ export interface ComboConfig {
   selection?: 'priority' | 'weighted' | 'round_robin'; // default 'priority'
   models: (string | ComboModelRef)[]; // ordered: first = preferred leader
   note?: string; // free-form remark, console-display only (never routed)
-}
-
-/**
- * Model Profile — a named slot table (slot → modelRef) used to mass-assign
- * models to a hooked client's agents (agents AND subagents) in one apply.
- * The profile itself is client-agnostic — a client adapter decides whether and
- * how to consume it (OpenCode writes `agent.<name>.model`).
- * A profile is NEVER a routing target: the gateway never resolves a profile id
- * at request time. It is consumed when a client hook applies — the resolved
- * modelRef is written into the client's own config. `modelRef` is a
- * gateway-visible id: registered model, combo id, or an auto virtual id
- * ('auto' | 'lite' | 'plus' | 'pro' | 'ultra').
- * Slot keys are free-form per profile (role names like 'flash' / 'pro' /
- * 'max' / 'vision'); an agent bound to a slot the selected profile does not
- * define stays unbound.
- */
-export interface ModelProfileConfig {
-  id: string; // unique profile id
-  name?: string; // display name
-  /** slot key → modelRef (model id | combo id | auto*) */
-  slots: Record<string, string>;
-  note?: string; // free-form remark, console-display only
 }
 
 export interface FallbackConfig {
@@ -263,38 +288,260 @@ export interface RoutingConfig {
   mode: RoutingMode; // smart = rules/Layer2 decision layer cascade (default); cost = always lite; quality = always pro
 }
 
-/**
- * Behavior on the MITM forward-proxy leg when the client's `model` name
- * matches no registered model, combo, variant or tier alias (after the full
- * bare-name resolution chain missed). Forward-proxy-leg ONLY — the native
- * /v1 leg never consults this (a client dialing the gateway directly gets
- * the historical classifier behavior unconditionally). `onMiss` accepts the
- * verbs `fail` / `direct` or ANY gateway-visible modelRef (`auto` =
- * the default cascade). See pipeline/unresolved-model.ts.
- */
-export interface UnresolvedModelConfig {
-  /** `fail` | `direct` | any modelRef; default `auto` (classifier).
-   *  `direct` runs the turn THROUGH the pipeline (normalization, session id,
-   *  capture, compression: rtk + headroom + caveman, fail-open) but skips
-   *  every model-bound stage — the turn ends as a `DirectForwardPlan` and the
-   *  transport relays the response from the ORIGINAL destination the client
-   *  dialed, original model id and the client's own Authorization header
-   *  riding along (surfaces/direct-forward.ts). Loopback targets never pass
-   *  through (recursion guard — they degrade to `auto`). */
-  onMiss?: string;
-  /** original-dial host (lowercase) → onMiss override. */
-  hosts?: Record<string, string>;
-}
-
 export interface OpenCodeConfig {
   url?: string;
   password?: string;
 }
 
 /**
+ * How the outbound proxy endpoint is chosen (ADR-0022).
+ *
+ *   `manual`  — `proxy.url` (the historical behavior; the default)
+ *   `mihomo`  — the gateway-managed mihomo mixed-port on loopback
+ *               (`http://127.0.0.1:<proxy.mihomo.mixedPort>`)
+ *
+ * `includes` / `excludes` and the loopback bypass apply in both modes.
+ * An absent or unrecognized mode is `manual`, so a pre-ADR-0022 file is
+ * unchanged. Additive fields — schemaVersion stays 1 (ADR-0016: no shape
+ * change, defaults filled in loadConfig).
+ */
+export type ProxyMode = 'manual' | 'mihomo';
+
+/** mihomo's own outbound mode — unrelated to `ProxyMode` (manual vs. core). */
+export type MihomoRoutingMode = 'rule' | 'global' | 'direct';
+
+/**
+ * How the generated proxy group picks its member (ADR-0022): `select` is the
+ * manual picker, `url-test` follows the lowest measured delay, `fallback`
+ * keeps the first member that answers.
+ */
+export type MihomoGroupType = 'select' | 'url-test' | 'fallback';
+
+/** One mihomo proxy-provider subscription. `id` is the provider name. */
+export interface MihomoSubscription {
+  /** Stable id, `[A-Za-z0-9_-]{1,64}` — also the mihomo provider name. */
+  id: string;
+  name: string;
+  /** http(s) subscription URL. May embed a token — never log it. */
+  url: string;
+  /** Refresh interval in seconds (mihomo proxy-provider `interval`). */
+  interval?: number;
+  /** Absent or true = included in the generated config. */
+  enabled?: boolean;
+}
+
+/** Protocols a hand-authored node can speak. Whitelisted because every field
+ *  is rendered into the generated config; an unknown type is dropped on load. */
+export type MihomoManualNodeType = 'ss' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'http' | 'socks5';
+
+/**
+ * One node the operator typed in the console — the manual counterpart of a
+ * subscription provider (ADR-0022). Only the fields that belong to `type` are
+ * kept by the sanitizer; the renderer maps them onto mihomo's proxy shape.
+ */
+export interface MihomoManualNode {
+  /** Stable id, `[A-Za-z0-9_-]{1,64}`; never shown to the core. */
+  id: string;
+  /** Proxy name in the generated config (unique among manual nodes). */
+  name: string;
+  /** Protocol name. Typed rows are whitelisted by the sanitizer; a raw YAML
+   *  row keeps whatever protocol the operator's mapping declares. */
+  type: string;
+  server: string;
+  port: number;
+  /** Shadowsocks cipher. */
+  cipher?: string;
+  /** ss / trojan / hysteria2 / http / socks5 secret. */
+  password?: string;
+  /** vmess / vless user id. */
+  uuid?: string;
+  /** vmess only; 0 for AEAD. */
+  alterId?: number;
+  /** vmess security (`auto` / `aes-128-gcm` / `chacha20-poly1305` / `none`). */
+  vmessCipher?: string;
+  /** Transport for vmess/vless/trojan. */
+  network?: 'tcp' | 'ws' | 'grpc' | 'h2';
+  /** vmess / vless / http / socks5 TLS. */
+  tls?: boolean;
+  /** vmess/vless `servername`, trojan/hysteria2 `sni`. */
+  sni?: string;
+  /** vless only: `xtls-rprx-vision`. */
+  flow?: string;
+  /** WebSocket path for `network: ws`. */
+  wsPath?: string;
+  /** WebSocket Host header for `network: ws`. */
+  wsHost?: string;
+  /** gRPC service name for `network: grpc`. */
+  grpcServiceName?: string;
+  /** HTTP/2 transport options (`h2-opts.host` / `.path`). */
+  h2Host?: string;
+  h2Path?: string;
+  /** vless REALITY: `reality-opts.public-key` / `.short-id`. */
+  realityPublicKey?: string;
+  realityShortId?: string;
+  /** TLS ALPN list, e.g. `h2`, `http/1.1`. */
+  alpn?: string[];
+  /** uTLS fingerprint (`client-fingerprint`). */
+  clientFingerprint?: string;
+  /** UDP relay toggle (`udp: true`). */
+  udp?: boolean;
+  /** Shadowsocks SIP003 plugin: `obfs` or `v2ray-plugin`. */
+  plugin?: string;
+  /** `plugin-opts.mode` (obfs: http/tls; v2ray-plugin: websocket). */
+  pluginMode?: string;
+  /** `plugin-opts.host`. */
+  pluginHost?: string;
+  /** `plugin-opts.path` (v2ray-plugin). */
+  pluginPath?: string;
+  /** hysteria2 obfuscation type (`salamander`). */
+  obfs?: string;
+  obfsPassword?: string;
+  /** hysteria2 bandwidth hints, e.g. `100 Mbps`. */
+  up?: string;
+  down?: string;
+  /** trojan / hysteria2 / http / socks5 certificate verification opt-out. */
+  skipCertVerify?: boolean;
+  /** `plugin-opts.tls` for v2ray-plugin. */
+  pluginTls?: boolean;
+  /** http / socks5 credentials. */
+  username?: string;
+  /** hysteria2 port hopping spec, e.g. `1000-2000`. */
+  ports?: string;
+  /** TCP Fast Open (`tfo: true`). */
+  tfo?: boolean;
+  /** Preferred IP family (`ip-version`). */
+  ipVersion?: string;
+  /**
+   * Canonical Clash proxy mapping (YAML text) for a row authored by pasting a
+   * proxy definition. When present the renderer emits this mapping verbatim
+   * instead of the typed fields above, so options the console does not model
+   * (`client-fingerprint`, `reality-opts`, plugin settings, …) survive.
+   */
+  yaml?: string;
+}
+
+/**
+ * Gateway-managed mihomo (Clash Meta) core. The sidecar listens on
+ * `mixedPort` and exposes its external controller on loopback
+ * `controllerPort`. The controller secret and subscription URLs are
+ * operator secrets: redacted in env archives, never written to logs.
+ */
+/** Rule kinds the generated config can carry WITHOUT external data — every
+ *  entry needs a single payload and no geo database or remote rule set, so an
+ *  operator-authored rule can never fail silently at load time. */
+export type MihomoRuleType =
+  | 'DOMAIN'
+  | 'DOMAIN-SUFFIX'
+  | 'DOMAIN-KEYWORD'
+  | 'IP-CIDR'
+  | 'IP-CIDR6'
+  | 'DST-PORT'
+  | 'SRC-PORT'
+  | 'PROCESS-NAME'
+  | 'PROCESS-PATH';
+
+/** Where a custom rule sends the match. `PROXY` is rewritten to the configured
+ *  group name at render time, so a renamed group cannot orphan the rules. */
+export type MihomoRuleTarget = 'PROXY' | 'DIRECT' | 'REJECT';
+
+export interface MihomoCustomRule {
+  type: MihomoRuleType;
+  payload: string;
+  target: MihomoRuleTarget;
+  /**
+   * Provenance label ONLY ("manual", a subscription name, "paste"). Never
+   * written into the generated config — it exists so the console can group and
+   * batch-clean rules that arrived from the same place.
+   */
+  source?: string;
+}
+
+export interface MihomoConfig {
+  /**
+   * Mirrors `proxy.mode === 'mihomo'` after sanitizing. A file that sets
+   * this true and omits `mode` is read as mihomo mode; an explicit
+   * `mode: manual` wins (backward compatible).
+   */
+  enabled?: boolean;
+  /**
+   * Whether the sidecar should be RUNNING — deliberately orthogonal to
+   * `proxy.mode`, which only says whether outbound traffic goes through it.
+   * A core can be kept warm (subscriptions refreshing, nodes probed, PAC
+   * served) while outbound uses a manual URL, and the manual URL stays
+   * configured while the core is stopped.
+   *
+   * Tri-state on purpose:
+   * - `true`  → run it, regardless of mode
+   * - `false` → leave it stopped even in mihomo mode (the operator stopped it
+   *             by hand; outbound then fails loudly instead of silently
+   *             restarting the process behind their back)
+   * - absent  → fall back to `proxy.mode === 'mihomo'`, which is exactly the
+   *             pre-split behaviour, so existing configs need no migration
+   */
+  autoStart?: boolean;
+  /** Optional absolute path to a mihomo binary. Empty = `<ocrHome>/bin/mihomo`, then PATH. */
+  binaryPath?: string;
+  /** HTTP+SOCKS mixed port bound to 127.0.0.1. Default 7890. */
+  mixedPort?: number;
+  /**
+   * mihomo's own outbound mode (distinct from `proxy.mode`, which picks
+   * manual URL vs. core). `rule` (default) applies the generated rules — today
+   * a single `MATCH,<group>`, so it equals `global` — `direct` bypasses the
+   * tunnel entirely, which is the deliberate kill switch.
+   */
+  routingMode?: MihomoRoutingMode;
+  /** External-controller port bound to 127.0.0.1. Default 9090. */
+  controllerPort?: number;
+  /**
+   * Bearer secret for the external controller. Empty until the first
+   * start, which generates one and persists it. Never logged.
+   */
+  controllerSecret?: string;
+  subscriptions?: MihomoSubscription[];
+  /**
+   * Hand-authored nodes, rendered into the generated `proxies:` block and added
+   * to the group alongside provider members. A manual node needs no
+   * subscription and no network fetch.
+   */
+  manualNodes?: MihomoManualNode[];
+  /** Selector group name in the generated config. Default `PROXY`. */
+  selectedGroup?: string;
+  /**
+   * How the group picks a node. Default `select` (the console's node picker).
+   * `url-test`/`fallback` hand the choice to mihomo, so the console's picker is
+   * disabled — and the generated group carries no `DIRECT` member, because a
+   * 0 ms direct route would win every test and silently bypass the tunnel.
+   */
+  groupType?: MihomoGroupType;
+  /** Delay-test cadence in seconds for automatic groups (30..86400). Absent =
+   *  the shipped 60 s; the interval is the failure-detection window. */
+  groupInterval?: number;
+  /** `url-test` tolerance in ms: how much faster a candidate must be to switch. */
+  groupTolerance?: number;
+  /**
+   * URL used for health checks and delay tests (http/https). Default
+   * `https://www.gstatic.com/generate_204`; configurable because the endpoint
+   * must be reachable both from this machine and through the selected nodes.
+   */
+  testUrl?: string;
+  /**
+   * Operator-authored rules, matched in order BEFORE the final `MATCH,<group>`.
+   * They are the only rule source the console accepts: a subscription's own
+   * `rules:`/`proxy-groups:` stay out (ADR-0022), because importing them means
+   * importing a second, conflicting set of groups.
+   */
+  rules?: MihomoCustomRule[];
+  /** group name → node name. Restored via the controller after start. */
+  selectedNodes?: Record<string, string>;
+}
+
+/**
  * Outbound proxy for upstream calls (model providers, Layer2 decision layer, catalog sync).
  * Resolution order: loopback targets are NEVER proxied → excludes (force direct)
- * → includes (non-empty: ONLY matches go through proxy) → proxy.url → direct.
+ * → includes (non-empty: ONLY matches go through proxy) → the effective endpoint → direct.
+ *
+ * The effective endpoint is `proxy.url` in `manual` mode and
+ * `http://127.0.0.1:<mihomo.mixedPort>` in `mihomo` mode (ADR-0022).
  *
  * Patterns are wildcard globs matched against the composite `provider/modelId`
  * AND the bare model id, so both levels work:
@@ -307,21 +554,43 @@ export interface OpenCodeConfig {
  */
 export interface ProxyConfig {
   enabled?: boolean; // master switch; default false (opt-in) — proxying only when explicitly true
-  url?: string; // global proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun, incl. CONNECT); empty = direct
+  mode?: ProxyMode; // default 'manual' — pre-existing files keep proxy.url
+  url?: string; // manual-mode proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun and Node, incl. CONNECT); empty = direct
   includes?: string[]; // non-empty: ONLY matching models/providers go through proxy
   excludes?: string[]; // matching models/providers force direct (evaluated before includes)
+  mihomo?: MihomoConfig;
 }
 
 /**
  * What happens at INGRESS for a forward-proxy rule row (ADR-0018, second
  * revision — the two-field shape):
  *
- *   `intercept`   → MITM the connection (the default posture — LLM traffic
- *                   enters the routing pipeline this way)
+ *   `intercept`   → MITM the connection (a SPECIFIC row means it; on the
+ *                   catch-all row it is the default posture for hosts no
+ *                   gateway plugin claims — ADR-0018 Revision 4)
  *   `passthrough` → blind-tunnel the bytes without decrypting
  *   `reject`      → 403 on admission, before any tunnel or certificate
  */
 export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/**
+ * The interception POSTURE (ADR-0018 Revision 4) — who decides that a host is
+ * decrypted at all:
+ *
+ *   `claims` (default) → the hosts a live client-gateway plugin CLAIMS
+ *                        (`listGatewayHosts()`) plus every SPECIFIC row the
+ *                        operator wrote `ingress: intercept`. Everything else is
+ *                        a blind tunnel: interception is a capability the
+ *                        gateway declares and the operator extends, not a
+ *                        blank-machine default whose breakage lands on all TLS.
+ *   `all`              → every host is decrypted (the audit posture). Explicit
+ *                        opt-in: warned at boot and banner-flagged on the
+ *                        console.
+ *
+ * It gates ONLY the decrypt/tunnel axis. `egress` still comes from the matched
+ * row, `reject` is unchanged, and loopback stays passthrough + direct.
+ */
+export type InterceptPosture = 'claims' | 'all';
 
 /** Where the bytes EXIT — out of this machine, or through `config.proxy`. */
 export type RuleEgress = 'direct' | 'proxy';
@@ -342,11 +611,13 @@ export interface ForwardProxyRule {
 /**
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
  *
- * FULL-CAPTURE by design: every proxied TLS connection is MITM'd with a locally
- * generated CA; the decrypted request is inspected — LLM-protocol traffic enters
- * the routing pipeline, anything else is forwarded transparently. No `mode`
- * switch: full capture IS the single behavior. The generated CA must be trusted
- * by the clients that use this proxy (`<caDir>/ca.pem`).
+ * INTERCEPTION IS DECIDED (ADR-0018 Revision 4): a proxied TLS connection is
+ * MITM'd with a locally generated CA only when a rule row says `intercept`, when
+ * a live client-gateway plugin claims the host, or when the operator turned on
+ * the audit posture (`intercept: 'all'`); everything else is a blind tunnel. The
+ * decrypted request is inspected — LLM-protocol traffic enters the routing
+ * pipeline, anything else is forwarded transparently. The generated CA must be
+ * trusted by the clients that DO use the intercepted leg (`<caDir>/ca.pem`).
  *
  * ONE ordered rule table (ADR-0018): each row names the host's whole outcome
  * with two fields — `ingress` (intercept / passthrough / reject) and `egress`
@@ -355,9 +626,10 @@ export interface ForwardProxyRule {
  * is an ADMISSION gate — 403 before any tunnel is opened or certificate minted.
  *
  * Invariants no rule can override: loopback is always passthrough + direct
- * (cycle safety + local dev), and an unmatched host falls back to direct +
- * intercepted, which is the pre-ADR-0018 posture — so an empty table changes
- * nothing.
+ * (cycle safety + local dev). An unmatched host takes the catch-all row's
+ * `egress` and is blind-tunneled unless it is CLAIMED by a live client-gateway
+ * plugin or `intercept: all` is set (ADR-0018 Revision 4) — interception is a
+ * declared capability, never a blank-machine default.
  *
  * Scope: traffic this gateway proxies or relays for a client. The gateway's own
  * upstream calls keep their provider/model-scoped `proxy:` policy, so a reject
@@ -388,9 +660,17 @@ export interface ForwardProxyConfig {
   };
   /**
    * The rule table (see ForwardProxyRule). Absent = every host takes the
-   * unmatched fallback (direct + intercepted). Hot-applies on save.
+   * unmatched fallback (catch-all egress, blind tunnel unless claimed — see
+   * `intercept`). Hot-applies on save.
    */
   rules?: ForwardProxyRule[];
+  /**
+   * Interception posture (see InterceptPosture; ADR-0018 Revision 4). Default
+   * `'claims'`: only plugin-claimed hosts and explicit `ingress: intercept`
+   * rows are decrypted. `'all'` restores machine-wide decryption (audit mode) —
+   * warned at boot and banner-flagged on the console. Hot-applies on save.
+   */
+  intercept?: InterceptPosture;
   /**
    * Concurrent inbound socket cap on the proxy listener; sockets opened past it
    * are destroyed immediately. Default 512, clamp 16..8192. Hot-applies on save.
@@ -424,9 +704,6 @@ export interface ForwardProxyConfig {
      *  broken chain; default false. Warned at boot and on the console. */
     insecure?: boolean;
   };
-  /** Unresolved-model-name policy — MITM forward-proxy leg only
-   *  (see UnresolvedModelConfig). */
-  unresolvedModel?: UnresolvedModelConfig;
 }
 
 /**
@@ -535,21 +812,58 @@ export interface ResponsesSurfaceConfig {
 }
 
 /**
- * Inference streaming posture.
+ * Client-facing stream mode — the SHAPE written back to the caller.
+ * - `allow` (default): the client's own `stream` flag decides; a non-boolean
+ *   truthy value keeps the C-3 normalization (only `=== true` streams).
+ * - `deny`: a `stream: true` request is refused with a 400. For clients that
+ *   cannot consume SSE, or an operator who wants one response shape.
+ * - `always`: the gateway answers in SSE even when the client asked for JSON.
+ *   Surfaces without a chunk encoder (anthropic / responses) emit their
+ *   buffered SSE frame sequence instead, so "always" never degrades to JSON.
+ */
+export type StreamingClientMode = 'allow' | 'deny' | 'always';
+
+/**
+ * Upstream transport mode — how the PROVIDER leg is called, independent of
+ * the client. The two axes exist separately because "the client wants JSON"
+ * and "the gateway wants SSE from the provider" are different questions
+ * (Kong's `response_streaming` is the same split; ADR-0008 §1).
+ * - `stream` (default): use the upstream SSE reader wherever the wire has
+ *   one, and ACCUMULATE when the client wants JSON. Buys gateway-side TTFT /
+ *   stall measurement and a uniform transport on wires that treat non-stream
+ *   requests differently; it does NOT make a JSON client's response arrive
+ *   earlier (the body still needs the whole generation).
+ * - `follow`: upstream SSE iff the client is being streamed to and the
+ *   serving wire has a streaming executor — the pre-2026-11 default, kept
+ *   as the conservative rollback.
+ * - `buffered`: never use upstream SSE (the pre-streaming rollback lever,
+ *   formerly `streaming.enabled: false`).
+ *
+ * Capability still bounds every mode: a wire without a chunk encoder
+ * (anthropic / google today) stays buffered whichever mode is set. Chat and
+ * responses both relay upstream chunks one-for-one — responses does it with
+ * its `streamStart`/`encodeChunk`/`streamEnd` lifecycle, since its SSE events
+ * are not chat-chunk shaped. The schema-assertion cascade's lite lead stays
+ * buffered because its whole turn may be voided. Both axes are HOT-applied
+ * (read per request).
+ */
+export type StreamingUpstreamMode = 'follow' | 'stream' | 'buffered';
+
+/**
+ * Inference streaming posture — two independent axes (ADR-0008 §1).
+ */
+
+/**
+ * Hot-applied: `loadConfig`'s live ref swaps the section on save and both
+ * save handlers re-seed the pipeline gate, so a mode change lands on the next
+ * request (a `deny` mid-flight turn is unaffected — every request reads the
+ * posture once, at admission).
  */
 export interface StreamingConfig {
-  /**
-   * Relay the upstream SSE body to the client frame by frame instead of
-   * buffering the whole generation and re-chunking it. Default TRUE.
-   *
-   * Scope is bounded by capability, not by preference: only a wire with a
-   * streaming executor (today: OpenAI `chat/completions`) streams, and a turn
-   * whose schema-assertion cascade must see the full content first still takes
-   * the buffered path. `false` restores the pre-streaming behavior everywhere —
-   * it exists as a rollback lever, not as a tuning knob. Restart-scoped (no hot
-   * applyConfig).
-   */
-  enabled?: boolean;
+  /** Response shape written to the caller. Absent = `allow`. */
+  client?: { mode?: StreamingClientMode };
+  /** Provider-leg transport. Absent = `follow`. */
+  upstream?: { mode?: StreamingUpstreamMode };
 }
 
 /**
@@ -734,10 +1048,9 @@ export interface CompressionConfig {
  * OFF by default (opt-in): captured bodies may contain sensitive data, and the
  * console /api/admin/* endpoints are auth-exempt — enable consciously.
  * Request header names are recorded; credential-shaped header VALUES are
- * redacted ([REDACTED]) by the exchange serializer. `redactSecrets: false`
- * opts OUT of that redaction — raw Authorization / api-key values (and
- * auth-by-query params) then persist in the archive. Default true; turning
- * it off is a conscious operator decision, never the shipped posture.
+ * redacted ([REDACTED]) by the exchange serializer. `redactSecrets` is
+ * always forced on at runtime (false is ignored) — live credentials must
+ * never land in the archive.
  *
  * The requestCapture tree (audit-log capture config).
  */
@@ -761,13 +1074,9 @@ export interface RequestCaptureConfig {
    */
   storeMedia?: boolean;
   /**
-   * Credential redaction for captured headers and query strings (default
-   * true). When false, values matching the credential deny-list
-   * (authorization / api-key / cookie / token / ... — see
-   * `DENY_HEADER_SUBSTRINGS` in observability/http-exchange.ts) are written
-   * VERBATIM to the capture archive, including upstream provider keys.
-   * Useful to debug exactly what an upstream received; the archive then
-   * holds live credentials — protect it accordingly.
+   * Credential redaction for captured headers, query strings and bodies
+   * (always on). The key remains for forward-compat YAML; a false value is
+   * ignored at load/apply time.
    */
   redactSecrets?: boolean;
 }
@@ -815,15 +1124,12 @@ export interface SystemoneSurfaceConfig {
 
 /**
  * Console-only memory (per environment): a write-through mirror of the
- * client-hook form's selections — the last profile id + agent→slot mapping,
- * the picked model refs, and the model-list draft. Never consulted by
- * routing or by the hook itself — restoring the UI selection across page
- * reloads, gateway restarts and teardown is its single job. Keyed by client
- * name (reserved for future clients' forms).
+ * client-hook form's selections — the picked model refs and the model-list
+ * draft. Never consulted by routing or by the hook itself — restoring the UI
+ * selection across page reloads, gateway restarts and teardown is its single
+ * job. Keyed by client name (reserved for future clients' forms).
  */
 export interface ClientProfileMemoryEntry {
-  profile: string; // profile id ('' = none)
-  bindings: Record<string, string>; // agent name → slot key
   /** Write-through mirror of the form drafts (the console saves on every
    *  pick, see ClientsPage rememberDraft): models = slot → model-ref draft
    *  (pi/omp main pick, plain slot clients); agentModels = role/agent → raw
@@ -838,16 +1144,23 @@ export interface ClientProfileMemoryEntry {
    *  the setup payload omits `virtualModels` and the adapter injects its own
    *  default block; an array (possibly empty) scopes the block to that set. */
   virtualModels?: string[];
-  /** Model-list source on the opencode form: 'none' (default) exposes no
-   *  concrete models, 'follow' derives the extra-model set from the selected
-   *  API key's effective access, 'custom' keeps the manual picker. UI-only —
-   *  the hook still writes a static snapshot. */
-  modelMode?: 'none' | 'custom' | 'follow';
+  /** Model-list source on the opencode form: `'default'` = the console's
+   *  "Default" tab — no concrete models added, the adapter's own
+   *  virtual-entry block applies (pre-v4 files stored this as `'none'`; the
+   *  boot migration renames it), `'follow'` derives the extra-model set from
+   *  the selected API key's effective access, `'custom'` keeps the manual
+   *  picker. The displayed label lives in the i18n tables under
+   *  `clients.modelMode*`. UI-only — the hook still writes a static snapshot. */
+  modelMode?: 'default' | 'custom' | 'follow';
   /** Last-written gateway key id (apiKeys[].id). The client-hook setup ALWAYS
    *  writes the selected key (client config backups cover regrets); the form
    *  re-seeds the picker from this id, and a stale id (key deleted since)
    *  seeds nothing. */
   apiKeyId?: string;
+  /** Context window (tokens) the last setup applied for this client. A
+   *  re-apply (resync / repeated takeover) reuses it so a written window
+   *  never silently decays to the 256K default. UI-only. */
+  contextWindow?: number;
   /** Agent/role link table visibility (opencode, pi). OFF = the form declares
    *  "not configuring subagents": the table hides and setup OMITS the agent
    *  payload entirely (no sweep, no writes — existing overrides survive).
@@ -897,7 +1210,7 @@ export interface RateLimitConfig {
 export interface DefaultModelsConfig {
   /**
    * ModelRef for the console's internal description/README translations
-   * (harness/translation.ts). Accepts any gateway-visible modelRef: a tier
+   * (translation/index.ts). Accepts any gateway-visible modelRef: a tier
    * alias ('lite' | 'plus' | 'pro' | 'ultra') or a registered model id.
    * Unset = the `lite` alias. The chain never escalates to `auto` ON ITS OWN
    * (an internal, non-critical call must not have unbounded spend): a
@@ -952,8 +1265,6 @@ export interface RouterConfig {
   rateLimit?: RateLimitConfig;
   models?: ModelRegistration[];
   combos?: ComboConfig[];
-  /** Named slot→modelRef tables for mass-assigning client agent models (see ModelProfileConfig). */
-  modelProfiles?: ModelProfileConfig[];
   /**
    * Outbound rate-limit overlay for upstream credentials: provider id → list
    * of per-credential rules keyed by the credential identity

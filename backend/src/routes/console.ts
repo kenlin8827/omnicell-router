@@ -1,15 +1,15 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
+import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { getProviderTakedownStore } from '../providers/provider-takedown.js';
-import { NPM_VOCABULARY } from '../providers/vocabulary.js';
-import { getModelServicePlugin, pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
+import { protocolVocabulary } from '../providers/vocabulary.js';
+import { pluginPackageZip, pluginProviderOrigins } from '../plugins/host.js';
 import { PluginAuthType, type TrafficExchange, type DissectedExchange } from '../plugins/types.js';
 import { listGateways, getGatewayById } from '../plugins/gateways.js';
 import { globMatchAny } from '../utils/glob.js';
@@ -22,12 +22,15 @@ import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
 import { applyDirectivesConfig } from '../pipeline/directive-gate.js';
+import { applyStreamingPosture } from '../pipeline/streaming-posture.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
+import { registerMihomoRoutes } from './mihomo.js';
+import { reconcileMihomoSidecar } from '../proxy/mihomo-sidecar.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
@@ -42,18 +45,20 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
-import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deleteProxyAccessEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
+import { listGatewayHosts, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
+import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
+import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
+import type { CatalogModel } from '../opencode/catalog/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import { CLASSIFIER_TAXONOMY } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
 import { maskSecret, isValidProviderId, PROVIDER_ID_RULE, getProviderNodeById } from '../opencode/user-config.js';
-import { isSelfBaseURL } from '../utils/self-url.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
   listApiKeys,
@@ -353,19 +358,19 @@ async function refreshProviderCredentialChain(
  */
 const withPoolSync =
   (registry: ProviderRegistry, handler: (req: any, reply: any) => Promise<unknown>) =>
-  async (req: any, reply: any) => {
-    const result = await handler(req, reply);
-    if (!reply.sent) {
-      try {
-        await refreshDirectPool(registry);
-      } catch (err) {
-        // Fail-open: the registry keeps serving, but a silent drift hides a
-        // failed mutation — log it so an operator can see it landed nowhere.
-        console.warn(`[console] pool resync after a def/credential mutation failed (registry may drift): ${(err as Error).message}`);
+    async (req: any, reply: any) => {
+      const result = await handler(req, reply);
+      if (!reply.sent) {
+        try {
+          await refreshDirectPool(registry);
+        } catch (err) {
+          // Fail-open: the registry keeps serving, but a silent drift hides a
+          // failed mutation — log it so an operator can see it landed nowhere.
+          console.warn(`[console] pool resync after a def/credential mutation failed (registry may drift): ${(err as Error).message}`);
+        }
       }
-    }
-    return result;
-  };
+      return result;
+    };
 /**
  * Idempotent connect (identity at the write seam): handing the store a
  * key it ALREADY holds for this provider is idempotent — the existing credential is
@@ -429,7 +434,7 @@ async function connectKeyIdempotent(
    * silently repointing the operator's terminal sessions is a hijack, not a
    * default. When a USEABLE head already existed, put it back: the new key joins
    * the chain as an extra credential, and promoting it stays a deliberate second
-   * action (the row's own set-as-chain-head button). A prior head that is SUSPECT or
+   * action (the row's own pin-as-default button). A prior head that is SUSPECT or
    * operator-disabled is NOT defended — there, the new key taking over IS the
    * rotation the operator was reaching for.
    */
@@ -1084,12 +1089,11 @@ export function registerConsoleRoutes(
       classifier: CLASSIFIER_TAXONOMY,
     };
     const metrics = orchestrator.getTracker().getStats();
-    const clients = await getAllClientStatuses();
     const config = loadConfig();
 
     // Runtime credential directory (hash prefixes ONLY — the same display-safe
     // form pair snapshots already carry): lets the guardrails view name an
-    // orphan breaker's owner (e.g. the inline config-baked chain head, which
+    // orphan breaker's owner (e.g. the inline config-baked default credential, which
     // lives outside the store roster) instead of a bare #hash. Union of the
     // bound store (the connected roster — independent of model registration)
     // and the registry chains, so a connected-but-model-less provider is named
@@ -1131,10 +1135,9 @@ export function registerConsoleRoutes(
       },
       // Actual listening port (config.yaml `port` is the single source of truth)
       // so the console header shows the real gateway port instead of a literal.
-      port: config.port,
       metrics,
+      port: config.port,
       circuitBreakers: cbSummary,
-      clients,
       credentialHashes,
       registeredModelsCount: registry.getAllModels().length,
       // Inbound forward-proxy runtime status (see forward-proxy/status.ts) —
@@ -1152,6 +1155,19 @@ export function registerConsoleRoutes(
 
   app.get('/api/admin/status', handleStatus);
 
+  // 3'. Client roster — split from /api/admin/status so the console's 3s
+  // status poll never runs the roster's subprocess version probes (kimi /
+  // openclaw `--version`, worst-case 5s timeout each). Only the Clients page
+  // and the Overview card fetch this, on demand.
+  // `?refresh=1` bypasses the roster SWR cache — the Clients page's manual
+  // "Refresh Status" button must never serve a stale snapshot.
+  app.get('/api/admin/clients', async (req) => {
+    const refresh = (req.query as Record<string, string | undefined>).refresh === '1';
+    return {
+      status: 'ok',
+      clients: await getAllClientStatuses({ refresh }),
+    };
+  });
   // 3A1'. Release update check — display-only and cached in-process. The
   // first console read starts the GitHub call in the background and answers
   // `checking: true`; the console polls until the snapshot settles. A stale
@@ -1199,7 +1215,7 @@ export function registerConsoleRoutes(
    *  rows an ISO string; 0 when unparsable (sorts to the oldest end). */
   const tsOf = (r: TimelineRow): number =>
     'ev' in r ? (r.ev as { ts?: number }).ts ?? 0 : Date.parse((r.ex as { ts?: string }).ts ?? '') || 0;
-    type TimelineRow =
+  type TimelineRow =
     | { source: 'proxy'; ev: Record<string, unknown> }
     | { source: string; ex: Record<string, unknown> };
   app.get('/api/admin/proxy-log', async (req) => {
@@ -1250,6 +1266,12 @@ export function registerConsoleRoutes(
             }
             if (methodF && ex.method !== methodF) continue;
             if (hostF && (ex.authority ?? '').toLowerCase() !== hostF) continue;
+            // Plugin rows are HTTP by definition (the console's `kindOf`):
+            // a CONNECT/WS filter excludes them, and a status filter prunes
+            // them — otherwise the federated total counts rows the delete
+            // path (and the rendered table) never includes.
+            if (kindF && kindF !== 'http') continue;
+            if (statusF && String(ex.status ?? '') !== statusF) continue;
             rows.push({ source: id, tsMs: Date.parse(ex.ts ?? '') || 0, ex });
           }
         }
@@ -1265,9 +1287,9 @@ export function registerConsoleRoutes(
         rows: slice.map((r) =>
           'ev' in r
             ? {
-                source: 'proxy' as const,
-                ev: { ...r.ev, reqBodyToken: bodyTokenOf(r.ev.reqBodyFile), resBodyToken: bodyTokenOf(r.ev.resBodyFile) },
-              }
+              source: 'proxy' as const,
+              ev: { ...r.ev, reqBodyToken: bodyTokenOf(r.ev.reqBodyFile), resBodyToken: bodyTokenOf(r.ev.resBodyFile) },
+            }
             : { source: r.source, ex: decoratePluginRow(r.source, r.ex) }
         ),
         total,
@@ -1279,7 +1301,9 @@ export function registerConsoleRoutes(
     // scope=live (default) — the merged tail: ring + every plugin feed tail.
     const s = proxyAccessLogSettings();
     const rows: TimelineRow[] = [];
+    const hiddenProxy = liveHiddenProxyIds();
     for (const e of listProxyAccessEvents()) {
+      if (hiddenProxy.has(e.id)) continue;
       rows.push({ source: 'proxy', ev: { ...e, reqBodyToken: bodyTokenOf(e.reqBodyFile), resBodyToken: bodyTokenOf(e.resBodyFile) } });
     }
     for (const { id } of trafficDecoders()) {
@@ -1305,7 +1329,12 @@ export function registerConsoleRoutes(
       } catch {
         // Unreadable feed dir = empty feed.
       }
-      for (const ex of events) rows.push({ source: id, ex: decoratePluginRow(id, ex) } as TimelineRow);
+      const hiddenPlugin = liveHiddenPluginKeys(id);
+      for (const ex of events) {
+        const key = typeof ex.id === 'string' ? ex.id : ex.ts;
+        if (key && hiddenPlugin.has(key)) continue;
+        rows.push({ source: id, ex: decoratePluginRow(id, ex) } as TimelineRow);
+      }
     }
     rows.sort((a, b) => (tsOf(a) || 0) - (tsOf(b) || 0));
     return {
@@ -1323,14 +1352,14 @@ export function registerConsoleRoutes(
   });
 
   // 3A2c. HISTORY delete by FILTER — the history-mode counterpart of the
-  // clear button. The visible-keys rule (traffic-delete) cannot apply here:
-  // the console only holds ONE page of the persisted federation at a time, so
-  // "what I see" and "what I asked to delete" would diverge. Instead the
-  // console sends the SAME filter vocabulary it queries with and the backend
-  // deletes every matching persisted row across ALL sources: proxy day JSONL
-  // (`deleteProxyAccessEvents` = ring + day files + body sidecars) and each
-  // plugin feed's day JSONL + orphaned body sidecars. The response reports
-  // per-source counts so the confirm toast is never a guess.
+  // clear button. History is the PERSISTED scope, so this rewrite touches the
+  // day JSONL + body sidecars only and leaves the live ring alone (ADR-0017
+  // §5: the same row may still be listed in the live view until it ages out).
+  // The console only holds ONE page of the persisted federation at a time, so
+  // "what I see" and "what I asked to delete" would diverge; the console sends
+  // the SAME filter vocabulary it queries with and the backend deletes every
+  // matching persisted row across ALL sources. The response reports per-source
+  // counts so the confirm toast is never a guess.
   app.post('/api/admin/proxy-log/history/delete', async (req) => {
     const b = (req.body ?? {}) as Record<string, string | undefined>;
     const kindF = b.kind ?? '';
@@ -1338,18 +1367,23 @@ export function registerConsoleRoutes(
     const statusF = b.status ?? '';
     const hostF = (b.host ?? '').toLowerCase();
 
-    // Proxy side: ids → the row-scoped deleter (ring + day files + sidecars).
+    // Proxy side: ids → the persisted-row deleter (day files + body sidecars).
     const ids = readProxyAccessHistory({
       kind: kindF || undefined,
       method: methodF || undefined,
       status: statusF || undefined,
       host: hostF || undefined,
     }).map((e) => e.id);
-    const proxyDeleted = ids.length > 0 ? deleteProxyAccessEvents(ids) : 0;
+    const proxyDeleted = ids.length > 0 ? deletePersistedProxyEvents(ids) : 0;
 
     // Plugin side: rewrite each feed's day files without the matching lines.
     const deletedPlugins: Record<string, number> = {};
     for (const { id } of trafficDecoders()) {
+      // Plugin rows are ALWAYS `http` (the console's `kindOf`): a CONNECT/WS
+      // filter cannot match them, but the default `http` filter must — the
+      // history table renders those rows, so refusing every kind filter left
+      // them behind after a clear (the "clear is not clean" bug).
+      if (kindF && kindF !== 'http') continue;
       const dir = path.join(trafficRoot(), id);
       let files: string[] = [];
       try {
@@ -1381,13 +1415,6 @@ export function registerConsoleRoutes(
             (!methodF || ex.method === methodF) &&
             (!hostF || (ex.authority ?? '').toLowerCase() === hostF) &&
             (!statusF || String((ex as { status?: number }).status ?? '') === statusF);
-          if (hit && kindF) {
-            // `kind` is proxy-only vocabulary: a filtered history delete never
-            // carries it, but if one ever does, refuse plugin matching rather
-            // than guess (count drift beats wrong deletes).
-            keptOut.push(line);
-            continue;
-          }
           if (hit) {
             touched = true;
             removed++;
@@ -1435,11 +1462,11 @@ export function registerConsoleRoutes(
   });
 
 
-  // 3A1b. Clear the WHOLE traffic view — the console renders one timeline, so
-  // "clear" must empty every source behind it, not just the core ring. Gateway
-  // feeds are plugin-owned artifacts on disk (day JSONL + captured bodies), so
-  // they are removed here rather than through the plugin: the console owns the
-  // feed layout (ADR-0017 §5).
+  // 3A1b. Explicit FULL wipe across BOTH scopes — ring, proxy day files +
+  // bodies, and every plugin feed dir. This is an admin API, not either
+  // console button: live clear hides only, history delete rewrites only
+  // (ADR-0017 §5). Gateway feeds are console-owned artifacts on disk, so they
+  // are removed here rather than through the plugin.
   app.post('/api/admin/traffic-clear', async () => {
     clearProxyAccessLog();
     const cleared: string[] = [];
@@ -1457,101 +1484,44 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * 3A1c. Delete EXACTLY the rows the console is showing — the filter-scoped
-   * counterpart of `/traffic-clear`.
+   * 3A1c. Hide EXACTLY the rows the LIVE view is showing — the live-scope
+   * counterpart of the history delete. Live and history are scopes over the
+   * same feeds, not separate stores (ADR-0017 §5), so this route never touches
+   * a file: proxy rows leave the ring, and plugin rows are recorded in a
+   * live-only tombstone overlay that the live read applies and history
+   * ignores. The persisted day JSONL and body sidecars stay intact and remain
+   * listed/deletable from History mode.
    *
-   * The console sends row KEYS, never a predicate: the filter lives in one
-   * place (the page) and a backend copy would drift into deleting more than
-   * the operator can see. A key is `id` (proxy events, plugin exchanges that
-   * carry one) or `ts` (feed rows written before ids existed), matched the same
-   * way on both sides.
+   * The console sends row keys (`id`, else the legacy feed `ts`) with their
+   * timestamps, never a predicate: the filter lives in one place (the page)
+   * and a backend copy would drift into hiding more than the operator sees.
    */
-  app.post('/api/admin/traffic-delete', async (req) => {
+  app.post('/api/admin/traffic-live-clear', async (req) => {
     const body = (req.body ?? {}) as { proxy?: unknown; plugins?: unknown };
-    const asKeys = (v: unknown): string[] =>
-      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
-    const proxyKeys = asKeys(body.proxy);
-    const deleted: { proxy: number; plugins: Record<string, number> } = {
-      proxy: deleteProxyAccessEvents(proxyKeys),
-      plugins: {},
-    };
-    const pluginEntries = body.plugins && typeof body.plugins === 'object'
-      ? Object.entries(body.plugins as Record<string, unknown>)
-      : [];
-    for (const [decoderId, rawKeys] of pluginEntries) {
-      const keys = new Set(asKeys(rawKeys));
-      if (keys.size === 0) continue;
-      const dir = path.join(trafficRoot(), decoderId);
-      let removed = 0;
-      const bodyIds = new Set<string>();
-      try {
-        if (!fs.existsSync(dir)) continue;
-        const files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
-        for (const f of files) {
-          const abs = path.join(dir, f);
-          let text: string;
-          try {
-            text = fs.readFileSync(abs, 'utf8');
-          } catch {
-            continue;
-          }
-          const kept: string[] = [];
-          let touched = false;
-          for (const line of text.split(/\r?\n/)) {
-            if (!line) continue;
-            let row: Record<string, unknown>;
-            try {
-              row = JSON.parse(line) as Record<string, unknown>;
-            } catch {
-              kept.push(line); // torn tail line, not ours to judge
-              continue;
-            }
-            const key = typeof row.id === 'string' ? row.id : typeof row.ts === 'string' ? row.ts : undefined;
-            if (key !== undefined && keys.has(key)) {
-              touched = true;
-              removed++;
-              if (typeof row.id === 'string') bodyIds.add(row.id);
-              continue;
-            }
-            kept.push(line);
-          }
-          if (!touched) continue;
-          try {
-            if (kept.length === 0) fs.unlinkSync(abs);
-            else fs.writeFileSync(abs, kept.join('\n') + '\n');
-          } catch {
-            // Best effort — the row is gone from the feed view either way.
-          }
+    const asLiveKeys = (v: unknown): LiveHiddenKey[] => {
+      if (!Array.isArray(v)) return [];
+      const out: LiveHiddenKey[] = [];
+      for (const x of v) {
+        if (!x || typeof x !== 'object' || !('key' in x) || !('ts' in x)) continue;
+        if (typeof x.key === 'string' && x.key.length > 0 && typeof x.ts === 'number' && Number.isFinite(x.ts)) {
+          out.push({ key: x.key, ts: x.ts });
         }
-        // Sidecar bytes are named `<day>/<id>-<side>.bin`: drop only the ones
-        // whose row just went away, never a neighbour's.
-        const bodiesRoot = path.join(dir, 'bodies');
-        if (bodyIds.size > 0 && fs.existsSync(bodiesRoot)) {
-          for (const day of fs.readdirSync(bodiesRoot)) {
-            const dayDir = path.join(bodiesRoot, day);
-            let names: string[];
-            try {
-              names = fs.readdirSync(dayDir);
-            } catch {
-              continue;
-            }
-            for (const name of names) {
-              const owner = name.replace(/-(?:req|res)\.bin$/, '');
-              if (!bodyIds.has(owner)) continue;
-              try {
-                fs.unlinkSync(path.join(dayDir, name));
-              } catch {
-                // Locked file (Windows) — the row is gone, the blob is orphaned.
-              }
-            }
-          }
-        }
-      } catch {
-        // Unreadable feed dir = nothing to delete.
       }
-      deleted.plugins[decoderId] = removed;
+      return out;
+    };
+    // Only ids the ring actually holds are part of the live view right now;
+    // the tombstones cover the plugin tail rows (history ignores them).
+    const ringIds = new Set(listProxyAccessEvents().map((e) => e.id));
+    const liveProxy = asLiveKeys(body.proxy).filter((k) => ringIds.has(k.key));
+    const plugins: Record<string, LiveHiddenKey[]> = {};
+    if (body.plugins && typeof body.plugins === 'object' && !Array.isArray(body.plugins)) {
+      for (const [decoderId, raw] of Object.entries(body.plugins)) {
+        plugins[decoderId] = asLiveKeys(raw);
+      }
     }
-    return { status: 'ok', deleted };
+    forgetProxyAccessRingEvents(liveProxy.map((k) => k.key));
+    const hidden = hideLiveEvents(liveProxy, plugins);
+    return { status: 'ok', hidden };
   });
 
   // 3A2b. Generic plugin-traffic feed (Wireshark dissector model, ADR-0017
@@ -1723,22 +1693,82 @@ export function registerConsoleRoutes(
   // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The
   // console renders the warning CODES through i18n and shows which rule a probe
   // host hits, so an ordered table is never a black box. `rules` in the body =
-  // the UNSAVED table being edited; omitted = the live one.
+  // the UNSAVED table being edited; omitted = the live one. `intercept` in the
+  // body = the UNSAVED posture toggle (same reason); omitted = the live one.
   app.post('/api/admin/forward-proxy/rules/resolve', async (req) => {
-    const body = (req.body ?? {}) as { host?: unknown; rules?: unknown };
+    const body = (req.body ?? {}) as { host?: unknown; rules?: unknown; intercept?: unknown };
     const live = getRuntimeConfigRef();
     const rawRules = Array.isArray(body.rules) ? body.rules : live?.forwardProxy?.rules;
     const proxyEnabled = live?.proxy?.enabled === true;
     const rules = normalizeRules(rawRules);
+    // ADR-0018 Revision 4: the posture and the claim set are part of the answer,
+    // because they decide `tunnel` for every host no specific row names. The
+    // preview reads the SAME registry the proxy legs do (`listGatewayHosts()`)
+    // and takes an unsaved toggle from the body, so it can never disagree with
+    // the live decision.
+    const intercept = body.intercept === 'all' || body.intercept === 'claims'
+      ? body.intercept
+      : live?.forwardProxy?.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT;
+    // A wildcard gateway claims EVERY host through `match()`, so a literal `'*'`
+    // in this list would print as a host name. The set is exact claims only;
+    // the wildcard's own attribution stays visible through `claimSources`.
+    const claimed = [...listGatewayHosts()].filter((h) => h !== WILDCARD_HOST_CLAIM).sort();
+    // Per-plugin attribution for the console's "decrypted without a rule" list:
+    // the SAME live registry `listGatewayHosts()` unions, so the two can never
+    // disagree — one is the host set, the other says who claimed it.
+    const claimSources = [...listGateways().entries()]
+      .map(([pluginId, gw]) => ({
+        pluginId,
+        hosts: [...new Set(gw.hosts.filter((h) => h !== WILDCARD_HOST_CLAIM))].sort(),
+      }))
+      .filter((s) => s.hosts.length > 0)
+      .sort((a, b) => a.pluginId.localeCompare(b.pluginId));
     const host = typeof body.host === 'string' ? body.host.trim() : '';
     return {
       status: 'ok',
       rules,
-      warnings: lintRules(rawRules, proxyEnabled),
+      warnings: lintRules(rawRules, proxyEnabled, intercept),
       proxyEnabled,
+      intercept,
+      claimed,
+      claimSources,
       // The resolver is the SAME function the proxy legs call, so the preview
       // can never disagree with the live decision.
-      decision: host ? resolveHost(host, rules) : null,
+      decision: host ? resolveHost(host, rules, { claimed: new Set(claimed), intercept }) : null,
+    };
+  });
+
+  // 3A5. One-click "tighten to allowlist" (ADR-0018 Revision 4). An install
+  // that predates the claims posture still carries the old `* → intercept`
+  // catch-all, which now decrypts nothing extra yet reads as "decrypt
+  // everything". Tightening rewrites the catch-all to a blind tunnel (keeping
+  // its egress) and pins the posture to `claims` — through the SAME save path
+  // the console's Save button uses (config.yaml write + hot-apply), and ONLY
+  // when the operator clicked: nothing here runs on boot.
+  app.post('/api/admin/forward-proxy/tighten', async (_req, reply) => {
+    const live = getRuntimeConfigRef();
+    const current = live?.forwardProxy ?? loadConfig().forwardProxy ?? {};
+    const currentRules = current.rules ?? [];
+    const catchAll = currentRules.find((r) => r?.match === '*');
+    const egress = catchAll?.egress ?? DEFAULT_FORWARD_PROXY_RULES[0].egress;
+    // Rewrite ONLY the catch-all's ingress. Specific `intercept` rows are
+    // explicit operator intent (they keep decrypting under `claims`) and every
+    // other row stays exactly as written — tightening must never be a way to
+    // lose rules the operator typed.
+    const rules = catchAll
+      ? currentRules.map((r) =>
+        r?.match === '*' && r.ingress === 'intercept' ? { ...r, ingress: 'passthrough' as const } : r,
+      )
+      : [...currentRules, { match: '*', ingress: 'passthrough' as const, egress }];
+    const saved = saveConfig({ forwardProxy: { ...current, rules, intercept: DEFAULT_FORWARD_PROXY_INTERCEPT } });
+    if (!saved.success) return reply.status(400).send(saved);
+    // Hot-apply: saveConfig's auth-view sync replaces `live.forwardProxy` and
+    // every proxy leg re-reads it per request, so no restart is involved.
+    return {
+      status: 'ok',
+      rules,
+      intercept: DEFAULT_FORWARD_PROXY_INTERCEPT,
+      warnings: lintRules(rules, live?.proxy?.enabled === true, DEFAULT_FORWARD_PROXY_INTERCEPT),
     };
   });
 
@@ -1766,10 +1796,10 @@ export function registerConsoleRoutes(
     const plan = prober?.getPlan();
     const coverage = plan
       ? Array.from(plan.byProvider.entries()).map(([providerId, target]) => ({
-          providerId,
-          kind: target.kind,
-          entryId: target.kind === 'dsl' ? target.entry.id : `adapter:${target.adapter.id}`,
-        }))
+        providerId,
+        kind: target.kind,
+        entryId: target.kind === 'dsl' ? target.entry.id : `adapter:${target.adapter.id}`,
+      }))
       : [];
     return {
       status: 'ok',
@@ -1896,14 +1926,17 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, profile } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, product, acknowledgeRunning } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
       virtualModels?: string[];
       agentModels?: Record<string, string>;
-      profile?: { id?: string; bindings?: Record<string, string> };
+      /** Family adapters: act on ONE product (`intellij-idea`, `goland`, …) instead of all. */
+      product?: string;
+      /** The operator was told the client is running and chose to proceed anyway. */
+      acknowledgeRunning?: boolean;
     };
     const cleaned = models && typeof models === 'object'
       ? Object.fromEntries(Object.entries(models).map(([k, v]) => [k, String(v ?? 'auto').trim() || 'auto']))
@@ -1919,13 +1952,9 @@ export function registerConsoleRoutes(
       : undefined;
     const cw = Number(contextWindow);
 
-    // Agent-binding payloads (opencode hook):
-    //  - agentModels: manual rows, agent name → modelRef (''/'auto' dropped);
-    //  - profile: profile-linked rows — bindings are agent → profile-slot key,
-    //    resolved here against the saved profile's slots; slots the profile
-    //    no longer defines drop out (the row falls back to inherit).
-    //    A wrong write to opencode.jsonc is harder to undo than a refused
-    //    setup, so every merged ref must be routable (fail-fast).
+    // Agent-binding payload (opencode hook): manual rows — agent name →
+    // modelRef (''/'auto' dropped). A wrong write to opencode.jsonc is harder
+    // to undo than a refused setup, so every ref must be routable (fail-fast).
     const allowedRefs = new Set<string>([
       // 'auto' is a legal slot ref (inherit-the-default): the adapter skips it.
       'auto', 'lite', 'plus', 'pro', 'ultra',
@@ -1950,49 +1979,15 @@ export function registerConsoleRoutes(
         manual[agentName] = ref;
       }
     }
-    const resolvedRefs: Record<string, string> = {};
-    const resolvedTags: Record<string, string> = {};
-    let profileEcho: { id: string; bindings: Record<string, string> } | undefined;
-    if (profile !== undefined) {
-      const profileId = (profile.id || '').trim();
-      if (!profileId) {
-        // Empty id = explicit un-link: sweep router-owned agent overrides + clear echo
-        profileEcho = { id: '', bindings: {} };
-      } else {
-        const p = (loadConfig().modelProfiles || []).find(x => x.id === profileId);
-        if (!p) {
-          return reply.status(400).send({ success: false, message: `Model profile '${profileId}' not found in config` });
-        }
-        const bindingsIn = profile.bindings;
-        if (bindingsIn && (typeof bindingsIn !== 'object' || Array.isArray(bindingsIn))) {
-          return reply.status(400).send({ success: false, message: 'profile.bindings must be an object of agent name → slot key' });
-        }
-        const bindingEntries = Object.entries(bindingsIn || {});
-        if (bindingEntries.length > 100) {
-          return reply.status(400).send({ success: false, message: 'profile.bindings exceeds 100 entries' });
-        }
-        for (const [agentName, slotRaw] of bindingEntries) {
-          const slotKey = String(slotRaw || '').trim();
-          if (!slotKey) continue; // unlinked
-          const ref = (p.slots || {})[slotKey];
-          if (!ref) continue; // slot gone from the profile — row falls back to inherit
-          resolvedTags[agentName] = slotKey;
-          resolvedRefs[agentName] = ref;
-        }
-        profileEcho = { id: profileId, bindings: resolvedTags };
-      }
-    }
-    // Merge both sources (disjoint per row; manual wins defensively) and
-    // fail-fast on any ref the gateway cannot resolve.
-    const merged: Record<string, string> = { ...resolvedRefs, ...manual };
-    const invalid = Object.entries(merged).filter(([, ref]) => !allowedRefs.has(ref)).map(([name, ref]) => `${name}→${ref}`);
+    // Fail-fast on any ref the gateway cannot resolve.
+    const invalid = Object.entries(manual).filter(([, ref]) => !allowedRefs.has(ref)).map(([name, ref]) => `${name}→${ref}`);
     if (invalid.length > 0) {
       return reply.status(400).send({
         success: false,
         message: `Agent model refs not routable: ${invalid.join(', ')} — register the model / combo first`,
       });
     }
-    const agentModelsPayload = agentModels !== undefined || profileEcho !== undefined ? merged : undefined;
+    const agentModelsPayload = agentModels !== undefined ? manual : undefined;
 
     const result = await setupClient(client, {
       ...(cleaned ? { models: cleaned } : {}),
@@ -2001,7 +1996,8 @@ export function registerConsoleRoutes(
       ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
       ...(cleanedVirtual !== undefined ? { virtualModels: cleanedVirtual } : {}),
       ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
-      ...(profileEcho ? { profile: profileEcho } : {}),
+      ...(typeof product === 'string' && product.trim() ? { product: product.trim() } : {}),
+      ...(acknowledgeRunning === true ? { acknowledgeRunning: true } : {}),
     });
     if (!result.success) return reply.status(400).send(result);
     return result;
@@ -2009,7 +2005,11 @@ export function registerConsoleRoutes(
 
   const handleTeardown = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const result = await teardownClient(client);
+    const { product, acknowledgeRunning } = (req.body || {}) as { product?: string; acknowledgeRunning?: boolean };
+    const result = await teardownClient(client, {
+      ...(typeof product === 'string' && product.trim() ? { product: product.trim() } : {}),
+      ...(acknowledgeRunning === true ? { acknowledgeRunning: true } : {}),
+    });
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
@@ -2022,7 +2022,7 @@ export function registerConsoleRoutes(
    * Deliberately the SAME cascade the /v1/systemone surface applies (ADR-0008),
    * so a name means one thing console-wide: a registered id, or a combo (its
    * leader member answers — the same leader pick the routing path uses), is
-   * used as-is; a bare tier alias projects onto the chain head of its healthy
+   * used as-is; a bare tier alias projects onto the leading model of its healthy
    * DECISION-SURFACE pool (the read that keeps systemone-wire models in view);
    * bare `auto` means `systemone.defaultModel`. Undefined = nothing routable
    * behind the name (unknown id, combo without members, empty/all-unhealthy
@@ -2045,18 +2045,45 @@ export function registerConsoleRoutes(
     return undefined;
   };
 
+  /** Compact context window: 200000 → '200k', 1_048_576 → '1M'. */
+  const fmtContext = (n: number): string =>
+    n >= 1_000_000 ? `${+((n / 1_000_000).toFixed(1))}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+
+  /**
+   * Catalog enrichment tokens — decision-relevant facts the registry
+   * registration does not carry, appended to a registered model's (or
+   * variant's) description. Conditional by design: majority-true facts
+   * (tool_call=yes, no image support on a text-only fleet) stay SILENT so the
+   * per-question criteria repetition does not bloat the prompt — a token
+   * appears only when it distinguishes the candidate or warns about it.
+   */
+  const catalogTokens = (cat: CatalogModel | undefined): string[] => {
+    if (!cat) return [];
+    const tokens: string[] = [];
+    const ctx = cat.limit?.context;
+    if (typeof ctx === 'number' && Number.isFinite(ctx) && ctx > 0) tokens.push(`context=${fmtContext(ctx)}`);
+    const inMods = cat.modalities?.input;
+    if (Array.isArray(inMods) && inMods.includes('image')) tokens.push('vision=yes (accepts image input)');
+    if (cat.tool_call === false) tokens.push('tools=NO — cannot call tools, unsuitable for agent roles');
+    if (cat.status === 'deprecated') tokens.push('status=deprecated — avoid unless no alternative');
+    return tokens;
+  };
+
   /**
    * One-line, model-readable description of a candidate — `criteria` values are
    * the ONLY per-option context the decision prompt carries (the whole
    * questions document is serialized verbatim by convert.ts
    * buildDecisionChatRequest). Registry data is the objective half (tier
-   * membership, price, reasoning support, wire); the frontend-supplied note
-   * carries what the registry cannot know (a profile slot link). Virtual ids
-   * resolve to no entity and are described by what they MEAN, since "assign
-   * `lite`" is a legitimate pick. Deliberately NO tier ladder here: writing
-   * "ultra = broadest" made every role land on `ultra`.
+   * membership, price, reasoning support, wire); catalog enrichment adds the
+   * capability/context/lifecycle facts the registration does not carry
+   * (context window, vision, tool calling, deprecated status) — see
+   * catalogTokens. The frontend-supplied note carries what neither source can
+   * know (caller context). Virtual ids resolve to no entity and are described
+   * by what they MEAN, since "assign `lite`" is a legitimate pick. Deliberately
+   * NO tier ladder here: writing "ultra = broadest" made every role land on
+   * `ultra`.
    */
-  const describeCandidate = (rawId: string, note?: string): string => {
+  const describeCandidate = (rawId: string, note?: string, cat?: CatalogModel): string => {
     const m = registry.getModel(rawId);
     let body: string;
     if (m) {
@@ -2064,6 +2091,7 @@ export function registerConsoleRoutes(
       const parts = [
         `registered model; tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}`,
         `price $${m.pricing?.input ?? 0}/$${m.pricing?.output ?? 0} per 1M tokens in/out`,
+        ...catalogTokens(cat),
       ];
       if (m.wire === 'systemone') {
         parts.push('wire=systemone — decision protocol ONLY, cannot serve chat, never assign it to a chat role');
@@ -2078,14 +2106,17 @@ export function registerConsoleRoutes(
       // Variant sibling id (`<baseId>-<variantId>`): not a registry entry of its
       // own — the base model plus a pinned reasoning level (orchestrator
       // resolves it the same way). Calling it unregistered would steer the
-      // decider away from a perfectly legal pick.
+      // decider away from a perfectly legal pick. The caller looks the catalog
+      // record up by the BASE id and passes it in.
       const { base, variant } = registry.resolveVariantRef(rawId)!;
       const tiers = registry.tiersOf(base);
+      const catTokens = catalogTokens(cat);
       body =
         `variant of ${base.id} (pins reasoning_effort '${variant.reasoningEffort}'); ` +
         `tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}; ` +
-        `price $${base.pricing?.input ?? 0}/$${base.pricing?.output ?? 0} per 1M tokens in/out; ` +
-        `wire=${base.wire ?? 'unknown'}`;
+        `price $${base.pricing?.input ?? 0}/$${base.pricing?.output ?? 0} per 1M tokens in/out` +
+        (catTokens.length > 0 ? `; ${catTokens.join('; ')}` : '') +
+        `; wire=${base.wire ?? 'unknown'}`;
     } else if (registry.isCombo(rawId)) {
       body = `combo; members=${registry.resolveCombo(rawId).length} (the router picks a healthy member per request)`;
     } else if (rawId === 'auto') {
@@ -2118,8 +2149,8 @@ export function registerConsoleRoutes(
     };
     const decider = (body.deciderModel || '').trim();
     const targets = Array.isArray(body.targets) ? body.targets.filter((t) => t && t.key) : [];
-    // Candidates are plain ids or { id, note } — the note (e.g. the model a
-    // profile slot resolves to) contextualizes the choice but only `id` is a
+    // Candidates are plain ids or { id, note } — the note (caller-supplied
+    // context) contextualizes the choice but only `id` is a
     // legal assignment value.
     const rawCandidates = Array.isArray(body.candidates) ? body.candidates : [];
     const candidates = rawCandidates
@@ -2144,7 +2175,7 @@ export function registerConsoleRoutes(
       // Tier PURPOSE (what each rung is for), never a ranking: a ladder reads
       // as "ultra is the most/broadest" and then every role lands on it.
       tierPurpose: TIER_PURPOSE,
-      task: 'Assign each role/slot the MOST suitable candidate id. Every candidate is described with its objective profile (tier membership, price per 1M tokens, reasoning support, wire); use that — never guess from the model name alone.',
+      task: 'Assign each role/slot the MOST suitable candidate id. Every candidate is described with its objective profile (tier membership, price per 1M tokens, context window, capability flags such as vision and tool calling where they distinguish the candidate, reasoning support, wire, lifecycle warnings); use that — never guess from the model name alone.',
       roles: targets.map((t) => ({
         key: t.key,
         name: t.label || t.key,
@@ -2156,13 +2187,35 @@ export function registerConsoleRoutes(
         ...(t.current ? { current: t.current } : {}),
       })),
     };
+    // Catalog enrichment, loaded ONCE per request: capability/context/lifecycle
+    // facts the registry registration does not carry (see catalogTokens).
+    // Lookup key is the provider-qualified registration id (`<provider>/<model>`
+    // — exactly how boot-direct names registrations), so a plain Map.get per
+    // candidate; variants resolve through their BASE id. Failure degrades
+    // gracefully: candidates fall back to the registry-only description.
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    const catalogModels = new Map<string, CatalogModel>();
+    try {
+      for (const rec of await catalogRepository.list()) {
+        for (const cm of rec.models) catalogModels.set(`${rec.id}/${cm.id}`, cm);
+      }
+    } catch {
+      // catalog unavailable — describeCandidate simply receives undefined
+    }
+    const catalogOf = (rawId: string): CatalogModel | undefined => {
+      const m = registry.getModel(rawId);
+      if (m) return catalogModels.get(m.id);
+      const v = registry.resolveVariantRef(rawId);
+      return v ? catalogModels.get(v.base.id) : undefined;
+    };
+
     const rubric = 'Pick exactly one candidate id per question. Match the role\'s WORK to the tier whose PURPOSE describes it (see tierPurpose), then weigh that candidate\'s described profile (capability needs, cost, latency). Do not default every role to one "best" model — the four tiers exist to separate that work. A candidate marked unable to serve chat is never a valid answer.';
     const questions: Record<string, { type: 'choice'; instructions: string; criteria: Record<string, string> }> = {};
     for (const t of targets) {
       questions[t.key] = {
         type: 'choice',
         instructions: rubric,
-        criteria: Object.fromEntries(candidates.map((c) => [c.id, describeCandidate(c.id, c.note)])),
+        criteria: Object.fromEntries(candidates.map((c) => [c.id, describeCandidate(c.id, c.note, catalogOf(c.id))])),
       };
     }
 
@@ -2204,7 +2257,7 @@ export function registerConsoleRoutes(
       targets: targets.length,
       candidates: candidates.length,
       criteriaChars: JSON.stringify(questions).length,
-      criteriaSample: candidates[0] ? describeCandidate(candidates[0].id, candidates[0].note) : '',
+      criteriaSample: candidates[0] ? describeCandidate(candidates[0].id, candidates[0].note, catalogOf(candidates[0].id)) : '',
       state,
       answers: Object.fromEntries(
         Object.entries((response?.answers || {}) as Record<string, { choice?: unknown }>).map(([k, v]) => [k, v?.choice])
@@ -2247,7 +2300,7 @@ export function registerConsoleRoutes(
     return { success: true, model: raw, resolved: model.id };
   });
 
-  // 4a. OpenCode agent inventory (model-profile binding UI): live v2 service
+  // 4a. OpenCode agent inventory (agent model-binding UI): live v2 service
   //     roster (`GET /api/agent`, plugins included) with the file scan
   //     (built-ins + agent(s)/*.md + config nodes) as offline fallback.
   app.get('/api/admin/opencode/agents', async () => ({ status: 'ok', agents: await listOpenCodeAgentsLive() }));
@@ -2383,10 +2436,15 @@ export function registerConsoleRoutes(
     // invariant 6). Within circuitBreaker only persistence.debounceMs still
     // needs a restart — the state store binds its debounce at boot.
     initProxyConfig(loadConfig().proxy);
+    void reconcileMihomoSidecar(loadConfig().proxy).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Clash] reconcile after config save failed: ${message}`);
+    });
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
     applyRouteEntriesConfig(loadConfig().routeEntries); // experience-table gate: hot-applies lookup/writes
     applyDirectivesConfig(loadConfig().directives); // directive gate: hot-applies the reserved namespace + kill switch
+    applyStreamingPosture(loadConfig().streaming); // streaming posture: both axes are read per request, so a save lands immediately
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
     try {
@@ -2400,10 +2458,6 @@ export function registerConsoleRoutes(
       .getRegistry()
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // breaker rules hot-apply (next-decision-point semantics)
-    // Profile-link write-through: an edited profile re-resolves into every
-    // hooked client linked to it (diff-guarded — no-op when unchanged).
-    const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
-    if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
   };
   app.post('/api/admin/config', handleSaveConfig);
@@ -2419,10 +2473,15 @@ export function registerConsoleRoutes(
     const result = saveRawConfig(body.yaml);
     if (!result.success) return reply.status(400).send(result);
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
+    void reconcileMihomoSidecar(loadConfig().proxy).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Clash] reconcile after config save failed: ${message}`);
+    });
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture); // hot-apply capture too
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)
     applyRouteEntriesConfig(loadConfig().routeEntries); // hot-apply the experience-table gate too
     applyDirectivesConfig(loadConfig().directives); // hot-apply the directive namespace too
+    applyStreamingPosture(loadConfig().streaming); // hot-apply the streaming posture too (two axes, per-request reads)
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
@@ -2430,15 +2489,12 @@ export function registerConsoleRoutes(
       .getRegistry()
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // hot-apply breaker rules too (see handleSaveConfig)
-    // Profile-link write-through on the raw path too (same diff guard).
     try {
       await refreshDirectPool(orchestrator.getRegistry()); // provider-def sync on the raw path too (no restart)
     } catch (err) {
       // Fail-open, but never silent: the registry keeps serving and may drift.
       console.warn(`[console] pool resync after config save failed (registry may drift): ${(err as Error).message}`);
     }
-    const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
-    if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);
@@ -2553,7 +2609,7 @@ export function registerConsoleRoutes(
             : 'no rule matches a registered model';
         console.warn(
           `[Console] Tier '${tier}' has an EMPTY candidate pool (${cause}) — its requests will degrade to another tier. ` +
-            `Add models to tiers.${tier}.members on the /tiers page.`,
+          `Add models to tiers.${tier}.members on the /tiers page.`,
         );
       }
     }
@@ -2661,7 +2717,7 @@ export function registerConsoleRoutes(
   // the bare tier alias: the same force_tier path a client's
   // `model: "pro"` request takes (tier aliases are reserved gateway ids,
   // never classifier-routed). One run only
-  // exercises the SELECTED member (the chain head, or the weighted/round-robin
+  // exercises the SELECTED member (the default credential, or the weighted/round-robin
   // pick), never the whole pool — deep per-model checks stay on the providers
   // page. An EMPTY tier degrades inside getModelForTier (the session-pin birth
   // representative falls down the escalate→plus→lite chain, server-warned with
@@ -2678,10 +2734,11 @@ export function registerConsoleRoutes(
       const result = await orchestrator.process(
         {
           model: tier,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
+          stream: false,
+          input: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          generation: { maxOutputTokens: 1 },
         },
-        { wire: 'chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
+        { wire: 'openai-chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
       );
       return {
         status: 'ok',
@@ -2987,10 +3044,11 @@ export function registerConsoleRoutes(
       const result = await orchestrator.process(
         {
           model: id,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
+          stream: false,
+          input: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          generation: { maxOutputTokens: 1 },
         },
-        { wire: 'chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
+        { wire: 'openai-chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
       );
       return {
         status: 'ok',
@@ -3069,8 +3127,8 @@ export function registerConsoleRoutes(
       const open = pairs.filter((s) => s.state === 'OPEN');
       const limitEntry = meta.keyHashPrefix
         ? limitOverlay.find(
-            (e) => (e.keyHashPrefix ?? '').toLowerCase() === meta.keyHashPrefix!.toLowerCase()
-          )
+          (e) => (e.keyHashPrefix ?? '').toLowerCase() === meta.keyHashPrefix!.toLowerCase()
+        )
         : undefined;
       const quota = quotaViewFor(providerId, meta.keyHashPrefix);
       return {
@@ -3083,27 +3141,23 @@ export function registerConsoleRoutes(
         openPairs: open.length,
         ...(open.length > 0
           ? {
-              cooldownUntilMs: Math.max(
-                ...open.map((s) => s.cooldownUntil ?? Date.now() + s.remainingCooldownMs)
-              ),
-            }
+            cooldownUntilMs: Math.max(
+              ...open.map((s) => s.cooldownUntil ?? Date.now() + s.remainingCooldownMs)
+            ),
+          }
           : {}),
       };
     });
   };
 
   const ocHandlers = {
-    /** The npm SDK vocabulary — ONE backend-owned table (providers/vocabulary.ts)
-     * served to every UI surface that renders npm choices or display names. */
-    npmVocabulary: async () => {
-      // Plugin-backed wires (qoder gRPC, workbuddy HTTP) are only OFFERED when
-      // the plugin is installed — suggesting the alias without the executor
-      // would invite authoring a def that fails on every call.
-      const entries = NPM_VOCABULARY.filter((e) => {
-        if (e.wire !== 'qoder' && e.wire !== 'workbuddy') return true;
-        return !!getModelServicePlugin(e.wire);
-      });
-      return { status: 'ok', entries };
+    /** The OCR protocol vocabulary — ONE backend-owned table (providers/vocabulary.ts)
+     * served to every UI surface that renders protocol choices or display names. */
+    protocolVocabulary: async () => {
+      // Plugin-owned protocols are listed only while a loaded plugin claims the
+      // wire — the table derives that half from the plugin registry, so this
+      // handler never filters by vendor name (providers/vocabulary.ts).
+      return { status: 'ok', entries: protocolVocabulary() };
     },
 
     list: async (req: FastifyRequest) => {
@@ -3312,22 +3366,33 @@ export function registerConsoleRoutes(
       // namespace (the form normalizes input live; direct API callers get the
       // rule stated back). Also keeps the catalog-shadow guard below exact:
       // 'OpenAI' can no longer bypass a covered 'openai' id.
-      const { isValidProviderId, PROVIDER_ID_RULE, upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { isValidProviderId, PROVIDER_ID_RULE, upsertProviderDef, getProviderNodeById, expandEnvTemplate } = await import('../opencode/user-config.js');
       if (!isValidProviderId(id)) {
         return reply.status(400).send({
           success: false,
           error: `Invalid provider id '${id}' - ${PROVIDER_ID_RULE}`,
         });
       }
-      // A baseURL pointing back at THIS gateway would make the gateway its own
-      // upstream (boot excludes it loudly as self_loop) — refuse at the door
-      // with the same wording. Pointing at a DIFFERENT instance (another
-      // port/host) is a legitimate federation upstream and passes. Criterion
-      // is the URL, never the id.
-      if (isSelfBaseURL(String(body.baseURL ?? ''), loadConfig().port)) {
-        return reply.status(409).send({
+      // Upstream URL admission (self-loop / metadata / insecure public http).
+      if (body.baseURL) {
+        try {
+          const { assertAllowedUpstream } = await import('../utils/upstream-url-guard.js');
+          const expandedBaseURL = expandEnvTemplate(String(body.baseURL)) || String(body.baseURL);
+          assertAllowedUpstream(expandedBaseURL, loadConfig().port);
+        } catch (err: any) {
+          return reply.status(409).send({
+            success: false,
+            reasonCode: err?.reasonCode || 'invalid_upstream_url',
+            error: err?.message || String(err),
+          });
+        }
+      }
+      // ADR-0006: credentials live in the bound store, never inline in defs.
+      if (body.apiKeyInline) {
+        return reply.status(400).send({
           success: false,
-          error: `baseURL (${body.baseURL}) points at this gateway itself — the gateway cannot be its own upstream`,
+          reasonCode: 'api_key_inline_forbidden',
+          error: 'apiKeyInline is disabled — connect the key through the bound credential store.',
         });
       }
       // An id covered by the remote catalog (opencode / models-dev) may NOT be
@@ -3432,20 +3497,31 @@ export function registerConsoleRoutes(
     update: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const body = req.body as any;
-      const { upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { upsertProviderDef, getProviderNodeById, expandEnvTemplate } = await import('../opencode/user-config.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const existing = getProviderNodeById(id);
       if (!existing) {
         return reply.status(404).send({ success: false, error: `Provider '${id}' not found in the provider defs file` });
       }
-      // Same door-guard as create: an update may SET a baseURL — or keep the
-      // existing one — pointing at the gateway itself. The fallback mirrors
-      // the upsert's `body.baseURL ?? existing.options?.baseURL` below.
       const effectiveBaseURL = body.baseURL ?? existing.options?.baseURL ?? '';
-      if (isSelfBaseURL(String(effectiveBaseURL), loadConfig().port)) {
-        return reply.status(409).send({
+      if (effectiveBaseURL) {
+        try {
+          const { assertAllowedUpstream } = await import('../utils/upstream-url-guard.js');
+          const expandedBaseURL = expandEnvTemplate(String(effectiveBaseURL)) || String(effectiveBaseURL);
+          assertAllowedUpstream(expandedBaseURL, loadConfig().port);
+        } catch (err: any) {
+          return reply.status(409).send({
+            success: false,
+            reasonCode: err?.reasonCode || 'invalid_upstream_url',
+            error: err?.message || String(err),
+          });
+        }
+      }
+      if (body.apiKeyInline === true) {
+        return reply.status(400).send({
           success: false,
-          error: `baseURL (${effectiveBaseURL}) points at this gateway itself — the gateway cannot be its own upstream`,
+          reasonCode: 'api_key_inline_forbidden',
+          error: 'apiKeyInline is disabled — connect the key through the bound credential store.',
         });
       }
       // B4: same implicit auth.json side-write as create (apiKey + !inline) —
@@ -3704,13 +3780,13 @@ export function registerConsoleRoutes(
       // provider as healthy while inference refuses that key. The store does
       // not carry the flag (it lives in the breaker state store's overlay), so
       // the chain is filtered with the same keyHashPrefix identity routing
-      // uses. An addressed credentialId below deliberately bypasses this.
+      // uses — and probed IN ORDER below (first key that answers wins). An
+      // addressed credentialId below deliberately bypasses this.
       const credentialState = registry.getCircuitBreakerManager().getCredentialStateStore();
       const storeChain = store.resolveKeyChain(id);
       const enabledChain = storeChain.filter(
         (c) => c.key && !credentialState.isDisabled(id, keyHashPrefix(c.key))
       );
-      const resolvedKey = enabledChain[0]?.key;
       // Per-credential probe: the operator pinned ONE credential row (KeysPage
       // credential list). resolveKeyChain is a sanctioned raw read on this route
       // — same contract as resolveKey above: the key leaves only as the
@@ -3763,20 +3839,20 @@ export function registerConsoleRoutes(
         ? [upstreamId(body.modelId)]
         : defIds.length > 0
           ? (() => {
-              const textDefs = defIds.filter((k) => {
-                const cm = cat?.models.find((mm) => mm.id === upstreamId(k));
-                return !cm || isTextPair(cm.modalities);
-              });
-              const list = textDefs.length > 0 ? textDefs : [defIds[0]];
-              return list.slice(0, PROBE_CANDIDATE_CAP).map(upstreamId);
-            })()
+            const textDefs = defIds.filter((k) => {
+              const cm = cat?.models.find((mm) => mm.id === upstreamId(k));
+              return !cm || isTextPair(cm.modalities);
+            });
+            const list = textDefs.length > 0 ? textDefs : [defIds[0]];
+            return list.slice(0, PROBE_CANDIDATE_CAP).map(upstreamId);
+          })()
           : (() => {
-              const text = (cat?.models ?? [])
-                .filter((mm) => mm.disabled !== true && isTextPair(mm.modalities))
-                .map((mm) => mm.id);
-              const list = text.length > 0 ? text : (cat?.models ?? []).slice(0, 1).map((mm) => mm.id);
-              return list.slice(0, PROBE_CANDIDATE_CAP);
-            })();
+            const text = (cat?.models ?? [])
+              .filter((mm) => mm.disabled !== true && isTextPair(mm.modalities))
+              .map((mm) => mm.id);
+            const list = text.length > 0 ? text : (cat?.models ?? []).slice(0, 1).map((mm) => mm.id);
+            return list.slice(0, PROBE_CANDIDATE_CAP);
+          })();
       if (modelCandidates.length === 0) {
         return reply.status(400).send({ success: false, reasonCode: 'no_testable_model', provider: id });
       }
@@ -3787,12 +3863,35 @@ export function registerConsoleRoutes(
       // OAuth access-token probing retires with the store flip: no
       // CredentialStore exports raw oauth tokens (masked list-and-badge only) —
       // an oauth-only provider lands on the 400 hint.
+      //
+      // KEY ORDER = what a provider-level probe tries, first to last:
+      // an addressed row (one row only — "test this credential" is not "what
+      // routing would pick"), an explicit `body.apiKey`, the def's inline key,
+      // then the enabled store chain. The chain ROTATES: the whole point of
+      // storing several keys is that any of them may serve inference, so "the
+      // provider works" is proven by the first key that answers — reporting
+      // the head's 401 while key #2 is fine would send the operator hunting a
+      // problem that does not exist. Everything parked means nothing can be
+      // probed at all (a disabled key is out of service).
+      type ProbeAttempt = { key: string; credentialId?: string };
       const inlineKey = expandEnvTemplate(def?.options?.apiKey);
-      const apiKey = body.apiKey || (addressed ? addressed.key : inlineKey || resolvedKey);
-      if (!apiKey) {
+      const probeAttempts: ProbeAttempt[] = [];
+      if (addressed) {
+        probeAttempts.push({ key: addressed.key, credentialId: addressed.credentialId });
+      } else if (body.apiKey) {
+        probeAttempts.push({ key: body.apiKey });
+      } else if (inlineKey) {
+        probeAttempts.push({ key: inlineKey });
+      } else {
+        for (const c of enabledChain) probeAttempts.push({ key: c.key, credentialId: c.credentialId });
+      }
+      if (probeAttempts.length === 0) {
         // Every stored key parked: say THAT, not the misleading no-key/OAuth
-        // hint (the operator must know a takedown is the cause).
-        if (!addressed && !inlineKey && enabledChain.length === 0 && storeChain.some((c) => c.key)) {
+        // hint (the operator must know a takedown is the cause). Reaching this
+        // point already proves there is no addressed row, no request-body key,
+        // no inline key and no enabled store row — the disabled chain is the
+        // only thing left to explain.
+        if (storeChain.some((c) => c.key)) {
           return reply.status(400).send({
             success: false,
             reasonCode: 'no_enabled_credential',
@@ -3806,40 +3905,97 @@ export function registerConsoleRoutes(
           error: `No API key for '${id}' (credential store or inline). For OAuth-based providers run: opencode auth login ${id}`,
         });
       }
-      // Same precedence as boot-direct pool construction (models.dev `api`
-      // before the daemon runtime hint) — test must hit what inference hits.
-      const baseURL = body.baseURL || def?.options?.baseURL || cat?.api || cat?.baseURL;
+      // Security S-03: refuse request-body baseURL overrides — a caller with
+      // only a credentialId could otherwise exfiltrate the stored key to an
+      // attacker URL. Test hits the same URL inference uses.
+      if (body.baseURL) {
+        return reply.status(400).send({
+          success: false,
+          reasonCode: 'base_url_override_forbidden',
+          provider: id,
+          error: 'body.baseURL is not accepted on test; configure the provider def (or catalog) baseURL instead.',
+        });
+      }
+      const rawBaseURL = def?.options?.baseURL || cat?.api || cat?.baseURL;
+      const baseURL = rawBaseURL ? expandEnvTemplate(String(rawBaseURL)) || String(rawBaseURL) : '';
       if (!baseURL) {
         return reply.status(400).send({ success: false, reasonCode: 'no_base_url', provider: id });
+      }
+      try {
+        const { assertAllowedUpstream } = await import('../utils/upstream-url-guard.js');
+        assertAllowedUpstream(String(baseURL), loadConfig().port);
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          reasonCode: err?.reasonCode || 'invalid_upstream_url',
+          provider: id,
+          error: err?.message || String(err),
+        });
       }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
       const { baseForWire } = await import('../providers/wire.js');
       const { sanitizeExtraHeaders } = await import('../utils/http-headers.js');
-      // Rotation loop: a model-scoped failure (upstream ANSWERED and rejected
-      // only that model) advances to the next candidate; one green proves the
-      // provider works. Connection-level failures (auth, network, gateway 404)
-      // are provider-wide — rotating would only repeat the same error.
+      // Two nested rotation loops, both stopping on one green:
+      //   · models — a MODEL-SCOPED failure (upstream ANSWERED and rejected
+      //     only that model) advances to the next candidate model;
+      //   · credentials — the rotation the operator asked for: a key that is
+      //     revoked (401/403) or out of quota (429) says nothing about its
+      //     siblings, so the next credential takes over and the model list
+      //     restarts from the top for it.
+      // Only a MOUNT failure ends the probe early: transport errors, unroutable
+      // packages, 5xx and HTML gateways are properties of the baseURL, which
+      // every credential of the provider shares — rotating would just repeat
+      // the same error with a different key attached.
       let result: Awaited<ReturnType<typeof probeProvider>> | undefined;
       const tried: string[] = [];
-      for (const modelId of modelCandidates) {
-        tried.push(modelId);
-        // Model-level npm override (e.g. Zen gpt-6-luna → @ai-sdk/openai =
-        // Responses API) beats provider-level npm when picking the wire shape.
-        const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
-        const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
-        result = await probeProvider({
-          baseURL: baseForWire(kind, baseURL),
-          apiKey,
-          model: modelId,
-          provider: id,
-          kind,
-          headers: sanitizeExtraHeaders(def?.options?.headers),
-        });
-        if (result.ok || !result.modelScoped) break;
+      const triedCredentialIds: string[] = [];
+      let answered: ProbeAttempt | undefined;
+      probes: for (const attempt of probeAttempts) {
+        if (attempt.credentialId) triedCredentialIds.push(attempt.credentialId);
+        // Tracks the row the FINAL verdict belongs to: reassigned per attempt,
+        // so a green probe is credited to the key that answered while an
+        // all-red one is credited to the key tried last.
+        answered = attempt;
+        for (const modelId of modelCandidates) {
+          if (!tried.includes(modelId)) tried.push(modelId);
+          // Model-level npm override (e.g. Zen gpt-6-luna → @ai-sdk/openai =
+          // Responses API) beats provider-level npm when picking the wire shape.
+          const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
+          const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
+          result = await probeProvider({
+            baseURL: baseForWire(kind, baseURL),
+            apiKey: attempt.key,
+            model: modelId,
+            provider: id,
+            kind,
+            headers: sanitizeExtraHeaders(
+              def?.options?.headers
+                ? Object.fromEntries(
+                    Object.entries(def.options.headers).map(([k, v]) => [k, expandEnvTemplate(String(v))]),
+                  )
+                : undefined,
+            ),
+          });
+          if (result.ok) break probes;
+          // Key-scoped refusal → this key is done, hand over to the next one.
+          if (result.hintCode === 'authFailed' || result.hintCode === 'rateLimited') break;
+          // Reached the upstream and got refused for THIS model → another key
+          // may have it open; anything else (transport, 5xx) is the mount's
+          // problem, and a mount is shared by every key of the provider.
+          if (!result.modelScoped) break probes;
+        }
       }
-      // Masked echo of the addressed row (never raw material): the UI can
-      // confirm WHICH credential answered, not just that the provider did.
-      const credentialMeta = addressed ? store.listCredentials(id).find((a) => a.id === addressed.credentialId) : undefined;
+      // Masked echo of the row that produced the verdict (never raw material):
+      // the row that ANSWERED on success, the row tried last on failure — the UI
+      // can confirm WHICH credential the verdict belongs to, not just the
+      // provider.
+      const credentialMetas = store.listCredentials(id);
+      const credentialMeta = answered?.credentialId
+        ? credentialMetas.find((a) => a.id === answered!.credentialId)
+        : undefined;
+      const triedCredentials = triedCredentialIds
+        .map((cid) => credentialMetas.find((a) => a.id === cid))
+        .filter((a): a is (typeof credentialMetas)[number] => !!a);
       return {
         status: 'ok',
         provider: id,
@@ -3847,6 +4003,7 @@ export function registerConsoleRoutes(
         // Rotation evidence (machine data, localized by the console): which
         // candidates were tried, in order. Only meaningful when > 1.
         ...(tried.length > 1 ? { triedModels: tried } : {}),
+        ...(triedCredentials.length > 1 ? { triedCredentials } : {}),
         ...(credentialMeta ? { credential: credentialMeta } : {}),
         ...result,
       };
@@ -4246,7 +4403,7 @@ export function registerConsoleRoutes(
      * action; replaces the retired operator activate route — `store.activate`
      * stays the internal head primitive for sync/connect headPreserved).
      * Body: { ids: string[] } — a permutation of the provider's credential
-     * ids; the chain head becomes ids[0]. Gated on capabilities.reorder
+     * ids; the default credential becomes ids[0]. Gated on capabilities.reorder
      * (Decision 1). Response mirrors the old activate reply: the head
      * credential plus the refreshed masked credential list so the UI
      * repaints without a second fetch.
@@ -4670,7 +4827,7 @@ export function registerConsoleRoutes(
     app.get(`${prefix}/credential-sync`, ocHandlers.credentialSyncStatus);
     app.post(`${prefix}/credential-sync/toggle`, ocHandlers.credentialSyncToggle);
     app.post(`${prefix}/credential-sync/run`, withPoolSync(registry, ocHandlers.credentialSyncRun));
-    app.get(`${prefix}/opencode/npm-vocabulary`, ocHandlers.npmVocabulary);
+    app.get(`${prefix}/opencode/protocol-vocabulary`, ocHandlers.protocolVocabulary);
     app.get(`${prefix}/opencode/providers`, ocHandlers.list);
     app.get(`${prefix}/opencode/catalog`, ocHandlers.catalog);
     app.get(`${prefix}/opencode/models`, ocHandlers.models);
@@ -4726,10 +4883,10 @@ export function registerConsoleRoutes(
       const ext = file.split('.').pop()?.toLowerCase();
       const mime =
         ext === 'png' ? 'image/png'
-        : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
-        : ext === 'webp' ? 'image/webp'
-        : ext === 'svg' ? 'image/svg+xml'
-        : undefined;
+          : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+            : ext === 'webp' ? 'image/webp'
+              : ext === 'svg' ? 'image/svg+xml'
+                : undefined;
       if (!mime) return reply.code(415).send({ status: 'error', error: 'unsupported logo format' });
       // Logos ship inside operator-installed packages: treat them as untrusted
       // content. SVG can carry scripts on direct navigation — lock it down;
@@ -4762,6 +4919,32 @@ export function registerConsoleRoutes(
       return reply.type('application/zip').send(Buffer.from(zip));
     });
 
+    /**
+     * Re-materialize every client model surface a gateway plugin owns.
+     *
+     * A gateway's catalog config (list mode, followed key ids) is persisted in
+     * its own artifact, but the clients it feeds MATERIALIZE that list into
+     * their own files — those must be rewritten on save, or the picker keeps
+     * whatever it held at hook time. A failed refresh never fails the save (the
+     * config is already persisted); it is reported next to the values instead.
+     */
+    const refreshOwnedModelSurfaces = async (
+      pluginId: string,
+    ): Promise<Array<{ client: string; ok: boolean; message: string }>> => {
+      const { getAllClientAdapters } = await import('../cli/clients/index.js');
+      const rows: Array<{ client: string; ok: boolean; message: string }> = [];
+      for (const adapter of getAllClientAdapters()) {
+        if (adapter.catalogPlugin !== pluginId || !adapter.refreshModelSurface) continue;
+        try {
+          const result = await adapter.refreshModelSurface();
+          rows.push({ client: adapter.name, ok: result.success, message: result.message });
+        } catch (err) {
+          rows.push({ client: adapter.name, ok: false, message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return rows;
+    };
+
     // Plugin-level configuration (ADR-0017): schema declared in plugin.json,
     // values stored as a plugin artifact — never in config.yaml.
     app.get(`${prefix}/plugins/:id/config`, async (req, reply) => {
@@ -4780,7 +4963,8 @@ export function registerConsoleRoutes(
       try {
         const { applyPluginConfig } = await import('../plugins/host.js');
         const result = await applyPluginConfig(id, body.values as Record<string, unknown>);
-        return { status: 'ok', values: result.values, warnings: result.warnings };
+        const surfaces = await refreshOwnedModelSurfaces(id);
+        return { status: 'ok', values: result.values, warnings: result.warnings, surfaces };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Unknown/unloaded plugin = 404 (same as GET); schema/value problems = 400.
@@ -4838,67 +5022,70 @@ export function registerConsoleRoutes(
       `${prefix}/plugins/install`,
       { bodyLimit: PLUGIN_PACKAGE_MAX_BYTES },
       async (req, reply) => {
-      const body = req.body as Buffer | string | undefined;
-      const bytes = typeof body === 'string' ? Buffer.from(body, 'binary') : body;
-      if (!bytes || bytes.length === 0) {
-        return reply.code(400).send({ status: 'error', error: 'empty body — send the plugin zip as application/octet-stream' });
-      }
-      if (bytes.length > PLUGIN_PACKAGE_MAX_BYTES) {
-        return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
-      }
-      try {
-        const { installPluginPackage, packageIdOf, pluginPackageZip, listInstalledPlugins: listing } =
-          await import('../plugins/host.js');
-        // Snapshot the version this upload is about to REPLACE (a packaged one
-        // — a dev-tree plugin is not ours to materialize here). A failed upgrade
-        // must not delete a working install.
-        let previous: Uint8Array | undefined;
+        const body = req.body as Buffer | string | undefined;
+        const bytes = typeof body === 'string' ? Buffer.from(body, 'binary') : body;
+        if (!bytes || bytes.length === 0) {
+          return reply.code(400).send({ status: 'error', error: 'empty body — send the plugin zip as application/octet-stream' });
+        }
+        if (bytes.length > PLUGIN_PACKAGE_MAX_BYTES) {
+          return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
+        }
         try {
-          const target = packageIdOf(new Uint8Array(bytes));
-          const existing = listing().find((p) => p.id === target);
-          if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
-        } catch {
-          // unreadable upload: installPluginPackage below reports it properly
-        }
-        const { id: installed } = installPluginPackage(new Uint8Array(bytes));
-        const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
-        await loadInstalledPlugins();
-        const plugins = listInstalledPlugins();
-        const view = plugins.find((p) => p.id === installed && !p.disabled);
-        if (!view?.loaded) {
-          // a package that cannot load would re-fail every boot — discard it;
-          // discard BEFORE preset sync / pool refresh so a broken package
-          // registers nothing
-          const { discardPluginPackage } = await import('../plugins/host.js');
-          discardPluginPackage(installed);
-          // Roll BACK to the version that was working until this upload, so a
-          // bad upgrade is a no-op instead of a lost plugin.
-          if (previous) {
-            installPluginPackage(previous);
-            await loadInstalledPlugins();
-            return reply.code(422).send({
-              status: 'error',
-              error: `package rejected and discarded (${view?.error ?? 'unknown error'}); rolled back to the previously installed version`,
-              plugins: listInstalledPlugins(),
-            });
+          const { installPluginPackage, packageIdOf, pluginPackageZip, listInstalledPlugins: listing } =
+            await import('../plugins/host.js');
+          // Snapshot the version this upload is about to REPLACE (a packaged one
+          // — a dev-tree plugin is not ours to materialize here). A failed upgrade
+          // must not delete a working install.
+          let previous: Uint8Array | undefined;
+          try {
+            const target = packageIdOf(new Uint8Array(bytes));
+            const existing = listing().find((p) => p.id === target);
+            if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
+          } catch {
+            // unreadable upload: installPluginPackage below reports it properly
           }
-          // Reload AFTER the discard: otherwise the response would hand the
-          // console a row for a package that is no longer on disk (the list is
-          // the disk's truth, not the last failed import's).
+          const { id: installed, version: installedVersion, replacedVersion } = installPluginPackage(new Uint8Array(bytes));
+          const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
           await loadInstalledPlugins();
-          return reply
-            .code(422)
-            .send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins: listInstalledPlugins() });
+          const plugins = listInstalledPlugins();
+          const view = plugins.find((p) => p.id === installed && !p.disabled);
+          if (!view?.loaded) {
+            // a package that cannot load would re-fail every boot — discard it;
+            // discard BEFORE preset sync / pool refresh so a broken package
+            // registers nothing
+            const { discardPluginPackage } = await import('../plugins/host.js');
+            discardPluginPackage(installed);
+            // Roll BACK to the version that was working until this upload, so a
+            // bad upgrade is a no-op instead of a lost plugin.
+            if (previous) {
+              // A ROLLBACK is the one legitimate downgrade: the caller did not
+              // ask for it, the loader did — the version guard exists for
+              // uploads, and it must not block the recovery path.
+              installPluginPackage(previous, { allowDowngrade: true });
+              await loadInstalledPlugins();
+              return reply.code(422).send({
+                status: 'error',
+                error: `package rejected and discarded (${view?.error ?? 'unknown error'}); rolled back to the previously installed version`,
+                plugins: listInstalledPlugins(),
+              });
+            }
+            // Reload AFTER the discard: otherwise the response would hand the
+            // console a row for a package that is no longer on disk (the list is
+            // the disk's truth, not the last failed import's).
+            await loadInstalledPlugins();
+            return reply
+              .code(422)
+              .send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins: listInstalledPlugins() });
+          }
+          // presets register at install time (same contract as boot/reload) —
+          // after a verified successful load, BEFORE the pool refresh so the
+          // fresh defs are routable immediately
+          const registered = await syncPluginPresets();
+          await refreshDirectPool(registry);
+          return { status: 'ok', id: installed, version: installedVersion, replacedVersion, plugins, registered };
+        } catch (err) {
+          return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
         }
-        // presets register at install time (same contract as boot/reload) —
-        // after a verified successful load, BEFORE the pool refresh so the
-        // fresh defs are routable immediately
-        const registered = await syncPluginPresets();
-        await refreshDirectPool(registry);
-        return { status: 'ok', id: installed, plugins, registered };
-      } catch (err) {
-        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
-      }
       },
     );
     // Per-credential credential writes (reorder / rename / disconnect).
@@ -4928,10 +5115,21 @@ export function registerConsoleRoutes(
   app.get('/api/admin/catalog/logo', handleCatalogLogo);
 
   // 9. Client API Keys Management (for external client access)
+  // List is always masked — plaintext leaves only via the reveal endpoint
+  // (Playground / copy flows). Defense in depth on top of the CORS tighten.
   const handleListApiKeys = async () => {
-    return { status: 'ok', keys: listApiKeys(false) };
+    return { status: 'ok', keys: listApiKeys(true) };
   };
   app.get('/api/admin/api-keys', handleListApiKeys);
+
+  const handleRevealApiKey = async (req: any, reply: any) => {
+    const { id } = req.params as { id: string };
+    const key = listApiKeys(false).find((k) => k.id === id);
+    if (!key) return reply.status(404).send({ success: false, error: `API key '${id}' not found` });
+    reply.header('Cache-Control', 'no-store');
+    return { status: 'ok', id: key.id, key: key.key };
+  };
+  app.post('/api/admin/api-keys/:id/reveal', handleRevealApiKey);
 
   const handleCreateApiKey = async (req: any, reply: any) => {
     const body = req.body as { name: string; key?: string; expiresAt?: string; description?: string; modelAccess?: unknown; limits?: unknown };
@@ -5362,6 +5560,8 @@ export function registerConsoleRoutes(
     return { status: r.ok ? 'ok' : 'error', ...r };
   });
 
+  registerMihomoRoutes(app);
+
   /* ---------------------------------------------------------------------- *
    * 12b. Request-capture archive browser (CaptureRecorder; opt-in audit log)
    * Bodies may contain sensitive data — these endpoints sit under /api/admin/*
@@ -5451,24 +5651,24 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * Read the HTTP exchange events written by the capture pipeline.
-   * Each inference turn produces 2-4 events sharing the same `requestId`:
-   * client-request, gateway-response, upstream-request, upstream-response.
-   * The console joins them into one logical turn via `requestId`.
+   * Read the HTTP exchange events written by the capture pipeline and
+   * project them into REQUESTS. Every event carries its `requestId`,
+   * `exchangeId` and write-time turn identity; the recorder groups all
+   * exchanges of one request into `requests[].exchanges[]`.
    */
   app.get('/api/admin/capture/:date/:file/events', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
-    // `limit` is TURNS per page (2-4 wire events travel with their turn), so
-    // the pager's summary counts the same unit the header does. 50 turns is
-    // the console default.
+    // `limit` is REQUESTS per page (every exchange of a request always
+    // travels with it), so the pager counts the same unit as the header.
+    // 50 requests is the console default.
     const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '50', 10) || 50, 1), 500);
     // Metadata-first console reads: bodies=none strips the wire bodies (KB
-    // payload, instant paint); full bodies come back per turn via /turn or a
-    // bodies=full re-read. bodies=chat keeps round-opener request bodies +
-    // response bodies only — the conversation replay's bounded footprint.
+    // payload, instant paint); full bodies come back per request via
+    // /request or a bodies=full re-read. bodies=chat keeps prompt-start
+    // request bodies + response bodies only — the replay's bounded footprint.
     const bodiesParam = (req.query as any)?.bodies;
     const bodies = bodiesParam === 'none' ? 'none' : bodiesParam === 'chat' ? 'chat' : 'full';
     // stitched=1: merge the session's fragments from every date dir (a
@@ -5476,8 +5676,8 @@ export function registerConsoleRoutes(
     // one chronological timeline. Response carries the per-fragment breakdown.
     const stitched = (req.query as any)?.stitched === '1';
     // page=1 is the NEWEST window page; older pages count up from there.
-    // Pages are TURN pages (a page never splits a turn's events), bounded by
-    // the read window — history older than the window is export-only.
+    // Pages are REQUEST pages (a page never splits a request's events),
+    // bounded by the read window — older history is export-only.
     const page = Math.min(Math.max(parseInt((req.query as any)?.page || '1', 10) || 1, 1), 100000);
     const result = stitched
       ? await captureRecorder.readEventsStitched(date, file, limit, bodies, page)
@@ -5489,10 +5689,10 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * EXACT whole-archive summary: request count (header denominator / pager
-   * total) and the USER-PROMPT ROUND INDEX (prompt + request range) for the
-   * round selector. The events window only knows the tail; this metadata scan
-   * is streamed and never parses request bodies.
+   * EXACT whole-archive summary: the request count and the WRITE-TIME TURN
+   * INDEX (one entry per `turnIndex`, with its request range) for the turn
+   * selector. The events window only knows the tail; this metadata scan is
+   * streamed and never parses request bodies.
    * Display-only: pagination still follows a bounded read window.
    */
   app.get('/api/admin/capture/:date/:file/summary', async (req: any) => {
@@ -5505,12 +5705,13 @@ export function registerConsoleRoutes(
   });
 
   /**
-   * Full wire bodies for ONE turn (the console passes the client-request
-   * event id). The metadata-first events read strips bodies; the drawer
-   * fetches them here when a turn is opened. Bounded by the same read
-   * window as /events — a turn archived beyond the window answers 404.
+   * Full wire bodies for ONE REQUEST (keyed by its `requestId`; an event id
+   * is accepted too for deep links). The metadata-first events read strips
+   * bodies; the drawer fetches them here when a request is opened. Bounded
+   * by the same read window as /events — a request archived beyond the
+   * window answers 404.
    */
-  app.get('/api/admin/capture/:date/:file/turn', async (req: any, reply: any) => {
+  app.get('/api/admin/capture/:date/:file/request', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -5520,13 +5721,13 @@ export function registerConsoleRoutes(
       return reply.status(400).send({ status: 'error', message: 'id query param required' });
     }
     // stitched=1: also search the session's other date-dir fragments — a
-    // cross-midnight turn's bodies live in the shard its events landed in.
+    // cross-midnight request's bodies live in the shard its events landed in.
     const stitched = (req.query as any)?.stitched === '1';
     const result = stitched
-      ? await captureRecorder.readTurnStitched(date, file, id)
-      : await captureRecorder.readTurn(date, file, id);
+      ? await captureRecorder.readRequestStitched(date, file, id)
+      : await captureRecorder.readRequest(date, file, id);
     if (!result) {
-      return reply.status(404).send({ status: 'error', message: 'Turn not found in read window' });
+      return reply.status(404).send({ status: 'error', message: 'Request not found in read window' });
     }
     return { status: 'ok', date, file, ...result };
   });
@@ -5650,7 +5851,7 @@ export function registerConsoleRoutes(
       let truncated = false;
       if (reader) {
         const dec = new TextDecoder();
-        for (;;) {
+        for (; ;) {
           const { done, value } = await reader.read();
           if (done) break;
           total += value.byteLength;
@@ -5676,7 +5877,7 @@ export function registerConsoleRoutes(
   /* ---------------------------------------------------------------------- *
    * Session observation maintenance (console /sessions page cleanup).
    * Console pages cannot present API keys, so destructive session ops live
-   * under /api/admin — same trust surface as the capture-archive deletes
+   * under /api/admin — same trust surface as the capture archive deletes
     * above. (DELETE /api/admin/sessions/:id is registered in server.ts together
     * with the rest of the sessions* surface.)
    * ---------------------------------------------------------------------- */

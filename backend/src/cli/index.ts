@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop, getRunningPid, getDaemonInfo } from './daemon.js';
-import { setupClient, teardownClient, CLIENT_TARGETS } from './clients/index.js';
-import { defaultGatewayPort, type ClientActionWarning } from './clients/base.js';
-import { runCursorLauncher } from './clients/cursor-proxy.js';
-import { runQoderLauncher } from './clients/qoder-proxy.js';
+import {
+  setupClient,
+  teardownClient,
+  CLIENT_TARGETS,
+  ensurePluginClientAdapters,
+  findLaunchVerb,
+  getAllClientAdapters,
+  listLaunchVerbs,
+  pluginWarningLabelsFor,
+} from './clients/index.js';
+import { defaultGatewayPort, pluginWarningText, type ClientActionWarning } from './clients/base.js';
+import { runLauncherScript } from './clients/launcher.js';
 import { registerGlobalShims, shimStatus, unregisterGlobalShims } from './shim.js';
-import { CliAction, SupportedClient } from './types.js';
+import type { CliAction, SupportedClient } from './types.js';
 import { APP_VERSION } from '../version.js';
 import {
   DEFAULT_ENV_NAME,
@@ -38,8 +46,13 @@ ${C.cyan}${C.bold}  ⚡ OmniCellRouter (OCR)${C.reset} ${C.dim}v${APP_VERSION}${
 }
 
 /** Post-setup advisories as CLI lines — the console renders the same codes as
- *  a warning toast; a CLI hook must not look healthy when HTTPS will fail. */
-function formatClientWarnings(warnings: ClientActionWarning[] | undefined): string[] {
+ *  a warning toast; a CLI hook must not look healthy when HTTPS will fail.
+ *  Core codes keep core wording; a package code resolves through the owning
+ *  plugin's `warningLabels`, so plugin text never lives in core. */
+function formatClientWarnings(
+  warnings: ClientActionWarning[] | undefined,
+  pluginLabels?: Record<string, string | Record<string, string>>
+): string[] {
   return (warnings ?? []).map((w) => {
     switch (w.code) {
       case 'ca_not_trusted':
@@ -48,8 +61,45 @@ function formatClientWarnings(warnings: ClientActionWarning[] | undefined): stri
         return 'CA trust could not be verified on this platform — check the Proxy Access setup wizard if HTTPS fails.';
       case 'proxy_not_running':
         return `The forward proxy is not running on port ${w.params?.port ?? '?'} — start the gateway before launching.`;
+      case 'ide_running':
+        return 'A JetBrains IDE was running during setup: the hook applies on its next start, and the IDE rewrites proxy.settings.xml from memory when it exits — re-run setup after quitting it.';
+      case 'ide_truststore_readonly':
+        return `The IDE install's own truststore is not writable, so the MITM CA went into ${w.params?.path ?? 'a copy'} and the IDE's vmoptions now point at it — restart the IDE for JBR to pick it up.`;
+      default:
+        return pluginWarningText(pluginLabels, w.code, w.params) ?? `Advisory '${w.code}' — no text was declared for it.`;
     }
   });
+}
+
+/** Column pad for the generated help rows. */
+const pad = (text: string, width: number): string => text + ' '.repeat(Math.max(2, width - text.length));
+
+/**
+ * The client section of the help text, DERIVED from the registry.
+ *
+ * The roster is core hooks + whatever packages this install has, so a packaged
+ * hook (`cursor-proxy`, `qoder-proxy`, …) documents itself: no core release and
+ * no help text edit adds or removes a client. Launch verbs come from the same
+ * declarations the dispatcher uses, so help and behaviour cannot drift.
+ */
+function clientIntegrationHelp(): string {
+  const lines: string[] = [];
+  for (const adapter of getAllClientAdapters()) {
+    lines.push(`  ${C.magenta}ocr setup ${adapter.name}${C.reset}${pad('', Math.max(2, 24 - adapter.name.length))}Hook ${adapter.displayName}`);
+  }
+  for (const adapter of getAllClientAdapters()) {
+    lines.push(`  ${C.yellow}ocr teardown ${adapter.name}${C.reset}${pad('', Math.max(2, 21 - adapter.name.length))}Unhook ${adapter.displayName}`);
+  }
+  const verbs = listLaunchVerbs();
+  if (verbs.length > 0) {
+    lines.push('');
+    for (const v of verbs) {
+      lines.push(`  ${C.cyan}ocr ${v.verb}${C.reset}${pad('', Math.max(2, 28 - v.verb.length))}${v.summary ?? `Launch ${v.client}`}`);
+    }
+  }
+  // Trailing blank line: the generated block ends the section, and the next
+  // heading must not sit flush against the last row.
+  return lines.join('\n') + '\n';
 }
 
 function printHelp(): void {
@@ -69,32 +119,7 @@ ${C.bold}USER INTERFACE:${C.reset}
   ${C.cyan}ocr desktop${C.reset}             Open native desktop window (falls back to web if not installed)
 
 ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
-  ${C.magenta}ocr setup opencode${C.reset}      Hook OpenCode to route via local OCR gateway
-  ${C.magenta}ocr setup opencode-proxy${C.reset} Hook OpenCode (proxy mode) via the OCR forward proxy
-  ${C.magenta}ocr setup claude${C.reset}        Hook Claude Code to route via local OCR gateway
-  ${C.magenta}ocr setup codex${C.reset}         Hook Codex / OpenAI-compatible CLI to local OCR gateway
-  ${C.magenta}ocr setup pi${C.reset}            Hook Pi coding agent (models.json provider) to local OCR gateway
-  ${C.magenta}ocr setup dsh${C.reset}           Hook DeepSeek Harness (web profile patch) to local OCR gateway
-  ${C.magenta}ocr setup workbuddy${C.reset}     Hook WorkBuddy (models.json custom models) to local OCR gateway
-  ${C.magenta}ocr setup cursor-proxy${C.reset}  Hook Cursor through the OCR forward proxy (writes the launchers)
-  ${C.magenta}ocr setup qoder-proxy${C.reset}   Hook Qoder (desktop + qodercli) through the OCR forward proxy
-
-  ${C.magenta}ocr cursor${C.reset} [args]        Launch Cursor through the OCR launcher (run setup first)
-  ${C.magenta}ocr cursor-agent${C.reset} [args]  Launch the cursor-agent CLI through the OCR launcher
-  ${C.magenta}ocr qoder${C.reset} [args]         Launch Qoder through the OCR launcher
-  ${C.magenta}ocr qoder-cli${C.reset} [args]     Launch the qodercli CLI through the OCR launcher
-
-  ${C.yellow}ocr teardown opencode${C.reset}   Unhook OpenCode and restore original configuration
-  ${C.yellow}ocr teardown opencode-proxy${C.reset} Unhook OpenCode proxy mode and restore service env
-  ${C.yellow}ocr teardown claude${C.reset}     Unhook Claude and restore official direct connection
-  ${C.yellow}ocr teardown codex${C.reset}      Unhook Codex and restore standard settings
-  ${C.yellow}ocr teardown pi${C.reset}         Unhook Pi and remove the OCR provider entry
-  ${C.yellow}ocr teardown dsh${C.reset}        Unhook DeepSeek Harness and remove the OCR provider route
-  ${C.yellow}ocr teardown workbuddy${C.reset}  Unhook WorkBuddy and remove the OCR custom-model rows
-  ${C.yellow}ocr teardown cursor-proxy${C.reset} Unhook Cursor and remove the OCR launchers
-  ${C.yellow}ocr teardown qoder-proxy${C.reset}  Unhook Qoder and remove both OCR launchers
-
-
+${clientIntegrationHelp()}  Flags for both: --port <n>, --product <id> (JetBrains family: act on ONE IDE), --force (act on a client that is currently running — the hook can be undone when it exits)
 
 ${C.bold}ENVIRONMENTS (book-sets under ~/.omnicell-router/envs/):${C.reset}
   ${C.cyan}ocr env list${C.reset}                List environments (current = next boot picks)
@@ -110,18 +135,14 @@ ${C.bold}SYSTEM COMMANDS:${C.reset}
   ocr --help, -h          Display this help manual
 `);
 }
-/** Bare launch verbs name the target tool, never a hook target: point the
- *  operator at the right id instead of the generic unknown-client message. */
-const LAUNCH_VERB_HOOK_TARGETS: Record<string, SupportedClient> = {
-  cursor: 'cursor-proxy',
-  'cursor-agent': 'cursor-proxy',
-  qoder: 'qoder-proxy',
-  'qoder-cli': 'qoder-proxy',
-};
-
+/**
+ * Bare launch verbs name the target tool, never a hook target: point the
+ * operator at the id that PUBLISHES the verb (the registry knows which hook
+ * that is) instead of the generic unknown-client message.
+ */
 function launchVerbHint(target: string, verb: 'setup' | 'teardown'): string | null {
-  const hookTarget = LAUNCH_VERB_HOOK_TARGETS[target.toLowerCase()];
-  return hookTarget ? `'${target}' is a launch verb, not a hook target. Run \`ocr ${verb} ${hookTarget}\`.` : null;
+  const hit = findLaunchVerb(target.toLowerCase());
+  return hit ? `'${target}' is a launch verb, not a hook target. Run \`ocr ${verb} ${hit.client}\`.` : null;
 }
 
 async function handleStatus(): Promise<void> {
@@ -304,17 +325,45 @@ async function reportLaunch(
 }
 
 /**
- * `ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` are
- * PASSTHROUGH verbs: every remaining argument belongs to the target tool
- * (`--help` and `--version` included), so they are dispatched before OCR's own
- * flag parsing.
+ * Every command OCR itself owns, as an exhaustive map: `Record<CliAction, true>`
+ * makes a new action a compile error until it is listed here.
+ *
+ * Resolution order matters — core commands are matched BEFORE a package's
+ * launch verbs, so a package can never shadow `status` (or `setup`) by
+ * declaring a verb with the same word.
  */
-async function handleClientLaunch(action: 'cursor' | 'cursor-agent' | 'qoder' | 'qoder-cli', argv: string[]): Promise<void> {
-  if (action === 'qoder' || action === 'qoder-cli') {
-    await reportLaunch(action, await runQoderLauncher(action === 'qoder' ? 'desktop' : 'cli', argv), argv);
+const OCR_COMMANDS: Record<CliAction, true> = {
+  start: true,
+  stop: true,
+  restart: true,
+  status: true,
+  web: true,
+  ui: true,
+  desktop: true,
+  setup: true,
+  teardown: true,
+  'install-shims': true,
+  'uninstall-shims': true,
+  'shims-status': true,
+  env: true,
+  version: true,
+  help: true,
+};
+
+/**
+ * Every registered passthrough verb: the remaining arguments belong to the
+ * target tool (`--help` and `--version` included), so the caller dispatches
+ * BEFORE OCR's own flag parsing. Which verbs exist is the registry's answer —
+ * the core knows none of them by name.
+ */
+async function handleClientLaunch(verb: string, argv: string[]): Promise<void> {
+  const hit = findLaunchVerb(verb);
+  if (!hit) {
+    console.error(`${C.red}✗ Unknown command '${verb}'.${C.reset} Run ${C.cyan}ocr help${C.reset} for the current verbs.`);
+    process.exitCode = 1;
     return;
   }
-  await reportLaunch(action, await runCursorLauncher(action === 'cursor' ? 'ide' : 'agent', argv), argv);
+  await reportLaunch(verb, await runLauncherScript(hit.script, argv, hit.detached, hit.missingHint), argv);
 }
 
 async function main(): Promise<void> {
@@ -325,14 +374,25 @@ async function main(): Promise<void> {
   const raw = process.argv.slice(2);
   const args = raw[0] === '--cli' ? raw.slice(1) : raw;
   const action = (args[0] || 'status').toLowerCase() as CliAction;
-  // Passthrough verbs own their remaining flags (`--help`/`--version` mean the
-  // TARGET tool's help/version), so they never enter OCR's own flag parsing.
-  if (action === 'cursor' || action === 'cursor-agent' || action === 'qoder' || action === 'qoder-cli') {
-    await handleClientLaunch(action, args.slice(1));
-    return;
+  // Packages contribute client hooks AND their launch verbs, so the registry is
+  // the only source for "is the first token a launch verb?". It is loaded ONLY
+  // for that question and for `help`: a core command must not boot the plugin
+  // host — loading packages prints diagnostics (and stages the app-owned tier
+  // only when explicitly pointed at one), and
+  // `ocr shims-status` promises a single JSON document on stdout. Commands that
+  // need the roster (`setup`, `teardown`, `status`) await it themselves.
+  if (!OCR_COMMANDS[action]) {
+    await ensurePluginClientAdapters();
+    // Passthrough verbs own their remaining flags (`--help`/`--version` mean the
+    // TARGET tool's help/version), so they never enter OCR's own flag parsing.
+    if (findLaunchVerb(action)) {
+      await handleClientLaunch(action, args.slice(1));
+      return;
+    }
   }
 
   if (args.includes('--help') || args.includes('-h') || action === 'help') {
+    await ensurePluginClientAdapters();
     printHelp();
     return;
   }
@@ -348,6 +408,19 @@ async function main(): Promise<void> {
   if (portIdx !== -1 && args[portIdx + 1]) {
     port = parseInt(args[portIdx + 1], 10);
   }
+
+  // Parse optional --product flag (JetBrains family: act on ONE IDE, e.g.
+  // `--product goland`); absent = every detected product.
+  let product: string | undefined;
+  const productIdx = args.findIndex((a) => a === '--product');
+  if (productIdx !== -1 && args[productIdx + 1]) product = args[productIdx + 1];
+
+  // `--force`: the operator knows the client is running and wants the hook
+  // anyway. An adapter that can DETECT a live client refuses without it, since
+  // a write under a running IDE is undone when the IDE exits and rewrites its
+  // settings from memory.
+  const acknowledgeRunning = args.includes('--force');
+
 
   // Parse optional --env flag (start/restart): runs the gateway on a named
   // environment by injecting OCR_ENV into the daemon child.
@@ -433,10 +506,15 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
-      const res = await setupClient(client, { port });
+      const res = await setupClient(client, {
+        port,
+        ...(product ? { product } : {}),
+        ...(acknowledgeRunning ? { acknowledgeRunning } : {}),
+      });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
-        for (const line of formatClientWarnings(res.warnings)) {
+        const warnLabels = await pluginWarningLabelsFor(client);
+        for (const line of formatClientWarnings(res.warnings, warnLabels)) {
           console.log(`${C.yellow}⚠ ${line}${C.reset}`);
         }
       } else {
@@ -458,7 +536,10 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
       }
-      const res = await teardownClient(client);
+      const res = await teardownClient(client, {
+        ...(product ? { product } : {}),
+        ...(acknowledgeRunning ? { acknowledgeRunning } : {}),
+      });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
       } else {

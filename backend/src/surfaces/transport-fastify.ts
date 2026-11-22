@@ -2,14 +2,15 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access.js';
 import type { ClientExchangeContext } from '../observability/http-exchange.js';
 import {
-  appendGatewayResponseChunk,
-  markGatewayResponseStreamStart,
-  emitGatewayResponse,
+  appendClientResponseChunk,
+  markClientResponseStreamStart,
+  emitClientResponse,
   getClientExchangeContext,
 } from '../observability/http-exchange.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import type { ApiKeyConfig } from '../config/types.js';
 import type { TransportContext } from './types.js';
+import { createClientLegWatchdog, writeWithBackpressure, type ClientLegWatchdog } from './transport-backpressure.js';
 
 /**
  * Fastify transport (step-3c form): explicit capture inside the terminal
@@ -43,6 +44,11 @@ export function createFastifyTransport(
   let sseCtx: ClientExchangeContext | undefined;
   // Set by the migrated close listener (see below) — the isClientGone signal.
   let closed = false;
+  // Stall deadline for the SSE leg, armed at beginSse (see
+  // `createClientLegWatchdog`): a peer that stops draining and never reports
+  // close would otherwise park the exchange — and its terminal capture event —
+  // behind an awaited write that nothing can cancel.
+  let sseWatchdog: ClientLegWatchdog | undefined;
 
   // Client-abort capture — server.ts's onRequest hook, migrated verbatim:
   // when the socket closes before the response finishes, no terminal send
@@ -53,13 +59,15 @@ export function createFastifyTransport(
   // disconnect (forward-proxy.test.ts:360 is the runtime spec), which is why
   // the terminal sends ALSO consult isClientGone() below.
   reply.raw.on('close', () => {
-    closed = true;
+    sseWatchdog?.stop();
     // writableEnded = response fully written — a later socket close (e.g.
-    // keep-alive teardown) must not synthesize a 499 for a completed 200.
+    // keep-alive teardown) must not synthesize a 499 for a completed 200 or
+    // mark the client gone.
     if (reply.raw.writableEnded) return;
+    closed = true;
     const ctx = getClientExchangeContext(req);
     if (ctx && !ctx.pending.responded && ctx.recorder.isEnabled()) {
-      emitGatewayResponse(ctx, {
+      emitClientResponse(ctx, {
         statusCode: 499,
         statusMessage: 'Client Closed Request',
         getHeader: () => undefined,
@@ -70,7 +78,7 @@ export function createFastifyTransport(
   // Bun fires no reliable 'close'/'aborted' after the response is dead —
   // the migrated listener covers Node; the socket-destroyed poll covers
   // Bun (forward-proxy.test.ts:360 documents the verified runtime).
-  const isClientGone = () => closed || reply.raw.socket?.destroyed === true;
+  const isClientGone = () => closed || reply.raw.destroyed || reply.raw.socket?.destroyed === true;
 
   // Fastify's per-request pino child — the one error sink for this transport.
   const logError = (err: unknown, message: string) => {
@@ -79,20 +87,20 @@ export function createFastifyTransport(
 
   // Terminal-send finalize (contract §1.5): one emit decision per response —
   // real status when the socket lived, synthetic 499 when the client was
-  // already gone. `responded` dedup lives inside emitGatewayResponse; the
+  // already gone. `responded` dedup lives inside emitClientResponse; the
   // isEnabled gate + ctx presence check live here (no ctx ⇒ pre-process 400
   // or capture-off ⇒ nothing to pair).
-  const finalizeCapture = (view: Parameters<typeof emitGatewayResponse>[1]) => {
+  const finalizeCapture = (view: Parameters<typeof emitClientResponse>[1], gone = isClientGone()) => {
     const ctx = getClientExchangeContext(req);
     if (!ctx || !ctx.recorder.isEnabled()) return;
-    if (isClientGone()) {
-      emitGatewayResponse(ctx, {
+    if (gone) {
+      emitClientResponse(ctx, {
         statusCode: 499,
         statusMessage: 'Client Closed Request',
         getHeader: () => undefined,
       });
     } else {
-      emitGatewayResponse(ctx, view);
+      emitClientResponse(ctx, view);
     }
   };
 
@@ -137,13 +145,14 @@ export function createFastifyTransport(
       // stays synchronous here: exactly ONE terminal send per request
       // (contract §1.5), and the capture stash + finalize below still run
       // in send-order.
+      const goneBeforeSend = isClientGone();
       Promise.resolve(reply.status(status).send(serialized)).catch((err: unknown) => logError(err, 'Fastify sendJson reply.send rejected'));
       const ctx = getClientExchangeContext(req);
       if (ctx) {
-        appendGatewayResponseChunk(ctx, serialized);
+        appendClientResponseChunk(ctx, serialized);
       }
       // view=reply: statusCode + getHeaders() — the old onResponse source.
-      finalizeCapture(reply);
+      finalizeCapture(reply, goneBeforeSend);
     },
 
     beginSse: (headers) => {
@@ -170,6 +179,26 @@ export function createFastifyTransport(
         logError(err, 'Fastify beginSse writeHead failed');
       }
       sseCtx = getClientExchangeContext(req);
+      sseWatchdog = createClientLegWatchdog({
+        onStall: (idleTimeoutMs) => {
+          // No frame left the box for a whole idle budget: treat the peer as
+          // gone (a later 200 would be a lie), close the socket so the parked
+          // relay wakes on a failing write, and finalize the exchange now —
+          // this timer is the only actor that can, when the pipeline itself is
+          // the thing that is suspended.
+          logError(
+            new Error(`No SSE frame reached the client for ${idleTimeoutMs}ms — closing the exchange`),
+            'Fastify SSE client leg stalled'
+          );
+          closed = true;
+          try {
+            reply.raw.destroy();
+          } catch {
+            // Already destroyed: exactly the state we are asserting.
+          }
+          finalizeCapture(reply);
+        },
+      });
     },
 
     writeSseChunk: (chunk) => {
@@ -177,17 +206,17 @@ export function createFastifyTransport(
       // per chunk, exactly like the old handler (the [DONE] frame is the
       // last chunk, so it lands in the capture too, same as before).
       if (sseCtx) {
-        markGatewayResponseStreamStart(sseCtx);
-        appendGatewayResponseChunk(sseCtx, chunk);
+        markClientResponseStreamStart(sseCtx);
+        appendClientResponseChunk(sseCtx, chunk);
       }
-      try {
-        reply.raw.write(chunk);
-      } catch (err) {
-        logError(err, 'Fastify writeSseChunk failed');
-      }
+      sseWatchdog?.progress();
+      if (isClientGone()) return;
+      return writeWithBackpressure(reply.raw, chunk, (err) => logError(err, 'Fastify writeSseChunk failed'));
     },
 
     endSse: () => {
+      sseWatchdog?.stop();
+      const goneBeforeEnd = isClientGone();
       try {
         reply.raw.end();
       } catch (err) {
@@ -195,7 +224,7 @@ export function createFastifyTransport(
       }
       // Synchronous finalize replaces the old post-flush onResponse emit.
       // view=reply keeps the same sources (statusCode + merged getHeaders()).
-      finalizeCapture(reply);
+      finalizeCapture(reply, goneBeforeEnd);
     },
 
     relayUpstream: (up) => {
@@ -206,21 +235,30 @@ export function createFastifyTransport(
         reply.raw.writeHead(up.statusCode || 502, up.statusMessage, up.headers as Record<string, string | string[]>);
       } catch (err) {
         logError(err, 'Fastify relayUpstream writeHead failed');
+        up.stream.on('error', () => { });
+        try { up.stream.destroy(); } catch { }
         finalizeCapture(reply);
         return;
       }
       const ctx = getClientExchangeContext(req);
       up.stream.on('data', (chunk: Buffer) => {
-        if (ctx) appendGatewayResponseChunk(ctx, chunk.toString('utf8'));
+        if (ctx) appendClientResponseChunk(ctx, chunk.toString('utf8'));
       });
-      up.stream.pipe(reply.raw);
+      reply.raw.once('close', () => {
+        if (!reply.raw.writableEnded) {
+          try { up.stream.destroy(); } catch { }
+        }
+      });
+      // Register 'end' BEFORE pipe() so finalizeCapture evaluates isClientGone()
+      // before pipe's internal onend listener calls reply.raw.end()/destroy().
       up.stream.on('end', () => {
         finalizeCapture(reply);
       });
+      up.stream.pipe(reply.raw);
       up.stream.on('error', () => {
         try {
           reply.raw.destroy();
-        } catch {}
+        } catch { }
         finalizeCapture(reply);
       });
     },

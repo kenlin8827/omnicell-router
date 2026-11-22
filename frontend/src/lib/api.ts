@@ -43,13 +43,29 @@ export interface GatewayMetrics {
 }
 
 /** Where a client hook lands — mirrors backend `ClientHookKind`. */
-export type ClientHookKind = 'config' | 'launcher' | 'service-env';
+export type ClientHookKind = 'config' | 'launcher' | 'service-env' | 'proxy-config';
 
 export interface ClientStatus {
   name: string;
   displayName: string;
   /** Where the hook lands (backend `ClientAdapter.hookKind`). */
   hookKind: ClientHookKind;
+  /** Package that PROVIDES this hook — absent for a hook the build ships.
+   *  Stamped by the registry, so the console can point at the owning package
+   *  (enable it, explain why it is missing) without a client→plugin table. */
+  pluginId?: string;
+  /** Package that owns this client's MODEL SURFACE (its `client-gateway`
+   *  catalog). Declared by the hook itself; absent = no gateway-owned catalog. */
+  catalogPlugin?: string;
+  /** Passthrough launch verbs the hook publishes (`['cursor','cursor-agent']`)
+   *  — the console renders `ocr <verb>` from here. */
+  launch?: string[];
+  /** Brand asset key for this row's logo; absent = the client id is the asset
+   *  name. Declared by the hook, so no client→logo table lives here. */
+  icon?: string;
+  /** Bare product name where the surface implies the variant; absent =
+   *  `displayName`. */
+  shortName?: string;
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -60,12 +76,14 @@ export interface ClientStatus {
   version?: { current: string; min?: string; meetsMin: boolean };
   /** This client's model slots; value undefined = auto (intelligent routing). */
   modelSlots: { key: string; value?: string; default?: string; description?: string }[];
-  /** Last-linked model profile (opencode): profile id + agent→slot-key tags
-   *  (the linked rows — their effective models resolve from the profile). */
-  profile?: ModelProfileBinding;
   /** A file an adapter owns besides its primary `configPath` (Cursor's CLI
    *  launcher); `exists` probed at status time. Mirrors backend ClientArtifact. */
   artifacts?: ClientArtifact[];
+
+  /** Family adapters (JetBrains): the product instances this machine has, each
+   *  with its own takeover state. Absent = single-product adapter. Mirrors
+   *  backend ClientProductStatus. */
+  products?: ClientProductStatus[];
 }
 
 /** Mirrors backend ClientArtifact (a file an adapter owns besides `configPath`). */
@@ -74,30 +92,39 @@ export interface ClientArtifact {
   exists: boolean;
 }
 
+/** One product instance inside a family adapter (mirrors backend ClientProductStatus). */
+export interface ClientProductStatus {
+  /** Stable product key — also the `product` action target (`intellij-idea`, `goland`, …). */
+  id: string;
+  displayName: string;
+  /** Brand asset key for the row's logo; absent = the id is the asset name. */
+  icon?: string;
+  version: string | null;
+  configPath: string;
+  exists: boolean;
+  hooked: boolean;
+  backupExists: boolean;
+  /** Is the MITM root trusted where THIS product's JBR reads it (own store or
+   *  the vmoptions copy)? `unknown` when the probe cannot run. */
+  caTrusted: boolean | 'unknown';
+  /** The ACP agent this hook provisioned (name = the agent's own identity). */
+  agent: { name: string; version: string } | null;
+  /** Files this product owns (settings, per-product agents dir) — the
+   *  `.ocr-backup` snapshot is reversible state, never an artifact. */
+  artifacts: ClientArtifact[];
+}
+
 /** Advise-only finding from a SUCCESSFUL client setup (backend
  *  `ClientActionWarning`): the artifact was written, but the client will still
  *  fail at use time until this is fixed. */
 export interface ClientActionWarning {
-  code: 'ca_not_trusted' | 'ca_trust_unknown' | 'proxy_not_running';
+  /** A core code (localized by the console), or a code the owning package
+   *  declared in its manifest's `warningLabels`. */
+  code: string;
   params?: Record<string, string>;
 }
 
-/** Mirrors backend ModelProfileBinding (profile-link echo from the OCR sidecar meta). */
-export interface ModelProfileBinding {
-  id: string;
-  bindings: Record<string, string>;
-}
-
-/** Mirrors backend ModelProfileConfig (config.yaml `modelProfiles` entry). */
-export interface ModelProfileView {
-  id: string;
-  name?: string;
-  /** slot key → modelRef (model id | combo id | auto*) */
-  slots: Record<string, string>;
-  note?: string;
-}
-
-/** Mirrors backend OpenCodeAgentView (agent inventory for model-profile binding). */
+/** Mirrors backend OpenCodeAgentView (agent inventory for model binding). */
 export interface OpenCodeAgentView {
   name: string;
   mode: 'primary' | 'subagent' | 'all';
@@ -117,8 +144,6 @@ export interface OpenCodeAgentView {
  *  selections (saved on every pick). UI-only: never consulted by routing or
  *  by the hook itself. */
 export interface ClientProfileMemoryEntry {
-  profile: string;
-  bindings: Record<string, string>;
   /** models = slot → model-ref draft (pi/omp main, plain slot clients);
    *  agentModels = role/agent → raw draft ref (native pins included);
    *  extraModels = the custom model-list draft. Mirrors backend. */
@@ -129,13 +154,17 @@ export interface ClientProfileMemoryEntry {
    *  untouched — setup omits `virtualModels` (adapter default block); an
    *  array (possibly empty) scopes the block to that set. Mirrors backend. */
   virtualModels?: string[];
-  /** Model-list source: 'none' (default) = no concrete models exposed,
+  /** Model-list source: 'default' = the console's "Default" tab (no concrete
+   *  models exposed, the adapter's own virtual-entry block applies),
    *  'follow' = mirror the selected API key's effective model access,
    *  'custom' = manual picker. Mirrors backend. */
-  modelMode?: 'none' | 'custom' | 'follow';
+  modelMode?: 'default' | 'custom' | 'follow';
   /** Last-written gateway key id (apiKeys[].id); a stale id (deleted key)
    *  seeds nothing. Mirrors backend. */
   apiKeyId?: string;
+  /** Context window (tokens) the last setup applied (see backend
+   *  ClientProfileMemoryEntry) — re-applied on resync/re-takeover. */
+  contextWindow?: number;
   /** Agent/role link table visibility (opencode, pi). OFF = table hidden and
    *  setup omits the agent payload entirely. Absent = seed from whether
    *  links exist. Mirrors backend. */
@@ -434,14 +463,12 @@ export interface GatewayStatusResponse {
      */
     classifier?: ClassifierTaxonomyEntry[];
   };
-  clients: ClientStatus[];
   /**
    * Runtime credential directory (provider + keyHash prefix only). Additive:
    * older gateways omit it. Lets the guardrails matrix name an orphan breaker
-   * as the inline config-baked chain head instead of a bare #hash.
+   * as the inline config-baked default credential instead of a bare #hash.
    */
   credentialHashes?: { provider: string; keyHashPrefix: string }[];
-  registeredModelsCount: number;
   /** Inbound forward-proxy runtime status (backend forward-proxy/status.ts). */
   forwardProxy?: {
     enabled: boolean;
@@ -454,6 +481,13 @@ export interface GatewayStatusResponse {
     error?: string;
   };
 }
+
+/** GET /api/admin/clients — roster only (backend console.ts §3'). */
+export interface ClientRosterResponse {
+  status: string;
+  clients: ClientStatus[];
+}
+
 
 /** One row of the forward-proxy access log (backend forward-proxy/access-log.ts). */
 export interface ProxyAccessEvent {
@@ -605,12 +639,23 @@ export interface CaTrustResponse {
  *
  * ONE ordered table, first match wins. Each row carries TWO fields splitting
  * the decision into its axes: `ingress` — what happens at ingress (`intercept`
- * = MITM, the default posture; `passthrough` = blind tunnel; `reject` = 403 on
- * admission) — and `egress` — where the bytes exit (`direct` / `proxy`). A
- * `reject` row uses `egress: 'direct'`. Loopback is always passthrough +
- * direct; an unmatched host falls back to direct + intercepted.
+ * = MITM (a specific row means it; on the catch-all row it is only the default
+ * posture for hosts nothing claims); `passthrough` = blind tunnel; `reject` =
+ * 403 on admission) — and `egress` — where the bytes exit (`direct` /
+ * `proxy`). A `reject` row uses `egress: 'direct'`. Loopback is always
+ * passthrough + direct; an unmatched host takes the catch-all's `egress` and is
+ * blind-tunneled unless a live client-gateway plugin CLAIMS it or the audit
+ * posture (`intercept: 'all'`) is on (ADR-0018 Revision 4).
  */
 export type RuleIngress = 'intercept' | 'passthrough' | 'reject';
+
+/**
+ * The interception posture (ADR-0018 Revision 4) — `'claims'` (default) decrypts
+ * only plugin-claimed hosts and explicit `ingress: intercept` rows; `'all'` is
+ * the machine-wide audit posture. Parity-checked against the backend's
+ * `INTERCEPT_POSTURES` by `forward-proxy-console-vocabulary-parity.test.ts`.
+ */
+export type InterceptPosture = 'claims' | 'all';
 
 /** Where the bytes exit. */
 export type RuleEgress = 'direct' | 'proxy';
@@ -630,6 +675,7 @@ export type RuleWarningCode =
   | 'invalid-rule'
   | 'unreachable-rule'
   | 'no-catch-all'
+  | 'catch-all-intercepts'
   | 'proxy-rule-without-proxy';
 
 export interface RuleWarning {
@@ -644,7 +690,8 @@ export interface RuleWarning {
 export interface HostDecision {
   action: RuleExit;
   tunnel: boolean;
-  reason: 'loopback' | 'rule' | 'fallback';
+  /** `claim` = a live client-gateway plugin claims this host, so it is decrypted. */
+  reason: 'loopback' | 'rule' | 'claim' | 'fallback';
   ruleIndex?: number;
   match?: string;
 }
@@ -655,8 +702,28 @@ export interface RulesResolveResponse {
   warnings: RuleWarning[];
   /** `config.proxy.enabled` — a `proxy` row is inert while this is false. */
   proxyEnabled: boolean;
+  /** Interception posture in force (or the UNSAVED one when the body carried it). */
+  intercept: InterceptPosture;
+  /** Hosts a live client-gateway plugin claims — decrypted under `claims`. */
+  claimed: string[];
+  /** The same claim set, attributed: which plugin declares which hosts. */
+  claimSources: ClaimSource[];
   /** Null when the request carried no probe host. */
   decision: HostDecision | null;
+}
+
+/** One live client-gateway plugin and the hosts it claims. */
+export interface ClaimSource {
+  pluginId: string;
+  hosts: string[];
+}
+
+/** `POST /api/admin/forward-proxy/tighten` — the catch-all rewritten to a blind tunnel. */
+export interface TightenRulesResponse {
+  status: string;
+  rules: ForwardProxyRule[];
+  intercept: InterceptPosture;
+  warnings: RuleWarning[];
 }
 
 /**
@@ -677,7 +744,7 @@ export interface TraceRecord {
   clientRequestId?: string;
   /** Gateway conversation entity id (ADR-0002). */
   sessionId: string;
-  turnNumber: number;
+  requestNumber: number;
   timestamp: number;
   /** Client API-key identity (application) that drove this turn, when known. */
   apiKey?: CaptureKeyIdentity;
@@ -687,6 +754,20 @@ export interface TraceRecord {
     messageCount: number;
     hasSystemPrompt: boolean;
     hasToolsOrSchema: boolean;
+    /**
+     * INBOUND stream tag: the response shape this turn actually wrote
+     * (`true` = SSE). May be true while the client asked JSON — `client.mode:
+     * always` forces a streamed answer. Absent on traces written before the
+     * tag existed.
+     */
+    clientStream?: boolean;
+    /**
+     * INBOUND protocol id the client addressed (`openai-chat` =
+     * chat/completions, `anthropic-messages`, `openai-responses`). Legacy
+     * traces are normalized at the backend read boundary (`persist.ts`).
+     * Absent on pre-tag traces.
+     */
+    inboundWire?: 'openai-chat' | 'anthropic-messages' | 'openai-responses';
   };
   routing: {
     layerUsed: 'layer0' | 'entry' | 'layer2';
@@ -730,6 +811,20 @@ export interface TraceRecord {
      *  retired retry-escalation ladder may still read 'escalation' — display
      *  only). Absent on old rows. */
     effortSource?: 'client' | 'l2-decision' | 'entry' | 'directive' | 'default' | 'escalation';
+    /**
+     * OUTBOUND stream tag of the served attempt: `'sse'` = the upstream SSE
+     * reader ran, `'buffered'` = one buffered provider call. `'sse'` with
+     * `request.clientStream: false` is the accumulate mode (a stream the
+     * gateway drained and answered as JSON). Absent on legacy traces.
+     */
+    upstreamStream?: 'sse' | 'buffered';
+    /**
+     * OUTBOUND protocol wire the served attempt executed on (`openai` /
+     * `anthropic` / `google` / `responses` / `opencode-proxy`). Distinct from
+     * `request.inboundWire` unless the turn is a passthrough. Absent on
+     * legacy traces.
+     */
+    wireKind?: string;
   };
   finops: {
     inputTokens: number;
@@ -807,7 +902,9 @@ export interface CaptureSessionRow {
   sessionId: string;
   bytes: number;
   mtimeMs: number;
-  turns: number;
+  /** Total captured REQUESTS in this archive (ADR-0024 request layer). */
+  requests: number;
+  /** Requests with an error outcome. */
   failed: number;
   lastStatus?: 'ok' | 'error';
   /** First user-message text of the session (backend-extracted, capped) */
@@ -835,14 +932,15 @@ export interface CaptureSessionRow {
    * surface is labeled explicitly — chat included. Undefined = a legacy
    * archive without request lines or an unrecognized path (unbadged).
    */
-  protocol?: 'chat' | 'anthropic' | 'responses' | 'systemone';
+  protocol?: 'openai-chat' | 'anthropic-messages' | 'openai-responses' | 'systemone';
 }
 
 /** One date-dir fragment of a stitched (cross-midnight) conversation read. */
 export interface CaptureFragmentRow {
   date: string;
   file: string;
-  turns: number;
+  /** Requests contributed by this shard. */
+  requests: number;
 }
 
 /** One archive hit for a session id: coordinates only (date dir + file name) */
@@ -851,96 +949,38 @@ export interface CaptureSessionMatch {
   file: string;
 }
 
-/**
- * HTTP-level observation of the SUCCESSFUL outbound call (mirrors
- * backend UpstreamHttpRecord): URL, status, safe response-header subset,
- * TTFB, total duration, attempt index, wire kind. Absent when no
- * outbound HTTP attempt landed successfully.
- */
-export interface UpstreamHttpRecord {
-  url: string;
-  method: string;
-  status: number;
-  responseHeaders?: {
-    retryAfter?: string;
-    requestId?: string;
-    contentType?: string;
-    ratelimit?: {
-      limit?: string;
-      remaining?: string;
-      reset?: string;
-    };
-  };
-  ttfbMs: number | null;
-  durationMs: number;
-  attemptIndex: number;
-  wireKind: 'openai' | 'anthropic' | 'google' | 'responses' | 'opencode-proxy';
-}
+/** UTF-8 text, or hex for binary payloads. Mirrors backend `WireBody`. */
+export type WireBody = string | { hex: string };
 
-export interface CaptureRecord {
-  id: string;
-  ts: number;
-  sessionId: string;
-  status: 'ok' | 'error';
-  model: string;
-  request?: unknown;
-  /** Real outbound wire body (provider-translated, upstreamModel substituted). */
-  upstreamRequest?: unknown;
-  /** HTTP-level capture of the successful outbound call (last-write-wins). */
-  upstreamHttp?: UpstreamHttpRecord;
-  /** Upstream error payload (status + parsed body) when a candidate call failed */
-  upstreamError?: unknown;
-  response?: unknown;
-  error?: string;
-  routing?: {
-    tierUsed?: string;
-    layerUsed?: string;
-    modelUsed?: string;
-    provider?: string;
-    fallbackOccurred?: boolean;
-    failoverPath?: string[];
-  };
-  usage?: unknown;
-  latencyMs?: number;
-  truncated?: boolean;
-}
-
-/**
- * One HTTP-exchange event (mirrors backend HttpExchangeEvent). The capture
- * pipeline emits 2-4 events per inference turn:
- *   - direction='client',   phase='request'  — the inbound HTTP request
- *   - direction='client',   phase='response' — gateway → client response
- *   - direction='upstream', phase='request'  — gateway → provider request
- *   - direction='upstream', phase='response' — provider → gateway response
- *
- * Each req/resp pair shares one `exchangeId`. Readers join the four events of
- * ONE request by `requestId` (the gateway turn id, ADR-0021); `clientRequestId`
- * is the caller's trace-wide correlation value and may cover several requests.
- */
-export interface WireBody {
-  /** Non-UTF-8 payloads fall back to hex (mirrors backend WireBody). */
-  hex: string;
-}
-
+/** Byte-faithful wire snapshot of ONE side of ONE HTTP exchange. */
 export interface RawWireCapture {
   requestLine: string;
   requestHeaders: Record<string, string>;
-  requestBody: string | WireBody;
+  requestBody: WireBody;
   responseLine: string;
   status: number;
   responseHeaders: Record<string, string>;
-  responseBody: string | WireBody;
+  responseBody: WireBody;
 }
 
-export interface HttpExchangeEvent {
+export interface CaptureEvent {
   id: string;
   ts: number;
   eventType: 'http-exchange';
+  /** Every schema-2 archive line carries 2. */
+  schema: 2;
   direction: 'client' | 'upstream';
   phase: 'request' | 'response';
+  /** Write-time turn identity, copied onto EVERY event of the request. */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: 'new_prompt' | 'continuation' | 'ambiguous_compaction' | 'no_prompt';
+  /** 1-based attempt ordinal within (requestId, leg). */
+  attempt: number;
+  /** One HTTP request/response pair shares one exchangeId. */
   exchangeId: string;
   clientRequestId?: string;
-  /** Gateway turn id (ADR-0021) — the exact join key. */
+  /** Gateway REQUEST id (ADR-0021) — the exact join key. */
   requestId: string;
   /** The provider's own response id, when its wire exposes one. */
   upstreamRequestId?: string;
@@ -970,6 +1010,15 @@ export interface HttpExchangeEvent {
   proxy?: string;
   /** Why this exchange happened when it is NOT ordinary turn traffic. 'l2-decision' = the L2 decision layer's decision-model call. Absent = ordinary traffic. */
   purpose?: 'l2-decision';
+  /**
+   * SSE tag for THIS phase (mirrors the backend event). On a REQUEST event:
+   * the body asked for a streamed answer (client leg: the caller's `stream`
+   * flag; upstream leg: the `stream:true` the gateway actually sent). On a
+   * CLIENT RESPONSE event: the gateway wrote an SSE body. Absent when the
+   * protocol carries no such signal (pre-tag archives) — never guessed from
+   * a content-type string.
+   */
+  stream?: boolean;
   truncated?: boolean;
   /**
    * Completion-token total derived at read time from the response body (last
@@ -980,83 +1029,165 @@ export interface HttpExchangeEvent {
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
   /**
-   * Flattened LAST user message of the request, capped — stamped on
-   * client-request events at write time so metadata-only reads (bodies=none)
-   * still render the turn prompt in the timeline. Absent on other
-   * phases/directions and for bodies without user text. The body's last user
-   * message is only THIS turn's prompt when the client appended it: the
-   * server blanks it for resent history (tool-result continuations), so an
-   * absent summary means "no new user message", not "unknown". A history
-   * that SHRANK (client-side compaction) is exempt — its last user message
-   * is this turn's prompt even though the index looks old.
+   * Display-only flattened last user message, capped. Stamped on the
+   * prompt-start client-request event at write time so metadata-only reads
+   * (bodies=none) can render a prompt. It NEVER decides a turn boundary —
+   * `turnIndex` / `isPromptStart` do.
    */
   promptSummary?: string;
-  /** Message-array length of the client request (staleness basis for the NEXT turn). */
-  promptMessageCount?: number;
-  /** Index of the last user message inside that array (see promptSummary). */
-  promptLastUserIdx?: number;
 }
 
-export interface CaptureTurn {
-  /** Gateway turn id (ADR-0021) — the join key. */
+/** One leg of a request: client ↔ gateway, gateway ↔ provider, decision. */
+export type CaptureExchangeLeg = 'client' | 'upstream' | 'decision';
+
+/**
+ * ONE HTTP exchange = one request event + its response event, paired by
+ * `exchangeId`. A request owns 2-N of these (client, upstream, every failover
+ * attempt, the Layer-2 decision pair). `attempt` is 1-based within
+ * `(requestId, leg)`; no hop is ever overwritten.
+ */
+export interface CaptureExchange {
+  leg: CaptureExchangeLeg;
+  attempt: number;
+  exchangeId: string;
+  purpose?: 'l2-decision';
+  request?: CaptureEvent;
+  response?: CaptureEvent;
+  /** response.ts - request.ts (whole exchange duration). */
+  latencyMs?: number;
+  /** firstByteTs - request.ts (streamed replies only). */
+  ttftMs?: number;
+  /** response.ts - firstByteTs (decode window). */
+  genMs?: number;
+  /**
+   * SSE tag of the REQUEST side: the client's ask (client leg) or the
+   * transport the gateway actually sent (upstream leg). Absent on archives
+   * written before the tag existed.
+   */
+  requestStream?: boolean;
+  /**
+   * SSE tag of the RESPONSE side (client legs): true iff the gateway wrote an
+   * SSE body. Undefined for upstream legs (their transport is the request
+   * tag) and for pre-tag archives.
+   */
+  responseStream?: boolean;
+}
+
+/** One REQUEST: every HTTP exchange sharing one `requestId`. ADR-0024. */
+export interface CaptureRequest {
   requestId: string;
-  /** Caller correlation value, carried from the client-request event. */
   clientRequestId?: string;
   sessionId: string;
   model: string;
-  /**
-   * 1-based request sequence number inside the read window — one per client
-   * request, never per tool-result continuation. Absent when the request line
-   * fell outside the window (a continuation tail).
-   */
-  requestNumber?: number;
-  /**
-   * 1-based prompt-round number inside the read window — one per user
-   * prompt plus every request it drove. A leading prompt-less block opens
-   * round 1 (its prompt sits outside the window).
-   */
-  roundNumber?: number;
-  /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
+  /** Immutable, session-scoped write-time turn ordinal. `null` = no turn. */
+  turnIndex: number | null;
+  isPromptStart: boolean;
+  turnDecision: 'new_prompt' | 'continuation' | 'ambiguous_compaction' | 'no_prompt';
+  /** Display-only prompt text, present on the prompt-start request. */
   promptSummary?: string;
-  clientRequest?: HttpExchangeEvent;
-  gatewayResponse?: HttpExchangeEvent;
-  upstreamRequest?: HttpExchangeEvent;
-  upstreamResponse?: HttpExchangeEvent;
-  /** The L2 decision layer's HTTP leg when one fired inside this turn (kept in separate slots — never merged into the serving upstream pair). */
-  decisionRequest?: HttpExchangeEvent;
-  decisionResponse?: HttpExchangeEvent;
+  /** 1-based REQUEST ordinal inside the read window (the pager's unit). */
+  requestNumber?: number;
+  /** Every exchange of this request, in wire order. Never last-write-wins. */
+  exchanges: CaptureExchange[];
   error?: string;
+}
+
+/** The last exchange of a leg — the one that served the client. */
+export function primaryExchange(
+  request: CaptureRequest,
+  leg: CaptureExchangeLeg
+): CaptureExchange | undefined {
+  let found: CaptureExchange | undefined;
+  for (const ex of request.exchanges ?? []) {
+    if (ex.leg === leg && (!found || ex.attempt >= found.attempt)) found = ex;
+  }
+  return found;
+}
+
+export function exchangeEvent(
+  request: CaptureRequest,
+  leg: CaptureExchangeLeg,
+  phase: 'request' | 'response'
+): CaptureEvent | undefined {
+  return primaryExchange(request, leg)?.[phase];
+}
+
+/**
+ * UI PROJECTION ONLY. The console's chips, transcript and timeline need the
+ * SERVING leg of each exchange; `exchanges[]` above remains the complete,
+ * authoritative list and the drawer renders its tabs from it. This projection
+ * never decides a turn boundary and never invents a failover hop.
+ */
+export interface CaptureRequestView extends CaptureRequest {
+  clientRequest?: CaptureEvent;
+  clientResponse?: CaptureEvent;
+  upstreamRequest?: CaptureEvent;
+  upstreamResponse?: CaptureEvent;
+  decisionRequest?: CaptureEvent;
+  decisionResponse?: CaptureEvent;
   gatewayLatencyMs?: number;
-  upstreamLatencyMs?: number;
-  /** Decision-leg cycle latency (decision-resp.ts - decision-req.ts). */
-  decisionLatencyMs?: number;
-  /** TTFT / decode window per leg, derived from firstByteTs at read time
-   *  (backend CaptureTurnSummary). Undefined when the leg was not streamed
-   *  or the event predates the stamp. */
   gatewayTtftMs?: number;
   gatewayGenMs?: number;
+  upstreamLatencyMs?: number;
   upstreamTtftMs?: number;
   upstreamGenMs?: number;
-  /** TTFT / decode window for the decision layer leg (same derivation as upstream). */
+  decisionLatencyMs?: number;
   decisionTtftMs?: number;
   decisionGenMs?: number;
 }
 
-/** Whole-archive USER-PROMPT round (backend CaptureRoundIndexEntry). */
-export interface CaptureRoundIndexEntry {
-  ordinal: number;
+/** One pure projection from the canonical wire object. */
+export function toCaptureRequestView(raw: CaptureRequest): CaptureRequestView {
+  const view: CaptureRequestView = {
+    ...raw,
+    exchanges: Array.isArray(raw.exchanges) ? raw.exchanges : [],
+    clientRequest: exchangeEvent(raw, 'client', 'request'),
+    clientResponse: exchangeEvent(raw, 'client', 'response'),
+    upstreamRequest: exchangeEvent(raw, 'upstream', 'request'),
+    upstreamResponse: exchangeEvent(raw, 'upstream', 'response'),
+    decisionRequest: exchangeEvent(raw, 'decision', 'request'),
+    decisionResponse: exchangeEvent(raw, 'decision', 'response'),
+  };
+  const client = primaryExchange(raw, 'client');
+  const upstream = primaryExchange(raw, 'upstream');
+  const decision = primaryExchange(raw, 'decision');
+  if (client) {
+    view.gatewayLatencyMs = client.latencyMs;
+    view.gatewayTtftMs = client.ttftMs;
+    view.gatewayGenMs = client.genMs;
+  }
+  if (upstream) {
+    view.upstreamLatencyMs = upstream.latencyMs;
+    view.upstreamTtftMs = upstream.ttftMs;
+    view.upstreamGenMs = upstream.genMs;
+  }
+  if (decision) {
+    view.decisionLatencyMs = decision.latencyMs;
+    view.decisionTtftMs = decision.ttftMs;
+    view.decisionGenMs = decision.genMs;
+  }
+  return view;
+}
+
+/** One TURN over the WHOLE archive, indexed by its write-time `turnIndex`. */
+export interface CaptureTurnIndexEntry {
+  /** Immutable, session-scoped write-time turn ordinal. */
+  turnIndex: number;
+  /** New user message that opened the turn. */
   prompt?: string;
+  /** Request send time (epoch ms) of the turn's first request. */
   startTs?: number;
+  /** Requests in this turn (prompt request + tool-loop hops). */
   requests: number;
   firstRequest: number;
   lastRequest: number;
 }
 
-/** Exact whole-archive totals + prompt-round index (backend CaptureArchiveSummary). */
+/** Exact whole-archive totals + the write-time turn index. */
 export interface CaptureArchiveSummary {
   requests: number;
   fragments: number;
-  rounds: CaptureRoundIndexEntry[];
+  turns: CaptureTurnIndexEntry[];
 }
 
 // Mirrors backend SessionRow (backend/src/session/session-row.ts) — the console
@@ -1519,6 +1650,228 @@ export interface HeadroomSidecarOpResult {
   version: string | null;
   error: string | null; // English operator/log text — UI shows the localized `code` message
   code: string | null;
+}
+
+// ---- mihomo outbound core (backend: proxy/mihomo-sidecar.ts, ADR-0022) ----
+
+export interface MihomoSubscription {
+  id: string;
+  name: string;
+  url: string;
+  interval?: number;
+  enabled?: boolean;
+}
+/** Protocols a hand-authored node can speak (backend whitelist, ADR-0022). */
+export type MihomoManualNodeType = 'ss' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'http' | 'socks5';
+
+/** One node typed in the console: the manual counterpart of a subscription. */
+export interface MihomoManualNode {
+  id: string;
+  name: string;
+  /** Typed rows use the protocol whitelist; a pasted YAML row keeps its own. */
+  type: string;
+  server: string;
+  port: number;
+  cipher?: string;
+  password?: string;
+  uuid?: string;
+  alterId?: number;
+  vmessCipher?: string;
+  network?: 'tcp' | 'ws' | 'grpc' | 'h2';
+  tls?: boolean;
+  sni?: string;
+  flow?: string;
+  wsPath?: string;
+  wsHost?: string;
+  grpcServiceName?: string;
+  h2Host?: string;
+  h2Path?: string;
+  realityPublicKey?: string;
+  realityShortId?: string;
+  alpn?: string[];
+  clientFingerprint?: string;
+  udp?: boolean;
+  tfo?: boolean;
+  ipVersion?: string;
+  plugin?: string;
+  pluginMode?: string;
+  pluginHost?: string;
+  pluginPath?: string;
+  pluginTls?: boolean;
+  obfs?: string;
+  obfsPassword?: string;
+  up?: string;
+  down?: string;
+  ports?: string;
+  skipCertVerify?: boolean;
+  username?: string;
+  /** Canonical Clash proxy mapping for a node authored by pasting YAML. */
+  yaml?: string;
+  /** Form-owned fields projected from `yaml` by GET /mihomo/nodes. */
+  fields?: Partial<Omit<MihomoManualNode, 'id' | 'fields'>>;
+  /** Mapping keys the form does not model (YAML-only surface). */
+  unmodeled?: string[];
+}
+
+/** Protocol field table + enum whitelists, served by the backend. */
+export interface MihomoNodeCatalog {
+  protocols: string[];
+  fields: Record<string, string[]>;
+  enums: {
+    ssCiphers: string[];
+    vmessCiphers: string[];
+    networks: string[];
+    fingerprints: string[];
+    ssPlugins: string[];
+    obfsModes: string[];
+    ipVersions: string[];
+    obfsTypes: string[];
+  };
+}
+
+export interface MihomoStatus {
+  status: string;
+  installed: boolean;
+  binaryPath: string | null;
+  running: boolean;
+  managed: boolean;
+  adopted: boolean;
+  pid: number | null;
+  mode: 'manual' | 'mihomo';
+  /** The outbound master switch (`proxy.enabled`) — not a core-run signal. */
+  enabled: boolean;
+  /** Whether the core is SUPPOSED to be running. Independent of `mode`: a core
+   *  can run while outbound goes direct, and be stopped while mode says mihomo. */
+  autoStart: boolean;
+  mixedPort: number;
+  controllerPort: number;
+  secretConfigured: boolean;
+  version: string | null;
+  error: string | null;
+  code: string | null;
+  /** mihomo's own outbound mode, as saved for the next start (default 'rule'). */
+  routingMode: MihomoRoutingMode;
+  /** What the running core reports right now; null when it is not answering. */
+  liveRoutingMode: MihomoRoutingMode | null;
+}
+
+/** Rule types that need no external data (no GEOIP/GEOSITE/RULE-SET) — the
+ *  backend whitelist, mirrored here so the editor can only offer what renders. */
+export type MihomoRuleType =
+  | 'DOMAIN' | 'DOMAIN-SUFFIX' | 'DOMAIN-KEYWORD'
+  | 'IP-CIDR' | 'IP-CIDR6' | 'DST-PORT' | 'SRC-PORT'
+  | 'PROCESS-NAME' | 'PROCESS-PATH';
+
+export type MihomoRuleTarget = 'PROXY' | 'DIRECT' | 'REJECT';
+
+/** One operator-authored rule, rendered ahead of the final `MATCH` rule. */
+export interface MihomoCustomRule {
+  type: MihomoRuleType;
+  payload: string;
+  target: MihomoRuleTarget;
+  /** Provenance label only ("manual", a subscription name, "paste") — never written to the core. */
+  source?: string;
+}
+
+export interface MihomoRuleImportInput {
+  /** 'subscription' reads the URL from config, 'text' parses what was pasted. */
+  source: 'subscription' | 'text';
+  subscriptionId?: string;
+  text?: string;
+  /** Off drops rules whose target is neither DIRECT/REJECT nor a known group. */
+  mapUnknownTarget?: boolean;
+}
+
+export interface MihomoRuleImportResult {
+  status: 'ok';
+  /** Where the parsed document came from: the core provider cache, the network, or the paste box. */
+  source?: 'cache' | 'network' | 'text';
+  rules: MihomoCustomRule[];
+  /** Why rows were dropped, so the console can report it instead of guessing. */
+  skipped: { reason: string; count: number }[];
+  total: number;
+  mappedToProxy: number;
+}
+
+export interface MihomoCustomRulesResult {
+  status: 'ok' | 'error';
+  rules?: MihomoCustomRule[];
+  message?: string;
+}
+
+/** mihomo's outbound mode — NOT the gateway's `proxy.mode` (manual vs. core). */
+export type MihomoRoutingMode = 'rule' | 'global' | 'direct';
+
+export interface MihomoRoutingModeResult {
+  status: 'ok' | 'error';
+  routingMode?: MihomoRoutingMode;
+  /** True only when the running core accepted the PATCH immediately. */
+  live?: boolean;
+  warning?: string;
+  message?: string;
+}
+
+export interface MihomoOpResult {
+  status: string;
+  ok: boolean;
+  action?: string;
+  reused?: boolean;
+  pid: number | null;
+  version: string | null;
+  error: string | null;
+  code: string | null;
+}
+
+export interface MihomoProviderInfo {
+  name: string;
+  vehicleType?: string;
+  updatedAt?: string;
+  nodeCount?: number;
+}
+
+export interface InstallMihomoResult {
+  status: string;
+  ok: boolean;
+  path?: string;
+  version?: string;
+  error?: string;
+  code?: string;
+}
+
+export interface MihomoProxyGroup {
+  name: string;
+  type: string;
+  now: string;
+  all: string[];
+}
+
+/** One row of the core's effective rule table — what is actually loaded. */
+export interface MihomoRuleRow {
+  type: string;
+  payload: string;
+  proxy: string;
+}
+
+/** How the running group picks a node: only `select` lets the console choose. */
+export type MihomoGroupType = 'select' | 'url-test' | 'fallback';
+
+export interface MihomoProxyNode {
+  name: string;
+  type: string;
+  delay: number | null;
+  selected: boolean;
+  /** Manual-node id when this row is hand-authored; null for subscription/built-in rows. */
+  manualId: string | null;
+  /** One origin per row: filter key and label source. */
+  source: MihomoNodeSource;
+}
+
+/** Where one node row came from: the subscription that contributed it, the
+ *  operator's manual list, or mihomo itself (DIRECT/REJECT/PASS). */
+export interface MihomoNodeSource {
+  kind: 'subscription' | 'manual' | 'builtin';
+  /** Subscription id for `subscription`; the manual node id for `manual`. */
+  id: string | null;
 }
 
 /** Harness domain wire types (ADR-0015) — names mirror the backend contract 1:1. */
@@ -2023,6 +2376,116 @@ export interface HarnessMcpCliProbe {
   files: number;
 }
 
+export type McpInspectTarget =
+  | {
+      mode: 'host';
+      host: string;
+      scope: 'global' | 'project';
+      name: string;
+      projectId?: string;
+      projectRoot?: string;
+    }
+  | {
+      mode: 'custom';
+      transport: 'stdio';
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      cwd?: string;
+    }
+  | {
+      mode: 'custom';
+      transport: 'auto' | 'streamable-http' | 'sse';
+      url: string;
+      headers?: Record<string, string>;
+    };
+
+export interface McpToolInfo {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+export interface McpResourceInfo {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpResourceTemplateInfo {
+  uriTemplate: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpPromptInfo {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: Array<{
+    name: string;
+    description?: string;
+    required?: boolean;
+  }>;
+}
+
+export interface McpInspectSnapshot {
+  status: string;
+  sessionId: string;
+  transport: 'stdio' | 'streamable-http' | 'sse';
+  serverInfo: {
+    name: string;
+    version: string;
+    title?: string;
+  } | null;
+  instructions?: string;
+  capabilities: Record<string, unknown>;
+  tools: McpToolInfo[];
+  resources: McpResourceInfo[];
+  resourceTemplates: McpResourceTemplateInfo[];
+  prompts: McpPromptInfo[];
+  stderr: string[];
+  connectedAt: number;
+  durationMs: number;
+}
+
+export interface McpCallToolResponse {
+  status: string;
+  sessionId: string;
+  toolName: string;
+  isError: boolean;
+  content: unknown[];
+  structuredContent?: Record<string, unknown>;
+  durationMs: number;
+  stderr: string[];
+}
+
+export interface McpReadResourceResponse {
+  status: string;
+  sessionId: string;
+  uri: string;
+  contents: unknown[];
+  durationMs: number;
+  stderr: string[];
+}
+
+export interface McpGetPromptResponse {
+  status: string;
+  sessionId: string;
+  promptName: string;
+  description?: string;
+  messages: unknown[];
+  durationMs: number;
+  stderr: string[];
+}
+
 export interface HarnessRemovePlan {
   planId: string;
   action: 'remove';
@@ -2076,7 +2539,7 @@ async function readNdjsonLines(res: Response, onLine: (line: string) => void): P
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  for (;;) {
+  for (; ;) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -2108,6 +2571,15 @@ export interface UpdateCheckResponse {
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Client roster only — the slow half (subprocess version probes) of the
+   *  old aggregated status, now fetched on demand instead of every poll.
+   *  `refresh` bypasses the backend roster SWR cache (the manual button). */
+  async getClients(refresh = false): Promise<ClientRosterResponse> {
+    const res = await fetch('/api/admin/clients' + (refresh ? '?refresh=1' : ''));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -2168,21 +2640,20 @@ export const api = {
     return res.arrayBuffer();
   },
 
-  /** Empty EVERY source behind the one traffic timeline (core ring + gateway feeds). */
-  /** Delete exactly these rows (the filter-scoped clear). Keys, not a predicate: */
-  /** the console already knows what it is showing, so the filter logic stays */
-  /** in one place instead of being re-implemented here. */
-  async deleteTrafficRows(body: {
-    proxy: string[];
-    plugins: Record<string, string[]>;
-  }): Promise<{ deleted: { proxy: number; plugins: Record<string, number> } }> {
-    const res = await fetch('/api/admin/traffic-delete', {
+  /** Hide exactly these rows from the LIVE view. Never deletes on disk: the
+   *  persisted day JSONL and body sidecars stay, so History still lists the
+   *  same rows and can delete them there. */
+  async clearLiveTraffic(body: {
+    proxy: { key: string; ts: number }[];
+    plugins: Record<string, { key: string; ts: number }[]>;
+  }): Promise<{ hidden: { proxy: number; plugins: Record<string, number> } }> {
+    const res = await fetch('/api/admin/traffic-live-clear', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as { deleted: { proxy: number; plugins: Record<string, number> } };
+    return (await res.json()) as { hidden: { proxy: number; plugins: Record<string, number> } };
   },
   async clearTrafficLog(): Promise<{ cleared: string[] }> {
     const res = await fetch('/api/admin/traffic-clear', { method: 'POST' });
@@ -2232,12 +2703,27 @@ export const api = {
    * SAME resolver the proxy legs use, so the preview can never disagree with the
    * live decision. Pass `rules` to test UNSAVED edits.
    */
-  async resolveForwardProxyRules(args: { host?: string; rules?: ForwardProxyRule[] }): Promise<RulesResolveResponse> {
+  async resolveForwardProxyRules(args: {
+    host?: string;
+    rules?: ForwardProxyRule[];
+    intercept?: InterceptPosture;
+  }): Promise<RulesResolveResponse> {
     const res = await fetch('/api/admin/forward-proxy/rules/resolve', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(args),
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Tighten the rule table to the allowlist posture (ADR-0018 Revision 4):
+   * the catch-all becomes a blind tunnel (same egress) and `intercept` goes to
+   * `claims`. Only the operator can trigger it — nothing runs on boot.
+   */
+  async tightenForwardProxyRules(): Promise<TightenRulesResponse> {
+    const res = await fetch('/api/admin/forward-proxy/tighten', { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -2360,6 +2846,250 @@ export const api = {
     return res.json();
   },
 
+  async getMihomoStatus(): Promise<MihomoStatus> {
+    const res = await fetch('/api/admin/proxy/mihomo/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getMihomoRules(): Promise<MihomoRuleRow[]> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return (body?.rules ?? []) as MihomoRuleRow[];
+  },
+
+  async setMihomoRoutingMode(mode: MihomoRoutingMode): Promise<MihomoRoutingModeResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/routing-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoRoutingModeResult;
+  },
+
+  /** Parses a subscription (or pasted rules) into a DRAFT — nothing is saved. */
+  async importMihomoRules(input: MihomoRuleImportInput): Promise<MihomoRuleImportResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoRuleImportResult;
+  },
+
+  /** Writes the whole ordered rule list and lets the core pick it up. */
+  async setMihomoCustomRules(rules: MihomoCustomRule[]): Promise<MihomoCustomRulesResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rules }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoCustomRulesResult;
+  },
+
+  async startMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/start', { method: 'POST' });
+    return res.json();
+  },
+
+  async stopMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/stop', { method: 'POST' });
+    return res.json();
+  },
+
+  async restartMihomo(): Promise<MihomoOpResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/restart', { method: 'POST' });
+    return res.json();
+  },
+
+  /**
+   * Install/update the mihomo core binary. The server answers NDJSON because the
+   * download is tens of MB: `progress` events carry (downloaded, total) bytes and
+   * exactly one `result` carries the install outcome (total 0 = unknown size).
+   */
+  async installMihomo(onProgress?: (downloaded: number, total: number) => void): Promise<InstallMihomoResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.body || !contentType.includes('ndjson')) return res.json();
+    let out: InstallMihomoResult | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return; // A malformed line must not kill the stream — skip it.
+      }
+      if (evt.type === 'progress' && typeof evt.downloaded === 'number') {
+        onProgress?.(evt.downloaded, typeof evt.total === 'number' ? evt.total : 0);
+      } else if (evt.type === 'result') {
+        out = evt as unknown as InstallMihomoResult;
+      }
+    });
+    if (!out) throw new Error(`install stream ended without a result (HTTP ${res.status})`);
+    return out;
+  },
+
+  async getMihomoSubscriptions(): Promise<{ status: string; subscriptions: MihomoSubscription[]; providers: MihomoProviderInfo[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async addMihomoSubscription(body: { name: string; url: string; interval?: number; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async updateMihomoSubscription(id: string, body: Partial<MihomoSubscription>): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async deleteMihomoSubscription(id: string): Promise<void> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw mihomoError(json, res.status);
+    }
+  },
+
+  async refreshMihomoSubscription(id: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/subscriptions/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async refreshAllMihomoSubscriptions(): Promise<{ status: string; refreshed: string[]; failed: string[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/subscriptions/refresh', { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok && !json?.refreshed) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  /** Config rows with the form projection of each YAML-authored mapping. */
+  async getMihomoNodes(): Promise<{ status: string; nodes: MihomoManualNode[] }> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  /** Protocol/field/enum table driving the node form. */
+  async getMihomoNodeCatalog(): Promise<{ status: string } & MihomoNodeCatalog> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes/catalog');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async addMihomoNode(body: Omit<MihomoManualNode, 'id'> | { yaml: string }): Promise<{ status: string; node?: MihomoManualNode; nodes?: MihomoManualNode[]; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async updateMihomoNode(id: string, body: Partial<MihomoManualNode> | { yaml: string }): Promise<{ status: string; node?: MihomoManualNode; nodes?: MihomoManualNode[]; message?: string }> {
+    const res = await fetch(`/api/admin/proxy/mihomo/nodes/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async deleteMihomoNode(id: string): Promise<void> {
+    const res = await fetch(`/api/admin/proxy/mihomo/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw mihomoError(json, res.status);
+    }
+  },
+
+  async testMihomoNode(body: { server: string; port: number } | { yaml: string }): Promise<{ status: string; reachable?: boolean; ms?: number; error?: string; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/nodes/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  /** Connectivity check: fetch the configured URL THROUGH the current proxy
+   *  node; unlike
+   *  `testMihomoNode` (a direct TCP probe) this proves the tunnel + URL pair.
+   *  `group` names the RUNNING group shown in the console (config may differ). */
+  async testMihomoUrl(url?: string, group?: string): Promise<{ status: string; reachable?: boolean; ms?: number; node?: string; url?: string; error?: string; message?: string }> {
+    const body: Record<string, string> = {};
+    if (url) body.url = url;
+    if (group) body.group = group;
+    const res = await fetch('/api/admin/proxy/mihomo/test-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async getMihomoProxies(group?: string): Promise<{ status: string; running: boolean; group: string; groupType?: MihomoGroupType; now?: string | null; groups: MihomoProxyGroup[]; nodes: MihomoProxyNode[]; message?: string }> {
+    const qs = group ? `?group=${encodeURIComponent(group)}` : '';
+    const res = await fetch(`/api/admin/proxy/mihomo/proxies${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async selectMihomoProxy(group: string, name: string): Promise<{ status: string; group: string; name: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group, name }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
+  async testMihomoDelay(name: string, group = false, url?: string): Promise<{ status: string; delay?: number; delays?: Record<string, number>; message?: string }> {
+    const res = await fetch('/api/admin/proxy/mihomo/proxies/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, group, ...(url ? { url } : {}) }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return json;
+  },
+
   async getTierPools(): Promise<TierPoolsResponse> {
     const res = await fetch('/api/admin/tier-pools');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2436,17 +3166,6 @@ export const api = {
     return res.json();
   },
 
-  /** Model profiles (config.yaml `modelProfiles`) — raw section round-trip, no
-   *  resolution view needed (refs are resolved by the client hook at apply). */
-  async getModelProfiles(): Promise<ModelProfileView[]> {
-    const cfg = await this.getConfig();
-    return cfg.modelProfiles || [];
-  },
-
-  async saveModelProfiles(profiles: ModelProfileView[]): Promise<{ status: string; message: string }> {
-    return this.saveConfig({ modelProfiles: profiles });
-  },
-
   /** OpenCode agent inventory (built-ins + agent/*.md + global config node). */
   async listOpencodeAgents(): Promise<OpenCodeAgentView[]> {
     const res = await fetch('/api/admin/opencode/agents');
@@ -2455,8 +3174,8 @@ export const api = {
     return json.agents || [];
   },
 
-  /** Per-client form memory (profile + slot mapping) saved in the ACTIVE
-   *  environment's config — survives reloads, restarts and teardown. */
+  /** Per-client form memory saved in the ACTIVE environment's config —
+   *  survives reloads, restarts and teardown. */
   async getClientProfileMemory(): Promise<Record<string, ClientProfileMemoryEntry>> {
     const cfg = await this.getConfig();
     return cfg.clientProfileMemory || {};
@@ -2509,8 +3228,10 @@ export const api = {
       virtualModels?: string[];
       /** Manual agent bindings (opencode): agent name → modelRef. */
       agentModels?: Record<string, string>;
-      /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
-      profile?: { id: string; bindings: Record<string, string> };
+      /** Family adapters (JetBrains): act on ONE product (`intellij-idea`, `goland`, …); absent = all. */
+      product?: string;
+      /** The operator was told the client is running and chose to proceed anyway. */
+      acknowledgeRunning?: boolean;
     }
   ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {
@@ -2540,7 +3261,7 @@ export const api = {
       deciderModel: string;
       targets: { key: string; label?: string; role?: string; current?: string }[];
       /** Plain ids, or `{ id, note }` — the note contextualizes (e.g. the model
-       *  a profile slot resolves to) but only `id` is a legal assignment. */
+       *  caller-supplied context) but only `id` is a legal assignment. */
       candidates: (string | { id: string; note?: string })[];
     }
   ): Promise<{ status: string; resolved?: string; assignments: Record<string, string> }> {
@@ -2802,7 +3523,8 @@ export const api = {
     offset = 0,
     q?: string,
     apiKey?: string,
-    hideInternal = true
+    hideInternal = true,
+    hideOneShot = false
   ): Promise<{ sessions: SessionRecord[]; total: number }> {
     const qs = new URLSearchParams();
     if (limit !== undefined) qs.set('limit', String(limit));
@@ -2811,6 +3533,10 @@ export const api = {
     if (apiKey) qs.set('apiKey', apiKey);
     // Backend default hides internal rows; send '0' explicitly to include them.
     qs.set('hideInternal', hideInternal ? '1' : '0');
+    // Single-request (client helper) rows: the BACKEND default shows them and
+    // only an explicit '1' filters — this is a console display choice, not an
+    // API-wide hiding rule (ADR-0002 §1), so the flag is never inferred.
+    if (hideOneShot) qs.set('hideOneShot', '1');
     const res = await fetch(`/api/admin/sessions?${qs.toString()}`);
     if (!res.ok) return { sessions: [], total: 0 };
     const json = await res.json();
@@ -2889,6 +3615,16 @@ export const api = {
   async getApiKeys(): Promise<{ status: string; keys: ApiKeyItem[] }> {
     const res = await fetch('/api/admin/api-keys');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** One-shot plaintext reveal for Playground / copy — list endpoint is masked. */
+  async revealApiKey(id: string): Promise<{ status: string; id: string; key: string }> {
+    const res = await fetch(`/api/admin/api-keys/${encodeURIComponent(id)}/reveal`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
     return res.json();
   },
 
@@ -3475,6 +4211,92 @@ export const api = {
     return data;
   },
 
+  async harnessMcpInspect(body: { target: McpInspectTarget; refresh?: boolean }): Promise<McpInspectSnapshot> {
+    const res = await fetch('/api/admin/harness/mcp/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpDisconnect(sessionId: string): Promise<{ status: string; closed: boolean }> {
+    const res = await fetch('/api/admin/harness/mcp/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    });
+    return res.json();
+  },
+
+  async harnessMcpCallTool(body: {
+    sessionId?: string;
+    target?: McpInspectTarget;
+    toolName: string;
+    arguments?: Record<string, unknown>;
+    timeoutMs?: number;
+  }): Promise<McpCallToolResponse> {
+    const res = await fetch('/api/admin/harness/mcp/call-tool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpReadResource(body: {
+    sessionId?: string;
+    target?: McpInspectTarget;
+    uri: string;
+    timeoutMs?: number;
+  }): Promise<McpReadResourceResponse> {
+    const res = await fetch('/api/admin/harness/mcp/read-resource', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  async harnessMcpGetPrompt(body: {
+    sessionId?: string;
+    target?: McpInspectTarget;
+    promptName: string;
+    arguments?: Record<string, string>;
+    timeoutMs?: number;
+  }): Promise<McpGetPromptResponse> {
+    const res = await fetch('/api/admin/harness/mcp/get-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
   /**
    * Translate one description into the console language (derived cache; may call the gateway).
    *
@@ -3483,7 +4305,7 @@ export const api = {
    * (long-form only) re-translates a document that already has a cached rendering, replacing it on
    * success.
    */
-  async harnessTranslate(body: {
+  async translate(body: {
     text: string;
     lang: string;
     format?: 'markdown';
@@ -3494,7 +4316,7 @@ export const api = {
     cached: boolean;
     model: string;
   }> {
-    const res = await fetch('/api/admin/harness/translate', {
+    const res = await fetch('/api/admin/translate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3513,11 +4335,11 @@ export const api = {
    * (completed chunks, total) while the README is translated, then exactly one `result` or `error`.
    * Resolves with the final rendering; a streamed error rejects like the plain route does.
    */
-  async harnessTranslateStream(
+  async translateStream(
     body: { text: string; lang: string; refresh?: boolean },
     onProgress: (done: number, total: number) => void
   ): Promise<{ text: string; cached: boolean; model: string }> {
-    const res = await fetch('/api/admin/harness/translate-stream', {
+    const res = await fetch('/api/admin/translate-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...body, format: 'markdown' }),
@@ -3551,12 +4373,12 @@ export const api = {
   },
 
   /** Batch translation, one chunk per call (the page walks the list in chunks). */
-  async harnessTranslateBatch(body: { lang: string; texts: string[] }): Promise<{
+  async translateBatch(body: { lang: string; texts: string[] }): Promise<{
     status: string;
     results: Record<string, { text: string; model: string; cached: boolean }>;
     errors: { text: string; code: string; message: string }[];
   }> {
-    const res = await fetch('/api/admin/harness/translate-batch', {
+    const res = await fetch('/api/admin/translate-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3570,14 +4392,13 @@ export const api = {
     return data;
   },
 
-  /** Cache-only batch lookup: re-seeds the console with translations from previous visits. */
   /** Cache-only translation lookup (never calls a model). `format: 'markdown'` reads the README
    *  store instead of the description one, so a page translated yesterday opens translated. */
-  async harnessTranslations(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
+  async translationsLookup(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
     status: string;
     translations: Record<string, { text: string; model: string }>;
   }> {
-    const res = await fetch('/api/admin/harness/translations', {
+    const res = await fetch('/api/admin/translations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3597,7 +4418,7 @@ export const api = {
     attempts: { model: string; ok: boolean; error?: string }[];
     code?: 'no_api_key' | 'unsupported_lang' | 'upstream';
   }> {
-    const res = await fetch('/api/admin/harness/translations/probe', {
+    const res = await fetch('/api/admin/translations/probe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lang, ...(model !== undefined ? { model } : {}) }),
@@ -4027,36 +4848,30 @@ export const api = {
     return json.matches || [];
   },
 
+  /** THE ONE capture read. Paging is in REQUESTS; each request carries its
+   *  complete `exchanges[]`, projected into a view for the console chips. */
   async getCaptureEvents(
     date: string,
     file: string,
     limit = 50,
     bodies: 'full' | 'none' | 'chat' = 'full',
     stitched = true,
-    /** 1-based page counted from the NEWEST end (page 1 = newest turn page). */
+    /** 1-based page counted from the NEWEST end. */
     page = 1
   ): Promise<{
-    events: HttpExchangeEvent[];
-    turns: CaptureTurn[];
+    events: CaptureEvent[];
+    requests: CaptureRequestView[];
     totalLines: number;
-    /** Logical turns (requests + orphan response tails) in the read window. */
+    /** Requests in the read window (the pager's exact denominator). */
+    totalRequests: number;
+    /** Distinct write-time turn ordinals in the read window. */
     totalTurns: number;
-    /** Client REQUESTS in the read window — the pager's unit. */
-    windowRequests: number;
-    /** USER-PROMPT ROUNDS in the read window; never the request count. */
-    totalRounds: number;
-    /** The read window is the whole archive (false = only its tail). */
     windowComplete: boolean;
     fileTruncated: boolean;
-    /** Present on stitched reads: per-date-dir fragments of the conversation. */
     fragments?: CaptureFragmentRow[];
-    /** The page actually served (clamped into [1, totalPages]). */
     page: number;
-    /** Turn pages available inside the read window. */
     totalPages: number;
-    /** Older turns remain in the read window (page < totalPages). */
     hasOlder: boolean;
-    /** Newer turns exist (page > 1). */
     hasNewer: boolean;
   }> {
     const params = new URLSearchParams({
@@ -4071,11 +4886,10 @@ export const api = {
     if (!res.ok) {
       return {
         events: [],
-        turns: [],
+        requests: [],
         totalLines: 0,
+        totalRequests: 0,
         totalTurns: 0,
-        windowRequests: 0,
-        totalRounds: 0,
         windowComplete: true,
         fileTruncated: false,
         page: 1,
@@ -4084,23 +4898,28 @@ export const api = {
         hasNewer: false,
       };
     }
-    return res.json();
+    const json = await res.json();
+    return {
+      ...json,
+      events: Array.isArray(json.events) ? json.events : [],
+      requests: Array.isArray(json.requests) ? json.requests.map(toCaptureRequestView) : [],
+      totalRequests: Number(json.totalRequests) || 0,
+      totalTurns: Number(json.totalTurns) || 0,
+      fragments: Array.isArray(json.fragments) ? json.fragments : undefined,
+    };
   },
 
-  /** EXACT whole-archive summary: request count (header denominator + pager
-   *  total) and the USER-PROMPT round index for the selector. Display-only —
-   *  pagination stays window-bounded. Never call round entries "requests".
-   *  Resolves `null` when the scan is unavailable: callers must keep their
-   *  previous/unknown state so the header falls back to the window tally
-   *  instead of rendering a bogus "0 requests" over live rows. */
+  /** EXACT whole-archive summary: the request count and the WRITE-TIME turn
+   *  index (one entry per `turnIndex`). Display-only — pagination stays
+   *  window-bounded. Resolves `null` when the scan is unavailable so callers
+   *  keep their previous/unknown state instead of rendering a bogus zero. */
   async getCaptureSummary(
     date: string,
     file: string,
     stitched = true
   ): Promise<CaptureArchiveSummary | null> {
     const res = await fetch(
-      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/summary${
-        stitched ? '?stitched=1' : ''
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/summary${stitched ? '?stitched=1' : ''
       }`
     );
     if (!res.ok) return null;
@@ -4108,29 +4927,33 @@ export const api = {
     return {
       requests: Number(json.requests) || 0,
       fragments: Number(json.fragments) || 0,
-      rounds: Array.isArray(json.rounds) ? json.rounds : [],
+      turns: Array.isArray(json.turns) ? json.turns : [],
     };
   },
 
-  /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads).
-   *  The key is the turn id (`requestId`) or any of its event ids; stitched=1
-   *  lets a cross-midnight turn resolve from its other date-dir shard. */
-  async getCaptureTurn(date: string, file: string, turnId: string, stitched = true): Promise<CaptureTurn | null> {
+  /** Full wire bodies for ONE request, fetched on demand (metadata-first
+   *  list reads). The key is its `requestId` or any of its event ids. */
+  async getCaptureRequest(
+    date: string,
+    file: string,
+    requestId: string,
+    stitched = true
+  ): Promise<CaptureRequestView | null> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
         file
-      )}/turn?id=${encodeURIComponent(turnId)}${stitched ? '&stitched=1' : ''}`
+      )}/request?id=${encodeURIComponent(requestId)}${stitched ? '&stitched=1' : ''}`
     );
     if (!res.ok) return null;
     const json = await res.json();
-    return json.turn || null;
+    return json.request ? toCaptureRequestView(json.request) : null;
   },
 
   async getCaptureRecords(
     date: string,
     file: string,
     limit = 200
-  ): Promise<{ records: CaptureRecord[]; totalLines: number; fileTruncated: boolean }> {
+  ): Promise<{ records: Record<string, unknown>[]; totalLines: number; fileTruncated: boolean }> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?limit=${limit}`
     );
@@ -4262,9 +5085,15 @@ export interface PluginViewInfo {
   id: string;
   name: string;
   version: string;
+  /** Primary part type (`types[0]`) — keep reading this for a single label. */
   type: string;
+  /** Every extension axis this package occupies, manifest order (ADR-0028).
+   *  A multi-part package renders one label per entry. */
+  types?: string[];
   wires: string[];
   description?: string | Record<string, string>;
+  /** Package-declared warning texts, keyed by the advisory code it emits. */
+  warningLabels?: Record<string, string | Record<string, string>>;
   presets?: PluginProviderPresetInfo[];
   source: 'dev' | 'packaged';
   path: string;
@@ -4299,9 +5128,15 @@ export interface PluginConfigFieldInfo {
    *  holds one of the listed values (exactly one of `equals` / `in`). Hidden
    *  fields keep their draft value, so a mode toggle never discards input. */
   visibleWhen?: { key: string; equals?: string | boolean; in?: (string | boolean)[] };
+  /** Quick-mode marker: shown in the settings drawer's QUICK view; without it
+   *  the field renders only in the ADVANCED view. A schema with no `essential`
+   *  field has no quick view at all (display-only, like `visibleWhen`). */
+  essential?: boolean;
   /** Locale map keyed by BCP-47 ('zh-CN'), like the manifest description. */
   title?: string | Record<string, string>;
   desc?: string | Record<string, string>;
+  /** `drawer` (default), `card` (edited on the Client Hub card) or `none`. */
+  placement?: 'drawer' | 'card' | 'none';
 }
 
 /** One declared group of plugin settings (mirrors backend
@@ -4310,6 +5145,8 @@ export interface PluginConfigFieldInfo {
 export interface PluginConfigSectionInfo {
   id: string;
   title?: string | Record<string, string>;
+  /** Optional hint under the heading (rendered as an info tip). */
+  desc?: string | Record<string, string>;
   advanced?: boolean;
 }
 
@@ -4317,10 +5154,10 @@ export interface PluginConfigSectionInfo {
 // Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
 
-export interface NpmVocabularyEntry {
-  /** The v1 alias users type (`@ai-sdk/<x>`). */
+export interface ProtocolVocabularyEntry {
+  /** Canonical OCR protocol id (the dropdown value). */
   alias: string;
-  /** The opencode v2 `package` shape stored in the defs file (ADR-0010). */
+  /** Same id — kept for readers that address the legacy field name. */
   package: string;
   /** Resolved wire — informational; authoritative in the backend's wireFor(). */
   wire: string;
@@ -4328,7 +5165,7 @@ export interface NpmVocabularyEntry {
   order: number;
 }
 /** Process-lifetime cache — the vocabulary is boot-scoped backend data. */
-let npmVocabularyCache: NpmVocabularyEntry[] | null = null;
+let protocolVocabularyCache: ProtocolVocabularyEntry[] | null = null;
 
 export interface OpenCodeProviderView {
   id: string;
@@ -4511,7 +5348,11 @@ export type ProbeHintCode =
 export interface TestProviderResult {
   status: string;
   ok: boolean;
-  kind?: 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
+  /** Wire id the probe actually spoke. Open on purpose: a wire is either a core
+   *  shape or a plugin wire id, and the plugin half is derived from the loaded
+   *  plugin registry (backend `providers/plugin-wires.ts`) — never a closed
+   *  enum in this mirror. */
+  kind?: string;
   model?: string;
   latencyMs?: number;
   authHint?: boolean;
@@ -4527,6 +5368,9 @@ export interface TestProviderResult {
   upstreamBody?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
+  /** Credential rotation: masked rows tried, in order (only when > 1). */
+  triedCredentials?: CredentialMeta[];
+  /** Masked echo of the row that produced the verdict (addressed OR rotated). */
   credential?: CredentialMeta;
   provider?: string;
 }
@@ -5079,6 +5923,17 @@ export interface ProviderPurgeResult {
  * when the error body carries one (push 400 preconditions). Purely additive:
  * the message contract is unchanged and message-only callers are unaffected.
  */
+/** Controller-backed mihomo calls answer 409 `not-running` while the core is
+ * down; keep that code so the console can localize it instead of showing the
+ * transport English. */
+function mihomoError(body: any, httpStatus: number): OcApiError {
+  return new OcApiError(
+    body?.message || `HTTP ${httpStatus}`,
+    typeof body?.code === 'string' ? body.code : undefined,
+    body
+  );
+}
+
 export class OcApiError extends Error {
   readonly reasonCode?: string;
   /** Parsed non-2xx body — carries the machine params (url/cause/httpStatus)
@@ -5154,13 +6009,13 @@ export const opencodeApi = {
     );
   },
 
-  /** One entry of the backend-owned npm SDK vocabulary (providers/vocabulary.ts). */
-  async getNpmVocabulary(): Promise<NpmVocabularyEntry[]> {
-    if (npmVocabularyCache) return npmVocabularyCache;
-    const res = await ocJson<{ status: string; entries: NpmVocabularyEntry[] }>(
-      await fetch('/api/admin/opencode/npm-vocabulary')
+  /** One entry of the backend-owned OCR protocol vocabulary (providers/vocabulary.ts). */
+  async getProtocolVocabulary(): Promise<ProtocolVocabularyEntry[]> {
+    if (protocolVocabularyCache) return protocolVocabularyCache;
+    const res = await ocJson<{ status: string; entries: ProtocolVocabularyEntry[] }>(
+      await fetch('/api/admin/opencode/protocol-vocabulary')
     );
-    npmVocabularyCache = res.entries;
+    protocolVocabularyCache = res.entries;
     return res.entries;
   },
 
@@ -5376,15 +6231,28 @@ export const opencodeApi = {
   async putPluginConfig(
     id: string,
     values: Record<string, unknown>
-  ): Promise<{ status: string; values: Record<string, unknown>; warnings: string[] }> {
+  ): Promise<{
+    status: string;
+    values: Record<string, unknown>;
+    warnings: string[];
+    /** Client model surfaces re-materialized from this save (gateway plugins own
+     *  one; e.g. Junie's profile files). Empty when the plugin owns none. */
+    surfaces?: Array<{ client: string; ok: boolean; message: string }>;
+  }> {
     const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ values }),
     });
-    const parsed = (await res.json()) as { status: string; error?: string; values?: Record<string, unknown>; warnings?: string[] };
+    const parsed = (await res.json()) as {
+      status: string;
+      error?: string;
+      values?: Record<string, unknown>;
+      warnings?: string[];
+      surfaces?: Array<{ client: string; ok: boolean; message: string }>;
+    };
     if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
-    return { status: parsed.status, values: parsed.values ?? values, warnings: parsed.warnings ?? [] };
+    return { status: parsed.status, values: parsed.values ?? values, warnings: parsed.warnings ?? [], surfaces: parsed.surfaces };
   },
 
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {
@@ -5532,7 +6400,7 @@ export const opencodeApi = {
    * held this exact key for the provider, so NO second credential was created
    * (idempotent success — `credential` names the row that survived).
    * `headPreserved` = the sink auto-activated the new key and this surface handed
-   * the chain head back to the credential that was serving (opencode's `active`
+   * the default credential back to the credential that was serving (opencode's `active`
    * is ALSO the key its own CLI uses, so adding an credential must not repoint it).
    * The reply mirrors backend console.ts `connect` inline.
    */

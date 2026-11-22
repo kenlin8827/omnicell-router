@@ -57,7 +57,10 @@ export const stickyBodyCell: React.CSSProperties = {
  *
  * The head is a second table; its column widths are MEASURED from the body's first row, so it
  * stays aligned whatever the body's own layout does (auto or fixed) and whether or not the body
- * currently overflows. Horizontal scrolling is mirrored onto the head.
+ * currently overflows. Horizontal scrolling is mirrored onto the head, and the head's scrollable
+ * width is taken from the body's own scroll range — a cell wider than its track (a long badge)
+ * overflows into that range, and a head sized to the tracks alone would clamp the mirrored
+ * `scrollLeft` short and sit shifted at the far right.
  *
  * Use this for every bounded, scrolling table. A page-level table keeps a plain header row too.
  *
@@ -86,20 +89,34 @@ export const ScrollTable: React.FC<{
   const bodyRef = useRef<HTMLDivElement>(null);
   const bodyTableRef = useRef<HTMLTableElement>(null);
   const [widths, setWidths] = useState<number[] | null>(null);
+  // Scrollable width the head must expose. The measured tracks alone are NOT enough:
+  // content wider than its track (a long badge, an unbreakable token) overflows into
+  // the body's scrollable area, so the body can scroll further right than a head sized
+  // to the tracks. The mirrored `scrollLeft` would then clamp short and leave every
+  // column shifted by the overflow at the far right of the table.
+  const [headWidth, setHeadWidth] = useState<number | null>(null);
 
   const measure = () => {
     const row = bodyTableRef.current?.tBodies[0]?.rows[0];
     if (!row || row.cells.length !== columns.length) {
       setWidths((prev) => (prev === null ? prev : null));
+      setHeadWidth((prev) => (prev === null ? prev : null));
       return;
     }
     const next = Array.from(row.cells).map((cell) => cell.getBoundingClientRect().width);
     setWidths((prev) =>
       prev && prev.length === next.length && prev.every((w, i) => Math.abs(w - next[i]!) < 0.5) ? prev : next
     );
+    // The body's own scroll range, plus the width a classic vertical scrollbar takes
+    // from its client box (the head has no scrollbar, so without that term the head
+    // would come up short by the bar's width even with no content overflow).
+    const body = bodyRef.current;
+    const extent = body ? body.scrollWidth + (body.offsetWidth - body.clientWidth) : next.reduce((sum, w) => sum + w, 0);
+    setHeadWidth((prev) => (prev !== null && Math.abs(prev - extent) < 0.5 ? prev : extent));
   };
 
-  // After every render: rows, column count and scrollbar presence can all change the tracks.
+  // After every render: rows, column count, the body's scrollbar and any content that
+  // overflows its track can all change the tracks or the head's scrollable extent.
   useLayoutEffect(measure);
 
   useEffect(() => {
@@ -157,27 +174,33 @@ export const ScrollTable: React.FC<{
         ref={headRef}
         style={{ flex: '0 0 auto', overflow: 'hidden', borderBottom: '1px solid var(--divider)' }}
       >
-        <table style={{ ...baseTable(Boolean(widths)), ...(widths ? { width: widths.reduce((sum, w) => sum + w, 0) } : {}) }}>
-          {measuredColgroup ?? declaredColgroup}
-          <thead>
-            <tr>
-              {columns.map((column) => (
-                <th
-                  key={column.key}
-                  style={{
-                    ...HEAD_CELL,
-                    ...headCellStyle,
-                    ...(column.align ? { textAlign: column.align } : {}),
-                    ...(column.sticky ? stickyBodyCell : {}),
-                    ...column.headStyle,
-                  }}
-                >
-                  {column.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-        </table>
+        {/* The inner box carries the scroll EXTENT, the table only the tracks. The head must
+            keep its measured column widths, so the tail left by content that overflowed its
+            track inside the body is added OUTSIDE the table — widening the table itself would
+            spread the extra width over the tracks and drift every column out of line. */}
+        <div style={widths && headWidth !== null ? { width: headWidth } : undefined}>
+          <table style={{ ...baseTable(Boolean(widths)), ...(widths ? { width: widths.reduce((sum, w) => sum + w, 0) } : {}) }}>
+            {measuredColgroup ?? declaredColgroup}
+            <thead>
+              <tr>
+                {columns.map((column) => (
+                  <th
+                    key={column.key}
+                    style={{
+                      ...HEAD_CELL,
+                      ...headCellStyle,
+                      ...(column.align ? { textAlign: column.align } : {}),
+                      ...(column.sticky ? stickyBodyCell : {}),
+                      ...column.headStyle,
+                    }}
+                  >
+                    {column.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          </table>
+        </div>
       </div>
       <div
         ref={bodyRef}

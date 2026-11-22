@@ -1,8 +1,10 @@
 import { catalogModelToDef } from '../provider-defs.js';
 import { loadConfig } from '../../config/index.js';
-import { isSelfBaseURL } from '../../utils/self-url.js';
+import { assertAllowedUpstream, UpstreamUrlError } from '../../utils/upstream-url-guard.js';
+import { redactUpstreamBody } from '../../observability/upstream-body-redaction.js';
 import type { CatalogModel } from './types.js';
 import { wireFor } from '../../providers/wire.js';
+import { isPluginWire } from '../../providers/plugin-wires.js';
 
 /**
  * Model pull engine for provider definitions (providers.json).
@@ -36,19 +38,16 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; ids?:
   if (!def) {
     return { httpStatus: 404, body: { success: false, error: `Provider '${id}' is not defined in the provider defs file` } };
   }
-  const baseURL = def?.options?.baseURL;
+  const baseURL = expandEnvTemplate(def?.options?.baseURL);
   if (!baseURL) {
     return { httpStatus: 400, body: { success: false, error: `Provider '${id}' has no baseURL configured` } };
   }
-  // A baseURL pointing back at THIS gateway would fetch our own /v1/models and
-  // write every routable model back as this provider's defs — self-duplication,
-  // not data. A DIFFERENT instance (another port/host) is a legitimate pull
-  // target (federation). Criterion is the URL, never the id.
-  if (isSelfBaseURL(baseURL, loadConfig().port)) {
-    return {
-      httpStatus: 400,
-      body: { success: false, error: `Provider '${id}' baseURL (${baseURL}) points at this gateway itself — self-pull refused` },
-    };
+  // Self-loop / metadata / insecure-public refusal — same gate as console test.
+  try {
+    assertAllowedUpstream(String(baseURL), loadConfig().port);
+  } catch (err) {
+    const msg = err instanceof UpstreamUrlError ? err.message : String(err);
+    return { httpStatus: 400, body: { success: false, error: msg, reasonCode: err instanceof UpstreamUrlError ? err.reasonCode : 'invalid_upstream_url' } };
   }
   // raw key from the BOUND store (every credential flavor lands there: v2 db
   // pushes, v1/standalone imports into the ocr file) — direct auth.json reads
@@ -72,14 +71,24 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; ids?:
   const url = `${String(baseURL).replace(/\/+$/, '')}/models`;
   let res: Response;
   try {
-    res = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000) });
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}` },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000),
+    });
   } catch (err: any) {
     const cause = err?.cause?.code || err?.cause?.message || err?.message;
     return { httpStatus: 502, body: { success: false, reasonCode: 'pull_unreachable', url, cause: cause ? String(cause) : undefined } };
   }
+  if (res.status >= 300 && res.status < 400) {
+    return {
+      httpStatus: 502,
+      body: { success: false, reasonCode: 'pull_redirect', url, error: `Upstream redirected (${res.status}); credentialed pulls do not follow redirects.` },
+    };
+  }
   if (!res.ok) {
     const raw = await res.text().catch(() => '');
-    const text = raw.replace(/\s+/g, ' ').slice(0, 600);
+    const text = redactUpstreamBody(raw, { Authorization: `Bearer ${key}` });
     return {
       httpStatus: res.status === 401 || res.status === 403 ? 401 : 502,
       body: {
@@ -275,13 +284,6 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   // provider's candidate model list from its own /v1/models or the catalog.
   const jobs = await Promise.all(
     listConfigProviders().map(async (v): Promise<{ id: string; mode: AutoPullEntry['mode']; models: CatalogModel[]; error?: string }> => {
-      // A def whose baseURL points back at THIS gateway self-fetches
-      // /v1/models and re-materializes every routable model as its defs
-      // (same refusal as pullLiveModels). Other instances pull fine.
-      const sweepBaseURL = getProviderNodeById(v.id)?.options?.baseURL;
-      if (isSelfBaseURL(sweepBaseURL, loadConfig().port)) {
-        return { id: v.id, mode: 'skipped', models: [], error: `baseURL (${sweepBaseURL}) points at this gateway — self-pull refused` };
-      }
       // Opt-in gate: an undeclared provider is never swept — no fetch, no
       // catalog lookup, no writes. This is what keeps an aggregator gateway's
       // full upstream list from being materialized every sync period.
@@ -289,7 +291,19 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
       if (!pattern) return { id: v.id, mode: 'skipped', models: [] };
       const def = getProviderNodeById(v.id);
       if (!def) return { id: v.id, mode: 'skipped', models: [] };
-      const baseURL = def?.options?.baseURL;
+      const baseURL = expandEnvTemplate(def?.options?.baseURL);
+      if (baseURL) {
+        try {
+          assertAllowedUpstream(String(baseURL), loadConfig().port);
+        } catch (err) {
+          return {
+            id: v.id,
+            mode: 'skipped',
+            models: [],
+            error: err instanceof UpstreamUrlError ? err.message : String(err),
+          };
+        }
+      }
       const inlineKey = expandEnvTemplate(def?.options?.apiKey);
       const key = inlineKey || credStore.resolveKey(v.id)?.key;
       if (baseURL && key) {
@@ -301,9 +315,11 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
         try {
           const res = await fetch(`${String(baseURL).replace(/\/+$/, '')}/models`, {
             headers: { Authorization: `Bearer ${key}` },
+            redirect: 'manual',
             signal: AbortSignal.timeout(15000),
           });
-          if (!res.ok) liveError = `HTTP ${res.status}`;
+          if (res.status >= 300 && res.status < 400) liveError = `redirect ${res.status}`;
+          else if (!res.ok) liveError = `HTTP ${res.status}`;
           else {
             const raw = await res.json().catch(() => null);
             if (!raw) liveError = 'non-JSON payload';
@@ -350,7 +366,7 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   const out: AutoPullEntry[] = [];
   for (const job of jobs) {
     if (job.mode === 'skipped') {
-      out.push({ providerId: job.id, mode: 'skipped', pulled: 0 });
+      out.push({ providerId: job.id, mode: 'skipped', pulled: 0, ...(job.error ? { error: job.error } : {}) });
       continue;
     }
     if (job.error) {
@@ -466,7 +482,9 @@ export async function autoPullProvider(
   // pullModels() — a plain /models GET cannot exist on this transport class.
   const npm = def?.npm || def?.package || '';
   const npmWire = npm ? wireFor(npm) : 'unroutable';
-  if (npmWire === 'qoder' || npmWire === 'workbuddy') {
+  if (isPluginWire(npmWire)) {
+    // The executor's wire id is also the protocol id a plugin labels its own
+    // model list with, so the message names the wire the def resolved to.
     const { getModelServicePlugin } = await import('../../plugins/host.js');
     const plugin = getModelServicePlugin(npmWire);
     if (!plugin?.pullModels) {

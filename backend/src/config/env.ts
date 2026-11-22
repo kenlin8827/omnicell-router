@@ -250,6 +250,15 @@ function computeEnvPaths(name: string): EnvPaths {
     modelsDir: path.join(dir, 'models'),
     catalogDir: path.join(dir, 'catalog'),
     tracesDir: path.join(dir, 'traces'),
+    // Capture root (ADR-0024). The root name carries no version — the schema
+    // rides on every line (`schema: 2`, `CAPTURE_SCHEMA`) and the archive-line
+    // validator rejects anything else. Schema-1 archives are upgraded in place
+    // by the migrator chain at boot (capture/migrate/), including archives
+    // written before the gateway request ids (request boundary rebuilt off the
+    // recorded span sequence); a sequence the chain cannot close is repaired
+    // in place (orphan request with NO_TURN) — nothing is ever sealed away, so
+    // the live root stays the only copy and the cutover has no reader-side
+    // compatibility path.
     captureDir: path.join(dir, 'capture'),
     webauthSecretPath: path.join(dir, 'webauth-secret'),
   };

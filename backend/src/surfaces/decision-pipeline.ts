@@ -4,14 +4,14 @@ import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { SessionManager } from '../session/session-manager.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext } from '../observability/http-exchange.js';
 import type { UpstreamEventContext } from '../observability/upstream-events.js';
+import { NO_TURN } from '../capture/turn-boundary.js';
 import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { validateSystemoneRequest } from '../protocols/systemone/convert.js';
+import { buildDecisionRequest, validateSystemoneRequest } from '../protocols/systemone/convert.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
 import { getRateLimiter, credentialSubject, apiKeySubject } from '../ratelimit/rate-limiter.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
-import type { ChatCompletionRequest, Usage } from '../types/openai.js';
 import { buildSystemoneOcrHeaders } from './ocr-headers.js';
 import { systemoneSurface } from './systemone.js';
 import type { TransportContext } from './types.js';
@@ -196,15 +196,14 @@ export async function runDecisionSurface(
     // sessionId: archive key ONLY (same SessionManager entry the chat leg
     // pre-resolves through; no ratchet, no turn registration).
     const keyId = captureKeyIdentity(pctx.fastifyRequest ?? pctx.clientRequest)?.id;
+    const decisionRequest = buildDecisionRequest(sysBody, effective);
     const sessionId = orchestrator
       .getSessionManager()
-      .resolveSessionId(sysBody as unknown as ChatCompletionRequest, {
+      .resolveSessionId(decisionRequest, {
         keyId,
         headers: t.headers,
       }).sessionId;
-    const conversationKey =
-      SessionManager.conversationKey((sysBody as { messages?: any[] }).messages || [], keyId) ??
-      undefined;
+    const conversationKey = SessionManager.conversationKey(decisionRequest.input, keyId) ?? undefined;
     const clientExchangeCtx = emitClientRequest({
       recorder,
       req: pctx.fastifyRequest ?? pctx.clientRequest,
@@ -214,6 +213,8 @@ export async function runDecisionSurface(
       requestId,
       model: effective,
       conversationKey,
+      // This surface carries no user prompt: NO_TURN is the first-class value.
+      turn: NO_TURN,
     });
     if (pctx.fastifyRequest) {
       setClientExchangeContext(pctx.fastifyRequest, clientExchangeCtx);
@@ -231,6 +232,7 @@ export async function runDecisionSurface(
       model: effective,
       apiKey: captureKeyIdentity(pctx.fastifyRequest),
       conversationKey,
+      turn: NO_TURN,
     };
     } catch (captureErr) {
       // Non-fatal: decision proceeds unrecorded on any capture failure.
@@ -242,7 +244,7 @@ export async function runDecisionSurface(
   // executor bypasses executeCandidatePool (and the breaker) by contract, so
   // the limiter hooks live HERE — at the SURFACE, never in decide.ts (that
   // executor is shared with the L2 decision layer, and internal legs stay unmetered
-  // by policy). Serving identity: the chain head is the credential
+  // by policy). Serving identity: the default credential is the credential
   // registry.execute serves with when no selector is passed (registry
   // invariant), so no chain = nothing addressable = pure no-op degeneracy.
   // ONE dispatch per admitted decision: the executor's effort/conversion
@@ -272,9 +274,9 @@ export async function runDecisionSurface(
             (decision.response.usage.input_tokens ?? 0) + (decision.response.usage.output_tokens ?? 0),
           costUsd: computeRequestCost(
             {
-              prompt_tokens: decision.response.usage.input_tokens ?? 0,
-              completion_tokens: decision.response.usage.output_tokens ?? 0,
-            } as Usage,
+              inputTokens: decision.response.usage.input_tokens ?? 0,
+              outputTokens: decision.response.usage.output_tokens ?? 0,
+            },
             model.pricing
           ),
         }

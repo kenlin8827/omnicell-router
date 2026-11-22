@@ -2,7 +2,7 @@ import { CircuitBreakerManager } from './circuit-breaker-manager.js';
 import { ErrorClassifier } from './error-classifier.js';
 import { ModelRegistration } from '../config/types.js';
 import { DEFAULT_PROBE_TIMEOUT_MS } from '../config/defaults.js';
-import { ChatCompletionRequest } from '../types/openai.js';
+import type { CanonicalRequest } from '../ir/types.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
 import { clampProbeIntervalMs } from '../utils/probe-interval.js';
 import type { CircuitBreakerSnapshot } from './types.js';
@@ -15,7 +15,7 @@ export interface ProberCredential {
 export interface ProberTargetResolver {
   getModel(modelId: string): ModelRegistration | undefined;
   execute(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     model: ModelRegistration,
     upstreamEventContext?: unknown,
     credentialKeyHashPrefix?: string
@@ -195,10 +195,11 @@ export class ActiveHealthProber {
     credentialKeyHashPrefix: string | undefined,
     recordPrefix: string | undefined
   ): Promise<void> {
-    const probeRequest: ChatCompletionRequest = {
+    const probeRequest: CanonicalRequest = {
       model: model.upstreamModel,
-      messages: [{ role: 'user', content: 'health_check_ping' }],
-      max_tokens: 1,
+      stream: false,
+      input: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'health_check_ping' }] }],
+      generation: { maxOutputTokens: 1 },
     };
 
     try {
@@ -251,9 +252,9 @@ export class ActiveHealthProber {
  * swallowed so the settled race never surfaces an unhandled rejection.
  * Abandoning the WAIT does not cancel the exchange: a hung provider keeps one
  * orphaned call alive per cycle until its own provider timeout
- * (DEFAULT_PROVIDER_TIMEOUT_MS, 300 s) expires, holding that credential's
- * concurrency and quota for the window. The next sweep cycle re-probes;
- * trials are idempotent.
+ * (DEFAULT_PROVIDER_TIMEOUT_MS 30 min buffered / DEFAULT_STREAM_TIMEOUT_MS
+ * 1 h streamed) expires, holding that credential's concurrency and quota for
+ * the window. The next sweep cycle re-probes; trials are idempotent.
  */
 export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   // No-op catch on the loser: once the race settles, the late branch must not

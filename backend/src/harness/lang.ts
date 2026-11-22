@@ -1,4 +1,4 @@
-import type { TranslationLang } from './translation.js';
+import type { TranslationLang } from '../translation/index.js';
 
 /**
  * Script-based language evidence for a third-party document (README, published body).

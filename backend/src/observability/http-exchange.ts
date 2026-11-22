@@ -2,11 +2,12 @@ import type { FastifyRequest } from 'fastify';
 import type {
   CaptureKeyIdentity,
   CaptureRecorder,
-  HttpExchangeEvent,
+  CaptureEvent,
   RawWireCapture,
   WireBody,
 } from '../capture/recorder.js';
 import { mintExchangeId } from './request-identity.js';
+import { NO_TURN, type TurnIdentity } from '../capture/turn-boundary.js';
 import type { ApiKeyConfig } from '../config/types.js';
 import { redactProxyUrl } from '../utils/proxy.js';
 
@@ -53,19 +54,18 @@ const DENY_HEADER_SUBSTRINGS = [
 ];
 
 /**
- * Module-level kill switch for capture-side credential redaction, driven by
- * `requestCapture.redactSecrets` (default true = redact). When an operator
- * explicitly sets `redactSecrets: false`, header and query-param values pass
- * through UNSANITIZED — raw API keys reach the capture archive on disk. That
- * is a conscious operator decision; the default keeps the redaction always on.
- * Set from CaptureRecorder (constructor + applyConfig) so console hot-apply
- * and controlled-restart config switches both take effect.
+ * Module-level switch for capture-side credential redaction. ALWAYS ON:
+ * `CaptureRecorder` (constructor + applyConfig) calls this with `true` and
+ * ignores `requestCapture.redactSecrets: false` (S-06) — live credentials
+ * must never land in the archive. The config key remains for forward-compat
+ * reads only. The setter is kept so boot and console hot-apply both re-assert
+ * the policy through the same path; no caller passes `false`.
  */
 let captureRedactionEnabled = true;
 
-/** Apply the `requestCapture.redactSecrets` policy (true = redact, default). */
-export function setCaptureSecretRedaction(redact: boolean): void {
-  captureRedactionEnabled = redact;
+/** Re-assert the always-on capture redaction policy (opt-out removed, S-06). */
+export function setCaptureSecretRedaction(_redact: boolean): void {
+  captureRedactionEnabled = true;
 }
 
 /** Sentinel value written in place of a credential-bearing header value. */
@@ -142,9 +142,9 @@ function encodeWireBody(body: string | Uint8Array | undefined | null): WireBody 
 const QUERY_AUTH_PARAM_RE = /(^|[^a-z])(key|apikey|token|secret|signature|credential|password|auth|sig)([^a-z]|$)/i;
 
 function redactQueryAuth(u: URL): void {
-  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) does not
-  // persist raw unless the operator disabled redaction
-  // (`requestCapture.redactSecrets: false`) — redact the value, keep the name.
+  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) must never
+  // persist raw; `requestCapture.redactSecrets: false` is ignored (S-06).
+  // Redact the value, keep the name.
   for (const name of [...new Set(u.searchParams.keys())]) {
     if (captureRedactionEnabled && QUERY_AUTH_PARAM_RE.test(name)) u.searchParams.set(name, REDACTED);
   }
@@ -250,11 +250,11 @@ export interface ClientExchangeContext {
   clientRequestId?: string;
   /** Gateway-owned turn id shared by all four events of one request. */
   requestId: string;
-  /** Filled by `emitClientRequest` and finalized by `emitGatewayResponse`. */
+  /** Filled by `emitClientRequest` and finalized by `emitClientResponse`. */
   pending: {
     sessionId: string;
     model: string;
-    /** Deterministic conversation key (content-addressed, see HttpExchangeEvent.conversationKey). */
+    /** Deterministic conversation key (content-addressed, see CaptureEvent.conversationKey). */
     conversationKey?: string;
     /** Client API-key identity resolved at request-emit time (undefined for
      *  master-key / MITM legs) — reused by the gateway-response event so both
@@ -265,11 +265,19 @@ export interface ClientExchangeContext {
     /**
      * Response body stash, filled by the transport adapters' terminal sends
      * (whole-JSON payload in `sendJson`, accumulated chunks in the SSE
-     * branches) before `emitGatewayResponse` runs at finalize. Capped at
-     * GATEWAY_RESPONSE_BODY_CAP chars so a runaway stream can't exhaust
+     * branches) before `emitClientResponse` runs at finalize. Capped at
+     * CLIENT_RESPONSE_BODY_CAP chars so a runaway stream can't exhaust
      * memory — the recorder truncates further down to maxBodyBytes.
+     *
+     * Streaming legs push into `responseBodyParts` (O(1) per chunk); the
+     * joined string is materialised once at finalize. Buffered `sendJson`
+     * still writes `responseBody` directly.
      */
     responseBody?: string;
+    /** Chunk list for SSE accumulation — joined once in emitClientResponse. */
+    responseBodyParts?: string[];
+    /** Running char count of `responseBodyParts` (avoids re-reducing). */
+    responseBodyPartsLen?: number;
     /**
      * Epoch ms of the FIRST streamed response chunk — stamped by the SSE
      * transport on its first `writeSseChunk` (never by `sendJson`: a buffered
@@ -278,25 +286,78 @@ export interface ClientExchangeContext {
      * decode window. Undefined for buffered replies.
      */
     firstByteTs?: number;
+    /**
+     * True when the terminal send wrote an SSE body (`beginSse` ran). Set by
+     * `markClientResponseStreamStart` only — the transport knows the shape,
+     * so it is never inferred from a content-type here.
+     */
+    stream?: boolean;
     /** Set once the response event has been emitted — guards against a
      *  double-emit when both the terminal send and the abort listener try
      *  to finalize. */
     responded?: boolean;
+    /** Write-time turn identity — copied onto the response event. */
+    turn: TurnIdentity;
   };
 }
 
 /** Cap for the accumulated gateway response body (chars). */
-const GATEWAY_RESPONSE_BODY_CAP = 1024 * 1024;
+const CLIENT_RESPONSE_BODY_CAP = 1024 * 1024;
+
+/**
+ * SSE tag of a REQUEST body (ADR-0008 §1). Only a typed boolean counts — a
+ * truthy string is exactly the C-3 case the gateway itself does not treat as
+ * streaming, so tagging it would contradict the response.
+ */
+function requestedStreamOf(body: unknown): boolean | undefined {
+  if (!body || typeof body !== 'object' || !('stream' in body)) return undefined;
+  return typeof body.stream === 'boolean' ? body.stream : undefined;
+}
+
+/**
+ * SSE tag of the request the GATEWAY sent upstream. The payload is built by
+ * the provider adapter, so its own `stream` field is authoritative; the URL
+ * forms cover vendors that signal streaming in the path
+ * (`:streamGenerateContent` / `?alt=sse`). Undefined when neither says
+ * anything — the tag is a fact, never a guess.
+ */
+function upstreamStreamOf(requestBody: string, url: string): boolean | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestBody);
+  } catch {
+    // Non-JSON body (binary/hex class): fall through to the URL forms.
+  }
+  if (parsed && typeof parsed === 'object' && 'stream' in parsed && typeof parsed.stream === 'boolean') {
+    return parsed.stream;
+  }
+  if (/:streamGenerateContent\b|alt=sse\b/.test(url)) return true;
+  return undefined;
+}
 
 /**
  * Append a response-body chunk to the pending gateway response. Used by the
  * transport adapters (whole-JSON payload in `sendJson`, per-chunk in the SSE
  * branches). No-op once the cap is reached.
  */
-export function appendGatewayResponseChunk(ctx: ClientExchangeContext, chunk: string): void {
-  const cur = ctx.pending.responseBody ?? '';
-  if (cur.length >= GATEWAY_RESPONSE_BODY_CAP) return;
-  ctx.pending.responseBody = (cur + chunk).slice(0, GATEWAY_RESPONSE_BODY_CAP);
+export function appendClientResponseChunk(ctx: ClientExchangeContext, chunk: string): void {
+  const len = ctx.pending.responseBodyPartsLen ?? 0;
+  if (len >= CLIENT_RESPONSE_BODY_CAP) return;
+  const room = CLIENT_RESPONSE_BODY_CAP - len;
+  const piece = chunk.length > room ? chunk.slice(0, room) : chunk;
+  if (!piece) return;
+  (ctx.pending.responseBodyParts ??= []).push(piece);
+  ctx.pending.responseBodyPartsLen = len + piece.length;
+}
+
+/** Join any streamed parts into `responseBody` once, before wire encode. */
+function materializePendingResponseBody(ctx: ClientExchangeContext): string {
+  if (ctx.pending.responseBodyParts?.length) {
+    ctx.pending.responseBody = ctx.pending.responseBodyParts.join('');
+    ctx.pending.responseBodyParts = undefined;
+    ctx.pending.responseBodyPartsLen = undefined;
+  }
+  return ctx.pending.responseBody ?? '';
 }
 
 /**
@@ -305,8 +366,12 @@ export function appendGatewayResponseChunk(ctx: ClientExchangeContext, chunk: st
  * that, no-op). `sendJson` never calls this — a buffered reply has no
  * separate first-token phase and stays stamp-less.
  */
-export function markGatewayResponseStreamStart(ctx: ClientExchangeContext): void {
+export function markClientResponseStreamStart(ctx: ClientExchangeContext): void {
   if (ctx.pending.firstByteTs === undefined) ctx.pending.firstByteTs = Date.now();
+  // The SSE tag lives on the RESPONSE event (an `always`-mode reply is SSE
+  // even though the request body asked for JSON), so the terminal-send
+  // discipline owns it: only the SSE branches call this marker.
+  ctx.pending.stream = true;
 }
 
 /**
@@ -361,12 +426,14 @@ export function emitClientRequest(args: {
   apiKey?: CaptureKeyIdentity;
   body: unknown;
   sessionId: string;
-  /** Caller correlation value (see HttpExchangeEvent.clientRequestId). */
+  /** Caller correlation value (see CaptureEvent.clientRequestId). */
   clientRequestId?: string;
-  /** Gateway turn id (see HttpExchangeEvent.requestId). */
+  /** Gateway turn id (see CaptureEvent.requestId). */
   requestId: string;
   model: string;
   conversationKey?: string;
+  /** Allocated once at the admission gate; copied onto EVERY event. */
+  turn?: TurnIdentity;
 }): ClientExchangeContext {
   const exchangeId = mintExchangeId();
   const apiKey = args.apiKey ?? captureKeyIdentity(args.req);
@@ -397,6 +464,7 @@ export function emitClientRequest(args: {
     responseHeaders: {},
     responseBody: '',
   };
+  const inboundStream = requestedStreamOf(args.body);
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
     direction: 'client',
@@ -408,6 +476,11 @@ export function emitClientRequest(args: {
     model: args.model,
     status: 'ok',
     wire: requestWire,
+    // INBOUND request tag: what the caller's body asked for. `client.mode:
+    // always` changes the RESPONSE shape, which is tagged on the response
+    // event — the ask is never rewritten here.
+    ...(inboundStream !== undefined ? { stream: inboundStream } : {}),
+    ...(args.turn ?? NO_TURN),
     ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(apiKey ? { apiKey } : {}),
   });
@@ -422,6 +495,7 @@ export function emitClientRequest(args: {
       requestWire,
       apiKey,
       conversationKey: args.conversationKey,
+      turn: args.turn ?? NO_TURN,
     },
   };
 }
@@ -433,7 +507,7 @@ export function emitClientRequest(args: {
  * fully known and emitted as an independent event. The request event was
  * already emitted synchronously at handler entry.
  */
-export function emitGatewayResponse(
+export function emitClientResponse(
   ctx: ClientExchangeContext,
   reply: {
     statusCode: number;
@@ -474,7 +548,7 @@ export function emitGatewayResponse(
     responseHeaders: sanitizePlainHeadersForCapture(headersMap),
     // Stashed by the transport adapters' terminal sends — '' when the reply
     // went out through a path that bypasses them (e.g. raw socket errors).
-    responseBody: encodeWireBody(ctx.pending.responseBody ?? ''),
+    responseBody: encodeWireBody(materializePendingResponseBody(ctx)),
   };
   void ctx.recorder.recordEvent({
     eventType: 'http-exchange',
@@ -487,6 +561,9 @@ export function emitGatewayResponse(
     model: ctx.pending.model,
     status: reply.statusCode >= 200 && reply.statusCode < 400 ? 'ok' : 'error',
     wire: responseWire,
+    // Response-shape tag: true iff the terminal send wrote SSE.
+    stream: ctx.pending.stream === true,
+    ...ctx.pending.turn,
     ...(ctx.pending.firstByteTs !== undefined ? { firstByteTs: ctx.pending.firstByteTs } : {}),
     ...(ctx.pending.conversationKey ? { conversationKey: ctx.pending.conversationKey } : {}),
     ...(ctx.pending.apiKey ? { apiKey: ctx.pending.apiKey } : {}),
@@ -507,22 +584,25 @@ export function emitUpstreamRequest(args: {
   requestHeaders: Record<string, string>;
   requestBody: string;
   sessionId: string;
-  /** Caller correlation value (see HttpExchangeEvent.clientRequestId). */
+  /** Caller correlation value (see CaptureEvent.clientRequestId). */
   clientRequestId?: string;
-  /** Gateway turn id (see HttpExchangeEvent.requestId). */
+  /** Gateway turn id (see CaptureEvent.requestId). */
   requestId: string;
   model: string;
   /** Optional pre-minted exchangeId to share with the response event. */
   exchangeId?: string;
   proxy?: string;
   /** Non-default call label (e.g. 'l2-decision') so UI/log can tell the leg apart. */
-  purpose?: HttpExchangeEvent['purpose'];
-  /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
+  purpose?: CaptureEvent['purpose'];
+  /** Write-time turn identity of the owning request. */
+  turn?: TurnIdentity;
+  /** Client API-key identity of the owning request (see CaptureEvent.apiKey). */
   apiKey?: CaptureKeyIdentity;
-  /** Deterministic conversation key of the owning turn (see HttpExchangeEvent.conversationKey). */
+  /** Deterministic conversation key of the owning turn (see CaptureEvent.conversationKey). */
   conversationKey?: string;
 }): string {
   const exchangeId = args.exchangeId ?? mintExchangeId();
+  const outboundStream = upstreamStreamOf(args.requestBody, args.url);
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
     direction: 'upstream',
@@ -546,8 +626,13 @@ export function emitUpstreamRequest(args: {
       responseHeaders: {},
       responseBody: '',
     },
+    // OUTBOUND request tag: the `stream` the gateway actually sent (or the
+    // vendor's streaming URL form). This is the provider leg's true transport
+    // ask — the tag a reader needs to answer "was this turn streamed upstream?".
+    ...(outboundStream !== undefined ? { stream: outboundStream } : {}),
     ...(args.proxy ? { proxy: redactProxyUrl(args.proxy) } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.turn ?? NO_TURN),
     ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });
@@ -571,19 +656,21 @@ export function emitUpstreamResponse(args: {
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
   sessionId: string;
-  /** Caller correlation value (see HttpExchangeEvent.clientRequestId). */
+  /** Caller correlation value (see CaptureEvent.clientRequestId). */
   clientRequestId?: string;
-  /** Gateway turn id (see HttpExchangeEvent.requestId). */
+  /** Gateway turn id (see CaptureEvent.requestId). */
   requestId: string;
   model: string;
   exchangeId: string;
-  routing?: HttpExchangeEvent['routing'];
+  routing?: CaptureEvent['routing'];
   error?: string;
   /** Non-default call label (e.g. 'l2-decision') so UI/log can tell the leg apart. */
-  purpose?: HttpExchangeEvent['purpose'];
-  /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
+  purpose?: CaptureEvent['purpose'];
+  /** Write-time turn identity of the owning request. */
+  turn?: TurnIdentity;
+  /** Client API-key identity of the owning request (see CaptureEvent.apiKey). */
   apiKey?: CaptureKeyIdentity;
-  /** Deterministic conversation key of the owning turn (see HttpExchangeEvent.conversationKey). */
+  /** Deterministic conversation key of the owning turn (see CaptureEvent.conversationKey). */
   conversationKey?: string;
 }): void {
   // The provider's own id for this call, taken from the wire when it exposes
@@ -618,6 +705,7 @@ export function emitUpstreamResponse(args: {
     ...(args.error ? { error: args.error } : {}),
     ...(args.firstByteTs !== undefined ? { firstByteTs: args.firstByteTs } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.turn ?? NO_TURN),
     ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });

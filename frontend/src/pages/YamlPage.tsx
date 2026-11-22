@@ -99,7 +99,6 @@ const translateDiskPath = (diskPath: string): string => {
   let key = segs.join('.');
   if (segs[0] === 'tiers' && segs.length >= 2) key = 'tiers.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
   if (segs[0] === 'combos' && segs.length >= 2) key = 'combos.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
-  if (segs[0] === 'modelProfiles' && segs.length >= 2) key = 'modelProfiles.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
   if (segs[0] === 'credentials' && segs.length >= 2) key = 'credentials.*';
   if (segs[0] === 'catalog' && segs[1] === 'autoPullPatterns' && segs.length >= 3) key = 'catalog.autoPullPatterns.*';
   return key;
@@ -599,7 +598,7 @@ export const YamlPage: React.FC = () => {
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button className="btn btn-sm" onClick={loadYaml} disabled={loading}>
-              <RefreshCw size={12} />
+              <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
               <span>{t('yaml.reload')}</span>
             </button>
             <button className="btn btn-primary btn-sm" onClick={handleSave}>

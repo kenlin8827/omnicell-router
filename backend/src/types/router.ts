@@ -1,5 +1,4 @@
-import { ChatCompletionResponse } from './openai.js';
-import type { UpstreamEventContext } from '../observability/upstream-events.js';
+import type { CanonicalResponse } from '../ir/types.js';
 // Type-only imports: erased at runtime, so the resilience -> types/router
 // value-direction import cycle can never exist.
 import type { CircuitBreakerSnapshot } from '../resilience/types.js';
@@ -51,8 +50,36 @@ export const TIER_RANK: Record<TierLevel, number> = {
  * Default `supportedReasoningEfforts` for a thinking-capable model is
  * the full 6-level ladder — there is no 5-level "thinking subset".
  */
-export const EFFORT_LADDER = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const EFFORT_LADDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ReasoningEffort = (typeof EFFORT_LADDER)[number];
+
+/** Shared thinking-token budget estimates for protocols that express effort as a token budget. */
+export const EFFORT_TO_BUDGET: Record<ReasoningEffort, number> = {
+  none: 0,
+  minimal: 512,
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+  xhigh: 32768,
+  max: 65536,
+};
+
+/**
+ * Map an explicit thinking-token budget to the effort ladder. Needed on wires
+ * whose SDK has no native budget field (OpenAI chat exposes `reasoning_effort`
+ * only), so an Anthropic `thinking.budget_tokens` / Responses
+ * `reasoning.max_tokens` request is translated instead of silently dropped.
+ * Thresholds invert `EFFORT_TO_BUDGET`.
+ */
+export function effortFromThinkingBudget(tokens: number): ReasoningEffort {
+  if (tokens <= EFFORT_TO_BUDGET.none) return 'none';
+  if (tokens <= EFFORT_TO_BUDGET.minimal) return 'minimal';
+  if (tokens <= EFFORT_TO_BUDGET.low) return 'low';
+  if (tokens <= EFFORT_TO_BUDGET.medium) return 'medium';
+  if (tokens <= EFFORT_TO_BUDGET.high) return 'high';
+  if (tokens <= EFFORT_TO_BUDGET.xhigh) return 'xhigh';
+  return 'max';
+}
 
 /**
  * WHO authored the effective effort ask (ADR-0012). Every value except
@@ -155,7 +182,7 @@ export interface TierModelConfig {
 export type SessionLookupType =
   | 'explicit_header'   // client-supplied header / router_options
   | 'embedded_user_id'  // session UUID embedded in metadata.user_id (Claude Code)
-  | 'request_user'      // raw OpenAI request.user field
+  | 'request_user'      // RETIRED: raw OpenAI request.user — no longer emitted (user-scoped, not conversation-scoped); readable in historical traces only
   | 'prefix_chain'      // exact head-prefix anchor of a completed chain
   | 'tail_anchor'       // trailing-window anchor (survives history truncation)
   | 'client_ref'        // client-minted conversation id alias via router_options.client_ref (Cursor conversation_id)
@@ -179,6 +206,12 @@ export interface RoutingDecision {
   reasonCode?: string;
   reasonParams?: ReasonParams;
   layerUsed?: 'layer0' | 'entry' | 'layer2';
+  /**
+   * The request declares a machine-checkable JSON output contract
+   * (`response_format` json_object / json_schema). Arms the orchestrator's
+   * lite-first schema-assertion cascade (ADR-0001 §2); a `tools` list alone
+   * does NOT set it — there is no JSON contract for the assertion to check.
+   */
   needsSchemaValidation: boolean;
   sessionId?: string;
   sessionRatchetApplied?: boolean;
@@ -196,31 +229,20 @@ export interface RoutingDecision {
   effortConfidence?: number;
 }
 
-/**
- * `direct` unresolved-model outcome (ADR-0003 §7a): the turn ran THROUGH the
- * pipeline (normalization, session id, compression, capture) but resolves to
- * NO model — the transport must relay the response from the ORIGINAL
- * destination verbatim (raw bytes; the client's own auth headers ride along).
- * When set on an ExecutionResult, `response`/`tierUsed` are undefined and the
- * chat pipeline short-circuits to `relayUpstream` instead of encode/send.
- */
-export interface DirectForwardPlan {
-  /** Absolute origin URL — the ORIGINAL destination the MITM client dialed. */
-  url: string;
-  /** Client auth/accept headers (hop-by-hop, host and content-length stripped). */
-  requestHeaders: Record<string, string | string[]>;
-  /** Origin wire body: the client's own payload with scrubbed/compressed messages spliced back in. */
-  requestBody: string;
-  /** Upstream-leg capture provenance (undefined when capture is disabled). */
-  capture?: UpstreamEventContext;
-}
 
 export interface ExecutionResult {
-  response?: ChatCompletionResponse;
+  response?: CanonicalResponse;
   tierUsed?: TierLevel;
-  directForward?: DirectForwardPlan;
   modelUsed: string;
   layerUsed?: 'layer0' | 'entry' | 'layer2';
+  /**
+   * OUTBOUND protocol id of the SERVED attempt (the provider protocol id the
+   * gateway spoke to the upstream, e.g. `openai-chat`). Distinct from the
+   * inbound surface the client addressed — the gateway may have converted.
+   * Resolved from the served model's wire through the offered protocol table
+   * (`protocolForWire`), so the console prints one vocabulary on every page.
+   */
+  protocolUsed?: string;
   fallbackOccurred: boolean;
   fallbackReason?: string;
   sessionId?: string;
@@ -243,6 +265,20 @@ export interface ExecutionResult {
    */
   ttftMs?: number;
   genMs?: number;
+  /**
+   * Inbound stream tag: the response SHAPE actually written to this client
+   * (client `stream === true` after C-3, or `streaming.client.mode: always`).
+   * Owned by the surface pipeline; the orchestrator only carries it.
+   */
+  clientStream?: boolean;
+  /**
+   * Outbound stream tag: the provider leg of the SERVED attempt.
+   * `'sse'` = the upstream SSE reader ran; `'buffered'` = one buffered
+   * provider call. `'sse'` with `clientStream: false` is the accumulate mode
+   * (`streaming.upstream.mode: stream` on a JSON client) — a stream the
+   * gateway drained and answered as JSON (ADR-0008 §1).
+   */
+  upstreamStream?: 'sse' | 'buffered';
   /**
    * The perceived-experience companion to the TTFT/decode pair: total time the
    * committed attempt's stream spent in gaps of ≥1 s between two consecutive

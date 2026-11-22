@@ -31,6 +31,38 @@ export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
 /** `compression.headroom.url` backend default (loopback-only sidecar). */
 export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 
+/** `proxy.mihomo.mixedPort` backend default (ADR-0022). */
+export const DEFAULT_MIHOMO_MIXED_PORT = 7890;
+
+/** `proxy.mihomo.controllerPort` backend default. */
+export const DEFAULT_MIHOMO_CONTROLLER_PORT = 9090;
+
+/** `proxy.mihomo.selectedGroup` backend default. */
+export const DEFAULT_MIHOMO_GROUP = 'PROXY';
+
+/** Subscription refresh interval (seconds) when unset. */
+export const DEFAULT_MIHOMO_SUB_INTERVAL_SEC = 3600;
+
+/**
+ * `proxy.mihomo.groupInterval` backend default (seconds, automatic groups).
+ * The interval is the failure-detection window, so it ships at one minute
+ * instead of mihomo's five.
+ */
+export const DEFAULT_MIHOMO_GROUP_INTERVAL_SEC = 60;
+
+/** Backend bounds for `proxy.mihomo.groupInterval` (seconds). */
+export const MIHOMO_GROUP_INTERVAL_MIN_SEC = 30;
+export const MIHOMO_GROUP_INTERVAL_MAX_SEC = 86400;
+
+
+/** `proxy.mihomo.groupTolerance` backend default and upper bound (ms,
+ *  `url-test` only). */
+export const DEFAULT_MIHOMO_GROUP_TOLERANCE_MS = 50;
+export const MIHOMO_GROUP_TOLERANCE_MAX_MS = 5000;
+
+/** `proxy.mihomo.testUrl` backend default (mihomo's 204 health-check URL). */
+export const DEFAULT_MIHOMO_TEST_URL = 'https://www.gstatic.com/generate_204';
+
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 
@@ -77,3 +109,11 @@ export const CREDENTIAL_WEIGHT_MAX = 100;
  *  vendor CLI would reject, instead of sending the install and showing its error. Update both in
  *  the same commit. */
 export const DSH_PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Buffered provider timeout (ms) — mirrors backend `DEFAULT_PROVIDER_TIMEOUT_MS`
+ *  (backend/src/config/defaults.ts). Update both in the same commit. */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Streamed idle watchdog timeout (ms) — mirrors backend `DEFAULT_STREAM_IDLE_TIMEOUT_MS`
+ *  (backend/src/config/defaults.ts). Update both in the same commit. */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;

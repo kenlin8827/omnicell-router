@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CatalogCost, CatalogLimit, CatalogModalities } from './types.js';
 import { getOcrStorePath } from './ocr-store.js';
+import { protocolIdFromNpm } from '../provider-package.js';
 import type { ReasoningEffort } from '../../types/router.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
 
@@ -33,10 +34,11 @@ export interface OverrideEntry {
   /** Manual correction of the tri-state sampling-parameter capability flag (real behavior of a reseller's custom models, which catalog sources cannot cover). */
   temperature?: boolean;
   /**
-   * Tri-state developer-role capability override (`true` = the upstream
-   * accepts OpenAI `developer` messages — passthrough verbatim; undefined /
-   * false = the openai wire rewrites `developer` → `system`). No catalog
-   * source publishes role support, so this is override-only.
+   * Developer-role capability override, override-only (no catalog source
+   * publishes role support). Retained for config forward-compatibility:
+   * the canonical IR -> Chat projection already folds system/developer into
+   * one `system` message, so this value is currently INERT — all three states
+   * produce the same outbound payload. See ModelRegistration for details.
    */
   supportsDeveloperRole?: boolean;
   /**
@@ -48,7 +50,7 @@ export interface OverrideEntry {
   reasoningEfforts?: ReasoningEffort[];
   /** Model-default thinking level; `null` clears the override (follow the catalog/def). */
   defaultEffort?: ReasoningEffort | null;
-  /** Model-level AI-SDK package override — decides the wire protocol (boot-direct wire resolution). */
+  /** Model-level protocol id. Retired SDK package strings are translated on read. */
   npm?: string;
   /** Named thinking-level variants (UI short shape `{id, effort}` — materialized to the def shape at aggregation). */
   variants?: { id: string; effort: string }[];
@@ -72,10 +74,28 @@ export function readOverridesStore(): OverrideStore | null {
     if (!fs.existsSync(file)) return null;
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as OverrideStore;
     if (parsed?.version !== 1 || typeof parsed.models !== 'object' || parsed.models === null) return null;
-    return parsed;
+    const models: Record<string, OverrideEntry> = {};
+    for (const [key, entry] of Object.entries(parsed.models)) {
+      models[key] = translateOverrideNpm(entry);
+    }
+    return { ...parsed, models };
   } catch {
     return null;
   }
+}
+
+/** Read view only. The file is not rewritten here; the next override write
+ *  persists the translated id because it round-trips this view. */
+function translateOverrideNpm(entry: OverrideEntry): OverrideEntry {
+  if (!entry || typeof entry.npm !== 'string') return entry;
+  const npm = protocolIdFromNpm(entry.npm);
+  if (npm === entry.npm) return entry;
+  if (npm === undefined) {
+    const rest = { ...entry };
+    delete rest.npm;
+    return rest;
+  }
+  return { ...entry, npm };
 }
 
 export function getOverride(providerId: string, modelId: string): OverrideEntry | undefined {
@@ -105,7 +125,11 @@ export function upsertOverride(providerId: string, modelId: string, entry: Overr
     if (entry.supportsDeveloperRole !== undefined) merged.supportsDeveloperRole = entry.supportsDeveloperRole;
     if (entry.disabled !== undefined) merged.disabled = entry.disabled;
     if (entry.reasoningEfforts !== undefined) merged.reasoningEfforts = entry.reasoningEfforts;
-    if (entry.npm !== undefined) merged.npm = entry.npm;
+    if (entry.npm !== undefined) {
+      const npm = protocolIdFromNpm(entry.npm);
+      if (npm === undefined) delete merged.npm;
+      else merged.npm = npm;
+    }
     if (entry.defaultEffort !== undefined) {
       if (entry.defaultEffort === null) delete merged.defaultEffort;
       else merged.defaultEffort = entry.defaultEffort;

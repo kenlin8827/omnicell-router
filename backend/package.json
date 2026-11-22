@@ -1,6 +1,6 @@
 {
   "name": "@omnicell-router/backend",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "High-performance OmniCellRouter (OCR) Gateway & CLI Core",
   "type": "module",
   "main": "dist/index.js",
@@ -19,6 +19,7 @@
     "@grpc/grpc-js": "^1.14.7",
     "@grpc/proto-loader": "^0.8.1",
     "@iarna/toml": "^2.2.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@zip.js/zip.js": "^2.23.0",
     "fastify": "^5.2.1",
     "fflate": "^0.8.3",

@@ -15,12 +15,15 @@
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { UpstreamEventContext } from '../../providers/base.js';
 import { ModelRegistration } from '../../config/types.js';
-import { ChatCompletionRequest, ChatCompletionResponse } from '../../types/openai.js';
+import type { CanonicalRequest, CanonicalResponse } from '../../ir/types.js';
+import { capabilitiesFor } from '../../ir/capabilities.js';
+import { IrUnsupportedError } from '../../ir/errors.js';
 import { EFFORT_LADDER, ReasoningEffort } from '../../types/router.js';
 import { SystemoneRequest, SystemoneResponse } from './types.js';
 import { nativeSystemoneDecision } from './native.js';
 import {
-  buildDecisionChatRequest,
+  buildDecisionRequest,
+  canonicalOutputText,
   decisionReasoningEffort,
   synthesizeSystemoneResponse,
 } from './convert.js';
@@ -48,11 +51,64 @@ export interface SystemoneDecision {
  */
 const effortPreferenceByModel = new Map<string, ReasoningEffort | 'omit'>();
 
+/**
+ * Initial max_tokens pin for the conversion path. The old hard-coded 4096
+ * truncated decision calls: thinking models spend their completion budget on
+ * reasoning FIRST, so a big candidate set could exhaust 4096 before a single
+ * answer token was emitted — the classic "conversion failed: not a single
+ * valid JSON object". Generous headroom; an upstream with a lower hard cap
+ * rejects the value and the fallback below drops the field entirely (the
+ * vendor's own default applies).
+ */
+const DECISION_MAX_TOKENS = 16384;
+
+/**
+ * Models whose upstream rejected the max_tokens pin outright. The fallback is
+ * a single omit — the vendor then applies its own default / model maximum —
+ * so the learned fact is a boolean per model, not a value. Process-lifetime,
+ * like the other learned pins.
+ */
+const maxTokensRejectedByModel = new Set<string>();
+
+/**
+ * Per-model JSON-mode preference learned at runtime — true (or absent) = send
+ * `response_format: { type: 'json_object' }`; false = the upstream rejected
+ * the field, never send it again. Several OpenAI-compatible vendors (older
+ * vLLM builds, some proxies, smaller vendor APIs) hard-400 on response_format
+ * they don't implement; the prompt already carries the full JSON contract and
+ * the synthesizer tolerates fences and surrounding prose, so the field is an
+ * optimization, not a requirement. Same process-lifetime shape as the other
+ * learned pins; a gateway restart re-probes once.
+ */
+const jsonModePreferenceByModel = new Map<string, boolean>();
+
 /** Did the upstream reject our `reasoning_effort` parameter/value? */
 function isEffortRejection(err: any): boolean {
   if (!(err instanceof UpstreamError)) return false;
   if (err.status !== 400 && err.status !== 422) return false;
   return /reasoning_effort/i.test(`${err.message || ''} ${err.errorBody || ''}`);
+}
+
+/**
+ * Did the upstream reject our `max_tokens` parameter/value? The token context
+ * is required: a bare "too large" / "maximum … tokens" belongs to a
+ * CONTEXT-length 400 (dropping max_tokens cannot fix that), so matching it
+ * only buys a wasted retry.
+ */
+function isMaxTokensRejection(err: any): boolean {
+  if (!(err instanceof UpstreamError)) return false;
+  if (err.status !== 400 && err.status !== 422) return false;
+  return /max[_\s-]?tokens|(?:completion|output)\s+tokens|too many tokens/i.test(
+    `${err.message || ''} ${err.errorBody || ''}`
+  );
+}
+
+/** Did the upstream reject our `response_format` (JSON mode) parameter? */
+function isJsonModeRejection(err: any): boolean {
+  if (err instanceof IrUnsupportedError && err.code === 'response_format') return true;
+  if (!(err instanceof UpstreamError)) return false;
+  if (err.status !== 400 && err.status !== 422) return false;
+  return /response_format|json_object|json mode/i.test(`${err.message || ''} ${err.errorBody || ''}`);
 }
 
 /**
@@ -62,9 +118,11 @@ function isEffortRejection(err: any): boolean {
  * This is the "look at what the upstream actually supports" signal — there
  * is no query API for the real enum, but a rejection usually discloses it.
  */
+const EFFORT_MENTION_RE = new RegExp(`\\b(${EFFORT_LADDER.join('|')})\\b`, 'gi');
+
 function parseMentionedEfforts(errorText: string, exclude: ReasoningEffort): ReasoningEffort[] {
   const found = new Set<ReasoningEffort>();
-  for (const token of errorText.match(/\b(none|low|medium|high|xhigh|max)\b/gi) || []) {
+  for (const token of errorText.match(EFFORT_MENTION_RE) || []) {
     const level = token.toLowerCase() as ReasoningEffort;
     if (level !== exclude) found.add(level);
   }
@@ -79,65 +137,78 @@ function plannedEffort(model: ModelRegistration): ReasoningEffort | 'omit' {
 }
 
 /**
- * Execute the decision call, downgrading the effort pin when the upstream
- * rejects it. The retry target is learned from the vendor's own error
- * ("must be one of: 'low', 'high', 'max'") → its LOWEST allowed level;
- * when the message doesn't enumerate, the conservative chain applies
- * ('none' → 'low' → omit). Hard-bounded to 3 total attempts; the accepted
- * preference is memoized per model so later calls go straight to it.
+ * Execute the decision call, downgrading a rejected pin when the upstream
+ * rejects it. Three learnable pins, each with its own fallback chain:
+ * - `reasoning_effort`: the retry target is learned from the vendor's own
+ *   error ("must be one of: 'low', 'high', 'max'") → its LOWEST allowed
+ *   level; when the message doesn't enumerate, the conservative chain
+ *   applies ('none' → 'low' → omit).
+ * - `max_tokens`: one downgrade → omit the field entirely (the vendor then
+ *   applies its own default; its cap is the real limit either way).
+ * - `response_format` (JSON mode): one downgrade → omit the field entirely
+ *   (the system prompt carries the JSON contract; the synthesizer tolerates
+ *   fences and prose, so the constraint is an optimization, not a need).
+ * Accepted preferences are memoized per model so later calls go straight to
+ * them. Each pin gets at most one repair, so a call is bounded by the initial
+ * attempt plus the effort ladder (≤2 re-pins) plus max_tokens and
+ * response_format (one omit each) — at most 5 wire calls, and any rejection
+ * the fallbacks do not cover rethrows immediately.
  *
  * `upstreamEventContext` is the capture identity for the call (decision layer
  * plumbing or the surface pipeline itself), or undefined:
- * every attempt — including the effort-repair re-pin — is a real wire call,
+ * every attempt — including the pin-repair re-pins — is a real wire call,
  * so each gets its own event pair through the registry's normal mechanism.
  */
 async function executeDecision(
   registry: ProviderRegistry,
   model: ModelRegistration,
-  request: ChatCompletionRequest,
+  request: CanonicalRequest,
   signal?: AbortSignal,
-  upstreamEventContext?: UpstreamEventContext
-): Promise<ChatCompletionResponse> {
+  upstreamEventContext?: UpstreamEventContext,
+): Promise<CanonicalResponse> {
   let attemptRequest = request;
   let rejections = 0;
   for (;;) {
     try {
       return await registry.execute(attemptRequest, model, upstreamEventContext);
     } catch (err: any) {
-      const attempted = attemptRequest.reasoning_effort as ReasoningEffort | undefined;
-      if (!attempted || !isEffortRejection(err)) throw err;
-      // Same rule as the repair gate below: once the caller has walked away,
-      // re-pinning the effort buys nothing — an effort calibration is only
-      // worth learning for a decision somebody is still waiting on. Without
-      // this, a slow-then-400 upstream burns up to 2 more full chat calls
-      // behind a deadline the decision layer already gave up on.
+      const attemptedEffort = attemptRequest.reasoning?.effort as ReasoningEffort | undefined;
+      const attemptedMaxTokens = attemptRequest.generation?.maxOutputTokens;
       if (signal?.aborted) throw err;
-      rejections++;
-      let next: ReasoningEffort | 'omit';
-      if (rejections >= 2) {
-        next = 'omit'; // hard stop — bounded at 3 total attempts
-      } else {
-        // Parse the upstream's RAW error body only — the gateway's own
-        // message prefix carries the provider name, which may itself contain
-        // effort words and would poison the candidate parse.
-        const mentioned = parseMentionedEfforts(err.errorBody || '', attempted);
-        next = mentioned.length > 0 ? mentioned[0] : attempted === 'none' ? 'low' : 'omit';
+      let retry: CanonicalRequest | undefined;
+      if (attemptedEffort && isEffortRejection(err)) {
+        rejections += 1;
+        let next: ReasoningEffort | 'omit';
+        if (rejections >= 2) next = 'omit';
+        else {
+          const mentioned = parseMentionedEfforts(err.errorBody || '', attemptedEffort);
+          next = mentioned.length > 0 ? mentioned[0]! : attemptedEffort === 'none' ? 'low' : 'omit';
+        }
+        effortPreferenceByModel.set(model.id, next);
+        console.warn(`[systemone] upstream rejected reasoning_effort '${attemptedEffort}' for model '${model.id}' — downgrading the pin to '${next}'`);
+        const reasoning = { ...attemptRequest.reasoning };
+        if (next === 'omit') delete reasoning.effort;
+        else reasoning.effort = next;
+        retry = { ...attemptRequest, reasoning: Object.keys(reasoning).length ? reasoning : undefined };
+      } else if (attemptedMaxTokens !== undefined && isMaxTokensRejection(err)) {
+        rejections += 1;
+        maxTokensRejectedByModel.add(model.id);
+        console.warn(`[systemone] upstream rejected max_tokens ${attemptedMaxTokens} for model '${model.id}' — omitting the field (vendor default applies)`);
+        const generation = { ...attemptRequest.generation };
+        delete generation.maxOutputTokens;
+        retry = { ...attemptRequest, generation: Object.keys(generation).length ? generation : undefined };
+      } else if (attemptRequest.text?.format && isJsonModeRejection(err)) {
+        rejections += 1;
+        jsonModePreferenceByModel.set(model.id, false);
+        console.warn(`[systemone] upstream rejected response_format json_object for model '${model.id}' — retrying without it (the prompt carries the JSON contract)`);
+        const text = { ...attemptRequest.text };
+        delete text.format;
+        retry = { ...attemptRequest, text: Object.keys(text).length ? text : undefined };
       }
-      effortPreferenceByModel.set(model.id, next);
-      console.warn(
-        `[systemone] upstream rejected reasoning_effort '${attempted}' for model '${model.id}' — downgrading the pin to '${next}'`
-      );
-      const retry: ChatCompletionRequest = { ...request };
-      if (next === 'omit') delete retry.reasoning_effort;
-      else retry.reasoning_effort = next;
+      if (!retry) throw err;
       attemptRequest = retry;
     }
   }
-}
-
-function chatText(chat: ChatCompletionResponse): string {
-  const content = chat.choices?.[0]?.message?.content ?? '';
-  return typeof content === 'string' ? content : JSON.stringify(content);
 }
 
 async function convertViaChatModel(
@@ -145,39 +216,34 @@ async function convertViaChatModel(
   body: SystemoneRequest,
   model: ModelRegistration,
   signal?: AbortSignal,
-  upstreamEventContext?: UpstreamEventContext
+  upstreamEventContext?: UpstreamEventContext,
 ): Promise<SystemoneResponse> {
-  // System One = fast structured decisions: pin the decision call's reasoning
-  // effort on the initial AND repair requests (memoized preference + runtime
-  // rejection fallback live in plannedEffort / executeDecision).
-  const build = (repair?: { previousOutput: string; reason: string }) => {
-    const request = buildDecisionChatRequest(body, model.id, repair);
+  const build = (repair?: { previousOutput: string; reason: string }): CanonicalRequest => {
+    const request = buildDecisionRequest(body, model.id, repair);
+    const supportsJsonObject = capabilitiesFor(model.wire ?? 'openai-chat').responseFormat.json_object === true;
+    if (!supportsJsonObject || jsonModePreferenceByModel.get(model.id) === false) request.text = undefined;
     const preference = plannedEffort(model);
-    if (preference !== 'omit') request.reasoning_effort = preference;
+    if (preference !== 'omit') request.reasoning = { effort: preference };
+    if (!maxTokensRejectedByModel.has(model.id)) {
+      request.generation = { ...request.generation, maxOutputTokens: DECISION_MAX_TOKENS };
+    }
     return request;
   };
-
-  let chat = await executeDecision(registry, model, build(), signal, upstreamEventContext);
-  let synth = synthesizeSystemoneResponse(chat, body, model.id);
+  let response = await executeDecision(registry, model, build(), signal, upstreamEventContext);
+  let synth = synthesizeSystemoneResponse(response, body, model.id);
   for (let attempt = 0; attempt < CONVERSION_REPAIR_ATTEMPTS && !synth.ok; attempt++) {
-    // Never start a repair the caller has already walked away from: the first
-    // call's output was unusable AND time is up — a second full chat call
-    // would be pure cost. (The route passes no signal; only deadline-bound
-    // callers like the Layer 2 decision layer do.)
     if (signal?.aborted) break;
-    chat = await executeDecision(
-      registry,
-      model,
-      build({ previousOutput: chatText(chat), reason: synth.reason }),
-      signal,
-      upstreamEventContext
-    );
-    synth = synthesizeSystemoneResponse(chat, body, model.id);
+    const truncated = response.reason === 'length';
+    response = await executeDecision(registry, model, build({
+      previousOutput: canonicalOutputText(response),
+      reason: truncated
+        ? `${synth.reason} (the output was cut off at the token limit — keep it compact)`
+        : synth.reason,
+    }), signal, upstreamEventContext);
+    synth = synthesizeSystemoneResponse(response, body, model.id);
   }
   if (!synth.ok) {
-    const err: any = new Error(
-      `System One conversion failed: the model output could not be converted (${synth.reason}).`
-    );
+    const err: any = new Error(`System One conversion failed: the model output could not be converted (${synth.reason}).`);
     err.systemoneCode = 'conversion_failed';
     err.statusCode = 502;
     throw err;

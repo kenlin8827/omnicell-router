@@ -23,7 +23,26 @@ import React from 'react';
  * three tile paths on an 800x800 grid), rescaled to 24x24 and flattened to
  * monochrome — the colored tiles become untagged subpaths so the wrapper's
  * fill="currentColor" themes it with the rest of the row.
- * qoder.color.svg is the Qoder app icon shipped in `plugins/qoder/logo.svg`.
+ * qoder.color.svg is the Qoder app icon shipped in `plugins/qoder-models/logo.svg`.
+ * idea.color.svg / goland.color.svg are JetBrains' official product icons
+ *   (resources.jetbrains.com/storage/products/company/brand/logos/IntelliJ_IDEA_icon.svg
+ *   and GoLand_icon.svg), vendored because simple-icons carries no JetBrains
+ *   product marks — and the Go language mark would label a product instead of
+ *   the language it is for. The earlier `idea.svg` was byte-identical to the
+ *   FAMILY mark, so it is gone: the console drew "IntelliJ IDEA" beside the
+ *   JetBrains logo and no reader could tell the two apart.
+ * pycharm/phpstorm/webstorm/clion/rider/rubymine/rustrover/datagrip .color.svg
+ *   come from the same JetBrains brand-logos URL pattern (`<Product>_icon.svg`)
+ *   — same family, same licensing, same reason for vendoring.
+ * androidstudio.color.svg is Google's distribution, so JetBrains hosts no mark:
+ *   the simple-icons Android Studio path (CC0) with an explicit Android brand
+ *   green fill, because a color asset renders black without one.
+ * jetbrains.svg is JetBrains' own family mark (24x24, single path, no fill) from
+ *   resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg —
+ *   the family card uses it, its product rows use the product icons above.
+ * google.color.svg is Google's official multicolor "G" mark (Wikimedia Commons,
+ *   file `Google_"G"_logo.svg`), vendored because the provider glyph for Google
+ *   AI is the Gemini sparkle, not the Google brand mark.
  */
 const BRAND_SVGS: Record<string, string> = {};
 for (const [file, raw] of Object.entries(

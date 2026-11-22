@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。
+已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。2026-11-16 移除 §1 裸 `request.user` 身份层（用户粒度的取值不得命名会话；Junie 的常量 `user: "primary"` 会塌掉全部会话）；`request_user` 仅作为历史轨迹的只读值保留。2026-11-17 修正 §1 登记快照：回合结束的指纹是压缩前请求的深拷贝——按 role+content 重塑会丢掉 `tool_call_id` / `tool_calls`，工具循环一旦滑出探针窗口，每一轮都会重新 mint 一个会话。
 
 ## 背景
 
@@ -16,7 +16,7 @@
 
 1. 显式 Header `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`，或 `router_options.session_id`。
 2. 客户端内嵌会话 UUID——Claude Code `metadata.user_id` 的两种形态：旧版字符串 `user_{hex}_account_{uuid}_session_{uuid}` 与 2.x JSON 载荷 `{"device_id":...,"account_uuid":...,"session_id":"<uuid>"}`；两者的内层 id 同属一个对话 uuid 命名空间，统一映射到共享的 `cc_` 前缀。仅全形匹配：宽松的 `_session_` 后缀会把普通用户 id 提升为会话级；JSON 探测要求 JSON 对象且 `session_id` 为非空字符串（与控制台的 `formatSessionId` 同一语义）。
-3. 裸 `request.user`（用户粒度；为兼容保留）。
+3. **已移除（2026-11-16）。** 裸 `request.user` 不再是身份来源。它是 OpenAI 的 *end-user* 字段——用户粒度，不是会话粒度——而客户端常发送常量（JetBrains Junie 发 `user: "primary"`，即它的 agent 角色），导致该客户端的所有对话、所有轮次塌进一个名为 `primary` 的会话。用户标识绝不能命名会话：两者是两个正交的轴。仍然被采用的唯一 user 字段值是第 2 层的内层会话 UUID——那是承载在 `user_id` 里的**会话**标识，不是用户标识。第 2 轮起的连续性由内容锚点（4/5）、会话键（6）与客户端引用（7）负责；未命中的第 1 轮冷启动。`request_user` 作为**只读**值保留在 `SessionLookupType` 与 `CLIENT_NAMED_LOOKUP_TYPES` 中，使移除前写入的轨迹仍能反序列化并显示其原始 `idSource`；新的解析永不产生该值。
 4. 链锚——历史头部截至每个 assistant 轮的前缀哈希（探针有界；命中分叉/重生成后仍共头的历史）。按**规范形**序列化（见下）：登记的 assistant 回音保留其 `tool_calls`，故 agent 工具循环能扛住客户端回传时的字节漂移重新锚定。
 5. 尾锚——长度 ≥ 3、终于 assistant 边界的尾部窗口（截旧轮保上下文的客户端靠它回家）。
 6. 会话键——`sha256(apiKey 身份 + 完整首条用户消息)`。仅在字节精确锚点落空后才走到（第 2 轮起，如重生成的 assistant 改写），且仅当该键**只有唯一候选**（无歧义）时才归队：内容派生的身份 outrank 客户端声明，故别名永远无法改道一个其开场白仍被键识别的对话。有歧义的键（两个活会话共享首条消息）交给下面的客户端引用裁决，否则冷启动——假性拆分可自愈，假性合并永不可逆。传输 IP 被刻意排除在输入之外：本地网关对所有人都是 `127.0.0.1`/`::1`（无区分度），且地址在两个环回族之间抖动（正是它破坏了再锚定）。这取代了原先的首条消息根映射：它把 turn-1 形态的重发直接短路到 mint（根本不查键），又把有歧义的根**墓碑化**——同题重问毒化键，再叠加下述 tool-call 漂移，之后每一轮都落到被毒化的键上重新 mint，把一条会话级联成几十个 session id。
@@ -26,7 +26,9 @@
 
 **客户端会话引用——决断的取舍。** 别名方向与锚点使用同一种不对称：错误的重新绑定最多造成**拆分**（后续轮由内容重新锚定，别名随后跟随），绝不会把内容分开的两个会话合并。因此客户端把同一 id 复用到另一段对话最多付一次拆分的代价；而拒绝使用该 id，则在客户端历史不再像被服务的字节时每次都付一次拆分。每次解析都重绑别名（后写者胜），使它永远是产物而非输入：陈旧别名无法盖过字节精确锚点，被内容证据迁移的对话也会把别名一起带走。
 
-tool-call 锚按**规范形**序列化——易变包装字段（`"type":"function"` 标记、arguments JSON 的美化 vs 重压缩、信封键序）被归一化抹平；对回传时重新序列化的客户端，整对象哈希会在每个 tool-call 边界落空。该保留的区分度照旧保留：纯 tool-call 轮仍按 id + name + arguments 区分，不同的调用绝不互撞（不可逆的假性合并方向）。锚映射、会话键与客户端引用别名持久化到按环境的 JSON 快照（`<env>/data/sessions.json`——只存内容哈希、会话 id 与客户端 id，无明文；快照 `v: 2`，`v: 1` 文件可加载但无别名），2 秒防抖 + 原子写、关停时刷盘；重启不再撕碎非配合型客户端的分组（仅内存态的 tier/钉选/亲和绑定会重建）。完整摘要式重写匹配不到任何锚，刻意开新会话。出生元数据（`origin`、`firstUserMessage`）先写先得、此后不可变。
+tool-call 锚按**规范形**序列化——易变包装字段（`"type":"function"` 标记、arguments JSON 的美化 vs 重压缩、信封键序）被归一化抹平；对回传时重新序列化的客户端，整对象哈希会在每个 tool-call 边界落空。该保留的区分度照旧保留：纯 tool-call 轮仍按 id + name + arguments 区分，不同的调用绝不互撞（不可逆的假性合并方向）。**登记必须把客户端自己的字节交给这个序列化器**：回合结束的指纹是压缩前请求的深拷贝，绝非按 role+content 重塑——丢掉 `name` / `tool_call_id` / `tool_calls` 的副本会把每个含工具消息的边界登记成任何回传都无法复现的键，而解析只探测最近的边界，因此长工具循环滑出可匹配的开场之后，每一轮都会重新 mint 一个会话（`session-tool-anchor.test.ts`）。锚映射、会话键与客户端引用别名持久化到按环境的 JSON 快照（`<env>/data/sessions.json`——只存内容哈希、会话 id 与客户端 id，无明文；快照 `v: 2`，`v: 1` 文件可加载但无别名），2 秒防抖 + 原子写、关停时刷盘；重启不再撕碎非配合型客户端的分组（仅内存态的 tier/钉选/亲和绑定会重建）。完整摘要式重写匹配不到任何锚，刻意开新会话。出生元数据（`origin`、`firstUserMessage`）先写先得、此后不可变。
+
+**客户端辅助调用是它自己的对话——控制台只隐藏、绝不合并。** 生成标题 / 步骤摘要 / 分类这类请求，台阶上没有任何可锚之处：没有会话头、与被服务的对话没有共同前缀（提示是固定模板）、没有工具。于是它落到第 8 层冷启动，而一个 agent 回合能发出几十个这样的请求——某台本地网关在 3 分钟的 agent 工作里就记到 30 个，整个列表 96% 是单请求行。合并进父会话明确不是解法：把一段无关的交换焊进对话，正是上方锚点非对称性要防的假性合并。因此 `GET /api/admin/sessions` 接受 `hideOneShot`（丢弃自身请求数 `<= 1` 的行，分页前过滤，`total` 保持真实）；API 默认报出全部会话，而控制台页面——人真正当列表读的那个面——发送 `hideOneShot=1`，并在 `Hide internal` 旁给出复选框把它们调回来（`backend/tests/session/sessions-one-shot-filter.test.ts`）。正确的方向在客户端：辅助调用若点名父会话（`x-session-id` / `router_options.session_id`，第 1 层），即被原样采纳并归入其中。
 
 ### 2. 梯队策略——三种可配置策略
 
@@ -38,7 +40,7 @@ tool-call 锚按**规范形**序列化——易变包装字段（`"type":"functi
 
 ### 3. 模型钉扎及其驱逐——对话换模型仅有的两条路
 
-会话钉扎一个模型（`pinnedModel`，棘轮在出生/升档时写入）。钉扎读取用活注册表；ratchet 模式下钉扎坐候选链链首。被钉扎模型发生**硬切换**（`repinModel`，先于执行在本接缝持久化）当且仅当：
+会话钉扎一个模型（`pinnedModel`，棘轮在出生/升档时写入）。钉扎读取用活注册表；ratchet 模式下钉扎坐落在候选链首位。被钉扎模型发生**硬切换**（`repinModel`，先于执行在本接缝持久化）当且仅当：
 
 ```
 evict(pin) = configForce ∨ healthForce
@@ -51,7 +53,7 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - **范围**——仅 ratchet 模式。显式点名请求永不改道，仅为对齐回写钉扎（点名模型在天花板梯队实际服务；会话出生/升档时棘轮 resolver 收到的是**被点名模型本身**，绝非池代表——pool-less 部署下点名流量必须保持可调用；裸 `auto` 仍走池解析代表）。Combo 完全绕开钉扎（`sessionMode='bypass'`）：成员表逐调用现场重解析，combo 编辑下一个请求即触达所有对话——没有"绑定"需要撤离。
 - **控制台面**——钉扎是路由内部状态，绝不出现在控制台会话行中：`GET /api/admin/sessions` 只报 `currentModel`（实际服务过该会话最后一轮的模型 id，照注册原样——由图录/梯队成员匹配而来的模型带 `provider/model` 前缀，手写注册的模型是裸 id）与服务商 `currentProvider`——活跃行与轨迹重建行共用同一套推导，`GET /api/admin/sessions/:id` 走同一份投影。故障转移的落点因此绝不会冒充会话锚点；重启后的重建行按设计不携带路由状态，渲染同样的执行视图而非编造一个钉扎值；且行是封闭白名单（`SessionRow`，`backend/src/session/session-row.ts`），未来新增的会话内部字段默认不外泄，不会顺着一处展开（spread）漏出来。行里的 `firstUserMessage`（会话 id 下方的标题行）在出生时采集一次、由同一份提取结果写往两处——活跃实体与会话轨迹（`request.firstUserSummary`，后续每一轮逐字重写，因此轨迹环淘汰出生记录也不会让标题消失）——因此轨迹重建行（重启后，或从不铸造实体的 combo/stateless 会话）用的是同一个值；读取时绝不查请求捕捉归档，捕捉关闭时标题依然存在。凭证亲和与 `boundKeyHashPrefix`（显示安全的 ADR-0006 身份）同行返回；路由还会从**实时**注册表凭证链解析 `boundCredentialLabel`——即该前缀上的运维标签，按服务的 `currentProvider` 限定——因此重命名无需改动任何会话即可反映出来。缺失时（凭证未命名，或已离开该链）只剩前缀，控制台以前缀作为回退展示。`idSource`（`'gateway' | 'client'`）说明 id 由**哪一侧**铸造：取自**出生**层的解析类型——活跃行用实体的 `origin.lookupType`，否则用现存最早一条轨迹——因此后续靠内容锚点重解析、或重启重建，都不会翻转该标记；没有任何轨迹记录解析类型时为 `null`。它存在的原因是 id 的形状不能当证据：第 1–3 层与第 9 层会逐字采纳客户端给出的值，那一列里的 36 字符 UUID 是客户端的选择，而网关自己铸造的（第 8 层）是 `sess_` + 16 hex。纯展示——不重铸、不改写、不加命名空间。
 - **归因**——绝不新增 `reasonCode`（本轮代码属于 §2 的 `session.*` 词汇）；迁移走 `reasonParams`：`{ repin: 'config'|'health', repinFrom, repinTo }`，随 trace 持久化，在会话切换时间线渲染为显式尾部。
-被否决：peek 式驱逐（把钉扎从恢复中的模型上搬走）；在 `executeCandidatePool` 过滤链首（该池被显式/combo 共用——打破显式优先契约）；干等 TTL（最长一小时静默否决已提交的操作员编辑）。
+被否决：peek 式驱逐（把钉扎从恢复中的模型上搬走）；在 `executeCandidatePool` 过滤候选链首位（该池被显式/combo 共用——打破显式优先契约）；干等 TTL（最长一小时静默否决已提交的操作员编辑）。
 
 ### 4. 凭证亲和——切换是强制故障转移，绝非负载均衡
 
@@ -72,4 +74,4 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - 客户端 User-Agent 头随轨迹记录（`request.clientHeaders.userAgent`），并在控制台会话表上只读展示为客户端指纹；因其可被客户端伪造，绝不作为身份或路由输入——与上文排除传输 IP 的理由相同。
 - 旁路（combo）回合从不创建会话实体，因此按会话的回合编号使用独立的持久化计数器（`SessionManager.recordBypassTurn`，快照字段 `bypassTurns`）——纯展示用途的记账，绝不参与路由；缺少它时每个 combo 请求都会读到 `undefined + 1`，控制台请求明细表的每一行都被标成 #1。
 - 操作员编辑（梯队成员表、denylist）下一轮即触达活会话；每个被驱逐会话恰好支付一次缓存重建——强制、可归因、只在有处可去时重试。
-- 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`credential-affinity-orchestrator.test.ts`、`credential-selection.test.ts`、`session.test.ts`、`resilience*.test.ts`。
+- 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`credential-affinity-orchestrator.test.ts`、`credential-selection.test.ts`、`session.test.ts`、`session-tool-anchor.test.ts`（60 个工具往返的循环靠字节精确锚点始终归入同一会话）、`resilience*.test.ts`。

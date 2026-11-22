@@ -24,25 +24,6 @@ import { humanizeKey } from '../lib/format';
  * navigating away and discarding its own draft.
  */
 
-/** A gateway's model surface is a CLIENT concern and is edited in Client Hub.
- *  These keys stay in the schema (the storage contract) but are not rendered a
- *  second time here — one source, one editor. */
-const GATEWAY_CLIENT_FACING_FIELDS: Record<string, true> = {
-  model: true,
-  forceModel: true,
-  modelListMode: true,
-  models: true,
-  catalogReplace: true,
-  catalogPrefix: true,
-};
-
-/** Plugins whose model surface is edited on a Client Hub card. */
-const GATEWAY_PLUGIN_CLIENT: Record<string, string> = {
-  'cursor-gateway': 'Cursor',
-  'qoder-gateway': 'Qoder',
-};
-const isClientGateway = (id: string): boolean => GATEWAY_PLUGIN_CLIENT[id] !== undefined;
-
 /** The schema key is metadata, not a heading: printing it beside every label
  *  repeated the row it belonged to and turned the form into a wall of
  *  identifiers. It stays reachable on hover because backend warnings
@@ -172,16 +153,33 @@ export interface PluginConfigDrawerProps {
    *  drawer is opened FROM that page — telling the reader to go where they
    *  already are is noise. */
   showClientsGuide?: boolean;
+  /** Display name of the Client Hub card this plugin's `card` fields are edited
+   *  on (the guide note names it). Omitted = the plugin's own name. */
+  cardClientName?: string;
 }
 
-export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, onClose, showClientsGuide = true }) => {
+export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({
+  plugin,
+  onClose,
+  showClientsGuide = true,
+  cardClientName,
+}) => {
   const { t, lang } = useI18n();
   const toast = useToast();
   const [schema, setSchema] = useState<PluginConfigFieldInfo[]>([]);
   const [sections, setSections] = useState<PluginConfigSectionInfo[]>([]);
-  /** Declared `advanced` sections the operator has opened (id set). Collapsed
-   *  is the default: advanced settings keep their values either way. */
-  const [openAdvanced, setOpenAdvanced] = useState<Record<string, boolean>>({});
+  /** Explicit open/closed flag per declared group, keyed by group id. Absent =
+   *  the default (`advanced` groups start collapsed, the rest expanded); a
+   *  manual toggle only records the override. Collapsing is cosmetic — the
+   *  draft keeps every value either way. */
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  /** QUICK vs ADVANCED view. Quick shows only `essential`-marked fields; a
+   *  schema without any such field never mounts the toggle at all, so the
+   *  historical single-view drawer is unchanged. The draft is shared —
+   *  switching views never discards input, and Save always writes every key
+   *  (the backend expects the FULL values object), including fields the
+   *  current view does not render. */
+  const [mode, setMode] = useState<'quick' | 'advanced'>('quick');
   /** Textarea field opened in the large editor (null = closed). The editor edits
    *  the SAME draft entry, so there is nothing to "apply" on close. */
   const [expandTarget, setExpandTarget] = useState<PluginConfigFieldInfo | null>(null);
@@ -233,10 +231,11 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
     let cancelled = false;
     setSchema([]);
     setSections([]);
-    setOpenAdvanced({});
+    setOpenGroups({});
     setExpandTarget(null);
     setDraft({});
     setError(null);
+    setMode('quick');
     setWarnings([]);
     setSaved(false);
     setLoading(true);
@@ -271,7 +270,7 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
       // never receives the key secret and core exposes no key-policy lookup to
       // plugins, so the console resolves the key's allowed models here and
       // stores the resulting ids. Re-save after changing the key's policy.
-      if (isClientGateway(plugin.id) && next.modelListMode === 'follow') {
+      if (next.modelListMode === 'follow') {
         // The binding field is the gateway's OWN declaration (`accountKeyId`
         // today), never a hardcoded name.
         const keyField = schema.find((field) => field.control === 'apiKey')?.key;
@@ -424,23 +423,29 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
     );
   };
 
+  // Quick vs advanced is another DISPLAY-only filter over the same draft: the
+  // quick view shows only `essential`-marked fields, everything else stays a
+  // save-time participant. A schema without any essential field skips the
+  // toggle entirely and keeps the historical single view. In the quick view the
+  // per-section `advanced` collapsing is dropped — the subset is already the
+  // short form, so collapsing it again would hide declared essentials.
+  const hasEssential = schema.some((field) => field.essential === true);
+  // Placement is the manifest's call: `card` fields belong to the Client Hub
+  // card and `none` fields are dead config — neither is rendered a second time
+  // here; the apiKey control is card state by contract.
+  const cardFields = schema.filter((field) => field.placement === 'card');
+  const visibleSchema = schema
+    .filter((field) => (field.placement ?? 'drawer') === 'drawer' && field.control !== 'apiKey')
+    .filter((field) => (mode === 'quick' ? field.essential === true : true));
+  const visibleSections =
+    mode === 'quick'
+      ? sections.filter((s) => visibleSchema.some((f) => f.section === s.id)).map((s) => ({ ...s, advanced: false }))
+      : sections;
   // `visibleWhen` filters the RENDER only (ADR-0017 §7): the draft keeps every
   // value, so a field that is hidden at the moment still saves what it last held
   // — and the backend still validates it. Grouping inherits the same rule: an
   // all-hidden section renders no heading at all.
-  const configGroups = groupVisibleFields(
-    isClientGateway(plugin.id)
-      ? schema.filter(
-          (field) =>
-            GATEWAY_CLIENT_FACING_FIELDS[field.key] !== true &&
-            // The picked-key field is card state too, whatever the gateway
-            // names it — its `control` is the contract.
-            field.control !== 'apiKey'
-        )
-      : schema,
-    sections,
-    draft
-  );
+  const configGroups = groupVisibleFields(visibleSchema, visibleSections, draft);
 
   return (
     <>
@@ -484,10 +489,23 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
           </div>
         ) : (
           <>
-            {showClientsGuide && isClientGateway(plugin.id) && (
+            {showClientsGuide && cardFields.length > 0 && (
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '12px' }}>
-                {t('pluginPage.gatewayModelsMoved', { client: GATEWAY_PLUGIN_CLIENT[plugin.id] })}{' '}
+                {t('pluginPage.gatewayModelsMoved', { client: cardClientName ?? plugin.name })}{' '}
                 <Link to="/clients">{t('pluginPage.cursorOpenClients')}</Link>
+              </div>
+            )}
+            {hasEssential && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                <SegGroup
+                  size="md"
+                  value={mode}
+                  onChange={(v) => setMode(v as 'quick' | 'advanced')}
+                  options={[
+                    { value: 'quick', label: t('pluginPage.configModeQuick') },
+                    { value: 'advanced', label: t('pluginPage.configModeAdvanced') },
+                  ]}
+                />
               </div>
             )}
             {schema.length === 0 ? (
@@ -496,37 +514,40 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({ plugin, 
               configGroups.map((group) => {
                 const key = group.id ?? '__top';
                 const heading = group.title !== undefined ? pickLocaleText(group.title, lang) : undefined;
-                // Advanced groups ship collapsed: they keep their values either
-                // way, so hiding them only shortens the scroll. The toggle is a
-                // real button (not a styled div) so it stays keyboard-reachable.
-                const collapsed = group.advanced && openAdvanced[key] !== true;
+                // Every declared group renders as one collapsible CARD: the
+                // heading row is a real button (keyboard-reachable), `advanced`
+                // groups start collapsed, the rest expanded. The ungrouped block
+                // has no heading and no card — it renders flat, always open.
+                const open = openGroups[key] ?? !group.advanced;
                 return (
-                  <div key={key} className="form-section">
-                    {heading ? <div className="form-section-title">{heading}</div> : null}
-                    {collapsed ? (
-                      <div>
-                        <button type="button" className="btn btn-sm" onClick={() => setOpenAdvanced((prev) => ({ ...prev, [key]: true }))}>
-                          <ChevronDown size={12} aria-hidden />
-                          {t('pluginPage.configAdvancedShow')}
-                        </button>
-                      </div>
-                    ) : (
-                      <div style={CONFIG_LIST}>
+                  <div
+                    key={key}
+                    className={
+                      heading
+                        ? `form-section form-section-card${open ? '' : ' form-section-card-closed'}`
+                        : 'form-section'
+                    }
+                  >
+                    {heading ? (
+                      <button
+                        type="button"
+                        className="form-section-toggle"
+                        aria-expanded={open}
+                        onClick={() => setOpenGroups((prev) => ({ ...prev, [key]: !open }))}
+                      >
+                        <span className="form-section-title">{heading}</span>
+                        {open ? <ChevronUp size={13} aria-hidden /> : <ChevronDown size={13} aria-hidden />}
+                      </button>
+                    ) : null}
+                    {open ? (
+                      <div className={heading ? 'form-section-card-body' : undefined} style={CONFIG_LIST}>
                         {group.fields.map((field, index) => (
                           <div key={field.key} style={index === 0 ? undefined : CONFIG_DIVIDER}>
                             {renderConfigField(field)}
                           </div>
                         ))}
-                        {group.advanced ? (
-                          <div>
-                            <button type="button" className="btn btn-sm" onClick={() => setOpenAdvanced((prev) => ({ ...prev, [key]: false }))}>
-                              <ChevronUp size={12} aria-hidden />
-                              {t('pluginPage.configAdvancedHide')}
-                            </button>
-                          </div>
-                        ) : null}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })

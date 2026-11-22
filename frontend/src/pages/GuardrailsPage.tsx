@@ -158,7 +158,7 @@ export const GuardrailsPage: React.FC = () => {
   // neither tripped (state==='OPEN') nor operator-taken-down. HALF_OPEN still
   // serves probe traffic, so it counts as routable. A card with NO tuple
   // record (`snap === undefined`) has never failed and IS routable. This is
-  // the truth behind the 单点风险 badge (chainLen - open - takedown), NOT the
+  // the truth behind the single-point-of-risk badge (chainLen - open - takedown), NOT the
   // raw OPEN count: a disabled sibling makes a healthy pair a single point
   // even with zero breakers tripped.
   const routablePairsByModel = useMemo(() => {
@@ -242,8 +242,8 @@ export const GuardrailsPage: React.FC = () => {
         if (providerFilter !== '' && c.provider !== providerFilter) return false;
         if (modelIdFilter !== '' && c.modelId !== modelIdFilter) return false;
         if (credentialFilter !== '' && c.prefix !== credentialFilter) return false;
-        // A takedown card lives ONLY in the 已停用 tab (+全部) — never double
-        // listed as 熔断中/健康, which are pure breaker states.
+        // A takedown card lives ONLY in the dedicated takedown tab (+ all) — never double
+        // listed under the breaker-open / healthy tabs, which are pure breaker states.
         if (stateFilter === 'TAKEDOWN') {
           if (!isTakenDown(c)) return false;
         } else if (isTakenDown(c)) {
@@ -452,7 +452,7 @@ export const GuardrailsPage: React.FC = () => {
    * credentialId selects the store row, the bare model id the pairing. The
    * synthetic config-key column has no store row to pin — the provider probe
    * IS that key (there is no chain). An orphan prefix (credential gone) gets no
-   * probe: the chain head would answer for a credential nobody selected.
+   * probe: the default credential would answer for a credential nobody selected.
    */
   const pairTestTarget = (c: PairCard): ModelTestTarget | null => {
     const provPrefix = `${c.provider}/`;
@@ -806,7 +806,7 @@ export const GuardrailsPage: React.FC = () => {
             <span className="badge" style={{ ...STAT_BADGE, color: 'var(--text-muted)' }} title={t('guardrails.totalBreakers')}>
               {t('guardrails.pairSplit', { m: totalBreakers, p: allItems.length })}
             </span>
-            {/* SAME filter as the 熔断中 tab below (effectiveState): tuple truth
+            {/* SAME filter as the breaker-open tab below (effectiveState): tuple truth
                 plus operator takedowns. The model layer is a DERIVED fold of the
                 same tuples — adding `openCount` counted one model-scope trip
                 twice (once per model fold, once per tuple). */}
@@ -838,7 +838,7 @@ export const GuardrailsPage: React.FC = () => {
               <span>{t('guardrails.editRulesLink')}</span>
             </Link>
             <button className="btn btn-primary" onClick={handleResetAll} disabled={isResetting}>
-              <RefreshCw size={13} />
+              <RefreshCw size={13} style={isResetting ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
               <span>{isResetting ? t('guardrails.resetting') : t('guardrails.resetAll')}</span>
             </button>
           </div>

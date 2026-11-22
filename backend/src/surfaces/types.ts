@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream';
 import type { ModelAccessConfig } from '../config/types.js';
 import type { ProcessContext } from '../pipeline/orchestrator.js';
-import type { ChatCompletionChunk, ChatCompletionRequest } from '../types/openai.js';
+import type { CanonicalRequest, StreamEvent } from '../ir/types.js';
 import type { ExecutionResult } from '../types/router.js';
 
 /**
@@ -69,9 +69,9 @@ export interface TransportContext {
   >;
   sendJson(status: number, payload: unknown, headers?: Record<string, string>): void;
   /**
-   * Raw upstream relay (the `direct` unresolved-model executor, ADR-0003
-   * §7a): ONE terminal send that pipes an origin response to the client
-   * verbatim — status line, headers and body bytes (JSON or SSE alike).
+   * Raw upstream relay for a gateway plugin: ONE terminal send that pipes an
+   * origin response to the client verbatim — status line, headers and body
+   * bytes (JSON or SSE alike).
    * Callers pass hop-by-hop-stripped headers; the implementation owns the
    * capture side (per-chunk gateway-response stash + finalize), matching
    * sendJson/beginSse discipline.
@@ -83,7 +83,8 @@ export interface TransportContext {
     stream: Readable;
   }): void;
   beginSse(headers: Record<string, string>): void;
-  writeSseChunk(chunk: string): void;
+  /** A Promise applies transport backpressure; void keeps in-memory test sinks synchronous. */
+  writeSseChunk(chunk: string): void | Promise<void>;
   endSse(): void;
   /**
    * Client-abort detection. Bun never fires req 'res''close'/'aborted'
@@ -118,8 +119,15 @@ export interface SurfacePathContext {
 
 /** Parse outcome: exactly one of `request` (valid) or `error` (400 message) is set. */
 export interface SurfaceParseResult {
-  request?: ChatCompletionRequest;
+  request?: CanonicalRequest;
   error?: string;
+  /**
+   * Stable machine code for the error envelope (`error.code`). Wires whose
+   * `errorBody` ignores the argument (chat-completions) simply drop it; the
+   * Responses wire carries it, so a client can branch on
+   * `unsupported_parameter` / `previous_response_not_found` instead of prose.
+   */
+  errorCode?: string;
   state?: unknown;
 }
 
@@ -132,6 +140,13 @@ export interface ChatChunkContext {
   model: string;
   /** Client asked for the terminal usage frame (`stream_options.include_usage`). */
   includeUsage: boolean;
+  /**
+   * Opaque per-turn surface state from `parse`. Wires that pre-mint ids for
+   * their streamed lifecycle (responses: response_id / message item id) need
+   * them at the FIRST upstream chunk, long before `afterResult` can run.
+   * Chat wire ignores this.
+   */
+  state?: unknown;
 }
 
 /**
@@ -141,7 +156,7 @@ export interface ChatChunkContext {
  * impossible to hand the orchestrator a FastifyRequest-shaped context.
  */
 export interface ChatSurface {
-  readonly wire: 'chat' | 'anthropic' | 'responses';
+  readonly wire: 'openai-chat' | 'anthropic-messages' | 'openai-responses';
   readonly exec: 'chat-pipeline';
   readonly capture: true;
   readonly routePath: string;
@@ -152,14 +167,27 @@ export interface ChatSurface {
   encodeStream(result: ExecutionResult, state: unknown): string[];
   /**
    * Pass-through frame encoder for the streamed leg: ONE upstream chunk → one
-   * SSE frame, or `null` to drop it. Present only on a wire whose client
-   * protocol is chunk-shaped end to end (today: `chat`); a surface without it
-   * keeps the buffered `encodeStream` path even when its upstream could stream,
-   * because the pipeline only offers a relay when the surface can encode chunks.
+   * SSE frame, or `null` to drop it. Present on a wire whose client protocol is
+   * chunk-shaped end to end (`chat` and, since the relay lifecycle hooks,
+   * `responses`); a surface without it keeps the buffered `encodeStream` path
+   * even when its upstream could stream, because the pipeline only offers a
+   * relay when the surface can encode chunks.
    */
-  encodeChunk?(chunk: ChatCompletionChunk, ctx: ChatChunkContext): string | null;
-  /** Runs BEFORE the first response byte (responses wire: RespStore.append). */
+  encodeChunk?(event: StreamEvent, ctx: ChatChunkContext): string | null;
+  /** Runs BEFORE the first response byte on the buffered leg (responses: RespStore.append). */
   afterResult?(result: ExecutionResult, state: unknown): void;
+  /**
+   * Relay lifecycle for a wire that is NOT chat-chunk shaped but can still
+   * forward upstream chunks. `streamStart` frames flush with the first byte;
+   * `streamEnd` frames close the turn once the accumulated result exists.
+   *
+   * A surface with `afterResult` may only be handed a relay when it ALSO has
+   * `streamStart`: the hook's state must be pre-minted at parse time so the
+   * opening frame carries ids that `afterResult` will later persist. Wires
+   * without a lifecycle keep the buffered SSE path untouched.
+   */
+  streamStart?(state: unknown, ctx: ChatChunkContext): string[];
+  streamEnd?(result: ExecutionResult, state: unknown, ctx: ChatChunkContext): string[];
   errorBody(status: number, message: string, code?: string): unknown;
   executionError(err: unknown): { status: number; body: unknown };
 }

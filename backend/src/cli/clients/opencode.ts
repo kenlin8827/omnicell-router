@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import {
   ClientAdapter,
   createBackup,
+  describeBackup,
   restoreBackup,
   safeReadJson,
   defaultGatewayPort,
 } from './base.js';
-import { ClientHookStatus, ModelProfileBinding, VIRTUAL_AUTO_IDS } from '../types.js';
+import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
 import {
   ROUTER_PROVIDER_ID,
   getOpenCodeConfigPath,
@@ -17,6 +18,7 @@ import { readProviderDefsFile, writeProviderDefs } from '../../opencode/provider
 import { materializeDefs } from '../../opencode/credentials/def-materialize.js';
 import { reloadOpencodeService } from '../../opencode/credentials/opencode-v2-store.js';
 import { resolveDefaultPaths } from '../../opencode/credentials/paths.js';
+import { opencodePackageFor } from '../../opencode/provider-package.js';
 
 /**
  * OpenCode client adapter.
@@ -31,13 +33,12 @@ import { resolveDefaultPaths } from '../../opencode/credentials/paths.js';
  *  - The default model is selected via the top-level `model` key ("provider/model-id").
  */
 
-/** Sidecar that remembers the user's previous default model across setup/teardown
- *  and echoes the applied model profile (id + agent→slot bindings) for the console. */
+/** Sidecar that remembers the user's previous default model across setup/teardown. */
 function metaPathFor(configPath: string): string {
   return `${configPath}.ocr-meta.json`;
 }
 
-function readMeta(configPath: string): { previousModel?: string; profile?: ModelProfileBinding } {
+function readMeta(configPath: string): { previousModel?: string } {
   try {
     const p = metaPathFor(configPath);
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -47,8 +48,11 @@ function readMeta(configPath: string): { previousModel?: string; profile?: Model
   return {};
 }
 
-function writeMeta(configPath: string, meta: { previousModel?: string; profile?: ModelProfileBinding }): void {
+function writeMeta(configPath: string, meta: { previousModel?: string }): void {
   try {
+    // Legacy v1 key from the removed model-profile mechanism (ADR-0031) —
+    // dropped on every write so old sidecars converge clean.
+    delete (meta as Record<string, unknown>).profile;
     fs.writeFileSync(metaPathFor(configPath), JSON.stringify(meta, null, 2), 'utf8');
   } catch {
     // best effort
@@ -108,7 +112,7 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
   }
   return {
     name: 'OmniCellRouter',
-    package: '@opencode/ai/providers/openai-compatible',
+    package: opencodePackageFor('openai-chat'),
     settings: {
       baseURL: targetUrl,
       // Gateway-issued key when the user picks one; the placeholder works
@@ -180,7 +184,6 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       // included) links through the agent inventory table instead.
       modelSlots: [{ key: 'main', value: mainId, default: 'auto' }],
       extraModels,
-      profile: hooked ? readMeta(configPath).profile : undefined,
     };
   }
 
@@ -191,10 +194,8 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     /** Follow mode: the virtual tier subset the selected key's policy admits. */
     virtualModels?: string[];
     apiKey?: string;
-    /** Effective agent bindings (manual picks + profile-resolved links, merged by the console route): agent name → modelRef ('auto'/'' = inherit default). */
+    /** Effective agent bindings (manual picks): agent name → modelRef ('auto'/'' = inherit default). */
     agentModels?: Record<string, string>;
-    /** Profile-link echo for the sidecar meta: profile id + agent → profile-slot key ('' id = un-link). */
-    profile?: ModelProfileBinding;
   }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
     const port = options?.port || defaultGatewayPort();
@@ -203,7 +204,8 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     const apiKey = options?.apiKey?.trim() || undefined;
     const agentModels = options?.agentModels;
 
-    // 1. Safety backup (single rolling .bak.ocr, restorable via teardown)
+    // 1. Safety snapshot: ONE .bak.ocr of the pre-takeover file, restored by
+    //    teardown and never overwritten by a re-setup (see createBackup).
     if (fs.existsSync(configPath)) {
       createBackup(configPath);
     }
@@ -213,7 +215,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     //    an explicit user action, so the write bypasses the sync toggles. The
     //    materialized slot REPLACES the whole `providers` node (the client copy
     //    of the defs truth), and the legacy-slot twin cleanup stays (opencode
-    //    reads both, but only one may exist). Model-profile refs are part of the
+    //    reads both, but only one may exist). Agent refs are part of the
     //    exposed model set — opencode validates `agent.<name>.model` against
     //    this provider's `models` map.
     const agentRefs = Object.values(agentModels || {}).map(r => (r || '').trim()).filter(r => r && r !== 'auto');
@@ -247,18 +249,14 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     }
     patchJsonc(configPath, ['model'], targetModel);
 
-    // 4. Agent bindings — either payload present (even empty) means the
-    //    console form is engaged: sweep router-owned overrides first (both
-    //    node spellings, so a re-apply leaves no ghosts), then write each
-    //    binding into the agent home (the config node overrides same-name
-    //    agents defined in agent(s)/\*.md). `agentModels` carries the
-    //    effective refs; `profile` is the link echo (agent → profile-slot
-    //    key) that powers profile-change write-throughs. A bare
-    //    `ocr setup opencode` (CLI) passes neither and never touches the
-    //    agent node — manually pinned native models are never stolen.
-    let profileNote = '';
-    const profileIn = options?.profile;
-    const hasAgentPayload = agentModels !== undefined || profileIn !== undefined;
+    // 4. Agent bindings — the payload present (even empty) means the console
+    //    form is engaged: sweep router-owned overrides first (both node
+    //    spellings, so a re-apply leaves no ghosts), then write each binding
+    //    into the agent home (the config node overrides same-name agents
+    //    defined in agent(s)/\*.md). A bare `ocr setup opencode` (CLI) passes
+    //    no payload and never touches the agent node — manually pinned native
+    //    models are never stolen.
+    const hasAgentPayload = agentModels !== undefined;
     let applied = 0;
     if (hasAgentPayload) {
       sweepRouterAgentModels(configPath);
@@ -269,19 +267,11 @@ export class OpenCodeClientAdapter implements ClientAdapter {
         applied++;
       }
     }
-    if (profileIn !== undefined) {
-      if (profileIn.id) {
-        meta.profile = { id: profileIn.id, bindings: profileIn.bindings || {} };
-        profileNote = `, profile: ${profileIn.id} (${applied} agent(s))`;
-      } else {
-        delete meta.profile;
-      }
-    }
     writeMeta(configPath, meta);
 
     return {
       success: true,
-      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${hasAgentPayload ? `, agents: ${applied}` : ''}${profileNote}). Backup at ${configPath}.bak.ocr`,
+      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${hasAgentPayload ? `, agents: ${applied}` : ''}).${describeBackup(configPath)}`,
     };
   }
 
@@ -305,11 +295,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     // If backup exists, restore it directly (full revert, comments included)
     if (restoreBackup(configPath)) {
-      const meta = readMeta(configPath);
-      if (meta.profile) {
-        delete meta.profile;
-        writeMeta(configPath, meta);
-      }
+      writeMeta(configPath, readMeta(configPath)); // legacy profile key stripped by the writer
       return {
         success: true,
         message: `OpenCode configuration restored from backup (${configPath}.bak.ocr)`,
@@ -351,138 +337,14 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     }
 
     // Remove every agent model override that points at the router — both node
-    // spellings (v2 `agents` / the singular `agent` ghost home) and every
-    // binding source (manual links and profile links alike).
+    // spellings (v2 `agents` / the singular `agent` ghost home), manual links
+    // included.
     sweepRouterAgentModels(configPath);
-    const meta = readMeta(configPath);
-    if (meta.profile) {
-      delete meta.profile;
-      writeMeta(configPath, meta);
-    }
+    writeMeta(configPath, readMeta(configPath)); // legacy profile key stripped by the writer
 
     return {
       success: true,
       message: 'OpenCode configuration reverted successfully. OCR gateway decoupled.',
-    };
-  }
-
-  /**
-   * Profile-change write-through: re-resolve the linked agents' slot keys
-   * against the JUST-SAVED profile slots and rewrite the config's agent node
-   * (plus the provider-def models map) WITHOUT a full setup — a saved profile
-   * update propagates to hooked clients automatically. Only router-owned
-   * values are touched (sweep-then-write); the user's native pins survive.
-   * Tags whose slot the profile no longer defines drop out (their override is
-   * swept → the agent inherits the default model). A no-diff save writes
-   * nothing (backup churn guard).
-   */
-  async refreshProfileBindings(
-    profileId: string,
-    tags: Record<string, string>,
-    slots: Record<string, string>
-  ): Promise<{ success: boolean; message: string }> {
-    const configPath = this.getConfigPath();
-    if (!fs.existsSync(configPath)) {
-      return { success: false, message: `Configuration file not found at ${configPath}` };
-    }
-    const data = readJsonc(configPath) as any;
-    if (!data?.providers?.[ROUTER_PROVIDER_ID]?.settings?.baseURL) {
-      return { success: false, message: 'OpenCode is not hooked — nothing to refresh' };
-    }
-
-    // Current router-owned agent values (native pins never appear here). Read
-    // FIRST: manual rows — agents bound outside the profile — must survive the
-    // sweep below byte-identical, and the diff guard needs them to tell an
-    // unchanged mixed state from a change.
-    const stripPrefix = (v: any): string =>
-      typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
-        ? v.slice(ROUTER_PROVIDER_ID.length + 1)
-        : '';
-    const current: Record<string, string> = {};
-    const node = data?.[AGENT_SLOT];
-    if (node && typeof node === 'object') {
-      for (const [name, def] of Object.entries(node as Record<string, unknown>)) {
-        const v = stripPrefix((def as any)?.model);
-        if (v) current[name] = v;
-      }
-    }
-
-    // Resolve tags → desired refs. Missing slots — and slot refs of 'auto'
-    // (inherit-the-default, same semantics as the setup path) — drop out: the
-    // sweep removes their override and the agent inherits. MANUAL rows (agents
-    // absent from the tags map) keep their current router-owned value: a
-    // profile save must never touch them.
-    const desired: Record<string, string> = {};
-    for (const [name, ref] of Object.entries(current)) {
-      if (!(name in (tags || {}))) desired[name] = ref;
-    }
-    let skipped = 0;
-    for (const [name, slotKey] of Object.entries(tags || {})) {
-      const ref = (slots || {})[slotKey];
-      if (!ref || ref === 'auto' || !isValidAgentName(name)) {
-        skipped++;
-        continue;
-      }
-      desired[name] = ref;
-    }
-
-    // Diff guard: compare desired refs against the live agent node values —
-    // an unrelated config save must not rewrite this file. The echo compare
-    // sorts keys so an equal-but-reordered bindings map still counts as same.
-    const changed = [...new Set([...Object.keys(current), ...Object.keys(desired)])]
-      .some(n => (desired[n] || '') !== (current[n] || ''));
-    const meta = readMeta(configPath);
-    const stableEcho = (o: Record<string, string>) =>
-      JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
-    const echoSame =
-      meta.profile?.id === profileId && stableEcho(meta.profile?.bindings || {}) === stableEcho(tags || {});
-    if (!changed && echoSame) {
-      return { success: true, message: 'opencode profile links already up to date' };
-    }
-
-    // The provider-def models map must be a superset of the linked refs —
-    // opencode validates agent.<name>.model against the client's provider
-    // models map, so writing refs the map lacks would corrupt the config.
-    // A missing def entry means the hook state is inconsistent: refuse before
-    // touching anything (re-apply setup to repair).
-    const defsPaths = resolveDefaultPaths();
-    const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
-    const entry = defs[ROUTER_PROVIDER_ID];
-    if (!entry?.models || typeof entry.models !== 'object') {
-      return {
-        success: false,
-        message: 'opencode provider def entry is missing — re-apply the client setup first',
-      };
-    }
-
-    createBackup(configPath);
-    sweepRouterAgentModels(configPath);
-    let applied = 0;
-    for (const [name, ref] of Object.entries(desired)) {
-      patchJsonc(configPath, [AGENT_SLOT, name, 'model'], `${ROUTER_PROVIDER_ID}/${ref}`);
-      applied++;
-    }
-    // Extend the def models map with the linked refs (existing entries — main
-    // pin, user extras — are never removed) and materialize the client copy
-    // immediately so the new refs validate right away.
-    const modelsMap = { ...(entry.models as Record<string, unknown>) };
-    let added = 0;
-    for (const ref of Object.values(desired)) {
-      if (!modelsMap[ref]) {
-        modelsMap[ref] = { name: ref };
-        added++;
-      }
-    }
-    if (added > 0) {
-      writeProviderDefs({ ...defs, [ROUTER_PROVIDER_ID]: { ...entry, models: modelsMap } }, defsPaths);
-      materializeDefs(defsPaths, configPath);
-      await reloadOpencodeService(defsPaths); // new model ids must validate in the running service
-    }
-    meta.profile = { id: profileId, bindings: tags || {} };
-    writeMeta(configPath, meta);
-    return {
-      success: true,
-      message: `opencode profile links refreshed (${applied} agent(s)${skipped > 0 ? `, ${skipped} slot(s) missing` : ''})`,
     };
   }
 }

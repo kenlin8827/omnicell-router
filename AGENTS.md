@@ -6,13 +6,105 @@ Guidance for AI coding agents. Repo conventions only — architecture decisions 
 
 OmniCellRouter (OCR) — a local LLM gateway / cascaded router. Bun workspaces: `backend/` (Fastify + pino) and `frontend/` (React + Vite).
 
-Before touching environments/bootstrap, credentials, or provider definitions, query the current ADRs (`docs/adr/`): ADR-0007 (environment book-sets, bootstrap, controlled-restart switching, export/import), ADR-0006 (the OCR file as the single credential truth, credential sync clients, key-hash identity), ADR-0005 (direct execution, execution topology, credential chains), and ADR-0010 (provider-def ownership — `<ocrHome>/providers.json` is the single def truth; `opencode.jsonc` is a sync-client materialization target). Before touching model-addressing vocabulary — the `modelRef` wording (gateway-visible id namespace, four kinds: auto alias / combo id / registered id / variant sibling id — tagged `kind` by the console catalog), `ModelRegistration` as the resolved physical record, tier-membership or combo types, or the request `model` field resolution — query ADR-0003 (model addressing and tier membership). The historical `ModelRef`/`ModelIdentity` TYPE NAMES never shipped in code — do not reintroduce them. Before touching tier/effort escalation, the `@ocr-*` directive surface, or the route-entry experience table, query ADR-0011 (scrub-everywhere / apply-last-user-message, per-turn overlays that never touch the ratchet, automatic machinery never steps down, directives never write back) and the syntax reference in `docs/design/directives.md`. Before touching quota tracking — the (provider × keyHashPrefix) pair model, the built-in declaration table / code adapters / the `quotaProbes:` config section, the probe DSL constructs and banned classes, the iron rules (they bind ONLY operator config), or the quota_events ledger — query ADR-0009 (layered quota knowledge, declarative probing, credential-anchored activation). Before touching forward-proxy policy — `forwardProxy.rules`, the `ingress` (`intercept` / `passthrough` / `reject`) and `egress` (`direct` / `proxy`) vocabulary, the admission-gate ordering, the retired `viaOutboundProxy` / `bypassHosts` / `mitmHosts` keys, or the OS proxy bypass list — query ADR-0018 (ONE ordered first-match table, TWO single-axis fields per row: `ingress` = intercepted (the default) / blind tunnel / 403 on admission, `egress` = direct / through the outbound proxy; loopback always direct + passthrough; unmatched fails open to the pre-ADR defaults; `reject` rows answer 403 before any tunnel or certificate; the table has exactly ONE spelling — a row without `ingress`/`egress` is invalid and reported, never translated, and undeclared section keys are dropped on load, never folded). Health vocabulary is layer-disciplined: `CLOSED/HALF_OPEN/OPEN` belong to the CircuitBreaker; model-level aggregation reads `available/recovering/unavailable` (ADR-0004; eviction fires only on `unavailable`, ADR-0002).
+Before touching environments/bootstrap, credentials, or provider definitions, query the current ADRs (`docs/adr/`): ADR-0007 (environment book-sets, bootstrap, controlled-restart switching, export/import), ADR-0006 (the OCR file as the single credential truth, credential sync clients, key-hash identity), ADR-0005 (direct execution, execution topology, credential chains), and ADR-0010 (provider-def ownership — `<ocrHome>/providers.json` is the single def truth; `opencode.jsonc` is a sync-client materialization target). Before touching model-addressing vocabulary — the `modelRef` wording (gateway-visible id namespace, four kinds: auto alias / combo id / registered id / variant sibling id — tagged `kind` by the console catalog), `ModelRegistration` as the resolved physical record, tier-membership or combo types, or the request `model` field resolution — query ADR-0003 (model addressing and tier membership). The historical `ModelRef`/`ModelIdentity` TYPE NAMES never shipped in code — do not reintroduce them. The model-profile mechanism (`modelProfiles`, `ModelProfileConfig`, `ModelProfileBinding`, `slot:` link tags, `refreshProfileBindings`, the `/model-profiles` page) was REMOVED in ADR-0031 — client agent assignment is the clients-page rows (`agentModels`) + smart-assign only; do not reintroduce any profile vocabulary. Before touching tier/effort escalation, the `@ocr-*` directive surface, or the route-entry experience table, query ADR-0011 (scrub-everywhere / apply-last-user-message, per-turn overlays that never touch the ratchet, automatic machinery never steps down, directives never write back) and the syntax reference in `docs/design/directives.md`. Before touching quota tracking — the (provider × keyHashPrefix) pair model, the built-in declaration table / code adapters / the `quotaProbes:` config section, the probe DSL constructs and banned classes, the iron rules (they bind ONLY operator config), or the quota_events ledger — query ADR-0009 (layered quota knowledge, declarative probing, credential-anchored activation). Before touching forward-proxy policy — `forwardProxy.rules`, the `ingress` (`intercept` / `passthrough` / `reject`) and `egress` (`direct` / `proxy`) vocabulary, the admission-gate ordering, the retired `viaOutboundProxy` / `bypassHosts` / `mitmHosts` keys, or the OS proxy bypass list — query ADR-0018 (ONE ordered first-match table, TWO single-axis fields per row: `ingress` = intercepted (the default) / blind tunnel / 403 on admission, `egress` = direct / through the outbound proxy; loopback always direct + passthrough; unmatched fails open to the pre-ADR defaults; `reject` rows answer 403 before any tunnel or certificate; the table has exactly ONE spelling — a row without `ingress`/`egress` is invalid and reported, never translated, and undeclared section keys are dropped on load, never folded). Health vocabulary is layer-disciplined: `CLOSED/HALF_OPEN/OPEN` belong to the CircuitBreaker; model-level aggregation reads `available/recovering/unavailable` (ADR-0004; eviction fires only on `unavailable`, ADR-0002). Before touching protocol conversion, the canonical IR (`backend/src/ir/`), surface↔wire adapters, streaming event lifecycle, or tool-call markup recovery — query ADR-0033 (vendor-neutral canonical IR), ADR-0034 (scoped DeepSeek-v4 / opencode zen markup recovery), and `docs/design/protocol-matrix.md`.
+
+Before touching observation-scope vocabulary — the `session` / `turn` / `request` / `exchange` / `event` ladder, the `requestId` vs `exchangeId` split, the write-time turn boundary, the console Turns column, or capture event naming — query `docs/design/glossary.md` and ADR-0024 first. Bare `turn` means one user prompt; an `exchange` is ONE HTTP request/response pair, never a container; `direction` is only `client | upstream` and names the leg, not a vector. `turn` is a WRITE-TIME attribute: `turnIndex` per session (allocated once at the admission gate by the structural rule in `capture/turn-boundary.ts`, with `isPromptStart` / `turnDecision` provenance, no `turnId`, `null` first-class), stamped on every capture event and trace record of the request — readers copy it and NEVER re-derive a boundary from prompt text or message counts. It is observational only — never a rate-limit, billing or quota key (ADR-0023 budgets are per `request`). The read plane is `CaptureRequestSummary.exchanges[]` bucketed by `(leg, attempt)`; the capture archive root is `capture/` (`CAPTURE_SCHEMA = 2` — the version rides on the data, never on the root name), and `traces.db` is `DB_VERSION = 3`. Schema evolution is a registered chain, one class per hop, one file per class under `capture/migrate/steps/`: the engine resolves a hop by `(from, to)`, builds a fresh instance per file (so `begin()` planning state is never shared) and calls `begin()` per hop over that hop's input shape and rewrites cold files atomically in place at boot and on the hourly sweep — never a new root, never a read-time branch. `V1ToV2Migrate` (`steps/v1-to-v2.ts`) is a real step, not a tombstone: schema 1 is the unmarked baseline, the step replays the SAME structural turn rule over the bodies the archive already recorded, and for archives that predate the gateway ids it rebuilds the request boundary off the recorded span sequence (`traceId` is connection scope, `spanId` is the exchange anchor) instead of guessing — stamping `migratedFrom: 1` so reconstructed identity is never mistaken for a gate stamp. A sequence it cannot close is repaired in place instead of set aside — orphan request with `NO_TURN`, second request over an unfinished one, stray response attached, mid-request file kept — because the pass must never cost the operator data it already has. There is no seal, no `capture-archive/`, no side channel: nothing leaves the live root. The retired spellings `roundNumber` / `totalRounds` / `CaptureRoundIndexEntry` / `gatewayResponse` / `CaptureTurnSummary` / `/turn?id=` do not exist in code — do not reintroduce any of them.
+
+## Gateway quality gates — prompt integrity and cache integrity
+
+Two invariants outrank every other tradeoff in a protocol conversion. A breach is
+silent (no client error, no test failure) and expensive; treat either as a bug even
+when the request still succeeds.
+
+**Prompt integrity** — the model must see exactly the prompt the client sent:
+
+- Every `system` / `developer` message is preserved. Multiple blocks are JOINED
+  (`\n\n`), never overwritten; content-part arrays are flattened to their text,
+  never `JSON.stringify`-ed into the prompt (see the system-text join in
+  `ir/adapters/anthropic-messages.ts` and `ir/adapters/google-gemini.ts`, and `contentText` in
+  `protocols/chat-compat.ts`).
+- Tool definitions survive with `strict`, `parameters`, `description`; `tool_choice`,
+  `parallel_tool_calls`, `response_format` / `text.format`, history (`tool_calls`,
+  tool results, `refusal`, reasoning) all convert. Losing tool definitions collapses
+  every agent loop.
+- Params with no faithful target representation are rejected with
+  `400 unsupported_parameter`, never silently dropped (see
+  `IrUnsupportedError` and each surface's `executionError`).
+- Regression surface: `backend/tests/surfaces/responses.test.ts`, `providers/provider-tools.test.ts`,
+  `surfaces/surface-responses.test.ts`, `providers/anthropic-wire.test.ts`, `ir/chat-compat.test.ts`.
+
+**Cache integrity** — cache hits are money, and a lost marker/usage field is invisible:
+
+- Usage accounting maps cached tokens from EVERY carrier to
+  `usage.prompt_tokens_details.cached_tokens`: chat (`prompt_tokens_details`),
+  Anthropic (`cache_read_input_tokens`), Responses (`input_tokens_details`),
+  Gemini (`cachedContentTokenCount`). Add the mapping when adding a carrier.
+- Client cache controls survive the canonical hop: Anthropic `cache_control`
+  (system message, content parts, tool definitions), Responses `prompt_cache_key`,
+  `prompt_cache_retention`, `prompt_cache_options`, `prompt_cache_breakpoint`.
+  They live on the canonical types (`CacheControl`, `ChatMessage.cache_control`,
+  `ChatMessageContentPart.cache_control` / `prompt_cache_breakpoint`,
+  `Tool.function.cache_control`) and are consumed only by their own carrier.
+- Carrier-specific cache fields MUST be stripped before reaching a generic
+  OpenAI-compatible upstream (`irToChatRequest(..., { carrierExtensions: false })`,
+  which sets `stripCarrierExtensions` on `assertCanonicalRequestSupported`) —
+  strict servers 400 on unknown fields. The built-in chat provider and the
+  plugin chat bridge both pass that flag.
+- Prefix stability is part of the gate: system blocks are emitted in a
+  deterministic order with a stable joined separator, and a merged system
+  message keeps a client-declared breakpoint.
+- Streaming and buffered legs are ONE accounting plane: the SSE encoder exposes
+  the same usage fields as the JSON encoder (Anthropic
+  `cache_read_input_tokens` on `message_start`, chat's trailing `usage` frame,
+  Responses `input_tokens_details` on the terminal event), and relayed upstream
+  chunks forward `usage` intact. A field present on only one leg is a bug —
+  Claude Code always streams.
 
 ## Common commands
 
 - `bun run typecheck` — **run this after any code change** (backend + frontend; exit 0 = clean).
 - `bun run build` — full build (`tsc -p backend && vite build frontend`); `bun run build:frontend` for frontend only.
 - `bun run test` — backend suite via the isolated runner (each file runs as its own process with `OCR_HOME` pointed at a sandbox). Never run `bun test backend/tests` directly — the single-process built-in runner produces ~26 phantom failures from shared-config contamination.
+
+## Protocol ids vs SDK packages — two axes, never mixed
+
+OCR stores and serves PROTOCOL ids; it does not know client SDK package names. One vocabulary:
+
+- **Protocol id = wire id** — what provider/model defs, the console dropdown, the plugin
+  manifest's `protocol` key, `wireFor()` and the executor keys all use: `openai-chat`,
+  `openai-responses`, `anthropic-messages`, `google-gemini`, `systemone`, plus plugin-owned
+  ids (`qoder`, `workbuddy`, …). Never `@ai-sdk/*`, never a path. There is NO second "short
+  wire" spelling (ADR-0033, amended 2026-11-19 / 2026-11-20); `providers/wire.ts` resolves a def's npm/type
+  to one of these ids, it does not translate between two vocabularies.
+- **Legacy input aliases** (`openai-compatible`, `openai`, `responses`, `anthropic`, `google`) and inbound surface names
+  (`chat`, `responses`, `anthropic`) are READ-ONLY input aliases — normalized by
+  `providers/protocol.ts` (`canonicalProtocol`) at every read boundary so old defs/traces still
+  route. No write path emits them. The console renders full canonical ids everywhere (badges,
+  tooltips, and forms) with no short badge alias table.
+
+Client SDK spellings (`@opencode/ai/providers/<segment>`) are owned by the client integration's
+bidirectional map (`opencode/provider-package.ts`, import and export directions). Retired OCR
+spellings (`@ai-sdk/*`, `/qoder`) are translated by `providers/protocol.ts` on read — no write path
+emits them again. Never add an SDK alias to `wireFor`; normalize at the owning boundary.
+
+## Plugin ids — the suffix names the HALF, never the vendor
+
+A plugin id is a path component (`<pluginsRoot>/<id>.zip`, `unpacked/<id>/`, `plugins/<id>/`) and the
+packager REFUSES a manifest whose id differs from its directory name, so the two always move together.
+Two plugins of the same vendor are two different halves of the same product, and the id says which:
+
+- `-gateway` — the INBOUND half: claims the vendor's SNI hosts on the forward proxy (ADR-0017).
+- `-models` — the OUTBOUND half: a model-service executor giving OCR the vendor's models
+  (transport, credential chain, catalog, quota).
+
+A bare vendor name is therefore never a correct id: `qoder` says nothing about which half it is and
+reads as the canonical plugin with the other one derived from it, while the two are peers. Suffixes
+name direction, not capability — `-provider` / `-direct` / `-native` / `-wire` were all rejected
+because they name a credential mode, a core-internal namespace, or one method of the SDK. The WIRE id
+inside `wires: []` is not the plugin id and is never renamed with it (`wires: ["qoder"]` on plugin
+`qoder-models`): wire ids are core protocol vocabulary, and a plugin is only how one gets executed.
+Artifacts that hold operator state keep their vendor-name spelling across a plugin rename
+(`<ocrHome>/plugins/workbuddy-auth.json`) — renaming one would silently orphan a live login.
 
 ## Language — code comments are always English
 

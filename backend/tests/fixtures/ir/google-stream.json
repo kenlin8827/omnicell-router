@@ -1,0 +1,23 @@
+[
+  {
+    "responseId": "google-fixture",
+    "modelVersion": "fixture-model",
+    "candidates": [{ "index": 0, "content": { "role": "model", "parts": [{ "text": "hel" }] } }]
+  },
+  {
+    "responseId": "google-fixture",
+    "modelVersion": "fixture-model",
+    "candidates": [{ "index": 0, "content": { "role": "model", "parts": [{ "text": "lo" }] } }]
+  },
+  {
+    "responseId": "google-fixture",
+    "modelVersion": "fixture-model",
+    "candidates": [{ "index": 0, "content": { "role": "model", "parts": [] }, "finishReason": "STOP" }],
+    "usageMetadata": {
+      "promptTokenCount": 10,
+      "candidatesTokenCount": 3,
+      "totalTokenCount": 13,
+      "cachedContentTokenCount": 4
+    }
+  }
+]

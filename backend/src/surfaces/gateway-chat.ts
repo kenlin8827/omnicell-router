@@ -50,7 +50,7 @@ export interface GatewayChatServices {
     opts?: GatewayChatRunOptions
   ): Promise<void>;
   /** Current routing surface for AvailableModels-style fabrication. */
-  catalog(): { tiers: string[]; models: { id: string; label?: string }[] };
+  catalog(): { virtualModels: string[]; models: { id: string; label?: string }[] };
 }
 
 let services: GatewayChatServices | undefined;
@@ -90,7 +90,7 @@ export function buildGatewayChatServices(
   return {
     catalog: () => ({
       // Canonical display order: auto spans the TIER_LADDER escalation rungs.
-      tiers: ['auto', ...TIER_LADDER],
+      virtualModels: ['auto', ...TIER_LADDER],
       models: orchestrator
         .getRegistry()
         .getAllModels()
@@ -217,9 +217,9 @@ export function buildGatewayChatServices(
               // A gateway sinking the terminal answer must not break the pipeline.
             }
           }),
-        // Verbatim origin relay (the `direct` unresolved-model executor): keep
-        // the bytes protocol-faithful for the gateway — SSE bodies flow through
-        // the chunk path unchanged, anything else surfaces as a JSON terminal.
+        // Verbatim origin relay for the gateway: keep the bytes
+        // protocol-faithful — SSE bodies flow through the chunk path
+        // unchanged, anything else surfaces as a JSON terminal.
         relayUpstream: (up) => {
           const isSse = String(up.headers['content-type'] ?? '').includes('text/event-stream');
           if (!isSse) {

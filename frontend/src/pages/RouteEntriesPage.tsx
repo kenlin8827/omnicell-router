@@ -219,7 +219,7 @@ export const RouteEntriesPage: React.FC = () => {
             )}
           </div>
           <button className="btn" onClick={() => load()} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <RefreshCw size={13} /> {t('routeEntries.refresh')}
+            <RefreshCw size={13} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} /> {t('routeEntries.refresh')}
           </button>
           <button className="btn" onClick={handleClearAll} disabled={total === 0} title={t('routeEntries.clearConfirmTitle')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Eraser size={13} /> {t('routeEntries.clearAll')}

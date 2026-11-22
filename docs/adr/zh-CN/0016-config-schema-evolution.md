@@ -24,6 +24,8 @@ config.yaml 以 `schemaVersion` 为首键，所有段归入且只归入六个语
 | `resilience` | 韧性恢复面——失败怎么救 | `circuitBreaker`、`retry`（`inplace` / `failover` / `escalation`） |
 | `ops` | 运维观测面——观测、数据源、内部设施 | `requestCapture`、`tracePersist`、`logging`、`catalog`、`quota`、`quotaProbes`、`opencode`、`defaultModels` |
 
+上表是本文确定时的 v1 分组。schema v2（ADR-0031）已移除 `routing.modelProfiles`。schema v3（ADR-0008 §1）把单一的 `upstream.streaming.enabled` 标志拆成两个姿态轴 `streaming.client.mode` / `streaming.upstream.mode`；`upstream.streaming` 这一节本身没有搬家，因此 `SECTION_MOVES_V3` 逐字等于 v2 表，当前布局是 `migrations/v2-to-v3.ts` 里的 `SECTION_MOVES_V3`。
+
 运行时 `RouterConfig` 对象**不变、保持扁平**：消费方继续读 `config.tiers`、`config.retry`、`config.fallback`。分组只存在于磁盘 ↔ 运行时之间，由唯一一张声明式映射表（`schema.ts` 的 `SECTION_MOVES`）双向使用。
 
 ### 2. 运行时零兼容，迁移只发生在启动与保存点
@@ -37,7 +39,7 @@ config.yaml 以 `schemaVersion` 为首键，所有段归入且只归入六个语
 `backend/src/config/migrations/v0-to-v1.ts`、`v1-to-v2.ts`……每份导出冻结的 `{ from, to, warn, migrate }` 步骤；`schema.ts` 的 `MIGRATIONS` 按序组装。`migrateConfig` 逐版本推进（`while cur < SCHEMA_VERSION: find(from === cur)`），**绝不跳版本**——最终骨架 = 全部步骤的叠加。
 
 铁律：
-- 已发布的迁移文件**永久冻结**；演进只追加新文件，绝不改旧文件。`backend/tests/fixtures/` 的冻结 fixture + `backend/tests/config-migration.test.ts` 锚定每步的变换。
+- 已发布的迁移文件**永久冻结**；演进只追加新文件，绝不改旧文件。`backend/tests/fixtures/` 的冻结 fixture + `backend/tests/config/config-migration.test.ts` 锚定每步的变换。
 - 迁移步骤是**纯形状变换**。业务钳制（垃圾 → 默认、毫秒下限）留在 `loadConfig` 的 value cleaners——信任边界校验绝不混入迁移。
 - 未映射/退役键在迁移时消失（不在映射表内），绝不复活；migrateConfig 对迁移前 v0 解析中发现的退役手写面（ADR-0010）warn 一次，由启动升级显式提示而不是静默丢弃。
 

@@ -17,14 +17,7 @@ import {
 import { scanInventory } from '../harness/host/inventory.js';
 import { claimsPath, manifestPath } from '../harness/host/manifest.js';
 import { applyRemove, planRemove, type RemoveItem } from '../harness/host/maintenance.js';
-import {
-  pruneTranslationStore,
-  probeTranslationChain,
-  isSupportedLang,
-  readCachedTranslations,
-  translateDescription,
-  translateMarkdown,
-} from '../harness/translation.js';
+import { isSupportedLang } from '../translation/index.js';
 import { probeSystemoneDefault } from '../surfaces/systemone-probe.js';
 import { browseSource } from '../harness/common/market.js';
 import { allHostProbes, createPluginAdapter, probeOptionsFor } from '../harness/plugin/adapters/index.js';
@@ -33,6 +26,14 @@ import { fetchRepoStars, peekStarCache } from '../harness/common/stars.js';
 import { readMarketDetail } from '../harness/detail.js';
 import { installArtifact, type InstallResult } from '../harness/host/install.js';
 import { editMcpServer, readMcpEntry } from '../harness/host/mcp-edit.js';
+import {
+  callMcpTool,
+  disconnectMcpSession,
+  getMcpPrompt,
+  inspectMcpServer,
+  readMcpResource,
+  type McpInspectTarget,
+} from '../harness/host/mcp-inspector.js';
 import { searchMcpRegistry } from '../harness/host/mcp-registry.js';
 import { probeMcpCli } from '../harness/host/mcp-cli.js';
 import { probeMcpRuntimes } from '../harness/host/mcp-runtime.js';
@@ -1367,163 +1368,6 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     return { status: 'ok', ...log };
   });
 
-  // Description translation (derived cache; the model call goes through this gateway's own /v1).
-  // `format: 'markdown'` switches to the long-form contract: a README is a document, so every prose
-  // run is translated in chunks (fenced code preserved verbatim) under its own cache namespace — the
-  // description prompt would answer a 3 000-word page with two sentences.
-  // `refresh` (long-form only) is the console's re-translate: skip the cached rendering and replace
-  // it on success, so a bad answer is not permanent.
-  app.post('/api/admin/harness/translate', async (req, reply) => {
-    const body = (req.body || {}) as { text?: string; lang?: string; format?: string; refresh?: boolean };
-    const text = (body.text || '').trim();
-    if (!text) {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: 'text is required' };
-    }
-    if (!body.lang) {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: 'lang is required' };
-    }
-    const result =
-      body.format === 'markdown'
-        ? await translateMarkdown(text, body.lang, { refresh: body.refresh === true })
-        : await translateDescription(text, body.lang);
-    if ('code' in result) {
-      reply.code(result.code === 'no_api_key' ? 409 : 502);
-      return { status: 'error', ...result };
-    }
-    return { status: 'ok', ...result };
-  });
-
-  // Long-form translation with PROGRESS. A README is tens of seconds of model output, so a button
-  // that only says "translating…" looks stuck. Same NDJSON shape the capture replay uses: one JSON
-  // event per line — `progress` (completed chunks / total), then exactly one `result` or `error`.
-  // Server-side work is identical to `/translate` (same cache, same `refresh`), and only the console
-  // reads this stream.
-  app.post('/api/admin/harness/translate-stream', async (req, reply) => {
-    const body = (req.body || {}) as { text?: string; lang?: string; format?: string; refresh?: boolean };
-    const text = (body.text || '').trim();
-    if (!text || !body.lang) {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: 'text and lang are required' };
-    }
-    if (body.format !== 'markdown') {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: "format must be 'markdown' — a description is one call and needs no progress" };
-    }
-    reply.hijack();
-    const raw = reply.raw;
-    raw.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
-    let closed = false;
-    raw.on('close', () => {
-      closed = true;
-    });
-    const send = (evt: Record<string, unknown>) => {
-      if (closed) return;
-      try {
-        raw.write(`${JSON.stringify(evt)}\n`);
-      } catch {
-        closed = true;
-      }
-    };
-    try {
-      const result = await translateMarkdown(text, body.lang, {
-        refresh: body.refresh === true,
-        onProgress: (done, total) => send({ type: 'progress', done, total }),
-      });
-      if ('code' in result) send({ type: 'error', code: result.code, message: result.message });
-      else send({ type: 'result', text: result.text, cached: result.cached, model: result.model });
-    } catch (e) {
-      send({ type: 'error', code: 'upstream', message: e instanceof Error ? e.message : String(e) });
-    }
-    raw.end();
-  });
-
-  // Batch translation. One chunk per call, small in-process pool: the console walks the list in
-  // chunks so a slow tier never turns one request into a 60-second hang, and a dropped connection
-  // resumes from the cache instead of losing everything.
-  app.post('/api/admin/harness/translate-batch', async (req, reply) => {
-    const body = (req.body || {}) as { lang?: string; texts?: unknown };
-    if (!body.lang || !Array.isArray(body.texts)) {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: 'lang and texts[] are required' };
-    }
-    const texts = [
-      ...new Set(
-        body.texts.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
-      ),
-    ].slice(0, 50);
-    if (texts.length === 0) return { status: 'ok', results: {}, errors: [] };
-
-    const results: Record<string, { text: string; model: string; cached: boolean }> = {};
-    const errors: { text: string; code: string; message: string }[] = [];
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < texts.length) {
-        const text = texts[cursor++];
-        const result = await translateDescription(text, body.lang!);
-        if ('code' in result) errors.push({ text, code: result.code, message: result.message });
-        else results[text] = result;
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(3, texts.length) }, worker));
-
-    // No key = every item fails the same way; say it once instead of 50 identical rows.
-    if (errors.length === texts.length && errors.every((e) => e.code === 'no_api_key')) {
-      reply.code(409);
-      return { status: 'error', code: 'no_api_key', message: errors[0].message };
-    }
-    return { status: 'ok', results, errors };
-  });
-
-  // Cache-only lookup: the console seeds every already-translated description on mount, no spend.
-  app.post('/api/admin/harness/translations', async (req, reply) => {
-    const body = (req.body || {}) as { lang?: string; texts?: unknown; format?: string };
-    if (!body.lang || !Array.isArray(body.texts)) {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: 'lang and texts[] are required' };
-    }
-    // The cache seed READS a path derived from `lang`; an unchecked value would let a caller walk
-    // out of the cache directory. The translate verbs already check this.
-    if (!isSupportedLang(body.lang)) {
-      reply.code(400);
-      return { status: 'error', code: 'bad_request', message: `unsupported language '${body.lang}'` };
-    }
-    const texts = body.texts
-      .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
-      .slice(0, 500);
-    return {
-      status: 'ok',
-      translations: readCachedTranslations(texts, body.lang, body.format === 'markdown' ? 'readme' : 'descriptions'),
-    };
-  });
-
-  // Housekeeping on the derived translation store: age expiry, then oldest-first trimming under the
-  // size budget. Writes sweep on a throttle; this is the manual lever for an operator (or a future
-  // console button) that wants it now. Nothing here is correctness-bearing — the cache is derived.
-  app.post('/api/admin/harness/translations/prune', async (req) => {
-    const body = (req.body || {}) as { maxAgeDays?: unknown; maxBytes?: unknown };
-    const maxAgeDays = typeof body.maxAgeDays === 'number' ? body.maxAgeDays : undefined;
-    const maxBytes = typeof body.maxBytes === 'number' ? body.maxBytes : undefined;
-    const stats = pruneTranslationStore({
-      ...(maxAgeDays !== undefined ? { maxAgeMs: Math.max(maxAgeDays, 0) * 24 * 60 * 60 * 1000 } : {}),
-      ...(maxBytes !== undefined ? { maxBytes: Math.max(maxBytes, 0) } : {}),
-    });
-    return { status: 'ok', ...stats };
-  });
-
-  // Chain probe behind the console's default-model "test" buttons. `model` in the body carries the
-  // PICKER'S PENDING value (test BEFORE save; empty string = "as if unset"); absent → the saved
-  // config. Both probes under one diagnostic contract: explicit click = explicit one-call spend,
-  // honest verdicts, nothing persisted by the probe itself.
-  app.post('/api/admin/harness/translations/probe', async (req) => {
-    const body = (req.body || {}) as { lang?: unknown; model?: unknown };
-    return probeTranslationChain(
-      typeof body.lang === 'string' ? body.lang : 'en',
-      typeof body.model === 'string' ? body.model : undefined
-    );
-  });
-
   // System One default-model probe — the Settings "default model" card's second "test" button. Fires
   // the REAL /v1/systemone fallback path; with a pending selection it rides as an explicit
   // `model` through the surface's own admission gates.
@@ -1545,5 +1389,238 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       return { status: 'error', code: result.code, message: result.message };
     }
     return { status: 'ok', ...result };
+  });
+
+  const parseInspectTarget = (
+    raw: unknown
+  ): { ok: true; target: McpInspectTarget } | { ok: false; code: string; message: string } => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, code: 'bad_request', message: 'target object is required' };
+    }
+    const input = raw as Record<string, unknown>;
+    if (input.mode === 'custom') {
+      const transport = typeof input.transport === 'string' ? input.transport : 'stdio';
+      if (transport === 'stdio') {
+        const command = typeof input.command === 'string' ? input.command.trim() : '';
+        if (!command) return { ok: false, code: 'bad_request', message: 'command is required' };
+        const args = Array.isArray(input.args) ? input.args.filter((a): a is string => typeof a === 'string') : [];
+        const env =
+          input.env && typeof input.env === 'object' && !Array.isArray(input.env)
+            ? Object.fromEntries(
+                Object.entries(input.env as Record<string, unknown>).filter(
+                  (kv): kv is [string, string] => typeof kv[1] === 'string'
+                )
+              )
+            : undefined;
+        const cwd = typeof input.cwd === 'string' && input.cwd.trim() ? input.cwd.trim() : undefined;
+        return {
+          ok: true,
+          target: { mode: 'custom', transport: 'stdio', command, args, ...(env ? { env } : {}), ...(cwd ? { cwd } : {}) },
+        };
+      }
+      if (transport === 'auto' || transport === 'streamable-http' || transport === 'sse') {
+        const url = typeof input.url === 'string' ? input.url.trim() : '';
+        if (!url) return { ok: false, code: 'bad_request', message: 'url is required' };
+        const headers =
+          input.headers && typeof input.headers === 'object' && !Array.isArray(input.headers)
+            ? Object.fromEntries(
+                Object.entries(input.headers as Record<string, unknown>).filter(
+                  (kv): kv is [string, string] => typeof kv[1] === 'string'
+                )
+              )
+            : undefined;
+        return {
+          ok: true,
+          target: { mode: 'custom', transport, url, ...(headers ? { headers } : {}) },
+        };
+      }
+      return { ok: false, code: 'bad_request', message: `unsupported transport '${transport}'` };
+    }
+
+    const host = typeof input.host === 'string' ? input.host : '';
+    const name = typeof input.name === 'string' ? input.name : '';
+    if (!host || !name) {
+      return { ok: false, code: 'bad_request', message: 'host and name are required' };
+    }
+    if (!HOSTS.some((h) => h.id === host)) {
+      return { ok: false, code: 'bad_request', message: `unknown host '${host}'` };
+    }
+    const scope = typeof input.scope === 'string' ? input.scope : 'global';
+    if (!isEnabledScope(scope)) {
+      return {
+        ok: false,
+        code: 'unsupported_scope',
+        message: `scope '${scope}' is not supported — reads target ${ENABLED_SCOPES.join(', ')} scope`,
+      };
+    }
+    const root = resolveProjectRoot(
+      { projectRoot: input.projectRoot, projectId: input.projectId },
+      { required: scope === 'project' }
+    );
+    if (!root.ok) {
+      return { ok: false, code: 'bad_request', message: root.message };
+    }
+    return {
+      ok: true,
+      target: {
+        mode: 'host',
+        host: host as HarnessHostId,
+        scope,
+        name,
+        ...(root.projectRoot ? { projectRoot: root.projectRoot } : {}),
+      },
+    };
+  };
+
+  const inspectErrorReply = (reply: { code: (status: number) => void }, err: unknown) => {
+    const e = err as Error & { code?: string };
+    const status = e.code === 'not_found' ? 404 : e.code === 'bad_request' || e.code === 'unsupported_scope' ? 400 : 502;
+    reply.code(status);
+    return {
+      status: 'error',
+      code: e.code ?? 'inspect_failed',
+      message: e instanceof Error ? e.message : String(err),
+    };
+  };
+
+  app.post('/api/admin/harness/mcp/inspect', async (req, reply) => {
+    const body = (req.body || {}) as { target?: unknown; refresh?: boolean } & Record<string, unknown>;
+    const rawTarget = body.target ?? body;
+    const parsed = parseInspectTarget(rawTarget);
+    if (!parsed.ok) {
+      reply.code(400);
+      return { status: 'error', code: parsed.code, message: parsed.message };
+    }
+    try {
+      const snapshot = await inspectMcpServer(parsed.target, { refresh: body.refresh === true });
+      return { status: 'ok', ...snapshot };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
+  });
+
+  app.post('/api/admin/harness/mcp/disconnect', async (req, reply) => {
+    const body = (req.body || {}) as { sessionId?: unknown };
+    if (typeof body.sessionId !== 'string' || !body.sessionId.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'sessionId is required' };
+    }
+    const closed = await disconnectMcpSession(body.sessionId.trim());
+    return { status: 'ok', closed };
+  });
+
+  app.post('/api/admin/harness/mcp/call-tool', async (req, reply) => {
+    const body = (req.body || {}) as {
+      sessionId?: unknown;
+      target?: unknown;
+      toolName?: unknown;
+      arguments?: unknown;
+      timeoutMs?: unknown;
+    };
+    if (typeof body.toolName !== 'string' || !body.toolName.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'toolName is required' };
+    }
+    let target: McpInspectTarget | undefined;
+    if (body.target !== undefined) {
+      const parsed = parseInspectTarget(body.target);
+      if (!parsed.ok) {
+        reply.code(400);
+        return { status: 'error', code: parsed.code, message: parsed.message };
+      }
+      target = parsed.target;
+    }
+    const args =
+      body.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+        ? (body.arguments as Record<string, unknown>)
+        : {};
+    try {
+      const result = await callMcpTool({
+        ...(typeof body.sessionId === 'string' && body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(target ? { target } : {}),
+        toolName: body.toolName.trim(),
+        arguments: args,
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+      });
+      return { status: 'ok', ...result };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
+  });
+
+  app.post('/api/admin/harness/mcp/read-resource', async (req, reply) => {
+    const body = (req.body || {}) as {
+      sessionId?: unknown;
+      target?: unknown;
+      uri?: unknown;
+      timeoutMs?: unknown;
+    };
+    if (typeof body.uri !== 'string' || !body.uri.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'uri is required' };
+    }
+    let target: McpInspectTarget | undefined;
+    if (body.target !== undefined) {
+      const parsed = parseInspectTarget(body.target);
+      if (!parsed.ok) {
+        reply.code(400);
+        return { status: 'error', code: parsed.code, message: parsed.message };
+      }
+      target = parsed.target;
+    }
+    try {
+      const result = await readMcpResource({
+        ...(typeof body.sessionId === 'string' && body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(target ? { target } : {}),
+        uri: body.uri.trim(),
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+      });
+      return { status: 'ok', ...result };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
+  });
+
+  app.post('/api/admin/harness/mcp/get-prompt', async (req, reply) => {
+    const body = (req.body || {}) as {
+      sessionId?: unknown;
+      target?: unknown;
+      promptName?: unknown;
+      arguments?: unknown;
+      timeoutMs?: unknown;
+    };
+    if (typeof body.promptName !== 'string' || !body.promptName.trim()) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'promptName is required' };
+    }
+    let target: McpInspectTarget | undefined;
+    if (body.target !== undefined) {
+      const parsed = parseInspectTarget(body.target);
+      if (!parsed.ok) {
+        reply.code(400);
+        return { status: 'error', code: parsed.code, message: parsed.message };
+      }
+      target = parsed.target;
+    }
+    const args =
+      body.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+        ? Object.fromEntries(
+            Object.entries(body.arguments as Record<string, unknown>).filter(
+              (kv): kv is [string, string] => typeof kv[1] === 'string'
+            )
+          )
+        : undefined;
+    try {
+      const result = await getMcpPrompt({
+        ...(typeof body.sessionId === 'string' && body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(target ? { target } : {}),
+        promptName: body.promptName.trim(),
+        ...(args ? { arguments: args } : {}),
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+      });
+      return { status: 'ok', ...result };
+    } catch (err) {
+      return inspectErrorReply(reply, err);
+    }
   });
 }

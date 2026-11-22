@@ -1,7 +1,7 @@
 import { defaultGatewayPort } from '../cli/clients/base.js';
 import { loadConfig } from '../config/index.js';
 import type { SystemoneResponse } from '../protocols/systemone/types.js';
-import { firstEnabledKey } from '../harness/translation.js';
+import { firstEnabledKey } from '../translation/index.js';
 
 /**
  * System One default-model probe — the power behind the console's System One "test" button.

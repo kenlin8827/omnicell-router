@@ -1,11 +1,12 @@
 import path from 'node:path';
-import { ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChunk } from '../types/openai.js';
-import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
+import type { CanonicalRequest, CanonicalResponse, StreamEvent, InputItem, MessageItem } from '../ir/types.js';
+import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning, effortFromThinkingBudget } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
+import { repairToolCallPairing } from './tool-pairing.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
-import { hasToolsOrSchema } from '../router/request-traits.js';
+import { declaresJsonContract, hasToolsOrSchema } from '../router/request-traits.js';
 import {
   getRouteEntryStore,
   routeEntriesGate,
@@ -13,8 +14,9 @@ import {
   normalizePrompt,
   L2_CONFIDENT_THRESHOLD,
 } from '../router/route-entries.js';
-import { scanDirectives, applyTierDirectives, applyEffortDirectives } from './directives.js';
+import { scanDirectives, scrubWireDirectives, applyTierDirectives, applyEffortDirectives } from './directives.js';
 import { directivesGate } from './directive-gate.js';
+import { streamingPosture } from './streaming-posture.js';
 import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../config/defaults.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
@@ -22,9 +24,9 @@ import { FallbackContextBuilder } from '../validator/parser.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
-import { resolveUnresolvedModelAction } from './unresolved-model.js';
-import { isLoopbackHost } from '../forward-proxy/rules.js';
-import { filterHeaders } from '../forward-proxy/egress.js';
+import { protocolForWire } from '../providers/vocabulary.js';
+import { capabilitiesFor } from '../ir/capabilities.js';
+import { IrUnsupportedError } from '../ir/errors.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
 import {
   getRateLimiter,
@@ -50,18 +52,33 @@ interface ForcedPassRecord {
   noteCode: RateLimitNoteCode;
 }
 import { recordRateLimitEvent, type RateLimitNoteCode } from '../ratelimit/event-log.js';
+import { NO_TURN, type TurnIdentity } from '../capture/turn-boundary.js';
+
+/**
+ * One inbound request's identity plus its WRITE-TIME turn boundary. `turn` is
+ * allocated once, after the final session binding and before the first event;
+ * every capture/emitter/trace consumer copies the same object.
+ */
+interface RequestIdentity {
+  requestId: string;
+  clientRequestId?: string;
+  turn: TurnIdentity;
+  allocated: boolean;
+}
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
-import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
+import type { StreamRelay, StreamRoutingFacts } from '../utils/stream-relay.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
+import { redactUpstreamBody } from '../observability/upstream-body-redaction.js';
 import { displayPromptText, firstDisplayText } from '../utils/client-envelope.js';
+import { harnessProfileOf, type HarnessProfile } from '../utils/harness-profiles.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import {
@@ -74,7 +91,7 @@ export interface ProcessContext {
   clientIp?: string;
   headers?: Record<string, string | string[] | undefined>;
   /** Inbound wire that produced this request — recorded as session birth metadata. */
-  wire?: 'chat' | 'anthropic' | 'responses';
+  wire?: 'openai-chat' | 'anthropic-messages' | 'openai-responses';
   /**
    * Per-key model access policy (from the validated client API key). When set,
    * every candidate model entering the execution pool is filtered through it —
@@ -112,6 +129,19 @@ export interface ProcessContext {
    * sends instead and never provide this callback.
    */
   onClientExchange?: (ctx: ClientExchangeContext) => void;
+  /**
+   * The response SHAPE the surface actually writes (client `stream === true`
+   * after the C-3 normalization, or `streaming.client.mode: always`). The
+   * surface owns that decision — the orchestrator only records it on the
+   * trace's request block, so the console can tag the inbound leg without
+   * re-deriving the posture. Absent on non-chat entry points = not streamed.
+   */
+  clientStream?: boolean;
+  /**
+   * Parsed client-protocol body, used only for the inbound capture event.
+   * Session identity and execution keep using the scrubbed IR snapshot.
+   */
+  clientBody?: unknown;
 }
 
 /** Key attribution: the in-process binding wins, else the request's authInfo. */
@@ -125,6 +155,74 @@ const keyIdentityOf = (ctx?: ProcessContext): CaptureKeyIdentity | undefined =>
 const PERCEIVED_STALL_MS = 1000;
 
 /**
+ * Accumulate-only relay for `streaming.upstream.mode: stream` on a turn whose
+ * client wants JSON. The executor pool drains the upstream SSE body through
+ * it, the registry accumulates the chunks into one `CanonicalResponse`,
+ * and the surface then sends that JSON. Nothing reaches the client, so
+ * `committed` is permanently false: in-place retries and failover stay legal
+ * (re-issuing upstream duplicates no output the client has seen).
+ */
+/**
+ * Upstream status code carried on an arbitrary thrown error, if any — `in`
+ * narrowing instead of an unchecked cast, since `lastError` is untyped.
+ */
+function statusCodeOf(err: unknown): number | undefined {
+  if (err && typeof err === 'object' && 'statusCode' in err && typeof err.statusCode === 'number') {
+    return err.statusCode;
+  }
+  return undefined;
+}
+
+/**
+ * Gateway-authored error for an exhausted candidate pool. The upstream
+ * verdict (402/401/429/5xx) is the GATEWAY's routing state, never the
+ * client's problem: agent clients auto-retry 429 but hard-stop on 402, so
+ * forwarding an upstream "insufficient balance" wastes models that are
+ * still healthy. Two shapes:
+ *   - `remaining` non-empty → status 429 when the failure class is
+ *     routing-fixable (the client's own backoff retry re-peeks the pool and
+ *     lands on a healthy model); other classes keep their truthful status
+ *     (a 400 is the request's fault — retries cannot fix it);
+ *   - `remaining` empty → truthful status, operator-directed message
+ *     (breaker cooldowns are 12h for quota — retrying now cannot help).
+ * `remaining` is computed by the caller with a FRESH peek, so trips that
+ * happened during the run itself are counted.
+ */
+function routeExhaustedError(
+  routeLabel: string,
+  failoverPath: string[],
+  lastErr: unknown,
+  remaining: ModelRegistration[]
+): Error {
+  const attemptedPath = failoverPath.join(' → ') || 'none attempted';
+  const lastMsg = lastErr instanceof Error ? lastErr.message : 'unknown';
+  if (remaining.length > 0) {
+    const status = statusCodeOf(lastErr) ?? 0;
+    const routingFixable = [401, 402, 429].includes(status) || status >= 500;
+    return Object.assign(
+      new Error(
+        `Route exhausted after ${failoverPath.length} candidate(s) on ${routeLabel} (${attemptedPath}) — last upstream error: ${lastMsg}. ${remaining.length} model(s) on this route are still available; a retry routes to one of them automatically.`
+      ),
+      { statusCode: routingFixable ? 429 : (statusCodeOf(lastErr) ?? 502) }
+    );
+  }
+  return Object.assign(
+    new Error(
+      `Every model on ${routeLabel} is cooling down (tried: ${attemptedPath}) — last upstream error: ${lastMsg}. Clear the cooldowns in the console breaker panel or add credentials; retrying will not help until then.`
+    ),
+    { statusCode: statusCodeOf(lastErr) ?? 502 }
+  );
+}
+
+const UPSTREAM_SINK_RELAY: StreamRelay = {
+  stageRouting: () => { },
+  onChunk: () => { },
+  get committed() {
+    return false;
+  },
+};
+
+/**
  * True when a streamed chunk puts something on the user's screen: assistant
  * text, a tool-call fragment, or reasoning/thinking text. Role-only openers,
  * finish_reason frames and the trailing usage frame leave the screen unchanged,
@@ -132,25 +230,50 @@ const PERCEIVED_STALL_MS = 1000;
  * between two real chunks would be papered over by the frames arriving inside
  * it, which is precisely the stall time this metric exists to expose.
  *
- * Reasoning counts because the relay forwards it VERBATIM (chat-stream.ts —
+ * Reasoning counts because the relay forwards it VERBATIM (stream-relay.ts —
  * "thinking still streams to the client"). Leaving it out charged a reasoning
  * model's whole thinking phase as one giant pause, so the figure measured the
  * effort setting instead of a freeze. Both wire spellings are accepted: the
  * OpenAI-compatible `reasoning_content` convention the catalog declares, and
  * OpenRouter's plain `reasoning` string delta.
  */
-function hasVisibleOutput(chunk: ChatCompletionChunk): boolean {
-  for (const choice of chunk.choices ?? []) {
-    const delta = choice?.delta as
-      | { content?: unknown; tool_calls?: unknown; reasoning_content?: unknown; reasoning?: unknown }
-      | undefined;
-    if (!delta) continue;
-    if (typeof delta.content === 'string' && delta.content.length > 0) return true;
-    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
-    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) return true;
-    if (typeof delta.reasoning === 'string' && delta.reasoning.length > 0) return true;
+function hasVisibleOutput(event: StreamEvent): boolean {
+  if (event.type === 'response.output_text.delta' || event.type === 'response.refusal.delta') {
+    return event.text.length > 0;
   }
-  return false;
+  if (event.type === 'response.reasoning.delta' || event.type === 'response.reasoning_summary.delta') {
+    return event.text.length > 0;
+  }
+  if (event.type === 'response.function_call.arguments.delta') return event.argumentsDelta.length > 0;
+  return event.type === 'response.output_item.added' && event.item.type === 'tool_call';
+}
+
+function responseMessageText(response: CanonicalResponse | null | undefined): string {
+  if (!response) return '';
+  return response.output.map((item) => item.type === 'message'
+    ? item.content.map((part) => part.type === 'text' || part.type === 'refusal' ? part.text : '').join('')
+    : '').join('');
+}
+
+function messageText(message: MessageItem | undefined): string {
+  if (!message) return '';
+  return message.content.map((part) =>
+    part.type === 'text' || part.type === 'refusal' ? part.text : ''
+  ).filter(Boolean).join(' ');
+}
+
+function lastUserMessage(input: readonly InputItem[]): MessageItem | undefined {
+  for (let index = input.length - 1; index >= 0; index--) {
+    const item = input[index]!;
+    if (item.type === 'message' && item.role === 'user') return item;
+  }
+  return undefined;
+}
+
+const effortOf = (request: CanonicalRequest): ReasoningEffort | undefined => request.reasoning?.effort;
+
+function setEffort(request: CanonicalRequest, effort: ReasoningEffort): void {
+  request.reasoning = { ...request.reasoning, effort };
 }
 
 /**
@@ -185,6 +308,63 @@ function pickHeaderHost(
   if (typeof raw === 'string') return raw;
   if (Array.isArray(raw)) return raw[0];
   return undefined;
+}
+
+/**
+ * First string value of an inbound header (Fastify's surface allows arrays
+ * and both case spellings). Display path only — nothing here steers routing.
+ */
+function pickHeaderValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string
+): string | undefined {
+  if (!headers) return undefined;
+  const raw = headers[name] ?? headers[name.toLowerCase()];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s || undefined;
+}
+
+/**
+ * Self-declared human prompt (envelope layer 0): a client that KNOWS which
+ * bytes are the human turn states them here instead of asking the gateway to
+ * infer it from markup. Adopted verbatim, so a harness whose envelope shape
+ * is unguessable is still titled correctly without a profile.
+ *
+ * Display-only and spoofable by whoever sends it — the value never reaches
+ * routing, capture bodies or the upstream request, so the cost of a forged
+ * header is one wrong session title.
+ */
+const PROMPT_HINT_HEADER = 'x-ocr-prompt-hint';
+
+/**
+ * Envelope resolution inputs for ONE request: the harness profile scoped from
+ * the User-Agent (layer 2, vocabulary) and the self-declared prompt (layer 0,
+ * authoritative). Resolved once per request on the display path.
+ */
+interface EnvelopeHints {
+  readonly profile?: HarnessProfile;
+  readonly declaredPrompt?: string;
+}
+
+/** Display cap every identification aid uses (title, per-turn summary, snippet). */
+const DISPLAY_CAP_CHARS = 200;
+
+/** Clip to the display cap with an ellipsis (already-normalized input). */
+function clipDisplayText(text: string): string {
+  return text.length <= DISPLAY_CAP_CHARS ? text : text.slice(0, DISPLAY_CAP_CHARS - 1) + '…';
+}
+
+function envelopeHintsOf(
+  headers: Record<string, string | string[] | undefined> | undefined
+): EnvelopeHints {
+  const declared = pickHeaderValue(headers, PROMPT_HINT_HEADER);
+  return {
+    profile: harnessProfileOf(pickHeaderValue(headers, 'user-agent')),
+    // Declared text is the human's own words: whitespace is flattened for the
+    // one-line surfaces, never stripped of markup or truncated mid-tag.
+    declaredPrompt: declared ? clipDisplayText(declared.replace(/\s+/g, ' ').trim()) || undefined : undefined,
+  };
 }
 
 function extractClientHeaders(
@@ -271,25 +451,25 @@ export class PipelineOrchestrator {
   /**
    * Auto-request routing with the experience table in front of the decision layer
    * (ADR-0011): an entry hit short-circuits L2 entirely — the table IS a
-   * prior judgment. Explicit request tiers (`force_tier`, incl. the
+   * prior judgment. Explicit request tiers (`forceTier`, incl. the
    * mode-forced ones resolved in 1B) skip the table: an explicit choice is a
    * layer0 decision by definition. On an L2 judgment the router behaves
    * exactly as before (decision layer → plus baseline).
    */
   private async routeAutoDecision(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     decisionCapture: UpstreamEventContext | undefined,
     sessionId: string,
     promptHash: string | undefined
   ): Promise<RoutingDecision> {
     const gate = routeEntriesGate();
-    if (gate.enabled !== false && promptHash && !request.router_options?.force_tier) {
+    if (gate.enabled !== false && promptHash && !request.routerOptions?.forceTier) {
       const entry = getRouteEntryStore().hit(promptHash, sessionId);
       if (entry) {
         // The entry's effort is part of the experience; a client-explicit
         // effort always outranks it.
-        if (entry.effort && request.reasoning_effort === undefined) {
-          request.reasoning_effort = entry.effort;
+        if (entry.effort && effortOf(request) === undefined) {
+          setEffort(request, entry.effort);
         }
         appendRoutingLedger({
           kind: 'entry_hit',
@@ -304,7 +484,7 @@ export class PipelineOrchestrator {
           reasonCode: 'entry.hit',
           reasonParams: { tier: entry.tier, source: entry.source, hits: entry.hitCount },
           layerUsed: 'entry',
-          needsSchemaValidation: hasToolsOrSchema(request),
+          needsSchemaValidation: declaresJsonContract(request),
         };
       }
     }
@@ -356,11 +536,26 @@ export class PipelineOrchestrator {
    * SANITIZED form (credential values masked per the deny-list in
    * observability/http-exchange.ts), never raw.
    */
+  /** One-shot allocation of the write-time turn identity (ADR-0024). */
+  private allocateTurn(sessionId: string, input: readonly InputItem[]): TurnIdentity {
+    // Retained traces seed the counter for sessions that predate the v3
+    // snapshot; the counter itself is authoritative once present.
+    const seed = this.traceTracker
+      .getTracesBySession(sessionId)
+      .reduce((max, t) => Math.max(max, t.turnIndex ?? 0), 0);
+    const a = this.sessionManager.allocateTurnIndex(sessionId, input, seed);
+    return {
+      turnIndex: a.turnIndex,
+      isPromptStart: a.isPromptStart,
+      turnDecision: a.turnDecision,
+    };
+  }
+
   public async process(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     context?: ProcessContext,
     /**
-     * Progressive-output relay (see utils/chat-stream). Offered by a transport
+     * Progressive-output relay (see utils/stream-relay). Offered by a transport
      * that can flush SSE bytes as they arrive. The orchestrator USES it only
      * where streaming is legal — same candidate pool, no schema-assertion
      * cascade, a wire with a streaming executor, mock mode off — and silently
@@ -381,29 +576,36 @@ export class PipelineOrchestrator {
     const traceHeaders =
       context?.fastifyRequest?.headers ?? context?.clientRequest?.headers ?? context?.headers;
     const clientRequest = traceHeaders ? resolveClientRequestId({ headers: traceHeaders }) : {};
-    const turnIdentity = {
+    const turnIdentity: RequestIdentity = {
       requestId: mintRequestId(),
       ...(clientRequest.clientRequestId ? { clientRequestId: clientRequest.clientRequestId } : {}),
+      turn: NO_TURN,
+      allocated: false,
     };
 
     let captureSessionId = '';
     let preResolvedSession: SessionResolveResult | undefined;
     let upstreamEventContext: UpstreamEventContext | undefined;
     if (captureEnabled) {
-      // ADR-0011 §4: the SCRUBBED chain feeds capture, session-id and
-      // conversation key — a reserved `@ocr-*` token must never reach the
-      // archive, and anchor resolution must see the bytes the router sees.
-      // scanDirectives is idempotent; processInternal scrubs the live
-      // request again on its own path.
+      // ADR-0011 §4: reserved tokens never reach the archive. Session and
+      // conversation identity use the scrubbed IR chain; the client event uses
+      // a separately scrubbed projection of the original protocol envelope.
+      // scanDirectives is idempotent; processInternal scrubs the live request
+      // again on its own path.
       const normalizedMessages = PromptOptimizer.normalizeMessages(request);
       // Scrub with the LIVE gate (enabled flag + configured prefix), matching
       // processInternal — a relocated prefix or a disabled gate must not
       // desync capture/anchor bytes from what the router actually serves.
       const gate = directivesGate();
-      const snapshotRequest: ChatCompletionRequest = {
+      const snapshotScan = scanDirectives(
+        normalizedMessages,
+        gate.enabled ? gate.prefix : null,
+        request.instructions,
+      );
+      const snapshotRequest: CanonicalRequest = {
         ...request,
-        messages: scanDirectives(normalizedMessages, gate.enabled ? gate.prefix : null)
-          .messages,
+        input: snapshotScan.input,
+        ...(request.instructions !== undefined ? { instructions: snapshotScan.instructions } : {}),
       };
       const keyIdentity = keyIdentityOf(context);
       // Resolve ONCE here and hand the result to processInternal: cold-start
@@ -414,12 +616,17 @@ export class PipelineOrchestrator {
         headers: context?.headers,
       });
       captureSessionId = preResolvedSession.sessionId;
-      // Deterministic conversation key stamped onto EVERY event of the turn:
+      // ADR-0024: allocate the turn boundary ONCE — after the final session
+      // binding, before the first event. Re-entries, retries, failover hops
+      // and the L2 decision leg copy it; none of them re-allocate.
+      turnIdentity.turn = this.allocateTurn(captureSessionId, snapshotRequest.input);
+      turnIdentity.allocated = true;
+      // Deterministic conversation key stamped onto EVERY event of the request:
       // the capture archive can regroup turns even when the volatile session
       // id shifts (content-addressed, never a credential, mirrors the
       // session-manager resolution input exactly).
       const conversationKey = SessionManager.conversationKey(
-        snapshotRequest.messages || [],
+        snapshotRequest.input || [],
         keyIdentity?.id
       ) ?? undefined;
       // CLIENT REQUEST event fires synchronously here — independent of any
@@ -433,12 +640,16 @@ export class PipelineOrchestrator {
         recorder: this.captureRecorder,
         req: context?.fastifyRequest ?? context?.clientRequest,
         apiKey: keyIdentity,
-        body: snapshotRequest,
+        body: scrubWireDirectives(
+          context?.clientBody ?? snapshotRequest,
+          gate.enabled ? gate.prefix : null
+        ),
         sessionId: captureSessionId,
         clientRequestId: turnIdentity.clientRequestId,
         requestId: turnIdentity.requestId,
         model: request.model || 'auto',
         conversationKey,
+        turn: turnIdentity.turn,
       });
       if (context?.fastifyRequest) {
         setClientExchangeContext(context.fastifyRequest, clientExchangeCtx);
@@ -456,17 +667,39 @@ export class PipelineOrchestrator {
         // their events simply omit the field — same as before this existed.
         apiKey: keyIdentity,
         conversationKey,
+        turn: turnIdentity.turn,
       };
     }
 
+    // Provider-leg transport (streaming.upstream.mode — ADR-0008 §1):
+    //   buffered → never hand a relay to the executor pool (the historical
+    //              `streaming.enabled: false` rollback);
+    //   stream   → hand the wire a relay even when the CLIENT wants JSON, so
+    //              the upstream SSE reader runs and the accumulator builds the
+    //              response. The sink never writes a byte, so `committed` stays
+    //              false and retries/failover remain legal;
+    //   follow   → the client's own relay (or none) — historical behavior.
     return await this.processInternal(
       request,
       context,
       preResolvedSession,
       upstreamEventContext,
       turnIdentity,
-      relay
+      this.resolveUpstreamRelay(relay)
     );
+  }
+
+  /**
+   * Apply `streaming.upstream.mode` to the surface-supplied relay. The sink
+   * relay is a module constant: it carries no per-request state (it forwards
+   * nothing and never commits), so one instance serves every accumulated
+   * turn.
+   */
+  private resolveUpstreamRelay(relay: StreamRelay | undefined): StreamRelay | undefined {
+    const mode = streamingPosture().upstream;
+    if (mode === 'buffered') return undefined;
+    if (relay) return relay;
+    return mode === 'stream' ? UPSTREAM_SINK_RELAY : undefined;
   }
 
   /**
@@ -480,11 +713,11 @@ export class PipelineOrchestrator {
    * 7. Post-turn prefix fingerprint registration
    */
   private async processInternal(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     context?: ProcessContext,
     preResolvedSession?: SessionResolveResult,
     upstreamEventContext?: UpstreamEventContext,
-    turnIdentity?: { requestId: string; clientRequestId?: string },
+    turnIdentity?: RequestIdentity,
     relay?: StreamRelay
   ): Promise<ExecutionResult> {
     const clientRequestId = turnIdentity?.clientRequestId;
@@ -505,11 +738,12 @@ export class PipelineOrchestrator {
     const directivePrefix = directiveGate.prefix;
     const directiveScan = scanDirectives(
       normalizedMessages,
-      directiveGate.enabled ? directivePrefix : null
+      directiveGate.enabled ? directivePrefix : null,
+      request.instructions,
     );
     if (
       directiveScan.droppedMessages > 0 &&
-      !directiveScan.messages.some((m) => m.role === 'user')
+      !directiveScan.input.some((item) => item.type === 'message' && item.role === 'user')
     ) {
       // A directive-only prompt with no history: nothing left to send.
       throw Object.assign(
@@ -517,26 +751,14 @@ export class PipelineOrchestrator {
         { statusCode: 400 }
       );
     }
-    const normalizedRequest: ChatCompletionRequest = {
+    const normalizedRequest: CanonicalRequest = {
       ...request,
-      messages: directiveScan.messages,
+      input: directiveScan.input,
+      ...(request.instructions !== undefined ? { instructions: directiveScan.instructions } : {}),
     };
 
     let explicitModel: ModelRegistration | undefined;
     let variantUsed: string | undefined;
-    // MITM forward-proxy leg (no Fastify response lifecycle) — the only leg
-    // whose `clientRequest` Host header is the trusted ORIGINAL dial target.
-    // Gates the unresolved-model hosts overrides (ADR-0003).
-    const mitmLeg = !!context?.clientRequest && !context?.fastifyRequest;
-    // onMiss-mapped combo ref (forwardProxy.unresolvedModel) — merges into the
-    // combo fork below so the disabled/empty fail-fast checks apply to it too.
-    let unresolvedComboRef: string | undefined;
-    // `direct` unresolved-model outcome (ADR-0003 §7a): the turn keeps running
-    // through the pipeline (normalization → session id → compression →
-    // capture) but skips every model-bound stage — routing, ratchet, route
-    // entry, breaker, failover, FinOps, turn registration — and returns a
-    // DirectForwardPlan for the transport to relay verbatim.
-    let directMiss = false;
     // Routing-name matching trims once. `request.model` itself stays verbatim
     // end-to-end (surface contract: wire/capture bytes and the forwarded copy
     // are never rewritten) — this restores the trim tolerance the old inline
@@ -545,7 +767,7 @@ export class PipelineOrchestrator {
     const modelName = (request.model ?? '').trim();
     const bareTier = tierFromVirtualEntry(modelName);
     if (bareTier) {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: bareTier };
+      normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: bareTier };
     } else if (modelName && modelName !== 'auto') {
       const specific = this.registry.getModel(modelName);
       if (specific) {
@@ -555,7 +777,7 @@ export class PipelineOrchestrator {
         // same-model retry and credential re-spread still apply; the model
         // itself is never substituted (ADR-0014).
         explicitModel = specific;
-        normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: specific.tier };
+        normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: specific.tier };
       } else {
         const variantRef = this.registry.resolveVariantRef(modelName);
         if (variantRef) {
@@ -567,9 +789,9 @@ export class PipelineOrchestrator {
           // applies its downgrade/honesty contract.
           explicitModel = variantRef.base;
           variantUsed = variantRef.variant.id;
-          normalizedRequest.reasoning_effort = variantRef.variant.reasoningEffort;
+          setEffort(normalizedRequest, variantRef.variant.reasoningEffort);
           normalizedRequest.model = variantRef.base.id;
-          normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: variantRef.base.tier };
+          normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: variantRef.base.tier };
         } else if (modelName.includes('#')) {
           // `#variant` is explicit syntax — a typo must fail loud instead of
           // silently classifier-routing (invisible model drift is exactly
@@ -595,8 +817,9 @@ export class PipelineOrchestrator {
           // sibling provider) and the gateway's own host matches no provider
           // baseUrl anyway. Cheapest-hit-first ordering picks the primary
           // otherwise. Same-name siblings stay reachable via the tier's
-          // failover pool. A full miss falls through to the ADR-0003
-          // unresolved-model policy below (default `auto` = the classifier).
+          // failover pool. A full miss falls through to the classifier —
+          // ADR-0026 deleted the unresolved-model policy outright, so every
+          // leg resolves a name the same way.
           const bareHits = this.registry.getModelsByUpstreamName(
             modelName,
             pickHeaderHost(context?.clientRequest?.headers)
@@ -609,78 +832,17 @@ export class PipelineOrchestrator {
           // models stay addressable by their full provider-prefixed id.
           if (bareHits.length > 0 && !this.registry.isCombo(modelName)) {
             explicitModel = bareHits[0];
-            normalizedRequest.router_options = {
-              ...normalizedRequest.router_options,
-              force_tier: explicitModel.tier,
+            normalizedRequest.routerOptions = {
+              ...normalizedRequest.routerOptions,
+              forceTier: explicitModel.tier,
             };
-          } else {
-            // Every exact-match chain missed. ADR-0003 forwardProxy.unresolvedModel
-            // policy takes over — MITM leg ONLY: the native /v1 leg keeps the
-            // historical classifier contract unconditionally (native client
-            // names like `claude-opus-*` after a /model switch inside Claude
-            // Code are intelligent-routing product behavior). `fail` throws
-            // loud 404 (no invisible model drift, same contract as a
-            // `#variant` typo); a modelRef resolves exactly as if the client
-            // had sent it (explicit choice, ADR-0014 semantics).
-            // `direct` (ADR-0003 §7a) runs THROUGH the pipeline now: the
-            // turn continues below and ends as a DirectForwardPlan (see the
-            // directMiss early return after compression).
-            const missHost = pickHeaderHost(context?.clientRequest?.headers);
-            const action = mitmLeg
-              ? resolveUnresolvedModelAction(this.config.forwardProxy, missHost)
-              : 'auto';
-            if (action === 'fail') {
-              throw Object.assign(
-                new Error(
-                  `Model '${modelName}' is not registered and forwardProxy.unresolvedModel.onMiss=fail — register it or adjust the policy.`
-                ),
-                { statusCode: 404 }
-              );
-            }
-            if (action === 'direct') {
-              // The turn keeps running through the pipeline (compression and
-              // capture apply below); everything model-bound is skipped via
-              // the directMiss flag and the turn ends as a DirectForwardPlan.
-              // Recursion guard: a loopback ORIGINAL destination would
-              // re-enter the gateway — degrade to the default classifier.
-              // Host headers carry the port; the matcher matches bare hosts.
-              const missHostBare = (missHost || '').trim().toLowerCase().replace(/:\d+$/, '');
-              if (missHostBare && isLoopbackHost(missHostBare)) {
-                console.warn(
-                  `[OCR] forwardProxy.unresolvedModel.onMiss=direct refused for loopback host '${missHost}' — falling back to auto routing.`
-                );
-              } else {
-                directMiss = true;
-              }
-            } else if (action !== 'auto') {
-              const ref = action.ref;
-              const refTier = tierFromVirtualEntry(ref);
-              if (refTier) {
-                normalizedRequest.router_options = {
-                  ...normalizedRequest.router_options,
-                  force_tier: refTier,
-                };
-              } else if (this.registry.isCombo(ref)) {
-                unresolvedComboRef = ref;
-              } else {
-                const mapped = this.registry.getModel(ref);
-                if (mapped) {
-                  explicitModel = mapped;
-                  normalizedRequest.router_options = {
-                    ...normalizedRequest.router_options,
-                    force_tier: mapped.tier,
-                  };
-                } else {
-                  // Config validated refs at load time can go stale (model
-                  // removed / combo renamed). Degrade to the default instead
-                  // of failing every request on a dead mapping.
-                  console.warn(
-                    `[OCR] forwardProxy.unresolvedModel.onMiss: modelRef '${ref}' does not resolve — falling back to auto routing.`
-                  );
-                }
-              }
-            }
           }
+          // Nothing matched: no policy, no mapping, no fallback. The name
+          // falls through to the classifier exactly like a native /v1 caller's
+          // would — ADR-0026 deleted the unresolved-model mechanism outright,
+          // so the MITM leg has no special posture of its own. A gateway
+          // plugin that wants "this name means that model" maps it BEFORE
+          // dispatch (it owns the decrypted wire); the pipeline never guesses.
         }
       }
     }
@@ -690,11 +852,8 @@ export class PipelineOrchestrator {
     // session ratchet and schema-assertion escalation are all bypassed
     // (explicit user composition wins, mirroring the exact-model
     // pass-through above).
-    const comboByName = explicitModel
-      ? undefined
-      : modelName && this.registry.isCombo(modelName)
-        ? modelName
-        : unresolvedComboRef;
+    const comboByName =
+      !explicitModel && modelName && this.registry.isCombo(modelName) ? modelName : undefined;
     if (comboByName && this.registry.isComboDisabled(comboByName)) {
       // Fail fast like the empty-member case below: the combo is hidden from
       // /v1/models, so an in-flight client naming it must get a loud 404 —
@@ -710,8 +869,14 @@ export class PipelineOrchestrator {
       // Fail fast instead of silently degrading to classifier routing: the
       // combo is still advertised via /v1/models, so routing it as `auto`
       // would be invisible billing/model drift.
-      throw new Error(
-        `Combo '${comboByName}' has no registered member models — check that every id in config.combos exists in config.models.`
+      // 404 like the disabled branch above: the combo is not currently
+      // routable (no member registered) — an operator-config gap must not
+      // read as an upstream 502.
+      throw Object.assign(
+        new Error(
+          `Combo '${comboByName}' has no registered member models — sync the member providers' model lists (console provider pull) or fix the ids in config.combos; boot logs name every provider excluded for zero models.`
+        ),
+        { statusCode: 404 }
       );
     }
     const comboId = comboByName ?? undefined;
@@ -739,11 +904,11 @@ export class PipelineOrchestrator {
     // for auto/tier-alias requests; explicit client choices always win.
     const modeTier = routingModeForceTier(
       normalizedRequest.model,
-      normalizedRequest.router_options,
+      normalizedRequest.routerOptions,
       this.config.routing?.mode
     );
     if (modeTier) {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: modeTier };
+      normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: modeTier };
     }
 
     // 2. Identify / track conversation session (zero-header layered resolution).
@@ -760,60 +925,32 @@ export class PipelineOrchestrator {
         clientRef: clientRef ?? undefined,
       });
     const sessionId = sessionResolve.sessionId;
-
-    // 2B. Token-saver compression (toolOutput tool-output compression → headroom
-    // sidecar → outputStyle injection). All stages fail open. Snapshot the
-    // PRE-compression
-    // messages for the post-turn prefix fingerprint: the client always sends
-    // uncompressed bytes, so the session chain must be indexed on the original
-    // content — matching registerCompletedTurn below against compressed bytes
-    // would break zero-header session resolution from the next turn onward.
-    // (The upstream-facing compressed prefix stays byte-stable across turns
-    // because the tool-output compressors are deterministic and headroom
-    // runs in session mode.)
-    const fingerprintMessages = normalizedRequest.messages.map(m => ({
-      role: m.role,
-      content: Array.isArray(m.content) ? m.content.map(p => ({ ...p })) : m.content,
-    }));
-    await applyCompression(normalizedRequest, this.config.compression, sessionId);
-    // 2B′. `direct` unresolved-model turn (ADR-0003 §7a): compression ran
-    // above on the canonical messages — that is everything model-bound this
-    // turn shares. Route-entry experience, ratchet, candidate routing,
-    // breaker, failover, FinOps and turn registration are all model-bound
-    // and are skipped; the transport relays the plan verbatim.
-    if (directMiss) {
-      const clientHeaders = (context?.clientRequest?.headers ?? {}) as Record<
-        string,
-        string | string[] | undefined
-      >;
-      // MITM leg URL: plain-HTTP proxy requests arrive absolute-form (the
-      // URL IS the original destination); TLS-decrypted MITM requests arrive
-      // origin-form — scheme marker 'https' (transport-node-http) + the
-      // trusted Host header reconstruct it.
-      const rawUrl = context?.clientRequest?.url || '/';
-      const hostHeader = pickHeaderHost(clientHeaders) ?? '';
-      const targetUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${hostHeader}${rawUrl}`;
-      // The origin wire body: the client's own payload (all non-canonical
-      // fields preserved) with the scrubbed + compressed messages spliced
-      // back in — the original model id rides along verbatim.
-      const originBody = JSON.stringify({ ...request, messages: normalizedRequest.messages });
-      const fwdHeaders = filterHeaders(clientHeaders as Parameters<typeof filterHeaders>[0]);
-      delete (fwdHeaders as Record<string, unknown>)['host'];
-      delete (fwdHeaders as Record<string, unknown>)['content-length'];
-      return {
-        directForward: {
-          url: targetUrl,
-          requestHeaders: fwdHeaders,
-          requestBody: originBody,
-          capture: upstreamEventContext,
-        },
-        modelUsed: request.model || 'unknown',
-        fallbackOccurred: false,
-        sessionId,
-        requestId,
-        latencyMs: Date.now() - startTime,
-      };
+    // Capture-disabled requests reach the admission gate only here; allocate
+    // exactly once so the trace plane carries the same identity regardless of
+    // the capture switch. `allocated` makes the two gates mutually exclusive.
+    if (turnIdentity && !turnIdentity.allocated) {
+      turnIdentity.turn = this.allocateTurn(sessionId, normalizedRequest.input);
+      turnIdentity.allocated = true;
     }
+    const requestTurn = turnIdentity?.turn ?? NO_TURN;
+
+    // 2B. Snapshot canonical strings before pairing/compression. Session
+    // anchors must describe the bytes the client sent, not a compressed or
+    // repaired upstream projection. Serialization avoids a deep content clone.
+    const fingerprintItems = SessionManager.serializeInput(normalizedRequest.input);
+
+    // Repair unmatched/duplicate tool results after fingerprinting and before
+    // any carrier renders the request. Unchanged histories keep their array.
+    const pairing = repairToolCallPairing(normalizedRequest.input);
+    if (pairing.input !== normalizedRequest.input) {
+      console.log(
+        `[pipeline:tool-pairing] repaired history: ${pairing.synthesized} missing repl${pairing.synthesized === 1 ? 'y' : 'ies'}, ` +
+        `${pairing.duplicates} duplicate repl${pairing.duplicates === 1 ? 'y' : 'ies'}, ` +
+        `${pairing.orphans} orphan repl${pairing.orphans === 1 ? 'y' : 'ies'}`
+      );
+      normalizedRequest.input = pairing.input;
+    }
+    await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
     // 2C. Route-entry experience (ADR-0011). One normalized prompt hash feeds
     // the experience-table lookup and write. Directives were scrubbed above, so
@@ -821,13 +958,8 @@ export class PipelineOrchestrator {
     // no double rows, no prefix drift.
     const routeGate = routeEntriesGate();
     const routeEntriesOn = routeGate.enabled !== false;
-    const lastUserMsgEarly = normalizedRequest.messages.filter((m) => m.role === 'user').pop();
-    const lastUserText = typeof lastUserMsgEarly?.content === 'string'
-      ? lastUserMsgEarly.content
-      : Array.isArray(lastUserMsgEarly?.content)
-        ? (lastUserMsgEarly.content.map((p) => (p as any).text || '').join(' ')).trim()
-        : '';
-    const normalizedPrompt = normalizePrompt(lastUserText ?? '');
+    const lastUserText = messageText(lastUserMessage(normalizedRequest.input)).trim();
+    const normalizedPrompt = normalizePrompt(lastUserText);
     // A directive-only ("just continue") turn carries no prompt of its own:
     // hashing the previous user message would attribute this turn's outcome to
     // the OLD prompt and let it rewrite that prompt's experience row.
@@ -861,21 +993,21 @@ export class PipelineOrchestrator {
     // injection below, the `@ocr-effort-*` directive, model defaultEffort). The
     // local `requestedEffort` read later is the EFFECTIVE ask the machinery
     // served against; `effortSource` says whose ask it was.
-    const clientEffort = normalizedRequest.reasoning_effort;
+    const clientEffort = effortOf(normalizedRequest);
     const initialDecision: RoutingDecision = comboId
       ? {
-          targetTier: 'plus',
-          confidence: 1.0,
-          reason: `Using custom combo '${comboId}' — your chosen models, no automatic routing`,
-          reasonCode: 'combo',
-          reasonParams: { combo: comboId },
-          layerUsed: 'layer0',
-          needsSchemaValidation: false,
-        }
+        targetTier: 'plus',
+        confidence: 1.0,
+        reason: `Using custom combo '${comboId}' — your chosen models, no automatic routing`,
+        reasonCode: 'combo',
+        reasonParams: { combo: comboId },
+        layerUsed: 'layer0',
+        needsSchemaValidation: false,
+      }
       : await this.routeAutoDecision(normalizedRequest, upstreamEventContext, sessionId, promptHash);
 
     // Explicit-model honesty: the engine's 'forced' code here reflects the
-    // force_tier the 1B resolver INJECTED from the named model's registration
+    // forceTier the 1B resolver INJECTED from the named model's registration
     // (full id / variant / bare name) — the client named a model, not a tier.
     // A dedicated code keeps the trace truthful: `tier` stays in params for
     // tooltips, but the console template carries no {tier} slot, so no tier
@@ -896,13 +1028,13 @@ export class PipelineOrchestrator {
       !comboId &&
       initialDecision.layerUsed === 'layer2' &&
       initialDecision.effort &&
-      normalizedRequest.reasoning_effort === undefined
+      effortOf(normalizedRequest) === undefined
     ) {
       const floor = this.config.classifier?.layer2?.effortFloor ?? DEFAULT_LAYER2_EFFORT_FLOOR;
       const floorRank = EFFORT_LADDER.indexOf(floor);
       const servedEffort =
         EFFORT_LADDER.indexOf(initialDecision.effort) < floorRank ? floor : initialDecision.effort;
-      normalizedRequest.reasoning_effort = servedEffort;
+      setEffort(normalizedRequest, servedEffort);
       initialDecision.reasonParams = {
         ...(initialDecision.reasonParams ?? {}),
         effort: servedEffort,
@@ -933,7 +1065,7 @@ export class PipelineOrchestrator {
     let effortSource: EffortSource | undefined =
       clientEffort !== undefined
         ? 'client'
-        : normalizedRequest.reasoning_effort !== undefined
+        : effortOf(normalizedRequest) !== undefined
           ? initialDecision.layerUsed === 'entry'
             ? 'entry'
             : 'l2-decision'
@@ -945,7 +1077,7 @@ export class PipelineOrchestrator {
     //                downgrade intercepted, pin honored)
     // - 'explicit' : a client-authored choice — a named model OR a forced
     //                tier (tier aliases / the global mode lever /
-    //                router_options.force_tier). Turn recorded, a higher
+    //                router_options.forceTier). Turn recorded, a higher
     //                proposal still escalates the ceiling, but the session
     //                NEVER rewrites the proposal and the pin is neither
     //                read nor followed — a forced lite must serve lite even
@@ -954,19 +1086,19 @@ export class PipelineOrchestrator {
     //                composition IS the decision
     const sessionMode: 'ratchet' | 'explicit' | 'bypass' = comboId
       ? 'bypass'
-      : explicitModel || normalizedRequest.router_options?.force_tier
+      : explicitModel || normalizedRequest.routerOptions?.forceTier
         ? 'explicit'
         : 'ratchet';
     let decision: RoutingDecision;
     let ratchetApplied = false;
-    let sessionTurnCount: number;
+    let sessionRequestCount: number;
     if (sessionMode === 'bypass') {
       decision = { ...initialDecision, sessionId, sessionRatchetApplied: false, sessionLookupType: sessionResolve.lookupType };
       // Bypass never mints a session entity, so getSession reads undefined
       // every turn and stamped every combo request #1 in the console's
       // request-detail table. Dedicated counter instead — display-only
       // bookkeeping, no pin/tier state (ADR-0002).
-      sessionTurnCount = this.sessionManager.recordBypassTurn(sessionId);
+      sessionRequestCount = this.sessionManager.recordBypassTurn(sessionId);
     } else {
       const ratchetResult = this.sessionManager.applyRatchet(
         sessionId,
@@ -986,7 +1118,7 @@ export class PipelineOrchestrator {
       decision.sessionRatchetApplied = ratchetResult.ratchetApplied;
       decision.sessionLookupType = sessionResolve.lookupType;
       ratchetApplied = ratchetResult.ratchetApplied;
-      sessionTurnCount = ratchetResult.session.turnCount;
+      sessionRequestCount = ratchetResult.session.requestCount;
     }
 
     // Traces already recorded for this session (this turn's trace is written
@@ -994,13 +1126,17 @@ export class PipelineOrchestrator {
     // per-turn prompt summary needs the previous message count.
     const prevTraces = this.traceTracker.getTracesBySession(sessionId);
 
-    // Multimodal content parts: keep the text ones. Shared by the session
-    // title below and the per-turn prompt summary in step 8.
-    const textPartOf = (p: unknown): string => {
-      if (typeof p !== 'object' || p === null || !('text' in p)) return '';
-      const text: unknown = p.text;
-      return typeof text === 'string' ? text : '';
-    };
+    // Envelope resolution inputs (display only): the harness vocabulary scoped
+    // from this request's User-Agent and any self-declared prompt. Headers come
+    // from whichever transport owns the leg — same precedence as the trace
+    // identity below (Fastify request, MITM client request, plain headers) —
+    // and the result is resolved ONCE here for the title, the per-turn summary
+    // and the route snippet.
+    const envelopeHints = envelopeHintsOf(
+      (context?.fastifyRequest?.headers ??
+        context?.clientRequest?.headers ??
+        context?.headers) as Record<string, string | string[] | undefined> | undefined
+    );
 
     // Session title: the FIRST user message carrying human text, flattened and
     // capped like the capture preview (array content is joined, never dropped —
@@ -1008,8 +1144,10 @@ export class PipelineOrchestrator {
     // metadata envelopes are skipped, not quoted: Cursor's agent opens with a
     // standalone `<timestamp>` message or a whole `<user_info>`/`<rules>`/…
     // context bundle, which would otherwise title the session with a clock
-    // reading or an OS banner (see utils/client-envelope.ts for the rules —
-    // known tags AND any tag-only message count as envelope). Strict runs
+    // reading or an OS banner; Claude Code MIXES `<system-reminder>` + a
+    // `/clear` record with the human prompt in ONE message (see
+    // utils/client-envelope.ts for the four rules and
+    // utils/harness-profiles.ts for the scoped vocabulary). Strict runs
     // first so an unrecognized envelope never outranks a later human turn in
     // the same request; only when the whole request carries no recognized
     // human text does the permissive pass keep a tag-only message (a prompt
@@ -1020,29 +1158,28 @@ export class PipelineOrchestrator {
     // (attachOrigin, below) and the trace (step 8) — a row rebuilt from traces
     // alone has no entity at all.
     const firstUserSummary =
+      // A declared prompt (layer 0) is authoritative and outranks inference on
+      // every later turn too — but the frozen birth value still wins, because
+      // the title is a birth attribute.
       prevTraces[0]?.request.firstUserSummary ??
+      envelopeHints.declaredPrompt ??
       (() => {
         const userTexts: string[] = [];
-        for (const msg of normalizedRequest.messages) {
-          if (msg.role !== 'user') continue;
-          const raw =
-            typeof msg.content === 'string'
-              ? msg.content
-              : Array.isArray(msg.content)
-                ? msg.content.map(textPartOf).join(' ')
-                : '';
+        for (const item of normalizedRequest.input) {
+          if (item.type !== 'message' || item.role !== 'user') continue;
+          const raw = messageText(item);
           if (raw) userTexts.push(raw);
         }
         // Strict-then-permissive pass lives in the normalizer, shared with the
         // capture-session preview (one derivation, three surfaces).
-        return firstDisplayText(userTexts, 200);
+        return firstDisplayText(userTexts, DISPLAY_CAP_CHARS, { profile: envelopeHints.profile });
       })();
 
     // Birth metadata: attach once per session (first-write-wins inside the
     // manager), recording the inbound wire, the layer that resolved the id,
     // the client ip and the first-message snippet for UI identification.
     const bornSession = this.sessionManager.getSession(sessionId);
-    if (bornSession && bornSession.turnCount === 1) {
+    if (bornSession && bornSession.requestCount === 1) {
       this.sessionManager.attachOrigin(
         sessionId,
         { wire: context?.wire, lookupType: sessionResolve.lookupType },
@@ -1217,11 +1354,11 @@ export class PipelineOrchestrator {
           // prefix exists in the new provider's chain (prefer continuity —
           // same key material, same cache economics), and otherwise treats it
           // as stale and re-spreads with a FORCED rebind persisted after the
-          // first success. Explicitly rebinding here to the new chain head
+          // first success. Explicitly rebinding here to the new default credential
           // would pick an credential the model was never verified against.
         }
       }
-    } else if (sessionMode === 'explicit' && !explicitModel && normalizedRequest.router_options?.force_tier) {
+    } else if (sessionMode === 'explicit' && !explicitModel && normalizedRequest.routerOptions?.forceTier) {
       // Forced-tier turn (ADR-0014): the session pin is followed ONLY when it
       // lives in the forced tier — then following is pure KV affinity (the
       // pin IS a model of the tier the client forced, so serving it cannot
@@ -1270,7 +1407,7 @@ export class PipelineOrchestrator {
       }
     }
 
-    let finalResponse: ChatCompletionResponse;
+    let finalResponse!: CanonicalResponse;
     // Pre-execution placeholder for the effort machinery below. Placeholder
     // resolution must not consult the tier pool when the request already
     // carries its own model: a combo is the sanctioned way to address
@@ -1303,8 +1440,26 @@ export class PipelineOrchestrator {
     // selected model declares a default → pin it as the requested level so
     // every downstream step (effort matching, payload thinking block,
     // X-OCR-Thinking-* observability) treats it as a normal request.
-    if (normalizedRequest.reasoning_effort === undefined && actualModel.defaultEffort) {
-      normalizedRequest.reasoning_effort = actualModel.defaultEffort;
+    // A native token budget (Anthropic `thinking.budget_tokens`, Responses
+    // `reasoning.max_tokens`) has no OpenAI-chat spelling. On wires without a
+    // native budget field, translate it to the equivalent ladder level BEFORE
+    // the default pin / effort matching below, so capability clamps and the
+    // X-OCR-Thinking-* headers see it; the budget itself stays on the request
+    // for wires that consume it natively.
+    const servedWire = actualModel.wire ?? 'openai-chat';
+    const budgetTokens = normalizedRequest.reasoning?.budgetTokens;
+    if (
+      effortOf(normalizedRequest) === undefined &&
+      typeof budgetTokens === 'number' &&
+      budgetTokens > 0 &&
+      servedWire !== 'anthropic-messages' &&
+      servedWire !== 'google-gemini' &&
+      servedWire !== 'openai-responses'
+    ) {
+      setEffort(normalizedRequest, effortFromThinkingBudget(budgetTokens));
+    }
+    if (effortOf(normalizedRequest) === undefined && actualModel.defaultEffort) {
+      setEffort(normalizedRequest, actualModel.defaultEffort);
       effortSource = 'default'; // ADR-0012: the model pin owns the ask
     }
 
@@ -1320,13 +1475,13 @@ export class PipelineOrchestrator {
     if (directivesApplicable) {
       const supportedEfforts = actualModel.supportedReasoningEfforts
         ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : undefined);
-      const before = normalizedRequest.reasoning_effort;
+      const before = effortOf(normalizedRequest);
       const effortDirective = applyEffortDirectives(directiveActions, before, supportedEfforts);
       if (effortDirective.applied) {
         const suffix = effortDirective.suffix ?? (effortDirective.delta > 0 ? 'effort-up' : 'effort-down');
         const token = `${directivePrefix}${suffix}`;
         if (effortDirective.changed && effortDirective.effort) {
-          normalizedRequest.reasoning_effort = effortDirective.effort;
+          setEffort(normalizedRequest, effortDirective.effort);
           effortSource = 'directive'; // the user's own instruction owns the ask
           decision.reasonParams = {
             ...(decision.reasonParams ?? {}),
@@ -1334,14 +1489,14 @@ export class PipelineOrchestrator {
             ...(tierDirectiveChanged
               ? {}
               : {
-                  // A tier directive is the headline reason of its turn; the
-                  // effort overlay only takes the headline slot when it is the
-                  // only directive present (otherwise from/to would collide).
-                  token,
-                  direction: effortDirective.direction,
-                  from: before ?? '—',
-                  to: effortDirective.effort,
-                }),
+                // A tier directive is the headline reason of its turn; the
+                // effort overlay only takes the headline slot when it is the
+                // only directive present (otherwise from/to would collide).
+                token,
+                direction: effortDirective.direction,
+                from: before ?? '—',
+                to: effortDirective.effort,
+              }),
           };
           if (!tierDirectiveChanged) {
             decision.reasonCode = effortDirective.pinned
@@ -1374,7 +1529,7 @@ export class PipelineOrchestrator {
         });
       }
     }
-    const requestedEffort: ReasoningEffort | undefined = normalizedRequest.reasoning_effort;
+    const requestedEffort: ReasoningEffort | undefined = effortOf(normalizedRequest);
     let actualEffort: ReasoningEffort | undefined;
     let reasoningDegraded = false;
     const effortPick = (() => {
@@ -1402,8 +1557,8 @@ export class PipelineOrchestrator {
       // Write the resolved effort back so provider builders construct the
       // correct upstream payload (Anthropic budget_tokens, Gemini
       // thinkingBudget, Responses thinkingEffort, etc.).
-      if (actualEffort !== requestedEffort) {
-        normalizedRequest.reasoning_effort = actualEffort;
+      if (actualEffort !== undefined && actualEffort !== requestedEffort) {
+        setEffort(normalizedRequest, actualEffort);
       }
     } else if (preferredModel) {
       // Explicit model choice / session pin: never re-route, but translate by
@@ -1422,7 +1577,7 @@ export class PipelineOrchestrator {
         reasoningDegraded =
           EFFORT_LADDER.indexOf(recomputed) < EFFORT_LADDER.indexOf(requestedEffort ?? 'none');
         if (recomputed !== requestedEffort) {
-          normalizedRequest.reasoning_effort = recomputed;
+          setEffort(normalizedRequest, recomputed);
         }
       }
     } else {
@@ -1446,6 +1601,10 @@ export class PipelineOrchestrator {
     // the final answer (no re-assertion follows), so it streams exactly like
     // the direct path and stamps timing the same way.
     let poolTiming: { firstChunkAt: number; streamEndAt: number; stalledMs?: number } | undefined = undefined;
+    // Upstream transport of the SERVED attempt (registry-reported; ADR-0008
+    // §1). Buffered by construction on the cascade's lite lead (it is never
+    // given a relay) and whenever `streaming.upstream.mode` is `buffered`.
+    let upstreamStream: 'sse' | 'buffered' | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices, combos AND
@@ -1460,10 +1619,10 @@ export class PipelineOrchestrator {
     if (
       decision.needsSchemaValidation &&
       this.config.fallback.enabled &&
-      !request.router_options?.disable_fallback &&
+      !request.routerOptions?.disableFallback &&
       !explicitModel &&
       !comboId &&
-      !normalizedRequest.router_options?.force_tier
+      !normalizedRequest.routerOptions?.forceTier
     ) {
       // 5A: Lite Tier lead - Deploy Lite Tier first with resilience
       const litePool = this.registry.getCandidateModelsForTier('lite', true);
@@ -1481,16 +1640,16 @@ export class PipelineOrchestrator {
         upstreamEventContext
       );
 
-      let liteRes: ChatCompletionResponse | null = null;
+      let liteRes: CanonicalResponse | null = null;
       let assertionPassed = false;
       let assertionError = '';
 
       if (liteResult.success && liteResult.response) {
         liteRes = liteResult.response;
-        const content = liteRes.choices[0]?.message?.content || '';
+        const content = responseMessageText(liteRes);
 
         // Local static AST / Schema assertion (Zero extra LLM cost!)
-        const validation = SchemaAssertion.validate(content, normalizedRequest.response_format);
+        const validation = SchemaAssertion.validate(content, normalizedRequest.text?.format);
         if (validation.valid) {
           assertionPassed = true;
           finalResponse = liteRes;
@@ -1500,7 +1659,7 @@ export class PipelineOrchestrator {
           // may have served a model whose translation/capability differs from
           // the tier-pick prediction (helper: map → clamp → mirror).
           {
-            const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier);
+            const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier, budgetTokens);
             actualEffort = r.actualEffort;
             reasoningDegraded = r.degraded;
           }
@@ -1509,6 +1668,7 @@ export class PipelineOrchestrator {
           failoverPath = liteResult.failoverPath;
           inplaceRetries += liteResult.inplaceRetries;
           servedCredentialPrefix = liteResult.servedCredentialPrefix;
+          upstreamStream = liteResult.transport;
         } else {
           assertionError = validation.error || 'Schema validation assertion failed';
         }
@@ -1522,7 +1682,7 @@ export class PipelineOrchestrator {
         fallbackReason = assertionError;
         const escalateTier = this.config.fallback.escalateTier || 'plus';
 
-        const failedContent = liteRes?.choices[0]?.message?.content || '';
+        const failedContent = responseMessageText(liteRes);
         const fallbackReq = FallbackContextBuilder.buildEscalationRequest(
           normalizedRequest,
           failedContent,
@@ -1542,7 +1702,7 @@ export class PipelineOrchestrator {
             sessionId,
             // The escalation response is final (no re-assertion below), so it
             // streams under the same commit-point contract as the direct path.
-            relay: this.config.streaming?.enabled === false ? undefined : relay,
+            relay,
             streamRouting: {
               layerUsed: decision.layerUsed || 'layer0',
               sessionId,
@@ -1563,7 +1723,17 @@ export class PipelineOrchestrator {
               { statusCode: 403 }
             );
           }
-          throw plusResult.lastError || new Error(`Plus escalation failed for tier '${escalateTier}'`);
+          const escErr = plusResult.lastError;
+          if (escErr instanceof IrUnsupportedError) throw escErr;
+          const accessPolicy = context?.modelAccess;
+          const escRemaining = this.registry
+            .getCandidateModelsForTier(escalateTier, true)
+            .filter(
+              (m) =>
+                !plusResult.failoverPath.includes(m.id) &&
+                (!accessPolicy || isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m))),
+            );
+          throw routeExhaustedError(`escalation tier '${escalateTier}'`, plusResult.failoverPath, escErr, escRemaining);
         }
 
         finalResponse = plusResult.response;
@@ -1572,7 +1742,7 @@ export class PipelineOrchestrator {
         // Recompute effort against the actually-served model (same contract
         // as the direct path).
         {
-          const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier);
+          const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier, budgetTokens);
           actualEffort = r.actualEffort;
           reasoningDegraded = r.degraded;
         }
@@ -1582,6 +1752,7 @@ export class PipelineOrchestrator {
         inplaceRetries += plusResult.inplaceRetries;
         servedCredentialPrefix = plusResult.servedCredentialPrefix;
         poolTiming = plusResult.timing;
+        upstreamStream = plusResult.transport;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -1615,7 +1786,7 @@ export class PipelineOrchestrator {
         // retry and credential re-spread stay unconditional. A client that
         // WANTS substitution opts in per request via router_options.failover.
         const explicitFailover =
-          explicitModel && normalizedRequest.router_options?.failover === true;
+          explicitModel && normalizedRequest.routerOptions?.failover === true;
         const head = explicitModel ?? preferredModel;
         if (explicitModel && !explicitFailover) {
           // The named model IS the contract: a one-model chain, no
@@ -1663,7 +1834,7 @@ export class PipelineOrchestrator {
         }
         allowEscalate =
           !explicitModel &&
-          !normalizedRequest.router_options?.force_tier &&
+          !normalizedRequest.routerOptions?.forceTier &&
           tierCrossPolicy === 'allow_escalate' &&
           actualTier === 'lite';
       }
@@ -1686,7 +1857,7 @@ export class PipelineOrchestrator {
           // the full `message.content` before its verdict, and that verdict can
           // re-ask the whole turn on a bigger tier — relaying it would commit
           // output the cascade is about to throw away.
-          relay: this.config.streaming?.enabled === false ? undefined : relay,
+          relay,
           streamRouting: {
             layerUsed: decision.layerUsed || 'layer0',
             sessionId,
@@ -1715,27 +1886,58 @@ export class PipelineOrchestrator {
           // asked for exactly this model and deserves to know it did not
           // serve, not a generic tier-level message (mirrors policyDenied).
           const lastErr = execResult.lastError;
-          const lastStatus = lastErr && typeof (lastErr as { statusCode?: number }).statusCode === 'number' ? (lastErr as { statusCode: number }).statusCode : undefined;
+          const unsupported = lastErr instanceof IrUnsupportedError;
           throw Object.assign(
             new Error(
               `Explicit model '${explicitModel.id}' did not serve the request (a named model is never substituted; opt in per request with router_options.failover to allow tier-pool failover). Last error: ${lastErr?.message ?? 'unknown'}`
             ),
-            { statusCode: lastStatus ?? 502 }
+            {
+              statusCode: statusCodeOf(lastErr) ?? 502,
+              ...(unsupported ? { name: 'IrUnsupportedError', code: 'unsupported_parameter' } : {}),
+            }
           );
         }
-        throw execResult.lastError || new Error(`Execution failed for tier '${actualTier}'`);
+        // Pool exhausted with a non-policy failure. The upstream verdict is
+        // the GATEWAY's routing state, never the client's problem: agent
+        // clients auto-retry 429 but hard-stop on 402, so a forwarded
+        // "insufficient balance" wastes models that are still healthy.
+        // Two gateway-authored shapes:
+        //   - untried healthy models remain  → 429: the client's own backoff
+        //     retry re-peeks the pool and lands on one of them, no user
+        //     action needed (only routing-fixable classes remap — a 400 is
+        //     the request's fault and retries cannot fix it);
+        //   - every candidate is cooling down → keep the truthful status,
+        //     say what the operator must do (console breaker panel /
+        //     credentials).
+        // Remaining = the executed CHAIN (covers combo member lists that span
+        // tiers, where a tier-peek would read the wrong pool) minus the
+        // attempted path, gated by the non-consuming per-model breaker peek —
+        // so trips that happened during this very run are counted — and by
+        // the key's model-access policy, which the pool filter applied
+        // inside executeCandidatePool.
+        const lastErr = execResult.lastError;
+        if (lastErr instanceof IrUnsupportedError) throw lastErr;
+        const accessPolicy = context?.modelAccess;
+        const remaining = chain.filter(
+          (m) =>
+            !execResult.failoverPath.includes(m.id) &&
+            this.getCircuitBreakerManager().isAvailable(m.id) &&
+            (!accessPolicy || isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m))),
+        );
+        throw routeExhaustedError(comboId ? `combo '${comboId}'` : `tier '${actualTier}'`, execResult.failoverPath, lastErr, remaining);
       }
 
       finalResponse = execResult.response;
       actualModel = execResult.modelUsed!;
       actualTier = execResult.tierUsed!;
       poolTiming = execResult.timing;
+      upstreamStream = execResult.transport;
       // Recompute `actualEffort` against the model that ACTUALLY served the
       // request — failover may have shifted to a different model than the
       // one `pickModelForEffort` originally picked, with a different effort
       // translation/ceiling. The header / ExecutionResult must reflect reality.
       {
-        const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier);
+        const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier, budgetTokens);
         actualEffort = r.actualEffort;
         reasoningDegraded = r.degraded;
       }
@@ -1774,8 +1976,8 @@ export class PipelineOrchestrator {
     // was in play — nothing to bind).
     this.sessionManager.registerCompletedTurn(
       sessionId,
-      fingerprintMessages,
-      finalResponse!.choices[0]?.message ?? ''
+      fingerprintItems,
+      finalResponse.output,
     );
 
     // 7. Post-turn observability
@@ -1809,10 +2011,10 @@ export class PipelineOrchestrator {
     // `'none'` is a real effort value meaning "no thinking" — NOT a request
     // for thinking that the model failed to honor. An omitted field is also
     // not a request for thinking (model uses its own default).
+    const servedEffort = effortOf(normalizedRequest);
     const wantsThinking =
-      (normalizedRequest.reasoning_effort != null &&
-        normalizedRequest.reasoning_effort !== 'none') ||
-      (typeof normalizedRequest.max_thinking_tokens === 'number' && normalizedRequest.max_thinking_tokens > 0);
+      (servedEffort != null && servedEffort !== 'none') ||
+      (typeof budgetTokens === 'number' && budgetTokens > 0);
     // 5-level default: `none` is a client toggle, not a capability.
     const modelEfforts = actualModel.supportedReasoningEfforts
       ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : []);
@@ -1825,11 +2027,11 @@ export class PipelineOrchestrator {
     // without becoming noise.
     const throttle = getWarnThrottle();
     if (wantsThinking && !supportsAnyThinking) {
-      const key = `no-capability|${actualModel.id}|${actualModel.wire ?? 'openai'}`;
+      const key = `no-capability|${actualModel.id}|${actualModel.wire ?? 'openai-chat'}`;
       throttle.warn(
         key,
-        `[ocr] thinking-level request served by '${actualModel.id}' (${actualModel.wire ?? 'openai'} wire) — ` +
-          `model has no thinking-effort capability, thinking controls were silently dropped.`
+        `[ocr] thinking-level request served by '${actualModel.id}' (${actualModel.wire ?? 'openai-chat'} wire) — ` +
+        `model has no thinking-effort capability, thinking controls were silently dropped.`
       );
     }
     if (
@@ -1845,19 +2047,20 @@ export class PipelineOrchestrator {
       throttle.warn(
         key,
         `[ocr] thinking effort downgraded: client requested '${requestedEffort}', ` +
-          `served '${actualEffort}' on model '${actualModel.id}' (gap=${gap} levels, ` +
-          `model supports [${modelEfforts.join(', ') || 'none'}])`
+        `served '${actualEffort}' on model '${actualModel.id}' (gap=${gap} levels, ` +
+        `model supports [${modelEfforts.join(', ') || 'none'}])`
       );
     }
 
-    const cachedTokens = PromptOptimizer.extractCachedTokens(finalResponse!.usage);
+    const usage = finalResponse.usage;
+    const cachedTokens = PromptOptimizer.extractCachedTokens(usage);
     this.tracker.record({
       tier: actualTier,
       fallbackOccurred,
-      inputTokens: finalResponse!.usage?.prompt_tokens || 0,
-      cachedTokens: cachedTokens,
-      outputTokens: finalResponse!.usage?.completion_tokens || 0,
-      reasoningTokens: finalResponse!.usage?.completion_tokens_details?.reasoning_tokens || 0,
+      inputTokens: usage.inputTokens,
+      cachedTokens,
+      outputTokens: usage.outputTokens,
+      reasoningTokens: usage.reasoningTokens ?? 0,
       latencyMs,
     });
 
@@ -1866,18 +2069,17 @@ export class PipelineOrchestrator {
     // only path that produces usage, and the request slots were already
     // consumed at the gates (inbound: auth preHandler, outbound: dispatch
     // above), so failed turns carry usage: 0 without a second ledger write.
-    // Tokens = prompt + completion (cached ⊂ prompt, reasoning ⊂ completion);
-    // cost = the same request-time pricing snapshot the trace row records.
+    // Cached tokens are included in input; reasoning tokens in output.
     const rlUsage = {
-      tokens: (finalResponse!.usage?.prompt_tokens || 0) + (finalResponse!.usage?.completion_tokens || 0),
-      costUsd: computeRequestCost(finalResponse!.usage, actualModel.pricing),
+      tokens: usage.inputTokens + usage.outputTokens,
+      costUsd: computeRequestCost(usage, actualModel.pricing),
     };
     let usageCredentialPrefix: string | undefined;
     {
       const rl = getRateLimiter();
       const clientKeyId = keyIdentityOf(context)?.id;
       if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
-      // The credential that SERVED (same chain-head degeneracy as the pool gate,
+      // The credential that SERVED (same default-credential degeneracy as the pool gate,
       // so single-credential providers carry usage too). `servedUsagePrefix`
       // also feeds the trace record below (execution.credentialKeyHashPrefix):
       // one credential attribution, two consumers (ratelimit subject + quota
@@ -1908,9 +2110,20 @@ export class PipelineOrchestrator {
             effort: actualEffort,
             source: 'l2_confident',
             confidence: decision.confidence,
-            // Display aid only: client metadata envelopes (Cursor's `<timestamp>`)
-            // are dropped so the snippet names the prompt, not a clock reading.
-            snippet: routeGate.snippetEnabled === false ? undefined : lastUserText ? displayPromptText(lastUserText).slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
+            // Display aid only: client metadata envelopes (Cursor's
+            // `<timestamp>`, Claude Code's `<system-reminder>`) are dropped so
+            // the snippet names the prompt, not a clock reading or harness
+            // boilerplate — same 200-char display-aid precedent as the session
+            // attachOrigin, same harness profile as the title.
+            snippet:
+              routeGate.snippetEnabled === false
+                ? undefined
+                : (envelopeHints.declaredPrompt ??
+                  (lastUserText
+                    ? clipDisplayText(
+                      displayPromptText(lastUserText, { profile: envelopeHints.profile })
+                    ) || undefined
+                    : undefined)),
           },
           sessionId
         );
@@ -1927,43 +2140,24 @@ export class PipelineOrchestrator {
     // it as correlation only, because a caller may reuse one value for every
     // request of a conversation.
 
-    // The summary names the user message THAT TRIGGERED this turn. A
-    // tool-result continuation turn carries the whole history, so its last
-    // user message is the PREVIOUS turn's prompt — recording it again makes
-    // every continuation row in the console's request detail read as a
-    // duplicate (an empty summary renders the "no new user message"
-    // fallback glyph). The message is stale when its index already existed
-    // at the session's previous turn: clients append, so a genuinely new
-    // user message always lands at or past the previous messageCount. When
-    // this request's history SHRANK (client-side compaction / truncation)
-    // every index moved down and the comparison proves nothing, so the
-    // summary is kept — hiding a real prompt is the worse failure.
-    const lastUserIdx = (() => {
-      for (let i = normalizedRequest.messages.length - 1; i >= 0; i--) {
-        if (normalizedRequest.messages[i].role === 'user') return i;
-      }
-      return -1;
-    })();
-    const lastUserMsg = lastUserIdx >= 0 ? normalizedRequest.messages[lastUserIdx] : undefined;
-    const lastUserTextForSummary = typeof lastUserMsg?.content === 'string'
-      ? lastUserMsg.content
-      : Array.isArray(lastUserMsg?.content)
-        ? lastUserMsg.content.map(textPartOf).join(' ')
-        : '';
-    // Display aid: same envelope stripping as the session title — a metadata-only
-    // turn renders as the empty-summary glyph, never as `<timestamp>…</timestamp>`.
-    let userPromptSummary = displayPromptText(lastUserTextForSummary).slice(0, 200);
-    const prevMessageCount = prevTraces[prevTraces.length - 1]?.request.messageCount ?? 0;
-    const turnMessageCount = normalizedRequest.messages.length;
-    if (userPromptSummary && turnMessageCount >= prevMessageCount && lastUserIdx < prevMessageCount) {
-      userPromptSummary = '';
-    }
+    // Display-only prompt text. The write-time boundary decides whether this
+    // request opened a turn; a tool-result continuation carries the previous
+    // prompt in its history and must not render a duplicate header. Text is
+    // never consulted to DECIDE that boundary — `isPromptStart` is.
+    const lastUserTextForSummary = messageText(lastUserMessage(normalizedRequest.input));
+    const userPromptSummary = requestTurn.isPromptStart
+      ? (envelopeHints.declaredPrompt ??
+        clipDisplayText(displayPromptText(lastUserTextForSummary, { profile: envelopeHints.profile })))
+      : '';
 
     this.traceTracker.record({
       requestId,
       ...(clientRequestId ? { clientRequestId } : {}),
       sessionId,
-      turnNumber: sessionTurnCount,
+      requestNumber: sessionRequestCount,
+      turnIndex: requestTurn.turnIndex,
+      isPromptStart: requestTurn.isPromptStart,
+      turnDecision: requestTurn.turnDecision,
       timestamp: startTime,
       // Key attribution on the lightweight session trajectory as well (works
       // even with capture disabled): which application's key drove this turn.
@@ -1972,9 +2166,16 @@ export class PipelineOrchestrator {
         model: request.model || 'auto',
         userPromptSummary,
         ...(firstUserSummary ? { firstUserSummary } : {}),
-        messageCount: normalizedRequest.messages.length,
-        hasSystemPrompt: normalizedRequest.messages.some(m => m.role === 'system'),
-        hasToolsOrSchema: Boolean(decision.needsSchemaValidation),
+        messageCount: normalizedRequest.input.length,
+        hasSystemPrompt: Boolean(normalizedRequest.instructions)
+          || normalizedRequest.input.some((item) => item.type === 'message' && (item.role === 'system' || item.role === 'developer')),
+        hasToolsOrSchema: hasToolsOrSchema(normalizedRequest),
+        // Response shape actually written to the client (surface-owned: the
+        // C-3-normalized ask, or `client.mode: always` forcing SSE).
+        clientStream: context?.clientStream === true,
+        // Inbound protocol surface the client addressed (chat / anthropic /
+        // responses) — the console's protocol column reads it directly.
+        inboundWire: context?.wire as 'openai-chat' | 'anthropic-messages' | 'openai-responses' | undefined,
         clientHeaders: extractClientHeaders(context?.headers),
         ...(clientRef ? { clientRef } : {}),
       },
@@ -1994,10 +2195,17 @@ export class PipelineOrchestrator {
         credentialKeyHashPrefix: usageCredentialPrefix,
         tierUsed: actualTier,
         latencyMs,
+        // OUTBOUND protocol wire the served attempt ran on (distinct from the
+        // inbound surface unless the turn is a passthrough).
+        wireKind: actualModel.wire,
         ttftMs,
         genMs,
         stalledMs,
         fallbackOccurred,
+        // Provider-leg transport of the served attempt — the OUTBOUND stream
+        // tag (ADR-0008 §1). 'sse' with clientStream:false is the accumulate
+        // mode: the gateway read a stream and answered in JSON.
+        upstreamStream,
         fallbackReason,
         failoverOccurred,
         failoverAttempts,
@@ -2013,9 +2221,9 @@ export class PipelineOrchestrator {
         effortSource,
       },
       finops: {
-        inputTokens: finalResponse!.usage?.prompt_tokens || 0,
-        outputTokens: finalResponse!.usage?.completion_tokens || 0,
-        cachedTokens: cachedTokens,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedTokens,
         costUsd: rlUsage.costUsd,
       },
     });
@@ -2032,6 +2240,7 @@ export class PipelineOrchestrator {
       tierUsed: actualTier,
       modelUsed: actualModel.id,
       layerUsed: decision.layerUsed || 'layer0',
+      protocolUsed: protocolForWire(actualModel.wire ?? 'openai-chat'),
       fallbackOccurred,
       fallbackReason,
       failoverOccurred,
@@ -2050,6 +2259,8 @@ export class PipelineOrchestrator {
       ttftMs,
       genMs,
       stalledMs,
+      clientStream: context?.clientStream === true,
+      upstreamStream,
       // Reasoning-effort observability — server.ts reads these to set
       // X-OCR-Thinking-{Requested,Actual,Degraded} headers so the client
       // can see whether they got the level they asked for.
@@ -2071,14 +2282,24 @@ export class PipelineOrchestrator {
    * value against what the client asked (`undefined` / `'none'` count as the
    * none level).
    */
+  private wireConsumesBudgetNatively(wire?: string): boolean {
+    return wire === 'anthropic-messages' || wire === 'google-gemini' || wire === 'openai-responses';
+  }
+
   private resolveServedEffort(
     model: ModelRegistration,
     requestedEffort: ReasoningEffort | undefined,
-    servedTier: TierLevel
+    servedTier: TierLevel,
+    budgetTokens?: number,
   ): { actualEffort: ReasoningEffort | undefined; degraded: boolean } {
-    const ask = requestedEffort ?? 'none';
+    const effectiveRequested =
+      requestedEffort ??
+      (typeof budgetTokens === 'number' && budgetTokens > 0 && !this.wireConsumesBudgetNatively(model.wire)
+        ? effortFromThinkingBudget(budgetTokens)
+        : undefined);
+    const ask = effectiveRequested ?? 'none';
     const target = applyEffortMap(this.registry.effortMapFor(model, servedTier), ask);
-    if (target === 'none' && ask === 'none') return { actualEffort: requestedEffort, degraded: false };
+    if (target === 'none' && ask === 'none') return { actualEffort: effectiveRequested, degraded: false };
     const supported = model.supportedReasoningEfforts ?? (model.supportsReasoningEffort ? EFFORT_LADDER : []);
     const actual = target === 'none' ? 'none' : downgradeReasoning(target, supported);
     return {
@@ -2125,7 +2346,7 @@ export class PipelineOrchestrator {
    * providers run the exact pre-P3 no-prefix path.
    */
   private async executeCandidatePool(
-    request: ChatCompletionRequest,
+    request: CanonicalRequest,
     opts: {
       chain: ModelRegistration[];
       tier: TierLevel;
@@ -2172,7 +2393,7 @@ export class PipelineOrchestrator {
     upstreamEventContext?: UpstreamEventContext
   ): Promise<{
     success: boolean;
-    response?: ChatCompletionResponse;
+    response?: CanonicalResponse;
     modelUsed?: ModelRegistration;
     tierUsed?: TierLevel;
     failoverOccurred: boolean;
@@ -2193,6 +2414,12 @@ export class PipelineOrchestrator {
      * ttftMs/genMs/stalledMs.
      */
     timing?: { firstChunkAt: number; streamEndAt: number; stalledMs?: number };
+    /**
+     * Transport the SERVED attempt used: `'sse'` = the upstream SSE reader
+     * ran (whether or not frames also reached the client), `'buffered'` = one
+     * buffered provider call. Registry-reported, never inferred from timing.
+     */
+    transport?: 'sse' | 'buffered';
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -2272,40 +2499,40 @@ export class PipelineOrchestrator {
       // recovery happens at this boundary, never as a 500).
       const selection: CredentialSelection = opts.sessionId
         ? selectCredential(
-            affinitySession,
-            candidate,
-            this.registry.getCredentialChain(candidate.provider),
-            cbManager,
-            {
-              sessionId: opts.sessionId,
-              affinityWindowMs,
-              // Rate-limit shaping input (see CredentialSelectionCtx.spreadCapped):
-              // a peek per chain member, map lookups only — no state consumed.
-              spreadCapped: (prefix) =>
-                !getRateLimiter().peek(credentialSubject(candidate.provider, prefix)).allowed,
-              // A capped member the slack filter actually excluded from the
-              // landing is a TRIGGERED outbound cap — record it where the
-              // shaping lands (never for a kept binding, never on the
-              // all-capped re-open).
-              onSpreadCapped: (prefix) => {
-                const subject = credentialSubject(candidate.provider, prefix);
-                const verdict = getRateLimiter().peek(subject);
-                if (verdict.allowed) return; // defensive — the filter just said capped
-                recordRateLimitEvent({
-                  direction: 'outbound',
-                  kind: 'shaped',
-                  subject,
-                  rule: verdict.rule,
-                  limitedBy: verdict.limitedBy,
-                  retryAfterMs: verdict.retryAfterMs,
-                  provider: candidate.provider,
-                  keyHashPrefix: prefix,
-                  note: 'spread selection',
-                  noteCode: 'spread',
-                });
-              },
-            }
-          )
+          affinitySession,
+          candidate,
+          this.registry.getCredentialChain(candidate.provider),
+          cbManager,
+          {
+            sessionId: opts.sessionId,
+            affinityWindowMs,
+            // Rate-limit shaping input (see CredentialSelectionCtx.spreadCapped):
+            // a peek per chain member, map lookups only — no state consumed.
+            spreadCapped: (prefix) =>
+              !getRateLimiter().peek(credentialSubject(candidate.provider, prefix)).allowed,
+            // A capped member the slack filter actually excluded from the
+            // landing is a TRIGGERED outbound cap — record it where the
+            // shaping lands (never for a kept binding, never on the
+            // all-capped re-open).
+            onSpreadCapped: (prefix) => {
+              const subject = credentialSubject(candidate.provider, prefix);
+              const verdict = getRateLimiter().peek(subject);
+              if (verdict.allowed) return; // defensive — the filter just said capped
+              recordRateLimitEvent({
+                direction: 'outbound',
+                kind: 'shaped',
+                subject,
+                rule: verdict.rule,
+                limitedBy: verdict.limitedBy,
+                retryAfterMs: verdict.retryAfterMs,
+                provider: candidate.provider,
+                keyHashPrefix: prefix,
+                note: 'spread selection',
+                noteCode: 'spread',
+              });
+            },
+          }
+        )
         : { forcedMove: false, reason: 'no-chain' };
       const credentialPrefix = selection.credential?.keyHashPrefix;
 
@@ -2323,7 +2550,7 @@ export class PipelineOrchestrator {
 
       // Outbound sliding-window gate (`credentials:` overlay) — evaluated BEFORE the
       // breaker gate so an at-cap credential never burns a half-open canary.
-      // The chain head stands in when the selector degenerated (single-credential
+      // The default credential stands in when the selector degenerated (single-credential
       // / sessionless paths — the head IS the boot-baked credential registry.execute
       // serves with, registry invariant), so caps fire on one-key providers too.
       // NON-CONSUMING peek: the request slot is taken below only when the call
@@ -2424,16 +2651,41 @@ export class PipelineOrchestrator {
       // byte-identical request when nothing is in play).
       let candidateReq = request;
       {
-        const ask = opts.requestedEffort ?? 'none';
+        const budgetAsk =
+          opts.requestedEffort === undefined &&
+          typeof request.reasoning?.budgetTokens === 'number' &&
+          request.reasoning.budgetTokens > 0 &&
+          !this.wireConsumesBudgetNatively(candidate.wire)
+            ? effortFromThinkingBudget(request.reasoning.budgetTokens)
+            : undefined;
+        const ask = opts.requestedEffort ?? budgetAsk ?? 'none';
         const target = applyEffortMap(candidateEffortMap, ask);
         if (!(target === 'none' && ask === 'none')) {
           const supported =
             candidate.supportedReasoningEfforts ?? (candidate.supportsReasoningEffort ? EFFORT_LADDER : []);
           const candidateEffort = target === 'none' ? 'none' : downgradeReasoning(target, supported);
-          if (candidateEffort !== request.reasoning_effort) {
-            candidateReq = { ...request, reasoning_effort: candidateEffort };
+          if (candidateEffort !== effortOf(request)) {
+            candidateReq = {
+              ...request,
+              reasoning: { ...request.reasoning, effort: candidateEffort },
+            };
           }
         }
+      }
+      // On cross-protocol failover candidates, strip non-portable reasoning
+      // signatures / encrypted blobs so long multi-turn threads can still fail over
+      // to Chat-only upstreams instead of failing with 400 on the backup model.
+      if (
+        failoverAttempts > 1 &&
+        !capabilitiesFor(protocolForWire(candidate.wire ?? 'openai-chat')).reasoningSignature &&
+        candidateReq.input.some((item) => item.type === 'reasoning' && (item.signature !== undefined || item.encrypted !== undefined))
+      ) {
+        const strippedInput = candidateReq.input.flatMap((item): InputItem[] => {
+          if (item.type !== 'reasoning' || (item.signature === undefined && item.encrypted === undefined)) return [item];
+          const { signature: _sig, encrypted: _enc, ...rest } = item;
+          return rest.text || rest.summary ? [rest] : [];
+        });
+        candidateReq = { ...candidateReq, input: strippedInput };
       }
 
       // Stage this attempt's routing facts BEFORE the call: a relay that gets
@@ -2441,12 +2693,17 @@ export class PipelineOrchestrator {
       // that actually proceeds can commit any (earlier attempts never got that
       // far, and each later attempt simply overwrites the staged set).
       if (opts.relay) {
-        opts.relay.stageRouting({ ...opts.streamRouting, modelUsed: candidate.id, tierUsed: candidateAccessTier });
+        opts.relay.stageRouting({
+          ...opts.streamRouting,
+          modelUsed: candidate.id,
+          tierUsed: candidateAccessTier,
+          protocolUsed: protocolForWire(candidate.wire ?? 'openai-chat'),
+        });
       }
 
       // In-place retry loop on the SAME candidate model
       let candidateSucceeded = false;
-      let candidateResponse: ChatCompletionResponse | undefined = undefined;
+      let candidateResponse: CanonicalResponse | undefined = undefined;
       // Streaming decode timing, per candidate attempt: `firstChunkAt` stamps
       // the first chunk THIS attempt forwards, `streamEndAt` when
       // registry.execute resolves — the SSE body is fully drained by then.
@@ -2470,29 +2727,36 @@ export class PipelineOrchestrator {
       // long freeze on the same scale (a single maximum cannot).
       let lastVisibleAt: number | undefined;
       let stalledMs: number | undefined;
+      // Transport the served attempt actually used (registry-reported, once
+      // per attempt). Reset per attempt: a retry re-issues with a fresh tag.
+      let transport: 'sse' | 'buffered' | undefined;
       const timingRelay: StreamRelay | undefined = opts.relay
         ? {
-            stageRouting: (facts) => opts.relay!.stageRouting(facts),
-            onChunk: (chunk) => {
-              const now = Date.now();
-              firstChunkAt ??= now;
-              if (hasVisibleOutput(chunk)) {
-                if (lastVisibleAt !== undefined) {
-                  const gap = now - lastVisibleAt;
-                  // The first measured gap proves this turn HAS a stream
-                  // cadence: 0 means "measured and smooth", undefined stays
-                  // reserved for fewer than two output chunks.
-                  stalledMs ??= 0;
-                  if (gap >= PERCEIVED_STALL_MS) stalledMs += gap;
-                }
-                lastVisibleAt = now;
+          stageRouting: (facts) => opts.relay!.stageRouting(facts),
+          onTransport: (kind) => {
+            transport = kind;
+            opts.relay!.onTransport?.(kind);
+          },
+          onChunk: (chunk) => {
+            const now = Date.now();
+            firstChunkAt ??= now;
+            if (hasVisibleOutput(chunk)) {
+              if (lastVisibleAt !== undefined) {
+                const gap = now - lastVisibleAt;
+                // The first measured gap proves this turn HAS a stream
+                // cadence: 0 means "measured and smooth", undefined stays
+                // reserved for fewer than two output chunks.
+                stalledMs ??= 0;
+                if (gap >= PERCEIVED_STALL_MS) stalledMs += gap;
               }
-              opts.relay!.onChunk(chunk);
-            },
-            get committed() {
-              return opts.relay!.committed;
-            },
-          }
+              lastVisibleAt = now;
+            }
+            return opts.relay!.onChunk(chunk);
+          },
+          get committed() {
+            return opts.relay!.committed;
+          },
+        }
         : undefined;
 
       for (let attempt = 0; attempt <= maxInplaceAttempts; attempt++) {
@@ -2577,11 +2841,13 @@ export class PipelineOrchestrator {
             provider: candidate.provider,
             // Pair attribution: the credential this call actually ran on — the
             // selector's prefix, else the registry stamp on the error (a
-            // selection that degenerated to the chain head still attributes).
+            // selection that degenerated to the default credential still attributes).
             keyHashPrefix: credentialPrefix ?? diagnosis.usedKeyHashPrefix,
             errorClass: diagnosis.category,
             status: diagnosis.statusCode,
-            message: err?.message ?? String(err),
+            // Belt-and-suspenders: UpstreamError paths already redact, but
+            // non-Upstream errors can still carry echoed secrets in message.
+            message: redactUpstreamBody(err?.message ?? String(err)),
             role: 'serving',
             sessionId: opts.sessionId,
           });
@@ -2662,6 +2928,9 @@ export class PipelineOrchestrator {
             firstChunkAt !== undefined && streamEndAt !== undefined
               ? { firstChunkAt, streamEndAt, stalledMs }
               : undefined,
+          // Served-attempt transport tag. `opts.relay` absent = the executor
+          // was never given a relay, so the buffered call is certain.
+          transport: opts.relay ? transport : 'buffered',
         };
       }
     }

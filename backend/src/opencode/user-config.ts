@@ -8,9 +8,9 @@ import {
   type JSONPath,
   type ParseError,
 } from 'jsonc-parser';
-import { isOpencodeV2Package } from '../providers/wire.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { readProviderDefsFile, writeProviderDefs } from './provider-defs.js';
+import { currentPackageFor } from './provider-package.js';
 import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 
 /**
@@ -76,7 +76,7 @@ function atomicWrite(filePath: string, content: string): void {
   } catch (e) {
     try {
       fs.unlinkSync(tmpPath);
-    } catch {}
+    } catch { }
     throw e;
   }
 }
@@ -144,7 +144,7 @@ export function expandEnvTemplate(value?: string): string {
 // ---------------------------------------------------------------------------
 
 export const ROUTER_PROVIDER_ID = 'omnicell-router';
-const DEFAULT_NPM = '@ai-sdk/openai-compatible';
+const DEFAULT_NPM = 'openai-chat';
 
 /**
  * No legacy compatibility: provider defs have ONE shape and ONE home — the v2
@@ -256,7 +256,12 @@ export function normalizeProviderDef(raw: unknown): any {
   const rec = raw as Record<string, any>;
   if (!isOpencodeV2ShapedDef(rec)) return raw;
   const def: Record<string, any> = { ...rec };
-  if (def.npm === undefined && typeof rec.package === 'string') def.npm = rec.package;
+  if (typeof def.npm === 'string') def.npm = currentPackageFor(def.npm);
+  if (typeof rec.package === 'string') {
+    const pkg = currentPackageFor(rec.package);
+    def.package = pkg;
+    if (def.npm === undefined) def.npm = pkg;
+  }
   const settings = rec.settings && typeof rec.settings === 'object' ? rec.settings : {};
   const options: Record<string, any> = rec.options && typeof rec.options === 'object' ? { ...rec.options } : {};
   for (const [k, v] of Object.entries(settings)) {
@@ -283,75 +288,41 @@ export function normalizeProviderDef(raw: unknown): any {
 /**
  * Model-def sibling of normalizeProviderDef: `provider.package` ≙
  * `provider.npm` — the boot-direct npm precedence chain (d.provider.npm >
- * catModel.npm > def.npm > rec.npm) then flows opencode v2 packages into wireFor
- * unchanged. NOTE: model-level `settings` is ALREADY the opencode v1 shape's slot
- * (reasoningEffort/effort are read raw there by boot-direct), so unlike the
- * provider level there is no settings→options overlay — only the genuinely
- * new `package` alias is normalized. Untouched opencode v1 model defs pass through by
- * reference.
+ * catModel.npm > def.npm > rec.npm) then flows the npm into wireFor. A retired
+ * opencode-v2 package value is translated to the OCR protocol id here, so wireFor
+ * only ever sees current spellings. NOTE: model-level `settings` is ALREADY
+ * the opencode v1 shape's slot (reasoningEffort/effort are read raw there by
+ * boot-direct), so unlike the provider level there is no settings→options
+ * overlay — only the `package` alias is normalized. Untouched opencode v1
+ * model defs pass through by reference.
  */
 function normalizeModelDef(raw: unknown): any {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, any>;
   const provider = rec.provider && typeof rec.provider === 'object' ? (rec.provider as Record<string, any>) : undefined;
-  if (!provider || provider.npm !== undefined || typeof provider.package !== 'string') return raw;
-  return { ...rec, provider: { ...provider, npm: provider.package } };
+  if (!provider) return raw;
+  if (typeof provider.npm === 'string') {
+    const normalized = currentPackageFor(provider.npm);
+    return normalized === provider.npm ? raw : { ...rec, provider: { ...provider, npm: normalized } };
+  }
+  if (provider.npm !== undefined || typeof provider.package !== 'string') return raw;
+  return { ...rec, provider: { ...provider, npm: currentPackageFor(provider.package) } };
 }
 
-// ---------------------------------------------------------------------------
-// opencode v2 provider-shape WRITE construction 
-// ---------------------------------------------------------------------------
+/**
+ * Retired package spellings are translated by the shared protocol map
+ * (`providers/protocol.ts`) — the same table `wireFor` uses. This re-export
+ * keeps the defs/read-write call sites on one name.
+ */
+export { currentPackageFor };
 
 /**
- * Opencode v1 npm → opencode v2 package table (write side of Decision 9). Every segment is one
- * wire.ts's OPENCODE_V2_SEGMENT_WIRES already recognizes on the READ side — the write
- * side adds NO second vocabulary: `wireFor(opencode v1) === wireFor(mapped-v2)` holds
- * for each pair (pinned by user-config-v2-write.test.ts).
- * '@ai-sdk/openai-compatible' maps to the canonical compatible-runtime string
- * '@opencode/ai/providers/openai-compatible' — the only compatible-runtime
- * package the read normalizer resolves onto the 'openai' wire.
- * Unknown npm strings ride through VERBATIM into the `package` slot: inventing
- * an unprobed opencode v2 segment would silently change wire inference (opencode v2 segments are
- * matched exactly, unknown → unroutable), while a passthrough '@ai-sdk/*' (or
- * any other) string keeps resolving through the classic heuristic exactly as
- * the opencode v1 node did.
- */
-/**
- * The compatible-runtime package — the single source of that string. It is also
- * the def-materializer's fallback for wires the client has no package for
+ * Protocol id of the chat-compatible runtime. The defs book stores this id;
+ * the materializer maps it to the opencode SDK package on the client copy.
+ * Also the fallback for wires the client has no package for
  * (CLIENT_PACKAGE_FALLBACK in credentials/def-materialize.ts).
  */
-export const OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE = '@opencode/ai/providers/openai-compatible';
-
-const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
-  '@ai-sdk/openai-compatible': OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
-  '@ai-sdk/openai': '@opencode/ai/providers/openai',
-  '@ai-sdk/anthropic': '@opencode/ai/providers/anthropic',
-  '@ai-sdk/google': '@opencode/ai/providers/google',
-  '@ai-sdk/azure': '@opencode/ai/providers/azure',
-  '@ai-sdk/vertex': '@opencode/ai/providers/vertex',
-  '@ai-sdk/google-vertex': '@opencode/ai/providers/google-vertex',
-  '@ai-sdk/bedrock': '@opencode/ai/providers/bedrock',
-  '@ai-sdk/amazon-bedrock': '@opencode/ai/providers/amazon-bedrock',
-  // TypeSafe decision wire. The segment 'typesafe' resolves to wire 'systemone'
-  // (wire.ts OPENCODE_V2_SEGMENT_WIRES), so the authored package keeps the
-  // decision wire end to end. Client loadability is a separate concern: a client
-  // that has not shipped the segment still gets the compatible-runtime package,
-  // substituted in the client copy only by CLIENT_PACKAGE_FALLBACK
-  // (credentials/def-materialize.ts) — the book always keeps this value.
-  '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
-  '@ai-sdk/qoder': '@opencode/ai/providers/qoder',
-  '@ai-sdk/workbuddy': '@opencode/ai/providers/workbuddy',
-};
-
-/** npm string → the opencode v2 `package` value (mapped table, already-v2 passthrough, unknown passthrough). */
-export function opencodeV2PackageFor(npm: string): string {
-  if (isOpencodeV2Package(npm)) return npm;
-  // Object.hasOwn parity with wireFor (prototype-member npm strings must never
-  // resolve to Object.prototype values as a "package").
-  const mapped: string | undefined = Object.hasOwn(AI_SDK_TO_OPENCODE_V2_PACKAGE, npm) ? AI_SDK_TO_OPENCODE_V2_PACKAGE[npm] : undefined;
-  return mapped ?? npm;
-}
+export const CLIENT_COMPATIBLE_PACKAGE = 'openai-chat';
 
 // opencode v2 has no inline `{env:VAR}` string concept — the runtime reads the
 // variables NAMED in the `env` array itself. A full-string template translates;
@@ -399,13 +370,13 @@ export function legacyShapedProviderPaths(def: Record<string, any>): string[] {
 
 /**
  * Model-level write normalization — the reverse of normalizeModelDef: the
- * internal `provider.npm` slot becomes the opencode v2 `provider.package` slot, and the
- * value passes through opencodeV2PackageFor (the SAME one vocabulary as the provider
- * level — no second converter; the reader aliases package→npm verbatim and
- * wireFor resolves both spellings to one wire, so the mapping round-trips).
- * Everything else in a model def is already opencode-v2 shaped (console.ts's
- * bodyToModelDef is the single catalog-style→def converter shared by the
- * model editor routes; this mirror does NOT fork a second converter).
+ * internal `provider.npm` slot becomes the client shape's `provider.package`
+ * slot. The value is the npm string VERBATIM: the retired
+ * `@opencode/ai/providers/*` vocabulary is never emitted again.
+ * Everything else in a model def is already the client's file shape
+ * (console.ts's bodyToModelDef is the single catalog-style→def converter
+ * shared by the model editor routes; this mirror does NOT fork a second
+ * converter).
  */
 function opencodeV2ModelDefs(models: Record<string, any> | undefined): Record<string, any> | undefined {
   if (!models) return undefined;
@@ -416,7 +387,7 @@ function opencodeV2ModelDefs(models: Record<string, any> | undefined): Record<st
       const providerOut: Record<string, any> = { ...provider };
       const npmValue: string = provider.npm;
       delete providerOut.npm;
-      providerOut.package = opencodeV2PackageFor(npmValue);
+      providerOut.package = npmValue;
       out[mid] = { ...m, provider: providerOut };
     } else {
       out[mid] = m;
@@ -479,7 +450,7 @@ export function buildV2ProviderNode(def: ProviderDefInput): { node?: Record<stri
 
   const node: Record<string, any> = {};
   if (def.name) node.name = def.name;
-  node.package = opencodeV2PackageFor(def.npm || DEFAULT_NPM);
+  node.package = def.npm || DEFAULT_NPM;
   if (def.canonical) node.canonical = def.canonical;
   if (envNames.size > 0) node.env = [...envNames];
   if (Object.keys(settings).length > 0) node.settings = settings;

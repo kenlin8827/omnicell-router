@@ -11,7 +11,7 @@ function ndjsonResponse(events: Record<string, unknown>[]): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'application/x-ndjson' } });
 }
 
-describe('api.harnessTranslateStream', () => {
+describe('api.translateStream', () => {
   it('reports every progress event and resolves with the final rendering', async () => {
     vi.stubGlobal(
       'fetch',
@@ -26,7 +26,7 @@ describe('api.harnessTranslateStream', () => {
       )
     );
     const seen: { done: number; total: number }[] = [];
-    const result = await api.harnessTranslateStream({ text: 'source', lang: 'zh' }, (done, total) =>
+    const result = await api.translateStream({ text: 'source', lang: 'zh' }, (done, total) =>
       seen.push({ done, total })
     );
     expect(seen).toEqual([
@@ -43,12 +43,12 @@ describe('api.harnessTranslateStream', () => {
       'fetch',
       vi.fn(async () => ndjsonResponse([{ type: 'progress', done: 0, total: 3 }, { type: 'error', message: 'no key' }]))
     );
-    await expect(api.harnessTranslateStream({ text: 'source', lang: 'zh' }, () => {})).rejects.toThrow('no key');
+    await expect(api.translateStream({ text: 'source', lang: 'zh' }, () => {})).rejects.toThrow('no key');
   });
 
   it('rejects when the stream ends without a result', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ndjsonResponse([{ type: 'progress', done: 1, total: 3 }])));
-    await expect(api.harnessTranslateStream({ text: 'source', lang: 'zh' }, () => {})).rejects.toThrow(
+    await expect(api.translateStream({ text: 'source', lang: 'zh' }, () => {})).rejects.toThrow(
       'ended without a result'
     );
   });

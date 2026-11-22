@@ -1,11 +1,12 @@
 import type http from 'node:http';
 import {
-  appendGatewayResponseChunk,
-  markGatewayResponseStreamStart,
-  emitGatewayResponse,
+  appendClientResponseChunk,
+  markClientResponseStreamStart,
+  emitClientResponse,
   type ClientExchangeContext,
 } from '../observability/http-exchange.js';
 import type { ProtocolSurface, TransportContext } from './types.js';
+import { createClientLegWatchdog, writeWithBackpressure, type ClientLegWatchdog } from './transport-backpressure.js';
 
 /**
  * Raw node:http transport (the MITM forward-proxy leg) — the second
@@ -107,19 +108,25 @@ export function createNodeHttpTransport(
   // when the client was gone before the payload went out).
   let clientCtx: ClientExchangeContext | undefined;
   let clientGone = false;
+  // SSE stall deadline (shared implementation, same reasoning as the Fastify
+  // leg): a peer that never drains and never reports abort parks the relay, so
+  // the exchange — including its terminal 499 — is closed from a timer instead.
+  let sseWatchdog: ClientLegWatchdog | undefined;
   req.on('aborted', () => {
     clientGone = true;
+    sseWatchdog?.stop();
   });
-  const finalizeCapture = () => {
+  const isClientGone = () => clientGone || res.destroyed || res.socket?.destroyed === true;
+  const finalizeCapture = (gone = isClientGone()) => {
     if (!clientCtx || !clientCtx.recorder.isEnabled()) return;
-    if (clientGone || res.socket?.destroyed) {
-      emitGatewayResponse(clientCtx, {
+    if (gone) {
+      emitClientResponse(clientCtx, {
         statusCode: 499,
         statusMessage: 'Client Closed Request',
         getHeader: () => undefined,
       });
     } else {
-      emitGatewayResponse(clientCtx, res);
+      emitClientResponse(clientCtx, res);
     }
   };
 
@@ -140,20 +147,20 @@ export function createNodeHttpTransport(
     captureProcessContext: () =>
       captureEnabled
         ? {
-            clientRequest: {
-              method: req.method || 'POST',
-              url: req.url || '',
-              headers: req.headers as Record<string, string | string[] | undefined>,
-              // Scheme marker for the origin-form url case: an origin-form
-              // url on this transport is always a TLS-DECRYPTED MITM leg
-              // (plain-HTTP proxy requests arrive absolute-form and never
-              // consult the marker).
-              scheme: 'https' as const,
-            },
-            onClientExchange: (ctx: ClientExchangeContext) => {
-              clientCtx = ctx;
-            },
-          }
+          clientRequest: {
+            method: req.method || 'POST',
+            url: req.url || '',
+            headers: req.headers as Record<string, string | string[] | undefined>,
+            // Scheme marker for the origin-form url case: an origin-form
+            // url on this transport is always a TLS-DECRYPTED MITM leg
+            // (plain-HTTP proxy requests arrive absolute-form and never
+            // consult the marker).
+            scheme: 'https' as const,
+          },
+          onClientExchange: (ctx: ClientExchangeContext) => {
+            clientCtx = ctx;
+          },
+        }
         : {},
 
     relayUpstream: (up) => {
@@ -164,20 +171,34 @@ export function createNodeHttpTransport(
         res.writeHead(up.statusCode || 502, up.statusMessage, up.headers as http.OutgoingHttpHeaders);
       } catch (err) {
         logWriteError(err, 'node-http relayUpstream writeHead failed');
+        up.stream.on('error', () => { });
+        try { up.stream.destroy(); } catch { }
         finalizeCapture();
         return;
       }
       up.stream.on('data', (chunk: Buffer) => {
-        if (clientCtx) appendGatewayResponseChunk(clientCtx, chunk.toString('utf8'));
+        if (clientCtx) appendClientResponseChunk(clientCtx, chunk.toString('utf8'));
       });
-      up.stream.pipe(res);
+      res.once('close', () => {
+        if (!res.writableEnded) {
+          clientGone = true;
+          try { up.stream.destroy(); } catch { }
+          finalizeCapture();
+        }
+      });
+      // Register 'end' BEFORE pipe() so finalizeCapture evaluates isClientGone()
+      // before pipe's internal onend listener calls res.end()/destroy().
       up.stream.on('end', () => {
         finalizeCapture();
       });
+      up.stream.pipe(res);
       up.stream.on('error', () => {
         try {
           res.destroy();
-        } catch {}
+        } catch { }
+        finalizeCapture();
+      });
+      up.stream.once('close', () => {
         finalizeCapture();
       });
     },
@@ -189,18 +210,19 @@ export function createNodeHttpTransport(
         logWriteError(err, 'node-http sendJson payload serialization failed');
         serialized = '{"error":{"message":"Internal Router Error","type":"api_error"}}';
       }
+      const goneBeforeSend = isClientGone();
       try {
         res.writeHead(status, {
           'content-type': 'application/json; charset=utf-8',
           ...(headers ?? {}),
         });
         // Stash BEFORE end so the finalize below always sees the full body.
-        if (clientCtx) appendGatewayResponseChunk(clientCtx, serialized);
+        if (clientCtx) appendClientResponseChunk(clientCtx, serialized);
         res.end(serialized);
       } catch (err) {
         logWriteError(err, 'node-http sendJson write failed');
       }
-      finalizeCapture();
+      finalizeCapture(goneBeforeSend);
     },
 
     beginSse: (headers) => {
@@ -219,32 +241,47 @@ export function createNodeHttpTransport(
       } catch (err) {
         logWriteError(err, 'node-http beginSse writeHead failed');
       }
+      sseWatchdog = createClientLegWatchdog({
+        onStall: (idleTimeoutMs) => {
+          logWriteError(
+            new Error(`No SSE frame reached the client for ${idleTimeoutMs}ms — closing the exchange`),
+            'node-http SSE client leg stalled'
+          );
+          clientGone = true;
+          try {
+            res.destroy();
+          } catch {
+            // Already destroyed: exactly the state we are asserting.
+          }
+          finalizeCapture();
+        },
+      });
     },
 
     writeSseChunk: (chunk) => {
       // C-5: per-chunk write parity with the Fastify leg (byte streams stay
       // identical; the capture stash accumulates the same frames).
-      try {
-        if (clientCtx) {
-          markGatewayResponseStreamStart(clientCtx);
-          appendGatewayResponseChunk(clientCtx, chunk);
-        }
-        res.write(chunk);
-      } catch (err) {
-        logWriteError(err, 'node-http writeSseChunk failed');
+      if (clientCtx) {
+        markClientResponseStreamStart(clientCtx);
+        appendClientResponseChunk(clientCtx, chunk);
       }
+      sseWatchdog?.progress();
+      if (clientGone || res.destroyed || res.writableEnded) return;
+      return writeWithBackpressure(res, chunk, (err) => logWriteError(err, 'node-http writeSseChunk failed'));
     },
 
     endSse: () => {
+      sseWatchdog?.stop();
+      const goneBeforeEnd = isClientGone();
       try {
         res.end();
       } catch (err) {
         logWriteError(err, 'node-http endSse failed');
       }
-      finalizeCapture();
+      finalizeCapture(goneBeforeEnd);
     },
 
-    isClientGone: () => clientGone || res.socket?.destroyed === true,
+    isClientGone,
 
     logError: (err, message) => {
       logWriteError(err, message);

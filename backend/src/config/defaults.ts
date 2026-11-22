@@ -1,5 +1,5 @@
 import type { ReasoningEffort } from '../types/router.js';
-import type { ForwardProxyRule } from './types.js';
+import type { ForwardProxyRule, InterceptPosture } from './types.js';
 
 /**
  * Single source of truth for magic defaults that previously lived as
@@ -27,8 +27,43 @@ export const DEFAULT_GATEWAY_PORT = 4000;
  */
 export const DEFAULT_DEV_PORT = 4700;
 
-/** Provider upstream request timeout when `provider.timeoutMs` is unset. */
-export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+/**
+ * BUFFERED provider call (`createCompletion`) wall-clock cap when
+ * `provider.timeoutMs` is unset — 30 MINUTES.
+ *
+ * Why 30 and not 2 h: a buffered call has NO progress signal, so the wall clock
+ * is its only bound — and while it runs it holds the request, a credential's
+ * concurrency/quota and the client's patience. A timeout is retriable, so the
+ * retry budget multiplies it (`retry.inplace.maxAttempts` + the failover hops
+ * ≈ 3 attempts worst case = 90 min for ONE client request). 30 min is already
+ * ~3× the ceiling vendors impose on non-stream calls (Anthropic's SDK floors
+ * its dynamic timeout at 10 min for a non-streaming large-max_tokens request),
+ * so it never truncates a legitimate answer while it still caps a dead socket.
+ * Override per provider with `provider.timeoutMs`.
+ */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * STREAMED provider leg (`createStream`) wall-clock cap when
+ * `provider.streamTimeoutMs` is unset — 60 MINUTES.
+ *
+ * Deliberately larger than the buffered cap: the streamed leg carries a
+ * progress signal, so liveness is enforced by `DEFAULT_STREAM_IDLE_TIMEOUT_MS`
+ * (silence), and the only thing this cap must clear is the largest legitimate
+ * single answer — about 128 k output tokens at a slow 50 tok/s ≈ 43 min. A
+ * stream still trickling bytes past an hour is a runaway loop, not an answer.
+ */
+export const DEFAULT_STREAM_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
+ * SSE idle watchdog for the streamed provider leg: abort after this long
+ * WITHOUT A SINGLE BYTE (keep-alive comments and `ping` frames count as
+ * progress). Five minutes of total silence means a dead connection, while a
+ * long thinking phase that streams deltas never trips it — which is what lets
+ * the TOTAL cap above be an hour without letting a hung socket linger.
+ * Override per provider with `provider.streamIdleTimeoutMs`.
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 
 /**
  * Synthetic health-probe wall-clock bound (backend/src/resilience/health-prober.ts).
@@ -51,17 +86,31 @@ export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
 
 /**
- * Fresh-install rule table (ADR-0018): one catch-all — intercept everything and
- * send it through the outbound proxy policy. Inert until BOTH
+ * Fresh-install rule table (ADR-0018, Revision 4): one catch-all — blind-tunnel
+ * every host and send it through the outbound proxy policy. Inert until BOTH
  * `forwardProxy.enabled` and `proxy.enabled` are on (the listener ships
- * disabled, so this seed routes nothing by itself); it exists so an operator who
- * turns the proxy on gets the posture they almost certainly wanted (a blocked
- * network) instead of a silent direct egress. `reject` is never seeded —
- * shipping a blocklist would break traffic nobody asked to block.
+ * disabled, so this seed routes nothing by itself).
+ *
+ * The seed is PASSTHROUGH, not intercept: interception is decided by the
+ * capability set (the hosts a live client-gateway plugin claims, plus rows an
+ * operator writes `ingress: intercept`), so a seed that decrypted everything
+ * made ~92% of a real machine's TLS a side effect of installing a gateway —
+ * with the trust store of every non-Bun TLS stack (IDEA's per-host
+ * `<config>/ssl/cacerts`, pinned clients) as the blast radius. `reject` is
+ * never seeded — shipping a blocklist would break traffic nobody asked to
+ * block.
  */
 export const DEFAULT_FORWARD_PROXY_RULES: ForwardProxyRule[] = [
-  { match: '*', ingress: 'intercept', egress: 'proxy' },
+  { match: '*', ingress: 'passthrough', egress: 'proxy' },
 ];
+
+/**
+ * Forward-proxy interception posture when `forwardProxy.intercept` is unset or
+ * unreadable (ADR-0018 Revision 4): decrypt only what a capability declares
+ * (plugin claims + explicit `ingress: intercept` rows); everything else is a
+ * blind tunnel. `'all'` is the explicit audit posture and is never a default.
+ */
+export const DEFAULT_FORWARD_PROXY_INTERCEPT: InterceptPosture = 'claims';
 
 /** Forward-proxy access log: day-file retention for the persisted JSONL (auto-cleanup). */
 export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
@@ -88,6 +137,74 @@ export const DEFAULT_FORWARD_PROXY_MAX_CONNECTIONS = 512;
 export const FORWARD_PROXY_MAX_CONNECTIONS_MIN = 16;
 export const FORWARD_PROXY_MAX_CONNECTIONS_MAX = 8192;
 
+
+/**
+ * Mihomo (Clash Meta) mixed-port when `proxy.mihomo.mixedPort` is unset.
+ * The gateway's outbound calls use `http://127.0.0.1:<mixedPort>` while
+ * `proxy.mode` is `mihomo` (ADR-0022). 7890 is mihomo's own default.
+ */
+export const DEFAULT_MIHOMO_MIXED_PORT = 7890;
+
+/** External-controller port when `proxy.mihomo.controllerPort` is unset. */
+export const DEFAULT_MIHOMO_CONTROLLER_PORT = 9090;
+
+/** Selector group written into the generated mihomo config. */
+export const DEFAULT_MIHOMO_GROUP = 'PROXY';
+
+/**
+ * Subscription refresh interval (seconds) when a subscription omits `interval`.
+ * Mihomo's proxy-provider `interval` is seconds. Clamped on load.
+ */
+export const DEFAULT_MIHOMO_SUB_INTERVAL_SEC = 3600;
+export const MIHOMO_SUB_INTERVAL_MIN_SEC = 300;
+export const MIHOMO_SUB_INTERVAL_MAX_SEC = 86_400;
+
+/**
+ * Delay-test cadence (seconds) for an automatic group (`url-test` / `fallback`)
+ * when `proxy.mihomo.groupInterval` is unset. The interval is the failure
+ * DETECTION window, not just a display refresh: a member that dies stays
+ * selected — and its latency reading stays stale — until the next cycle, so a
+ * dead node costs up to one interval of real traffic. Mihomo's own 300 s
+ * default leaves that window at five minutes; the gateway ships one minute.
+ */
+export const DEFAULT_MIHOMO_GROUP_INTERVAL_SEC = 60;
+/**
+ * Bounds for `proxy.mihomo.groupInterval`. Every cycle issues one real request
+ * per member THROUGH that member, so 30 s is the fastest cadence that still
+ * leaves a subscription-sized node list alone (mihomo's runner up is 10 s).
+ */
+export const MIHOMO_GROUP_INTERVAL_MIN_SEC = 30;
+export const MIHOMO_GROUP_INTERVAL_MAX_SEC = 86_400;
+/** How much faster (ms) a candidate must be before `url-test` switches. */
+export const DEFAULT_MIHOMO_GROUP_TOLERANCE_MS = 50;
+/** Upper bound for `proxy.mihomo.groupTolerance`: past a few seconds the
+ *  tolerance stops describing jitter and starts describing an outage. */
+export const MIHOMO_GROUP_TOLERANCE_MAX_MS = 5000;
+
+/**
+ * URL mihomo fetches for group health checks and console delay tests. This is
+ * mihomo's own `DefaultTestURL` — a 204 endpoint (no body, one RTT) and the
+ * de-facto Clash-ecosystem convention — and it is configurable because it must
+ * be reachable from the machine AND through the nodes (a global default is not
+ * reachable everywhere).
+ */
+export const DEFAULT_MIHOMO_TEST_URL = 'https://www.gstatic.com/generate_204';
+
+/**
+ * TCP reachability probe budget for the console's add-node dialog (ms). This
+ * is a connect() deadline, not a delay measurement: the node is not in the
+ * running config yet, so the core cannot route through it.
+ */
+export const MIHOMO_NODE_PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Budget for one delay measurement through the core (ms), shared by the
+ * console's per-node, batch and URL probes and by the controller client's own
+ * default. It is the round-trip deadline AND the cut-off for calling a row
+ * "timeout": mihomo answers a dead node with delay 0, so a measurement can
+ * only be trusted when it finishes inside this budget.
+ */
+export const MIHOMO_DELAY_TIMEOUT_MS = 5000;
 
 /** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
 export const DEFAULT_HEADROOM_PORT = 8787;

@@ -680,6 +680,11 @@ export const CombosPage: React.FC = () => {
             const isDisabled = combo.disabled;
             const modelIds = registeredIds;
             const warn = validateDraft(combo, combos, idx, modelIds);
+            // Unroutable = every member's registration probe came back false
+            // (meta loaded, members configured) — the routing path fail-fasts
+            // this combo, so the card must say so beyond per-chip styling.
+            const unroutable =
+              !warn && membersMeta.length > 0 && combo.models.length > 0 && membersMeta.every((m) => !m.registered);
             const cid = combo.id.trim();
             const testRes = testResults[cid];
             const isTesting = testingCombos.has(cid);
@@ -835,10 +840,10 @@ export const CombosPage: React.FC = () => {
                   <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                     {combo.models.length} {t('combos.membersUnit')}
                   </span>
-                  {warn && (
+                  {(warn || unroutable) && (
                     <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>
                       <AlertTriangle size={11} />
-                      <span>{t(warn)}</span>
+                      <span>{t(warn || 'combos.warnAllUnregistered')}</span>
                     </span>
                   )}
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' }}>

@@ -51,6 +51,7 @@ When installed via npm:
 - **Runtime Portability**: Runs natively on Node.js (>= 18.0.0) without requiring Bun or TypeScript compiler installed on the user's host.
 - **Embedded Web Console**: Ships pre-compiled static assets ([frontend/dist](file:///d:/OpenHub/omnicell-router/frontend/dist)) and server dist ([backend/dist](file:///d:/OpenHub/omnicell-router/backend/dist)), keeping the unpacked download size around 28 MB.
 - **Lifecycle Commands**: Users can run `ocr start`, `ocr web` (or `ocr ui`), `ocr status`, and `ocr stop`.
+- **No Plugin Packages**: `files` excludes `.plugin-dist`; the npm tarball never installs a plugin. Plugins are optional and an operator installs them from the console (ADR-0032).
 
 ### 2.2 Prerequisites
 
@@ -221,6 +222,11 @@ bun run build
 
 Generated bundles are located under:
 `desktop/src-tauri/target/release/bundle/`
+
+The installer carries the desktop shell, the console assets (`frontend/dist`) and the gateway
+sidecar — **no plugin packages**. `tauri.conf.json` must not declare a `plugins/` resource and
+`main.rs` must not set `OCR_BUNDLED_PLUGIN_SRC`: plugins are optional and are installed from the
+console's Plugins page (ADR-0032).
 
 ---
 
