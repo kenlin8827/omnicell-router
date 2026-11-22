@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { ModelRegistration } from '../../config/types.js';
 import { IrUnsupportedError } from '../errors.js';
 import { DATA_URL_RE } from '../media.js';
@@ -180,6 +181,27 @@ export function responsesToolToWire(tool: ToolDef): Record<string, unknown> {
   return { type: tool.kind, ...record(tool.config) };
 }
 
+/**
+ * Responses tool items carry their own item `id`, distinct from the correlation
+ * `call_id`, and upstreams reject an id that does not begin with the item-type
+ * prefix (`Invalid 'input[2].id': Expected an ID that begins with 'fc'`).
+ * Carriers without item ids (chat, Anthropic, Gemini) put the tool-call id in
+ * both slots, so the Responses adapters derive one. Two invariants:
+ *
+ * - Deterministic: the same history MUST yield the same id on every turn, or
+ *   the replayed prompt prefix turns over and the upstream prompt cache misses.
+ * - Injective: distinct tool-call ids MUST NOT collapse onto one item id. The
+ *   chat client controls `tool_calls[].id`, so an id that is not safe both in
+ *   charset and length is hashed instead of sanitized/truncated — dropping
+ *   characters or a tail would silently merge two calls into one id.
+ */
+export function responsesToolItemId(id: string, custom: boolean): string {
+  const prefix = custom ? 'ctc_' : 'fc_';
+  if (id.startsWith(prefix)) return id;
+  if (/^[A-Za-z0-9_-]{1,48}$/.test(id)) return prefix + id;
+  return prefix + crypto.createHash('sha256').update(id).digest('hex').slice(0, 48);
+}
+
 function itemToWire(item: InputItem): Record<string, unknown> | Record<string, unknown>[] | null {
   if (item.type === 'extension') {
     if (item.protocol !== PROTOCOL) throw new IrUnsupportedError('input_item', `Cannot convert ${item.protocol} item.`, PROTOCOL);
@@ -201,7 +223,9 @@ function itemToWire(item: InputItem): Record<string, unknown> | Record<string, u
     if (item.signature) throw new IrUnsupportedError('tool_call_signature', 'Responses cannot replay a foreign tool-call signature.', PROTOCOL);
     const custom = item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call';
     return {
-      type: custom ? 'custom_tool_call' : 'function_call', id: item.id, call_id: item.callId ?? item.id,
+      type: custom ? 'custom_tool_call' : 'function_call',
+      id: responsesToolItemId(item.id, custom),
+      call_id: item.callId ?? item.id,
       name: item.name,
       ...(custom ? { input: item.arguments } : { arguments: item.arguments }),
       ...(item.status ? { status: item.status } : {}),

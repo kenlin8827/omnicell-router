@@ -8,7 +8,7 @@ import type {
   Usage,
 } from '../types.js';
 import { assertCanonicalResponseSupported, assertCanonicalStreamEventSupported } from '../validate.js';
-import { responsesPartToWire } from './openai-responses.js';
+import { responsesPartToWire, responsesToolItemId } from './openai-responses.js';
 
 const PROTOCOL = 'openai-responses';
 
@@ -111,7 +111,7 @@ function outputItemToWire(item: OutputItem, messageId?: string): Record<string, 
     const custom = item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call';
     return {
       type: custom ? 'custom_tool_call' : 'function_call',
-      id: item.id || shortId(custom ? 'ctc_' : 'fc_'),
+      id: responsesToolItemId(item.id || shortId(custom ? 'ctc_' : 'fc_'), custom),
       call_id: item.callId ?? item.id,
       name: item.name,
       ...(custom ? { input: item.arguments } : { arguments: item.arguments }),
@@ -339,9 +339,12 @@ export class OpenAIResponsesEventEncoder {
       throw new IrUnsupportedError('stream_lifecycle', `Responses stream references unopened output item ${index}.`, PROTOCOL);
     }
     const sourceId = 'id' in item && typeof item.id === 'string' ? item.id : undefined;
-    const id = sourceId ?? (item.type === 'message' && index === 0 ? this.messageId : undefined)
-      ?? shortId(item.type === 'message' ? 'msg_' : item.type === 'reasoning' ? 'rs_'
-        : item.type === 'tool_call' && item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call' ? 'ctc_' : 'fc_');
+    const custom = item.type === 'tool_call' && item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call';
+    const id = item.type === 'tool_call' && sourceId !== undefined
+      ? responsesToolItemId(sourceId, custom)
+      : sourceId ?? (item.type === 'message' && index === 0 ? this.messageId : undefined)
+        ?? shortId(item.type === 'message' ? 'msg_' : item.type === 'reasoning' ? 'rs_'
+          : custom ? 'ctc_' : 'fc_');
     this.itemIds.set(index, id);
     return id;
   }

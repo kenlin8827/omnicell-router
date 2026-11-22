@@ -17,7 +17,15 @@ ADR-0008 曾把所有转换统一到 `ChatCompletionRequest`。那是务实的�
    - typed `input[]` / `output[]`（`message`、`tool_call`、`tool_result`、`reasoning`、`item_reference`、`extension`）保留 item id、状态与顺序；
    - typed content parts（`text`、`image`、`file`、`audio`、`refusal`、`extension`）保留媒体来源、引用、签名与缓存断点；
    - 工具是 typed union：`function`、`custom`、`builtin`、`extension`；`tool_choice` 包含 Responses `allowed_tools`；
-   - tool call 同时保留 item `id` 与关联 `callId`；目标要求对象时，非法参数 JSON 显式失败，不改写成别的含义；
+   - tool call 同时保留 item `id` 与关联 `callId`；目标要求对象时，非法参数 JSON 显式失败，不改写成别的含义。
+     没有 item id 的载体（Chat、Anthropic、Gemini）把 tool-call id 同时填进两个槽位，而 Responses wire
+     拒绝不以 `fc_` / `ctc_` 开头的 `function_call` / `custom_tool_call` item id（“Expected an ID that
+     begins with 'fc'”，参数 `input[n].id`）。因此 Responses 适配器由传入的 tool-call id 确定性派生 item id
+     （`responsesToolItemId`），`call_id` 保持原值——同一段历史每轮必须派生出同一个 item id，否则重放的
+     prompt 前缀会翻篇、上游 prompt cache 失效。派生同时保证单射：本身不符字符集或长度要求的 tool-call id
+     改用 SHA-256（截断到同样的 48 字符预算）而不是清洗或截尾，因为该字符串由 Chat 客户端掌控，丢字符会把
+     两个调用合并成同一个 item id。已带正确前缀的 item id（真正的 Responses 重放）原样透传，
+     缓冲编码器与流式编码器共用同一派生逻辑，因此同一 item 在 `output_item.added` 与终态响应之间不会换 id；
    - 推理正文、摘要 part、签名与加密内容是不同字段——正文绝不改标为摘要；
    - generation、结构化输出、推理、缓存、有状态请求与归因控制都有显式规范字段；
    - usage 保留缓存输入、缓存写入、推理、音频与预测 token 明细；

@@ -13,9 +13,11 @@ import {
   canonicalToResponsesPayload,
   responsesRequestToIR,
   responsesResponseToIR,
+  responsesToolItemId,
 } from '../../src/ir/adapters/openai-responses.js';
 import {
   OpenAIResponsesEventEncoder,
+  canonicalToResponsesObject,
   defaultResponsesEcho,
   newResponseStreamSequence,
 } from '../../src/ir/adapters/openai-responses-output.js';
@@ -68,6 +70,79 @@ describe('canonical IR conformance', () => {
     assert.equal(payload.input[2].id, 'fc_1');
     assert.equal(payload.input[2].call_id, 'call_1');
     assert.equal(payload.input[3].call_id, 'call_1');
+  });
+
+  it('derives prefixed Responses item ids for history from carriers that have none', () => {
+    const ir = chatRequestToIR({
+      model: 'auto',
+      messages: [
+        {
+          role: 'assistant', content: '',
+          tool_calls: [
+            { id: 'call_0123456789abcdef', type: 'function', function: { name: 'read', arguments: '{}' } },
+            { id: 'toolu_01ABC', type: 'function', function: { name: 'write', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_0123456789abcdef', content: 'a' },
+        { role: 'tool', tool_call_id: 'toolu_01ABC', content: 'b' },
+      ],
+    });
+    const payload = canonicalToResponsesPayload(ir, model);
+    const calls = (payload.input as { type: string; id?: string; call_id?: string }[])
+      .filter((item) => item.type === 'function_call');
+    const [first, second] = calls;
+    assert.equal(first.id, 'fc_call_0123456789abcdef', 'chat call ids are not valid Responses item ids');
+    assert.equal(first.call_id, 'call_0123456789abcdef');
+    assert.equal(second.id, 'fc_toolu_01ABC');
+    assert.equal(second.call_id, 'toolu_01ABC');
+    assert.equal((payload.input as { call_id?: string }[])[2].call_id, 'call_0123456789abcdef');
+    assert.equal(
+      JSON.stringify(canonicalToResponsesPayload(ir, model).input), JSON.stringify(payload.input),
+      'the derived id must be stable across turns or the replayed prefix busts the prompt cache',
+    );
+
+    // Injective even for hostile ids: the chat client owns these strings, and a
+    // sanitize/truncate transform would silently merge two calls onto one id.
+    assert.notEqual(responsesToolItemId('call_a.b', false), responsesToolItemId('call_a:b', false));
+    const long = 'x'.repeat(49);
+    assert.notEqual(responsesToolItemId(long, false), responsesToolItemId(long.slice(0, 48), false));
+    assert.match(responsesToolItemId(long, false), /^fc_[0-9a-f]{48}$/);
+    assert.equal(responsesToolItemId(long, false), responsesToolItemId(long, false));
+
+    const custom: CanonicalRequest = {
+      model: 'auto',
+      stream: false,
+      input: [{
+        type: 'tool_call', id: 'call_custom', callId: 'call_custom', name: 'freeform', arguments: '{}',
+        vendor: { 'openai-responses': { itemType: 'custom_tool_call' } },
+      }],
+    };
+    const customPayload = canonicalToResponsesPayload(custom, model);
+    assert.equal(customPayload.input[0].id, 'ctc_call_custom');
+    assert.equal(customPayload.input[0].call_id, 'call_custom');
+
+    const native = responsesRequestToIR({
+      model: 'auto',
+      input: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'read', arguments: '{}' }],
+    });
+    assert.equal(canonicalToResponsesPayload(native, model).input[0].id, 'fc_1', 'an item id is replayed verbatim');
+  });
+
+  it('emits prefixed item ids to Responses clients while keeping the call id correlation', () => {
+    const original = response([
+      { type: 'tool_call', id: 'call_1', callId: 'call_1', name: 'read', arguments: '{}' },
+    ]);
+    const object = canonicalToResponsesObject(original, { respId: 'resp_1' }, 'served');
+    const buffered = (object.output as { id?: string; call_id?: string }[])[0];
+    assert.equal(buffered.id, 'fc_call_1');
+    assert.equal(buffered.call_id, 'call_1');
+
+    const encoder = new OpenAIResponsesEventEncoder('resp_1', 'msg_1', newResponseStreamSequence(), true, defaultResponsesEcho());
+    const wire = canonicalResponseToEvents(original).flatMap((event) => encoder.encode(event, 'served', original));
+    const opened = wire.find((event) => event.type === 'response.output_item.added');
+    const final = (wire.at(-1)?.response as { output: { id?: string }[] } | undefined)?.output[0];
+    assert.equal((opened?.item as { id?: string } | undefined)?.id, 'fc_call_1');
+    assert.equal(final?.id, 'fc_call_1', 'streamed and terminal item ids must agree');
   });
 
   it('round-trips Responses item references, custom tools, verbosity and schema descriptions', () => {
