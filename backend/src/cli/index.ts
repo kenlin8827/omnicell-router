@@ -13,7 +13,7 @@ import {
 import { defaultGatewayPort, pluginWarningText, type ClientActionWarning } from './clients/base.js';
 import { runLauncherScript } from './clients/launcher.js';
 import { registerGlobalShims, shimStatus, unregisterGlobalShims } from './shim.js';
-import type { CliAction, SupportedClient } from './types.js';
+import type { CliAction } from './types.js';
 import { APP_VERSION } from '../version.js';
 import {
   DEFAULT_ENV_NAME,
@@ -495,7 +495,7 @@ async function main(): Promise<void> {
 
     case 'setup': {
       printBanner();
-      const client = args[1] as SupportedClient;
+      const client = args[1];
       if (!client) {
         console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <${CLIENT_TARGETS}>\``);
         process.exit(1);
@@ -526,7 +526,7 @@ async function main(): Promise<void> {
 
     case 'teardown': {
       printBanner();
-      const client = args[1] as SupportedClient;
+      const client = args[1];
       if (!client) {
         console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <${CLIENT_TARGETS}>\``);
         process.exit(1);

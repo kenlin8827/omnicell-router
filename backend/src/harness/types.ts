@@ -1,7 +1,7 @@
 /**
  * Harness domain vocabulary (ADR-0015).
  *
- * `client` = a runtime hooked for traffic (SupportedClient). `harness` = that runtime considered as an
+ * `client` = a runtime hooked for traffic (a client id, core or package-declared). `harness` = that runtime considered as an
  * artifact host. They are deliberately different vocabularies: hosts like Cursor/Zed will never be
  * traffic clients, and welding the two would pollute the traffic domain.
  */

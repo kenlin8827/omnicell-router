@@ -2366,24 +2366,11 @@ hiddenBadge: string;
      *  resolved file and the merge/reopen semantics. */
     workbuddyHint: string;
     versionOk: string;
+    /** Generic hook hint for clients whose package declares no `clientText.hint`. */
+    caHint: string;
     versionBelow: string;
-    proxyErrForwardProxyDisabled: string;
-    proxyErrCaMissing: string;
-    proxyErrServiceProbe: string;
-    proxyErrServiceSetEnv: string;
-    proxyErrServiceStart: string;
-    proxyErrNotActive: string;
-    proxyTeardownOk: string;
-    proxySetupOk: string;
-    cursorHint: string;
-    cursorErrForwardProxyDisabled: string;
-    cursorErrCaMissing: string;
-    cursorErrNotFound: string;
-    cursorSetupOk: string;
-    cursorTeardownOk: string;
     clientErrNotActive: string;
     clientErrTakeoverLost: string;
-    cursorErrRemoveFailed: string;
     gatewayModels: string;
     gatewayModelsInfo: string;
     gatewayReplace: string;
@@ -2403,21 +2390,7 @@ hiddenBadge: string;
     gatewayPluginDisabled: string;
     gatewayPluginNotLoaded: string;
     gatewayPluginRequired: string;
-    jetbrainsHint: string;
-    jetbrainsSetupOk: string;
-    jetbrainsTeardownOk: string;
-    /** Family card: "N IDEs" badge on the collapsed row. */
-    jetbrainsProductCount: string;
-    qoderErrNotFound: string;
-    qoderHint: string;
-    qoderSetupOk: string;
     warnCaNotTrusted: string;
-    jetbrainsCa: string;
-    jetbrainsCaImported: string;
-    jetbrainsCaAbsent: string;
-    jetbrainsCaUnknown: string;
-    jetbrainsCaNotHooked: string;
-    jetbrainsCaReimport: string;
     warnIdeRunning: string;
     /** Consent dialog title: a client is running while the operator asks to hook/unhook it. */
     ideRunningTitle: string;
@@ -2433,7 +2406,6 @@ hiddenBadge: string;
     warnIdeTruststoreReadonly: string;
     /** A plugin-owned advisory code with no text declared in its package. */
     warnUndeclaredAdvisory: string;
-    qoderTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;
     models: string;
@@ -2479,7 +2451,6 @@ hiddenBadge: string;
     smartScopeKey: string;
     smartScopeNone: string;
     smartScopeEmpty: string;
-    proxyHint: string;
     /** Hook-tab roster filter placeholder */
     filterPh: string;
     /** Proxy-tab prerequisite banners (inbound forward proxy off / not running) */

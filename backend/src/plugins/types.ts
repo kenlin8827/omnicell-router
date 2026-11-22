@@ -81,7 +81,15 @@ export interface PluginManifest {
    *  warning's `params`. Core-owned codes (`ca_not_trusted`, …) keep core
    *  wording — a package declares only codes it introduced. */
   warningLabels?: Record<string, string | Record<string, string>>;
-  /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
+  /** Package-owned client presentation texts (ADR-0027): success toasts, the
+   *  card hint, per-reasonCode failure copy and family-card labels — every
+   *  string the console used to hardcode per client id. Core must never
+   *  string-reference a package client id; the copy travels with the package. */
+  clientText?: ClientTextManifest;
+  /** Roster sort key among contributed hooks (lower sorts first). Absent =
+   *  alphabetical after every ranked hook; the core popularity table
+   *  (`utils/popularity.ts`) stays host/core-only. */
+  clientRank?: number;
   logo?: string;
   /** Provider presets this plugin can pre-provision (shown on the plugins page). */
   presets?: PluginProviderPreset[];
@@ -630,6 +638,24 @@ export interface ClientAdapterHost {
   createApiKey(opts: { name: string; description?: string }): { key: string } | null;
 }
 
+/** Text or locale map — the same shape `description` / `warningLabels` use;
+ *  `{param}` placeholders interpolate like the warning labels do. */
+export type ClientTextEntry = string | Record<string, string>;
+
+/**
+ * Package-owned client presentation texts (ADR-0027). `errors` keys mirror the
+ * adapter's own `ClientActionResult.reasonCode` spellings (lowerCamel or
+ * snake_case, verbatim); `family` keys label the `ClientHookStatus.products`
+ * rendering (product_count, ca, ca_imported, …).
+ */
+export interface ClientTextManifest {
+  setupOk?: ClientTextEntry;
+  teardownOk?: ClientTextEntry;
+  hint?: ClientTextEntry;
+  errors?: Record<string, ClientTextEntry>;
+  family?: Record<string, ClientTextEntry>;
+}
+
 /** One plugin known to the host — loaded, or the reason it could not load. */
 export interface PluginView {
   id: string;
@@ -645,6 +671,8 @@ export interface PluginView {
   description?: string | Record<string, string>;
   /** This package's own advisory texts, keyed by warning code (see PluginManifest). */
   warningLabels?: Record<string, string | Record<string, string>>;
+  /** Package-owned client presentation texts (see PluginManifest.clientText). */
+  clientText?: ClientTextManifest;
   presets?: PluginProviderPreset[];
   /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
   logo?: string;

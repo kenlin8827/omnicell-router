@@ -23,3 +23,23 @@ export function pluginWarningText(
   for (const [k, v] of Object.entries(params)) out = out.split(`{${k}}`).join(v);
   return out;
 }
+
+/**
+ * Resolve a package-declared client text (`manifest.clientText` — setup/teardown
+ * toasts, hook hints, per-reasonCode errors, family strings) for the console:
+ * pick the active UI language (same fallback chain as `pluginWarningText`) and
+ * fill `{param}` slots. Undefined means the package declared no text; the
+ * caller decides what to show (generic console copy or hide the element).
+ */
+export function pluginClientText(
+  text: string | Record<string, string> | undefined,
+  lang: string,
+  params?: Record<string, string | number>
+): string | undefined {
+  const resolved = pickLocaleText(text, lang);
+  if (!resolved) return undefined;
+  if (!params) return resolved;
+  let out = resolved;
+  for (const [k, v] of Object.entries(params)) out = out.split(`{${k}}`).join(String(v));
+  return out;
+}

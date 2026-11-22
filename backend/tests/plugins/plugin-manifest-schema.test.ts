@@ -379,6 +379,50 @@ describe('manifest: warningLabels', () => {
   });
 });
 
+describe('manifest: clientText and clientRank', () => {
+  const base = { id: 'p', name: 'P', version: '1.0.0', apiVersion: 1, type: 'client-adapter' };
+
+  it('accepts toasts, hint, per-reasonCode errors and family labels', () => {
+    assert.doesNotThrow(() =>
+      validatePluginManifest(
+        {
+          ...base,
+          clientText: {
+            setupOk: 'Hooked.',
+            teardownOk: { 'en-US': 'Unhooked.', 'zh-CN': '已拆装。' },
+            hint: 'Takes over at start.',
+            errors: { not_found: 'Not detected.', serviceStartFailed: 'Service start failed: {detail}' },
+            family: { product_count: '{n} IDEs', ca: 'CA trust' },
+          },
+          clientRank: 7,
+        },
+        'plugin'
+      )
+    );
+  });
+
+  it('rejects an unknown section, malformed codes and non-text entries', () => {
+    assert.throws(
+      () => validatePluginManifest({ ...base, clientText: { nope: 'x' } }, 'plugin'),
+      /not one of setupOk, teardownOk, hint, errors, family/
+    );
+    assert.throws(
+      () => validatePluginManifest({ ...base, clientText: { errors: { 'Not-Found': 'x' } } }, 'plugin'),
+      /lowerCamel or snake_case code/
+    );
+    assert.throws(
+      () => validatePluginManifest({ ...base, clientText: { family: { ca: { 'en-US': 7 } } } }, 'plugin'),
+      /must be a string or a locale map/
+    );
+  });
+
+  it('rejects a rank that is not a positive integer', () => {
+    assert.throws(() => validatePluginManifest({ ...base, clientRank: 0 }, 'plugin'), /positive integer/);
+    assert.throws(() => validatePluginManifest({ ...base, clientRank: 1.5 }, 'plugin'), /positive integer/);
+    assert.doesNotThrow(() => validatePluginManifest({ ...base, clientRank: 1 }, 'plugin'));
+  });
+});
+
 const jetbrainsPluginJson = path.resolve(import.meta.dirname, '../../../plugins/jetbrains-gateway/plugin.json');
 if (fs.existsSync(jetbrainsPluginJson)) {
   describe('warningLabels: the shipped jetbrains-gateway manifest', () => {

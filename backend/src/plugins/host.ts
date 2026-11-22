@@ -442,6 +442,7 @@ async function importPlugin(
     wires: modelPart?.wires ?? manifest.wires ?? [],
     description: manifest.description,
     warningLabels: manifest.warningLabels,
+    clientText: manifest.clientText,
     presets: manifest.presets,
     logo: manifest.logo,
     source,
@@ -519,7 +520,7 @@ async function importPlugin(
   // the package (a built-in/retired/duplicate client id throws). Staging the
   // gateway before it would leave a package that failed to load still owning
   // its hosts — "broken row, traffic still intercepted", the worst of both.
-  if (loaded.clientAdapter) registerPluginClientAdapter(manifest.id, loaded.clientAdapter);
+  if (loaded.clientAdapter) registerPluginClientAdapter(manifest.id, loaded.clientAdapter, manifest.clientRank);
   if (loaded.gateway) stageGateway(manifest.id, loaded.gateway);
   manifestsById.set(manifest.id, manifest);
   return { ...loaded, view };

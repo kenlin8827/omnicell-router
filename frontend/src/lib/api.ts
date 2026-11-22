@@ -5081,6 +5081,18 @@ export interface PluginProviderPresetInfo {
   description?: string;
 }
 
+/** Mirrors backend `PluginView.clientText` (manifest `clientText`): the package's
+ *  own presentation copy for its client hook, per locale or plain string.
+ *  `errors` keys are the adapter's emitted `reasonCode` spellings; `family`
+ *  keys are snake_case (product_count, ca, ca_imported, …). */
+export interface PluginClientText {
+  setupOk?: string | Record<string, string>;
+  teardownOk?: string | Record<string, string>;
+  hint?: string | Record<string, string>;
+  errors?: Record<string, string | Record<string, string>>;
+  family?: Record<string, string | Record<string, string>>;
+}
+
 export interface PluginViewInfo {
   id: string;
   name: string;
@@ -5091,9 +5103,13 @@ export interface PluginViewInfo {
    *  A multi-part package renders one label per entry. */
   types?: string[];
   wires: string[];
+
   description?: string | Record<string, string>;
   /** Package-declared warning texts, keyed by the advisory code it emits. */
   warningLabels?: Record<string, string | Record<string, string>>;
+  /** Package-declared client copy (manifest `clientText`): setup/teardown toasts,
+   *  per-reasonCode errors, hook hint and family (multi-product) strings. */
+  clientText?: PluginClientText;
   presets?: PluginProviderPresetInfo[];
   source: 'dev' | 'packaged';
   path: string;

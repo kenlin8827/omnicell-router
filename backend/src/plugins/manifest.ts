@@ -187,6 +187,41 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
       if (!isTextOrLocaleMap(text)) fail(`warningLabels['${code}'] must be a string or a locale map of strings`);
     }
   }
+  if (m.clientText !== undefined) {
+    const ct = m.clientText;
+    if (typeof ct !== 'object' || ct === null || Array.isArray(ct)) {
+      fail('clientText must be an object');
+    } else {
+      const rec = ct as Record<string, unknown>;
+      for (const key of Object.keys(rec)) {
+        if (key !== 'setupOk' && key !== 'teardownOk' && key !== 'hint' && key !== 'errors' && key !== 'family') {
+          fail(`clientText key '${key}' is not one of setupOk, teardownOk, hint, errors, family`);
+        }
+      }
+      for (const simple of ['setupOk', 'teardownOk', 'hint'] as const) {
+        const v = rec[simple];
+        if (v !== undefined && !isTextOrLocaleMap(v)) {
+          fail(`clientText.${simple} must be a string or a locale map of strings`);
+        }
+      }
+      for (const mapName of ['errors', 'family'] as const) {
+        const map = rec[mapName];
+        if (map === undefined) continue;
+        if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+          fail(`clientText.${mapName} must be an object keyed by code`);
+          continue;
+        }
+        for (const [code, text] of Object.entries(map as Record<string, unknown>)) {
+          // A code is the ABI the hook returns; the console looks it up verbatim.
+          if (!/^[a-z][a-zA-Z0-9_]*$/.test(code)) fail(`clientText.${mapName} key '${code}' must be a lowerCamel or snake_case code`);
+          if (!isTextOrLocaleMap(text)) fail(`clientText.${mapName}['${code}'] must be a string or a locale map of strings`);
+        }
+      }
+    }
+  }
+  if (m.clientRank !== undefined && (typeof m.clientRank !== 'number' || !Number.isInteger(m.clientRank) || m.clientRank < 1)) {
+    fail('clientRank must be a positive integer');
+  }
   if (m.presets !== undefined) {
     if (!Array.isArray(m.presets)) fail('presets must be an array');
     for (const preset of m.presets as unknown[]) {

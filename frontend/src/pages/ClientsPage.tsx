@@ -8,11 +8,11 @@ import { InfoTip } from '../components/InfoTip';
 import { AgentRowsTable } from '../components/AgentRowsTable';
 import { SmartAssignDialog, type SmartAssignTarget } from '../components/SmartAssignDialog';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
-import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type CaTrustResponse, type PluginConfigFieldInfo, type PluginConfigSectionInfo } from '../lib/api';
+import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type PluginClientText, type CaTrustResponse, type PluginConfigFieldInfo, type PluginConfigSectionInfo } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, pickLocaleText, SHARED_GATEWAY_CARD_KEYS, type GatewayCfgDraft } from '../lib/plugin-config';
-import { pluginWarningText } from '../lib/warnings';
+import { pluginClientText, pluginWarningText } from '../lib/warnings';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -34,31 +34,35 @@ const clientSlots = (c: ClientStatus | undefined): { key: string; value?: string
 const supportsExtraModels = (name: string): boolean =>
   name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw' || name === 'workbuddy';
 
-/** Backend machine reasonCodes (ClientActionResult) → i18n keys (per-adapter failure modes). */
+/** Core reasonCodes whose copy stays console-owned (shared by every adapter).
+ *  Package adapters' codes resolve through the owning plugin's
+ *  `clientText.errors[reasonCode]` — the console never string-references a
+ *  package client id. */
 const CLIENT_REASON_KEY: Record<string, string> = {
-  forwardProxyDisabled: 'clients.proxyErrForwardProxyDisabled',
-  forwardProxyCaMissing: 'clients.proxyErrCaMissing',
-  serviceProbeFailed: 'clients.proxyErrServiceProbe',
-  serviceSetEnvFailed: 'clients.proxyErrServiceSetEnv',
-  serviceStartFailed: 'clients.proxyErrServiceStart',
-  notActive: 'clients.proxyErrNotActive',
-  forward_proxy_disabled: 'clients.cursorErrForwardProxyDisabled',
-  forward_proxy_ca_missing: 'clients.cursorErrCaMissing',
-  cursor_not_found: 'clients.cursorErrNotFound',
-  qoder_not_found: 'clients.qoderErrNotFound',
   not_active: 'clients.clientErrNotActive',
   takeover_lost: 'clients.clientErrTakeoverLost',
   proxy_credential_required: 'clients.gatewayKeyRequired',
-  remove_failed: 'clients.cursorErrRemoveFailed',
 };
 
 type TFn = (key: string, params?: Record<string, string | number>) => string;
 
-/** Localize a client setup/teardown failure: a mapped reasonCode wins,
- * anything else (other adapters, unknown codes) falls back to the raw
- * server message — loud, never swallowed. */
-const clientActionErrorText = (err: unknown, t: TFn): string => {
+/** Localize a client setup/teardown failure: the owning package's declared
+ *  error text (`clientText.errors[reasonCode]`) wins — vendor-distinct copy
+ *  (e.g. which proxy env var to point at) beats the generic line. A mapped
+ *  CORE reasonCode is the fallback for adapters that declare nothing
+ *  (workbuddy, future core hooks); anything else falls back to the raw server
+ *  message — loud, never swallowed. */
+const clientActionErrorText = (
+  err: unknown,
+  t: TFn,
+  errors: Record<string, string | Record<string, string>> | undefined,
+  lang: string
+): string => {
   const e = err as { reasonCode?: string; params?: Record<string, string>; message?: string };
+  const declared = e?.reasonCode
+    ? pluginClientText(errors?.[e.reasonCode], lang, e.params)
+    : undefined;
+  if (declared) return declared;
   const key = e?.reasonCode ? CLIENT_REASON_KEY[e.reasonCode] : undefined;
   if (key) return t(key, e.params ?? {});
   return t('common.failed') + (e?.message ?? String(err));
@@ -180,6 +184,17 @@ export const ClientsPage: React.FC = () => {
   const [pluginWarnLabels, setPluginWarnLabels] = useState<
     Record<string, Record<string, string | Record<string, string>>>
   >({});
+  /** Client copy each package declares in its manifest (`clientText`):
+   *  setup/teardown toasts, hook hint, per-reasonCode errors and family
+   *  strings — refreshed with the same plugin read, resolved by the row's
+   *  `pluginId`, never by a core client-id table. */
+  const [pluginClientTexts, setPluginClientTexts] = useState<
+    Record<string, PluginClientText>
+  >({});
+  /** This client row's package-declared copy: resolved by the row's
+   *  `pluginId`, never by a core client-id table. */
+  const clientTextOf = (c: ClientStatus): PluginClientText | undefined =>
+    c.pluginId ? pluginClientTexts[c.pluginId] : undefined;
   /** In-place plugin settings drawer. It edits only the protocol/runtime keys —
    *  the model surface stays in the card editor — so opening it never navigates
    *  away or drops this card's draft. */
@@ -330,8 +345,13 @@ export const ClientsPage: React.FC = () => {
           }
           setGatewayPlugins(next);
           const labels: Record<string, Record<string, string | Record<string, string>>> = {};
-          for (const p of res.plugins || []) if (p.warningLabels) labels[p.id] = p.warningLabels;
+          const texts: Record<string, PluginClientText> = {};
+          for (const p of res.plugins || []) {
+            if (p.warningLabels) labels[p.id] = p.warningLabels;
+            if (p.clientText) texts[p.id] = p.clientText;
+          }
           setPluginWarnLabels(labels);
+          setPluginClientTexts(texts);
         })
         .catch(err => console.error('gateway plugin status:', err));
       // pi/omp role rows live in the same link-table draft shape as opencode's:
@@ -784,6 +804,11 @@ export const ClientsPage: React.FC = () => {
     // fresh attempt that may pass this time.
     clearKeyError(clientName);
     setLoading(true);
+    // This client's owning package (row `pluginId`) declares the presentation
+    // copy: success toast, failure errors, hook hint. Core adapters declare
+    // none and keep the console-owned copy.
+    const rowPluginId = clients.find(c => c.name === clientName)?.pluginId;
+    const rowClientText = rowPluginId ? pluginClientTexts[rowPluginId] : undefined;
     try {
       // A gateway client's model list is the plugin config, not the launcher
       // adapter — takeover must apply the catalog draft the card is showing,
@@ -887,19 +912,14 @@ export const ClientsPage: React.FC = () => {
         ...(product ? { product } : {}),
         ...acknowledge,
       } : { ...(product ? { product } : {}), ...acknowledge });
-      // Proxy-mode notices are backend prose — show a localized one-liner instead
-      // (the long hints live in the expanded card).
-      setActionNotice(
-        clientName === 'opencode-gateway'
-          ? t(action === 'setup' ? 'clients.proxySetupOk' : 'clients.proxyTeardownOk')
-          : clientName === 'cursor-proxy'
-            ? t(action === 'setup' ? 'clients.cursorSetupOk' : 'clients.cursorTeardownOk')
-            : clientName === 'qoder-proxy'
-              ? t(action === 'setup' ? 'clients.qoderSetupOk' : 'clients.qoderTeardownOk')
-              : clientName === 'jetbrains-proxy'
-                ? t(action === 'setup' ? 'clients.jetbrainsSetupOk' : 'clients.jetbrainsTeardownOk')
-                : (res.message || 'Updated')
+      // Success notices are the owning package's declared copy
+      // (`clientText.setupOk/teardownOk`), resolved by the row's `pluginId`;
+      // core adapters fall back to the backend's own message.
+      const okText = pluginClientText(
+        action === 'setup' ? rowClientText?.setupOk : rowClientText?.teardownOk,
+        lang
       );
+      setActionNotice(okText ?? (res.message || 'Updated'));
       // Setup succeeded, but the hooked client can still fail at USE time
       // (untrusted CA, proxy not listening). Advise, never block: the CA is
       // routinely imported right after hooking.
@@ -970,9 +990,13 @@ export const ClientsPage: React.FC = () => {
         revealCard();
         return;
       }
-      toast.error(clientActionErrorText(err, t));
       revealCard();
+      toast.error(clientActionErrorText(err, t, rowClientText?.errors, lang));
     } finally {
+      // EVERY exit clears the busy flag: success, a refusal inside the try, and
+      // the consent-cancel path above. Leaving it set disabled the whole card
+      // after the first successful action (setup or teardown both ended with
+      // grey, unclickable buttons).
       setLoading(false);
     }
   };
@@ -1921,11 +1945,14 @@ export const ClientsPage: React.FC = () => {
                   )}
                   {/* Family card: how many products this machine actually has.
                       One row per product lives inside the expanded body. */}
-                  {!!c.products && c.products.length > 1 && (
-                    <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
-                      {t('clients.jetbrainsProductCount', { n: c.products.length })}
-                    </span>
-                  )}
+                  {!!c.products && c.products.length > 1 && (() => {
+                    const label = pluginClientText(clientTextOf(c)?.family?.product_count, lang, { n: c.products.length });
+                    return label ? (
+                      <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
+                        {label}
+                      </span>
+                    ) : null;
+                  })()}
                   {/* Collapsed launcher row: the start command is the one thing
                       worth seeing without expanding — a plain double-click of
                       the app would silently stay un-proxied. Clicking the chip
@@ -1998,7 +2025,7 @@ export const ClientsPage: React.FC = () => {
                           {/* Tab strip — names only; hook/CA state is stated in the
                               detail body. `role=tablist` keeps it keyboard
                               discoverable; clicking a tab never bubbles to the card. */}
-                          <div role="tablist" aria-label={t('clients.jetbrainsProductCount', { n: c.products.length })} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          <div role="tablist" aria-label={pluginClientText(clientTextOf(c)?.family?.product_count, lang, { n: c.products.length }) ?? String(c.products.length)} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                             {c.products.map(p => (
                               <button
                                 key={p.id}
@@ -2067,25 +2094,37 @@ export const ClientsPage: React.FC = () => {
                                           product (idempotent); the proxy-access wizard's
                                           OS-store instructions would never reach JBR. */}
                                       {!p.hooked && p.caTrusted !== true ? (
-                                        <span>{t('clients.jetbrainsCa')} {t('clients.jetbrainsCaNotHooked')}</span>
+                                        pluginClientText(clientTextOf(c)?.family?.ca, lang) && pluginClientText(clientTextOf(c)?.family?.ca_not_hooked, lang) ? (
+                                          <span>{pluginClientText(clientTextOf(c)?.family?.ca, lang)} {pluginClientText(clientTextOf(c)?.family?.ca_not_hooked, lang)}</span>
+                                        ) : null
                                       ) : p.caTrusted === false ? (
                                         <>
-                                          <span style={{ color: 'var(--accent-rose)' }}>{t('clients.jetbrainsCa')} {t('clients.jetbrainsCaAbsent')}</span>
-                                          <button
-                                            className="btn btn-sm"
-                                            style={{ gap: '5px' }}
-                                            disabled={loading}
-                                            onClick={e => { e.stopPropagation(); void handleToggle(c.name, 'setup', p.id); }}
-                                          >
-                                            <RefreshCw size={11} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
-                                            <span>{t('clients.jetbrainsCaReimport')}</span>
-                                          </button>
+                                          {pluginClientText(clientTextOf(c)?.family?.ca, lang) && pluginClientText(clientTextOf(c)?.family?.ca_absent, lang) && (
+                                            <span style={{ color: 'var(--accent-rose)' }}>
+                                              {pluginClientText(clientTextOf(c)?.family?.ca, lang)} {pluginClientText(clientTextOf(c)?.family?.ca_absent, lang)}
+                                            </span>
+                                          )}
+                                          {pluginClientText(clientTextOf(c)?.family?.ca_reimport, lang) && (
+                                            <button
+                                              className="btn btn-sm"
+                                              style={{ gap: '5px' }}
+                                              disabled={loading}
+                                              onClick={e => { e.stopPropagation(); void handleToggle(c.name, 'setup', p.id); }}
+                                            >
+                                              <RefreshCw size={11} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+                                              <span>{pluginClientText(clientTextOf(c)?.family?.ca_reimport, lang)}</span>
+                                            </button>
+                                          )}
                                         </>
                                       ) : (
-                                        <span>
-                                          {t('clients.jetbrainsCa')}{' '}
-                                          {p.caTrusted === true ? t('clients.jetbrainsCaImported') : t('clients.jetbrainsCaUnknown')}
-                                        </span>
+                                        pluginClientText(clientTextOf(c)?.family?.ca, lang) && (
+                                          <span>
+                                            {pluginClientText(clientTextOf(c)?.family?.ca, lang)}{' '}
+                                            {p.caTrusted === true
+                                              ? pluginClientText(clientTextOf(c)?.family?.ca_imported, lang)
+                                              : pluginClientText(clientTextOf(c)?.family?.ca_unknown, lang)}
+                                          </span>
+                                        )
                                       )}
                                     </span>
                                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
@@ -2165,10 +2204,10 @@ export const ClientsPage: React.FC = () => {
 
                     {(c.hookKind !== 'config') && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
-                        {/* Per-client hint, NEVER the shared one: `proxyHint` is
-                            written for opencode's env-var hook and reads as
-                            nonsense on a client that has no such hook. */}
-                        {t(c.name === 'cursor-proxy' ? 'clients.cursorHint' : c.name === 'qoder-proxy' ? 'clients.qoderHint' : c.name === 'jetbrains-proxy' ? 'clients.jetbrainsHint' : 'clients.proxyHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
+                        {/* Per-client hint from the owning package's
+                            `clientText.hint`; core adapters keep the generic
+                            console copy (`clients.caHint`). */}
+                        {pluginClientText(clientTextOf(c)?.hint, lang, { caPath: caPath || '<appData>/forward-proxy/ca.pem' }) ?? t('clients.caHint', { caPath: caPath || '<appData>/forward-proxy/ca.pem' })}
                       </div>
                     )}
 
