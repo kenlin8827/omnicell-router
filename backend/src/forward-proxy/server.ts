@@ -13,6 +13,7 @@ import {
 import type { ForwardProxyConfig } from '../config/types.js';
 import {
   describeUpstreamFailure,
+  failureLabel,
   filterHeaders,
   isRuleRejected,
   openViaProxy,
@@ -21,6 +22,7 @@ import {
   setBootRules,
   setLiveForwardProxy,
   transitEgressFor,
+  shouldRetryOriginLeg,
   transitProxyFor,
   UPSTREAM_TIMEOUT_CODE,
   upstreamServernameOption,
@@ -121,6 +123,43 @@ const MITM_ABORT_FLUSH_MS = 1_000;
  * this only bounds the observation window for a server-speaks-first protocol.
  */
 const CLIENT_ERROR_RESPONSE = 'HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n';
+/**
+ * Credential-shaped header names in a raw packet head. The access log applies
+ * the same policy to captured headers (`DENY_HEADER_SUBSTRINGS`), and this log
+ * line must not become the one place a live key lands on disk.
+ */
+const CREDENTIAL_HEADER_LINE =
+  /^(?:proxy-)?authorization$|^cookie$|^set-cookie$|-key$|api[-_]?key|apikey|token|secret/i;
+
+/** Blank the value of every credential-shaped header line, keep the rest. */
+function redactPacketHead(raw: string): string {
+  return raw
+    .split('\r\n')
+    .map((line) => {
+      const at = line.indexOf(':');
+      if (at <= 0) return line;
+      const name = line.slice(0, at);
+      return CREDENTIAL_HEADER_LINE.test(name.trim()) ? `${name}: [REDACTED]` : line;
+    })
+    .join('\r\n');
+}
+
+/**
+ * One line describing a request the HTTP parser refused. The 400 that follows
+ * carries an EMPTY body, so without this the client only ever reports
+ * "400 Bad Request" with no headers and the operator has nothing to look at —
+ * the raw packet head (request line + first headers) is the only evidence of
+ * what the client actually sent.
+ */
+function describeClientError(err: unknown): string {
+  if (typeof err !== 'object' || err === null) return String(err);
+  const code = 'code' in err && typeof err.code === 'string' ? err.code : 'unknown';
+  const raw =
+    'rawPacket' in err && Buffer.isBuffer(err.rawPacket)
+      ? redactPacketHead(err.rawPacket.subarray(0, 240).toString('latin1'))
+      : '';
+  return raw ? `${code} raw=${JSON.stringify(raw)}` : code;
+}
 /** Raw-socket 403 for a CONNECT whose host a rule rejects (ADR-0018).
  *  Answered on the raw socket BEFORE the 200, so no tunnel and no minted
  *  certificate ever exist for a rejected host. */
@@ -581,12 +620,53 @@ function forwardSecureViaProxy(
   res: http.ServerResponse,
   t: ForwardTarget,
   proxyUrl: string,
-  upstreamTls: UpstreamTlsOptions
+  upstreamTls: UpstreamTlsOptions,
+  attempt = 0
 ): Promise<void> {
-  return new Promise((resolve) => {
+  // ES2022 lib here has no Promise.withResolvers; the executor form is the
+  // only way to keep `resolve` for the retry re-entry.
+  return new Promise<void>((resolve) => {
+  // One relay attempt. `retry` re-enters this function with attempt + 1; the
+  // returned promise settles exactly once, from whichever attempt finishes.
+  const relayOnce = (): void => {
+    // The request stream is consumed ONLY once the origin leg is secure: a
+    // retry re-reads `req` from wherever it stands, and a chunk already handed
+    // to a dying TLS socket cannot be rewound. Deferring the pump makes
+    // "nothing reached the origin" and "nothing left the client" the same
+    // fact, so `sentBytes === 0` really is replay-safe. (The outbound proxy's
+    // usual failure — a tunnel closed right after CONNECT — dies before
+    // `secureConnect`, so this is exactly the case the retry exists for.)
+    let originSecure = false;
+    let pumping = false;
+    let sentBytes = 0;
+    const countingTap: AccessTap = {
+      onReqChunk: (chunk: Buffer) => {
+        if (originSecure) sentBytes += chunk.length;
+        t.tap?.onReqChunk(chunk);
+      },
+      onResChunk: (chunk: Buffer) => t.tap?.onResChunk(chunk),
+      finish: (status, headers, note) => t.tap?.finish(status, headers, note),
+    };
+    const retry = (err: unknown): boolean => {
+      // A started pump means the client stream may already be partly consumed
+      // (and, on the h2 preface path, still has live listeners attached to
+      // it) — never replay that, even when no byte reached the origin.
+      if (pumping) return false;
+      if (!shouldRetryOriginLeg(err, { headersSent: res.headersSent, sentBytes, attempts: attempt })) return false;
+      // Do NOT finish the tap here: `AccessTap.finish` appends one ledger row,
+      // and the retry attempt completes the SAME tap (nothing was tapped yet —
+      // the pump never started). Finishing here would leave a ghost failed row
+      // beside the real one for a single exchange.
+      void forwardSecureViaProxy(req, res, t, proxyUrl, upstreamTls, attempt + 1).then(resolve);
+      return true;
+    };
     openViaProxy(proxyUrl, t.host, t.port)
       .then((pipeSock) => {
         const relay = net.createServer((c) => {
+          // A retry tears the tunnel down mid-handshake; an unhandled error on
+          // the loopback leg would crash the process instead of failing the
+          // attempt.
+          c.on('error', () => c.destroy());
           c.pipe(pipeSock);
           pipeSock.pipe(c);
         });
@@ -630,27 +710,60 @@ function forwardSecureViaProxy(
               });
             }
           );
+          // Nothing is read from `req` until the origin TLS leg is live (see
+          // the pump comment above): `secureConnect` never fires on a tunnel
+          // that died at open, so a retry sees the request untouched. A socket
+          // reused from the keep-alive pool is already secure.
+          // `req` has no listener until then; an inbound abort in that window
+          // must not surface as an unhandled 'error'.
+          req.on('error', () => {
+            try {
+              upstream.destroy();
+            } catch {}
+          });
+          const startPump = (): void => {
+            if (pumping) return;
+            pumping = true;
+            pumpRequestBody(req, upstream, countingTap, t.preface);
+          };
+          upstream.on('socket', (sock) => {
+            if (sock.connecting) {
+              sock.once('secureConnect', () => {
+                originSecure = true;
+                startPump();
+              });
+            } else {
+              originSecure = true;
+              startPump();
+            }
+          });
           armUpstreamKeepalive(upstream);
           upstream.setTimeout(FORWARD_PROXY_HANG_TIMEOUT_MS, () => {
             upstream.destroy(hangGuardError());
           });
-          upstream.on('error', (err: any) => {
+          upstream.on('error', (err: unknown) => {
+            if (retry(err)) {
+              cleanup();
+              return;
+            }
             const failure = describeUpstreamFailure(err, { proxied: true });
             t.tap?.finish(undefined, undefined, failure.note);
             proxyFail(res, failure.status, failure.message);
             cleanup();
             resolve();
           });
-          pumpRequestBody(req, upstream, t.tap, t.preface);
         });
       })
-      .catch((err: any) => {
-        // The CONNECT to the outbound proxy itself failed — a different class
-        // from an origin failure, and the note must say so.
-        t.tap?.finish(undefined, undefined, `outbound proxy connect failed: ${err?.code || err?.message || err}`);
-        proxyFail(res, 502, `Forward proxy: outbound proxy connection failed (${err?.message || err})`);
+      .catch((err: unknown) => {
+        // Same rule for the CONNECT itself: nothing was written, so one fresh
+        // tunnel is safe. Otherwise report the outbound-proxy class distinctly.
+        if (retry(err)) return;
+        t.tap?.finish(undefined, undefined, `outbound proxy connect failed: ${failureLabel(err)}`);
+        proxyFail(res, 502, `Forward proxy: outbound proxy connection failed (${failureLabel(err)})`);
         resolve();
       });
+  };
+  relayOnce();
   });
 }
 
@@ -720,7 +833,8 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
   const inner = http.createServer((req, res) => {
     void handleInnerRequest(req, res, false);
   });
-  inner.on('clientError', (_err, socket) => {
+  inner.on('clientError', (err, socket) => {
+    log(`inner clientError ${describeClientError(err)}`);
     try {
       socket.end(CLIENT_ERROR_RESPONSE);
     } catch {}
@@ -1571,7 +1685,8 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     void handlePlainProxyRequest(req, res);
   });
   proxy.on('connect', handleConnect);
-  proxy.on('clientError', (_err, socket) => {
+  proxy.on('clientError', (err, socket) => {
+    log(`proxy clientError ${describeClientError(err)}`);
     try {
       socket.end(CLIENT_ERROR_RESPONSE);
     } catch {}

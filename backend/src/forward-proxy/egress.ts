@@ -274,6 +274,39 @@ export const UPSTREAM_TIMEOUT_CODE = 'OCR_UPSTREAM_TIMEOUT';
 const DNS_CODES: Record<string, true> = { ENOTFOUND: true, EAI_AGAIN: true, EAI_FAIL: true, EAI_NONAME: true };
 
 /**
+ * Origin-leg failures that provably delivered nothing. An exchange is replayed
+ * ONLY when nothing was written toward the origin (`sentBytes === 0`) and no
+ * response byte reached the client, so the retry can never double-execute a
+ * request the origin already saw. The outbound proxy in between (mihomo/Clash)
+ * does close freshly opened tunnels; without this, one dropped tunnel surfaces
+ * as a 502 in the client and the hub gives up.
+ */
+const RETRYABLE_ORIGIN_CODES: Record<string, true> = {
+  ERR_SOCKET_CLOSED: true,
+  ECONNRESET: true,
+  EPIPE: true,
+};
+
+/** Human label for a failed origin leg: the socket code when it has one. */
+export function failureLabel(err: unknown): string {
+  if (err && typeof err === 'object') {
+    if ('code' in err && typeof err.code === 'string' && err.code) return err.code;
+    if ('message' in err && typeof err.message === 'string' && err.message) return err.message;
+  }
+  return String(err);
+}
+
+export function shouldRetryOriginLeg(
+  err: unknown,
+  state: { headersSent: boolean; sentBytes: number; attempts: number }
+): boolean {
+  if (state.headersSent || state.sentBytes > 0 || state.attempts >= 1) return false;
+  if (!err || typeof err !== 'object' || !('code' in err)) return false;
+  const { code } = err;
+  return typeof code === 'string' && RETRYABLE_ORIGIN_CODES[code] === true;
+}
+
+/**
  * Classify an origin-leg error.
  *
  * `timedOut` is passed by the callers that arm their own hang guard (the guard
