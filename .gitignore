@@ -49,3 +49,4 @@ frontend/.vite/
 
 # Local rollback snapshots (not source; never part of the tree).
 /.recovery/
+/.openidea/
