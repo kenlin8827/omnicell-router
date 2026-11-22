@@ -1164,9 +1164,11 @@ function isMeaningfulDef(raw: Record<string, unknown> | undefined): boolean {
 
 /** Register every not-yet-defined preset of every loaded plugin, and RETIRE the
  *  ones the plugin no longer declares. A preset is skipped whenever the defs
- *  file already holds ANY node with that id — even a bare New-custom stub — so
- *  presets never take over operator file state. Retirement uses the same drift
- *  rule as uninstall: a def still identical to what the plugin wrote is ours to
+ *  file already holds a MEANINGFUL node with that id, so presets never take
+ *  over operator file state; a bare package-only stub (the New-custom form or
+ *  the boot bind sweep's node — machine-written, no operator content) is fair
+ *  game and the preset overwrites it. Retirement uses the same drift rule as
+ *  uninstall: a def still identical to what the plugin wrote is ours to
  *  delete; one the operator edited stays, it just stops being claimed.
  *  Returns the created provider ids (for boot/reload logging). */
 export async function syncPluginPresets(): Promise<string[]> {
@@ -1192,18 +1194,21 @@ export async function syncPluginPresets(): Promise<string[]> {
     for (const preset of view.presets ?? []) {
       const raw = readProviderDefsFile()?.providers?.[preset.providerId] as Record<string, unknown> | undefined;
       if (raw) {
-        // Pre-existing def with the same id: never overwritten (ADR-0010).
-        // A def WE wrote earlier keeps its snapshot (so uninstall can still
-        // tell it apart from an operator edit); any other def only joins the
-        // ledger when MEANINGFUL, and then has no snapshot — so uninstall
-        // leaves it alone (isMeaningfulDef fallback).
+        // Pre-existing def with the same id: a def WE wrote earlier keeps its
+        // snapshot (so uninstall can still tell it apart from an operator
+        // edit); a MEANINGFUL def is operator-owned and never overwritten —
+        // it only joins the ledger, so uninstall leaves it alone. A BARE
+        // stub (isMeaningfulDef === false) is machine residue, not operator
+        // state: fall through and let the preset take the id over.
         if (entry.written?.[preset.providerId] !== undefined) {
           mine.add(preset.providerId);
           written[preset.providerId] = entry.written[preset.providerId];
-        } else if (isMeaningfulDef(raw)) {
-          mine.add(preset.providerId);
+          continue;
         }
-        continue;
+        if (isMeaningfulDef(raw)) {
+          mine.add(preset.providerId);
+          continue;
+        }
       }
       const result = upsertProviderDef({
         id: preset.providerId,

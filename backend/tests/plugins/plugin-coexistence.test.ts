@@ -401,6 +401,23 @@ describe('install → uninstall lifecycle', () => {
     expect(result.providersRemoved).toEqual([]);
     expect(defOf(PROVIDER)).toMatchObject({ settings: { baseURL: 'https://operator.invalid/v1' } });
   });
+  it('takes a preset id back from a bare package-only stub', async () => {
+    // Regression: the boot credential-bind sweep writes a BARE node for every
+    // store-backed provider (`{"package":"openai-chat"}` — the DEFAULT_NPM
+    // fallback). That machine-written stub blocked the preset registration
+    // forever, and the provider then resolved to a core wire with no web-login
+    // capability ("provider 'workbuddy' is not on a plugin wire…"). A stub is
+    // not operator state: the preset overwrites it.
+    writeProviderDefs({ [PROVIDER]: { package: 'openai-chat' } });
+    installPluginPackage(presetPackage());
+    await loadInstalledPlugins();
+    expect(await syncPluginPresets()).toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toMatchObject({ name: 'Life Cycle', package: 'openai-chat', settings: { baseURL: 'https://example.invalid/v1' } });
+    // uninstall still cleans up the def it (re)wrote.
+    const result = await uninstallPlugin(ID);
+    expect(result.providersRemoved).toEqual([PROVIDER]);
+    expect(defOf(PROVIDER)).toBeUndefined();
+  });
 
   it('leaves NOTHING behind on uninstall (config included)', async () => {
     installPluginPackage(presetPackage('1.0.0'));
