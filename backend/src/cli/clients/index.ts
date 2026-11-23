@@ -113,7 +113,9 @@ async function buildRoster(): Promise<ClientHookStatus[]> {
       // publishes. Stamped here so no console table and no CLI constant has to
       // know a client id in advance.
       const pluginId = pluginIdForClient(adapter.name);
-      const launch = adapter.launchVerbs?.().map((v) => v.verb);
+      const published = adapter.launchVerbs?.() ?? [];
+      const launch = published.map((v) => v.verb);
+      const launchAliases = published.flatMap((v) => v.aliases ?? []);
       return {
         ...status,
         hookKind: adapter.hookKind,
@@ -121,7 +123,8 @@ async function buildRoster(): Promise<ClientHookStatus[]> {
         ...(adapter.shortName ? { shortName: adapter.shortName } : {}),
         ...(pluginId ? { pluginId } : {}),
         ...(adapter.catalogPlugin ? { catalogPlugin: adapter.catalogPlugin } : {}),
-        ...(launch && launch.length > 0 ? { launch } : {}),
+        ...(launch.length > 0 ? { launch } : {}),
+        ...(launchAliases.length > 0 ? { launchAliases } : {}),
       };
     })
   );
@@ -158,6 +161,8 @@ export function getAllClientStatuses(options?: { refresh?: boolean }): Promise<C
 type LaunchVerbRow = {
   client: string;
   verb: string;
+  /** Retired spellings — resolved explicitly, never dispatched (see `ClientLaunchVerb.aliases`). */
+  aliases?: string[];
   script: string;
   detached: boolean;
   summary?: string;
@@ -168,16 +173,31 @@ export function listLaunchVerbs(): LaunchVerbRow[] {
   const verbs: LaunchVerbRow[] = [];
   for (const adapter of getAllClientAdapters()) {
     for (const v of adapter.launchVerbs?.() ?? []) {
-      verbs.push({ client: adapter.name, ...v });
+      const { aliases, ...row } = v;
+      verbs.push({ client: adapter.name, ...row, ...(aliases && aliases.length > 0 ? { aliases } : {}) });
     }
   }
   return verbs;
 }
 
-/** One launch verb by name, or undefined when nobody publishes it. */
+/** One launch verb by name, or undefined when nobody publishes it. A retired
+ *  alias names nobody here: it resolves only through `currentLaunchVerb`. */
 export function findLaunchVerb(verb: string) {
   const key = String(verb ?? '').trim();
   return listLaunchVerbs().find((v) => v.verb === key);
+}
+
+/** The CURRENT spelling of a launch verb, whether `verb` is that spelling or a
+ *  retired alias (`agy` → `antigravity-cli`), or undefined when nobody
+ *  publishes either. Calls that must refuse a retired spelling use this. */
+export function currentLaunchVerb(verb: string): string | undefined {
+  const key = String(verb ?? '').trim().toLowerCase();
+  if (!key) return undefined;
+  for (const v of listLaunchVerbs()) {
+    if (v.verb === key) return key;
+    if ((v.aliases ?? []).includes(key)) return v.verb;
+  }
+  return undefined;
 }
 
 export async function setupClient(

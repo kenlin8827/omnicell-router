@@ -4,6 +4,7 @@ import {
   setupClient,
   teardownClient,
   CLIENT_TARGETS,
+  currentLaunchVerb,
   ensurePluginClientAdapters,
   findLaunchVerb,
   getAllClientAdapters,
@@ -12,6 +13,8 @@ import {
 } from './clients/index.js';
 import { defaultGatewayPort, pluginWarningText, type ClientActionWarning } from './clients/base.js';
 import { runLauncherScript } from './clients/launcher.js';
+import { isCoreClientId } from './clients/reserved.js';
+import type { ClientAdapter } from './clients/base.js';
 import { registerGlobalShims, shimStatus, unregisterGlobalShims } from './shim.js';
 import type { CliAction } from './types.js';
 import { APP_VERSION } from '../version.js';
@@ -135,14 +138,46 @@ ${C.bold}SYSTEM COMMANDS:${C.reset}
   ocr --help, -h          Display this help manual
 `);
 }
+/** The id of the one hook that IS `target`, when the target was refused as a
+ *  launch verb: the product hook (`antigravity`) comes before its CLI verb
+ *  (`antigravity-cli`), whichever spelling produced the hit. */
+function hookIdForLaunchVerb(adapters: ClientAdapter[], key: string): string | undefined {
+  const hooks = adapters.filter((a) => a.launchVerbs?.().some((v) => v.verb === key || (v.aliases ?? []).includes(key)));
+  return hooks.find((a) => a.name === key)?.name ?? hooks[0]?.name;
+}
+
 /**
  * Bare launch verbs name the target tool, never a hook target: point the
- * operator at the id that PUBLISHES the verb (the registry knows which hook
- * that is) instead of the generic unknown-client message.
+ * operator at the hook that PUBLISHES the verb (the registry knows which one)
+ * instead of the generic unknown-client message. A retired verb spelling
+ * (`ocr setup agy`) is answered the same way, with the current name.
  */
-function launchVerbHint(target: string, verb: 'setup' | 'teardown'): string | null {
-  const hit = findLaunchVerb(target.toLowerCase());
-  return hit ? `'${target}' is a launch verb, not a hook target. Run \`ocr ${verb} ${hit.client}\`.` : null;
+function launchVerbHint(
+  target: string,
+  verb: 'setup' | 'teardown',
+  adapters: ClientAdapter[]
+): string | null {
+  const client = currentLaunchVerb(target);
+  if (!client) return null;
+  if (client !== String(target).trim().toLowerCase()) return `'${target}' was renamed — run \`ocr ${client}\`.`;
+  const hook = hookIdForLaunchVerb(adapters, client);
+  return `'${target}' is a launch verb, not a hook target.${hook ? ` Run \`ocr ${verb} ${hook}\`.` : ''}`;
+}
+
+/**
+ * A target that names a PRODUCT the hooked surface is installed for
+ * (`antigravity`) is not a hook id (`antigravity-proxy`): say which id to use
+ * instead of the generic unknown-client list.
+ */
+function retiredTargetHint(target: string, verb: 'setup' | 'teardown', adapters: ClientAdapter[]): string | null {
+  const key = String(target ?? '').trim().toLowerCase();
+  if (!key || isCoreClientId(key)) return null;
+  // The branding key a MECHANISM-named hook declares for the product it drives
+  // (`antigravity-proxy` → `antigravity`). A hook whose id IS the product
+  // already resolves through the registry, so only the id differs here.
+  const owners = adapters.filter((a) => a.icon === key && a.name !== key);
+  if (owners.length !== 1) return null;
+  return `'${target}' is a product, not a hook target. Run \`ocr ${verb} ${owners[0].name}\`.`;
 }
 
 async function handleStatus(): Promise<void> {
@@ -359,7 +394,14 @@ const OCR_COMMANDS: Record<CliAction, true> = {
 async function handleClientLaunch(verb: string, argv: string[]): Promise<void> {
   const hit = findLaunchVerb(verb);
   if (!hit) {
-    console.error(`${C.red}✗ Unknown command '${verb}'.${C.reset} Run ${C.cyan}ocr help${C.reset} for the current verbs.`);
+    // A retired spelling is refused BY NAME: running the old word silently
+    // would keep it alive in scripts, and "unknown command" hides the rename.
+    const current = currentLaunchVerb(verb);
+    console.error(
+      current
+        ? `${C.red}✗ '${verb}' was renamed — run ${C.cyan}ocr ${current}${C.reset}.`
+        : `${C.red}✗ Unknown command '${verb}'.${C.reset} Run ${C.cyan}ocr help${C.reset} for the current verbs.`
+    );
     process.exitCode = 1;
     return;
   }
@@ -501,7 +543,11 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
-      const launchHint = launchVerbHint(client, 'setup');
+      // await: the roster arrives with the package hooks, and a hint computed
+      // before they register would answer "unknown" for a hooked product.
+      await ensurePluginClientAdapters();
+      const hints = getAllClientAdapters();
+      const launchHint = launchVerbHint(client, 'setup', hints) ?? retiredTargetHint(client, 'setup', hints);
       if (launchHint) {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
@@ -531,7 +577,10 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <${CLIENT_TARGETS}>\``);
         process.exit(1);
       }
-      const launchHint = launchVerbHint(client, 'teardown');
+      // await: see the `setup` case — package hooks register on this promise.
+      await ensurePluginClientAdapters();
+      const hints = getAllClientAdapters();
+      const launchHint = launchVerbHint(client, 'teardown', hints) ?? retiredTargetHint(client, 'teardown', hints);
       if (launchHint) {
         console.error(`${C.red}✗ ${launchHint}${C.reset}`);
         process.exit(1);
@@ -595,6 +644,14 @@ async function main(): Promise<void> {
     }
 
     default: {
+      // A retired verb spelling (`ocr agy`) is named here too: it is not a
+      // launch verb any more, and "unknown command" would hide the rename.
+      const renamed = currentLaunchVerb(action);
+      if (renamed) {
+        console.error(`${C.red}✗ '${action}' was renamed — run ${C.cyan}ocr ${renamed}${C.reset}`);
+        process.exitCode = 1;
+        break;
+      }
       console.error(`${C.red}✗ Unknown command: '${action}'${C.reset}`);
       console.error(`  Run \`ocr --help\` to see supported commands.`);
       process.exit(2);

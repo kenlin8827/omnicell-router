@@ -17,6 +17,14 @@ import { quoteWindowsArgs } from '../../utils/run-command.js';
 export interface ClientLaunchVerb {
   /** The word after `ocr` (`cursor`, `cursor-agent`). */
   verb: string;
+  /**
+   * Retired spellings of `verb` (`agy` after `antigravity-cli` took its name).
+   * `ocr setup ‹alias›` names the hook that publishes the verb, and `ocr ‹alias›`
+   * fails with the CURRENT spelling — a silent run would keep the old command
+   * in scripts forever, and a generic "unknown command" hides where it went.
+   * An alias is never dispatched and never listed in the help text.
+   */
+  aliases?: string[];
   /** Absolute path of the managed launcher script this verb runs. */
   script: string;
   /**

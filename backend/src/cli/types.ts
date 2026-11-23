@@ -78,6 +78,9 @@ export interface ClientHookStatus {
   /** Passthrough launch verbs this hook publishes (`['cursor','cursor-agent']`)
    *  — the console renders `ocr <verb>`; absent = nothing to launch. */
   launch?: string[];
+  /** Retired spellings of `launch` verbs (`ClientLaunchVerb.aliases`): the CLI
+   *  refuses them by name, so a copyable `ocr …` hint must never use one. */
+  launchAliases?: string[];
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -96,6 +99,16 @@ export interface ClientHookStatus {
 
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
+
+  /**
+   * Client-owned model ids this hook OBSERVED at runtime. A client that
+   * compiles its model table into its binary publishes the list only in its
+   * own catalog read, so traffic is the one place it can be learned. The
+   * console OFFERS these ids where an operator must name one (a mapping row's
+   * left side); it never injects entries into the client's list. Absent =
+   * nothing observed yet.
+   */
+  catalogIds?: string[];
 
   /** Additional files this adapter owns beyond `configPath` — Cursor publishes
    *  a second launcher for the `cursor-agent` CLI. `exists` is probed at status
