@@ -184,11 +184,16 @@ async function abortCase(urlPath: string, bodyObj: Record<string, unknown>, mech
     assert.equal(resEvents.length, 1, `${urlPath}: Node must pair the request with the 499 record`);
     assertAbortRecord(resEvents[0]!, urlPath);
   } else {
-    // Bun is documented-blind to client-side destroys (header matrix M1):
-    // pre-flip emits nothing, post-flip blind-pairs the real 200. A 499
-    // here would be a false positive from broken gone-detection.
+    // Client-side destroys were a documented Bun blind spot (header matrix M1):
+    // the leg emitted nothing pre-flip and blind-paired the real 200 post-flip.
+    // Bun 1.4 detects the destroy, so the abort is now a real 499 here too —
+    // same discipline the Node branch asserts. An ABSENT record stays legal
+    // (a runtime that still hides the destroy emits nothing rather than a
+    // false 499); what must never happen is a 200 for a socket the client
+    // already killed.
     for (const ev of resEvents) {
-      assert.equal(ev.wire.status, 200, `${urlPath}: Bun-hidden abort can only blind-pair the real status (never 499)`);
+      assert.equal(ev.wire.status, 499, `${urlPath}: a detected client destroy must capture the 499, never the real status`);
+      assertAbortRecord(ev, urlPath);
     }
   }
   sock.destroy();
