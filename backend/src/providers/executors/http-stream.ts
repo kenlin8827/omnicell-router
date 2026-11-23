@@ -245,6 +245,16 @@ export async function postProviderStream(options: {
     });
     try {
       return await Promise.race([pending, deadline]);
+    } catch (err) {
+      // `controller.abort()` above settles the pending read SYNCHRONOUSLY, so the
+      // abort rejection can win this race against `deadline`'s own reject — the
+      // caller then sees "The operation was aborted." instead of the idle
+      // diagnostic. Re-label here, at the one place that knows an idle deadline
+      // fired, so EVERY caller (head wait, SSE loop, non-2xx error body) reports
+      // the real cause. `cause` keeps the transport error. Non-idle failures
+      // (a genuine upstream abort) propagate untouched.
+      if (idleTripped) throw new Error(idleMessage(), { cause: err });
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -451,9 +461,10 @@ export async function postProviderStream(options: {
           throw new Error(message, { cause: err });
         }
         if (idleTripped) {
-          const message = idleMessage();
-          capture(message);
-          throw new Error(message, { cause: err });
+          // `raceIdle` already re-labelled this as the idle message (it is the
+          // only place that knows an idle deadline fired); just record it.
+          capture(idleMessage());
+          throw err;
         }
         if (totalTripped) {
           const message = `Upstream ${provider} stream exceeded the total timeout of ${options.timeoutMs}ms — aborted`;
