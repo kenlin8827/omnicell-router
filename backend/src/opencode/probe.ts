@@ -140,7 +140,11 @@ export function structuredApiError(body: string): { code?: string } | null {
 }
 
 function hintForStatus(status: number, body = ''): { authHint?: boolean; hintCode?: ProbeHintCode } {
-  if (/unsupported_country_region|Country, region, or territory/i.test(body)) return { hintCode: 'regionBlocked' };
+  // Google spells an egress-region refusal as a 400 FAILED_PRECONDITION
+  // ("User location is not supported for the API use."), a wording the
+  // OpenAI/Anthropic-style region markers below never match.
+  if (/unsupported_country_region|Country, region, or territory|User location is not supported|location is not supported for the API/i.test(body))
+    return { hintCode: 'regionBlocked' };
   if (status === 401 || status === 403) return { authHint: true, hintCode: 'authFailed' };
   if (status === 400 && /ModelProtocolUnsupported|does not support this protocol/i.test(body))
     return { hintCode: 'protocolMismatch' };
