@@ -140,11 +140,12 @@ if (fs.existsSync(cursorGatewayPluginJson)) {
       const { loadInstalledPlugins, applyPluginConfig } = await import('../../src/plugins/host.js');
       await loadInstalledPlugins();
       await assert.rejects(() => applyPluginConfig('no-such-plugin', {}), /unknown or unloaded/);
-      // The model-service half of the Qoder plugin ships no configSchema →
-      // nothing to configure, writes rejected. The id must track the dev tree
-      // (`qoder-models`, not the retired `qoder`): a rename here turns this
-      // into an "unknown or unloaded plugin" failure.
-      await assert.rejects(() => applyPluginConfig('qoder-models', { x: 1 }), /no configurable fields/);
+      // A plugin that ships no configSchema has nothing to configure, so writes
+      // are rejected. The id must track the dev tree's schema-less half
+      // (`workbuddy-models`; `qoder-models` gained one with the data-policy
+      // field): a rename here turns this into an "unknown or unloaded plugin"
+      // failure instead of the rejection under test.
+      await assert.rejects(() => applyPluginConfig('workbuddy-models', { x: 1 }), /no configurable fields/);
     });
   });
 }
