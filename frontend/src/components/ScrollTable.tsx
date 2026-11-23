@@ -103,10 +103,16 @@ export const ScrollTable: React.FC<{
       setHeadWidth((prev) => (prev === null ? prev : null));
       return;
     }
-    const next = Array.from(row.cells).map((cell) => cell.getBoundingClientRect().width);
-    setWidths((prev) =>
-      prev && prev.length === next.length && prev.every((w, i) => Math.abs(w - next[i]!) < 0.5) ? prev : next
-    );
+    // Used layout width, NOT getBoundingClientRect: dialogs animate their card
+    // with a scale (`ocr-pop-in`), and a rect read during that transform comes
+    // back scaled (e.g. 0.97×). The head would then keep the shrunken tracks
+    // while the body settles at the real width — every column drifts a few px
+    // right of its header. `getComputedStyle().width` resolves the used value
+    // from layout, so ancestor transforms never leak into the measurement.
+    const next = Array.from(row.cells).map((cell) => {
+      const used = Number.parseFloat(getComputedStyle(cell).width);
+      return Number.isFinite(used) ? used : cell.getBoundingClientRect().width;
+    });
     // The body's own scroll range, plus the width a classic vertical scrollbar takes
     // from its client box (the head has no scrollbar, so without that term the head
     // would come up short by the bar's width even with no content overflow).
