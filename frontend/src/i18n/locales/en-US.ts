@@ -620,6 +620,7 @@ export const enUS: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} models',
     updateKey: 'Update Key',
+    saveKey: 'Save key',
     updateKeyPrompt: 'Enter new API key',
     keyUpdated: 'Credential updated in {sink}',
     addKeyCredential: 'Add credential',

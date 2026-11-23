@@ -622,6 +622,7 @@ export const jaJP: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} モデル',
     updateKey: 'キーを更新',
+    saveKey: 'キーを保存',
     updateKeyPrompt: '新しい API キーを入力',
     keyUpdated: '{sink} の認証情報を更新しました',
     addKeyCredential: '認証情報を追加',

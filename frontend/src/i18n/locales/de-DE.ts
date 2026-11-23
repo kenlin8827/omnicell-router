@@ -622,6 +622,7 @@ export const deDE: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} Modelle',
     updateKey: 'Key aktualisieren',
+    saveKey: 'Key speichern',
     updateKeyPrompt: 'Neuen API-Key eingeben',
     keyUpdated: 'Credential in {sink} aktualisiert',
     addKeyCredential: 'Credential hinzufügen',

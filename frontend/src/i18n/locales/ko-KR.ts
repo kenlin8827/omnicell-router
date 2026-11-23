@@ -622,6 +622,7 @@ export const koKR: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '모델 {n}개',
     updateKey: '키 업데이트',
+    saveKey: '키 저장',
     updateKeyPrompt: '새 API 키 입력',
     keyUpdated: '{sink} 에서 자격 증명을 업데이트했습니다',
     addKeyCredential: '자격 증명 추가',

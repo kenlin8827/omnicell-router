@@ -620,6 +620,7 @@ export const esES: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} modelos',
     updateKey: 'Actualizar clave',
+    saveKey: 'Guardar clave',
     updateKeyPrompt: 'Introduce la nueva clave API',
     keyUpdated: 'Credencial actualizada en {sink}',
     addKeyCredential: 'Añadir credencial',

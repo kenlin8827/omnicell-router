@@ -572,6 +572,7 @@ export interface TranslationDict {
     badgeOauth: string;
     modelsCount: string;
     updateKey: string;
+    saveKey: string;
     updateKeyPrompt: string;
     keyUpdated: string;
     addKeyCredential: string;

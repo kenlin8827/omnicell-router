@@ -622,6 +622,7 @@ export const ptBR: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} modelos',
     updateKey: 'Atualizar chave',
+    saveKey: 'Salvar chave',
     updateKeyPrompt: 'Digite a nova chave de API',
     keyUpdated: 'Credencial atualizada em {sink}',
     addKeyCredential: 'Adicionar credencial',

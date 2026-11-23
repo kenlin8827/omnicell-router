@@ -610,6 +610,7 @@ export const zhCN: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} 个模型',
     updateKey: '更新密钥',
+    saveKey: '保存密钥',
     updateKeyPrompt: '输入新的 API Key',
     keyUpdated: '凭证已写入 {sink}',
     addKeyCredential: '添加凭证',

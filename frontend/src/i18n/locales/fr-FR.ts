@@ -624,6 +624,7 @@ export const frFR: TranslationDict = {
     badgeOauth: 'OAuth',
     modelsCount: '{n} modèles',
     updateKey: 'Mettre à jour la clé',
+    saveKey: 'Enregistrer la clé',
     updateKeyPrompt: 'Saisissez la nouvelle clé API',
     keyUpdated: 'Identifiant mis à jour dans {sink}',
     addKeyCredential: 'Ajouter un identifiant',
