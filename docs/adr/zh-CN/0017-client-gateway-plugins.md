@@ -19,7 +19,7 @@ Cursor 无法通过配置指向自定义端点 —— 它的 AI 流量硬编码�
 
 client-gateway 插件声明接管入站 forward proxy 上的整台 SNI 主机，并拥有这些主机解密流量的处置权。模块导出 `createPlugin(host: ClientGatewayHost): ClientGatewayPlugin`：
 
-- `hosts: readonly string[]` —— 接管的主机（如 `api2.cursor.sh`）。
+- `hosts: readonly string[]` —— 接管的主机（如 `api2.cursor.sh`）。声明只携带一条传输事实：这些主机的出站腿（ADR-0018 修订 5）——它指定的是某条**腿**，永远不是地址；取值按「运营者的插件级开关 → 网关自己的 `egressFor()` → manifest 的 `egress`」决定。SPECIFIC 行的 `egress` 对这些主机不生效；行仍然决定 `ingress`。
 - `match(info)` / `handle(req, res)` —— 每请求准入与完整生命周期。网关在 h1 腿看到 node-http req/res，在 h2 腿看到 http2 兼容层（同形 API）。
 - `ClientGatewayHost` SDK（自包含，与 model-service host SDK 同规则 —— 打包插件永不按路径 import backend 模块）：`chat(body, sink, signal)` 让一次规范 OpenAI 形态的补全走与 `/v1/chat/completions` 完全相同的 `dispatchSurface` 管线（模型解析、tier、熔断、捕获全部生效）；`catalog()` 暴露路由面供 AvailableModels 类应答构造；`ocrHome()` 供工件状态使用。
 

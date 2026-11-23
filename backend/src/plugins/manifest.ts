@@ -10,7 +10,7 @@
  * extension point is claimed SNI hosts; the runtime view reads `wires ?? []`),
  * every other shape rule holds for both plugin types.
  */
-import type { PluginManifest, PluginPart, PluginType } from './types.js';
+import type { PluginClaimEgress, PluginConfigField, PluginManifest, PluginPart, PluginType } from './types.js';
 
 /** Contract version the CURRENT host implements. v1 is the FIRST plugin
  *  mechanism: there is no legacy or forward compatibility — a package must
@@ -22,6 +22,21 @@ export const SUPPORTED_PLUGIN_API = 1;
 /** Where a config field is edited: the plugin drawer (default), the Client Hub
  *  card the hook backs, or nowhere (stored, but dead for this hook). */
 export const CONFIG_PLACEMENTS = ['drawer', 'card', 'none'] as const;
+
+/**
+ * The plugin-level outbound-leg switch (ADR-0018 Revision 5), keyed and valued by
+ * CORE. Once a package claims a host, the leg under that host is the package's
+ * business — but the operator keeps the last word over the code they installed,
+ * and that word is spoken ONCE per plugin, not once per host: one switch that
+ * reaches every host this gateway claims.
+ *
+ * The default is `inherit`, deliberately NOT the manifest's own declaration:
+ * the switch sits ABOVE the plugin's code, and a default of `proxy` would make
+ * every untouched plugin a silent override of its own `egressFor()` answers.
+ * `inherit` is the state that leaves the claim in charge.
+ */
+export const GATEWAY_EGRESS_CONFIG_KEY = 'egress';
+export const GATEWAY_EGRESS_VALUES = ['inherit', 'proxy', 'direct'] as const;
 
 /** Reject a package built for any other contract version. Called at INSTALL
  *  (before anything touches disk) and at LOAD (packages already on disk). */
@@ -52,7 +67,67 @@ export function isPluginType(value: unknown): value is PluginType {
 export function normalizePluginParts(manifest: PluginManifest): PluginPart[] {
   if (Array.isArray(manifest.parts) && manifest.parts.length > 0) return manifest.parts;
   if (!isPluginType(manifest.type)) return [];
-  return [{ type: manifest.type, wires: manifest.wires, hosts: manifest.hosts }];
+  return [{ type: manifest.type, wires: manifest.wires, hosts: manifest.hosts, egress: manifest.egress }];
+}
+
+/** The hosts a manifest's client-gateway part claims, under BOTH spellings
+ *  (`type`/top-level `hosts`, or the `parts` entry). Empty for a package that
+ *  is not a gateway at all. */
+export function gatewayClaimedHosts(manifest: PluginManifest): string[] {
+  return normalizePluginParts(manifest).find((p) => p.type === 'client-gateway')?.hosts ?? [];
+}
+
+/**
+ * Whether the console should offer the operator the plugin-level leg switch:
+ * a gateway with at least one CONCRETE claimed host. A wildcard gateway claims
+ * no host, so a switch over it would be a switch over traffic it does not own
+ * (the same refusal the manifest validator applies to `egress` on `'*'`).
+ */
+export function hasOwnableClaim(manifest: PluginManifest): boolean {
+  return gatewayClaimedHosts(manifest).some((h) => String(h).trim() !== '*');
+}
+
+/**
+ * The field core injects into a gateway's `configSchema` so the operator's
+ * switch appears in the plugin's own settings drawer (ADR-0018 Revision 5). No
+ * `title`/`desc`/`enumLabels` on purpose: this row is CORE chrome, not package
+ * content, so its wording comes from the console's translation tables the same
+ * as every other label (`isCoreEgressField` in the frontend recognizes it) and
+ * never from a package author's English.
+ */
+export function gatewayEgressField(): PluginConfigField {
+  return {
+    key: GATEWAY_EGRESS_CONFIG_KEY,
+    type: 'enum',
+    values: [...GATEWAY_EGRESS_VALUES],
+    default: 'inherit',
+    control: 'segmented',
+    essential: true,
+  };
+}
+
+/**
+ * The operator's EXPLICIT leg choice out of a merged plugin config. `inherit` —
+ * the untouched default — is deliberately NOT a choice: it means "let the claim
+ * answer", so it must not outrank the plugin's own `egressFor()` the way a
+ * picked value does.
+ */
+export function operatorEgressChoice(values: Record<string, unknown>): PluginClaimEgress | undefined {
+  const v = values[GATEWAY_EGRESS_CONFIG_KEY];
+  return v === 'proxy' || v === 'direct' ? v : undefined;
+}
+
+/**
+ * Add the core switch to a gateway manifest, idempotently and without touching
+ * any other field. Called at MANIFEST READ, before the host SDK hands the
+ * manifest to a plugin's `config()` closure: injected later, the drawer, the
+ * merge and the plugin's own read would disagree about whether the key exists.
+ */
+export function withGatewayEgressField(manifest: PluginManifest): PluginManifest {
+  if (!hasOwnableClaim(manifest)) return manifest;
+  const schema = manifest.configSchema ?? [];
+  if (schema.some((f) => f.key === GATEWAY_EGRESS_CONFIG_KEY)) return manifest;
+  return { ...manifest, configSchema: [gatewayEgressField(), ...schema] };
 }
 
 /** A plugin id is a PATH COMPONENT — `<pluginsRoot>/<id>.zip`,
@@ -105,6 +180,19 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
       fail(`${label} must be a non-empty-string array`);
     }
   };
+  // The claim's outbound-leg declaration (ADR-0018 step 3). Refused on a
+  // wildcard claim: `'*'` is not a host, and a declaration that reached every
+  // host would let one installed package pin the egress of the whole machine —
+  // the exact blast radius Revision 4 was written to keep out of a claim.
+  const claimEgress = (value: unknown, label: string, hosts: unknown): void => {
+    if (value === undefined) return;
+    if (value !== 'inherit' && value !== 'proxy' && value !== 'direct') {
+      fail(`${label} must be 'inherit', 'proxy' or 'direct'`);
+    }
+    if (Array.isArray(hosts) && hosts.some((h) => String(h).trim() === '*')) {
+      fail(`${label} cannot ride a wildcard claim — it would pin the egress of every host`);
+    }
+  };
   if (m.type === undefined && m.parts === undefined) {
     fail('needs `type` (one axis) or `parts` (the axes this package occupies)');
   }
@@ -146,6 +234,9 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
           fail(`parts[${i}] is a client-gateway part and needs a non-empty hosts array`);
         }
         wildcardExclusive(part.hosts as unknown[], `parts[${i}].hosts`, fail);
+        claimEgress(part.egress, `parts[${i}].egress`, part.hosts);
+      } else if (part.egress !== undefined) {
+        fail(`parts[${i}].egress declares the exit of a host, and only a client-gateway part claims hosts`);
       }
       if (partType === 'client-adapter' && (part.wires !== undefined || part.hosts !== undefined)) {
         fail(`parts[${i}] is a client-adapter part — it contributes a Client Hub hook, not wires or hosts`);
@@ -161,6 +252,9 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
         fail('a client-gateway manifest needs a non-empty hosts array');
       }
       wildcardExclusive(m.hosts as unknown[], 'hosts', fail);
+      claimEgress(m.egress, 'egress', m.hosts);
+    } else if (m.egress !== undefined) {
+      fail('`egress` declares the exit of a host, and only a client-gateway plugin claims hosts');
     }
   }
   // Flat primitives only (ADR-0017 §7): a malformed schema fails loudly
@@ -168,6 +262,19 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   if (m.configSchema !== undefined) validateConfigSchema(m.configSchema, label, m.configSections);
   if (m.configSections !== undefined && m.configSchema === undefined) {
     fail('configSections without configSchema groups nothing');
+  }
+  // The leg switch is core-owned vocabulary (`GATEWAY_EGRESS_CONFIG_KEY`), and
+  // core INJECTS it into a gateway's schema. A package that declares the key
+  // itself is refused here rather than silently shadowed: two rows named
+  // `egress` in one drawer means the merged read can no longer say which one
+  // the operator touched, and the operator's word on the leg is the whole
+  // contract of that field.
+  if (
+    hasOwnableClaim(m as unknown as PluginManifest) &&
+    Array.isArray(m.configSchema) &&
+    (m.configSchema as Array<Record<string, unknown>>).some((f) => f?.key === GATEWAY_EGRESS_CONFIG_KEY)
+  ) {
+    fail(`configSchema may not declare '${GATEWAY_EGRESS_CONFIG_KEY}' — the outbound-leg switch belongs to core`);
   }
   if (m.logo !== undefined && typeof m.logo !== 'string') fail('logo must be a string');
   if (

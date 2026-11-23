@@ -28,10 +28,17 @@ import type {
 } from './types.js';
 import type { ClientAdapter } from '../cli/clients/base.js';
 import { beginPluginClientAdapterRebuild, commitPluginClientAdapterRebuild, registerPluginClientAdapter } from '../cli/clients/plugin-adapters.js';
-import { commitGateways, removeGateway, retainStagedGateways, stageGateway, getGatewayById, WILDCARD_HOST_CLAIM } from './gateways.js';
+import { commitGateways, removeGateway, retainStagedGateways, setGatewayOperatorEgress, stageGateway, getGatewayById, WILDCARD_HOST_CLAIM } from './gateways.js';
 import { getGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { invalidatePluginConfigCache, mergedPluginConfig, pluginConfigPath, writePluginConfig } from './config.js';
-import { assertSupportedPluginApi, isValidPluginId, normalizePluginParts, validatePluginManifest } from './manifest.js';
+import {
+  assertSupportedPluginApi,
+  isValidPluginId,
+  normalizePluginParts,
+  operatorEgressChoice,
+  validatePluginManifest,
+  withGatewayEgressField,
+} from './manifest.js';
 import { compareVersions } from '../utils/semver.js';
 import { seedBundledPlugins } from './seed.js';
 import { forwardH2 } from '../forward-proxy/h2-forward.js';
@@ -326,7 +333,13 @@ function asEntryResult(raw: unknown): PluginEntryResult {
 function readManifest(dir: string): PluginManifest {
   const raw = JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')) as unknown;
   validatePluginManifest(raw, 'invalid plugin.json');
-  return raw as PluginManifest;
+  // The operator's outbound-leg switch is injected HERE, at the single point a
+  // manifest becomes runtime data: the validator above has already refused a
+  // package that declares the key itself, and every reader downstream — the
+  // console drawer, the config merge, and a plugin's own `config()` closure —
+  // then sees the SAME schema. Injected later, the drawer would offer a control
+  // the merge drops.
+  return withGatewayEgressField(raw as PluginManifest);
 }
 
 /** Extract one packaged zip when the unpacked copy is missing or stale. */
@@ -522,7 +535,18 @@ async function importPlugin(
   // gateway before it would leave a package that failed to load still owning
   // its hosts — "broken row, traffic still intercepted", the worst of both.
   if (loaded.clientAdapter) registerPluginClientAdapter(manifest.id, loaded.clientAdapter, manifest.clientRank);
-  if (loaded.gateway) stageGateway(manifest.id, loaded.gateway);
+  // The claim's outbound-leg tiers (ADR-0018 Revision 5) travel with the registration,
+  // not with the module object: `plugin.json` is the manifest truth, the stored
+  // config is the operator's word, and the gateway's own `egressFor()` is the
+  // third voice the registry asks between them. An untouched switch merges back
+  // as `inherit`, which is not a choice — so it never reaches the registry and
+  // never silences the plugin's per-host answer.
+  if (loaded.gateway) {
+    stageGateway(manifest.id, loaded.gateway, {
+      manifest: gatewayPart?.egress,
+      operator: operatorEgressChoice(mergedPluginConfig(manifest.id, manifest.configSchema)),
+    });
+  }
   manifestsById.set(manifest.id, manifest);
   return { ...loaded, view };
 }
@@ -1395,7 +1419,15 @@ export async function applyPluginConfig(
   if (!manifest) throw new Error('unknown or unloaded plugin');
   if (!manifest.configSchema?.length) throw new Error('plugin declares no configurable fields');
   const result = writePluginConfig(id, manifest.configSchema, values);
-  const target = getGatewayById(id) ?? [...registry.values()].find((r) => r.view.id === id)?.plugin;
+  // The leg switch is the one config value CORE consumes rather than forwards:
+  // replacing the registry tier makes the operator's pick authoritative from the
+  // NEXT request to a claimed host, with no restart and no package rebuild for a
+  // value that lives in a JSON file. It runs before `onConfigChange` so a plugin
+  // that warms its transports in that hook does so under the leg the operator
+  // just chose.
+  const gateway = getGatewayById(id);
+  if (gateway) setGatewayOperatorEgress(id, operatorEgressChoice(result.values));
+  const target = gateway ?? [...registry.values()].find((r) => r.view.id === id)?.plugin;
   try {
     await target?.onConfigChange?.(result.values);
   } catch (err) {

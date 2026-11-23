@@ -36,10 +36,15 @@ import type { AccessTap } from '../forward-proxy/access-log.js';
 /** The three extension axes a plugin can occupy (ADR-0017 / ADR-0027). */
 export type PluginType = 'model-service' | 'client-gateway' | 'client-adapter';
 
+/** The outbound leg a gateway declares for the hosts it claims (ADR-0018
+ *  precedence step 3). `inherit` — the spelling of "absent" — means the
+ *  catch-all row still decides, so declaring a claim changes no routing. */
+export type PluginClaimEgress = 'inherit' | 'proxy' | 'direct';
+
 /**
  * One slot a package fills. `wires` belongs to a model-service part, `hosts`
- * to a client-gateway part; a client-adapter part carries neither (its
- * contribution is a Client Hub hook, not a wire or a claim).
+ * and `egress` to a client-gateway part; a client-adapter part carries none of
+ * them (its contribution is a Client Hub hook, not a wire or a claim).
  */
 export interface PluginPart {
   type: PluginType;
@@ -49,6 +54,11 @@ export interface PluginPart {
   /** SNI hosts this part claims on the forward proxy. Required non-empty on a
    *  client-gateway part, rejected elsewhere. */
   hosts?: string[];
+  /** Where the bytes of EXACTLY these hosts leave the machine. Vendor knowledge
+   *  ("this endpoint is unreachable direct here"), never an address: the
+   *  outbound proxy it means is the operator's `config.proxy`. Rejected on a
+   *  wildcard claim, which would pin every host on the machine. */
+  egress?: PluginClaimEgress;
 }
 
 export interface PluginManifest {
@@ -72,6 +82,8 @@ export interface PluginManifest {
    *  metadata only — the runtime truth is the module's `hosts`). Single-part
    *  form of `parts[].hosts`. */
   hosts?: string[];
+  /** Outbound leg for the claimed hosts. Single-part form of `parts[].egress`. */
+  egress?: PluginClaimEgress;
   /** Plain string, or a locale map ({"zh-CN": …, "en-US": …}) — the console
    *  picks by current UI locale and falls back to en-US / the raw value. */
   description?: string | Record<string, string>;
@@ -451,6 +463,24 @@ export interface ClientGatewayPlugin {
   /** Optional: notified after the operator saves plugin settings; the merged
    *  values arrive pre-validated (same object `host.config()` returns). */
   onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
+  /**
+   * The outbound leg this gateway claims for one of its hosts (ADR-0018 Revision 5).
+   * Evaluated PER REQUEST, so a gateway may change its mind as its own state
+   * changes, and it may answer host by host — this is the half where vendor
+   * knowledge lives, and it is the plugin's code speaking, never a rule row the
+   * operator has to keep. `undefined` means "code has no opinion", and the
+   * decision falls to what the operator set for this plugin, then to the
+   * manifest declaration.
+   *
+   * It is OVERRULED, not consulted, when the operator explicitly picked a leg
+   * for this plugin in the settings drawer: the plugin-level switch is the
+   * operator's word on every host this package claims.
+   *
+   * A WILDCARD gateway gets no vote: `'*'` is a read permission over every host
+   * the machine reaches, and an egress opinion attached to it would pin
+   * traffic this package does not own.
+   */
+  egressFor?(info: { host: string }): PluginClaimEgress | undefined;
 }
 
 /** One decrypted `Upgrade:` handshake handed to a client gateway. */

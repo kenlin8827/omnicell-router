@@ -19,7 +19,7 @@ Cursor cannot be pointed at a custom endpoint by config — its AI traffic is ha
 
 A client-gateway plugin CLAIMS whole SNI hosts on the inbound forward proxy and owns the decrypted traffic of those hosts. The module exports `createPlugin(host: ClientGatewayHost): ClientGatewayPlugin`:
 
-- `hosts: readonly string[]` — the claimed SNI hosts (e.g. `api2.cursor.sh`).
+- `hosts: readonly string[]` — the claimed SNI hosts (e.g. `api2.cursor.sh`). The claim carries exactly one transport fact: the outbound leg for those hosts (ADR-0018 Revision 5) — a LEG name, never an address, decided by the operator's plugin-level switch, then the gateway's own `egressFor()`, then the manifest's `egress`. A specific rule row's `egress` does not apply to these hosts; the row still decides `ingress`.
 - `match(info)` / `handle(req, res)` — per-request admission and full lifecycle. The gateway sees node-http req/res on the h1 leg and the http2 compatibility API (same shape) on the h2 leg.
 - `ClientGatewayHost` SDK (self-contained, same rule as the model-service host SDK — packaged plugins never import backend paths): `chat(body, sink, signal)` runs ONE canonical OpenAI-shaped completion through the SAME `dispatchSurface` pipeline as `/v1/chat/completions` (model resolution, tiers, breakers, captures all apply), `catalog()` exposes the routing surface for AvailableModels-style fabrication, `ocrHome()` for artifact state.
 

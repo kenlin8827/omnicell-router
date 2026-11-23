@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, RefreshCw, MonitorCog, Undo2, Terminal, Copy, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
-import { api, type GatewayStatusResponse, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type CaMeta, type CaTrustResponse, type ClaimSource } from '../lib/api';
+import { api, type GatewayStatusResponse, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type CaMeta, type CaTrustResponse, type ClaimSource, type ClaimHostOutcome } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
@@ -247,7 +247,6 @@ function insertRule<T extends { match: string }>(rules: T[], make: (catchAll: T 
   next.splice(catchAllAt, 0, row);
   return next;
 }
-
 
 const ENV_SNIPPETS = (server: string, caPath: string): Record<string, string> => ({
   PowerShell: `$env:HTTP_PROXY='${server}'\n$env:HTTPS_PROXY='${server}'\n$env:NO_PROXY='localhost,127.0.0.1'\n$env:NODE_EXTRA_CA_CERTS='${caPath}'`,
@@ -527,6 +526,9 @@ export const ProxyAccessPage: React.FC = () => {
   /** The same claim set attributed per plugin — the "who decrypts what" dialog. */
   const [claimSources, setClaimSources] = useState<ClaimSource[]>([]);
   const [claimsOpen, setClaimsOpen] = useState(false);
+  /** Plugin filter of the claims dialog ('' = every plugin). Reset on open so a
+   *  stale selection never hides rows the operator just asked to see. */
+  const [claimPlugin, setClaimPlugin] = useState('');
   const [tightening, setTightening] = useState(false);
 
   /** The config AS LOADED — the diff baseline for boot-frozen fields. The live
@@ -692,12 +694,46 @@ export const ProxyAccessPage: React.FC = () => {
    *  the probe must not invent a second name for what the operator just picked. */
   const ingressLabel = (tunnel: boolean): string =>
     tunnel ? t('forwardProxy.ingressPassthrough') : t('forwardProxy.ingressIntercept');
-  /** Columns of the "decrypted without a rule" dialog: the host, and WHICH live
-   *  plugin declares it (that attribution is the whole reason the list exists). */
+  /** Columns of the "decrypted without a rule" dialog: the host, WHICH live
+   *  plugin declares it, and where its bytes actually exit — decided by the
+   *  SAME backend resolver the relay calls, so this list is not an
+   *  interpretation of the manifest. */
   const claimColumns: ScrollTableColumn[] = [
-    { key: 'host', label: t('forwardProxy.ruleClaimsColHost'), width: '64%' },
-    { key: 'plugin', label: t('forwardProxy.ruleClaimsColPlugin') },
+    // Host takes whatever the two fixed tracks leave: it is the one column whose
+    // content is unbounded, so it stretches with the dialog instead of wrapping a
+    // domain at a fixed percentage. Plugin and egress widths are pinned to their
+    // content, so a wide dialog buys the host ALL the extra room.
+    { key: 'host', label: t('forwardProxy.ruleClaimsColHost') },
+    { key: 'plugin', label: t('forwardProxy.ruleClaimsColPlugin'), width: 190 },
+    { key: 'egress', label: t('forwardProxy.ruleClaimsColEgress'), width: 96 },
   ];
+  /** The plugin picker is driven by the LIVE claim set, and a selection whose
+   *  plugin disappeared (uninstalled while the dialog was open) falls back to
+   *  "all" instead of an empty table nobody can explain. */
+  const activeClaimPlugin = claimSources.some(s => s.pluginId === claimPlugin) ? claimPlugin : '';
+  const claimPluginOptions: ComboboxOption[] = claimSources.map(s => ({
+    value: s.pluginId,
+    label: s.pluginId,
+    meta: String(s.hosts.length),
+  }));
+  const visibleClaimSources = activeClaimPlugin
+    ? claimSources.filter(s => s.pluginId === activeClaimPlugin)
+    : claimSources;
+  /** Claim rows: host names and plugin ids are single unbreakable tokens, and the
+   *  table is `table-layout: fixed`, so such a token paints straight over the next
+   *  column instead of widening its own. Break them inside the track. */
+  const CLAIM_CELL_WRAP: React.CSSProperties = { overflowWrap: 'anywhere' };
+  /** WHICH TIER owns a claimed host's exit (ADR-0018 Revision 5). Over a claimed host
+   *  the claim outranks the table, so the operator reading their own row as the
+   *  answer would be reading a lie — the column names the tier instead, and the
+   *  plugin's settings drawer is where the operator's word actually is. */
+  const claimEgressSource = (o: ClaimHostOutcome): string => {
+    if (o.egressClaim === 'operator') return t('forwardProxy.ruleClaimsEgressFromOperator');
+    if (o.egressClaim === 'code') return t('forwardProxy.ruleClaimsEgressFromPlugin');
+    if (o.egressClaim === 'manifest') return t('forwardProxy.ruleClaimsEgressFromManifest');
+    if (o.reason === 'rule') return t('forwardProxy.ruleClaimsEgressFromRule');
+    return t('forwardProxy.ruleClaimsEgressFromCatchAll');
+  };
   /** Row-level lint sentence for EVERY code in the mirrored union. Banner-level
    *  codes return null (the note above the table already says it); the `never`
    *  assertion makes a new backend code a typecheck failure here rather than a
@@ -706,6 +742,10 @@ export const ProxyAccessPage: React.FC = () => {
     switch (code) {
       case 'invalid-rule': return t('forwardProxy.ruleInvalid');
       case 'unreachable-rule': return t('forwardProxy.ruleUnreachable');
+      // Row-level: the row's `egress` is never consulted on these hosts because
+      // their gateway claim owns the leg — the operator must be told, not left
+      // to debug a rule that looks correct.
+      case 'claim-owns-egress': return t('forwardProxy.ruleClaimOwnsEgress');
       case 'proxy-rule-without-proxy': return null;
       case 'no-catch-all': return null;
       // Table-level: the catch-all row reads as "decrypt everything" but the
@@ -1126,14 +1166,16 @@ export const ProxyAccessPage: React.FC = () => {
               <EgressNote tone="warn" text={t('forwardProxy.interceptAllWarning')} />
             )}
             {claimedHosts.length > 0 && (
-              <button
-                className="btn btn-sm"
-                style={{ marginBottom: '10px', gap: '6px' }}
-                onClick={() => setClaimsOpen(true)}
-              >
-                <ShieldCheck size={13} />
-                <span>{t('forwardProxy.ruleClaimsBtn', { n: String(claimedHosts.length) })}</span>
-              </button>
+              <div style={{ marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <button
+                  className="btn btn-sm"
+                  style={{ alignSelf: 'flex-start', gap: '6px' }}
+                  onClick={() => { setClaimPlugin(''); setClaimsOpen(true); }}
+                >
+                  <ShieldCheck size={13} />
+                  <span>{t('forwardProxy.ruleClaimsBtn', { n: String(claimedHosts.length) })}</span>
+                </button>
+              </div>
             )}
             {fp.enabled !== true && <EgressNote tone="info" text={t('forwardProxy.ruleDormant')} />}
             {ruleWarnings.some(w => w.code === 'proxy-rule-without-proxy') && (
@@ -1497,18 +1539,80 @@ export const ProxyAccessPage: React.FC = () => {
           subtitle={t('forwardProxy.ruleClaimsHint')}
           onClose={() => setClaimsOpen(false)}
           closeLabel={t('common.close')}
-          width={580}
+          width={780}
         >
-          <ScrollTable columns={claimColumns} maxHeight={380} empty={t('forwardProxy.ruleClaimsEmpty')}>
-            {claimSources.flatMap(src =>
-              src.hosts.map(host => (
-                <tr key={`${src.pluginId}:${host}`}>
-                  <td style={{ padding: '8px 10px', fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' }}>{host}</td>
-                  <td style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{src.pluginId}</td>
-                </tr>
-              )),
+          {/* A view control, not a config one: on a long claim set "which plugin
+              drags THIS host in" is usually asked about one plugin at a time. */}
+          {claimSources.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                {t('forwardProxy.ruleClaimsColPlugin')}
+              </span>
+              <Combobox
+                value={activeClaimPlugin}
+                onChange={setClaimPlugin}
+                options={claimPluginOptions}
+                placeholder={t('forwardProxy.ruleClaimsFilterAll')}
+                // Five plugins today, but the operator types a name to jump to it;
+                // the shared threshold (options > 8) would hide the search box.
+                forceFilter
+                clearable
+                style={{ width: '240px' }}
+              />
+            </div>
+          )}
+          {/* The horizontal floor keeps the auto host track from crushing a domain on a
+              narrow window; below it the body scrolls sideways instead. */}
+          <ScrollTable columns={claimColumns} maxHeight={420} minWidth={600} empty={t('forwardProxy.ruleClaimsEmpty')}>
+            {visibleClaimSources.flatMap(src =>
+              src.hosts.map(host => {
+                const o = src.outcomes.find(x => x.host === host);
+                return (
+                  <tr key={`${src.pluginId}:${host}`}>
+                    <td style={{ padding: '8px 10px', fontFamily: FONT_MONO, fontSize: 'var(--text-sm)', ...CLAIM_CELL_WRAP }}>
+                      {/* A break opportunity AFTER each dot: a wrap lands on a label boundary
+                          (`generativelanguage.` / `googleapis.com`) instead of the arbitrary
+                          point `overflow-wrap: anywhere` would otherwise pick. */}
+                      {host.split('.').map((part, i, parts) => (
+                        <React.Fragment key={i}>
+                          {part}
+                          {i < parts.length - 1 ? <>.<wbr /></> : null}
+                        </React.Fragment>
+                      ))}
+                    </td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', ...CLAIM_CELL_WRAP }}>{src.pluginId}</td>
+                    <td style={{ padding: '8px 10px', fontSize: 'var(--text-sm)' }}>
+                      {o ? (
+                        <span data-tip={claimEgressSource(o)}>
+                          {exitLabel(o.action)}
+                          {/* A row that names a claimed host with `passthrough`
+                              blinds the gateway that claims it — the exit still
+                              resolves, but nothing parses it. This is the one
+                              place an operator looking at claims can see that. */}
+                          {o.tunnel && (
+                            <span style={{ color: '#f87171', marginLeft: '6px' }}>
+                              {t('forwardProxy.ruleClaimsEgressBlinded')}
+                            </span>
+                          )}
+                        </span>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                );
+              }),
             )}
           </ScrollTable>
+          {/* There is deliberately NO egress control in this dialog. Over a
+              claimed host the claim owns the leg (ADR-0018 Revision 5), so the
+              operator's switch lives with the plugin it speaks for — the
+              settings drawer — and this table is the read-only answer to "what
+              does that mean for each of my hosts?" The plugin picker above only
+              narrows that answer; it writes nothing. */}
+          {claimSources.length > 0 && (
+            <div style={{ marginTop: '12px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              {t('forwardProxy.ruleClaimsEgressDrawerHint')}
+            </div>
+          )}
         </Dialog>
       )}
     </div>

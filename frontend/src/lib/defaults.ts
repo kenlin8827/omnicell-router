@@ -125,3 +125,12 @@ export const DEFAULT_PROVIDER_TIMEOUT_MS = 30 * 60 * 1000;
 /** Streamed idle watchdog timeout (ms) — mirrors backend `DEFAULT_STREAM_IDLE_TIMEOUT_MS`
  *  (backend/src/config/defaults.ts). Update both in the same commit. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+
+/** The core-injected outbound-leg switch — mirrors backend
+ *  `GATEWAY_EGRESS_CONFIG_KEY` / `GATEWAY_EGRESS_VALUES`
+ *  (backend/src/plugins/manifest.ts). Its wording is CONSOLE chrome, not package
+ *  content, so the drawer translates it from the i18n tables and therefore has
+ *  to recognize the field by key and value set. Update both in the same commit;
+ *  `forward-proxy-console-vocabulary-parity.test.ts` pins the two lists. */
+export const GATEWAY_EGRESS_CONFIG_KEY = 'egress';
+export const GATEWAY_EGRESS_VALUES = ['inherit', 'proxy', 'direct'] as const;

@@ -45,7 +45,7 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
-import { listGatewayHosts, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
+import { listGatewayHosts, listClaimedEgress, claimEgressFor, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
 import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
@@ -1721,27 +1721,54 @@ export function registerConsoleRoutes(
     // the wildcard's own attribution stays visible through `claimSources`.
     const claimed = [...listGatewayHosts()].filter((h) => h !== WILDCARD_HOST_CLAIM).sort();
     // Per-plugin attribution for the console's "decrypted without a rule" list:
-    // the SAME live registry `listGatewayHosts()` unions, so the two can never
-    // disagree — one is the host set, the other says who claimed it.
+    // the SAME live registry the proxy legs read, so the two can never disagree —
+    // one is the host set, the other says who claimed it and what leg that claim
+    // owns (ADR-0018 Revision 5). The preview asks `claimEgressFor` — the very callback
+    // the relay injects into `resolveHost` — because the tier that answers can be
+    // the plugin's code, and a preview of a snapshot would be a second opinion.
+    const claimOutcomes = (hosts: string[]) => hosts.map((host) => {
+      const d = resolveHost(host, rules, {
+        claimed: new Set(claimed), claimEgress: claimEgressFor, intercept,
+      });
+      return {
+        host,
+        action: d.action,
+        tunnel: d.tunnel,
+        reason: d.reason,
+        egressClaim: d.egressClaim,
+        ruleIndex: d.ruleIndex,
+      };
+    });
     const claimSources = [...listGateways().entries()]
-      .map(([pluginId, gw]) => ({
-        pluginId,
-        hosts: [...new Set(gw.hosts.filter((h) => h !== WILDCARD_HOST_CLAIM))].sort(),
-      }))
+      .map(([pluginId, gw]) => {
+        const hosts = [...new Set(gw.hosts.filter((h) => h !== WILDCARD_HOST_CLAIM))].sort();
+        // The DISTINCT legs this plugin's claims ask for. One package normally
+        // answers once — but a per-host hook may split, and a host two gateways
+        // answer oppositely drops out entirely (no winner), which the dialog has
+        // to be able to show rather than invent.
+        const egress = [...new Set(hosts.map((h) => claimEgressFor(h)?.action))]
+          .filter((e): e is 'proxy' | 'direct' => e !== undefined)
+          .sort();
+        return { pluginId, hosts, egress, outcomes: claimOutcomes(hosts) };
+      })
       .filter((s) => s.hosts.length > 0)
       .sort((a, b) => a.pluginId.localeCompare(b.pluginId));
     const host = typeof body.host === 'string' ? body.host.trim() : '';
     return {
       status: 'ok',
       rules,
-      warnings: lintRules(rawRules, proxyEnabled, intercept),
+      warnings: lintRules(rawRules, proxyEnabled, intercept, listClaimedEgress()),
       proxyEnabled,
       intercept,
       claimed,
       claimSources,
       // The resolver is the SAME function the proxy legs call, so the preview
-      // can never disagree with the live decision.
-      decision: host ? resolveHost(host, rules, { claimed: new Set(claimed), intercept }) : null,
+      // can never disagree with the live decision — which is why the claim legs
+      // ride in here too: omitting them would make an unsaved table preview as
+      // `direct` while the relay already goes `proxy`.
+      decision: host
+        ? resolveHost(host, rules, { claimed: new Set(claimed), claimEgress: claimEgressFor, intercept })
+        : null,
     };
   });
 
@@ -1775,7 +1802,7 @@ export function registerConsoleRoutes(
       status: 'ok',
       rules,
       intercept: DEFAULT_FORWARD_PROXY_INTERCEPT,
-      warnings: lintRules(rules, live?.proxy?.enabled === true, DEFAULT_FORWARD_PROXY_INTERCEPT),
+      warnings: lintRules(rules, live?.proxy?.enabled === true, DEFAULT_FORWARD_PROXY_INTERCEPT, listClaimedEgress()),
     };
   });
 

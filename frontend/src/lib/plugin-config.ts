@@ -1,5 +1,6 @@
 import type { PluginConfigFieldInfo, PluginConfigSectionInfo } from './api';
 import { EFFORT_LADDER } from './effort';
+import { GATEWAY_EGRESS_CONFIG_KEY, GATEWAY_EGRESS_VALUES } from './defaults';
 import { LANG_TO_BCP47 } from '../i18n/languages';
 
 /**
@@ -28,6 +29,26 @@ export function pickLocaleText(text: string | Record<string, string> | undefined
   if (typeof text === 'string') return text;
   const key = LANG_TO_BCP47[lang as keyof typeof LANG_TO_BCP47];
   return text[key] ?? text['en-US'] ?? text['en'] ?? Object.values(text)[0];
+}
+
+/**
+ * True for the outbound-leg switch CORE injects into a client-gateway's schema
+ * (backend `withGatewayEgressField`, ADR-0018 Revision 5). The field arrives through
+ * the same generic `configSchema` as a package's own fields, but its wording is
+ * console chrome rather than package content, so the drawer translates it from
+ * the i18n tables instead of printing `humanizeKey('egress')` over three machine
+ * values. Recognition is by key AND the exact value set: if the backend adds a
+ * fourth state, this stops matching and the row degrades to the generic
+ * rendering (visible to everyone) instead of offering a switch with no word for
+ * the new option.
+ */
+export function isCoreEgressField(field: Pick<PluginConfigFieldInfo, 'key' | 'control' | 'values'>): boolean {
+  return (
+    field.key === GATEWAY_EGRESS_CONFIG_KEY &&
+    field.control === 'segmented' &&
+    field.values?.length === GATEWAY_EGRESS_VALUES.length &&
+    GATEWAY_EGRESS_VALUES.every((v) => field.values?.includes(v))
+  );
 }
 
 /** Draft values as the console holds them: enum/string/number as raw text,

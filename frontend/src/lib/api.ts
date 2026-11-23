@@ -683,7 +683,8 @@ export type RuleWarningCode =
   | 'unreachable-rule'
   | 'no-catch-all'
   | 'catch-all-intercepts'
-  | 'proxy-rule-without-proxy';
+  | 'proxy-rule-without-proxy'
+  | 'claim-owns-egress';
 
 export interface RuleWarning {
   code: RuleWarningCode;
@@ -693,12 +694,23 @@ export interface RuleWarning {
   detail?: string;
 }
 
+/** Which tier of a client-gateway claim owns the leg under its hosts (backend
+ *  `ClaimEgressSource`): the operator's plugin-level switch, the plugin's own
+ *  per-request code, or the manifest's declared default. */
+export type ClaimEgressSource = 'operator' | 'code' | 'manifest';
+
 /** The full decision for a probe host — the console preview + the ledger note. */
 export interface HostDecision {
   action: RuleExit;
   tunnel: boolean;
   /** `claim` = a live client-gateway plugin claims this host, so it is decrypted. */
   reason: 'loopback' | 'rule' | 'claim' | 'fallback';
+  /**
+   * Set when a claiming gateway's own tier decided the EXIT: which tier spoke
+   * (ADR-0018 Revision 5). The provenance the probe needs, because `reason` says why
+   * the host is decrypted and nothing about who chose the leg under it.
+   */
+  egressClaim?: ClaimEgressSource;
   ruleIndex?: number;
   match?: string;
 }
@@ -723,6 +735,35 @@ export interface RulesResolveResponse {
 export interface ClaimSource {
   pluginId: string;
   hosts: string[];
+  /**
+   * The legs this plugin's claims currently ask for (ADR-0018 Revision 5) — normally
+   * one entry, empty when nothing speaks (the table decides) and two when the
+   * hosts differ, which the plugin's own per-host answer can do legitimately.
+   * It is a leg name, never a proxy address.
+   */
+  egress: Array<'proxy' | 'direct'>;
+  /**
+   * Each claimed host resolved through the SAME backend resolver the proxy legs
+   * call, so the dialog shows what the table plus the claim actually decide
+   * today — not just what the manifest intends. `tunnel` is the field that
+   * matters here: a `passthrough` row over a claimed host blinds the gateway
+   * that claims it (the claim owns the LEG, never the operator's right to
+   * decrypt).
+   */
+  outcomes: ClaimHostOutcome[];
+}
+
+/** One claimed host as the resolver sees it, right now, with the unsaved table. */
+export interface ClaimHostOutcome {
+  host: string;
+  action: RuleExit;
+  tunnel: boolean;
+  /** Why the host is decrypted / tunneled. */
+  reason: HostDecision['reason'];
+  /** Which tier of the claim owns the exit; absent means the table does. */
+  egressClaim?: ClaimEgressSource;
+  /** Which raw table row decided, when `reason` is `rule`. */
+  ruleIndex?: number;
 }
 
 /** `POST /api/admin/forward-proxy/tighten` — the catch-all rewritten to a blind tunnel. */

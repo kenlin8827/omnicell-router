@@ -1,7 +1,7 @@
 # ADR-0018：前向代理规则表
 
 日期：2026-12
-状态：已接受（三次修订——见下方各节「修订」）
+状态：已接受（五次修订——见下方各节「修订」）
 治理对象：`backend/src/forward-proxy/rules.ts`（解析器）、
 `backend/src/forward-proxy/egress.ts`（`ruleDecision` / `isRuleRejected` /
 `ruleTunnels` / `transitEgressFor` / `transitProxyFor`）、
@@ -27,6 +27,40 @@
 
 中间修订曾把它拆成两张有序表（`egressRules` + `decryptRules`）。那消掉了冗余，但没消掉操作者真正的抱怨：一个主机的结果分居两处，而「解密」成了配置里的一等概念。接管是这个产品的默认姿态，不是一种模式——所以它应该是一个**默认值**，而不是一张表。
 
+## 修订 5——声明拥有它自己那几个主机的出口
+
+修订 4 之所以把解密轴交给声明，是因为「这台主机值不值得读」是厂商知识。同一台主机上的出口是同一类事实再往下走一级：**这个厂商的端点在多数环境里直连就是不通。** 把这件事留给兜底行，等于让网关走不走出站代理纯属巧合——运营者因为别的原因把兜底行改成 `direct`，就把所有装好的网关静默挪出了代理。
+
+所以另一根轴也做同样的反转：**一旦一个包声明了某台主机，这台主机下的出站腿就是这个包的事。** 运营者对自己装的代码保留最终话语权，但这句话一个插件只说**一次**——一个开关覆盖它声明的全部主机——而不是每台主机一次。
+
+对一台**具体被声明**的主机，出口按声明的阶梯决定，顺序如下：
+
+1. 运营者在该插件自己设置抽屉里的开关。core 把 `egress: inherit | proxy | direct` 枚举注入网关的 `configSchema`（`inherit` 是未改动的默认值，永远不是一个选择，所以没动过的开关不会压掉插件自己的回答），这个值由 core 消费，而不是作为新能力交给包；
+2. 网关自己的代码——`egressFor({ host })`，每请求求值，所以它可以按主机回答、随时改主意；
+3. manifest 声明的默认值（`PluginPart.egress`，写在 `parts[]` 或单条目平铺简写里）；
+4. 谁都没说 ⇒ 规则表按原样决定：命中的 specific 行，否则兜底行，再否则 `direct`。
+
+刻意放在阶梯**之外**的：
+
+- **`reject` 是准入判定，不是一条腿。** 「可以读」的许可永远不是「可以到达」的许可，所以任何声明意见都解不开 reject 行。
+- **loopback** 保持 `direct` + 盲隧道（环路安全）。
+- **`ingress` 从不跟随阶梯。** specific 行的 `ingress` 仍然原样生效——声明拥有的是**腿**，永远不是运营者把一台主机变盲的权利——控制台逐主机打印 `tunnel`，所以一条 `passthrough` 行把声明它的网关弄瞎时，这件事是可见的，而不是靠推断。
+
+使它不至于变成第二套配置面的几条：
+
+- **它指定的是某条腿，永远不是地址。** `proxy` 和任何 `proxy` 行一样经 `outboundProxyUrl()` 解析（§4）——用的是运营者的 `proxy.enabled` 加 `proxy.url` / mihomo 端点。一个包无法把本机流量指向它自己选的地方。
+- **它的作用域恰好等于声明集合。** 查表是小写主机精确匹配，不是 glob。**通配声明（`'*'`，ADR-0026）根本不允许携带声明**——manifest 校验直接拒绝这个组合，因为 `'*'` 不是一个主机，那样的声明会把本机可达的每一个主机的出口都钉住。通配网关不投票；两个网关对同一主机给出**相反**意见时结果是沉默，而不是选一个赢家：哪个包先加载不是运营者的决定。
+- **表保留 `ingress` 轴和所有未被声明的主机。** 在被声明的主机上，行的 `egress` 是惰性的，所以 `lintRules` 对每一条「显式写了 `egress`、但值被声明覆盖」的行报 `claim-owns-egress`（`reject` 行和兜底行豁免——前者没有腿可被遮蔽，`*` 仍然路由每台没被声明的主机）。
+
+有两个后果是解析器「唯一真相」性质的承重墙：
+
+- `resolveHost` 保持纯函数：调用方注入 `ResolveOptions.claimEgress`，它是**回调**而不是快照，因为回答的层级可能是**本次请求**正在运行的插件代码。控制台的 dry-run 预览注入同一个回调（`/api/admin/forward-proxy/rules/resolve`），`RuleDecision.egressClaim: 'operator' | 'code' | 'manifest'` 记录是哪一级决定的——即使行恰好写了同一条腿，也会这样标，因为「声明拥有这个出口」两种情况下都是事实。
+- `transitEgressFor` 保留「空表 = 历史上直连」这条逃生通道，但**只在表本身就是决定者的地方保留**。声明的腿不是一行表，所以空表不得吞掉它——否则中继走直连、而同一主机的每个预览都写着 `proxy`，那是同一个预览/现实分裂的另一面。
+
+控制台的声明对话框因此是**只读**的：每台被声明主机的出口来自同一次解析调用（`claimSources[].outcomes`），运营者的否决入口在插件的设置抽屉里。这里刻意没有「写规则行」的控件：一行「意思是声明拥有它」的规则会是第二份真相，而且卸载一个插件会在它身后留下残余。
+
+声明这个契约本身归 `docs/adr/zh-CN/0017-client-gateway-plugins.md` §1；出口（腿）是它现在携带的唯一一条传输事实。其余传输仍然归核心（ADR-0017：`relayUpstream` 是唯一的拨号路径）。
+
 ## 修订 4——接管是被「声明」的（claims 姿态）
 
 修订 1–3 都保留了一个没被审视的前提：**接管是默认值**，规则表的职责只是把例外写出来。一次整机流量普查（25 台被代理的主机里，网关真正需要读的只有 5 台）让这个前提的代价显露出来：约 92% 的被解密字节毫无理由地被解密，而附带伤害并非理论问题——
@@ -47,8 +81,8 @@ forwardProxy:
 `resolveHost` 按以下顺序判定（它仍然是纯函数——声明集合由调用方传入，模块本身不 import 插件注册表）：
 
 1. **loopback** → `direct` + 盲隧道（不变量不变）；
-2. **命中的是 SPECIFIC 行**（`match !== '*'`）→ 完全按该行的 `ingress`/`egress`：运营者高于任何声明，所以 `reject` 与 `passthrough` 都能覆盖它；
-3. **该主机被 live client-gateway 插件声明**（`listGatewayHosts()`，ADR-0017）→ 兜底行的 `egress`，解密，`reason: 'claim'`；
+2. **命中的是 SPECIFIC 行**（`match !== '*'`）→ 该行的 `ingress` 原样生效，`reject` 判定永远有效；该行的 `egress` 只在这台主机没有任何声明意见时才生效（修订 5）；
+3. **该主机被 live client-gateway 插件声明**（`listGatewayHosts()`，ADR-0017）→ 解密，`reason: 'claim'`，出口按声明自己的阶梯决定（修订 5），声明没有意见时才用兜底行的；
 4. **`intercept: 'all'`** → 兜底行的 `egress`，解密（审计模式）；
 5. **其余** → 兜底行的 `egress`，盲隧道。
 
@@ -56,7 +90,7 @@ forwardProxy:
 
 - **兜底行的 `ingress` 是「默认姿态」，不是「通杀指令」。** 在 `claims` 下，`{ match: '*', ingress: intercept }` 并不会解密任何插件没声明的主机——这一行读起来比它实际做的强，所以 `lintRules` 报 `catch-all-intercepts`（仅在姿态为 `claims` 时）。新装种子是 `{ match: '*', ingress: passthrough, egress: proxy }`。
 - **`reject` 语义不变。** 兜底的 `reject` 依然是它覆盖的每一台主机的准入门，任何声明都解不开它——声明是「可以读」的许可，永远不是「可以到达」的许可。要例外，就在它上面写一条具体行。
-- **`egress` 语义不变。** 姿态只碰一根轴；`proxy` 行依然是 `proxy`，每条转发腿仍然调同一个解析器。
+- **`egress` 不随姿态改变。** 姿态只碰一根轴；`proxy` 行依然是 `proxy`，每条转发腿仍然调同一个解析器。（修订 5 把**被声明主机**的出口从行移到声明的阶梯上；没有被声明的主机仍然由表决定。）
 - **`reason` 增加 `claim`。** 账本与控制台探针现在能说清「这台主机被解密是因为插件声明了它」，而不是让人以为是运营者写了行。
 
 ### 为什么声明集合不是第二张表
@@ -197,7 +231,7 @@ forwardProxy:
 有序表只有在能被提问时才可读，所以 `POST /api/admin/forward-proxy/rules/resolve` 针对**未保存**的表返回：
 
 - `warnings`——lint 码（`invalid-rule`、`unreachable-rule`、`no-catch-all`、`catch-all-intercepts`、`proxy-rule-without-proxy`），带操作者所写那一行的下标；措辞由控制台通过 i18n 渲染，规则归后端所有；
-- `decision`——探针主机的 `{ action, tunnel, reason, ruleIndex, match }`，由代理腿调用的**同一个** `resolveHost` 产出。自修订 4 起，响应还带上 `intercept`、`claimed`（live 声明集合，或请求体里未保存的姿态）与 `claimSources`（同一集合按插件归组，控制台用它回答「哪台主机是谁声明的」），因为这两者现在决定了「没有任何具体行命中的主机」的 `tunnel`——预览若省略它们，回答的就不是代理真正在回答的那个问题。
+- `decision`——探针主机的 `{ action, tunnel, reason, ruleIndex, match }`，由代理腿调用的**同一个** `resolveHost` 产出。自修订 4 起，响应还带上 `intercept`、`claimed`（live 声明集合，或请求体里未保存的姿态）与 `claimSources`（同一集合按插件归组，控制台用它回答「哪台主机是谁声明的」；每个条目还带上它的声明集合要的腿（修订 5）和对话框逐主机打印的 `outcomes`（各自带 `egressClaim` 归因）），因为这两者现在决定了「没有任何具体行命中的主机」的 `tunnel`——预览若省略它们，回答的就不是代理真正在回答的那个问题。
 
 控制台只说这一行**自己的两个字段**：一个下拉是 `ingress`（接管 / 透传 / 拒绝），一个开关是 `egress`（直连 / 代理），探针的回答也用同样的两个词——所以「UI 词表」不是另一套词表，它就是 schema 本身。这份镜像由 `forward-proxy-console-vocabulary-parity.test.ts` 对着后端运行时的取值表（`RULE_INGRESSES`、`RULE_EGRESSES`、`RULE_WARNING_CODES`）做一致性校验；控制台没有对应句子可渲染的 lint 码会导致类型检查失败，而不是悄悄落到一句错的话上。
 
