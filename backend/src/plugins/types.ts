@@ -105,6 +105,12 @@ export interface PluginManifest {
   logo?: string;
   /** Provider presets this plugin can pre-provision (shown on the plugins page). */
   presets?: PluginProviderPreset[];
+  /** Release history shown by the console's Plugins page. Entries
+   *  are declared NEWEST FIRST; the console renders them in manifest order and
+   *  never re-sorts, so a pre-release or a backported fix keeps the author's
+   *  placement. Purely presentational: nothing in the loader, router or config
+   *  merge reads it. */
+  changelog?: PluginChangelogEntry[];
   /** Operator-facing configuration fields (ADR-0017). Flat primitives only —
    *  the console renders the settings form generically from this; values are
    *  stored as a plugin artifact (<pluginsRoot>/config/<id>.json), never in
@@ -211,6 +217,20 @@ export interface PluginProbeOptions {
   baseURL: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
+}
+
+/** One release note of a plugin's `changelog` (manifest presentation only).
+ *  `version` need not equal the manifest version — the history keeps the
+ *  versions an operator already knows, and the console marks the entry that
+ *  matches the installed one. `notes` follows the manifest locale-map
+ *  convention and is rendered as markdown. */
+export interface PluginChangelogEntry {
+  /** Release identifier as the package names it (semver is not required). */
+  version: string;
+  /** Release date, `YYYY-MM-DD`; display only. Absent = undated entry. */
+  date?: string;
+  /** Release notes — plain string or BCP-47 keyed map of strings. */
+  notes: string | Record<string, string>;
 }
 
 /** A provider definition the plugin offers to pre-provision (e.g. one per
@@ -709,6 +729,8 @@ export interface PluginView {
   warningLabels?: Record<string, string | Record<string, string>>;
   /** Package-owned client presentation texts (see PluginManifest.clientText). */
   clientText?: ClientTextManifest;
+  /** Release history (see PluginManifest.changelog); rendered in declared order. */
+  changelog?: PluginChangelogEntry[];
   presets?: PluginProviderPreset[];
   /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
   logo?: string;

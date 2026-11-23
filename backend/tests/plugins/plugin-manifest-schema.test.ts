@@ -423,6 +423,56 @@ describe('manifest: clientText and clientRank', () => {
   });
 });
 
+describe('manifest: changelog', () => {
+  const base = { id: 'p', name: 'P', version: '1.2.0', apiVersion: 1, type: 'model-service', wires: ['w'] };
+  const entry = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    version: '1.2.0',
+    date: '2026-11-23',
+    notes: { 'en-US': '- Added a changelog', 'zh-CN': '- 新增更新日志' },
+    ...extra,
+  });
+
+  it('accepts string and locale-map notes, with or without a date', () => {
+    assert.doesNotThrow(() => validatePluginManifest({ ...base, changelog: [entry()] }, 'plugin'));
+    assert.doesNotThrow(() =>
+      validatePluginManifest(
+        { ...base, changelog: [{ version: '1.0.0', notes: '- First release' }, entry()] },
+        'plugin'
+      )
+    );
+  });
+
+  it('rejects a non-array changelog and non-object entries', () => {
+    assert.throws(() => validatePluginManifest({ ...base, changelog: 'notes' }, 'plugin'), /changelog must be an array/);
+    assert.throws(() => validatePluginManifest({ ...base, changelog: [null] }, 'plugin'), /changelog\[0\] must be an object/);
+  });
+
+  it('rejects an empty or duplicated version', () => {
+    assert.throws(() => validatePluginManifest({ ...base, changelog: [entry({ version: '' })] }, 'plugin'), /non-empty string/);
+    assert.throws(() => validatePluginManifest({ ...base, changelog: [entry({ version: ' ' })] }, 'plugin'), /non-empty string/);
+    assert.throws(
+      () => validatePluginManifest({ ...base, changelog: [entry(), entry()] }, 'plugin'),
+      /declares version '1.2.0' twice/
+    );
+  });
+
+  it('rejects a date that is not YYYY-MM-DD', () => {
+    for (const date of ['2026-1-3', '23/11/2026', 20261123, '']) {
+      assert.throws(() => validatePluginManifest({ ...base, changelog: [entry({ date })] }, 'plugin'), /YYYY-MM-DD/, String(date));
+    }
+  });
+
+  it('rejects empty notes in either spelling', () => {
+    for (const notes of ['', '   ', {}, { 'en-US': ' ' }, { 'en-US': '', 'zh-CN': '- 有内容' }, ['- bullet'], { 'en-US': 7 }]) {
+      assert.throws(
+        () => validatePluginManifest({ ...base, changelog: [entry({ notes })] }, 'plugin'),
+        /notes must be a non-empty string or a locale map/,
+        JSON.stringify(notes)
+      );
+    }
+  });
+});
+
 const jetbrainsPluginJson = path.resolve(import.meta.dirname, '../../../plugins/jetbrains-gateway/plugin.json');
 if (fs.existsSync(jetbrainsPluginJson)) {
   describe('warningLabels: the shipped jetbrains-gateway manifest', () => {

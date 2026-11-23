@@ -40,6 +40,8 @@ const IDS = [
   'coexist-legacy',
   'coexist-broken-bundled',
   'coexist-assets',
+  'coexist-changelog',
+  'coexist-changelog-broken',
 ];
 
 function packageZip(id: string, version: string, apiVersion = 1): Uint8Array {
@@ -312,6 +314,36 @@ describe('plugin coexistence: official vs third-party', () => {
     } finally {
       rmSync(src, { recursive: true, force: true });
     }
+  });
+
+  it('carries the manifest changelog into every console row state', async () => {
+    const id = 'coexist-changelog';
+    const changelog = [
+      { version: '1.2.0', date: '2026-11-23', notes: { 'en-US': '- Notes', 'zh-CN': '- 说明' } },
+      { version: '1.0.0', notes: '- First release' },
+    ];
+    const manifest = { id, name: 'Changelog', version: '1.2.0', apiVersion: 1, type: 'model-service', wires: [id], changelog };
+    installPluginPackage(bareZip(id, manifest));
+    expect((await loadInstalledPlugins()).find((v) => v.id === id)?.changelog).toEqual(changelog);
+
+    // A disabled package is never imported; its facts still come from the
+    // manifest, changelog included.
+    await setPluginDisabled(id, true);
+    await loadInstalledPlugins();
+    expect(listInstalledPlugins().find((v) => v.id === id)?.changelog).toEqual(changelog);
+
+    // A package that fails to load keeps the history its manifest declares —
+    // it is part of the broken row's identity, read straight from the zip.
+    const brokenId = 'coexist-changelog-broken';
+    installPluginPackage(
+      zipSync({
+        'plugin.json': strToU8(JSON.stringify({ ...manifest, id: brokenId, name: brokenId, wires: [brokenId] })),
+        'index.js': strToU8('throw new Error("boom")'),
+      })
+    );
+    const failed = (await loadInstalledPlugins()).find((v) => v.id === brokenId);
+    expect(failed?.loaded).toBe(false);
+    expect(failed?.changelog).toEqual(changelog);
   });
 });
 

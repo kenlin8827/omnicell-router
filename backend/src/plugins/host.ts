@@ -457,6 +457,7 @@ async function importPlugin(
     description: manifest.description,
     warningLabels: manifest.warningLabels,
     clientText: manifest.clientText,
+    changelog: manifest.changelog,
     presets: manifest.presets,
     logo: manifest.logo,
     source,
@@ -573,6 +574,9 @@ function failedView(
     type: parts[0]?.type ?? 'model-service',
     types: parts.map((p) => p.type),
     wires: [],
+    // Identity for a row that failed to load: the console can still tell the
+    // operator what the package claims to change.
+    changelog: declared?.changelog,
     source,
     path,
     loaded: false,
@@ -795,6 +799,7 @@ function stubDisabledView(
       types: parts.map((p) => p.type),
       wires: parts.find((p) => p.type === 'model-service')?.wires ?? m.wires ?? [],
       description: m.description,
+      changelog: m.changelog,
       presets: m.presets,
       logo: m.logo,
       source,

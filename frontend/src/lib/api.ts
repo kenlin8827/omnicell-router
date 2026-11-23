@@ -5307,6 +5307,16 @@ export interface PluginClientText {
   family?: Record<string, string | Record<string, string>>;
 }
 
+/** One release note of a plugin's manifest `changelog` (presentation only).
+ *  `notes` is a plain string or a locale map; the console renders it as markdown
+ *  and keys rows by `version`. */
+export interface PluginChangelogEntry {
+  version: string;
+  /** `YYYY-MM-DD`; absent = undated entry. */
+  date?: string;
+  notes: string | Record<string, string>;
+}
+
 export interface PluginViewInfo {
   id: string;
   name: string;
@@ -5324,6 +5334,8 @@ export interface PluginViewInfo {
   /** Package-declared client copy (manifest `clientText`): setup/teardown toasts,
    *  per-reasonCode errors, hook hint and family (multi-product) strings. */
   clientText?: PluginClientText;
+  /** Release history from the manifest, in declared (newest-first) order. */
+  changelog?: PluginChangelogEntry[];
   presets?: PluginProviderPresetInfo[];
   source: 'dev' | 'packaged';
   path: string;

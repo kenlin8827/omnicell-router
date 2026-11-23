@@ -284,6 +284,40 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   ) {
     fail('description must be a string or locale map');
   }
+  // Release history is presentation only, but a malformed entry is still a
+  // packaging bug the console would render as a blank drawer: every field is
+  // checked here, at the same install/load gate as the rest of the manifest.
+  // Duplicate versions are refused because the console keys rows by version —
+  // two notes for one release would silently collapse into one.
+  if (m.changelog !== undefined) {
+    if (!Array.isArray(m.changelog)) fail('changelog must be an array of release entries');
+    const seenVersions = new Set<string>();
+    (m.changelog as unknown[]).forEach((raw, i) => {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) fail(`changelog[${i}] must be an object`);
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.version !== 'string' || !entry.version.trim()) {
+        fail(`changelog[${i}].version must be a non-empty string`);
+      } else if (seenVersions.has(entry.version)) {
+        fail(`changelog declares version '${entry.version}' twice`);
+      } else {
+        seenVersions.add(entry.version);
+      }
+      if (entry.date !== undefined && (typeof entry.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.date))) {
+        fail(`changelog[${i}].date must be a YYYY-MM-DD string`);
+      }
+      const notes = entry.notes;
+      // EVERY declared locale must carry text: the console picks one locale and
+      // renders it verbatim, so an empty value is a blank drawer for exactly the
+      // operator whose language the author thought was translated.
+      const notesPresent =
+        typeof notes === 'string'
+          ? notes.trim().length > 0
+          : isTextOrLocaleMap(notes) &&
+            Object.keys(notes as Record<string, string>).length > 0 &&
+            Object.values(notes as Record<string, string>).every((text) => text.trim().length > 0);
+      if (!notesPresent) fail(`changelog[${i}].notes must be a non-empty string or a locale map of strings`);
+    });
+  }
   if (m.warningLabels !== undefined) {
     if (typeof m.warningLabels !== 'object' || m.warningLabels === null || Array.isArray(m.warningLabels)) {
       fail('warningLabels must be an object keyed by warning code');

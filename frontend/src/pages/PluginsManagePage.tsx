@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, RefreshCw, Puzzle, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
+import { Download, RefreshCw, Puzzle, ScrollText, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
 import { ScrollTable } from '../components/ScrollTable';
 import { Combobox } from '../components/Combobox';
+import { Drawer } from '../components/Drawer';
+import { Prose } from '../components/Prose';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
 import { opencodeApi, type PluginViewInfo } from '../lib/api';
 import { isDesktopShell } from '../lib/download';
@@ -61,6 +63,8 @@ export function PluginsManagePage(): React.ReactElement {
   /** Settings drawer target. Non-null mounts the shared drawer, which loads the
    *  plugin's schema/values itself. */
   const [configTarget, setConfigTarget] = useState<PluginViewInfo | null>(null);
+  /** Changelog drawer target: the manifest's declared release history. */
+  const [changelogTarget, setChangelogTarget] = useState<PluginViewInfo | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -215,9 +219,9 @@ export function PluginsManagePage(): React.ReactElement {
           { key: 'version', label: t('pluginPage.colVersion'), width: 80 },
           { key: 'type', label: t('pluginPage.colType'), width: 190 },
           { key: 'status', label: t('pluginPage.colStatus'), width: 140 },
-          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 400 },
+          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 540 },
         ]}
-        minWidth={880}
+        minWidth={1080}
         empty={loading ? t('common.loading') : (query || statusFilter) ? t('pluginPage.noMatch') : t('pluginPage.empty')}
       >
         {plugins
@@ -320,6 +324,18 @@ export function PluginsManagePage(): React.ReactElement {
                   <Download size={12} aria-hidden />
                   {t('pluginPage.download')}
                 </button>
+                {/* Only a package that declares a history gets the action; an
+                    always-present button would open an empty drawer on most rows. */}
+                {p.changelog?.length ? (
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => setChangelogTarget(p)}
+                    title={t('pluginPage.changelog')}
+                  >
+                    <ScrollText size={12} aria-hidden />
+                    {t('pluginPage.changelog')}
+                  </button>
+                ) : null}
                 <button
                   className="btn btn-sm"
                   onClick={() => setConfigTarget(p)}
@@ -345,6 +361,42 @@ export function PluginsManagePage(): React.ReactElement {
       </ScrollTable>
       {configTarget ? (
         <PluginConfigDrawer plugin={configTarget} onClose={() => setConfigTarget(null)} />
+      ) : null}
+      {changelogTarget ? (
+        <Drawer
+          title={t('pluginPage.changelogTitle')}
+          subtitle={`${changelogTarget.name} · v${changelogTarget.version}`}
+          onClose={() => setChangelogTarget(null)}
+          closeLabel={t('common.close')}
+          width="min(600px, 94vw)"
+        >
+          {/* Manifest order IS the display order (the author declares newest
+              first); the entry matching the installed version is marked so the
+              operator does not have to compare version strings by eye. The
+              timeline styling lives in styles/index.css (`.plugin-changelog`). */}
+          <div className="plugin-changelog">
+            {(changelogTarget.changelog ?? []).map((entry) => {
+              const notes = pickLocaleText(entry.notes, lang) ?? '';
+              const current = entry.version === changelogTarget.version;
+              return (
+                <article key={entry.version} className="plugin-changelog-entry" data-current={current}>
+                  <div className="plugin-changelog-head">
+                    <span className="plugin-changelog-version">v{entry.version}</span>
+                    {entry.date ? <span className="plugin-changelog-date">{entry.date}</span> : null}
+                    {current ? (
+                      <span className="badge badge-success plugin-changelog-current">
+                        {t('pluginPage.changelogCurrent')}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="plugin-changelog-notes">
+                    <Prose text={notes} markdown open hideToggle bg="transparent" border="transparent" />
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </Drawer>
       ) : null}
     </>
   );

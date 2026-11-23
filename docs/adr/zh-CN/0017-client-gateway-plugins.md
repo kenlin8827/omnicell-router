@@ -81,6 +81,8 @@ advisory code，就在本包 manifest 的 `warningLabels` 里声明文案（沿�
 契约）。插件拥有措辞，宿主拥有渲染 —— CLI 取 en-US，控制台按当前 UI 语言取值 —— 因此插件告警永远
 不需要新增 core 的 i18n 条目或改 core 的文案。
 
+**修订 2026-11-23（插件更新日志）：** 插件可在 `plugin.json` 声明 `changelog` —— 一个 `{version, date?, notes}` 数组，由控制台的「插件管理」页以行内操作打开抽屉渲染。`notes` 沿用同一套 locale-map 约定并按 markdown 渲染；条目按**manifest 顺序**展示（作者最新在前），控制台绝不从 git、`version` 字段或包归档推断发布历史：未声明的包就没有该操作。它只是展示数据 —— `PluginView.changelog` 把它带到控制台，加载器、路由与配置合并路径都不读它。校验在安装/加载时拒绝畸形条目（空 notes、非 `YYYY-MM-DD` 的日期、重复版本），否则它们会渲染成静默的空白块或被折叠的行。
+
 同一页还能导出插件：`GET /api/admin/plugins/:id/package` 对已打包插件原样返回其安装 zip，对 dev 树插件则先将其入口 **bundle**（第三方依赖内联）再用与 `plugins:build` **同一个确定性打包器**压包——下回来的包可直接再 Install，且与构建产物逐字节相同。
 
 插件包始终**自包含**：发行版宿主是 `bun build --compile` 单文件，编译态只从内嵌 snapshot 解析裸包名，**不**查磁盘 `node_modules`。因此纯源码包会在加载时被拒绝并给出重新打包提示；依赖解析属于打包期（作者/CI），绝不放在插件安装期。`plugin.json` **不**携带依赖清单：仓内插件把 npm 包声明在宿主仓库的 workspace `package.json`（打包器从仓库 `node_modules` 解析），仓外作者直接交付已 bundle 的 `index.js` —— 安装期唯一的契约是入口在零外部包的情况下可解析。bundle 按 **Node** 目标构建而不是 Bun，因为**两个**宿主运行时必须跑同一份产物：编译后的 sidecar 与 `node backend/dist/index.js`（README：Bun 或 Node >= 18）。`bun` 目标会为内联依赖里的 CJS 互操作发射 `import.meta.require` —— 这是纯 Bun API，曾导致包在 sidecar 里能加载、在 Node 入口直接抛 `__require is not a function` —— 所以 CJS 互操作改为发射 `createRequire`，而 bundle 里仍残留 `import.meta.require` 的包会在打包期被拒绝。每个包还带一个内容为 `{"type":"module"}` 的 `package.json`（仓库源码里的 `package.json` 会被替换、绝不随包发出）：入口是 ESM，而裸 `.js` 从 Node 20.19 / 22.7 起才因语法探测默认按 ESM 处理 —— README 仍支持的 Node 18 在没有这个标记时会把 `export` 当 CommonJS 解析并报错。
