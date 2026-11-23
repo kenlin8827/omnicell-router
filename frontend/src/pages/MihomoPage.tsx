@@ -1773,6 +1773,11 @@ export const MihomoPage: React.FC = () => {
         }
         return next;
       });
+      // A batch is the one action whose whole point is the ranking, so it
+      // answers "which node is fastest" without a second click. Promoted only
+      // from the neutral state: an operator who already chose descending keeps
+      // that choice, and the header arrow stays the sole source of the order.
+      setDelaySort(prev => (prev === 'none' ? 'asc' : prev));
     } catch (err) {
       // The batch itself never ran: an error per row is the honest reading,
       // not N timeouts blaming the nodes. A controller-reported timeout is the
@@ -1881,10 +1886,11 @@ export const MihomoPage: React.FC = () => {
     return subscriptionNameById.get(source.id ?? '') ?? source.id ?? '';
   };
 
-  // Delay sort is opt-in (config order is meaningful and is the default). A
-  // state is not a number: measurements come first (asc or desc), then
-  // timeouts, errors, in-flight tests and untested rows — so descending never
-  // floats the "—" rows to the top. Ties break on name to stay stable across
+  // Delay sort starts neutral (config order is meaningful), and a completed
+  // batch promotes it to ascending (see testAll). A state is not a number:
+  // measurements come first (asc or desc), then timeouts, errors, in-flight
+  // tests and untested rows — so descending never floats the "—" rows to the
+  // top. Ties break on name to stay stable across
   // re-renders.
   const sortedNodes = useMemo(() => {
     if (delaySort === 'none') return visibleNodes;
