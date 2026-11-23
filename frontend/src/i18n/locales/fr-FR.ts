@@ -2541,6 +2541,9 @@ export const frFR: TranslationDict = {
     endpointManage: 'Ouvrir Proxy sortant',
     disabled: 'Proxy sortant désactivé',
     saveHint: 'N\'enregistre que les règles include/exclude ; l\'endpoint et le mode vivent sur Proxy sortant.',
+    quickAdd: 'Ajout rapide',
+    quickAddHint: 'Modèles au niveau fournisseur pour les fournisseurs dont cette machine détient une clé. Cocher ne fait qu\'ajouter des règles ; supprimez via le bouton de la ligne.',
+    quickAddApply: 'Ajouter la sélection ({n})',
   },
   proxy: {
     title: 'Proxy sortant',

@@ -2546,6 +2546,9 @@ export const enUS: TranslationDict = {
     endpointManage: 'Open Outbound Proxy',
     disabled: 'Outbound proxy disabled',
     saveHint: 'Saves only include/exclude rules; the endpoint and mode live on Outbound Proxy.',
+    quickAdd: 'Quick add',
+    quickAddHint: 'Provider-level patterns of the providers this machine holds a key for. Ticking only appends rules; remove one with the row\'s delete button.',
+    quickAddApply: 'Add selected ({n})',
   },
   proxy: {
     title: 'Outbound Proxy',

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeftRight, ListFilter, Save } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, opencodeApi } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { InfoTip } from '../components/InfoTip';
@@ -40,6 +40,7 @@ export const ProxyPatternsPage: React.FC = () => {
   const [endpoint, setEndpoint] = useState<EndpointSnapshot | null>(null);
   const [includes, setIncludes] = useState<string[]>([]);
   const [excludes, setExcludes] = useState<string[]>([]);
+  const [providerIds, setProviderIds] = useState<string[]>([]);
   const [savedKey, setSavedKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -58,7 +59,19 @@ export const ProxyPatternsPage: React.FC = () => {
       setSavedKey(JSON.stringify({ includes: section.includes || [], excludes: section.excludes || [] }));
       setLoading(false);
     }).catch(console.error);
+    // Quick-add options come from the providers this machine actually has a key
+    // for — never a hardcoded vendor list. A failed fetch just means no
+    // quick-add; the lists stay fully editable by hand.
+    opencodeApi.listModels({ connected: true }).then(res => {
+      const ids = [...new Set(res.models.map(m => m.providerId).filter(Boolean))].sort();
+      setProviderIds(ids);
+    }).catch(() => {});
   }, []);
+
+  /** Provider-level patterns for the quick-add dialog, minus whatever the list
+   *  already holds (the dialog never duplicates a row the operator typed). */
+  const suggestionsFor = (picked: string[]) =>
+    providerIds.map(p => `${p}/*`).filter(s => !picked.includes(s));
 
   const dirty = savedKey !== null && savedKey !== JSON.stringify({ includes, excludes });
 
@@ -134,6 +147,7 @@ export const ProxyPatternsPage: React.FC = () => {
             addLabel={t('proxy.addPattern')}
             patterns={includes}
             onChange={setIncludes}
+            suggestions={suggestionsFor(includes)}
           />
           <PatternListEditor
             label={t('proxy.excludes')}
@@ -141,6 +155,7 @@ export const ProxyPatternsPage: React.FC = () => {
             addLabel={t('proxy.addPattern')}
             patterns={excludes}
             onChange={setExcludes}
+            suggestions={suggestionsFor(excludes)}
           />
           <div style={{
             display: 'flex',

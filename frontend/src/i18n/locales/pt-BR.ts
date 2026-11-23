@@ -2522,6 +2522,9 @@ export const ptBR: TranslationDict = {
     endpointManage: 'Abrir Proxy de saída',
     disabled: 'Proxy de saída desativado',
     saveHint: 'Salva só as regras include/exclude; o endpoint e o modo ficam em Proxy de saída.',
+    quickAdd: 'Adição rápida',
+    quickAddHint: 'Padrões no nível do provedor apenas para provedores com chave nesta máquina. Marcar só acrescenta regras; remova pelo botão da linha.',
+    quickAddApply: 'Adicionar selecionados ({n})',
   },
   proxy: {
     title: 'Proxy de saída',

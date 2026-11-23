@@ -2502,6 +2502,9 @@ export const zhCN: TranslationDict = {
     endpointManage: '去出站代理页',
     disabled: '出站代理未启用',
     saveHint: '只保存包含/排除规则；端点与模式在「出站代理」页。',
+    quickAdd: '快捷添加',
+    quickAddHint: '只列出本机已连接（有凭据）的提供商的 provider 级规则。勾选只会追加规则行，删除请用行上的删除按钮。',
+    quickAddApply: '添加所选（{n}）',
   },
   proxy: {
     title: '出站代理',

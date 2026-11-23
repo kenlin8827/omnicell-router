@@ -2521,6 +2521,9 @@ export const koKR: TranslationDict = {
     endpointManage: '아웃바운드 프록시 열기',
     disabled: '아웃바운드 프록시 꺼짐',
     saveHint: '포함/제외 규칙만 저장합니다. 엔드포인트와 모드는 아웃바운드 프록시 페이지에 있습니다.',
+    quickAdd: '빠른 추가',
+    quickAddHint: '이 머신에 키가 있는 공급자의 공급자 단위 패턴만 표시합니다. 선택은 규칙 추가만 하며, 삭제는 행의 삭제 버튼으로 합니다.',
+    quickAddApply: '선택 추가 ({n})',
   },
   proxy: {
     title: '아웃바운드 프록시',

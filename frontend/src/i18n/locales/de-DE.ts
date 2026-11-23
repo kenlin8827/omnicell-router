@@ -2523,6 +2523,9 @@ export const deDE: TranslationDict = {
     endpointManage: 'Ausgehenden Proxy öffnen',
     disabled: 'Ausgehender Proxy deaktiviert',
     saveHint: 'Speichert nur die Ein-/Ausschlussregeln; Endpoint und Modus liegen unter „Ausgehender Proxy“.',
+    quickAdd: 'Schnell hinzufügen',
+    quickAddHint: 'Anbieterweite Muster der Anbieter, für die dieser Rechner einen Schlüssel hat. Auswählen fügt nur Regeln hinzu; entfernen über den Löschknopf der Zeile.',
+    quickAddApply: 'Auswahl hinzufügen ({n})',
   },
   proxy: {
     title: 'Ausgehender Proxy',

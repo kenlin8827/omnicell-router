@@ -354,7 +354,13 @@ set — that shape predates `mode` and still asks for the core.
   answers `PROXY 127.0.0.1:<mixedPort>` — with no `DIRECT` fallback for proxied
   hosts, because a dead core must fail loudly instead of silently leaking
   traffic around the tunnel. `proxy.includes` / `proxy.excludes` are NOT
-  mirrored into it: they match provider/model names, not hosts. The console
+  mirrored into it: they match provider/model names, not hosts. The console's
+  proxy-patterns page offers a multi-select quick-add dialog of provider-level
+  patterns derived from the LIVE connected provider ids (`<provider>/*`). The
+  dialog only APPENDS the ticked rows — it never rewrites rules the operator
+  typed. Nothing is seeded: an empty includes list keeps the proxy-all
+  default, and the console never invents vendor names no configured provider
+  carries. The console
   (Mihomo → basic settings) puts the URL behind a button that opens a dialog
   with the address and a copy action. The address is composed by the gateway
   from the request's own Host header plus the gateway port (`pacUrlFor`), never

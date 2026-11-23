@@ -2521,6 +2521,9 @@ export const jaJP: TranslationDict = {
     endpointManage: '送信プロキシを開く',
     disabled: '送信プロキシは無効',
     saveHint: '含める / 除外ルールのみを保存します。エンドポイントとモードは送信プロキシにあります。',
+    quickAdd: 'クイック追加',
+    quickAddHint: 'キーを保持しているプロバイダーの provider 単位パターンのみを表示します。チェックはルールの追加だけを行い、削除は行の削除ボタンから行います。',
+    quickAddApply: '選択を追加（{n}）',
   },
   proxy: {
     title: '送信プロキシ',

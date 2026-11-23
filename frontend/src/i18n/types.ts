@@ -2675,6 +2675,12 @@ hiddenBadge: string;
     endpointManage: string;
     disabled: string;
     saveHint: string;
+    /** Button + dialog title: multi-select picker of `<provider>/*` patterns from CONNECTED providers. */
+    quickAdd: string;
+    /** Dialog subtitle: where the patterns come from, and that picking only appends. */
+    quickAddHint: string;
+    /** Apply button, `{n}` = number of ticked patterns (disabled at 0). */
+    quickAddApply: string;
   };
   /** The inbound forward-proxy ACCESS page (ProxyAccessPage): CA trust, the
    *  setup wizard and the OS-proxy controls. Rule-table keys live under
