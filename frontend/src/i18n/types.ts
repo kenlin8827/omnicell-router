@@ -2674,6 +2674,16 @@ hiddenBadge: string;
     endpointHint: string;
     endpointManage: string;
     disabled: string;
+    /** Status pill: the include allowlist is empty, so every upstream call is direct. */
+    noInclude: string;
+    /** Status line: at least one include rule is configured — `{n}` = its count. */
+    active: string;
+    /** Status detail: nothing is proxied until a model matches an include rule. */
+    idleHint: string;
+    /** Status detail: only matching models use the endpoint. */
+    activeHint: string;
+    /** Status detail: the master switch is off, so the rules do nothing. */
+    disabledHint: string;
     saveHint: string;
     /** Button + dialog title: multi-select picker of `<provider>/*` patterns from CONNECTED providers. */
     quickAdd: string;

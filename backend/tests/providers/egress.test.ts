@@ -49,16 +49,24 @@ describe('ProviderRegistry.egressFor', () => {
     assert.deepEqual(registry.egressFor(model()), { mode: 'direct' });
   });
 
-  it('enabled proxy = proxy with the REDACTED origin (no credentials)', () => {
+  it('enabled proxy with no include rule = direct (nothing configured, nothing proxied)', () => {
     proxy({ enabled: true, url: 'http://user:pass@proxy.example:8080' });
+    const registry = makeRegistry();
+    registry.registerProvider('p', dialingProvider('https://api.example.com/v1'));
+    assert.deepEqual(registry.egressFor(model()), { mode: 'direct' });
+    initProxyConfig(undefined);
+  });
+
+  it('an include hit = proxy with the REDACTED origin (no credentials)', () => {
+    proxy({ enabled: true, url: 'http://user:pass@proxy.example:8080', includes: ['p/*'] });
     const registry = makeRegistry();
     registry.registerProvider('p', dialingProvider('https://api.example.com/v1'));
     assert.deepEqual(registry.egressFor(model()), { mode: 'proxy', origin: 'http://proxy.example:8080' });
     initProxyConfig(undefined);
   });
 
-  it('an excludes hit forces direct even with a global proxy', () => {
-    proxy({ enabled: true, url: 'http://proxy.example:8080', excludes: ['p/*'] });
+  it('an excludes hit forces direct even when an include rule matches', () => {
+    proxy({ enabled: true, url: 'http://proxy.example:8080', includes: ['*'], excludes: ['p/*'] });
     const registry = makeRegistry();
     registry.registerProvider('p', dialingProvider('https://api.example.com/v1'));
     assert.deepEqual(registry.egressFor(model()), { mode: 'direct' });
@@ -75,8 +83,8 @@ describe('ProviderRegistry.egressFor', () => {
     initProxyConfig(undefined);
   });
 
-  it('a loopback dial base is direct even with a global proxy', () => {
-    proxy({ enabled: true, url: 'http://proxy.example:8080' });
+  it('a loopback dial base is direct even with an include rule', () => {
+    proxy({ enabled: true, url: 'http://proxy.example:8080', includes: ['p/*'] });
     const registry = makeRegistry();
     registry.registerProvider('p', dialingProvider('http://127.0.0.1:11434/v1'));
     assert.deepEqual(registry.egressFor(model()), { mode: 'direct' });
@@ -84,7 +92,7 @@ describe('ProviderRegistry.egressFor', () => {
   });
 
   it('mihomo mode reports the loopback mixed port, not an exit node', () => {
-    proxy({ enabled: true, mode: 'mihomo', mihomo: { mixedPort: 7891, controllerPort: 9090 } });
+    proxy({ enabled: true, mode: 'mihomo', includes: ['p/*'], mihomo: { mixedPort: 7891, controllerPort: 9090 } });
     const registry = makeRegistry();
     registry.registerProvider('p', dialingProvider('https://api.example.com/v1'));
     assert.deepEqual(registry.egressFor(model()), { mode: 'proxy', origin: 'http://127.0.0.1:7891' });

@@ -10,15 +10,17 @@ import { nodeProxiedFetch } from './proxy-node.js';
  *   1. Loopback targets (localhost / 127.0.0.1 / ::1) are NEVER proxied, so local
  *      services (OpenCode, Ollama) keep working even with a global proxy set.
  *   2. excludes — a matching provider/model forces direct.
- *   3. includes — when non-empty, ONLY matching provider/models go through the proxy.
- *   4. proxy.url — global default (skipped when empty).
- *   5. undefined — direct; Bun fetch then still honors HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
+ *   3. includes — the ALLOWLIST: only a matching provider/model is proxied. An
+ *      empty (or absent) list proxies NOTHING — no rule configured means no
+ *      outbound proxy (ADR-0022 amendment 2026-12).
+ *   4. undefined — direct; Bun fetch then still honors HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
  *
  * List patterns match BOTH the composite `provider/modelId` and the bare model id,
  * so one syntax covers both levels: `providerName/asterisk` (slash-star) selects
  * every model of a provider; a leading star-slash prefix scopes a model pattern
  * to any provider; a bare `claude-*` matches the model id (no wildcard = substring). Calls without a match target (catalog/logo sync) are
- * unlisted: a non-empty includes list sends them direct, otherwise proxy.url applies.
+ * unlisted: a call with no match target is never proxied, because the empty
+ * includes list is direct.
  *
  * proxiedFetch passes the resolved proxy via Bun's fetch `proxy` option
  * (verified on bun 1.3.14). Node's fetch ignores that option, so the Node
@@ -127,11 +129,8 @@ export function resolveProxyUrl(
   if (isLoopbackUrl(targetUrl)) return undefined;
 
   if (cfg.excludes?.length && cfg.excludes.some((p) => patternHits(p, match))) return undefined;
-  if (cfg.includes?.length) {
-    return cfg.includes.some((p) => patternHits(p, match)) ? globalProxyUrl() : undefined;
-  }
-
-  return globalProxyUrl();
+  if (!cfg.includes?.length || !match) return undefined;
+  return cfg.includes.some((p) => patternHits(p, match)) ? globalProxyUrl() : undefined;
 }
 
 /**

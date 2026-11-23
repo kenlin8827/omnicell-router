@@ -49,6 +49,35 @@ other clients), and it can be stopped while `mode: mihomo` stays configured.
 > console's Start/Stop buttons persist it, and an absent value reproduces the
 > old rule exactly, so existing configs need no migration.
 
+> **Amendment — `proxy.includes` is an allowlist; no rule means no proxy.**
+> Earlier revisions treated an empty includes list as "proxy everything", so
+> turning the master switch on with a URL (or a mihomo core) routed every
+> upstream call through the proxy until the operator named an exception. That is
+> the wrong default for a gateway: it silently changes where credentials travel
+> for traffic nobody asked to proxy, and "I configured no rules" reads as "no
+> proxying" to every operator who hit it. `resolveProxyUrl` now returns direct
+> when the list is empty — `proxy.enabled` alone never routes traffic — and a
+> call with no `{ provider, model }` match target is always direct. Excludes
+> were already direct-forcing and remain first. The console renders the state
+> instead of leaving it implicit (an "all direct" pill on the proxy-patterns
+> page), and the field labels/comments say allowlist. Host-scoped
+> `forwardProxy.rules` are unaffected: `outboundProxyUrl()` has no list gate
+> (ADR-0018 §4), so a `{ egress: proxy }` row still proxies exactly the hosts it
+> names. An install that relied on proxy-everything adds `*` to includes — or a
+> provider-level row per provider — and is otherwise left on direct.
+>
+> **Infra calls are direct, and `*` does not change that.** The allowlist is
+> keyed by `{ provider, model }`, so a call with no such match target can never
+> satisfy a rule. Catalog sync (models.dev / OpenRouter), provider logo fetch and
+> the update check therefore always go direct, whatever includes says — this is
+> the consequence of naming models, not a second gate. On a network where those
+> hosts are only reachable through the proxy, that is a visible failure (the
+> catalog/logo sync reports the transport error) rather than a silent reroute of
+> credentialed inference traffic, which is the trade this amendment chooses.
+> The connectivity probe is NOT in this class: it carries `{ provider, model }`,
+> so it is gated by the allowlist exactly like real inference and a `*` row sends
+> it through the proxy.
+
 ### 2. The sidecar is generated config plus a loopback controller
 
 The gateway writes a mihomo config under `<env>/mihomo/` (`mixed-port`,
@@ -199,7 +228,7 @@ set — that shape predates `mode` and still asks for the core.
   start, so editing it mid-run would silently desync the console from the
   process); the card says so and the operator stops the core to change them.
   The proxy page has TWO nav levels, never two tab strips in a row: the page's
-  own tabs are `Proxy settings` (enable switch, manual URL, include/exclude lists)
+  own tabs are `Proxy settings` (enable switch, manual URL, allowlist + exclude lists)
   and `Clash core`, and the six Clash sections (general, subscriptions,
   nodes, rules, connectivity, logs) are a vertical menu on the left of that second
   scope — a section switch is navigation, so it reads as a menu, not as a
@@ -373,9 +402,9 @@ set — that shape predates `mode` and still asks for the core.
   proxy-patterns page offers a multi-select quick-add dialog of provider-level
   patterns derived from the LIVE connected provider ids (`<provider>/*`). The
   dialog only APPENDS the ticked rows — it never rewrites rules the operator
-  typed. Nothing is seeded: an empty includes list keeps the proxy-all
-  default, and the console never invents vendor names no configured provider
-  carries. The console
+  typed. Nothing is seeded: an empty includes list proxies nothing (see the
+  allowlist amendment below), and the console never invents vendor names no
+  configured provider carries. The console
   (Mihomo → basic settings) puts the URL behind a button that opens a dialog
   with the address and a copy action. The address is composed by the gateway
   from the request's own Host header plus the gateway port (`pacUrlFor`), never

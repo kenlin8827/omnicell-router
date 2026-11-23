@@ -26,8 +26,9 @@ questions in overlapping vocabularies.
    global flag.
 3. `proxy.includes` / `proxy.excludes` — provider/model-scoped lists that the
    forward proxy reached into with `{ model: host }`, i.e. a hostname smuggled
-   through a provider-model matcher. `includes` non-empty therefore silently
-   forced transit traffic to DIRECT.
+   through a provider-model matcher. Any `includes` evaluation therefore
+   silently forced transit traffic to DIRECT — until Revision 4 replaced the
+   whole mechanism with host-scoped rows.
 
 **Question B — is this connection intercepted at all?**
 4. `bypassHosts` (deny) and `mitmHosts` (allow) — two lists on the SAME axis,
@@ -572,8 +573,9 @@ bypass list even when its egress was "via proxy".
   provider, bare model id, substring), not hosts; a shared `match` field name
   would invite confusion. They also have no third representation fighting them,
   which is what forced this ADR. If that surface ever needs the same treatment it
-  gets its own ADR — including the known wart that a non-empty `includes` sends
-  unlisted callers (catalog sync, logo fetch, probes) direct.
+  gets its own ADR — including the wart that the include list is a MODEL
+  allowlist, so an unlisted caller (catalog sync, logo fetch, probes) is always
+  direct and an empty list proxies nothing (ADR-0022 amendment).
 - **CIDR / IP-range matching.** `globMatch` is a string glob; `10.0.0.0/8` does
   not mean anything. IPv4/IPv6 literals match as plain strings.
 - **Port-scoped rules.** Rules match the bare hostname.

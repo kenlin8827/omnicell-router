@@ -549,7 +549,8 @@ export interface MihomoConfig {
 /**
  * Outbound proxy for upstream calls (model providers, Layer2 decision layer, catalog sync).
  * Resolution order: loopback targets are NEVER proxied → excludes (force direct)
- * → includes (non-empty: ONLY matches go through proxy) → the effective endpoint → direct.
+ * → includes (allowlist: an EMPTY list means nothing is proxied) → the effective
+ * endpoint → direct.
  *
  * The effective endpoint is `proxy.url` in `manual` mode and
  * `http://127.0.0.1:<mihomo.mixedPort>` in `mihomo` mode (ADR-0022).
@@ -561,13 +562,20 @@ export interface MihomoConfig {
  *   - `claude-*` / `claude` → bare model-id match (wildcard / substring)
  * If both lists are set, excludes are evaluated first (matched = force direct),
  * then includes gate what remains.
- * With no explicit proxy resolved, Bun still honors HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
+ *
+ * Nothing is configured until a model is named: `enabled: true` with an empty
+ * `includes` list sends every upstream call DIRECT (ADR-0022, amendment
+ * 2026-12). A call with no `{ provider, model }` match target (catalog sync,
+ * logo fetch, update check) is ALWAYS direct — `*` does not reach it either;
+ * the connectivity probe DOES carry a match target and is gated normally.
+ * Host-scoped `forwardProxy.rules` rows are a different vocabulary and use
+ * `outboundProxyUrl()`, which has no list gate (ADR-0018 §4).
  */
 export interface ProxyConfig {
-  enabled?: boolean; // master switch; default false (opt-in) — proxying only when explicitly true
+  enabled?: boolean; // master switch; default false — arms the allowlist, never routes by itself
   mode?: ProxyMode; // default 'manual' — pre-existing files keep proxy.url
   url?: string; // manual-mode proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun and Node, incl. CONNECT); empty = direct
-  includes?: string[]; // non-empty: ONLY matching models/providers go through proxy
+  includes?: string[]; // allowlist: ONLY matching models/providers go through proxy; empty = all direct
   excludes?: string[]; // matching models/providers force direct (evaluated before includes)
   mihomo?: MihomoConfig;
 }

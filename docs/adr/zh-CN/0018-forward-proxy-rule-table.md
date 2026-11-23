@@ -18,7 +18,7 @@
 **问题 A——这个主机的字节往哪走？**
 1. `forwardProxy.viaOutboundProxy`——一个全局布尔，管所有非例外主机。
 2. `forwardProxy.bypassHosts[].viaProxy`——逐条目的旗标，但只对「同时被排除接管」的主机可达。被接管（MITM）的主机根本没法单独指定出口：`transitProxyFor(host, port, force)` 在所有 MITM 腿上拿到的都是 `force === undefined`，只能跟随全局开关。
-3. `proxy.includes` / `proxy.excludes`——provider/model 级列表，前向代理却用 `{ model: host }` 伸手进去，等于把主机名塞进 provider-model 匹配器。于是 `includes` 一旦非空，转发流量会被静默改成直连。
+3. `proxy.includes` / `proxy.excludes`——provider/model 级列表，前向代理却用 `{ model: host }` 伸手进去，等于把主机名塞进 provider-model 匹配器。因此任何一次 `includes` 求值都会把转发流量静默改成直连——直到修订 4 用按主机生效的规则行整体取代了这套机制。
 
 **问题 B——这条连接到底要不要被接管？**
 4. `bypassHosts`（拒绝）与 `mitmHosts`（允许）——**同一个轴**上的两条列表，带一个空列表哨兵（「留空 = 除例外外全接管」）和固定的 `拒绝 > 允许 > 默认` 优先级。
@@ -255,7 +255,7 @@ forwardProxy:
 ## 非目标
 
 - **给接管轴再开一张表。** §1 已否决——一个主机读两遍，还把默认值升格成机制。
-- **把 `proxy.includes` / `proxy.excludes` 也改成第三张表。** 那两张表匹配的是 `provider/modelId`（一个字符串三种解释：裸 provider、裸 model id、子串），不是主机；共用 `match` 字段名只会制造混淆。它们也没有「第三套表征互相打架」的问题，而那正是本 ADR 的动因。若那个表面将来需要同样处理，它该有独立 ADR——包括「`includes` 非空时未列出的调用方（catalog 同步、logo 拉取、探活）静默走直连」这个已知 wart。
+- **把 `proxy.includes` / `proxy.excludes` 也改成第三张表。** 那两张表匹配的是 `provider/modelId`（一个字符串三种解释：裸 provider、裸 model id、子串），不是主机；共用 `match` 字段名只会制造混淆。它们也没有「第三套表征互相打架」的问题，而那正是本 ADR 的动因。若那个表面将来需要同样处理，它该有独立 ADR——包括「include 列表是**模型**白名单，所以未列出的调用方（catalog 同步、logo 拉取、探活）永远直连，空列表则完全不走代理」（ADR-0022 修订）这个已知特性。
 - **CIDR / IP 段匹配。** `globMatch` 是字符串 glob，`10.0.0.0/8` 没有意义。IPv4/IPv6 字面量按普通字符串匹配。
 - **端口级规则。** 规则只匹配裸主机名。
 - **覆盖 loopback。** 任何规则都不能代理、拒绝或接管 loopback 目标。
