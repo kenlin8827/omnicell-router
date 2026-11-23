@@ -1,5 +1,5 @@
 import type { ReasoningEffort } from '../types/router.js';
-import type { ForwardProxyRule, InterceptPosture } from './types.js';
+import type { ForwardProxyRule, InterceptPosture, MihomoCustomRule } from './types.js';
 
 /**
  * Single source of truth for magic defaults that previously lived as
@@ -204,6 +204,52 @@ export const MIHOMO_GROUP_TOLERANCE_MAX_MS = 5000;
  * reachable everywhere).
  */
 export const DEFAULT_MIHOMO_TEST_URL = 'https://www.gstatic.com/generate_204';
+
+/**
+ * Baseline direct rules shipped with the generated Clash config (ADR-0022):
+ * loopback, RFC1918, CGNAT, link-local and the IPv6 ULA / link-local ranges
+ * must never enter the tunnel. They are the only direct defaults the gateway
+ * can guarantee without a geo database — `GEOIP`/`GEOSITE` rows need downloaded
+ * data files and are offered as an explicit console preset instead.
+ *
+ * Seeded into `proxy.mihomo.rules` only while that key is absent. Once the
+ * operator touches the list (including deleting every row) the saved list is
+ * authoritative and the defaults never come back on their own.
+ */
+export const MIHOMO_LAN_DIRECT_RULES: MihomoCustomRule[] = [
+  { type: 'IP-CIDR', payload: '127.0.0.0/8', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR', payload: '10.0.0.0/8', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR', payload: '172.16.0.0/12', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR', payload: '192.168.0.0/16', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR', payload: '169.254.0.0/16', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR', payload: '100.64.0.0/10', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR6', payload: '::1/128', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR6', payload: 'fc00::/7', target: 'DIRECT', source: 'default' },
+  { type: 'IP-CIDR6', payload: 'fe80::/10', target: 'DIRECT', source: 'default' },
+];
+
+/**
+ * One-click "CN direct" preset, inserted only when the operator asks for it
+ * (ADR-0022). Deliberately NOT a default: the core's rules apply to EVERY
+ * client of the mixed port, including forward-proxy rows whose `egress` is
+ * `proxy`, so a blanket domestic-bypass rule would silently leak traffic the
+ * operator explicitly routed through the exit.
+ *
+ * Both rows need the geo databases; the download is an explicit console action
+ * and the core refuses to start with these rows before the files exist.
+ */
+export const MIHOMO_CN_DIRECT_RULES: MihomoCustomRule[] = [
+  { type: 'GEOSITE', payload: 'cn', target: 'DIRECT', source: 'preset' },
+  { type: 'GEOIP', payload: 'CN', target: 'DIRECT', source: 'preset' },
+];
+
+/**
+ * Age at which the console marks the installed geo databases stale and
+ * suggests a re-sync (ADR-0022). Advisory only: nothing refetches on its own
+ * and a core with older data still starts — the operator's sync is the only
+ * thing that moves the files.
+ */
+export const MIHOMO_GEO_STALE_DAYS = 30;
 
 /**
  * TCP reachability probe budget for the console's add-node dialog (ms). This

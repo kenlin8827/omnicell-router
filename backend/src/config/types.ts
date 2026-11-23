@@ -426,15 +426,19 @@ export interface MihomoManualNode {
  * `controllerPort`. The controller secret and subscription URLs are
  * operator secrets: redacted in env archives, never written to logs.
  */
-/** Rule kinds the generated config can carry WITHOUT external data — every
- *  entry needs a single payload and no geo database or remote rule set, so an
- *  operator-authored rule can never fail silently at load time. */
+/** Rule kinds the generated config can carry. Everything except `GEOIP` /
+ *  `GEOSITE` is data-free — one payload, no database. The geo types are
+ *  evaluated from the core's geo files (downloaded through the console, never
+ *  at boot); a geo-rule config without those files is refused before the core
+ *  parses it. `RULE-SET` stays out: it fetches a remote document at load. */
 export type MihomoRuleType =
   | 'DOMAIN'
   | 'DOMAIN-SUFFIX'
   | 'DOMAIN-KEYWORD'
   | 'IP-CIDR'
   | 'IP-CIDR6'
+  | 'GEOIP'
+  | 'GEOSITE'
   | 'DST-PORT'
   | 'SRC-PORT'
   | 'PROCESS-NAME'
@@ -528,7 +532,8 @@ export interface MihomoConfig {
    * Operator-authored rules, matched in order BEFORE the final `MATCH,<group>`.
    * They are the only rule source the console accepts: a subscription's own
    * `rules:`/`proxy-groups:` stay out (ADR-0022), because importing them means
-   * importing a second, conflicting set of groups.
+   * importing a second, conflicting set of groups. Absent = the shipped LAN
+   * direct baseline is seeded; an explicit list (even empty) is authoritative.
    */
   rules?: MihomoCustomRule[];
   /** group name → node name. Restored via the controller after start. */

@@ -60,7 +60,42 @@ spawns `mihomo -d <dir> -f <config>`. A pid file and an `owner` marker
 (`spawned` / `adopted`) record who started it. Explicit stop kills a local
 listener. Switching away from mihomo mode no longer stops anything — the run
 policy (`autoStart`) owns that; when it does stop, it stops only a process this
-gateway spawned.
+gateway spawned. Boot reconciles once, unconditionally, against that same
+policy — the process exists or it does not, independent of which mode is
+configured.
+
+> **Amendment — the spawned core is a CHILD of this gateway.** The core is
+> infrastructure the gateway started, so it is bound to the gateway's lifetime,
+> not the other way round:
+>
+> - A core this gateway spawned is killed when the gateway exits, including a
+>   console restart (the restart supervisor is a surviving process; the child is
+>   not). The teardown runs in the synchronous `process.on('exit')` hook through
+>   `stopSpawnedMihomoSync`, which only ever knows a pid this process spawned or
+>   took ownership of — an operator's own mihomo (`adopted`) has no entry and is
+>   never touched. A kill that reports success also removes the markers naming
+>   that pid, so the state directory never claims a core that no longer exists.
+> - A start that fails at any stage (spawn error, immediate exit, not ready,
+>   bind refusal) reaps the process it just spawned and clears the markers that
+>   name it — a kill that failed keeps the markers, so the next start's self-heal
+>   can still find the survivor. When the core's own output names the refusal
+>   (`bind:` / `address already in use`), the failure is classified `port-in-use`
+>   with the port, distinct from `port-collision` (the configured mixed and
+>   controller ports being equal): one remedy is "close the other program", the
+>   other is "change the numbers".
+> - Adoption takes ownership deliberately: markers written by a previous
+>   gateway (`spawned` + a live pid) are treated as an orphan of this gateway
+>   shape and are killed on exit from then on. A core the operator started
+>   (`adopted`, no markers) is left running across every gateway lifecycle; a
+>   `spawned` marker whose pid is already dead is stale and is rewritten to
+>   `adopted`, because the live core behind the controller is not the one it
+>   recorded.
+> - A recorded pid that is alive but holds neither the mixed nor the controller
+>   port failed to bind; it answers nothing while making every later start
+>   collide, so it is reaped before a replacement spawns.
+> - A hard-killed gateway (taskkill, power loss) runs no handler; the survivor
+>   is adopted on the next boot under the rules above — reaped if it is deaf,
+>   owned and later killed if it is healthy.
 
 Binary lookup is `proxy.mihomo.binaryPath`, then `<ocrHome>/bin/mihomo`,
 then `PATH`. Download from the MetaCubeX/mihomo GitHub releases is an
@@ -88,6 +123,19 @@ or an MB count when the host sends no `Content-Length`), then exactly one
 GitHub API with the shared `GITHUB_TOKEN` header and falls back to the
 release-page redirect tag when the anonymous hourly cap answers 403/429,
 so a binary download no longer depends on API quota.
+
+The core's own output is not discarded. Its stdout/stderr are piped into a
+bounded, memory-only ring (500 lines, oldest dropped first) that the console's
+logs section polls through `GET` / `DELETE /api/admin/proxy/mihomo/logs`, and
+the gateway appends its own `core process started` / `exited` / `spawn error`
+markers to the same ring so a restart stays legible even while the pane still
+holds the previous process's last words. The ring is process-lifecycle
+evidence, not a metrics stream: an adopted core was not spawned here and
+contributes nothing, and the ring survives a crashed core on purpose — the
+lines right before an exit are the diagnosis the controller cannot give. The
+core's `log-level` stays `warning`, and neither the controller secret nor a
+subscription URL is among the lines it prints; the gateway strips ANSI colour
+codes and joins partial lines before storing.
 
 ### 3. Secrets stay out of logs and redacted archives
 
@@ -124,7 +172,7 @@ set — that shape predates `mode` and still asks for the core.
   install therefore never opens on the core tab reporting a core it was never
   asked to run.
 - The admin surface is `/api/admin/proxy/mihomo/*` and the Proxy page's
-  five Mihomo sections (general, subscriptions, nodes, rules, connectivity).
+  six Mihomo sections (general, subscriptions, nodes, rules, connectivity, logs).
   Controller-backed actions (node select/test, subscription refresh) stay
   clickable; a down core
   answers 409 `not-running`, which the console renders as the localized
@@ -132,7 +180,7 @@ set — that shape predates `mode` and still asks for the core.
   (install / start), never as the raw transport string. An unreachable
   controller is that same `not-running` case, not a separate transport error.
   The same rule covers every core/install failure code (`disabled`,
-  `binary-missing`, `port-collision`, `spawn-failed`, `not-ready`,
+  `binary-missing`, `port-collision`, `port-in-use`, `spawn-failed`, `not-ready`,
   `spawn-exited`, `kill-failed`, `pid-unknown`, `unauthorized`,
   `reload-failed`, download codes): the
   backend message stays an English diagnostic for logs, the console renders
@@ -144,10 +192,10 @@ set — that shape predates `mode` and still asks for the core.
   process); the card says so and the operator stops the core to change them.
   The proxy page has TWO nav levels, never two tab strips in a row: the page's
   own tabs are `Proxy settings` (enable switch, manual URL, include/exclude lists)
-  and `Clash core`, and the five Clash sections (general, subscriptions,
-  nodes, rules, connectivity) are a vertical menu on the left of that second
+  and `Clash core`, and the six Clash sections (general, subscriptions,
+  nodes, rules, connectivity, logs) are a vertical menu on the left of that second
   scope — a section switch is navigation, so it reads as a menu, not as a
-  second tab row stacked under the first. The rail hugs its five rows (it
+  second tab row stacked under the first. The rail hugs its six rows (it
   never stretches
   to the page bottom) and the section card fills the remaining page height and
   scrolls internally, so the document itself never scrolls. In the general
@@ -239,7 +287,12 @@ set — that shape predates `mode` and still asks for the core.
   A failed delay test is not a measurement: mihomo reports it as `0` (history
   entry, single test, or group map), and the client layer maps `0` to "no
   measurement" so the console renders `—` rather than a misleading `0 ms`;
-  batch tests also clear rows the response did not measure.
+  batch tests also clear rows the response did not measure. A whole-group batch
+  answers 504 (`get delay: all proxies timeout`) when no member succeeded, and
+  older builds answer 408 for the same failure; the client normalizes both to
+  one stable `timeout` code, so the console shows its localized timeout message
+  and settles those rows as timed out instead of surfacing a raw controller
+  status as an operation failure.
   A delay test is scoped by where the name lives. mihomo resolves
   `/proxies/{name}/delay` only through its own proxy map — the generated
   `proxies:` block, the groups, the built-ins — so a proxy-provider
@@ -392,11 +445,12 @@ set — that shape predates `mode` and still asks for the core.
   is an ORDERED list (`{ type, payload, target }`) rendered ahead of the final
   `MATCH,<group>`, first match winning. Targets stay symbolic — `PROXY` resolves
   to the configured group name at render time, so renaming the group cannot
-  silently point a rule at a dead name. The type whitelist is deliberate and
-  narrow: `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`,
-  `DST-PORT`, `SRC-PORT`, `PROCESS-NAME`, `PROCESS-PATH` — the types the core can
-  evaluate without a geo database or an external rule-set fetch. `GEOIP`,
-  `GEOSITE` and `RULE-SET` are rejected on load rather than shipped, because a
+  silently point a rule at a dead name. The type whitelist is narrow on
+  purpose: `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`,
+  `GEOIP`, `GEOSITE`, `DST-PORT`, `SRC-PORT`, `PROCESS-NAME`, `PROCESS-PATH`.
+  `GEOIP` / `GEOSITE` require the explicitly downloaded geo databases (see the
+  amendment below) and are refused at save and at start without them;
+  `RULE-SET` (a remote fetch at load) and logical rules are rejected, because a
   rule that cannot be evaluated either fails the config or falls through
   silently, and a silent fall-through changes egress. Payloads carrying a list
   separator are dropped for the same reason. The editor (`PUT
@@ -407,8 +461,8 @@ set — that shape predates `mode` and still asks for the core.
   /api/admin/proxy/mihomo/rules/import` (`source: 'subscription' | 'text'`).
   The import is a DRAFT operation: it parses the profile, flattens every target
   that names one of the subscription's own `proxy-groups` to `PROXY`, skips what
-  this gateway cannot evaluate (`GEOIP`/`GEOSITE`/`RULE-SET`/logical rules) with
-  a count, dedupes, and returns rows the console merges into the
+  the core cannot evaluate (`RULE-SET`, logical rules) with a count, dedupes,
+  and returns rows the console merges into the
   editable list — nothing is written and nothing reaches the core until the
   operator saves. A live binding was rejected: an airport that edits its profile
   would silently change egress while the console screen showed an unrelated
@@ -424,7 +478,7 @@ set — that shape predates `mode` and still asks for the core.
   while the core had already accepted the same URL). The network is only a
   fallback, and the console names the source it used instead of implying one.
   Every row carries a `source` provenance label (`manual`, a subscription name,
-  `paste`). It is metadata only — never rendered into the YAML, never evaluated —
+  `paste`, and the built-in labels `default` / `preset`). It is metadata only — never rendered into the YAML, never evaluated —
   and it exists for one operational job: grouping rules that arrived from the same
   place so they can be filtered and removed together when a subscription is
   dropped. Import is two-phase: the parsed list appears as a tickable, filterable
@@ -435,6 +489,83 @@ set — that shape predates `mode` and still asks for the core.
   inside their own bounded box while the save bar stays pinned to the card bottom,
   and the dialog body is never itself scrollable, because nested scroll areas hide
   rows and hand the wheel to the wrong container.
+
+> **Amendment — the LAN baseline is seeded, the CN bypass is an opt-in preset,
+> and geo data is an explicit install.** The rule table does something useful
+> without the operator writing it, and no rule ever depends on a file that is
+> not on disk:
+>
+> - `proxy.mihomo.rules` absent ⇒ the generated config carries the LAN
+>   baseline (`MIHOMO_LAN_DIRECT_RULES`, `source: 'default'`): loopback,
+>   RFC1918, CGNAT, link-local and the IPv6 ULA / link-local ranges → `DIRECT`.
+>   Once the key exists — including an explicitly empty list — the saved list is
+>   authoritative and the baseline never reseeds, so a default row the operator
+>   deleted stays deleted. The console's "Default rules" dialog re-adds the rows
+>   the operator ticks (deduped, draft-only); that explicit action is the only
+>   way they come back.
+> - The CN bypass (`GEOIP,CN` + `GEOSITE,cn` → `DIRECT`,
+>   `MIHOMO_CN_DIRECT_RULES`, `source: 'preset'`) is a ONE-CLICK PRESET, never a
+>   default. Core rules apply to every client of the mixed port — including
+>   ADR-0018 forward-proxy rows whose `egress` is `proxy` — so a blanket
+>   domestic-bypass default would silently send a CN vendor host the operator
+>   deliberately routed through the exit out direct. The preset dialog states
+>   that consequence instead of hiding it.
+> - `GEOIP` / `GEOSITE` are in the type whitelist, but the geo databases
+>   (`geoip.metadb`, `GeoSite.dat`, tens of MB) are an EXPLICIT download into
+>   the core's work directory (`POST /api/admin/proxy/mihomo/geo`, NDJSON
+>   progress, same MetaCubeX release host as the binary, 64 MB cap; existing
+>   non-empty files are kept, so a retry after a partial failure fetches only
+>   the missing one). mihomo downloads the files itself while parsing a config
+>   that needs them — and a failed download (offline machine, blocked GitHub
+>   host) makes the core exit fatally, taking the gateway's own outbound path
+>   with it. Both boundaries therefore refuse a geo-rule list while the files
+>   are missing: the rules save answers 400 `geo-missing` BEFORE persisting
+>   (persist-then-fail would leave config and process disagreeing at every
+>   later boot), and the sidecar start returns the `geo-missing` code before
+>   spawning. The generated config leaves `geo-auto-update` off; installed
+>   files are used offline and never re-fetched. The preset dialog checks
+>   `GET /api/admin/proxy/mihomo/geo` and downloads before the rows land in the
+>   draft, so the operator sees the cost as a progress bar, not a failed save.
+> - The importer treats `GEOIP` / `GEOSITE` like any whitelisted type (payload
+>   casing is normalized at render: uppercase for GEOIP, lowercase for
+>   GEOSITE); `RULE-SET` (remote fetch at load) and logical rules stay out of
+>   both the whitelist and the importer, counted as skipped.
+> - The two presets are SERVED by the backend
+>   (`GET /api/admin/proxy/mihomo/rules/presets`) from the same declaration the
+>   fresh-config seed reads. A console-side copy would be a drift twin of the
+>   seeded rows.
+
+> **Amendment — the connectivity check runs on TWO legs, not one.** The delay
+> endpoint answers "can the current node carry this URL"; it cannot answer "is
+> this URL reachable from this machine at all", so a failure leaves the
+> operator unable to tell a node/subscription fault from a local-network one.
+> `POST /api/admin/proxy/mihomo/test-url` therefore takes `mode: 'tunnel' |
+> 'machine'` (default `tunnel`, the historical behavior; any other value is a
+> 400, never a silent fallback). The machine leg answers "what would this
+> machine's own egress do with this URL": it follows the OS system proxy when
+> one is enabled (`readOsProxyEndpoint` — WinINET `ProxyEnable`+`ProxyServer`,
+> the active macOS service, or GNOME manual mode), honouring that proxy's
+> bypass list (`osProxyBypasses`: loopback always direct, `<local>`, WinINET
+> wildcards, CIDR, suffix domains, exact hosts), and goes raw direct when no
+> system proxy is set. It needs no running core. The transport is a raw
+> `net`/`tls` HTTP/1.1 client (origin-form direct; absolute-form or CONNECT +
+> TLS through the proxy, `Proxy-Authorization` from userinfo), chosen because
+> on this runtime BOTH `fetch` and `node:http`/`node:https` consult
+> `HTTP_PROXY` / `HTTPS_PROXY` from the environment while raw sockets consult
+> nothing (verified: a dead env proxy fails `fetch`, `fetch(url, { proxy: '' })`
+> and the node HTTP clients alike), so an HTTP client stack would answer
+> "whatever the shell env says" instead of "what the OS is configured to do".
+> Env proxies are deliberately ignored — they are a launch artefact. A PAC
+> (`AutoConfigURL`) is not followable from here and falls back to direct. The
+> response carries `via: 'direct' | 'system-proxy'` and, when proxied, the
+> `host:port` used. The console puts a two-state switch (via Clash node /
+> machine network) at the top of the connectivity tab, keys answers by (URL,
+> leg), and so switching never erases the other leg's result. There is
+> deliberately no third "through Clash's DIRECT" mode, and no operator gate:
+> the machine leg answers a question that is meaningful in every state. When
+> Clash itself holds the OS system proxy, the machine leg necessarily shares
+> the node path — the tab says so in an amber note, so the pair reads as a
+> full-machine-path cross-check rather than a node-independent baseline.
 
 > **Amendment — the UI calls it Clash, everywhere.** An earlier revision
 > labelled the surface "Mihomo (Clash)" so both names were visible. That was
@@ -459,3 +590,45 @@ set — that shape predates `mode` and still asks for the core.
 > `config.json` comments still call the running process the Clash core. The
 > i18n keys, the `/proxy-clash` route, the `proxy.mihomo` config key and the
 > binary name did not move.
+
+> **Amendment — the Clash panel also offers the OS proxy.** Basic settings now
+> hosts "Use as the system proxy" beside the PAC link: it points the OS proxy
+> at the mixed port through the SAME ownership module the inbound card uses
+> (ADR-0018 amendment — one snapshot slot, target switch that keeps the pre-OCR
+> payload, restore returns the pre-OCR settings). The action is immediate and
+> deliberately outside this tab's config save; enabling is gated on a running
+> core, and the card warns when the core is stopped while it owns the OS proxy.
+> The outbound page keeps only a quiet owner line pointing here.
+
+> **Amendment — geo data syncs on the operator's word, over a leg the operator
+> chooses.** The install is explicit, so updates are too: nothing refetches the
+> databases on its own (`geo-auto-update` stays off), and an installed pair older
+> than `MIHOMO_GEO_STALE_DAYS` (30 days) reports `stale` from
+> `GET /api/admin/proxy/mihomo/geo` and carries a "sync suggested" badge in the
+> console — an advisory only, never a start-block; a core with old data still
+> starts. Basic settings now carries a Geo card (file, size, updated time, stale
+> badge, one sync button, a machine/node leg switch), so the download is no longer
+> reachable only as a side effect of the CN preset.
+>
+> `POST /api/admin/proxy/mihomo/geo` takes `leg: 'machine' | 'node'` (default
+> `machine`; any other value is a 400, never a silent fallback) and
+> `refresh: boolean`. The machine leg is the default because it is the leg that
+> can always answer: it dials the OS system proxy when one is enabled (the same
+> `readOsProxyEndpoint` + `osProxyBypasses` pair as the connectivity machine leg,
+> judged per URL so a redirect to `objects.githubusercontent.com` is decided on
+> its own host) and goes direct otherwise — it works with the core stopped. The
+> node leg dials the mixed port and therefore requires a LIVE core
+> (`getMihomoStatus`, not merely a configured controller) whenever a fetch will
+> actually happen; with it down the route answers `not-running` before any
+> download request is attempted.
+> One tradeoff is stated rather than hidden: a direct machine fetch on this
+> runtime still honours `HTTP_PROXY` / `HTTPS_PROXY` from the environment, exactly
+> like every other `fetch` in the process. The OS proxy is the definition of the
+> leg; the env is launch residue.
+>
+> Sync means REPLACE: `refresh: true` re-downloads both files even when copies
+> exist, each written to a temporary file and renamed over the old one, and a
+> failed refresh keeps the working copies — the operator's sync never trades a
+> working database for a broken one. Without `refresh`, existing non-empty files
+> are skipped; that is the mode the CN preset uses (install what is missing, never
+> re-fetch what is already there).

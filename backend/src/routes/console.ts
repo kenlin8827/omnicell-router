@@ -27,10 +27,10 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, PLUGIN_PACKAGE_MAX_BYTES, DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, DEFAULT_MIHOMO_MIXED_PORT, PLUGIN_PACKAGE_MAX_BYTES, DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { registerMihomoRoutes } from './mihomo.js';
-import { reconcileMihomoSidecar } from '../proxy/mihomo-sidecar.js';
+import { reconcileMihomoSidecar, getMihomoStatus } from '../proxy/mihomo-sidecar.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
@@ -48,7 +48,7 @@ import {
 import { listGatewayHosts, listClaimedEgress, claimEgressFor, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
 import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
-import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
+import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy, buildOverride, lanBypassHosts } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
@@ -1674,27 +1674,56 @@ export function registerConsoleRoutes(
     return reply.send(fs.createReadStream(abs));
   });
 
-  // 3A3. OS system proxy ownership for the inbound forward proxy: snapshot →
-  // point at 127.0.0.1:<port> → one-click restore (forward-proxy/system-proxy.ts).
-  app.get('/api/admin/system-proxy', async () => {
-    const fp = getRuntimeConfigRef()?.forwardProxy;
+  // 3A3. OS system proxy ownership — ONE snapshot, TWO endpoints: the inbound
+  // forward proxy (default) or the Clash core's mixed port. A target switch
+  // rewrites the OS pointer without re-reading the pre-OCR snapshot; restore
+  // always returns what the OS held before OCR first took ownership.
+  const systemProxyPayload = async (): Promise<Record<string, unknown>> => {
+    const live = getRuntimeConfigRef();
+    const fp = live?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
+    const mixedPort = live?.proxy?.mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT;
     const sys = await getSystemProxyStatus(port, osBypassHosts(fp?.rules));
-    return { status: 'ok', ...sys, proxyEnabled: Boolean(fp?.enabled) };
-  });
+    const clashBypass = lanBypassHosts(process.platform);
+    const clashRunning = (await getMihomoStatus()).running;
+    return {
+      status: 'ok',
+      ...sys,
+      proxyEnabled: Boolean(fp?.enabled),
+      forward: { port, enabled: Boolean(fp?.enabled) },
+      // The clash card names the bypass ITS target would write (LAN ranges),
+      // not the inbound one on `override` (loopback + literal direct rows).
+      clash: { mixedPort, running: clashRunning, override: buildOverride(clashBypass, process.platform) },
+    };
+  };
 
-  app.post('/api/admin/system-proxy/enable', async () => {
-    const fp = getRuntimeConfigRef()?.forwardProxy;
+  app.get('/api/admin/system-proxy', async () => systemProxyPayload());
+
+  app.post('/api/admin/system-proxy/enable', async (req, reply) => {
+    const body = (req.body ?? {}) as { target?: unknown };
+    const live = getRuntimeConfigRef();
+    if (body.target === 'clash') {
+      // Pointing the OS at a dead port is one click away from a dead network:
+      // the core must answer before it owns the OS proxy.
+      if (!(await getMihomoStatus()).running) {
+        reply.code(409);
+        return { status: 'error', code: 'not-running' };
+      }
+      const mixedPort = live?.proxy?.mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT;
+      await enableSystemProxy(mixedPort, lanBypassHosts(process.platform), 'clash');
+      return systemProxyPayload();
+    }
+    const fp = live?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await enableSystemProxy(port, osBypassHosts(fp?.rules));
-    return { status: 'ok', ...sys };
+    await enableSystemProxy(port, osBypassHosts(fp?.rules), 'forward');
+    return systemProxyPayload();
   });
 
   app.post('/api/admin/system-proxy/disable', async () => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await disableSystemProxy(port, osBypassHosts(fp?.rules));
-    return { status: 'ok', ...sys };
+    await disableSystemProxy(port, osBypassHosts(fp?.rules));
+    return systemProxyPayload();
   });
 
   // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The

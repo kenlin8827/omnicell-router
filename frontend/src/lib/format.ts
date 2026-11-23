@@ -106,6 +106,33 @@ export const formatTimestamp = (value: string | number | null | undefined): stri
 };
 
 /**
+ * Last-active clock for dense session rows, split so the caller can stack the
+ * two lines. Today returns the clock alone (`date: null`) — the session list is
+ * ordered by last active, so the head of the list is almost all today, and a
+ * bare `toLocaleTimeString()` on a three-day-old row reads as today's time.
+ * Any other day prefixes the localized date (with the year once it differs) so
+ * staleness is visible without opening the row. Non-positive / unparseable
+ * instants (the trace-reconstruction `?? 0` fallback) return null — callers
+ * render '—', never a 1970 boot time.
+ */
+export const lastActiveParts = (ms: number): { date: string | null; time: string } | null => {
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const d = new Date(ms);
+  const now = new Date();
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const sameDay =
+    d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (sameDay) return { date: null, time };
+  const date = d.toLocaleDateString(
+    undefined,
+    d.getFullYear() === now.getFullYear()
+      ? { month: '2-digit', day: '2-digit' }
+      : { year: 'numeric', month: '2-digit', day: '2-digit' }
+  );
+  return { date, time };
+};
+
+/**
  * Smart-unit latency label for stats displays: sub-second stays in ms,
  * seconds keep one decimal (7020 → "7.0s", 13526 → "13.5s"), then m s / h m.
  * Callers keep the exact raw ms in a title tooltip since the label rounds.

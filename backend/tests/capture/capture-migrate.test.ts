@@ -48,6 +48,16 @@ function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-migrate-'));
 }
 
+/** A shard date inside the recorder's retention window: an enabled recorder
+ *  sweeps on construction, so a hardcoded date would be deleted as soon as the
+ *  wall clock moved past its 7-day window. */
+function todayDir(): string {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${mm}-${dd}`;
+}
+
 function jsonl(lines: unknown[]): string {
   return lines.map(l => JSON.stringify(l)).join('\n') + '\n';
 }
@@ -577,9 +587,10 @@ test('V1ToV2Migrate repairs a pathological span sequence without dropping a line
 
 test('a migrated archive is readable by the real recorder (turn grouping, exchanges and attempts)', async () => {
   const root = tmpRoot();
+  const date = todayDir();
   const user = { role: 'user', content: 'hi' };
   const tool = { role: 'tool', content: 'ok' };
-  copyInto(root, '2026-11-13', 'sess_1.jsonl', [
+  copyInto(root, date, 'sess_1.jsonl', [
     s1({ requestId: 'req_1', exchangeId: 'exc_1', wire: wire(chatBody([user])) }),
     s1({ requestId: 'req_1', exchangeId: 'exc_1', phase: 'response', wire: wire(chatBody([user])) }),
     s1({ direction: 'upstream', requestId: 'req_1', exchangeId: 'exc_2' }),
@@ -596,7 +607,7 @@ test('a migrated archive is readable by the real recorder (turn grouping, exchan
     maxBodyBytes: 1_048_576,
   });
   try {
-    const read = await recorder.readEvents('2026-11-13', 'sess_1.jsonl', 10);
+    const read = await recorder.readEvents(date, 'sess_1.jsonl', 10);
     assert.equal(read.totalLines, 5);
     assert.equal(read.requests.length, 2); // schema-1 lines were invisible before
     assert.equal(read.totalTurns, 1);

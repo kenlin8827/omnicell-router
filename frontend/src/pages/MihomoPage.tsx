@@ -11,11 +11,11 @@
  * reverse) from whichever page loaded first.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, CheckCircle2, XCircle, Copy, ArrowDown, ArrowUp, ArrowUpDown, ArrowLeftRight, Cpu, Download, Link2, Loader2, Network, Play, Plus, RefreshCw, Rss, Save, ScrollText, SlidersHorizontal, Square, Trash2 } from 'lucide-react';
+import { Activity, CheckCircle2, XCircle, Copy, ArrowDown, ArrowUp, ArrowUpDown, ArrowLeftRight, Cpu, Database, Download, Link2, Loader2, MonitorCog, Network, Play, Plus, RefreshCw, Rss, Save, ScrollText, SlidersHorizontal, Sparkles, Square, Terminal, Trash2, Undo2 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { BrandIcon } from '../components/BrandIcons';
 import { ProviderLogo } from '../components/ProviderLogo';
-import { api, OcApiError, type MihomoGroupType, type MihomoManualNode, type MihomoManualNodeType, type MihomoNodeCatalog, type MihomoNodeSource, type MihomoProviderInfo, type MihomoProxyGroup, type MihomoProxyNode, type MihomoRoutingMode, type MihomoStatus, type MihomoRuleRow, type MihomoSubscription, type MihomoCustomRule, type MihomoRuleImportResult, type MihomoRuleTarget, type MihomoRuleType } from '../lib/api';
+import { api, OcApiError, type MihomoCoreLogLine, type MihomoGeoLeg, type MihomoGeoReport, type MihomoGroupType, type MihomoManualNode, type MihomoManualNodeType, type MihomoNodeCatalog, type MihomoNodeSource, type MihomoProviderInfo, type MihomoProxyGroup, type MihomoProxyNode, type MihomoRoutingMode, type MihomoStatus, type MihomoRuleRow, type MihomoSubscription, type MihomoCustomRule, type MihomoRuleImportResult, type MihomoRuleTarget, type MihomoRuleType, type SystemProxyStatus } from '../lib/api';
 import { DEFAULT_MIHOMO_CONTROLLER_PORT, DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_GROUP_INTERVAL_SEC, DEFAULT_MIHOMO_GROUP_TOLERANCE_MS, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_SUB_INTERVAL_SEC, DEFAULT_MIHOMO_TEST_URL, MIHOMO_GROUP_INTERVAL_MAX_SEC, MIHOMO_GROUP_INTERVAL_MIN_SEC, MIHOMO_GROUP_TOLERANCE_MAX_MS } from '../lib/defaults';
 import { fmtDur, formatTimestamp } from '../lib/format';
 import { delayColor, delayRank, pruneReadings, UNTESTED_DELAY, type DelayReading } from '../lib/delay';
@@ -31,10 +31,16 @@ import { ScrollTable } from '../components/ScrollTable';
 import { Dialog } from '../components/Dialog';
 
 type ProxyMode = 'manual' | 'mihomo';
-type Tab = 'general' | 'subscriptions' | 'nodes' | 'rules' | 'test';
+type Tab = 'general' | 'subscriptions' | 'nodes' | 'rules' | 'test' | 'logs';
 
-/** One connectivity-check outcome, keyed by the probed URL in `urlProbes`. */
-type UrlProbe = { state: 'testing' | 'ok' | 'fail'; ms?: number; node?: string; error?: string };
+/** Which leg an endpoint probe runs on: through the Clash node, or the
+ *  machine's own egress (the OS system proxy when set, direct otherwise). */
+type ProbeLeg = 'tunnel' | 'machine';
+
+/** One connectivity-check outcome, keyed by `<leg>|<url>` in `urlProbes` so
+ *  switching legs never erases the other leg's answer. `via`/`proxy` say how
+ *  the machine leg left this box: directly, or through the OS system proxy. */
+type UrlProbe = { state: 'testing' | 'ok' | 'fail'; ms?: number; node?: string; via?: 'direct' | 'system-proxy'; proxy?: string; error?: string };
 
 /** The Mihomo scope's sections, rendered as a vertical menu (a section switch
  *  is navigation, not a second tab strip under the page's own tabs). */
@@ -44,17 +50,21 @@ const SUB_TABS: { value: Tab; icon: React.ReactNode; labelKey: string }[] = [
   { value: 'nodes', icon: <Network size={15} />, labelKey: 'proxy.tabNodes' },
   { value: 'test', icon: <Activity size={15} />, labelKey: 'proxy.tabTest' },
   { value: 'rules', icon: <ScrollText size={15} />, labelKey: 'proxy.tabRules' },
+  { value: 'logs', icon: <Terminal size={15} />, labelKey: 'proxy.tabLogs' },
 ];
 
-/** Rule types the renderer can evaluate on its own (no geo data, no rule-set
- *  fetch). The backend drops anything outside this list, so the editor must not
- *  offer it either. */
+/** Rule types the renderer can evaluate. GEOIP / GEOSITE need the geo
+ *  databases the Clash panel downloads (the backend refuses to save or start a
+ *  geo-rule list without them). The backend drops anything outside this list,
+ *  so the editor must not offer it either. */
 const RULE_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'DOMAIN', label: 'DOMAIN' },
   { value: 'DOMAIN-SUFFIX', label: 'DOMAIN-SUFFIX' },
   { value: 'DOMAIN-KEYWORD', label: 'DOMAIN-KEYWORD' },
   { value: 'IP-CIDR', label: 'IP-CIDR' },
   { value: 'IP-CIDR6', label: 'IP-CIDR6' },
+  { value: 'GEOIP', label: 'GEOIP' },
+  { value: 'GEOSITE', label: 'GEOSITE' },
   { value: 'DST-PORT', label: 'DST-PORT' },
   { value: 'SRC-PORT', label: 'SRC-PORT' },
   { value: 'PROCESS-NAME', label: 'PROCESS-NAME' },
@@ -74,6 +84,8 @@ const RULE_PAYLOADS: Record<string, string> = {
   'DOMAIN-KEYWORD': 'google',
   'IP-CIDR': '192.168.0.0/16',
   'IP-CIDR6': '2001:db8::/32',
+  GEOIP: 'CN',
+  GEOSITE: 'cn',
   'DST-PORT': '443',
   'SRC-PORT': '1024-65535',
   'PROCESS-NAME': 'chrome.exe',
@@ -195,9 +207,12 @@ const ENDPOINT_LOGO_PX = 48;
 /** The answer to a reachability probe, spelled once. Every place that asks the
  *  question — a preset card or the custom endpoint row — must render the same
  *  outcome line, or the operator reads two different vocabularies for one
- *  measurement. */
-const ProbeStatus: React.FC<{ probe?: UrlProbe }> = ({ probe }) => {
+ *  measurement. `leg` picks the wording: `ms` is a round trip through the
+ *  tunnel, or the machine's own egress. */
+const ProbeStatus: React.FC<{ probe?: UrlProbe; leg: ProbeLeg }> = ({ probe, leg }) => {
   const { t } = useI18n();
+  const okKey = leg === 'machine' ? 'proxy.connMachineOk' : 'proxy.connOk';
+  const failKey = leg === 'machine' ? 'proxy.connMachineFail' : 'proxy.connFail';
   return (
     <div style={{ minHeight: 18, fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 6 }} title={probe?.error}>
       {probe?.state === 'testing' && <><Loader2 size={12} style={SPIN} /><span style={{ color: 'var(--text-dim)' }}>{t('proxy.testUrlRunning')}</span></>}
@@ -205,14 +220,20 @@ const ProbeStatus: React.FC<{ probe?: UrlProbe }> = ({ probe }) => {
         <>
           <CheckCircle2 size={13} style={{ color: 'var(--accent-emerald)' }} />
           <span style={{ color: delayColor({ state: 'measured', ms: probe.ms, at: 0 }), fontVariantNumeric: 'tabular-nums' }}>
-            {t('proxy.connOk', { ms: probe.ms ?? 0 })}
+            {t(okKey, { ms: probe.ms ?? 0 })}
           </span>
+          {leg === 'machine' && probe.proxy && (
+            <span style={{ color: 'var(--text-dim)' }}>{t('proxy.connMachineViaProxy', { proxy: probe.proxy })}</span>
+          )}
         </>
       )}
       {probe?.state === 'fail' && (
         <>
           <XCircle size={13} style={{ color: 'var(--accent-rose)' }} />
-          <span style={{ color: 'var(--accent-rose)' }}>{t('proxy.connFail', { error: probe.error ?? 'error' })}</span>
+          <span style={{ color: 'var(--accent-rose)' }}>{t(failKey, { error: probe.error ?? 'error' })}</span>
+          {leg === 'machine' && probe.proxy && (
+            <span style={{ color: 'var(--text-dim)' }}>{t('proxy.connMachineViaProxy', { proxy: probe.proxy })}</span>
+          )}
         </>
       )}
       {!probe && <span style={{ color: 'var(--text-dim)' }}>—</span>}
@@ -487,7 +508,11 @@ const CORE_ERROR_KEYS: Record<string, string> = {
   timeout: 'proxy.nodeTestTimeout',
   disabled: 'proxy.errDisabled',
   'port-collision': 'proxy.errPortCollision',
+  'port-in-use': 'proxy.errPortInUse',
   'import-failed': 'proxy.errImport',
+  'geo-missing': 'proxy.errGeoMissing',
+  'geo-download-failed': 'proxy.errGeoDownload',
+  'geo-download-too-large': 'proxy.errGeoDownload',
   'binary-missing': 'proxy.errBinaryMissing',
   'spawn-failed': 'proxy.errStart',
   'reload-failed': 'proxy.errReload',
@@ -564,10 +589,13 @@ export const MihomoPage: React.FC = () => {
   /** Last unsaved-node probe result; cleared on every field edit so a stale
    *  "reachable" never describes a different server. */
   const [nodeTest, setNodeTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'fail'; ms?: number; error?: string }>({ state: 'idle' });
-  /** Connectivity-check results keyed by URL: the check runs THROUGH the
-   *  selected proxy node, so it proves tunnel + endpoint together. Keyed (not
-   *  pass before choosing one as the configured test URL. */
+  /** Connectivity-check results keyed by `<leg>|<url>`: each leg keeps its own
+   *  answer, so switching between the tunnel and direct baselines never
+   *  overwrites the other side of the comparison. */
   const [urlProbes, setUrlProbes] = useState<Record<string, UrlProbe>>({});
+  /** Which leg the probes run on. Default `tunnel` keeps the historical
+   *  behavior; `direct` is the comparison baseline (no core required). */
+  const [probeLeg, setProbeLeg] = useState<ProbeLeg>('tunnel');
   const [urlBatch, setUrlBatch] = useState<{ running: boolean; done: number; total: number }>({ running: false, done: 0, total: 0 });
   /** Ad-hoc endpoint typed on the connectivity section. It is a probe target,
    *  not a second copy of the config field: only "use as test URL" writes. */
@@ -633,6 +661,16 @@ export const MihomoPage: React.FC = () => {
     }
   }, []);
 
+  /** A failed geo read keeps the last report on screen: a transient error must
+   *  not turn installed files into "not downloaded". */
+  const refreshGeo = useCallback(async () => {
+    try {
+      setGeo(await api.getMihomoGeo());
+    } catch {
+      /* keep the last known report */
+    }
+  }, []);
+
   useEffect(() => {
     api.getConfig().then(cfg => {
       const next = (cfg.proxy || {}) as ProxyShape;
@@ -650,6 +688,89 @@ export const MihomoPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [proxy?.mode, refreshStatus]);
 
+  /** OS system-proxy ownership. ONE snapshot slot shared with the inbound
+   *  card on Proxy access: at most one endpoint owns the OS proxy, and restore
+   *  always returns the pre-OCR settings. Polled for the whole page, not per
+   *  tab: the header pill renders the ownership on every tab, and a stale
+   *  pointer (core gone, OS still aimed at it) is a machine-wide outage that
+   *  must read live wherever the operator is — the test tab renders its
+   *  "machine leg shares the node path" note from this same state. */
+  const [sys, setSys] = useState<SystemProxyStatus | null>(null);
+  const [sysBusy, setSysBusy] = useState(false);
+  const refreshSys = useCallback(async () => {
+    try {
+      setSys(await api.getSystemProxy());
+    } catch {
+      // Keep the last known state: a probe blip must not blank the card.
+    }
+  }, []);
+  useEffect(() => {
+    void refreshSys();
+    const timer = window.setInterval(() => { void refreshSys(); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshSys]);
+
+  const enableClashSystemProxy = async () => {
+    setSysBusy(true);
+    try {
+      setSys(await api.enableSystemProxy('clash'));
+    } catch (err: any) {
+      const msg = err?.message === 'not-running' ? t('proxy.notRunning') : err?.message || String(err);
+      toast.error(t('proxyLog.sysEnableBtn') + ': ' + msg);
+    } finally {
+      setSysBusy(false);
+    }
+  };
+  const restoreSystemProxy = async () => {
+    setSysBusy(true);
+    try {
+      setSys(await api.disableSystemProxy());
+    } catch (err: any) {
+      toast.error(t('proxyLog.sysRestoreBarBtn') + ': ' + (err?.message || err));
+    } finally {
+      setSysBusy(false);
+    }
+  };
+  /** State × owner, never a generic "on": the other endpoint may be the owner. */
+  const sysBadgeKey = ((): string => {
+    if (!sys) return 'proxyLog.sysStateOff';
+    if (sys.state === 'on') return sys.owner === 'clash' ? 'proxyLog.sysStateOnClash' : 'proxyLog.sysStateOn';
+    const keys: Record<Exclude<SystemProxyStatus['state'], 'on'>, string> = {
+      off: 'proxyLog.sysStateOff',
+      external: 'proxyLog.sysStateExternal',
+      stale: 'proxyLog.sysStateStale',
+      unsupported: 'proxyLog.sysStateUnsupported',
+    };
+    return keys[sys.state];
+  })();
+  const sysOwnedByClash = sys?.owner === 'clash' && (sys.state === 'on' || sys.state === 'stale');
+  /** Header pill text: the short state token under the "system proxy" label.
+   *  The slot has two possible owners, so an ON state names which one. */
+  const sysPillText = ((): string => {
+    if (!sys) return '';
+    if (sys.state === 'on') return t(sys.owner === 'clash' ? 'proxyLog.sysPillClash' : 'proxyLog.sysPillOcr');
+    if (sys.state === 'external') return t('proxyLog.sysPillExternal');
+    if (sys.state === 'stale') return t('proxyLog.sysPillStale');
+    return t('proxyLog.sysPillOff');
+  })();
+  const sysPillDot = sys?.state === 'on'
+    ? 'var(--accent-emerald)'
+    : sys?.state === 'stale' || sys?.state === 'external' ? 'var(--accent-amber)' : 'var(--text-dim)';
+
+  /** The core's captured output. The ring outlives a crashed core, so reading
+   *  it needs no live controller; polling runs only while this section is open. */
+  const [coreLogs, setCoreLogs] = useState<MihomoCoreLogLine[]>([]);
+  const logScrollRef = useRef<HTMLDivElement | null>(null);
+  const logFollowRef = useRef(true);
+  const refreshLogs = useCallback(async () => {
+    try {
+      setCoreLogs(await api.getMihomoLogs());
+    } catch {
+      // A failed poll keeps the previous lines: a gateway restart must not
+      // blank the pane that exists to explain failures.
+    }
+  }, []);
+
   useEffect(() => {
     if (tab === 'subscriptions') void refreshSubs().catch(console.error);
     if (tab === 'nodes') {
@@ -657,7 +778,24 @@ export const MihomoPage: React.FC = () => {
       void ensureNodeCatalog();
     }
     if (tab === 'rules') void refreshRules().catch(toastFailure);
-  }, [tab, refreshSubs, refreshNodes, refreshRules]);
+    if (tab === 'general') void refreshGeo();
+  }, [tab, refreshSubs, refreshNodes, refreshRules, refreshGeo]);
+
+  // Two seconds is a diagnostic cadence, not a live tail: the core logs at
+  // warning level, so there is rarely more than a line per event.
+  useEffect(() => {
+    if (tab !== 'logs') return;
+    void refreshLogs();
+    const timer = window.setInterval(() => { void refreshLogs(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [tab, refreshLogs]);
+
+  // Follow the tail unless the operator scrolled up to read an earlier line.
+  useEffect(() => {
+    if (!logFollowRef.current) return;
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [coreLogs]);
 
   const mihomo = proxy?.mihomo ?? {};
   const mode: ProxyMode = proxy?.mode === 'mihomo' ? 'mihomo' : 'manual';
@@ -678,6 +816,14 @@ export const MihomoPage: React.FC = () => {
     setTab('general');
     requestAnimationFrame(() => {
       document.getElementById('mihomo-core-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  /** Land on the OS system-proxy card: the general tab's last card. */
+  const showSystemProxyCard = () => {
+    setTab('general');
+    requestAnimationFrame(() => {
+      document.getElementById('mihomo-system-proxy-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   };
 
@@ -704,6 +850,15 @@ export const MihomoPage: React.FC = () => {
   const toastResultFailure = (result: { error?: string | null; code?: string | null }) => {
     const key = result.code ? CORE_ERROR_KEYS[result.code] : undefined;
     toast.error(key ? t(key) : (result.error || t('proxy.notRunning')));
+  };
+
+  const clearCoreLogs = async () => {
+    try {
+      await api.clearMihomoLogs();
+      setCoreLogs([]);
+    } catch (err) {
+      toastFailure(err);
+    }
   };
 
   /** Where a client should fetch the PAC from: this gateway's own origin, so a
@@ -824,6 +979,23 @@ export const MihomoPage: React.FC = () => {
    *  parsing is cheap, but moving traffic is not — nothing lands in the draft
    *  until the list on screen has been agreed to. */
   const [importPicked, setImportPicked] = useState<Set<number>>(new Set());
+  /** "Default rules" dialog: LAN baseline + the opt-in CN direct preset. The
+   *  rows come from the backend (one declaration, shared with the ones seeded
+   *  into a fresh config) — the console never hardcodes a payload. */
+  const [presetOpen, setPresetOpen] = useState(false);
+  const [presetRows, setPresetRows] = useState<{ defaults: MihomoCustomRule[]; cn: MihomoCustomRule[] } | null>(null);
+  const [presetPickDefaults, setPresetPickDefaults] = useState(true);
+  const [presetPickCn, setPresetPickCn] = useState(false);
+  const [presetGeoPresent, setPresetGeoPresent] = useState(false);
+  const [presetBusy, setPresetBusy] = useState(false);
+  const [presetProgress, setPresetProgress] = useState<{ file: string; downloaded: number; total: number } | null>(null);
+  /** Installed geo databases (GEOIP/GEOSITE rules read them). Their refresh is
+   *  an explicit operator action: the core itself never downloads them, and a
+   *  missing pair makes both the rule save and the core start refuse. */
+  const [geo, setGeo] = useState<MihomoGeoReport | null>(null);
+  const [geoLeg, setGeoLeg] = useState<MihomoGeoLeg>('machine');
+  const [geoBusy, setGeoBusy] = useState(false);
+  const [geoProgress, setGeoProgress] = useState<{ file: string; downloaded: number; total: number } | null>(null);
   /** The rules section has TWO views that never render together: the editable
    *  draft and the read-only table of what the core actually loaded. Mixing them
    *  on one screen made the operator guess which rows were in force. */
@@ -895,6 +1067,100 @@ export const MihomoPage: React.FC = () => {
 
   const customRulesValid = customRules.every(rule => rule.payload.trim().length > 0);
 
+  const openPresets = async () => {
+    setPresetRows(null);
+    setPresetPickDefaults(true);
+    setPresetPickCn(false);
+    setPresetProgress(null);
+    setPresetOpen(true);
+    try {
+      const [presets, geo] = await Promise.all([api.getMihomoRulePresets(), api.getMihomoGeo()]);
+      setPresetRows({ defaults: presets.defaults, cn: presets.cn });
+      setPresetGeoPresent(geo.present);
+    } catch (err: any) {
+      setPresetOpen(false);
+      toastFailure(err);
+    }
+  };
+
+  /**
+   * Add the ticked preset rows to the draft (deduped — re-applying is normal).
+   * A CN preset row cannot exist without the geo databases: the save route and
+   * the core start both refuse one, so the download happens HERE, before the
+   * rows land in the draft rather than as a failed save afterwards.
+   */
+  const applyPresets = async () => {
+    if (!presetRows) return;
+    const wanted = [
+      ...(presetPickDefaults ? presetRows.defaults : []),
+      ...(presetPickCn ? presetRows.cn : []),
+    ];
+    if (wanted.length === 0) return;
+    setPresetBusy(true);
+    try {
+      if (presetPickCn && !presetGeoPresent) {
+        setPresetProgress({ file: 'geoip', downloaded: 0, total: 0 });
+        const result = await api.downloadMihomoGeo('machine', { onProgress: (file, downloaded, total) => setPresetProgress({ file, downloaded, total }) });
+        if (!result.ok || !result.present) {
+          toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
+          return;
+        }
+        setPresetGeoPresent(true);
+      }
+      const seen = new Set(customRules.map(rule => `${rule.type}|${rule.payload}|${rule.target}`));
+      const merged = [...customRules];
+      let added = 0;
+      for (const rule of wanted) {
+        const key = `${rule.type}|${rule.payload}|${rule.target}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(rule);
+        added += 1;
+      }
+      if (added > 0) {
+        setCustomRules(merged);
+        setCustomRulesDirty(true);
+        toast.success(t('proxy.rulesPresetAdded', { n: added }));
+      } else {
+        toast.success(t('proxy.rulesPresetNothing'));
+      }
+      setPresetOpen(false);
+    } catch (err: any) {
+      toastFailure(err);
+    } finally {
+      setPresetBusy(false);
+      setPresetProgress(null);
+    }
+  };
+
+  /**
+   * Refresh the geo databases on the selected leg (ADR-0022). `refresh` makes
+   * "sync" mean what the button says — existing (possibly stale) copies are
+   * replaced — while a failed download keeps the old files: new bytes land in
+   * a temp file first.
+   */
+  const syncGeo = async () => {
+    setGeoBusy(true);
+    setGeoProgress({ file: 'geoip', downloaded: 0, total: 0 });
+    try {
+      const result = await api.downloadMihomoGeo(geoLeg, {
+        refresh: true,
+        onProgress: (file, downloaded, total) => setGeoProgress({ file, downloaded, total }),
+      });
+      if (result.ok && result.present) {
+        toast.success(t('proxy.geoSyncDone'));
+      } else {
+        toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
+      }
+    } catch (err: any) {
+      toastFailure(err);
+    } finally {
+      setGeoBusy(false);
+      setGeoProgress(null);
+      void refreshGeo();
+    }
+  };
+
   const toggleRuleSel = (index: number) => {
     setRuleSel(prev => {
       const next = new Set(prev);
@@ -902,6 +1168,15 @@ export const MihomoPage: React.FC = () => {
       else next.add(index);
       return next;
     });
+  };
+
+  /** Backend-stamped provenance labels are rendered localized; any other label
+   *  is a subscription name and passes through verbatim. */
+  const ruleSourceLabel = (source?: string): string => {
+    const label = source?.trim();
+    if (label === 'default') return t('proxy.rulesSourceDefault');
+    if (label === 'preset') return t('proxy.rulesSourcePreset');
+    return label || t('proxy.rulesSourceManual');
   };
 
   /** Provenance labels present in the draft, with row counts ('' = all). */
@@ -915,7 +1190,7 @@ export const MihomoPage: React.FC = () => {
     }
     const rows = [...counts.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([value, count]) => ({ value, label: value, meta: String(count) }));
+      .map(([value, count]) => ({ value, label: ruleSourceLabel(value), meta: String(count) }));
     if (unlabelled > 0) rows.push({ value: MANUAL_RULE_SOURCE, label: t('proxy.rulesSourceManual'), meta: String(unlabelled) });
     return rows;
   })();
@@ -1342,41 +1617,51 @@ export const MihomoPage: React.FC = () => {
     }
   };
 
-  /** Probe one endpoint through the CURRENT node. Results stay keyed by URL so
-   *  a batch over several candidates does not overwrite the previous answer;
+  /** Probe one endpoint on the CURRENT leg. Results stay keyed by `<leg>|<url>`
+   *  so a batch over several candidates does not overwrite the previous answer
+   *  and switching legs keeps both sides of the comparison;
    *  failures stay on the row (no toast per URL) — a batch would otherwise
    *  stack one popup per dead endpoint. */
   const probeUrl = async (url: string) => {
-    setUrlProbes(prev => ({ ...prev, [url]: { state: 'testing' } }));
+    const leg = probeLeg;
+    const key = `${leg}|${url}`;
+    setUrlProbes(prev => ({ ...prev, [key]: { state: 'testing' } }));
     try {
-      const result = await api.testMihomoUrl(url, group || undefined);
+      const result = await api.testMihomoUrl(url, leg === 'tunnel' ? group || undefined : undefined, leg);
       setUrlProbes(prev => ({
         ...prev,
-        [url]: result.reachable
-          ? { state: 'ok', ms: result.ms, node: result.node }
+        [key]: result.reachable
+          ? { state: 'ok', ms: result.ms, node: result.node, via: result.via, proxy: result.proxy }
           : {
             state: 'fail',
             node: result.node,
+            via: result.via,
+            proxy: result.proxy,
             error: result.error === 'timeout' ? t('proxy.testUrlTimeout') : (result.error || 'error'),
           },
       }));
     } catch (err) {
       setUrlProbes(prev => ({
         ...prev,
-        [url]: { state: 'fail', error: err instanceof Error ? err.message : 'error' },
+        [key]: { state: 'fail', error: err instanceof Error ? err.message : 'error' },
       }));
       toastFailure(err);
     }
   };
 
+  /** Current-leg answer for one URL (the other leg's answer stays in state). */
+  const probeOf = (url: string): UrlProbe | undefined => urlProbes[`${probeLeg}|${url}`];
+
   /** "Is this test URL usable here?" is a question about several candidate
    *  endpoints, not one: the presets are real service hosts, and one may be
-   *  blocked by the node while another answers. Probes run through the same
-   *  current node and never write the config — choosing a winner stays an
+   *  blocked by the node while another answers. Probes run on the current leg
+   *  and never write the config — choosing a winner stays an
    *  explicit field edit (the card sets it), so a probe cannot silently change
    *  what the core health-checks. */
   const probeEveryUrl = async () => {
-    if (!requireCore()) return;
+    // Only the tunnel leg needs the core; the machine leg answers with a
+    // stopped core — that is exactly when the comparison matters.
+    if (probeLeg === 'tunnel' && !requireCore()) return;
     const targets = Array.from(new Set([...TEST_URL_PRESETS.map(preset => preset.url), activeTestUrl]));
     setUrlBatch({ running: true, done: 0, total: targets.length });
     let done = 0;
@@ -1524,11 +1809,14 @@ export const MihomoPage: React.FC = () => {
       });
     } catch (err) {
       // The batch itself never ran: an error per row is the honest reading,
-      // not N timeouts blaming the nodes.
+      // not N timeouts blaming the nodes. A controller-reported timeout is the
+      // exception — mihomo answered "every member failed", which is each row's
+      // own outcome, so the toast is the localized timeout and the rows say so.
       const failedAt = Date.now();
+      const timedOut = err instanceof OcApiError && err.reasonCode === 'timeout';
       setDelayReadings(prev => {
         const next = { ...prev };
-        for (const name of names) next[name] = { state: 'error', at: failedAt };
+        for (const name of names) next[name] = { state: timedOut ? 'timeout' : 'error', at: failedAt };
         return next;
       });
       toastFailure(err);
@@ -1680,6 +1968,18 @@ export const MihomoPage: React.FC = () => {
           where it sat before. */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          {/* Machine egress ownership, on every tab: who holds the ONE OS-proxy
+              snapshot slot is page-level state, and a stale pointer is a
+              machine-wide outage — it must stay readable on whichever tab the
+              operator is on. Status + anchor only, the same idiom as the node
+              pill; the action stays on the card that owns it. */}
+          {sys?.supported && sys.state !== 'unsupported' && (
+            <button type="button" className="current-node" onClick={showSystemProxyCard}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: sysPillDot }} />
+              <span style={{ color: 'var(--text-dim)' }}>{t('proxyLog.sysTitle')}</span>
+              <span className="node-name">{sysPillText}</span>
+            </button>
+          )}
           {/* The node actually in use, on every scope: a micro-label pill instead
               of a settings row, and clicking it anchors to that row in the list —
               "which node am I on" is answerable without opening a tab. */}
@@ -1937,6 +2237,68 @@ export const MihomoPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                {/* Geo databases: GEOIP / GEOSITE rules read them from the core's
+                    work dir. The core never updates them on its own — a failed
+                    self-download kills it — and both the rule save and the core
+                    start refuse a geo-rule config without them. Syncing is the
+                    operator's explicit action on one of two legs, mirroring the
+                    endpoint probe: the machine's own network (OS system proxy,
+                    bypass list honoured) or the Clash node. */}
+                <div id="mihomo-geo-card" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={sectionTitle}>
+                      <Database size={14} />
+                      <span>{t('proxy.geoSyncTitle')}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <SegGroup
+                        size="sm"
+                        value={geoLeg}
+                        onChange={v => setGeoLeg(v as MihomoGeoLeg)}
+                        options={[
+                          { value: 'machine', label: t('proxy.geoSyncLegMachine') },
+                          { value: 'node', label: t('proxy.geoSyncLegNode'), title: coreReady ? undefined : t('proxy.geoSyncNodeNeedsCore') },
+                        ]}
+                      />
+                      <button
+                        className="btn btn-sm"
+                        disabled={geoBusy || (geoLeg === 'node' && !coreReady)}
+                        title={geoLeg === 'node' && !coreReady ? t('proxy.geoSyncNodeNeedsCore') : undefined}
+                        onClick={() => void syncGeo()}
+                      >
+                        {geoBusy ? <Loader2 size={12} style={SPIN} /> : <RefreshCw size={12} />}
+                        <span>{t('proxy.geoSyncAction')}</span>
+                      </button>
+                    </div>
+                  </div>
+                  {(geo?.files ?? []).map(file => (
+                    <div key={file.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>{file.file}</span>
+                      <span>{file.exists ? `${(file.size / 1_048_576).toFixed(1)} MB` : t('proxy.geoFileMissing')}</span>
+                      {file.exists && file.updatedAt ? <span>{t('proxy.geoUpdatedAt', { time: formatTimestamp(file.updatedAt) })}</span> : null}
+                      {file.stale ? <span className="badge badge-warning">{t('proxy.geoStale')}</span> : null}
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                    <div>{t('proxy.geoSyncHint')}</div>
+                    <div style={{ marginTop: 2 }}>
+                      {geoLeg === 'node' && !coreReady
+                        ? <span style={{ color: 'var(--accent-amber)' }}>{t('proxy.geoSyncNodeNeedsCore')}</span>
+                        : t('proxy.geoSyncLegHint')}
+                    </div>
+                  </div>
+                  {geoBusy && geoProgress && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                      <Loader2 size={12} style={SPIN} />
+                      <span>{t('proxy.geoSyncDownloading', { file: geoProgress.file })}</span>
+                      <span>
+                        {geoProgress.total > 0
+                          ? `${Math.min(100, Math.round((geoProgress.downloaded / geoProgress.total) * 100))}%`
+                          : `${(geoProgress.downloaded / 1_048_576).toFixed(1)} MB`}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {/* PAC: clients that only accept an auto-config URL (browsers, OS
                     proxy settings) get the mixed port AND the direct-bypass list
                     from one URL the gateway serves itself. The URL is reference
@@ -1953,6 +2315,66 @@ export const MihomoPage: React.FC = () => {
                   <button className="btn btn-sm" onClick={() => setPacOpen(true)}>
                     <span>{t('proxy.pacOpen')}</span>
                   </button>
+                </div>
+                {/* OS system proxy: the WHOLE machine through the tunnel. Same
+                    snapshot slot as the inbound card (Proxy access) — one owner
+                    at a time, restore always returns the pre-OCR settings. The
+                    action is immediate, not part of this tab's save. */}
+                <div id="mihomo-system-proxy-card" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={sectionTitle}>
+                      <MonitorCog size={14} />
+                      <span>{t('proxyLog.sysClashTitle')}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      {sys && (
+                        <span
+                          className="badge"
+                          style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: sys.state === 'on' ? 'var(--accent-emerald)' : sys.state === 'stale' || sys.state === 'external' ? 'var(--accent-amber)' : 'var(--text-dim)', background: 'var(--chip-bg)' }}
+                        >
+                          {t(sysBadgeKey)}
+                        </span>
+                      )}
+                      {sys?.supported && (
+                        <>
+                          <button
+                            className="btn btn-sm btn-primary"
+                            disabled={sysBusy || !coreReady || (sys.state === 'on' && sys.owner === 'clash')}
+                            title={!coreReady ? t('proxyLog.sysClashNeedCore') : undefined}
+                            onClick={() => void enableClashSystemProxy()}
+                          >
+                            <MonitorCog size={12} />
+                            <span>{t('proxyLog.sysEnableBtn')}</span>
+                          </button>
+                          <button
+                            className="btn btn-sm"
+                            disabled={sysBusy || (sys.state !== 'on' && sys.state !== 'stale')}
+                            onClick={() => void restoreSystemProxy()}
+                          >
+                            <Undo2 size={12} />
+                            <span>{sys.state === 'stale' ? t('proxyLog.sysRestoreBtn') : t('proxyLog.sysDisableBtn')}</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('proxyLog.sysClashHint')}</div>
+                  {sys?.supported ? (
+                    sys.clash?.override && (
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                        <span style={{ marginRight: '6px' }}>{t('proxyLog.sysOverrideLabel')}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>{sys.clash.override}</span>
+                      </div>
+                    )
+                  ) : (
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.sysUnsupportedNote')}</div>
+                  )}
+                  {sys?.owner === 'clash' && sys.state === 'stale' && (
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.sysStaleHintClash')}</div>
+                  )}
+                  {sysOwnedByClash && !coreReady && (
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.sysClashCoreDown')}</div>
+                  )}
                 </div>
                 {pacOpen && (
                   <Dialog
@@ -1989,25 +2411,43 @@ export const MihomoPage: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
                       <div className="card-header" style={{ marginBottom: 0 }}>
                         <div className="card-title"><span>{t('proxy.tabTest')}</span></div>
-                        {/* ONE axis per header: this tab answers "can the current
-                            node reach this endpoint", so the only batch here runs
-                            over the endpoints. Node delay is the nodes tab's own
-                            button — a second verb on this row read as a peer
-                            action while it was really a page jump. */}
-                        <button className="btn btn-sm" disabled={!coreReady || urlBatch.running} onClick={() => void probeEveryUrl()}>
-                          {urlBatch.running ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
-                          <span>
-                            {urlBatch.running
-                              ? t('proxy.testUrlBatchRunning', { done: urlBatch.done, n: urlBatch.total })
-                              : t('proxy.testUrlBatch')}
-                          </span>
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          {/* The leg switch is the diagnostic axis: `tunnel`
+                              proves node + URL together, `machine` shows what
+                              this machine's own egress (OS system proxy when
+                              set) makes of the same URL. Answers are kept per
+                              leg, so switching back is free. */}
+                          <SegGroup
+                            size="sm"
+                            value={probeLeg}
+                            onChange={v => setProbeLeg(v as ProbeLeg)}
+                            options={[
+                              { value: 'tunnel', label: t('proxy.testLegTunnel') },
+                              { value: 'machine', label: t('proxy.testLegMachine') },
+                            ]}
+                          />
+                          {/* ONE axis per header: this tab answers "can this
+                              endpoint be reached", so the only batch here runs
+                              over the endpoints. Node delay is the nodes tab's own
+                              button — a second verb on this row read as a peer
+                              action while it was really a page jump. */}
+                          <button className="btn btn-sm" disabled={(probeLeg === 'tunnel' && !coreReady) || urlBatch.running} onClick={() => void probeEveryUrl()}>
+                            {urlBatch.running ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
+                            <span>
+                              {urlBatch.running
+                                ? t('proxy.testUrlBatchRunning', { done: urlBatch.done, n: urlBatch.total })
+                                : t('proxy.testUrlBatch')}
+                            </span>
+                          </button>
+                        </div>
                       </div>
                       <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                        <span>
-                          {t('proxy.testCurrentNode')}{' '}
-                          <strong style={{ color: 'var(--text)' }}>{currentNode?.name ?? '—'}</strong>
-                        </span>
+                        {probeLeg === 'tunnel' && (
+                          <span>
+                            {t('proxy.testCurrentNode')}{' '}
+                            <strong style={{ color: 'var(--text)' }}>{currentNode?.name ?? '—'}</strong>
+                          </span>
+                        )}
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                           {t('proxy.testCurrentUrl')}{' '}
                           <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-2xs)', color: 'var(--text)', wordBreak: 'break-all' }}>
@@ -2018,8 +2458,14 @@ export const MihomoPage: React.FC = () => {
                           <span>{t('proxy.testChangeUrl')}</span>
                         </button>
                       </div>
-                      {!coreReady && (
+                      {probeLeg === 'tunnel' && !coreReady && (
                         <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('proxy.notRunning')}</div>
+                      )}
+                      {probeLeg === 'machine' && (
+                        <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('proxy.testLegMachineHint')}</div>
+                      )}
+                      {probeLeg === 'machine' && sysOwnedByClash && (
+                        <div style={{ color: 'var(--accent-amber)', fontSize: 'var(--text-sm)' }}>{t('proxy.testLegMachineOnClash')}</div>
                       )}
                     </div>
                     {/* One card per site: brand mark, host, its own last outcome,
@@ -2027,7 +2473,7 @@ export const MihomoPage: React.FC = () => {
                         config — "use as test URL" is the only writer. */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start', paddingRight: 4 }}>
                       {TEST_URL_PRESETS.map(preset => {
-                        const probe = urlProbes[preset.url];
+                        const probe = probeOf(preset.url);
                         const inUse = preset.url === activeTestUrl;
                         return (
                           <div key={preset.url} className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -2042,11 +2488,11 @@ export const MihomoPage: React.FC = () => {
                               </div>
                               {inUse && <span className="badge badge-success">{t('proxy.testInUse')}</span>}
                             </div>
-                            <ProbeStatus probe={probe} />
+                            <ProbeStatus probe={probe} leg={probeLeg} />
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                               <button
                                 className="btn btn-sm"
-                                disabled={!coreReady || probe?.state === 'testing'}
+                                disabled={(probeLeg === 'tunnel' && !coreReady) || probe?.state === 'testing'}
                                 onClick={() => void probeUrl(preset.url)}
                               >
                                 {probe?.state === 'testing' ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
@@ -2079,10 +2525,10 @@ export const MihomoPage: React.FC = () => {
                       />
                       <button
                         className="btn btn-sm"
-                        disabled={!coreReady || !customTestUrl.trim() || urlProbes[customTestUrl.trim()]?.state === 'testing'}
+                        disabled={(probeLeg === 'tunnel' && !coreReady) || !customTestUrl.trim() || probeOf(customTestUrl.trim())?.state === 'testing'}
                         onClick={() => void probeUrl(customTestUrl.trim())}
                       >
-                        {urlProbes[customTestUrl.trim()]?.state === 'testing' ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
+                        {probeOf(customTestUrl.trim())?.state === 'testing' ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
                         <span>{t('proxy.testUrlBtn')}</span>
                       </button>
                       <button
@@ -2096,7 +2542,7 @@ export const MihomoPage: React.FC = () => {
                     {/* A typed address is not one of the cards, so without this
                         line its probe has nowhere to land — a button that answers
                         nothing reads as a dead control. */}
-                    {customTestUrl.trim() !== '' && <ProbeStatus probe={urlProbes[customTestUrl.trim()]} />}
+                    {customTestUrl.trim() !== '' && <ProbeStatus probe={probeOf(customTestUrl.trim())} leg={probeLeg} />}
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxy.testCustomHint')}</div>
                   </div>
                 </div>
@@ -2227,6 +2673,61 @@ export const MihomoPage: React.FC = () => {
           </>
         )}
 
+            {tab === 'logs' && (
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1, minHeight: 0 }}>
+            <div className="card-header" style={{ marginBottom: 0 }}>
+              <div className="card-title">
+                <span>{t('proxy.tabLogs')}</span>
+                {coreLogs.length > 0 && <span className="badge">{coreLogs.length}</span>}
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button className="btn btn-sm" onClick={() => void refreshLogs()}>
+                  <RefreshCw size={12} />
+                  <span>{t('common.refresh')}</span>
+                </button>
+                <button className="btn btn-sm" disabled={coreLogs.length === 0} onClick={() => void clearCoreLogs()}>
+                  <Trash2 size={12} />
+                  <span>{t('common.clear')}</span>
+                </button>
+              </div>
+            </div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+              {t('proxy.logsHint')}
+            </div>
+            {/* The pane follows the tail unless the operator scrolls up; a
+                memory-only ring, so an empty pane after a crash still shows the
+                process's last words. */}
+            <div
+              ref={logScrollRef}
+              onScroll={e => {
+                const el = e.currentTarget;
+                logFollowRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+              }}
+              style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '10px 12px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-2xs)', lineHeight: 'var(--leading-normal)' }}
+            >
+              {coreLogs.length === 0 ? (
+                <div style={{ color: 'var(--text-dim)', fontFamily: 'inherit' }}>
+                  {status?.adopted && status?.running ? t('proxy.logsAdopted') : t('proxy.logsEmpty')}
+                </div>
+              ) : coreLogs.map(line => (
+                <div
+                  key={line.id}
+                  style={{
+                    display: 'flex',
+                    gap: '10px',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    color: line.stream === 'stderr' ? 'var(--accent-rose)' : line.stream === 'gateway' ? 'var(--text-dim)' : 'var(--text)',
+                  }}
+                >
+                  <span style={{ flexShrink: 0, color: 'var(--text-dim)' }}>{new Date(line.ts).toLocaleTimeString()}</span>
+                  <span>{line.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
             {tab === 'rules' && (
           <>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', flex: '0 0 auto' }}>
@@ -2250,6 +2751,10 @@ export const MihomoPage: React.FC = () => {
                 {customRulesDirty && <span className="badge badge-warning">{t('proxy.unsaved')}</span>}
               </div>
               <div style={{ display: 'flex', gap: '6px' }}>
+                <button className="btn btn-sm" disabled={busy !== null} onClick={() => void openPresets()}>
+                  <Sparkles size={13} />
+                  <span>{t('proxy.rulesPreset')}</span>
+                </button>
                 <button
                   className="btn btn-sm"
                   disabled={busy !== null}
@@ -2355,10 +2860,10 @@ export const MihomoPage: React.FC = () => {
                         />
                       </td>
                       <td
-                        title={rule.source || t('proxy.rulesSourceManual')}
+                        title={ruleSourceLabel(rule.source)}
                         style={{ ...RULE_CELL, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                       >
-                        {rule.source || t('proxy.rulesSourceManual')}
+                        {ruleSourceLabel(rule.source)}
                       </td>
                       <td style={RULE_CELL}>
                         <div style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
@@ -2428,6 +2933,87 @@ export const MihomoPage: React.FC = () => {
               )}
             </div>
           </div>
+          {presetOpen && (
+            <Dialog
+              title={t('proxy.rulesPresetTitle')}
+              subtitle={<span>{t('proxy.rulesPresetSubtitle')}</span>}
+              onClose={() => setPresetOpen(false)}
+              closeLabel={t('common.close')}
+              width={620}
+              closeDisabled={presetBusy}
+              footerRight={
+                <>
+                  <button className="btn" disabled={presetBusy} onClick={() => setPresetOpen(false)}>{t('common.cancel')}</button>
+                  <button
+                    className="btn btn-primary"
+                    disabled={presetBusy || !presetRows || (!presetPickDefaults && !presetPickCn)}
+                    onClick={() => void applyPresets()}
+                  >
+                    {presetBusy ? t('common.loading') : t('proxy.rulesPresetApply')}
+                  </button>
+                </>
+              }
+            >
+              {!presetRows ? (
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Loader2 size={14} style={SPIN} />
+                  <span>{t('common.loading')}</span>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <label style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={presetPickDefaults}
+                      onChange={e => setPresetPickDefaults(e.target.checked)}
+                      style={{ accentColor: 'var(--accent)', marginTop: 2 }}
+                    />
+                    <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)' }}>
+                        {t('proxy.rulesPresetLan')} <span className="badge">{presetRows.defaults.length}</span>
+                      </span>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                        {t('proxy.rulesPresetLanHint')}
+                      </span>
+                    </span>
+                  </label>
+                  <label style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={presetPickCn}
+                      onChange={e => setPresetPickCn(e.target.checked)}
+                      style={{ accentColor: 'var(--accent)', marginTop: 2 }}
+                    />
+                    <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)' }}>
+                        {t('proxy.rulesPresetCn')} <span className="badge">{presetRows.cn.length}</span>
+                      </span>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                        {t('proxy.rulesPresetCnHint')}
+                      </span>
+                      <span style={{ fontSize: 'var(--text-xs)', color: presetGeoPresent ? 'var(--text-dim)' : 'var(--accent-amber)', lineHeight: 'var(--leading-normal)' }}>
+                        {presetGeoPresent
+                          ? t('proxy.rulesPresetGeoReady')
+                          : t('proxy.rulesPresetGeoMissing')}
+                      </span>
+                    </span>
+                  </label>
+                  {presetProgress && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                      <Loader2 size={13} style={SPIN} />
+                      <span>
+                        {t('proxy.rulesPresetDownloading', { file: presetProgress.file })}
+                        {' '}
+                        {presetProgress.total > 0
+                          ? `${Math.min(100, Math.round((presetProgress.downloaded / presetProgress.total) * 100))}%`
+                          : `${(presetProgress.downloaded / 1_048_576).toFixed(1)} MB`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Dialog>
+          )}
           {importOpen && (
             <Dialog
               title={t('proxy.rulesImportTitle')}

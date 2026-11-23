@@ -514,6 +514,26 @@ bypass list even though its `egress` is `direct`. This also
 fixes an old inconsistency — `bypassHosts` used to be written into the OS
 bypass list even when its egress was "via proxy".
 
+> **Amendment — the OS proxy has TWO OCR targets, one owner.** `system-proxy.ts`
+> can now point the OS at either the inbound forward proxy (`owner: 'forward'`,
+> the default and the historical behaviour) or the Clash core's mixed port
+> (`owner: 'clash'`), exposed on the Clash panel's basic settings beside the PAC
+> link. The snapshot slot stays SINGLE and always holds the PRE-OCR state: the
+> first enable records it, re-enabling the same endpoint only refreshes, and
+> switching endpoints rewrites the OS pointer plus the snapshot's `owner`
+> without ever re-reading the OS (whose values at that moment are ours).
+> Restore returns what the OS held before OCR first took ownership, whichever
+> target set it. The bypass list is per target, because the endpoints route
+> differently: the inbound proxy tunnels unmatched traffic, so it bypasses only
+> loopback and the literal `direct` rows; the Clash config ends in
+> `MATCH,<group>`, so private / link-local / CGNAT ranges (the PAC's direct set,
+> expressed as WinINET `x.*` wildcards or CIDR) also stay DIRECT. Two
+> consequences the console must not hide: while Clash owns the OS proxy nothing
+> enters the gateway, so capture is empty (the card says so), and enabling is
+> gated on the core answering — pointing the OS at a dead port is one click from
+> a dead network, and a core stopped later raises the same restore warning the
+> inbound card carries.
+
 ## Consequences
 
 - Two concepts replace four mechanisms: per host, "where do the bytes go" and "is

@@ -19,7 +19,7 @@ import { ArrowLeftRight, ArrowRight, Save } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { Switch } from '../components/Switch';
 import { SegGroup } from '../components/SegGroup';
-import { api } from '../lib/api';
+import { api, type SystemProxyStatus } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 
@@ -50,6 +50,9 @@ export const ProxyPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
+  /** OS-proxy owner — a quiet status line only. The switch itself lives on the
+   *  Clash panel, beside the mixed port it points at. */
+  const [sys, setSys] = useState<SystemProxyStatus | null>(null);
 
   // Only the fields this page owns enter the dirty check: a node selection saved
   // on the Mihomo page must not light up "unsaved changes" here.
@@ -66,6 +69,7 @@ export const ProxyPage: React.FC = () => {
       setSavedKey(keyOf(next));
       setLoading(false);
     }).catch(console.error);
+    api.getSystemProxy().then(setSys).catch(() => {});
   }, []);
 
   const patch = (partial: Partial<ProxyShape>) => setProxy(prev => ({ ...(prev || {}), ...partial }));
@@ -181,6 +185,9 @@ export const ProxyPage: React.FC = () => {
               <span>{t('nav.proxyPatterns')}</span>
               <ArrowRight size={12} />
             </Link>
+            {sys?.owner === 'clash' && sys.state !== 'off' && (
+              <span>{t('proxy.sysProxyOwner', { port: sys.clash?.mixedPort ?? '' })}</span>
+            )}
           </div>
 
           <div

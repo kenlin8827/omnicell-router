@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2, X } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency } from '../lib/format';
+import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency, lastActiveParts } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
@@ -96,6 +96,37 @@ const TokenStatRow: React.FC<{ label: string; value: string; color?: string; tit
     </span>
   </div>
 );
+
+/**
+ * Last-active cell. The clock line is the row's staleness anchor; a row from
+ * another day stacks its localized date above the clock so "14:32" on a
+ * three-day-old session never reads as today. The extra line costs no height —
+ * the tokens cell beside it is a 4-row stack already — and keeps the column
+ * narrow (see `lastActiveParts`). `0` / unusable stamps render '—' with no
+ * tooltip: the backend's trace-reconstruction fallback (`?? 0`) is "unknown",
+ * not a 1970 instant.
+ */
+const LastActiveCell: React.FC<{ at: number }> = ({ at }) => {
+  const parts = lastActiveParts(at);
+  if (!parts) return <span style={{ color: 'var(--text-dim)' }}>—</span>;
+  return (
+    <span title={new Date(at).toLocaleString()}>
+      {parts.date !== null && (
+        <span
+          style={{
+            display: 'block',
+            fontSize: 'var(--text-2xs)',
+            color: 'var(--text-dim)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {parts.date}
+        </span>
+      )}
+      <span style={{ display: 'block', fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>{parts.time}</span>
+    </span>
+  );
+};
 
 /**
  * One `label value` pair inside a summary series. Labels stay dim and small,
@@ -1005,7 +1036,10 @@ export const SessionsPage: React.FC = () => {
     tokens: 150,
     speed: 140,
     cost: 96,
-    active: 68,
+    // 84 (was 68): a non-today row stacks its date above the clock, and the
+    // widest honest date line (a cross-year `11/21/2026` in text-2xs mono) must
+    // fit whole rather than ellipsize — the date is the message there.
+    active: 84,
     actions: 128,
   } as const;
   const colMinWidth =
@@ -1650,8 +1684,8 @@ export const SessionsPage: React.FC = () => {
                   >
                     {formatCostCompact(s.costUsd)}
                   </td>
-                  <td style={{ padding: '10px 14px', color: 'var(--text-dim)', textAlign: 'center' }}>
-                    {new Date(s.lastActiveAt).toLocaleTimeString()}
+                  <td style={{ padding: '10px 8px', color: 'var(--text-dim)', textAlign: 'center' }}>
+                    <LastActiveCell at={s.lastActiveAt} />
                   </td>
                   <td
                   style={{

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
 import { loadConfig, sanitizeProxyConfig } from '../../src/config/index.js';
-import { DEFAULT_MIHOMO_CONTROLLER_PORT, DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_TEST_URL } from '../../src/config/defaults.js';
+import { DEFAULT_MIHOMO_CONTROLLER_PORT, DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_TEST_URL, MIHOMO_LAN_DIRECT_RULES } from '../../src/config/defaults.js';
 import { manualNodeFields, manualNodeMapping, mihomoConfigSummary, redactSubscriptionUrl, renderMihomoConfig } from '../../src/proxy/mihomo-config.js';
 import { currentYaml } from '../helpers/current-config.js';
 
@@ -244,6 +244,8 @@ describe('renderMihomoConfig', () => {
         rules: [
           { type: 'domain-suffix', payload: ' a.example ', target: 'direct' },
           { type: 'GEOIP', payload: 'CN', target: 'DIRECT' },
+          { type: 'geosite', payload: 'cn', target: 'direct' },
+          { type: 'RULE-SET', payload: 'ads', target: 'REJECT' },
           { type: 'DOMAIN', payload: 'x.example,DIRECT', target: 'PROXY' },
           { type: 'DOMAIN', payload: '', target: 'PROXY' },
           { type: 'DOMAIN', payload: 'y.example', target: 'BOGUS' },
@@ -252,7 +254,39 @@ describe('renderMihomoConfig', () => {
     }).mihomo;
     expect(cleaned?.rules).toEqual([
       { type: 'DOMAIN-SUFFIX', payload: 'a.example', target: 'DIRECT' },
+      { type: 'GEOIP', payload: 'CN', target: 'DIRECT' },
+      { type: 'GEOSITE', payload: 'cn', target: 'DIRECT' },
       { type: 'DOMAIN', payload: 'y.example', target: 'PROXY' },
+    ]);
+  });
+
+  test('an ABSENT rules key seeds the LAN baseline; an explicit list never reseeds', () => {
+    const seeded = sanitizeProxyConfig({ mihomo: { mixedPort: 7890 } }).mihomo?.rules ?? [];
+    expect(seeded.length).toBe(MIHOMO_LAN_DIRECT_RULES.length);
+    expect(seeded.every((rule) => rule.target === 'DIRECT' && rule.source === 'default')).toBe(true);
+    expect(seeded.map((rule) => rule.payload)).toEqual(MIHOMO_LAN_DIRECT_RULES.map((rule) => rule.payload));
+    // The seed is per-read copies, not the shared constant: an edit in one
+    // window must not mutate the declaration every later load reads.
+    expect(seeded[0]).not.toBe(MIHOMO_LAN_DIRECT_RULES[0]);
+    // An explicitly empty list (the console after deleting every row) is
+    // authoritative — deleted defaults do not come back on the next read.
+    expect(sanitizeProxyConfig({ mihomo: { rules: [] } }).mihomo?.rules).toEqual([]);
+  });
+
+  test('geo rules render with the casing mihomo expects and no no-resolve', () => {
+    const doc = parse(renderMihomoConfig({
+      mixedPort: 7890,
+      controllerPort: 9090,
+      secret,
+      rules: [
+        { type: 'GEOIP', payload: 'cn', target: 'DIRECT' },
+        { type: 'GEOSITE', payload: 'CN', target: 'PROXY' },
+      ],
+    }).yaml) as { rules: string[] };
+    expect(doc.rules).toEqual([
+      'GEOIP,CN,DIRECT',
+      'GEOSITE,cn,PROXY',
+      'MATCH,PROXY',
     ]);
   });
 

@@ -2721,6 +2721,7 @@ hiddenBadge: string;
     installingSize: string;
     errDisabled: string;
     errPortCollision: string;
+    errPortInUse: string;
     errBinaryMissing: string;
     errStart: string;
     errReload: string;
@@ -2740,9 +2741,16 @@ hiddenBadge: string;
     clientAccess: string;
     pacOpen: string;
     pacSummary: string;
+    /** Quiet owner line on the outbound page: the OS proxy currently points at
+     *  the Clash mixed port (`{port}`). */
+    sysProxyOwner: string;
     nodeAllSources: string;
     nodeAllTypes: string;
     tabRules: string;
+    tabLogs: string;
+    logsHint: string;
+    logsEmpty: string;
+    logsAdopted: string;
     rulesNoCore: string;
     rulesEmpty: string;
     rulesCustomTitle: string;
@@ -2772,6 +2780,27 @@ hiddenBadge: string;
     rulesSelectRow: string;
     rulesClearSel: string;
     errImport: string;
+    /** Save/start refused: a GEOIP/GEOSITE row without the geo databases. */
+    errGeoMissing: string;
+    /** The explicit geo-data download failed (network / HTTP / disk). */
+    errGeoDownload: string;
+    /** Geo database card (basic settings): installed files and their sync. */
+    geoSyncTitle: string;
+    geoSyncHint: string;
+    geoSyncLegMachine: string;
+    geoSyncLegNode: string;
+    /** The node leg needs a running core; doubles as its tooltip and hint. */
+    geoSyncNodeNeedsCore: string;
+    geoSyncLegHint: string;
+    geoSyncAction: string;
+    /** `{file}` = geo asset key (geoip / geosite); the percentage is appended by the page. */
+    geoSyncDownloading: string;
+    geoSyncDone: string;
+    geoFileMissing: string;
+    /** `{time}` = localized timestamp of the installed copy. */
+    geoUpdatedAt: string;
+    /** Advisory: the installed copy is past the re-sync window. */
+    geoStale: string;
     rulesImportCacheNote: string;
     rulesImportNetNote: string;
     rulesImportPreview: string;
@@ -2781,6 +2810,24 @@ hiddenBadge: string;
     rulesSource: string;
     rulesSourceAll: string;
     rulesSourceManual: string;
+    /** Provenance of a seeded row (`source: 'default'`). */
+    rulesSourceDefault: string;
+    /** Provenance of a one-click preset row (`source: 'preset'`). */
+    rulesSourcePreset: string;
+    rulesPreset: string;
+    rulesPresetTitle: string;
+    rulesPresetSubtitle: string;
+    rulesPresetLan: string;
+    rulesPresetLanHint: string;
+    rulesPresetCn: string;
+    rulesPresetCnHint: string;
+    rulesPresetGeoReady: string;
+    rulesPresetGeoMissing: string;
+    rulesPresetApply: string;
+    rulesPresetAdded: string;
+    rulesPresetNothing: string;
+    /** `{file}` = geo asset key (geoip / geosite); the percentage is appended by the page. */
+    rulesPresetDownloading: string;
     rulesShown: string;
     rulesViewEdit: string;
     rulesViewLive: string;
@@ -2929,6 +2976,25 @@ hiddenBadge: string;
     connOk: string;
     /** `testUrlBtn` outcome: the proxy did not carry the request. `{error}`. */
     connFail: string;
+    /** Machine-leg outcome: the machine's own egress reached the endpoint.
+     *  `{ms}` is the machine's round trip, never read as node latency. */
+    connMachineOk: string;
+    /** Machine-leg outcome: the machine's own egress failed. `{error}`. */
+    connMachineFail: string;
+    /** Suffix on a machine-leg outcome when the request left through the OS
+     *  system proxy: which endpoint carried it. `{proxy}`. */
+    connMachineViaProxy: string;
+    /** Endpoint-check leg: through the Clash node (default). */
+    testLegTunnel: string;
+    /** Endpoint-check leg: the machine's own egress — through the OS system
+     *  proxy when one is enabled, directly otherwise. Needs no running core. */
+    testLegMachine: string;
+    /** Shown while the machine leg is active: how it leaves this machine and
+     *  what its result compared with the tunnel answers. */
+    testLegMachineHint: string;
+    /** Shown while the machine leg is active AND the OS system proxy is held by
+     *  Clash: the leg follows that proxy, so it shares the node path. */
+    testLegMachineOnClash: string;
     testCurrentNode: string;
     testCurrentUrl: string;
     testChangeUrl: string;
@@ -3150,6 +3216,22 @@ hiddenBadge: string;
     sysOverrideLabel: string;
     sysEnvBtn: string;
     sysUnsupportedNote: string;
+    /** OS proxy owned by the Clash endpoint (ONE snapshot slot, two targets). */
+    sysStateOnClash: string;
+    sysHintClashOwned: string;
+    sysSwitchBtn: string;
+    sysClashTitle: string;
+    sysClashHint: string;
+    sysClashNeedCore: string;
+    sysClashCoreDown: string;
+    sysStaleHintClash: string;
+    /** Short state tokens for the Mihomo page header pill ("OS proxy · <token>"):
+     *  the state vocabulary without its own "system proxy" prefix. */
+    sysPillClash: string;
+    sysPillOcr: string;
+    sysPillOff: string;
+    sysPillExternal: string;
+    sysPillStale: string;
     autoHint: string;
     refresh: string;
     clear: string;

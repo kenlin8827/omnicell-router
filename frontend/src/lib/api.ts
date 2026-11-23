@@ -606,11 +606,16 @@ export interface SystemProxyStatus {
   platform: string;
   supported: boolean;
   state: 'off' | 'on' | 'external' | 'stale' | 'unsupported';
+  /** Which OCR endpoint owns (or owned) the OS proxy; absent while OCR owns
+   *  nothing. ONE snapshot slot, two targets. */
+  owner?: 'forward' | 'clash';
   currentServer?: string;
   targetServer?: string;
   override?: string;
   caPath: string;
   proxyEnabled?: boolean;
+  forward?: { port: number; enabled: boolean };
+  clash?: { mixedPort: number; running: boolean; override?: string };
 }
 
 /**
@@ -1803,11 +1808,14 @@ export interface MihomoStatus {
   liveRoutingMode: MihomoRoutingMode | null;
 }
 
-/** Rule types that need no external data (no GEOIP/GEOSITE/RULE-SET) — the
- *  backend whitelist, mirrored here so the editor can only offer what renders. */
+/** Rule types the backend whitelist accepts, mirrored here so the editor can
+ *  only offer what renders. GEOIP / GEOSITE need the geo databases the Clash
+ *  panel downloads; the backend refuses to save or start without them. */
 export type MihomoRuleType =
   | 'DOMAIN' | 'DOMAIN-SUFFIX' | 'DOMAIN-KEYWORD'
-  | 'IP-CIDR' | 'IP-CIDR6' | 'DST-PORT' | 'SRC-PORT'
+  | 'IP-CIDR' | 'IP-CIDR6'
+  | 'GEOIP' | 'GEOSITE'
+  | 'DST-PORT' | 'SRC-PORT'
   | 'PROCESS-NAME' | 'PROCESS-PATH';
 
 export type MihomoRuleTarget = 'PROXY' | 'DIRECT' | 'REJECT';
@@ -1847,6 +1855,45 @@ export interface MihomoCustomRulesResult {
   message?: string;
 }
 
+/** Direct-bypass presets served by the backend, so the row payloads have one
+ *  declaration (the seeded LAN baseline and the opted-in CN rows). */
+export interface MihomoRulePresets {
+  status: 'ok';
+  defaults: MihomoCustomRule[];
+  cn: MihomoCustomRule[];
+}
+
+export interface MihomoGeoFileInfo {
+  key: 'geoip' | 'geosite';
+  file: string;
+  exists: boolean;
+  size: number;
+  /** mtime (epoch ms) of the installed copy; absent while the file does not. */
+  updatedAt?: number;
+  /** Installed but past the advisory window — show the re-sync hint. */
+  stale: boolean;
+}
+
+/** Which egress the geo download takes: the machine's own network (OS system
+ *  proxy when one is enabled, bypass list honoured) or the Clash node. */
+export type MihomoGeoLeg = 'machine' | 'node';
+
+/** State of the geo databases GEOIP/GEOSITE rules are evaluated against. */
+export interface MihomoGeoReport {
+  status: 'ok';
+  present: boolean;
+  files: MihomoGeoFileInfo[];
+}
+
+export interface MihomoGeoDownloadResult {
+  status: 'ok' | 'error';
+  ok: boolean;
+  present: boolean;
+  files?: MihomoGeoFileInfo[];
+  code?: string;
+  error?: string;
+}
+
 /** mihomo's outbound mode — NOT the gateway's `proxy.mode` (manual vs. core). */
 export type MihomoRoutingMode = 'rule' | 'global' | 'direct';
 
@@ -1875,6 +1922,15 @@ export interface MihomoProviderInfo {
   vehicleType?: string;
   updatedAt?: string;
   nodeCount?: number;
+}
+
+/** One captured line of the Clash core's own output. `gateway` marks a
+ *  lifecycle marker written by the gateway (spawn/exit), not core output. */
+export interface MihomoCoreLogLine {
+  id: string;
+  ts: number;
+  stream: 'stdout' | 'stderr' | 'gateway';
+  text: string;
 }
 
 export interface InstallMihomoResult {
@@ -2776,9 +2832,28 @@ export const api = {
     return res.json();
   },
 
-  async enableSystemProxy(): Promise<SystemProxyStatus> {
-    const res = await fetch('/api/admin/system-proxy/enable', { method: 'POST' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  /**
+   * Point the OS proxy at one of OCR's local endpoints. `forward` (default) is
+   * the inbound forward proxy on the Proxy access page; `clash` is the Clash
+   * core's mixed port. ONE snapshot slot: switching endpoints rewrites the OS
+   * pointer and keeps the pre-OCR snapshot for restore.
+   */
+  async enableSystemProxy(target: 'forward' | 'clash' = 'forward'): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy/enable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    if (!res.ok) {
+      // The route answers a code body (e.g. `not-running`) — surface the code,
+      // not the transport status, so the console can localize it.
+      let code = `HTTP ${res.status}`;
+      try {
+        const body = (await res.json()) as { code?: string };
+        if (body?.code) code = body.code;
+      } catch {}
+      throw new Error(code);
+    }
     return res.json();
   },
 
@@ -2942,6 +3017,62 @@ export const api = {
     return body as MihomoCustomRulesResult;
   },
 
+  /** The LAN baseline and the opt-in CN direct rows. */
+  async getMihomoRulePresets(): Promise<MihomoRulePresets> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules/presets');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoRulePresets;
+  },
+
+  async getMihomoGeo(): Promise<MihomoGeoReport> {
+    const res = await fetch('/api/admin/proxy/mihomo/geo');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoGeoReport;
+  },
+
+  /**
+   * Download the geo databases GEOIP/GEOSITE rules need. NDJSON: `progress`
+   * events carry the asset key and byte counts, then exactly one `result`
+   * (total 0 = unknown size). `leg` picks the egress: `machine` (default) is
+   * the machine's own network, `node` goes through the Clash core. `refresh`
+   * replaces files that already exist; without it only missing files are
+   * fetched.
+   */
+  async downloadMihomoGeo(
+    leg: MihomoGeoLeg,
+    opts: { refresh?: boolean; onProgress?: (file: string, downloaded: number, total: number) => void } = {},
+  ): Promise<MihomoGeoDownloadResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/geo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ leg, refresh: opts.refresh === true }),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.body || !contentType.includes('ndjson')) {
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw mihomoError(body, res.status);
+      return body as MihomoGeoDownloadResult;
+    }
+    let out: MihomoGeoDownloadResult | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return; // A malformed line must not kill the stream — skip it.
+      }
+      if (evt.type === 'progress' && typeof evt.downloaded === 'number') {
+        opts.onProgress?.(typeof evt.file === 'string' ? evt.file : '', evt.downloaded, typeof evt.total === 'number' ? evt.total : 0);
+      } else if (evt.type === 'result') {
+        out = evt as unknown as MihomoGeoDownloadResult;
+      }
+    });
+    if (!out) throw new Error(`geo download stream ended without a result (HTTP ${res.status})`);
+    return out;
+  },
+
   async startMihomo(): Promise<MihomoOpResult> {
     const res = await fetch('/api/admin/proxy/mihomo/start', { method: 'POST' });
     return res.json();
@@ -3091,12 +3222,17 @@ export const api = {
     return json;
   },
 
-  /** Connectivity check: fetch the configured URL THROUGH the current proxy
-   *  node; unlike
-   *  `testMihomoNode` (a direct TCP probe) this proves the tunnel + URL pair.
-   *  `group` names the RUNNING group shown in the console (config may differ). */
-  async testMihomoUrl(url?: string, group?: string): Promise<{ status: string; reachable?: boolean; ms?: number; node?: string; url?: string; error?: string; message?: string }> {
-    const body: Record<string, string> = {};
+  /** Connectivity check with TWO legs (`mode`): `tunnel` (default) fetches the
+   *  URL THROUGH the current proxy node — it proves the tunnel + URL pair;
+   *  `machine` sends the request the way the rest of this machine does — via
+   *  the OS system proxy when one is enabled (`via: 'system-proxy'`), directly
+   *  otherwise — the baseline that tells a node/subscription fault apart from
+   *  a local-egress one. `group` names the RUNNING group shown in the console
+   *  (config may differ) and is ignored by the machine leg. Unlike
+   *  `testMihomoNode` (a direct TCP probe of a node's server), both legs
+   *  request the URL itself. */
+  async testMihomoUrl(url?: string, group?: string, mode: 'tunnel' | 'machine' = 'tunnel'): Promise<{ status: string; mode?: 'tunnel' | 'machine'; via?: 'direct' | 'system-proxy'; proxy?: string; reachable?: boolean; ms?: number; node?: string; url?: string; error?: string; message?: string }> {
+    const body: Record<string, string> = { mode };
     if (url) body.url = url;
     if (group) body.group = group;
     const res = await fetch('/api/admin/proxy/mihomo/test-url', {
@@ -3136,6 +3272,22 @@ export const api = {
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw mihomoError(json, res.status);
     return json;
+  },
+
+  /** The core's captured stdout/stderr, oldest first (bounded ring, memory-only). */
+  async getMihomoLogs(): Promise<MihomoCoreLogLine[]> {
+    const res = await fetch('/api/admin/proxy/mihomo/logs');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return Array.isArray(json.lines) ? json.lines : [];
+  },
+
+  async clearMihomoLogs(): Promise<void> {
+    const res = await fetch('/api/admin/proxy/mihomo/logs', { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw mihomoError(json, res.status);
+    }
   },
 
   async getTierPools(): Promise<TierPoolsResponse> {

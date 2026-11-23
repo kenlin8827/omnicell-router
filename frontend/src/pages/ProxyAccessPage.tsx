@@ -357,6 +357,10 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
     stale: 'proxyLog.sysStateStale',
     unsupported: 'proxyLog.sysStateUnsupported',
   };
+  /** The Clash panel can own the same snapshot slot; this card must then tell
+   *  the truth instead of claiming the OS points at the inbound proxy. */
+  const ownedByClash = st?.owner === 'clash' && (st.state === 'on' || st.state === 'stale');
+  const badgeKey = st?.state === 'on' && st.owner === 'clash' ? 'proxyLog.sysStateOnClash' : stateKey[st?.state ?? 'off'] || 'proxyLog.sysStateOff';
   const stateColor = st?.state === 'on' ? 'var(--accent-emerald)' : st?.state === 'stale' || st?.state === 'external' ? 'var(--accent-amber)' : 'var(--text-dim)';
 
   return (
@@ -367,20 +371,20 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
           <span>{t('proxyLog.sysTitle')}</span>
           {st && (
             <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: stateColor, background: 'var(--chip-bg)' }}>
-              {t(stateKey[st.state] || 'proxyLog.sysStateOff')}
+              {t(badgeKey)}
             </span>
           )}
         </div>
         {st?.supported && (
           <div style={{ display: 'flex', gap: '8px' }}>
-            {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t('proxyLog.sysStaleHint')}</span>}
+            {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t(ownedByClash ? 'proxyLog.sysStaleHintClash' : 'proxyLog.sysStaleHint')}</span>}
             {!readOnly && (
-              <button className="btn btn-primary btn-sm" disabled={busy || st.state === 'on'} onClick={() => act('enable')}>
+              <button className="btn btn-primary btn-sm" disabled={busy || (st.state === 'on' && !ownedByClash)} onClick={() => act('enable')}>
                 <MonitorCog size={12} />
-                <span>{t('proxyLog.sysEnableBtn')}</span>
+                <span>{t(ownedByClash ? 'proxyLog.sysSwitchBtn' : 'proxyLog.sysEnableBtn')}</span>
               </button>
             )}
-            <button className="btn btn-sm" disabled={busy || st.state === 'off'} onClick={() => act('disable')}>
+            <button className="btn btn-sm" disabled={busy || (st.state !== 'on' && st.state !== 'stale')} onClick={() => act('disable')}>
               <Undo2 size={12} />
               <span>{st.state === 'stale' ? t('proxyLog.sysRestoreBtn') : t('proxyLog.sysDisableBtn')}</span>
             </button>
@@ -389,7 +393,7 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
       </div>
 
       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', padding: '0 14px 10px' }}>
-        {t('proxyLog.sysHint')}
+        {t(ownedByClash ? 'proxyLog.sysHintClashOwned' : 'proxyLog.sysHint')}
       </div>
 
       {st?.supported && st.override && (
@@ -848,8 +852,10 @@ export const ProxyAccessPage: React.FC = () => {
   /** A disabled forward proxy can leave the machine pointed at a dead port
    *  (`on`) or leave an un-restored snapshot (`stale`). Both are visible here
    *  with a direct restore, so recovery never depends on finding the wizard
-   *  sub-route. `proxyEnabled` is the RUNTIME flag, not the form draft. */
-  const sysRestoreRow = sysStatus && sysStatus.proxyEnabled === false && (sysStatus.state === 'on' || sysStatus.state === 'stale') ? (
+   *  sub-route. `proxyEnabled` is the RUNTIME flag, not the form draft.
+   *  A Clash-owned snapshot is excluded: this hint names the inbound proxy as
+   *  the cause, and the Clash panel carries its own core-down warning. */
+  const sysRestoreRow = sysStatus && sysStatus.owner !== 'clash' && sysStatus.proxyEnabled === false && (sysStatus.state === 'on' || sysStatus.state === 'stale') ? (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: 'var(--text-sm)' }}>
       <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: 'var(--accent-amber)', background: 'var(--chip-bg)' }}>
         {t('proxyLog.sysRestoreBarTitle')}
