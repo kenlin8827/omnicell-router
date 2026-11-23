@@ -356,10 +356,15 @@ set — that shape predates `mode` and still asks for the core.
   traffic around the tunnel. `proxy.includes` / `proxy.excludes` are NOT
   mirrored into it: they match provider/model names, not hosts. The console
   (Mihomo → basic settings) puts the URL behind a button that opens a dialog
-  with the address and a copy action, composed from the console's own origin so
-  a remote-opened console still hands out a reachable address — the URL is
-  reference copy, not a setting, so it must not occupy a permanently
-  read-only input in the middle of the form.
+  with the address and a copy action. The address is composed by the gateway
+  from the request's own Host header plus the gateway port (`pacUrlFor`), never
+  from the console document's origin: under the Vite dev server
+  `window.location.origin` is the 5174 dev origin, which dies with the terminal
+  and is never what the OS or a browser should be pointed at. The status
+  payload therefore carries `pacUrl` (older gateways omit it and the button
+  stays disabled), and a remote-opened console still hands out the address it
+  was reached on. The URL is reference copy, not a setting, so it must not
+  occupy a permanently read-only input in the middle of the form.
   Outbound mode is mihomo's own switch and is kept separate from `proxy.mode`
   (manual vs. core): `proxy.mihomo.routingMode` is `rule` (default), `global` or
   `direct`. The generated config injects exactly one `MATCH,<group>` rule, so
@@ -591,14 +596,20 @@ set — that shape predates `mode` and still asks for the core.
 > i18n keys, the `/proxy-clash` route, the `proxy.mihomo` config key and the
 > binary name did not move.
 
-> **Amendment — the Clash panel also offers the OS proxy.** Basic settings now
-> hosts "Use as the system proxy" beside the PAC link: it points the OS proxy
-> at the mixed port through the SAME ownership module the inbound card uses
-> (ADR-0018 amendment — one snapshot slot, target switch that keeps the pre-OCR
-> payload, restore returns the pre-OCR settings). The action is immediate and
-> deliberately outside this tab's config save; enabling is gated on a running
-> core, and the card warns when the core is stopped while it owns the OS proxy.
-> The outbound page keeps only a quiet owner line pointing here.
+> **Amendment — the OS proxy target lives on ONE System Proxy page.** The Clash
+> panel no longer hosts "Use as the system proxy": assigning the OS pointer
+> (enabling or switching between the inbound forward proxy and the mixed port)
+> belongs to a dedicated System Proxy page in the Proxy group, which renders
+> both targets side by side through the SAME ownership module the inbound card
+> uses (ADR-0018 amendment — one snapshot slot, target switch that keeps the
+> pre-OCR payload, restore returns the pre-OCR settings). The action is
+> immediate and deliberately outside any tab's config save; enabling the Clash
+> target is gated on a running core, and the page warns when the core is
+> stopped while it owns the OS proxy. Every other surface keeps only status:
+> the inbound card (and its setup wizard), the Clash panel and
+> the outbound page show the owner, the bypass / env copy and a restore action,
+> each linking to the System Proxy page
+> (`/proxy-system?target=forward|clash`) for enable and switch.
 
 > **Amendment — geo data syncs on the operator's word, over a leg the operator
 > chooses.** The install is explicit, so updates are too: nothing refetches the

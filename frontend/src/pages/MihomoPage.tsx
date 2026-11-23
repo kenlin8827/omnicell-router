@@ -11,7 +11,8 @@
  * reverse) from whichever page loaded first.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, CheckCircle2, XCircle, Copy, ArrowDown, ArrowUp, ArrowUpDown, ArrowLeftRight, Cpu, Database, Download, Link2, Loader2, MonitorCog, Network, Play, Plus, RefreshCw, Rss, Save, ScrollText, SlidersHorizontal, Sparkles, Square, Terminal, Trash2, Undo2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Activity, CheckCircle2, XCircle, Copy, ArrowDown, ArrowUp, ArrowUpDown, ArrowLeftRight, Cpu, Database, Download, Link2, Loader2, Network, Play, Plus, RefreshCw, Rss, Save, ScrollText, SlidersHorizontal, Sparkles, Square, Terminal, Trash2 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { BrandIcon } from '../components/BrandIcons';
 import { ProviderLogo } from '../components/ProviderLogo';
@@ -543,6 +544,7 @@ export const MihomoPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const confirm = useConfirm();
+  const navigate = useNavigate();
   const [proxy, setProxy] = useState<ProxyShape | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -696,7 +698,6 @@ export const MihomoPage: React.FC = () => {
    *  must read live wherever the operator is — the test tab renders its
    *  "machine leg shares the node path" note from this same state. */
   const [sys, setSys] = useState<SystemProxyStatus | null>(null);
-  const [sysBusy, setSysBusy] = useState(false);
   const refreshSys = useCallback(async () => {
     try {
       setSys(await api.getSystemProxy());
@@ -710,39 +711,6 @@ export const MihomoPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [refreshSys]);
 
-  const enableClashSystemProxy = async () => {
-    setSysBusy(true);
-    try {
-      setSys(await api.enableSystemProxy('clash'));
-    } catch (err: any) {
-      const msg = err?.message === 'not-running' ? t('proxy.notRunning') : err?.message || String(err);
-      toast.error(t('proxyLog.sysEnableBtn') + ': ' + msg);
-    } finally {
-      setSysBusy(false);
-    }
-  };
-  const restoreSystemProxy = async () => {
-    setSysBusy(true);
-    try {
-      setSys(await api.disableSystemProxy());
-    } catch (err: any) {
-      toast.error(t('proxyLog.sysRestoreBarBtn') + ': ' + (err?.message || err));
-    } finally {
-      setSysBusy(false);
-    }
-  };
-  /** State × owner, never a generic "on": the other endpoint may be the owner. */
-  const sysBadgeKey = ((): string => {
-    if (!sys) return 'proxyLog.sysStateOff';
-    if (sys.state === 'on') return sys.owner === 'clash' ? 'proxyLog.sysStateOnClash' : 'proxyLog.sysStateOn';
-    const keys: Record<Exclude<SystemProxyStatus['state'], 'on'>, string> = {
-      off: 'proxyLog.sysStateOff',
-      external: 'proxyLog.sysStateExternal',
-      stale: 'proxyLog.sysStateStale',
-      unsupported: 'proxyLog.sysStateUnsupported',
-    };
-    return keys[sys.state];
-  })();
   const sysOwnedByClash = sys?.owner === 'clash' && (sys.state === 'on' || sys.state === 'stale');
   /** Header pill text: the short state token under the "system proxy" label.
    *  The slot has two possible owners, so an ON state names which one. */
@@ -819,13 +787,9 @@ export const MihomoPage: React.FC = () => {
     });
   };
 
-  /** Land on the OS system-proxy card: the general tab's last card. */
-  const showSystemProxyCard = () => {
-    setTab('general');
-    requestAnimationFrame(() => {
-      document.getElementById('mihomo-system-proxy-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  };
+  /** The OS proxy switch lives on its own page now: the pill is a status
+   *  readout that lands there with the Clash target in view. */
+  const openSystemProxyPage = () => navigate('/proxy-system?target=clash');
 
   const requireCore = (): boolean => {
     if (coreReady) return true;
@@ -861,9 +825,10 @@ export const MihomoPage: React.FC = () => {
     }
   };
 
-  /** Where a client should fetch the PAC from: this gateway's own origin, so a
-      console opened on another host/port still hands out a reachable URL. */
-  const pacUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/proxy.pac`;
+  /** Where a client should fetch the PAC from. The backend answers the URL on
+      the origin THIS request reached (request Host + gateway port), so a dev
+      console on Vite never advertises a URL that dies with its dev server. */
+  const pacUrl = sys?.pacUrl ?? '';
 
   /** Outbound mode changes apply to the LIVE core (no restart) and persist. */
   const changeRoutingMode = async (mode: MihomoRoutingMode) => {
@@ -884,6 +849,7 @@ export const MihomoPage: React.FC = () => {
   };
 
   const copyPac = async () => {
+    if (!pacUrl) return;
     // The shared helper, not `navigator.clipboard`: inside the desktop shell the
     // console is a remote page in a webview, where the engine's clipboard API
     // prompts and rejects on an unfocused document.
@@ -1971,10 +1937,10 @@ export const MihomoPage: React.FC = () => {
           {/* Machine egress ownership, on every tab: who holds the ONE OS-proxy
               snapshot slot is page-level state, and a stale pointer is a
               machine-wide outage — it must stay readable on whichever tab the
-              operator is on. Status + anchor only, the same idiom as the node
-              pill; the action stays on the card that owns it. */}
+              operator is on. Status + navigation only: the switch lives on the
+              system-proxy page, so this page cannot steal the owner. */}
           {sys?.supported && sys.state !== 'unsupported' && (
-            <button type="button" className="current-node" onClick={showSystemProxyCard}>
+            <button type="button" className="current-node" onClick={openSystemProxyPage}>
               <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: sysPillDot }} />
               <span style={{ color: 'var(--text-dim)' }}>{t('proxyLog.sysTitle')}</span>
               <span className="node-name">{sysPillText}</span>
@@ -2312,71 +2278,11 @@ export const MihomoPage: React.FC = () => {
                     </div>
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}>{t('proxy.pacSummary')}</div>
                   </div>
-                  <button className="btn btn-sm" onClick={() => setPacOpen(true)}>
+                  <button className="btn btn-sm" disabled={!pacUrl} onClick={() => setPacOpen(true)}>
                     <span>{t('proxy.pacOpen')}</span>
                   </button>
                 </div>
-                {/* OS system proxy: the WHOLE machine through the tunnel. Same
-                    snapshot slot as the inbound card (Proxy access) — one owner
-                    at a time, restore always returns the pre-OCR settings. The
-                    action is immediate, not part of this tab's save. */}
-                <div id="mihomo-system-proxy-card" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <div style={sectionTitle}>
-                      <MonitorCog size={14} />
-                      <span>{t('proxyLog.sysClashTitle')}</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      {sys && (
-                        <span
-                          className="badge"
-                          style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: sys.state === 'on' ? 'var(--accent-emerald)' : sys.state === 'stale' || sys.state === 'external' ? 'var(--accent-amber)' : 'var(--text-dim)', background: 'var(--chip-bg)' }}
-                        >
-                          {t(sysBadgeKey)}
-                        </span>
-                      )}
-                      {sys?.supported && (
-                        <>
-                          <button
-                            className="btn btn-sm btn-primary"
-                            disabled={sysBusy || !coreReady || (sys.state === 'on' && sys.owner === 'clash')}
-                            title={!coreReady ? t('proxyLog.sysClashNeedCore') : undefined}
-                            onClick={() => void enableClashSystemProxy()}
-                          >
-                            <MonitorCog size={12} />
-                            <span>{t('proxyLog.sysEnableBtn')}</span>
-                          </button>
-                          <button
-                            className="btn btn-sm"
-                            disabled={sysBusy || (sys.state !== 'on' && sys.state !== 'stale')}
-                            onClick={() => void restoreSystemProxy()}
-                          >
-                            <Undo2 size={12} />
-                            <span>{sys.state === 'stale' ? t('proxyLog.sysRestoreBtn') : t('proxyLog.sysDisableBtn')}</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('proxyLog.sysClashHint')}</div>
-                  {sys?.supported ? (
-                    sys.clash?.override && (
-                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
-                        <span style={{ marginRight: '6px' }}>{t('proxyLog.sysOverrideLabel')}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>{sys.clash.override}</span>
-                      </div>
-                    )
-                  ) : (
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.sysUnsupportedNote')}</div>
-                  )}
-                  {sys?.owner === 'clash' && sys.state === 'stale' && (
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.sysStaleHintClash')}</div>
-                  )}
-                  {sysOwnedByClash && !coreReady && (
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.sysClashCoreDown')}</div>
-                  )}
-                </div>
-                {pacOpen && (
+                {pacOpen && pacUrl && (
                   <Dialog
                     title={t('proxy.pacLabel')}
                     subtitle={<span>{t('proxy.pacHint')}</span>}

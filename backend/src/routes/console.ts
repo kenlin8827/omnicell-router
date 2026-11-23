@@ -49,6 +49,7 @@ import { listGatewayHosts, listClaimedEgress, claimEgressFor, WILDCARD_HOST_CLAI
 import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
 import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy, buildOverride, lanBypassHosts } from '../forward-proxy/system-proxy.js';
+import { pacUrlFor } from '../proxy/mihomo-pac.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
@@ -1678,7 +1679,7 @@ export function registerConsoleRoutes(
   // forward proxy (default) or the Clash core's mixed port. A target switch
   // rewrites the OS pointer without re-reading the pre-OCR snapshot; restore
   // always returns what the OS held before OCR first took ownership.
-  const systemProxyPayload = async (): Promise<Record<string, unknown>> => {
+  const systemProxyPayload = async (req: FastifyRequest): Promise<Record<string, unknown>> => {
     const live = getRuntimeConfigRef();
     const fp = live?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
@@ -1694,10 +1695,14 @@ export function registerConsoleRoutes(
       // The clash card names the bypass ITS target would write (LAN ranges),
       // not the inbound one on `override` (loopback + literal direct rows).
       clash: { mixedPort, running: clashRunning, override: buildOverride(clashBypass, process.platform) },
+      // The PAC URL follows the origin THIS request reached, never the console
+      // document's origin (a dev console on Vite would advertise a URL that
+      // dies with its dev server).
+      pacUrl: pacUrlFor(req.headers.host, req.protocol, live?.port),
     };
   };
 
-  app.get('/api/admin/system-proxy', async () => systemProxyPayload());
+  app.get('/api/admin/system-proxy', async (req) => systemProxyPayload(req));
 
   app.post('/api/admin/system-proxy/enable', async (req, reply) => {
     const body = (req.body ?? {}) as { target?: unknown };
@@ -1711,19 +1716,19 @@ export function registerConsoleRoutes(
       }
       const mixedPort = live?.proxy?.mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT;
       await enableSystemProxy(mixedPort, lanBypassHosts(process.platform), 'clash');
-      return systemProxyPayload();
+      return systemProxyPayload(req);
     }
     const fp = live?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
     await enableSystemProxy(port, osBypassHosts(fp?.rules), 'forward');
-    return systemProxyPayload();
+    return systemProxyPayload(req);
   });
 
-  app.post('/api/admin/system-proxy/disable', async () => {
+  app.post('/api/admin/system-proxy/disable', async (req) => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
     await disableSystemProxy(port, osBypassHosts(fp?.rules));
-    return systemProxyPayload();
+    return systemProxyPayload(req);
   });
 
   // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The

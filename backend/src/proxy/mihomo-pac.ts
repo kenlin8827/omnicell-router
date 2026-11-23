@@ -16,8 +16,29 @@
  * provider/model names, not hosts, so they have no meaning in a PAC script.
  */
 
+import { DEFAULT_GATEWAY_PORT } from '../config/defaults.js';
+
 /** Served at the gateway root, outside /api (browsers fetch it unauthenticated). */
 export const PAC_PATH = '/proxy.pac';
+
+/**
+ * Absolute PAC URL for the client that reached the gateway.
+ *
+ * The request's own Host is the only origin that is guaranteed to reach this
+ * listener: a dev console is served by Vite on another port, and handing out
+ * `window.location.origin` would tie the OS/browser auto-config to a dev
+ * server that dies with the terminal. `changeOrigin` in the Vite proxy
+ * rewrites Host to the gateway, and a production console is served by the
+ * gateway itself, so both paths yield the gateway origin.
+ */
+export function pacUrlFor(
+  requestHost: string | undefined,
+  protocol = 'http',
+  gatewayPort?: number,
+): string {
+  const host = requestHost?.trim() || `127.0.0.1:${gatewayPort ?? DEFAULT_GATEWAY_PORT}`;
+  return `${protocol}://${host}${PAC_PATH}`;
+}
 
 export interface PacScriptOptions {
   /** The mihomo mixed port (HTTP + SOCKS5 on one listener). */

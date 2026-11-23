@@ -331,6 +331,9 @@ export interface TranslationDict {
     proxyPatterns: string;
     /** Nav label: the built-in Clash panel under Proxy Management. */
     proxyMihomo: string;
+    /** Nav label: the machine-wide OS proxy page (one slot; the target is the
+     *  inbound forward proxy or the Clash egress). */
+    systemProxy: string;
     /** Nav label: the inbound proxy's traffic log page (the observation half
      *  of the inbound capability; the settings page owns the rules). Kept to
      *  one short word pair — the card header carries the full name. */
@@ -3220,6 +3223,13 @@ hiddenBadge: string;
     sysStateOnClash: string;
     sysHintClashOwned: string;
     sysSwitchBtn: string;
+    /** Dedicated system-proxy page: one machine-wide slot, two OCR targets. */
+    sysPageIntro: string;
+    sysForwardTitle: string;
+    sysForwardOff: string;
+    sysOpenPage: string;
+    sysActiveBtn: string;
+    sysCurrentLabel: string;
     sysClashTitle: string;
     sysClashHint: string;
     sysClashNeedCore: string;

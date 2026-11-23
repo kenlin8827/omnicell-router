@@ -616,6 +616,9 @@ export interface SystemProxyStatus {
   proxyEnabled?: boolean;
   forward?: { port: number; enabled: boolean };
   clash?: { mixedPort: number; running: boolean; override?: string };
+  /** PAC URL on the gateway's own origin (request Host + gateway port), never
+   *  the console document's origin. Optional: older gateways omit it. */
+  pacUrl?: string;
 }
 
 /**

@@ -304,16 +304,15 @@ const verifyRows = (snippet: string): { os: string; cmd: string; hint?: string }
   });
 
 /**
- * OS system-proxy ownership card: snapshot → point the OS at the inbound
- * forward proxy → one-click restore. WinINET / networksetup / gsettings per
- * platform (backend forward-proxy/system-proxy.ts); unsupported platforms
- * render an explanatory note only. Env snippets stay clipboard-only.
- * Embedded form drops the outer card frame — it is one route of the wizard's
- * client-routing step, not a card nested inside another card. `readOnly` keeps
- * the restore half alive while the forward proxy is off: pointing the OS at a
- * port nobody listens on must never be one click away in that state.
+ * OS system-proxy status card: snapshot state, the bypass the target would
+ * write, restore, and the per-shell env snippet. It is READ-ONLY on the
+ * pointer — the OS proxy has one owner and one switch, and that switch lives
+ * on the System Proxy page. `restore` stays here because recovering from a
+ * stale pointer must not require finding that page. Env snippets stay
+ * clipboard-only. Embedded form drops the outer card frame — it is one route
+ * of the wizard's client-routing step, not a card nested inside another card.
  */
-const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({ embedded = false, readOnly = false }) => {
+const SystemProxyCard: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [st, setSt] = useState<SystemProxyStatus | null>(null);
@@ -339,12 +338,12 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
     setShowEnv(st.state !== 'on');
   }, [st]);
 
-  const act = async (kind: 'enable' | 'disable') => {
+  const restore = async () => {
     setBusy(true);
     try {
-      setSt(kind === 'enable' ? await api.enableSystemProxy() : await api.disableSystemProxy());
+      setSt(await api.disableSystemProxy());
     } catch (err: any) {
-      toast.error((kind === 'enable' ? t('proxyLog.sysEnableBtn') : t('proxyLog.sysDisableBtn')) + ': ' + (err?.message || err));
+      toast.error(t('proxyLog.sysDisableBtn') + ': ' + (err?.message || err));
     } finally {
       setBusy(false);
     }
@@ -357,7 +356,7 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
     stale: 'proxyLog.sysStateStale',
     unsupported: 'proxyLog.sysStateUnsupported',
   };
-  /** The Clash panel can own the same snapshot slot; this card must then tell
+  /** The Clash egress can own the same snapshot slot; this card must then tell
    *  the truth instead of claiming the OS points at the inbound proxy. */
   const ownedByClash = st?.owner === 'clash' && (st.state === 'on' || st.state === 'stale');
   const badgeKey = st?.state === 'on' && st.owner === 'clash' ? 'proxyLog.sysStateOnClash' : stateKey[st?.state ?? 'off'] || 'proxyLog.sysStateOff';
@@ -378,13 +377,11 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
         {st?.supported && (
           <div style={{ display: 'flex', gap: '8px' }}>
             {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t(ownedByClash ? 'proxyLog.sysStaleHintClash' : 'proxyLog.sysStaleHint')}</span>}
-            {!readOnly && (
-              <button className="btn btn-primary btn-sm" disabled={busy || (st.state === 'on' && !ownedByClash)} onClick={() => act('enable')}>
-                <MonitorCog size={12} />
-                <span>{t(ownedByClash ? 'proxyLog.sysSwitchBtn' : 'proxyLog.sysEnableBtn')}</span>
-              </button>
-            )}
-            <button className="btn btn-sm" disabled={busy || (st.state !== 'on' && st.state !== 'stale')} onClick={() => act('disable')}>
+            <Link to="/proxy-system?target=forward" className="btn btn-sm">
+              <MonitorCog size={12} />
+              <span>{t('proxyLog.sysOpenPage')}</span>
+            </Link>
+            <button className="btn btn-sm" disabled={busy || (st.state !== 'on' && st.state !== 'stale')} onClick={() => void restore()}>
               <Undo2 size={12} />
               <span>{st.state === 'stale' ? t('proxyLog.sysRestoreBtn') : t('proxyLog.sysDisableBtn')}</span>
             </button>
@@ -1464,10 +1461,10 @@ export const ProxyAccessPage: React.FC = () => {
             </div>
             {/* The wizard has no steps to show, but the OS-proxy snapshot may
                 still outlive a disabled or crashed forward proxy. Only draw the
-                restore panel when OCR actually owns (or owned) the OS proxy —
-                a fresh install should not see an empty system-proxy card.
-                Read-only so the OS cannot be pointed at a dead port. */}
-            {(sysStatus?.state === 'on' || sysStatus?.state === 'stale') && <SystemProxyCard embedded readOnly />}
+                status/restore panel when OCR actually owns (or owned) the OS
+                proxy — a fresh install should not see an empty system-proxy
+                card. The pointer switch lives on the System Proxy page. */}
+            {(sysStatus?.state === 'on' || sysStatus?.state === 'stale') && <SystemProxyCard embedded />}
           </div>
         ) : (
           <>

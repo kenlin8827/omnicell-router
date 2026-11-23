@@ -517,8 +517,15 @@ bypass list even when its egress was "via proxy".
 > **Amendment — the OS proxy has TWO OCR targets, one owner.** `system-proxy.ts`
 > can now point the OS at either the inbound forward proxy (`owner: 'forward'`,
 > the default and the historical behaviour) or the Clash core's mixed port
-> (`owner: 'clash'`), exposed on the Clash panel's basic settings beside the PAC
-> link. The snapshot slot stays SINGLE and always holds the PRE-OCR state: the
+> (`owner: 'clash'`). Both targets are assigned from ONE dedicated System Proxy
+> page in the Proxy group: that page is the only surface that enables or
+> switches the OS pointer, because a switch has to answer "which target?", and
+> per-panel switches would each be able to claim the single slot. Every other
+> surface — the inbound card (and its setup wizard), the Clash
+> panel, the outbound page — keeps status, bypass / env copy and the restore
+> action, each linking to the System Proxy page
+> (`/proxy-system?target=forward|clash`).
+> The snapshot slot stays SINGLE and always holds the PRE-OCR state: the
 > first enable records it, re-enabling the same endpoint only refreshes, and
 > switching endpoints rewrites the OS pointer plus the snapshot's `owner`
 > without ever re-reading the OS (whose values at that moment are ours).

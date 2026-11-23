@@ -51,7 +51,7 @@ export const ProxyPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
   /** OS-proxy owner — a quiet status line only. The switch itself lives on the
-   *  Clash panel, beside the mixed port it points at. */
+   *  System Proxy page, where ONE slot chooses its target. */
   const [sys, setSys] = useState<SystemProxyStatus | null>(null);
 
   // Only the fields this page owns enter the dirty check: a node selection saved
@@ -186,7 +186,10 @@ export const ProxyPage: React.FC = () => {
               <ArrowRight size={12} />
             </Link>
             {sys?.owner === 'clash' && sys.state !== 'off' && (
-              <span>{t('proxy.sysProxyOwner', { port: sys.clash?.mixedPort ?? '' })}</span>
+              <Link to="/proxy-system?target=clash" className="link-quiet">
+                <span>{t('proxy.sysProxyOwner', { port: sys.clash?.mixedPort ?? '' })}</span>
+                <ArrowRight size={12} />
+              </Link>
             )}
           </div>
 

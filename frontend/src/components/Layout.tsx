@@ -4,7 +4,7 @@ import {
   Activity, AlertOctagon, Archive, ArrowLeftRight,
   BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, CloudDownload, Compass, Cpu,
   DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
-  MessagesSquare, Monitor, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
+  MessagesSquare, Monitor, MonitorCog, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
   ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
 } from 'lucide-react';
@@ -76,6 +76,9 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/proxy-log', labelKey: 'nav.proxyLog', icon: ScrollText },
     { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
     { to: '/proxy-clash', labelKey: 'nav.proxyMihomo', icon: Cpu },
+    /* The machine-wide switch consumes BOTH halves above, so it sits last:
+       one OS slot, pointed at the inbound proxy or the Clash egress. */
+    { to: '/proxy-system', labelKey: 'nav.systemProxy', icon: MonitorCog },
   ] },
   /** The name-resolution chain, in the order the pipeline walks it (ADR-0003):
    *  combos and tiers are the exact-match stages, auto is the smart cascade,
@@ -135,6 +138,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/harness/mcp-debug': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcpBrowser' },
   '/proxy-upstream': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxy' },
   '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
+  '/proxy-system': { groupKey: 'nav.grpProxy', titleKey: 'nav.systemProxy' },
   '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/proxy-log': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyLog' },
