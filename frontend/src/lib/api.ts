@@ -60,6 +60,9 @@ export interface ClientStatus {
   /** Passthrough launch verbs the hook publishes (`['cursor','cursor-agent']`)
    *  — the console renders `ocr <verb>` from here. */
   launch?: string[];
+  /** Retired spellings of the verbs above — refused by the CLI, so never
+   *  rendered as a start command (backend `ClientHookStatus.launchAliases`). */
+  launchAliases?: string[];
   /** Brand asset key for this row's logo; absent = the client id is the asset
    *  name. Declared by the hook, so no client→logo table lives here. */
   icon?: string;
@@ -72,6 +75,10 @@ export interface ClientStatus {
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
+  /** Client-owned model ids the hook observed at runtime (a client whose model
+   *  table is compiled publishes it only in its own catalog read). The console
+   *  offers these ids when a mapping row names one; absent = none observed. */
+  catalogIds?: string[];
   /** Installed CLI version vs the adapter's minimum-compatible floor (absent = adapter declares no probe). */
   version?: { current: string; min?: string; meetsMin: boolean };
   /** This client's model slots; value undefined = auto (intelligent routing). */
@@ -5136,7 +5143,7 @@ export interface PluginConfigFieldInfo {
   enumLabels?: Record<string, string | Record<string, string>>;
   /** Widget from the closed console vocabulary (mirrors backend
    *  `PluginConfigControl`). Omitted = the type's default control. */
-  control?: 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
+  control?: 'text' | 'textarea' | 'model' | 'models' | 'aliases' | 'segmented' | 'apiKey';
   /** Id of the plugin's `configSections` entry this field belongs to; omitted =
    *  the leading ungrouped block. */
   section?: string;

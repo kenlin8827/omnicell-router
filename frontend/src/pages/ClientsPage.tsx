@@ -10,8 +10,9 @@ import { SmartAssignDialog, type SmartAssignTarget } from '../components/SmartAs
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
 import { api, opencodeApi, type ClientStatus, type ClientArtifact, type ApiKeyItem, type OpenCodeAgentView, type ClientProfileMemoryEntry, type PluginViewInfo, type PluginClientText, type CaTrustResponse, type PluginConfigFieldInfo, type PluginConfigSectionInfo } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
+import { effortOptionList, EFFORT_LADDER } from '../lib/effort';
 import { gatewayBaseUrl } from '../lib/gateway-url';
-import { gatewayModeValue, gatewayVocabulary, parseGatewayCfg, pickLocaleText, SHARED_GATEWAY_CARD_KEYS, type GatewayCfgDraft } from '../lib/plugin-config';
+import { formatAliasSpec, gatewayCardShape, gatewayModeValue, gatewayVocabulary, matchAliasPattern, parseAliasRows, parseGatewayCfg, pickLocaleText, SHARED_GATEWAY_CARD_KEYS, type AliasRow, type GatewayCfgDraft } from '../lib/plugin-config';
 import { pluginClientText, pluginWarningText } from '../lib/warnings';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
@@ -104,12 +105,16 @@ function sameModelSelection(a: string[], b: string[]): boolean {
  * The `ocr <verb>` launch commands a hook publishes (`ClientHookStatus.launch`).
  * The FIRST verb is the primary start command, the rest are alternates. No
  * table here: a packaged hook's verbs (`cursor`, `qoder-cli`, …) arrive with
- * its status row, exactly like a built-in hook's.
+ * its status row, exactly like a built-in hook's. Retired spellings are
+ * dropped — the chip copies a command that must still run, and a retired word
+ * is refused at the CLI.
  */
-const launchCommandsOf = (c: ClientStatus): { primary: string; alt?: string } | null =>
-  c.launch?.length
-    ? { primary: `ocr ${c.launch[0]}`, ...(c.launch[1] ? { alt: `ocr ${c.launch[1]}` } : {}) }
+const launchCommandsOf = (c: ClientStatus): { primary: string; alt?: string } | null => {
+  const verbs = (c.launch ?? []).filter((v) => !(c.launchAliases ?? []).includes(v));
+  return verbs.length
+    ? { primary: `ocr ${verbs[0]}`, ...(verbs[1] ? { alt: `ocr ${verbs[1]}` } : {}) }
     : null;
+};
 
 interface GatewayPluginState {
   installed: boolean;
@@ -133,7 +138,7 @@ export const ClientsPage: React.FC = () => {
   /** Per-client per-slot model selection ('auto' = intelligent routing default) */
   const [modelSel, setModelSel] = useState<Record<string, Record<string, string>>>({});
   /** Gateway-routable models (virtual + registered) from /v1/models */
-  const [models, setModels] = useState<{ id: string; tier?: string; kind?: string; members?: number }[]>([]);
+  const [models, setModels] = useState<{ id: string; tier?: string; kind?: string; members?: number; efforts?: string[] }[]>([]);
   /** Gateway API keys (Claude auth token writer) */
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   /** Per-client selected API key id — setup resolves the plaintext secret via
@@ -164,7 +169,15 @@ export const ClientsPage: React.FC = () => {
    *  Holds only the touched keys; display falls back to the committed plugin
    *  values, so an empty map shows exactly what the plugin holds. Cleared by a
    *  successful save — the response's values are the new committed baseline. */
-  const [cardEdits, setCardEdits] = useState<Record<string, Record<string, string>>>({});
+  const [cardEdits, setCardEdits] = useState<Record<string, Record<string, string | string[]>>>({});
+  /** Row drafts of an `aliases` field, keyed by PLUGIN id. A row table cannot
+   *  live in `cardEdits` as a spec array: a half-typed row (no target yet) is
+   *  not a spec and would disappear on the next keystroke. The draft keeps row
+   *  OBJECTS; only a save folds them back into `clientId=target[#label]`. */
+  const [aliasEdits, setAliasEdits] = useState<Record<string, { key: string; rows: AliasRow[] }>>({});
+  /** Batch-add draft per plugin: a wildcard over the client's reported ids and
+   *  the OCR model every match should map to. */
+  const [aliasBatch, setAliasBatch] = useState<Record<string, { pattern: string; target: string }>>({});
   /** Schema + sections of each gateway plugin, kept so the card renders its
    *  `placement: 'card'` fields from the plugin's own declaration (no console
    *  knowledge of plugin keys). */
@@ -474,8 +487,11 @@ export const ClientsPage: React.FC = () => {
   /** Catalog-relevant draft fields differ from the committed values — after
    *  such a save the client must re-read its own model list. Follow mode always
    *  re-snapshots the key's allowed list at save time, so it counts too. */
-  const gatewayCatalogDirty = (draft: GatewayCfgDraft): boolean => {
+  const gatewayCatalogDirty = (draft: GatewayCfgDraft, pluginId: string): boolean => {
     const base = parseGatewayCfg(draft.values ?? {}, draft);
+    // The alias table is a catalog shape: saving it changes the labels the
+    // client renders, so the client must re-read its list afterwards.
+    if (aliasEdits[pluginId]) return true;
     return (
       draft.model !== base.model ||
       draft.forceModel !== base.forceModel ||
@@ -493,7 +509,14 @@ export const ClientsPage: React.FC = () => {
   const saveGatewayCfg = async (pluginId: string): Promise<boolean> => {
     const draft = gatewayCfg[pluginId];
     if (!draft) return false;
-    const catalogChanged = gatewayCatalogDirty(draft);
+    // Without the declaration this card cannot know which keys exist: a save
+    // built from an empty schema would drop every operator value (the alias
+    // table included). Refuse until the config endpoint answered.
+    if ((gatewaySchema[pluginId] ?? []).length === 0) {
+      toast.error(t('clients.gatewaySchemaUnavailable'));
+      return false;
+    }
+    const catalogChanged = gatewayCatalogDirty(draft, pluginId);
     // Every OCR-routed completion is charged to this key (ADR-0017): limits,
     // model access and usage attribution all hang on it, so the card cannot
     // save an unbound gateway.
@@ -520,22 +543,31 @@ export const ClientsPage: React.FC = () => {
         setKeyModels((prev) => ({ ...prev, [picked.id]: view }));
         models = view.models.filter((model) => model.allowed).map((model) => model.id);
       }
-      // The unset mode may hide the concrete default from the list, but a
-      // configured id stays a real routing target: forceModel and unpinned
-      // requests resolve it against the full registry.
-      const model = draft.model;
-      const values = {
-        ...draft.values,
-        // `placement: 'card'` fields are edited on this card; carry the overlay
-        // through takeover-driven saves exactly like the explicit Save button.
-        ...(cardEdits[pluginId] ?? {}),
-        model,
+      // Only DECLARED keys are written. A gateway whose model surface is a
+      // mapping table declares none of the shared catalog keys, and echoing a
+      // stored one back would make the host drop it with a warning on every
+      // save (and quietly re-add a dead knob to the config file).
+      const declared = new Set((gatewaySchema[pluginId] ?? []).map((field) => field.key));
+      const shared: Record<string, unknown> = {
+        model: draft.model,
         forceModel: draft.forceModel,
         catalogReplace: draft.catalogReplace,
         catalogPrefix: draft.catalogPrefix,
         // Persist the plugin's own unset spelling — `default` is UI vocabulary.
         modelListMode: gatewayModeValue(draft, draft.modelListMode),
         models,
+      };
+      const aliasField = (gatewaySchema[pluginId] ?? []).find((field) => field.control === 'aliases');
+      const aliasRows = aliasEdits[pluginId];
+      const values: Record<string, unknown> = {
+        ...Object.fromEntries(Object.entries(draft.values).filter(([key]) => declared.has(key))),
+        // `placement: 'card'` fields are edited on this card; carry the overlay
+        // through takeover-driven saves exactly like the explicit Save button.
+        ...Object.fromEntries(Object.entries(cardEdits[pluginId] ?? {}).filter(([key]) => declared.has(key))),
+        ...Object.fromEntries(Object.entries(shared).filter(([key]) => declared.has(key))),
+        ...(aliasField && aliasRows
+          ? { [aliasField.key]: aliasRows.rows.map(formatAliasSpec).filter(Boolean) }
+          : {}),
         ...(draft.keyField ? { [draft.keyField]: picked.id } : {}),
       };
       const res = await opencodeApi.putPluginConfig(pluginId, values);
@@ -543,6 +575,12 @@ export const ClientsPage: React.FC = () => {
       // The response values are the new committed baseline; the card-owned
       // overlay has nothing left to shadow. A FAILED save keeps it for retry.
       setCardEdits((prev) => (prev[pluginId] ? { ...prev, [pluginId]: {} } : prev));
+      setAliasEdits((prev) => {
+        if (!prev[pluginId]) return prev;
+        const next = { ...prev };
+        delete next[pluginId];
+        return next;
+      });
       // Only a catalog-shaped save needs the client to re-read its list; a
       // dropped value (warning) means the advertised list did NOT change.
       setGatewaySavedNotice((prev) => ({ ...prev, [pluginId]: catalogChanged && res.warnings.length === 0 }));
@@ -586,7 +624,8 @@ export const ClientsPage: React.FC = () => {
       draft.modelListMode !== base.modelListMode ||
       !sameModelSelection(draft.models, base.models) ||
       draft.boundKeyId !== pickedId ||
-      Object.keys(cardEdits[cardPluginId] ?? {}).length > 0
+      Object.keys(cardEdits[cardPluginId] ?? {}).length > 0 ||
+      !!aliasEdits[cardPluginId]
     );
   };
 
@@ -1350,6 +1389,10 @@ export const ClientsPage: React.FC = () => {
             // `placement` choices instead of branching on the plugin id.
             const schema = gatewaySchema[pluginId] ?? [];
             const sections = gatewaySections[pluginId] ?? [];
+            // The shared blocks are DECLARED vocabulary: a gateway that keeps
+            // its model surface elsewhere (a mapping table) declares none of
+            // these keys and gets neither the list editor nor the routing row.
+            const shape = gatewayCardShape(schema);
             const hideDefaultModel = schema.find((field) => field.key === 'model')?.placement === 'none';
             const defaultOptions = [...new Set([
               draft.model,
@@ -1398,6 +1441,8 @@ export const ClientsPage: React.FC = () => {
                   </span>
                 ) : null}
 
+                {shape.modelList && (
+                <>
                 <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayModelList')}</span>
                 <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -1507,12 +1552,14 @@ export const ClientsPage: React.FC = () => {
                     </label>
                   )}
                 </div>
+                </>
+                )}
 
                 {/* The gateway routing default (`model` / `forceModel`) is a
                     RELAY concept. A hook whose client always names its model
                     declares that field `placement: 'none'` — the card then
                     skips the row instead of offering dead config. */}
-                {!hideDefaultModel && (
+                {shape.routingDefault && !hideDefaultModel && (
                   <>
                     <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('clients.gatewayDefaultModel')}</span>
                     <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
@@ -1582,26 +1629,209 @@ export const ClientsPage: React.FC = () => {
                           return (
                             <React.Fragment key={field.key}>
                               <span style={{ gridColumn: 1, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{label}</span>
-                              {field.control === 'model' ? (
-                                <Combobox
-                                  style={{ gridColumn: 2, minWidth: 0 }}
-                                  value={value}
-                                  clearable
-                                  disabled={busy}
-                                  onChange={(v) => setCard(field.key, v ?? '')}
-                                  options={[...new Set([value, ...listed])].filter(Boolean).map((id) => ({ value: id, label: id }))}
-                                  placeholder={label}
-                                />
-                              ) : (
-                                <input
-                                  className="input"
-                                  style={{ gridColumn: 2, minWidth: 0 }}
-                                  value={value}
-                                  disabled={busy}
-                                  onChange={(e) => setCard(field.key, e.target.value)}
-                                  placeholder={label}
-                                />
-                              )}
+                          {field.control === 'model' ? (
+                            <Combobox
+                              style={{ gridColumn: 2, minWidth: 0 }}
+                              value={value}
+                              clearable
+                              disabled={busy}
+                              onChange={(v) => setCard(field.key, v ?? '')}
+                              options={[...new Set([value, ...listed])].filter(Boolean).map((id) => ({ value: id, label: id }))}
+                              placeholder={label}
+                            />
+                          ) : field.control === 'aliases' ? (
+                            <div style={{ gridColumn: 2, display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                              {(() => {
+                                // The mapping table: the client's own model id
+                                // on the left, the OCR model it should serve on
+                                // the right, plus the thinking level that id
+                                // means. Rows are DRAFTS (row objects), so a
+                                // half-typed row survives the next keystroke.
+                                const committedSpecs = Array.isArray(committed[field.key])
+                                  ? (committed[field.key] as unknown[]).map(String)
+                                  : [];
+                                const rows = aliasEdits[pluginId]?.rows ?? parseAliasRows(committedSpecs);
+                                // Client ids the hook observed in its own catalog
+                                // reads — the picker options AND the pattern source.
+                                const catalogIds = [...new Set(c.catalogIds ?? [])];
+                                const batch = aliasBatch[pluginId] ?? { pattern: '', target: '' };
+                                const setBatch = (next: { pattern: string; target: string }): void =>
+                                  setAliasBatch((prev) => ({ ...prev, [pluginId]: next }));
+                                const setRows = (next: AliasRow[]): void => {
+                                  setGatewaySavedNotice((prev) => (prev[pluginId] ? { ...prev, [pluginId]: false } : prev));
+                                  setAliasEdits((prev) => ({ ...prev, [pluginId]: { key: field.key, rows: next } }));
+                                };
+                                const patchRow = (index: number, patch: Partial<AliasRow>): void =>
+                                  setRows(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+                                // Declared thinking levels of a row's target: a
+                                // registered model offers only the ladder it declares
+                                // (the pipeline clamps anything else back), narrowed to
+                                // the shared six the console can label; a
+                                // virtual/combo/variant address declares none, so the
+                                // full ladder applies.
+                                const levelOptionsFor = (target: string): readonly string[] => {
+                                  const declared = models.find((model) => model.id === target)?.efforts ?? [];
+                                  const levels = declared.filter((level) => (EFFORT_LADDER as readonly string[]).includes(level));
+                                  return levels.length > 0 ? levels : EFFORT_LADDER;
+                                };
+                                const rowGrid: React.CSSProperties = {
+                                  display: 'grid',
+                                  gridTemplateColumns: 'minmax(120px, 1fr) minmax(150px, 1.2fr) minmax(96px, 0.7fr) minmax(80px, 1fr) 24px',
+                                  gap: '6px',
+                                  alignItems: 'center',
+                                };
+                                return (
+                                  <>
+                                    <div style={{ ...rowGrid, color: 'var(--text-dim)' }}>
+                                      <span>{t('clients.aliasRowClientId')}</span>
+                                      <span>{t('clients.aliasRowTarget')}</span>
+                                      <span>{t('clients.aliasRowLevel')}</span>
+                                      <span>{t('clients.aliasRowLabel')}</span>
+                                      <span />
+                                    </div>
+                                    {rows.map((row, index) => (
+                                      <div key={index} style={rowGrid}>
+                                        {catalogIds.length > 0 ? (
+                                          <Combobox
+                                            value={row.clientId}
+                                            disabled={busy}
+                                            onChange={(v) => patchRow(index, { clientId: v ?? '' })}
+                                            // The row's own value stays listed: an id
+                                            // the client has not reported (yet) must
+                                            // still render, never look cleared.
+                                            options={[...new Set([row.clientId, ...catalogIds])].filter(Boolean).map((id) => ({ value: id, label: id }))}
+                                            placeholder="gemini-4-argon-high"
+                                            panelMinWidth={320}
+                                          />
+                                        ) : (
+                                          <input
+                                            className="input"
+                                            value={row.clientId}
+                                            disabled={busy}
+                                            onChange={(e) => patchRow(index, { clientId: e.target.value })}
+                                            placeholder="gemini-4-argon-high"
+                                            style={{ fontFamily: FONT_MONO }}
+                                          />
+                                        )}
+                                        <Combobox
+                                          value={row.target}
+                                          disabled={busy}
+                                          onChange={(v) => {
+                                            const target = v ?? '';
+                                            // A level the new target cannot serve would
+                                            // be clamped away downstream — clear it rather
+                                            // than store a pin that never applies.
+                                            patchRow(index, levelOptionsFor(target).includes(row.effort) ? { target } : { target, effort: '' });
+                                          }}
+                                          options={models.map((model) => ({ value: model.id, label: model.id }))}
+                                          placeholder={t('clients.aliasRowTarget')}
+                                          panelMinWidth={320}
+                                        />
+                                        <Combobox
+                                          value={row.effort}
+                                          disabled={busy}
+                                          clearable
+                                          onChange={(v) => patchRow(index, { effort: v ?? '' })}
+                                          options={effortOptionList(t, levelOptionsFor(row.target)).filter((option) => option.value !== '')}
+                                          placeholder={t('clients.aliasRowLevel')}
+                                          panelMinWidth={200}
+                                        />
+                                        <input
+                                          className="input"
+                                          value={row.label}
+                                          disabled={busy}
+                                          onChange={(e) => patchRow(index, { label: e.target.value })}
+                                          placeholder={row.target ? 'OCR · ' + row.target + (row.effort ? ' · ' + row.effort : '') : t('clients.aliasRowLabel')}
+                                        />
+                                        <button
+                                          type="button"
+                                          disabled={busy}
+                                          onClick={() => setRows(rows.filter((_, i) => i !== index))}
+                                          title={t('clients.aliasRowRemove')}
+                                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-dim)' }}
+                                        >
+                                          <X size={12} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                    {rows.length === 0 && (
+                                      <span style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('clients.aliasEmpty')}</span>
+                                    )}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                      <button
+                                        type="button"
+                                        className="btn btn-sm"
+                                        disabled={busy}
+                                        onClick={() => setRows([...rows, { clientId: '', target: '', effort: '', label: '' }])}
+                                      >
+                                        {t('clients.aliasAdd')}
+                                      </button>
+                                      <span style={{ width: 12 }} />
+                                      <input
+                                        className="input"
+                                        style={{ width: 150, fontFamily: FONT_MONO }}
+                                        value={batch.pattern}
+                                        disabled={busy || catalogIds.length === 0}
+                                        onChange={(e) => setBatch({ ...batch, pattern: e.target.value })}
+                                        placeholder={t('clients.aliasPatternPlaceholder')}
+                                        title={t('clients.aliasPatternHint')}
+                                      />
+                                      {catalogIds.length > 0 ? (
+                                        <Combobox
+                                          style={{ width: 220 }}
+                                          value={batch.target}
+                                          disabled={busy}
+                                          onChange={(v) => setBatch({ ...batch, target: v })}
+                                          options={models.map((model) => ({ value: model.id, label: model.id }))}
+                                          placeholder={t('clients.aliasRowTarget')}
+                                          panelMinWidth={320}
+                                        />
+                                      ) : null}
+                                      <button
+                                        type="button"
+                                        className="btn btn-sm"
+                                        disabled={busy || catalogIds.length === 0 || !batch.pattern.trim()}
+                                        onClick={() => {
+                                          if (!batch.target) {
+                                            toast.error(t('clients.aliasPatternNeedsTarget'));
+                                            return;
+                                          }
+                                          const matches = matchAliasPattern(batch.pattern, catalogIds).filter(
+                                            (id) => !rows.some((row) => row.clientId === id),
+                                          );
+                                          if (matches.length === 0) {
+                                            toast.error(t('clients.aliasPatternNoMatch'));
+                                            return;
+                                          }
+                                          setRows([
+                                            ...rows,
+                                            ...matches.map((id) => ({ clientId: id, target: batch.target, effort: '', label: '' })),
+                                          ]);
+                                          setBatch({ pattern: '', target: batch.target });
+                                        }}
+                                      >
+                                        {t('clients.aliasAddByPattern')}
+                                      </button>
+                                    </div>
+                                    {catalogIds.length === 0 ? (
+                                      <span style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                                        {t('clients.aliasCatalogEmpty')}
+                                      </span>
+                                    ) : null}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          ) : (
+                            <input
+                              className="input"
+                              style={{ gridColumn: 2, minWidth: 0 }}
+                              value={value}
+                              disabled={busy}
+                              onChange={(e) => setCard(field.key, e.target.value)}
+                              placeholder={label}
+                            />
+                          )}
                             </React.Fragment>
                           );
                         })}

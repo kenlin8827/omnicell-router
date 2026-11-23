@@ -9,7 +9,7 @@ import { SegGroup } from './SegGroup';
 import { Switch } from './Switch';
 import { api, opencodeApi, type ApiKeyItem, type PluginConfigFieldInfo, type PluginConfigSectionInfo, type PluginViewInfo } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
-import { groupVisibleFields, pickLocaleText } from '../lib/plugin-config';
+import { drawerFields, groupVisibleFields, pickLocaleText } from '../lib/plugin-config';
 import { sortModelOptions } from '../lib/model-options';
 import { useToast } from './ToastProvider';
 import { FONT_MONO } from '../lib/fonts';
@@ -430,17 +430,17 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({
   // per-section `advanced` collapsing is dropped — the subset is already the
   // short form, so collapsing it again would hide declared essentials.
   const hasEssential = schema.some((field) => field.essential === true);
+  // `quick` applies only when the manifest marks essentials; otherwise the
+  // schema has ONE view and the subset filter would empty the drawer.
+  const quickView = mode === 'quick' && hasEssential;
   // Placement is the manifest's call: `card` fields belong to the Client Hub
   // card and `none` fields are dead config — neither is rendered a second time
   // here; the apiKey control is card state by contract.
   const cardFields = schema.filter((field) => field.placement === 'card');
-  const visibleSchema = schema
-    .filter((field) => (field.placement ?? 'drawer') === 'drawer' && field.control !== 'apiKey')
-    .filter((field) => (mode === 'quick' ? field.essential === true : true));
-  const visibleSections =
-    mode === 'quick'
-      ? sections.filter((s) => visibleSchema.some((f) => f.section === s.id)).map((s) => ({ ...s, advanced: false }))
-      : sections;
+  const visibleSchema = drawerFields(schema, quickView ? 'quick' : 'advanced');
+  const visibleSections = quickView
+    ? sections.filter((s) => visibleSchema.some((f) => f.section === s.id)).map((s) => ({ ...s, advanced: false }))
+    : sections;
   // `visibleWhen` filters the RENDER only (ADR-0017 §7): the draft keeps every
   // value, so a field that is hidden at the moment still saves what it last held
   // — and the backend still validates it. Grouping inherits the same rule: an

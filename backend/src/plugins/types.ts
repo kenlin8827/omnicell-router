@@ -137,9 +137,11 @@ export interface PluginConfigSection {
 /** The closed widget vocabulary the CONSOLE owns (ADR-0017 §7). A plugin names
  *  a control, never a layout, ordering or markup: 'text' is the default for a
  *  `string`, 'textarea' a multi-line box, 'model' a single model-ref picker
- *  bound to the gateway catalog, 'models' a multi-pick list of model refs.
+ *  bound to the gateway catalog, 'models' a multi-pick list of model refs,
+ *  'aliases' a row table of `client=target[#label]` mapping specs (a client's
+ *  own model id on the left, an OCR model on the right).
  *  A control that cannot drive the field's type fails the manifest. */
-export type PluginConfigControl = 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
+export type PluginConfigControl = 'text' | 'textarea' | 'model' | 'models' | 'aliases' | 'segmented' | 'apiKey';
 
 /** One flat field of a plugin's operator-facing configuration. Primitives
  *  only: the console renders string/number/boolean/string[]/enum inputs

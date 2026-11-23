@@ -253,6 +253,9 @@ const CONFIG_CONTROLS: Record<string, Record<string, true>> = {
   textarea: { string: true, 'string[]': true },
   model: { string: true },
   models: { 'string[]': true },
+  // A mapping table of `client=target[#label]` specs; each row maps one of the
+  // client's OWN model ids onto an OCR model the gateway rewrites to.
+  aliases: { 'string[]': true },
   // A short closed choice rendered as joined buttons instead of a dropdown --
   // the console's own mode switches (none / custom / follow) use the same shape.
   segmented: { enum: true },
