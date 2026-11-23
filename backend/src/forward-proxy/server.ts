@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
+import { OrderedRelay } from './ordered-relay.js';
 import { CertMinter, ensureCa } from './ca.js';
 import { peekClientHello } from './sni.js';
 import { splice, type SpliceDirection } from './relay.js';
@@ -1103,9 +1104,20 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     target: Omit<MitmTarget, 'abort'>,
     reportClientFailure: (reason: string) => void
   ): void {
-    const pending: Buffer[] = [];
+    /** Client plaintext, in arrival order, regardless of when the hop is ready. */
+    const relay = new OrderedRelay();
     let conn: net.Socket | null = null;
     let decided = false;
+    /**
+     * True once the loopback hop to the inner server is CONNECTED. Until then
+     * every decrypted chunk is held by `relay`, because `conn` exists
+     * (net.connect returns before it connects) and writing to it would QUEUE
+     * bytes ahead of the buffered head. That inversion is not cosmetic: a body
+     * arrives as many chunks, so the tail would reach the parser before the
+     * request line and the inner server answers 400 to a message it never saw —
+     * the client's "request failed with empty body (code 400)" on large prompts.
+     */
+    let connected = false;
     /** Decrypted bytes seen so far — zero at close means the client never spoke. */
     let decryptedBytes = 0;
     /**
@@ -1129,18 +1141,19 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       } catch {}
     };
 
+    /** Whatever the relay hands over goes to the inner hop, in order. */
+    const forward = (chunk: Buffer): void => {
+      if (!conn!.write(chunk)) {
+        tlsSock.pause();
+        conn!.once('drain', () => tlsSock.resume());
+      }
+    };
+
     const onDecrypted = (d: Buffer): void => {
       decryptedBytes += d.length;
-      if (conn) {
-        if (!conn.write(d)) {
-          tlsSock.pause();
-          conn.once('drain', () => tlsSock.resume());
-        }
-        return;
-      }
-      pending.push(d);
-      if (decided) return;
-      const buf = Buffer.concat(pending);
+      relay.push(d);
+      if (connected || decided) return;
+      const buf = relay.snapshot();
       const isH2 =
         tlsSock.alpnProtocol === 'h2' || buf.subarray(0, 14).toString('latin1') === 'PRI * HTTP/2.0';
       if (!isH2) {
@@ -1188,8 +1201,10 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
             },
           });
         }
-        for (const p of pending) conn!.write(p);
-        pending.length = 0;
+        connected = true;
+        relay.attach(forward, () => {
+          connected = true;
+        });
         conn!.on('data', (d2: Buffer) => {
           if (!tlsSock.write(d2)) {
             conn!.pause();
