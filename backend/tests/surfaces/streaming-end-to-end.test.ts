@@ -449,6 +449,9 @@ describe('true streaming through the candidate pool', () => {
       // TTFT pair IS stamped — the upstreamStream tag records it.
       assert.equal(trace.execution.upstreamStream, 'sse');
       assert.equal(typeof trace.execution.ttftMs, 'number');
+      // No proxy is initialized in this process: the served dial went direct.
+      assert.equal(trace.execution.egress, 'direct');
+      assert.equal(trace.execution.egressProxy, undefined);
     } finally {
       server.stop(true);
     }

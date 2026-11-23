@@ -1352,6 +1352,16 @@ hiddenBadge: string;
     colStreamTip: string;
     /** Protocol-map column header (inbound surface → outbound wireKind). */
     colProtocol: string;
+    /** Outbound-egress column header (direct / proxy / unknown). */
+    colEgress: string;
+    /** Egress column tooltip: the three states. */
+    colEgressTip: string;
+    /** PROXY badge tooltip prefix (the redacted origin is appended after the colon). */
+    egressProxyTip: string;
+    /** DIRECT state tooltip. */
+    egressDirectTip: string;
+    /** Unknown state tooltip (legacy row / transport that does not report its egress). */
+    egressUnknownTip: string;
     promptFallbackTip: string;
     /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
     inboundStreamTip: string;

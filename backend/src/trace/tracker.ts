@@ -175,6 +175,17 @@ export interface ExecutionTrace {
      */
     wireKind?: string;
     /**
+     * Outbound egress of the SERVED attempt (ADR-0018 / ADR-0022): `direct` =
+     * straight out of the machine, `proxy` = through the operator's outbound
+     * proxy, whose redacted endpoint rides in `egressProxy`. Resolved at the
+     * dial, never at trace time — the proxy config hot-applies, and a long
+     * stream outlives a save. Absent = UNKNOWN (legacy rows, plugin-owned
+     * transports, mock execution), never read as direct.
+     */
+    egress?: 'direct' | 'proxy';
+    /** Redacted `scheme://host:port` of the outbound proxy; set only with `egress: 'proxy'`. */
+    egressProxy?: string;
+    /**
      * Perceived stall time: total time the committed attempt's stream spent in
      * gaps of ≥1 s between two consecutive chunks the client received with
      * visible output (answer text, tool-call fragments or reasoning/thinking

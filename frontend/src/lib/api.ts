@@ -881,6 +881,16 @@ export interface TraceRecord {
      * legacy traces.
      */
     wireKind?: string;
+    /**
+     * Outbound egress of the SERVED attempt (mirrors backend ExecutionTrace):
+     * `'direct'` = straight out of the machine, `'proxy'` = through the
+     * outbound proxy whose redacted endpoint rides in `egressProxy`. Absent on
+     * legacy rows and on transports that do not report a dial base (plugin
+     * executors) — UNKNOWN, never rendered as direct.
+     */
+    egress?: 'direct' | 'proxy';
+    /** Redacted `scheme://host:port` of the outbound proxy; only with `egress: 'proxy'`. */
+    egressProxy?: string;
   };
   finops: {
     inputTokens: number;

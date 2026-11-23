@@ -2536,14 +2536,23 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                       width: 176,
                       align: 'center',
                     },
+                    // Outbound egress (ADR-0018): its own self-describing
+                    // track, same convention as stream/protocol, so "did this
+                    // turn leave through the proxy?" is one scannable column.
+                    {
+                      key: 'egress',
+                      label: <span title={t('sessions.colEgressTip')}>{t('sessions.colEgress')}</span>,
+                      width: 84,
+                      align: 'center',
+                    },
                   ]}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 1248 = the 15 declared tracks (34+66+66+210+92+62+58+66+
-                  // 88+52+60+62+52+104+176); + 220 for the elastic prompt
+                  // 1332 = the 16 declared tracks (34+66+66+210+92+62+58+66+
+                  // 88+52+60+62+52+104+176+84); + 220 for the elastic prompt
                   // column.
-                  minWidth={1248 + 220}
+                  minWidth={1332 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
@@ -2661,6 +2670,28 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                             outbound={tr.execution.wireKind}
                             tip={t('sessions.protocolTip')}
                           />
+                        )}
+                      </td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Outbound egress of THIS turn (ADR-0018): the
+                            redacted proxy origin rides the PROXY tooltip.
+                            Absent = unknown (legacy row / plugin transport),
+                            rendered '—' — never as direct. */}
+                        {tr.execution.egress === 'proxy' ? (
+                          <span
+                            className="badge badge-info"
+                            title={`${t('sessions.egressProxyTip')}: ${tr.execution.egressProxy ?? ''}`}
+                          >
+                            PROXY
+                          </span>
+                        ) : tr.execution.egress === 'direct' ? (
+                          <span style={{ color: 'var(--text-dim)' }} title={t('sessions.egressDirectTip')}>
+                            DIRECT
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-dim)' }} title={t('sessions.egressUnknownTip')}>
+                            —
+                          </span>
                         )}
                       </td>
                     </tr>

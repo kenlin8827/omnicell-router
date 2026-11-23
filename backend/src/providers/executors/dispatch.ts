@@ -14,9 +14,19 @@ import { isPluginWire } from '../plugin-wires.js';
 export class DispatchingProvider implements LLMProvider {
   public name: string;
   private execs = new Map<WireKind, LLMProvider>();
+  /**
+   * Wires whose executor is CORE (the four built-in transports + the
+   * openai-chat fallback for unknown non-plugin types) and therefore honors
+   * `config.proxy` through `proxiedFetch`. Plugin wires own their egress and
+   * stay OUT of this set — `dialBaseFor` answers only for the core ones, so
+   * the trace never claims an egress the plugin may not have taken.
+   */
+  private coreWires = new Set<WireKind>();
+  private wireBases: Partial<Record<WireKind, string>>;
 
   constructor(config: ProviderConfig, wireBases: Partial<Record<WireKind, string>>) {
     this.name = config.name;
+    this.wireBases = wireBases;
     for (const [wire, baseUrl] of Object.entries(wireBases) as [WireKind, string][]) {
       if (wire === 'unroutable' || wire === 'systemone') continue;
       const wireConfig: ProviderConfig = {
@@ -24,21 +34,34 @@ export class DispatchingProvider implements LLMProvider {
         type: wire,
         baseUrl,
       };
-      if (wire === 'anthropic-messages') this.execs.set(wire, new AnthropicMessagesProvider(wireConfig));
-      else if (wire === 'google-gemini') this.execs.set(wire, new GoogleGeminiProvider(wireConfig));
-      else if (wire === 'openai-responses') this.execs.set(wire, new OpenAIResponsesProvider(wireConfig));
-      else if (wire === 'openai-chat') this.execs.set(wire, new OpenAIChatProvider(wireConfig));
+      if (wire === 'anthropic-messages') { this.execs.set(wire, new AnthropicMessagesProvider(wireConfig)); this.coreWires.add(wire); }
+      else if (wire === 'google-gemini') { this.execs.set(wire, new GoogleGeminiProvider(wireConfig)); this.coreWires.add(wire); }
+      else if (wire === 'openai-responses') { this.execs.set(wire, new OpenAIResponsesProvider(wireConfig)); this.coreWires.add(wire); }
+      else if (wire === 'openai-chat') { this.execs.set(wire, new OpenAIChatProvider(wireConfig)); this.coreWires.add(wire); }
       else {
         // Plugin-owned wires are resolved through the host registry, never
         // through a name list here (a new plugin protocol needs no core edit).
         const plugin = getModelServicePlugin(wire);
         if (plugin) this.execs.set(wire, createPluginProvider(plugin, wireConfig));
-        else if (!isPluginWire(wire)) this.execs.set(wire, new OpenAIChatProvider(wireConfig));
+        else if (!isPluginWire(wire)) {
+          this.execs.set(wire, new OpenAIChatProvider(wireConfig));
+          this.coreWires.add(wire);
+        }
         // A plugin wire with no installed executor stays UNSET on purpose:
         // exec() then fails by wire id instead of routing the request to a
         // chat executor that would only produce an upstream 400.
       }
     }
+  }
+
+  /**
+   * The per-wire base this dispatch dials for `model` — only for core wires.
+   * `undefined` = plugin-owned (or unset) transport: egress unknown.
+   */
+  dialBaseFor(model: ModelRegistration): string | undefined {
+    const wire = model.wire ?? 'openai-chat';
+    if (!this.coreWires.has(wire)) return undefined;
+    return this.wireBases[wire];
   }
 
   private exec(model: ModelRegistration): LLMProvider {

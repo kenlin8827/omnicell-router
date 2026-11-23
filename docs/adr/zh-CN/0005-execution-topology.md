@@ -46,6 +46,8 @@
 
 TraceTracker：环 5000 + 按环境 `traces.db`（WAL）持久化，保留 7 天 / 100 MB，逐小时清扫；记录 = 请求摘要（安全 `clientHeaders` 子集）+ routing（reason/reasonCode/reasonParams 含驱逐归因，ADR-0002）+ execution + finops。管理面：traces（环→库，冷会话可从持久化 trace 重建）、sessions（活行 join）、logs（环尾 ≤ 5000）。Fastify 逐请求访问日志**刻意关闭**（UI 轮询噪音；onError 保 5xx 底）——请求观测是 trace/capture 平面的职责，不是 stdout 的。捕获接缝实名 `observability/http-exchange`（客户腿）+ `observability/upstream-events`（`UpstreamEventContext` 贯穿 `process()`，provider 侧 emit 契约）——不存在其他事件汇抽象。
 
+**出站是执行事实，在拨出时落戳。** trace 的 execution 块携带落定尝试的出站走向——`egress: 'direct' | 'proxy'`，经代理时另带 `egressProxy`（出站代理的脱敏 `scheme://host:port`）；词汇取自 ADR-0018，端点遵循 ADR-0022（mihomo 模式下 origin 是本机回环混合端口，不是上游出口节点）。它在尝试拨出前一刻解析，用的是执行器同一个 `resolveProxyUrl`，目标地址取自承载该尝试的 transport 自报的拨出基址（`LLMProvider.dialBaseFor`）——绝不取注册表级 provider 配置（dispatch provider 按 wire 拨不同基址），也绝不在写 trace 时解析（代理配置热生效，长流会跨过一次保存）。缺省即 UNKNOWN，不得读作直连：旧行与插件自有 transport（自握出站、不报拨出基址）一律显示为未知。读 `egress`，不要从它的缺席推断直连。
+
 延迟词汇沿用业界 TTFT/TPS 拆分（OpenRouter：`Total = TTFT + output tokens / TPS`），在线上只测一次、处处派生。trace 的 execution 块携带 `ttftMs`（进程开始 → 落定尝试的首个转发 chunk——用户体感，含路由/排队/prefill 以及提交前的失败尝试）与 `genMs`（首 chunk → 流完全排干——解码窗口）。捕获平面在每条腿上打同一批时刻：流式响应事件（两条腿）携带 `firstByteTs`（上游 SSE 读端 / 网关 SSE 写端），`groupEventsIntoRequests` 由此派生每腿的 `ttftMs`/`genMs`。
 
 **控制台指标词汇（2026-11 修订；2026-12 为体感卡顿率指标增补）——三个已发布指标，均非臆造。** TTFT 与输出速率命名对齐 OpenTelemetry GenAI 语义约定，每个数字都能对应到一个标准仪器，无需翻译；卡顿率借用流媒体 QoE 的 rebuffering ratio 口径，标注为无 OTel GenAI 对应物的体感指标：

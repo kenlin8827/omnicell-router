@@ -18,6 +18,15 @@ export interface LLMProvider {
   /** Probe before fetch; absent createStream means buffered-only. */
   supportsStreaming?(model: ModelRegistration): boolean;
 
+  /**
+   * Base URL this transport will dial for `model`. The trace's egress stamp
+   * resolves the outbound-proxy decision against THIS url at dial time —
+   * never against registry-level provider config: a dispatching provider
+   * dials a different base per wire. Absent = the transport does not report
+   * its dial base (plugin-owned executors), which reads as UNKNOWN egress.
+   */
+  dialBaseFor?(model: ModelRegistration): string | undefined;
+
   /** Native upstream stream, decoded once at the protocol boundary. */
   createStream?(
     request: CanonicalRequest,
