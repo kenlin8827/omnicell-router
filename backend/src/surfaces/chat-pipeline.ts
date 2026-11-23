@@ -40,8 +40,8 @@ function writeSseFrames(t: TransportContext, frames: Iterable<string>): void | P
  *    trailing `ocr-summary` comment on every chat-shaped wire (chat places it
  *    before `[DONE]`; anthropic and responses place it after their terminal
  *    event);
- *  - a failure after the first byte ends the stream WITHOUT `[DONE]` — no JSON
- *    error body, no retry, because the client already holds part of the answer.
+ *  - a failure after the first byte ends the stream WITHOUT `[DONE]`. A wire
+ *    may send an in-band failure frame; no separate JSON response or retry.
  */
 export async function runChatSurface(
   t: TransportContext,
@@ -205,12 +205,19 @@ export async function runChatSurface(
     }
   } catch (err: unknown) {
     if (streamed) {
-      // Bytes (and the 200 event-stream headers) already reached the client:
-      // a JSON error body would be a SECOND terminal send on this wire, and a
-      // retry would duplicate output the client has partly consumed. Close
-      // WITHOUT [DONE] — the standard "stream ended unexpectedly" signal.
+      // Headers are committed. Do not send a second HTTP response or retry;
+      // report the failure in-band when the wire supports it, then close.
       t.logError(err, 'Streamed chat execution failed after the first byte');
-      t.endSse();
+      try {
+        if (surface.streamError && !t.isClientGone()) {
+          const frame = surface.streamError(err);
+          if (frame !== null) await t.writeSseChunk(frame);
+        }
+      } catch (writeErr) {
+        t.logError(writeErr, 'Failed to send SSE error frame');
+      } finally {
+        t.endSse();
+      }
       return;
     }
     // Execution failure: log loudly, map through the surface's own error

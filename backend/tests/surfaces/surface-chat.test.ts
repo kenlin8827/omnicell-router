@@ -97,6 +97,123 @@ const chatBody = (extra: Partial<ChatCompletionRequest> = {}): ChatCompletionReq
   ...extra,
 });
 
+describe('chat surface — committed SSE failures', () => {  for (const failure of ['reasoning signature', 'unrelated error', 'disconnected client', 'error frame write failure'] as const) {
+    it(`closes once without a success terminal: ${failure}`, async () => {
+      const { t, calls, ops } = makeFakeTransport();
+      const attemptedErrors: string[] = [];
+      const write = t.writeSseChunk;
+      t.isClientGone = () => failure === 'disconnected client';
+      t.writeSseChunk = (frame) => {
+        if (frame.startsWith('data: {"error":')) {
+          attemptedErrors.push(frame);
+          if (failure === 'error frame write failure') return Promise.reject(new Error('socket closed'));
+        }
+        return write(frame);
+      };
+      let attempts = 0;
+      const orchestrator: Parameters<typeof runChatSurface>[2] = {
+        async process(_request, _ctx, relay) {
+          attempts++;
+          assert.ok(relay);
+          await relay.onChunk({ type: 'response.output_item.added', index: 0, item: { type: 'message', role: 'assistant', content: [] } });
+          assert.equal(relay.committed, true);
+          if (failure === 'unrelated error') throw new Error('upstream socket closed');
+          await relay.onChunk({ type: 'response.output_item.done', index: 1, item: { type: 'reasoning', signature: 'opaque' } });
+          throw new Error('expected stream encoder to reject the signed item');
+        },
+      };
+      await runChatSurface(t, chatSurface, orchestrator, chatBody({ stream: true }));
+
+      assert.equal(attempts, 1);
+      assert.equal(ops().filter((op) => op === 'beginSse').length, 1);
+      assert.equal(ops().filter((op) => op === 'endSse').length, 1);
+      assert.equal(ops().at(-1), 'endSse');
+      assert.ok(!ops().includes('sendJson'));
+      const frames = calls.filter(({ op }) => op === 'writeSseChunk').map(({ args }) => args[0] as string);
+      assert.match(frames[0]!, /"finish_reason":null/);
+      assert.equal(frames.length, failure === 'reasoning signature' ? 2 : 1);
+      assert.equal(attemptedErrors.length, failure === 'reasoning signature' || failure === 'error frame write failure' ? 1 : 0);
+      if (attemptedErrors.length) {
+        assert.deepEqual(JSON.parse(attemptedErrors[0]!.slice('data: '.length)), {
+          error: {
+            message: 'Protocol cannot replay signed or encrypted reasoning. Target protocol: openai-chat.',
+            type: 'invalid_request_error',
+            code: 'unsupported_parameter',
+          },
+        });
+      }
+      assert.equal((calls.find(({ op }) => op === 'logError')?.args[0] as Error).name,
+        failure === 'unrelated error' ? 'Error' : 'IrUnsupportedError');
+    });
+  }
+
+  /**
+   * The matrix above drives the pipeline with a HAND-THROWN error, so it proves
+   * what the pipeline does with an IrUnsupportedError but not that the real
+   * chat encoder produces one. These cases feed the genuine `ChatEventEncoder`
+   * (mounted by `chatSurface.parse`) a canonical event it cannot represent and
+   * assert the in-band frame reaches the wire. Every sibling code is covered
+   * because the guard is `protocol === 'openai-chat'`, not a code allowlist
+   * (`reasoning_summary` was the same silent close before it).
+   */
+  const encoderRejections = [
+    {
+      name: 'signed reasoning item (reasoning_signature)',
+      event: { type: 'response.output_item.done', index: 1, item: { type: 'reasoning', text: '', signature: 'opaque' } } as const,
+      message: 'Protocol cannot replay signed or encrypted reasoning. Target protocol: openai-chat.',
+    },
+    {
+      name: 'reasoning summary on a wire that has none (reasoning_summary)',
+      event: { type: 'response.reasoning_summary.delta', index: 1, summaryIndex: 0, text: 's' } as const,
+      message: 'Protocol cannot stream structured reasoning summaries. Target protocol: openai-chat.',
+    },
+    {
+      name: 'a foreign extension item (output_item)',
+      event: {
+        type: 'response.output_item.added',
+        index: 1,
+        item: { type: 'extension', protocol: 'anthropic-messages', data: {} },
+      } as const,
+      message: 'Cannot convert anthropic-messages extension item. Target protocol: openai-chat.',
+    },
+  ];
+  for (const { name, event, message } of encoderRejections) {
+    it(`reports a real encoder rejection in-band: ${name}`, async () => {
+      const { t, calls, ops } = makeFakeTransport();
+      const orchestrator: Parameters<typeof runChatSurface>[2] = {
+        async process(_request, _ctx, relay) {
+          assert.ok(relay);
+          await relay.onChunk({ type: 'response.output_item.added', index: 0, item: { type: 'message', role: 'assistant', content: [] } });
+          assert.equal(relay.committed, true);
+          // The REAL encoder inside the surface throws here.
+          await relay.onChunk(event);
+          assert.fail('the chat encoder should have rejected this event');
+        },
+      };
+      await runChatSurface(t, chatSurface, orchestrator, chatBody({ stream: true }));
+
+      assert.equal(ops().filter((op) => op === 'endSse').length, 1);
+      assert.equal(ops().at(-1), 'endSse');
+      assert.ok(!ops().includes('sendJson'));
+      const frames = calls.filter(({ op }) => op === 'writeSseChunk').map(({ args }) => args[0] as string);
+      assert.equal(frames.length, 2, 'the role delta plus exactly one error frame');
+      assert.deepEqual(JSON.parse(frames[1]!.slice('data: '.length)), {
+        error: { message, type: 'invalid_request_error', code: 'unsupported_parameter' },
+      });
+      assert.equal((calls.find(({ op }) => op === 'logError')?.args[0] as Error).name, 'IrUnsupportedError');
+    });
+  }
+
+  it('leaves a non-chat surface rejection silent (the guard is protocol-scoped)', () => {
+    assert.equal(chatSurface.streamError!(new IrUnsupportedError('x', 'm', 'anthropic-messages')), null);
+    assert.equal(chatSurface.streamError!(new Error('boom')), null);
+    assert.equal(
+      chatSurface.streamError!(new IrUnsupportedError('reasoning_signature', 'm', 'openai-chat')),
+      'data: {"error":{"message":"m","type":"invalid_request_error","code":"unsupported_parameter"}}\n\n'
+    );
+  });
+});
+
 describe('chat surface — frozen §1.3 order', () => {
   it('parse failure sends 400 BEFORE the gate runs and never reaches process', async () => {
     const { t, calls, ops } = makeFakeTransport();

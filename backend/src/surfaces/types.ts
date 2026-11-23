@@ -188,6 +188,17 @@ export interface ChatSurface {
    */
   streamStart?(state: unknown, ctx: ChatChunkContext): string[];
   streamEnd?(result: ExecutionResult, state: unknown, ctx: ChatChunkContext): string[];
+  /**
+   * Optional in-band failure frame for an ALREADY COMMITTED SSE response
+   * (headers and at least one chunk are on the wire, so no second HTTP
+   * response and no retry is legal — ADR-0008 §1).
+   *
+   * Contract: return a frame to emit it (the pipeline writes it, then
+   * `endSse`); return `null` to keep the bare close for failures this wire
+   * cannot express. A throw is caught and logged, and `endSse` still runs
+   * exactly once — a surface must never close the turn itself.
+   */
+  streamError?(err: unknown): string | null;
   errorBody(status: number, message: string, code?: string): unknown;
   executionError(err: unknown): { status: number; body: unknown };
 }
