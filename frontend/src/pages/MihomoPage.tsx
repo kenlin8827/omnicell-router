@@ -192,6 +192,34 @@ const EndpointLogo: React.FC<{ mark: EndpointMark }> = ({ mark }) => {
 /** Endpoint mark size: one constant so every card's plate stays identical. */
 const ENDPOINT_LOGO_PX = 48;
 
+/** The answer to a reachability probe, spelled once. Every place that asks the
+ *  question — a preset card or the custom endpoint row — must render the same
+ *  outcome line, or the operator reads two different vocabularies for one
+ *  measurement. */
+const ProbeStatus: React.FC<{ probe?: UrlProbe }> = ({ probe }) => {
+  const { t } = useI18n();
+  return (
+    <div style={{ minHeight: 18, fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 6 }} title={probe?.error}>
+      {probe?.state === 'testing' && <><Loader2 size={12} style={SPIN} /><span style={{ color: 'var(--text-dim)' }}>{t('proxy.testUrlRunning')}</span></>}
+      {probe?.state === 'ok' && (
+        <>
+          <CheckCircle2 size={13} style={{ color: 'var(--accent-emerald)' }} />
+          <span style={{ color: delayColor({ state: 'measured', ms: probe.ms, at: 0 }), fontVariantNumeric: 'tabular-nums' }}>
+            {t('proxy.connOk', { ms: probe.ms ?? 0 })}
+          </span>
+        </>
+      )}
+      {probe?.state === 'fail' && (
+        <>
+          <XCircle size={13} style={{ color: 'var(--accent-rose)' }} />
+          <span style={{ color: 'var(--accent-rose)' }}>{t('proxy.connFail', { error: probe.error ?? 'error' })}</span>
+        </>
+      )}
+      {!probe && <span style={{ color: 'var(--text-dim)' }}>—</span>}
+    </div>
+  );
+};
+
 /** Catalog projection: every wire whitelist comes from GET /nodes/catalog. */
 const optionList = (values: string[] = []) => values.map(value => ({ value, label: value }));
 
@@ -1360,15 +1388,6 @@ export const MihomoPage: React.FC = () => {
     setUrlBatch({ running: false, done: targets.length, total: targets.length });
   };
 
-  /** A failed probe leaves one question open: is the endpoint dead for every
-   *  exit, or just for the node in use? The nodes section answers that — its
-   *  batch test runs the same URL across every group member. */
-  const inspectEveryNode = async () => {
-    setTab('nodes');
-    if (nodes.length === 0) await refreshNodes().catch(toastFailure);
-    void testAll();
-  };
-
   const refreshOne = async (id: string) => {
     if (!requireCore()) return;
     setBusy(`refresh:${id}`);
@@ -1970,22 +1989,19 @@ export const MihomoPage: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
                       <div className="card-header" style={{ marginBottom: 0 }}>
                         <div className="card-title"><span>{t('proxy.tabTest')}</span></div>
-                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                          <button className="btn btn-sm" disabled={!coreReady || urlBatch.running} onClick={() => void probeEveryUrl()}>
-                            {urlBatch.running ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
-                            <span>
-                              {urlBatch.running
-                                ? t('proxy.testUrlBatchRunning', { done: urlBatch.done, n: urlBatch.total })
-                                : t('proxy.testUrlBatch')}
-                            </span>
-                          </button>
-                          {/* The other axis: one URL, every member. It lives on the
-                              nodes section because the numbers belong to the rows. */}
-                          <button className="btn btn-sm" disabled={!coreReady || urlBatch.running} onClick={() => void inspectEveryNode()}>
-                            <Network size={12} />
-                            <span>{t('proxy.testUrlAllNodes')}</span>
-                          </button>
-                        </div>
+                        {/* ONE axis per header: this tab answers "can the current
+                            node reach this endpoint", so the only batch here runs
+                            over the endpoints. Node delay is the nodes tab's own
+                            button — a second verb on this row read as a peer
+                            action while it was really a page jump. */}
+                        <button className="btn btn-sm" disabled={!coreReady || urlBatch.running} onClick={() => void probeEveryUrl()}>
+                          {urlBatch.running ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
+                          <span>
+                            {urlBatch.running
+                              ? t('proxy.testUrlBatchRunning', { done: urlBatch.done, n: urlBatch.total })
+                              : t('proxy.testUrlBatch')}
+                          </span>
+                        </button>
                       </div>
                       <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                         <span>
@@ -2026,24 +2042,7 @@ export const MihomoPage: React.FC = () => {
                               </div>
                               {inUse && <span className="badge badge-success">{t('proxy.testInUse')}</span>}
                             </div>
-                            <div style={{ minHeight: 18, fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 6 }} title={probe?.error}>
-                              {probe?.state === 'testing' && <><Loader2 size={12} style={SPIN} /><span style={{ color: 'var(--text-dim)' }}>{t('proxy.nodeTesting')}</span></>}
-                              {probe?.state === 'ok' && (
-                                <>
-                                  <CheckCircle2 size={13} style={{ color: 'var(--accent-emerald)' }} />
-                                  <span style={{ color: delayColor({ state: 'measured', ms: probe.ms, at: 0 }), fontVariantNumeric: 'tabular-nums' }}>
-                                    {t('proxy.nodeTestOk', { ms: probe.ms ?? 0 })}
-                                  </span>
-                                </>
-                              )}
-                              {probe?.state === 'fail' && (
-                                <>
-                                  <XCircle size={13} style={{ color: 'var(--accent-rose)' }} />
-                                  <span style={{ color: 'var(--accent-rose)' }}>{t('proxy.nodeTestFail', { error: probe.error ?? 'error' })}</span>
-                                </>
-                              )}
-                              {!probe && <span style={{ color: 'var(--text-dim)' }}>—</span>}
-                            </div>
+                            <ProbeStatus probe={probe} />
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                               <button
                                 className="btn btn-sm"
@@ -2055,7 +2054,7 @@ export const MihomoPage: React.FC = () => {
                               </button>
                               {/* Choosing is a FIELD edit, so it hands the
                                   operator to the settings card that owns the
-                                  save — this tab only measures. */}
+                                  save — this tab only probes. */}
                               <button
                                 className="btn btn-sm"
                                 disabled={inUse}
@@ -2083,7 +2082,7 @@ export const MihomoPage: React.FC = () => {
                         disabled={!coreReady || !customTestUrl.trim() || urlProbes[customTestUrl.trim()]?.state === 'testing'}
                         onClick={() => void probeUrl(customTestUrl.trim())}
                       >
-                        <Play size={12} />
+                        {urlProbes[customTestUrl.trim()]?.state === 'testing' ? <Loader2 size={12} style={SPIN} /> : <Play size={12} />}
                         <span>{t('proxy.testUrlBtn')}</span>
                       </button>
                       <button
@@ -2094,6 +2093,10 @@ export const MihomoPage: React.FC = () => {
                         <span>{t('proxy.testUse')}</span>
                       </button>
                     </div>
+                    {/* A typed address is not one of the cards, so without this
+                        line its probe has nowhere to land — a button that answers
+                        nothing reads as a dead control. */}
+                    {customTestUrl.trim() !== '' && <ProbeStatus probe={urlProbes[customTestUrl.trim()]} />}
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxy.testCustomHint')}</div>
                   </div>
                 </div>
@@ -2738,7 +2741,7 @@ export const MihomoPage: React.FC = () => {
                       title={t('proxy.nodeSortDelay')}
                       aria-label={t('proxy.nodeSortDelay')}
                     >
-                      <span>{t('proxy.nodeTest')}</span>
+                      <span>{t('proxy.nodeColDelay')}</span>
                       {delaySort === 'asc' ? <ArrowUp size={11} /> : delaySort === 'desc' ? <ArrowDown size={11} /> : <ArrowUpDown size={11} />}
                     </button>
                   ),
@@ -2832,13 +2835,13 @@ export const MihomoPage: React.FC = () => {
                         style={{ flexShrink: 0, minWidth: 112, justifyContent: 'center', whiteSpace: 'nowrap' }}
                       >
                         {nodeTest.state === 'running' && <Loader2 size={12} style={SPIN} />}
-                        <span>{nodeTest.state === 'running' ? t('proxy.nodeTesting') : t('proxy.nodeTestConn')}</span>
+                        <span>{nodeTest.state === 'running' ? t('proxy.tcpProbeRunning') : t('proxy.tcpProbe')}</span>
                       </button>
                       {nodeTest.state === 'ok' && (
-                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)' }}>{t('proxy.nodeTestOk', { ms: nodeTest.ms ?? 0 })}</span>
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)' }}>{t('proxy.tcpOk', { ms: nodeTest.ms ?? 0 })}</span>
                       )}
                       {nodeTest.state === 'fail' && (
-                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>{t('proxy.nodeTestFail', { error: nodeTest.error ?? '' })}</span>
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>{t('proxy.tcpFail', { error: nodeTest.error ?? '' })}</span>
                       )}
                     </div>
                   }
@@ -3281,6 +3284,14 @@ export const MihomoPage: React.FC = () => {
                     </div>
                     </>
                     )}
+                    {/* Rendered in BOTH modes: the footer button exists in both,
+                        and its verb is deliberately NOT the connectivity tab's —
+                        the socket leaves this host directly, never through the
+                        proxy, so a green answer here must not be read as "this
+                        node carries traffic". */}
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+                      {t('proxy.tcpProbeHint')}
+                    </div>
                   </div>
                 </Dialog>
               )}

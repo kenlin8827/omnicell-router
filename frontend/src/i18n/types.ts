@@ -2837,15 +2837,32 @@ hiddenBadge: string;
     nodeSelected: string;
     nodeCurrent: string;
     nodeNone: string;
+    /** AXIS 2 — ACTION: measure one node's LATENCY (ADR-0022 "latency"). It is
+     *  never the word for the connectivity verdict (`testUrlBtn`) or for the
+     *  direct-TCP port check (`tcpProbe`); mixing them costs a node. */
     nodeTest: string;
     nodeTestAll: string;
-    nodeTestConn: string;
+    /** In-flight label for a latency measurement (`nodeTest` / `nodeTestAll`). */
     nodeTesting: string;
-    nodeTestOk: string;
-    nodeTestFail: string;
+    /** AXIS 3 — ACTION: direct TCP connect to an unsaved node's server:port.
+     *  This is the only check a row that is not in the config yet can answer,
+     *  and it proves nothing about the proxy (ADR-0022). */
+    tcpProbe: string;
+    /** In-flight label for `tcpProbe`. */
+    tcpProbeRunning: string;
+    /** `tcpProbe` outcome: the port accepted a direct socket. */
+    tcpOk: string;
+    /** `tcpProbe` outcome: the direct socket failed. `{error}`. */
+    tcpFail: string;
+    /** Says out loud what `tcpProbe` does NOT prove, and where the real answer
+     *  lives. Without it an operator reads "port reachable" as "this node
+     *  works" and saves a node that cannot carry traffic. */
+    tcpProbeHint: string;
     nodeTestUrl: string;
     nodeTestUrlHint: string;
     nodeDelay: string;
+    /** Column header: the latency reading, not the action. */
+    nodeColDelay: string;
     nodeSortDelay: string;
     nodeType: string;
     nodeOffline: string;
@@ -2899,7 +2916,18 @@ hiddenBadge: string;
     nodePorts: string;
     nodeFieldInvalid: string;
     nodeUnmodeled: string;
+    /** AXIS 1 — ACTION: fetch one endpoint THROUGH the proxy (ADR-0022
+     *  "connectivity"). The answer is a verdict about the proxy, not a node
+     *  ranking, so its result string never shares a word with AXIS 2. */
     testUrlBtn: string;
+    /** In-flight label for `testUrlBtn`. */
+    testUrlRunning: string;
+    /** `testUrlBtn` outcome: the tunnel carried the request. `{ms}` is the
+     *  round trip through the proxy, spelled as such so it is never read as a
+     *  node latency. */
+    connOk: string;
+    /** `testUrlBtn` outcome: the proxy did not carry the request. `{error}`. */
+    connFail: string;
     testCurrentNode: string;
     testCurrentUrl: string;
     testChangeUrl: string;
@@ -2908,7 +2936,8 @@ hiddenBadge: string;
     testCustomLabel: string;
     testCustomHint: string;
     testUrlTimeout: string;
-    testUrlAllNodes: string;
+    /** Batch of `testUrlBtn` over every candidate endpoint. Node latency is
+     *  AXIS 2 and lives on the nodes tab only. */
     testUrlBatch: string;
     /** {done} of {n} endpoints probed so far. */
     testUrlBatchRunning: string;
