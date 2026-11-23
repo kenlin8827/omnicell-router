@@ -140,7 +140,11 @@ function renderGroup(
  * renaming the group never orphans a rule. IP rules carry `no-resolve`: without
  * it every IP rule forces mihomo to resolve a candidate hostname first, which
  * both costs a DNS round-trip and lets a resolved IP match a rule that the
- * operator wrote against literal addresses.
+ * operator wrote against literal addresses. `GEOIP` deliberately does NOT carry
+ * it — matching a CONNECT hostname against the country database is the whole
+ * point. Geo payloads are normalized to the spelling mihomo expects (country
+ * codes upper-case, geosite categories lower-case) whatever casing the operator
+ * typed.
  */
 function renderCustomRules(input: RenderMihomoInput): string[] {
   const group = input.group || DEFAULT_MIHOMO_GROUP;
@@ -148,7 +152,10 @@ function renderCustomRules(input: RenderMihomoInput): string[] {
   for (const rule of input.rules ?? []) {
     const target = rule.target === 'PROXY' ? group : rule.target;
     const noResolve = rule.type === 'IP-CIDR' || rule.type === 'IP-CIDR6' ? ',no-resolve' : '';
-    out.push(`${rule.type},${rule.payload},${target}${noResolve}`);
+    const payload = rule.type === 'GEOIP'
+      ? rule.payload.toUpperCase()
+      : rule.type === 'GEOSITE' ? rule.payload.toLowerCase() : rule.payload;
+    out.push(`${rule.type},${payload},${target}${noResolve}`);
   }
   return out;
 }
@@ -168,6 +175,8 @@ export function renderMihomoConfig(input: RenderMihomoInput): RenderedMihomoConf
       url: sub.url,
       interval: sub.interval ?? DEFAULT_MIHOMO_SUB_INTERVAL_SEC,
       path: `./providers/${sub.id}.yaml`,
+      // Forces the download through one proxy/group instead of the rule set.
+      ...(sub.proxy ? { proxy: sub.proxy } : {}),
       // Disabled on purpose: the group's own url-test already walks every
       // member, so a second provider-level probe would only double the test
       // traffic. The cadence still comes from the shared resolver — the old

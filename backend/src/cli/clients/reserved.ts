@@ -1,4 +1,3 @@
-import type { SupportedClient } from '../types.js';
 
 /**
  * Client-id vocabulary a plugin cannot claim — the RESERVED half of the Client
@@ -60,7 +59,5 @@ export function retiredClientHint(name: string): string | undefined {
   return `client '${name}' was renamed to '${replacement}' — uninstall the old package (its row is superseded) and use '${replacement}'`;
 }
 
-/** Compile-time guard: a reserved id must stay part of the union the console
- *  and CLI can ADDRESS, or the roster would hold an id nothing can type. */
-type AssertTrue<T extends true> = T;
-export type CoreClientIdsAreAddressable = AssertTrue<CoreClientId extends SupportedClient ? true : false>;
+/** `CoreClientId` is the ENTIRE core client vocabulary — there is no second
+ *  union for package ids: those register as runtime strings (ADR-0027). */

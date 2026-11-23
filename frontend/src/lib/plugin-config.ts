@@ -1,4 +1,6 @@
 import type { PluginConfigFieldInfo, PluginConfigSectionInfo } from './api';
+import { EFFORT_LADDER } from './effort';
+import { GATEWAY_EGRESS_CONFIG_KEY, GATEWAY_EGRESS_VALUES } from './defaults';
 import { LANG_TO_BCP47 } from '../i18n/languages';
 
 /**
@@ -27,6 +29,26 @@ export function pickLocaleText(text: string | Record<string, string> | undefined
   if (typeof text === 'string') return text;
   const key = LANG_TO_BCP47[lang as keyof typeof LANG_TO_BCP47];
   return text[key] ?? text['en-US'] ?? text['en'] ?? Object.values(text)[0];
+}
+
+/**
+ * True for the outbound-leg switch CORE injects into a client-gateway's schema
+ * (backend `withGatewayEgressField`, ADR-0018 Revision 5). The field arrives through
+ * the same generic `configSchema` as a package's own fields, but its wording is
+ * console chrome rather than package content, so the drawer translates it from
+ * the i18n tables instead of printing `humanizeKey('egress')` over three machine
+ * values. Recognition is by key AND the exact value set: if the backend adds a
+ * fourth state, this stops matching and the row degrades to the generic
+ * rendering (visible to everyone) instead of offering a switch with no word for
+ * the new option.
+ */
+export function isCoreEgressField(field: Pick<PluginConfigFieldInfo, 'key' | 'control' | 'values'>): boolean {
+  return (
+    field.key === GATEWAY_EGRESS_CONFIG_KEY &&
+    field.control === 'segmented' &&
+    field.values?.length === GATEWAY_EGRESS_VALUES.length &&
+    GATEWAY_EGRESS_VALUES.every((v) => field.values?.includes(v))
+  );
 }
 
 /** Draft values as the console holds them: enum/string/number as raw text,
@@ -61,6 +83,30 @@ export interface PluginConfigGroup {
   title?: string | Record<string, string>;
   advanced: boolean;
   fields: PluginConfigFieldInfo[];
+}
+
+/**
+ * The fields a plugin settings drawer renders for the current view.
+ *
+ * `mode: 'quick'` is a DISPLAY subset (`essential` only), and it exists only
+ * when the schema marks something essential: a plugin that marks none has one
+ * view, and must render ALL its drawer fields. Filtering by `essential` anyway
+ * is what emptied the drawer for every gateway plugin (none declare it) — the
+ * operator saw a Save button and no settings at all.
+ *
+ * Placement is the manifest's call: `card` fields belong to the Client Hub card
+ * and `none` fields are dead config, though the latter is the backend's audit's
+ * business, not the renderer's; the `apiKey` control is card state by contract
+ * and is never repeated here.
+ */
+export function drawerFields(
+  schema: PluginConfigFieldInfo[],
+  mode: 'quick' | 'advanced'
+): PluginConfigFieldInfo[] {
+  const quick = mode === 'quick' && schema.some((field) => field.essential === true);
+  return schema
+    .filter((field) => (field.placement ?? 'drawer') === 'drawer' && field.control !== 'apiKey')
+    .filter((field) => (quick ? field.essential === true : true));
 }
 
 /**
@@ -156,6 +202,88 @@ export const SHARED_GATEWAY_CARD_KEYS: Record<string, true> = {
   catalogReplace: true,
   catalogPrefix: true,
 };
+
+/** Shared card keys that make up the model-LIST editor (mode / snapshot /
+ *  replace / prefix). A gateway that declares none of them has no list to
+ *  edit — its card must not render the block at all. */
+export const GATEWAY_MODEL_LIST_KEYS = ['modelListMode', 'models', 'catalogReplace', 'catalogPrefix'] as const;
+
+/** What the shared catalog editor should draw for one gateway: the list block
+ *  and the routing-default row are each DECLARED, never assumed. */
+export function gatewayCardShape(schema: PluginConfigFieldInfo[]): { modelList: boolean; routingDefault: boolean } {
+  const declared = new Set(schema.map((field) => field.key));
+  return {
+    modelList: GATEWAY_MODEL_LIST_KEYS.some((key) => declared.has(key)),
+    routingDefault: declared.has('model') || declared.has('forceModel'),
+  };
+}
+
+/** One row of an `aliases` field: a client model id mapped onto the model the
+ *  gateway actually serves, optionally at a pinned thinking level. The stored
+ *  spelling is `clientId=target[@effort][#label]` (the same string a
+ *  hand-written config carries). */
+export interface AliasRow {
+  clientId: string;
+  target: string;
+  /** Pinned thinking level ('' = the client's own value passes through). */
+  effort: string;
+  label: string;
+}
+
+export function parseAliasSpec(spec: string): AliasRow | undefined {
+  const eq = spec.indexOf('=');
+  if (eq <= 0) return undefined;
+  const clientId = spec.slice(0, eq).trim();
+  const rest = spec.slice(eq + 1);
+  const hash = rest.indexOf('#');
+  const served = (hash === -1 ? rest : rest.slice(0, hash)).trim();
+  const label = hash === -1 ? '' : rest.slice(hash + 1).trim();
+  if (!clientId || !served) return undefined;
+  // A TRAILING `@<ladder value>` is the level pin; any other `@` belongs to
+  // the model id (the gateway's parser applies the same rule).
+  let target = served;
+  let effort = '';
+  const at = served.lastIndexOf('@');
+  if (at > 0) {
+    const token = served.slice(at + 1).trim().toLowerCase();
+    if ((EFFORT_LADDER as readonly string[]).includes(token)) {
+      effort = token;
+      target = served.slice(0, at).trim();
+    }
+  }
+  if (!target) return undefined;
+  return { clientId, target, effort, label };
+}
+
+/** Rows from stored specs, dropping entries that could never match. */
+export function parseAliasRows(specs: readonly string[]): AliasRow[] {
+  return specs.map(parseAliasSpec).filter((row): row is AliasRow => row !== undefined);
+}
+
+/** Client model ids a wildcard pattern selects (`*` = any run of characters,
+ *  everything else literal, case-insensitive). Used by the alias table's batch
+ *  add: `gemini-4*` fills one row per matching id the client reported. */
+export function matchAliasPattern(pattern: string, ids: readonly string[]): string[] {
+  const text = pattern.trim();
+  if (!text) return [];
+  const source = text
+    .split('*')
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  const re = new RegExp(`^${source}$`, 'i');
+  return ids.filter((id) => re.test(id));
+}
+
+/** Stored spec for one edited row; '' for a row that is not yet complete. */
+export function formatAliasSpec(row: AliasRow): string {
+  const clientId = row.clientId.trim();
+  const target = row.target.trim();
+  if (!clientId || !target) return '';
+  const label = row.label.trim();
+  const effort = row.effort.trim();
+  const level = effort ? `@${effort}` : '';
+  return label ? `${clientId}=${target}${level}#${label}` : `${clientId}=${target}${level}`;
+}
 
 export function parseGatewayCfg(
   values: Record<string, unknown>,

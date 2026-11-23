@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { INTERCEPT_POSTURES, RULE_EGRESSES, RULE_INGRESSES, RULE_WARNING_CODES } from '../../src/forward-proxy/rules';
+import { GATEWAY_EGRESS_CONFIG_KEY, GATEWAY_EGRESS_VALUES } from '../../src/plugins/manifest';
 
 /**
  * The console mirror (`frontend/src/lib/api.ts`) re-declares the rule vocabulary
@@ -13,6 +14,19 @@ import { INTERCEPT_POSTURES, RULE_EGRESSES, RULE_INGRESSES, RULE_WARNING_CODES }
  * is to mirror the value (and give it a message) in the same commit.
  */
 const API = readFileSync(join(import.meta.dir, '..', '..', '..', 'frontend', 'src', 'lib', 'api.ts'), 'utf8');
+const DEFAULTS = readFileSync(join(import.meta.dir, '..', '..', '..', 'frontend', 'src', 'lib', 'defaults.ts'), 'utf8');
+
+const constString = (name: string): string => {
+  const m = new RegExp(`export const ${name} = '([^']+)'`).exec(DEFAULTS);
+  if (!m) throw new Error(`frontend/src/lib/defaults.ts no longer declares \`${name}\` as a string constant`);
+  return m[1];
+};
+
+const constStringArray = (name: string): string[] => {
+  const m = new RegExp(`export const ${name} = \\[([^\\]]*)\\]`).exec(DEFAULTS);
+  if (!m) throw new Error(`frontend/src/lib/defaults.ts no longer declares \`${name}\` as a string-array constant`);
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort();
+};
 
 const union = (name: string): string[] => {
   const m = new RegExp(`export type ${name} =([\\s\\S]*?);`).exec(API);
@@ -37,5 +51,14 @@ describe('console vocabulary parity (backend ⇄ frontend/src/lib/api.ts)', () =
 
   it('the interception posture names the same two values', () => {
     expect(union('InterceptPosture')).toEqual(backend(INTERCEPT_POSTURES));
+  });
+
+  it('the core-injected egress switch names the same key and the same three values', () => {
+    // The drawer RECOGNIZES the field by key + exact value set (`isCoreEgressField`)
+    // and renders its labels from i18n. A backend value the mirror does not know
+    // degrades the row to the generic rendering — visible, but no longer the
+    // operator's switch with its own words.
+    expect(constString('GATEWAY_EGRESS_CONFIG_KEY')).toBe(GATEWAY_EGRESS_CONFIG_KEY);
+    expect(constStringArray('GATEWAY_EGRESS_VALUES')).toEqual(backend(GATEWAY_EGRESS_VALUES));
   });
 });

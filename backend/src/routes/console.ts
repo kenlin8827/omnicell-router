@@ -27,10 +27,10 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, DEFAULT_MIHOMO_MIXED_PORT, PLUGIN_PACKAGE_MAX_BYTES, DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { registerMihomoRoutes } from './mihomo.js';
-import { reconcileMihomoSidecar } from '../proxy/mihomo-sidecar.js';
+import { reconcileMihomoSidecar, getMihomoStatus } from '../proxy/mihomo-sidecar.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
@@ -45,10 +45,11 @@ import {
   osBypassHosts,
   resolveHost,
 } from '../forward-proxy/rules.js';
-import { listGatewayHosts, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
+import { listGatewayHosts, listClaimedEgress, claimEgressFor, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
 import { listProxyAccessEvents, readProxyAccessHistory, clearProxyAccessLog, deletePersistedProxyEvents, forgetProxyAccessRingEvents, proxyAccessLogSettings, proxyAccessBodyPath, type ProxyAccessEvent } from '../forward-proxy/access-log.js';
 import { hideLiveEvents, liveHiddenProxyIds, liveHiddenPluginKeys, type LiveHiddenKey } from '../observability/traffic-live-hidden.js';
-import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
+import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy, buildOverride, lanBypassHosts } from '../forward-proxy/system-proxy.js';
+import { pacUrlFor } from '../proxy/mihomo-pac.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
@@ -1535,10 +1536,12 @@ export function registerConsoleRoutes(
   // environment-book-set switch (ADR-0007) and may change under a live server.
   const trafficRoot = (): string => path.join(getOcrHomeDir(), 'plugins', 'traffic');
   const TRAFFIC_TAIL = 500;
-  /** Per-side DISPLAY window handed to the dissector (and the hex preview).
-   *  Capture is full fidelity on disk; only this read is bounded. */
-  const TRAFFIC_DISSECT_WINDOW = 32 * 1024;
-  /** Inline hex preview length (the drawer's hex fallback). */
+  /** Per-side DISPLAY window handed to the dissector. Capture is full fidelity
+   *  on disk; only this read is bounded, per row on every poll — the drawer's
+   *  own render cap is DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES. */
+  const TRAFFIC_DISSECT_WINDOW = DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES;
+  /** Inline hex preview length — first paint only. The drawer replaces it with
+   *  the token-addressed body, so keeping it small keeps every poll cheap. */
   const TRAFFIC_HEX_PREVIEW = 1024;
   /** Strict sidecar ref: `<YYYYMMDD>/<id>-<side>.bin`, no traversal. */
   const TRAFFIC_BODY_REF_RE = /^\d{8}\/[A-Za-z0-9._-]+\.bin$/;
@@ -1569,8 +1572,13 @@ export function registerConsoleRoutes(
       try {
         const fd = fs.openSync(abs, 'r');
         try {
-          const buf = Buffer.alloc(TRAFFIC_DISSECT_WINDOW);
-          const read = fs.readSync(fd, buf, 0, TRAFFIC_DISSECT_WINDOW, 0);
+          // Allocate the bytes the file actually has, not the window: a
+          // 500-row tail decorates ~1000 sides per poll, and a full-window
+          // buffer per side is the dominant cost (window × rows), while most
+          // bodies are kilobytes.
+          const take = Math.min(fs.fstatSync(fd).size, TRAFFIC_DISSECT_WINDOW);
+          const buf = Buffer.allocUnsafe(take);
+          const read = fs.readSync(fd, buf, 0, take, 0);
           return buf.subarray(0, read);
         } finally {
           fs.closeSync(fd);
@@ -1667,27 +1675,60 @@ export function registerConsoleRoutes(
     return reply.send(fs.createReadStream(abs));
   });
 
-  // 3A3. OS system proxy ownership for the inbound forward proxy: snapshot →
-  // point at 127.0.0.1:<port> → one-click restore (forward-proxy/system-proxy.ts).
-  app.get('/api/admin/system-proxy', async () => {
-    const fp = getRuntimeConfigRef()?.forwardProxy;
+  // 3A3. OS system proxy ownership — ONE snapshot, TWO endpoints: the inbound
+  // forward proxy (default) or the Clash core's mixed port. A target switch
+  // rewrites the OS pointer without re-reading the pre-OCR snapshot; restore
+  // always returns what the OS held before OCR first took ownership.
+  const systemProxyPayload = async (req: FastifyRequest): Promise<Record<string, unknown>> => {
+    const live = getRuntimeConfigRef();
+    const fp = live?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
+    const mixedPort = live?.proxy?.mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT;
     const sys = await getSystemProxyStatus(port, osBypassHosts(fp?.rules));
-    return { status: 'ok', ...sys, proxyEnabled: Boolean(fp?.enabled) };
+    const clashBypass = lanBypassHosts(process.platform);
+    const clashRunning = (await getMihomoStatus()).running;
+    return {
+      status: 'ok',
+      ...sys,
+      proxyEnabled: Boolean(fp?.enabled),
+      forward: { port, enabled: Boolean(fp?.enabled) },
+      // The clash card names the bypass ITS target would write (LAN ranges),
+      // not the inbound one on `override` (loopback + literal direct rows).
+      clash: { mixedPort, running: clashRunning, override: buildOverride(clashBypass, process.platform) },
+      // The PAC URL follows the origin THIS request reached, never the console
+      // document's origin (a dev console on Vite would advertise a URL that
+      // dies with its dev server).
+      pacUrl: pacUrlFor(req.headers.host, req.protocol, live?.port),
+    };
+  };
+
+  app.get('/api/admin/system-proxy', async (req) => systemProxyPayload(req));
+
+  app.post('/api/admin/system-proxy/enable', async (req, reply) => {
+    const body = (req.body ?? {}) as { target?: unknown };
+    const live = getRuntimeConfigRef();
+    if (body.target === 'clash') {
+      // Pointing the OS at a dead port is one click away from a dead network:
+      // the core must answer before it owns the OS proxy.
+      if (!(await getMihomoStatus()).running) {
+        reply.code(409);
+        return { status: 'error', code: 'not-running' };
+      }
+      const mixedPort = live?.proxy?.mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT;
+      await enableSystemProxy(mixedPort, lanBypassHosts(process.platform), 'clash');
+      return systemProxyPayload(req);
+    }
+    const fp = live?.forwardProxy;
+    const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
+    await enableSystemProxy(port, osBypassHosts(fp?.rules), 'forward');
+    return systemProxyPayload(req);
   });
 
-  app.post('/api/admin/system-proxy/enable', async () => {
+  app.post('/api/admin/system-proxy/disable', async (req) => {
     const fp = getRuntimeConfigRef()?.forwardProxy;
     const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await enableSystemProxy(port, osBypassHosts(fp?.rules));
-    return { status: 'ok', ...sys };
-  });
-
-  app.post('/api/admin/system-proxy/disable', async () => {
-    const fp = getRuntimeConfigRef()?.forwardProxy;
-    const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
-    const sys = await disableSystemProxy(port, osBypassHosts(fp?.rules));
-    return { status: 'ok', ...sys };
+    await disableSystemProxy(port, osBypassHosts(fp?.rules));
+    return systemProxyPayload(req);
   });
 
   // 3A4. Forward-proxy rule table (ADR-0018): lint + dry-run resolution. The
@@ -1714,27 +1755,54 @@ export function registerConsoleRoutes(
     // the wildcard's own attribution stays visible through `claimSources`.
     const claimed = [...listGatewayHosts()].filter((h) => h !== WILDCARD_HOST_CLAIM).sort();
     // Per-plugin attribution for the console's "decrypted without a rule" list:
-    // the SAME live registry `listGatewayHosts()` unions, so the two can never
-    // disagree — one is the host set, the other says who claimed it.
+    // the SAME live registry the proxy legs read, so the two can never disagree —
+    // one is the host set, the other says who claimed it and what leg that claim
+    // owns (ADR-0018 Revision 5). The preview asks `claimEgressFor` — the very callback
+    // the relay injects into `resolveHost` — because the tier that answers can be
+    // the plugin's code, and a preview of a snapshot would be a second opinion.
+    const claimOutcomes = (hosts: string[]) => hosts.map((host) => {
+      const d = resolveHost(host, rules, {
+        claimed: new Set(claimed), claimEgress: claimEgressFor, intercept,
+      });
+      return {
+        host,
+        action: d.action,
+        tunnel: d.tunnel,
+        reason: d.reason,
+        egressClaim: d.egressClaim,
+        ruleIndex: d.ruleIndex,
+      };
+    });
     const claimSources = [...listGateways().entries()]
-      .map(([pluginId, gw]) => ({
-        pluginId,
-        hosts: [...new Set(gw.hosts.filter((h) => h !== WILDCARD_HOST_CLAIM))].sort(),
-      }))
+      .map(([pluginId, gw]) => {
+        const hosts = [...new Set(gw.hosts.filter((h) => h !== WILDCARD_HOST_CLAIM))].sort();
+        // The DISTINCT legs this plugin's claims ask for. One package normally
+        // answers once — but a per-host hook may split, and a host two gateways
+        // answer oppositely drops out entirely (no winner), which the dialog has
+        // to be able to show rather than invent.
+        const egress = [...new Set(hosts.map((h) => claimEgressFor(h)?.action))]
+          .filter((e): e is 'proxy' | 'direct' => e !== undefined)
+          .sort();
+        return { pluginId, hosts, egress, outcomes: claimOutcomes(hosts) };
+      })
       .filter((s) => s.hosts.length > 0)
       .sort((a, b) => a.pluginId.localeCompare(b.pluginId));
     const host = typeof body.host === 'string' ? body.host.trim() : '';
     return {
       status: 'ok',
       rules,
-      warnings: lintRules(rawRules, proxyEnabled, intercept),
+      warnings: lintRules(rawRules, proxyEnabled, intercept, listClaimedEgress()),
       proxyEnabled,
       intercept,
       claimed,
       claimSources,
       // The resolver is the SAME function the proxy legs call, so the preview
-      // can never disagree with the live decision.
-      decision: host ? resolveHost(host, rules, { claimed: new Set(claimed), intercept }) : null,
+      // can never disagree with the live decision — which is why the claim legs
+      // ride in here too: omitting them would make an unsaved table preview as
+      // `direct` while the relay already goes `proxy`.
+      decision: host
+        ? resolveHost(host, rules, { claimed: new Set(claimed), claimEgress: claimEgressFor, intercept })
+        : null,
     };
   });
 
@@ -1768,7 +1836,7 @@ export function registerConsoleRoutes(
       status: 'ok',
       rules,
       intercept: DEFAULT_FORWARD_PROXY_INTERCEPT,
-      warnings: lintRules(rules, live?.proxy?.enabled === true, DEFAULT_FORWARD_PROXY_INTERCEPT),
+      warnings: lintRules(rules, live?.proxy?.enabled === true, DEFAULT_FORWARD_PROXY_INTERCEPT, listClaimedEgress()),
     };
   });
 
@@ -3655,7 +3723,14 @@ export function registerConsoleRoutes(
     webLoginPluginFor: async (id: string) => {
       const { getProviderNodeById } = await import('../opencode/user-config.js');
       const { wireFor } = await import('../providers/wire.js');
-      const def = getProviderNodeById(id);
+      let def = getProviderNodeById(id);
+      if (!def) {
+        // The catalog row comes from the manifest, so the login button stays
+        // offered even for a provider the operator deleted. A click IS connect
+        // intent: materialize the preset (and lift its deletion tombstone).
+        const { ensurePresetProvider } = await import('../plugins/host.js');
+        if (await ensurePresetProvider(id)) def = getProviderNodeById(id);
+      }
       if (!def) return { error: `provider '${id}' not found` };
       const node = def as { baseURL?: string; options?: { baseURL?: string }; npm?: string; package?: string };
       const baseURL = (node.options?.baseURL ?? node.baseURL ?? '').replace(/\/+$/, '');
@@ -4057,6 +4132,12 @@ export function registerConsoleRoutes(
           // nor miss the standalone store's credentials.json (the B3 regression).
           const result = deleteProviderDef(id);
           if (!result.success) return reply.status(400).send(result);
+          // Delete is intent: without this, the next plugin reload/install sees
+          // the preset's def missing and re-creates it (the row reappears on the
+          // Connected surface). A surviving credential still re-creates a node
+          // through the boot bind sweep — credential truth outranks the def.
+          const { forgetProviderRegistration } = await import('../plugins/host.js');
+          forgetProviderRegistration(id);
           // Decision 8 double confirmation is enforced by the console UI
           // (purgeAuth opt-in) — server-side the loop reports honestly.
           const purge = purgeAuth ? await purgeProviderCredentials(store, id) : null;

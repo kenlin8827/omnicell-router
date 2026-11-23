@@ -82,6 +82,8 @@
 
 ## Context
 
+- **Amended 2026-11-22:** the paragraph below predates the client-id migration: there is no `SupportedClient` type any more. Client ids are runtime-declared strings — core hooks are the closed `CoreClientId` set (`cli/clients/reserved.ts`), package hooks (`opencode-gateway`, `cursor-proxy`, `qoder-proxy`, `jetbrains-proxy`) are contributed by their packages and resolved through the plugin registry. The count below ("thirteen runtimes") describes the roster at the time of writing.
+
 The gateway already owns a **client** relationship with thirteen runtimes (`SupportedClient`: `opencode`,
 `opencode-gateway`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`, `workbuddy`, `cursor-proxy`,
 `qoder-proxy`). That relationship is about **traffic**: an adapter makes the runtime's requests flow
@@ -232,6 +234,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   root). A runtime launched from a shell with a different override is invisible here, so a copy on a
   lower-precedence root is **never** reported as "not read".
 
+**Amended 2026-11-22:** the bullet below says "`host ≠ SupportedClient`"; that type no longer exists. The distinction itself is unchanged — a host id (`cursor`, `opencode`, …) is a harness artifact target, a client id (`cursor-proxy`, `opencode-gateway`) is a traffic hook contributed by a package at runtime. Nothing about the split moved; only the closed union did.
 - **`host ≠ SupportedClient`.** Cursor is both an artifact host and a proxy-access traffic client
   (`cursor-proxy`); the host id stays `cursor` because the harness domain reads artifacts, not traffic.
   VS Code/Zed/Windsurf are artifact hosts only; the traffic enum is not widened for them.

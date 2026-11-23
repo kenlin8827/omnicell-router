@@ -39,6 +39,7 @@ import {
   DEFAULT_MIHOMO_GROUP_TOLERANCE_MS,
   MIHOMO_GROUP_TOLERANCE_MAX_MS,
   DEFAULT_MIHOMO_TEST_URL,
+  MIHOMO_LAN_DIRECT_RULES,
 } from './defaults.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
@@ -741,10 +742,18 @@ const CUSTOM_RULE_PAYLOAD_MAX = 512;
 const CUSTOM_RULE_SOURCE_MAX = 40;
 
 /** The one rule-type whitelist: the sanitizer validates against it, the
- *  subscription importer maps against it, and the console offers exactly it. */
+ *  subscription importer maps against it, and the console offers exactly it.
+ *
+ *  `GEOIP` / `GEOSITE` are allowed because mihomo evaluates them from data
+ *  files it can use offline once present. They are NOT data-free like the
+ *  other types: the core exits fatally when the data is missing, so the geo
+ *  files are an explicit download and both the rule save and the core start
+ *  refuse a geo-rule config without them (ADR-0022). `RULE-SET` stays out: it
+ *  fetches a remote document at load time, which cannot be made offline-safe. */
 export const MIHOMO_CUSTOM_RULE_TYPES = [
   'DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD',
   'IP-CIDR', 'IP-CIDR6',
+  'GEOIP', 'GEOSITE',
   'DST-PORT', 'SRC-PORT',
   'PROCESS-NAME', 'PROCESS-PATH',
 ] as const;
@@ -763,6 +772,11 @@ const CUSTOM_RULE_TARGETS = new Set<string>(['PROXY', 'DIRECT', 'REJECT']);
  * document. Unknown types are DROPPED rather than passed through — mihomo's
  * behaviour with a rule it cannot evaluate is either a hard load failure or a
  * silent fallthrough, and an operator cannot debug either from the console.
+ *
+ * `GEOIP`/`GEOSITE` survive the whitelist but their DATA does not: the save
+ * route and the sidecar both refuse a geo-rule config while the geo files are
+ * missing (ADR-0022), so a valid row can never reach a core that would exit on
+ * it.
  */
 function sanitizeCustomRules(raw: unknown): MihomoCustomRule[] {
   if (!Array.isArray(raw)) return [];
@@ -814,11 +828,16 @@ function sanitizeSubscriptions(raw: unknown): MihomoSubscription[] {
     if (typeof rec.interval === 'number' && Number.isFinite(rec.interval)) {
       interval = Math.min(MIHOMO_SUB_INTERVAL_MAX_SEC, Math.max(MIHOMO_SUB_INTERVAL_MIN_SEC, Math.round(rec.interval)));
     }
+    // A free-form mihomo name (`DIRECT`, a node, or the generated group). Not
+    // checked against the live proxy table: existence is a runtime fact and a
+    // stale name must not block the file from loading.
+    const proxy = typeof rec.proxy === 'string' ? rec.proxy.trim().slice(0, 80) : '';
     out.push({
       id,
       name: name.slice(0, 80),
       url,
       interval,
+      ...(proxy ? { proxy } : {}),
       enabled: rec.enabled !== false,
     });
   }
@@ -1003,7 +1022,12 @@ export function sanitizeProxyConfig(raw: unknown): ProxyConfig {
     groupType,
     groupInterval,
     groupTolerance,
-    rules: sanitizeCustomRules(mihomoRaw.rules),
+    // Seeded only while the key is ABSENT (never configured). An explicit list
+    // — including the empty one the console writes after deleting every row —
+    // is authoritative, so a deleted default never comes back on the next read.
+    rules: mihomoRaw.rules === undefined
+      ? MIHOMO_LAN_DIRECT_RULES.map((rule) => ({ ...rule }))
+      : sanitizeCustomRules(mihomoRaw.rules),
     selectedNodes,
   };
   return {

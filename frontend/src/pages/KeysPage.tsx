@@ -560,20 +560,6 @@ function credentialName(a: CredentialMeta, unnamed: string): string {
   return a.label?.trim() || unnamed;
 }
 
-/** Short fingerprint chip text (`#abcdef0123`); the full value rides in the title. */
-const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) => {
-  const { t } = useI18n();
-  if (!credential.keyHashPrefix) return null;
-  return (
-    <span
-      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO }}
-      title={t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id })}
-    >
-      #{credential.keyHashPrefix.slice(0, 8)}
-    </span>
-  );
-};
-
 type CredentialZoomRowProps = {
   credential: CredentialHealth;
   caps: CredentialStoreCapabilities;
@@ -597,14 +583,11 @@ type CredentialZoomRowProps = {
   pending: boolean;
   /** A connectivity probe for THIS credential row is in flight (multi-credential: per-row, not per-card). */
   testing: boolean;
-  /** Label edit mode is page-owned: it closes on the write's success, not before. */
-  renaming: boolean;
+  /** Open the page-owned label dialog (the row never hosts an inline input). */
   onStartRename: () => void;
-  onCancelRename: () => void;
   /** Shared tick clock (cooldown chips). */
   now: number;
   onPin: (a: CredentialHealth) => void;
-  onRename: (a: CredentialHealth, label: string) => void;
   /** One-shot upstream probe with THIS row's exact key (bypasses head selection). */
   onTest: (a: CredentialHealth) => void;
   onDisconnect: (a: CredentialHealth) => void;
@@ -621,17 +604,18 @@ type CredentialZoomRowProps = {
   /** Open the outbound rate-limit overlay editor for THIS credential. */
   onEditLimits: (a: CredentialHealth) => void;
   /**
-   * Commit a new spread weight for THIS credential (zoom-table editor; absent
-   * = the store cannot carry weights, the row renders a read-only ×N badge).
+   * Open the page-owned weight dialog for THIS credential (zoom-table editor;
+   * absent = the store cannot carry weights, the row renders a read-only ×N
+   * badge).
    */
-  onEditWeight?: (a: CredentialHealth, weight: number) => void;
+  onEditWeight?: (a: CredentialHealth) => void;
   /** 1-based chain slot in the list; the default credential is always #1. */
   position: number;
 };
 
 /** Compact icon-button look shared by every per-credential action. */
 const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)' };
-/** One row height for every zoom-table control: the number input, the icon
+/** One row height for every zoom-table control: the weight button, the icon
  *  buttons and the status chips all sit on the same 28px baseline. */
 const ZOOM_CTRL: React.CSSProperties = { height: 28, minHeight: 0, padding: '2px 6px', lineHeight: 1, fontSize: 'var(--text-sm)' };
 const CRED_ICON_BTN_LG: React.CSSProperties = { ...ZOOM_CTRL, padding: '2px 7px' };
@@ -643,31 +627,42 @@ const CRED_ICON_BTN_LG: React.CSSProperties = { ...ZOOM_CTRL, padding: '2px 7px'
  */
 const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining: number }> = ({ credential, remaining }) => {
   const { t } = useI18n();
+  const hasStateMarker = credential.disabled || !credential.routable || credential.suspect;
+  // Explicit "normal" word: an empty cell reads as broken data. A row with a
+  // leading marker is never "normal", and any chip (cooldown / limits / quota)
+  // is a state of its own — the word only fills an otherwise empty cell.
+  const showsNormal = !hasStateMarker && remaining <= 0 && (credential.limits ?? []).length === 0 && !credential.quota;
   return (
     <>
-      {/* Leading state slot: a fixed width keeps the timing/limit chips that
-          follow aligned across rows, whether or not this row is disabled. */}
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 58, flex: '0 0 58px' }}>
-        {credential.disabled && (
-          <span
-            style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-            title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
-          >
-            <PowerOff size={9} />
-            {t('op.credentialDisabled')}
-          </span>
-        )}
-        {!credential.routable && (
-          <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
-            <Ban size={11} />
-          </span>
-        )}
-        {credential.suspect && (
-          <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
-            <AlertTriangle size={11} />
-          </span>
-        )}
-      </span>
+      {/* Leading state slot: the fixed width keeps the chips that FOLLOW a
+          state badge aligned across rows. It exists ONLY when this row has a
+          marker — an unconditional spacer pushed a healthy row's chip (and the
+          "normal" word) ~58px right of the header, which read as centered in a
+          left-aligned column. */}
+      {hasStateMarker && (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 58, flex: '0 0 58px' }}>
+          {credential.disabled && (
+            <span
+              style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+              title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
+            >
+              <PowerOff size={9} />
+              {t('op.credentialDisabled')}
+            </span>
+          )}
+          {!credential.routable && (
+            <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
+              <Ban size={11} />
+            </span>
+          )}
+          {credential.suspect && (
+            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
+              <AlertTriangle size={11} />
+            </span>
+          )}
+        </span>
+      )}
+      {showsNormal && <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>}
       {remaining > 0 && (
         <span
           style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
@@ -882,12 +877,14 @@ const CredentialActions: React.FC<CredentialActionsProps> = ({
 };
 
 /** Head cells for the ScrollTable: override its uppercase label treatment
- *  (wrong for CJK) and clip short labels to the fixed column tracks. */
+ *  (wrong for CJK) and clip short labels to the fixed column tracks. The
+ *  horizontal inset matches ZOOM_TD's, so a left-aligned column's header sits
+ *  exactly over its body text (centered columns stay centered either way). */
 const ZOOM_HEAD: React.CSSProperties = {
   fontSize: 'var(--text-sm)',
   fontWeight: 'var(--font-bold)',
   color: 'var(--text-dim)',
-  padding: '7px 6px',
+  padding: '7px 8px',
   textTransform: 'none',
   letterSpacing: 'normal',
   whiteSpace: 'nowrap',
@@ -895,7 +892,7 @@ const ZOOM_HEAD: React.CSSProperties = {
   textOverflow: 'ellipsis',
 };
 const ZOOM_TD: React.CSSProperties = {
-  padding: '6px 10px',
+  padding: '6px 8px',
   borderBottom: '1px solid var(--divider)',
   verticalAlign: 'middle',
   whiteSpace: 'nowrap',
@@ -912,12 +909,9 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
   prefixVisible,
   pending,
   testing,
-  renaming,
   onStartRename,
-  onCancelRename,
   now,
   onPin,
-  onRename,
   onTest,
   onDisconnect,
   onToggleDisabled,
@@ -929,13 +923,8 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
   position,
 }) => {
   const { t } = useI18n();
-  const [labelDraft, setLabelDraft] = useState('');
   const remaining = credential.cooldownUntilMs !== undefined ? credential.cooldownUntilMs - now : 0;
   const name = credentialName(credential, t('op.credentialUnnamed'));
-  const startRename = () => {
-    setLabelDraft(credential.label ?? '');
-    onStartRename();
-  };
   // One shared helper renders every per-column action — the pin/test/limits/
   // toggle/disconnect columns and the ghost copy/clear-suspect embeds all use
   // the same availability logic.
@@ -948,7 +937,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
       pending={pending}
       testing={testing}
       canReveal={canReveal}
-      onStartRename={startRename}
+      onStartRename={onStartRename}
       onPin={onPin}
       onTest={onTest}
       onCopyKey={onCopyKey}
@@ -966,61 +955,33 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
         #{position}
       </td>
       <td style={{ ...ZOOM_TD, fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>
-        {renaming ? (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <input
-              className="input"
-              style={{ fontSize: 'var(--text-md)', width: 180 }}
-              aria-label={t('op.credentialLabelPlaceholder')}
-              placeholder={t('op.credentialLabelPlaceholder')}
-              maxLength={80}
-              value={labelDraft}
-              onChange={(e) => setLabelDraft(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter with an empty draft is the CLEAR gesture, not a no-op.
-                if (e.key === 'Enter') onRename(credential, labelDraft.trim());
-                if (e.key === 'Escape') onCancelRename();
-              }}
-              autoFocus
-            />
-            <button
-              className="btn btn-sm btn-primary"
-              style={CRED_ICON_BTN_LG}
-              disabled={pending || labelDraft.trim() === (credential.label?.trim() ?? '')}
-              title={labelDraft.trim() ? t('op.credentialRename') : t('op.credentialClearLabel')}
-              onClick={() => onRename(credential, labelDraft.trim())}
-            >
-              <Check size={13} />
-            </button>
-            <button className="btn btn-sm" style={CRED_ICON_BTN_LG} title={t('common.cancel')} aria-label={t('common.cancel')} onClick={onCancelRename}>
-              ✕
-            </button>
-          </span>
-        ) : (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
-            {prefixVisible && <PrefixChip credential={credential} />}
-            {/* Rename lives beside the name it edits, not in its own column. */}
-            <CredentialActions
-              large
-              ghost
-              only="rename"
-              credential={credential}
-              caps={caps}
-              pending={pending}
-              testing={testing}
-              canReveal={canReveal}
-              onStartRename={startRename}
-              onPin={onPin}
-              onTest={onTest}
-              onCopyKey={onCopyKey}
-              onClearSuspect={onClearSuspect}
-              onEditLimits={onEditLimits}
-              onToggleDisabled={onToggleDisabled}
-              onDisconnect={onDisconnect}
-            />
-          </span>
-        )}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+          {/* Long labels (emails, ≤80 chars) ellipsize INSIDE the measured
+              column — the full value stays on the cell tooltip and in the
+              rename dialog, never pushing the chip/actions out of the cell. */}
+          <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+          {/* Rename lives beside the name it edits, not in its own column —
+              and it opens the page-owned label DIALOG: an inline input plus
+              its save/cancel controls overflowed this measured column. */}
+          <CredentialActions
+            large
+            ghost
+            only="rename"
+            credential={credential}
+            caps={caps}
+            pending={pending}
+            testing={testing}
+            canReveal={canReveal}
+            onStartRename={onStartRename}
+            onPin={onPin}
+            onTest={onTest}
+            onCopyKey={onCopyKey}
+            onClearSuspect={onClearSuspect}
+            onEditLimits={onEditLimits}
+            onToggleDisabled={onToggleDisabled}
+            onDisconnect={onDisconnect}
+          />
+        </span>
       </td>
       <td style={{ ...ZOOM_TD, fontSize: 'var(--text-md)', fontFamily: FONT_MONO, color: 'var(--text-dim)', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1032,37 +993,26 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
             </span>
           )}
           {/* Copy sits beside the key it copies. */}
-          <CredentialActions large ghost only="copy" credential={credential} caps={caps} pending={pending} testing={testing} canReveal={canReveal} onStartRename={startRename} onPin={onPin} onTest={onTest} onCopyKey={onCopyKey} onClearSuspect={onClearSuspect} onEditLimits={onEditLimits} onToggleDisabled={onToggleDisabled} onDisconnect={onDisconnect} />
+          <CredentialActions large ghost only="copy" credential={credential} caps={caps} pending={pending} testing={testing} canReveal={canReveal} onStartRename={onStartRename} onPin={onPin} onTest={onTest} onCopyKey={onCopyKey} onClearSuspect={onClearSuspect} onEditLimits={onEditLimits} onToggleDisabled={onToggleDisabled} onDisconnect={onDisconnect} />
         </span>
       </td>
-      {/* Weight: editable only when the bound store can carry one (OCR file);
-          v2-bound rows render the read-only badge. Blur/Enter commits, the
-          backend clamps — the input mirrors the same 1..MAX range. The column
-          exists only when showWeight, matching the conditional header so the
-          measured tracks never shift. */}
+      {/* Weight: the cell shows the current spread weight and opens the
+          page-owned weight dialog — never an inline number input, so the
+          measured column tracks never depend on a row's edit state. The
+          column exists only when showWeight, matching the conditional header. */}
       {showWeight && (
         <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
           {caps?.weight && onEditWeight ? (
-            <input
-              type="number"
-              className="input"
-              min={1}
-              max={CREDENTIAL_WEIGHT_MAX}
-              key={credential.weight ?? 1}
-              defaultValue={credential.weight ?? 1}
+            <button
+              className="btn btn-sm"
+              style={{ ...ZOOM_CTRL, padding: '2px 8px', fontVariantNumeric: 'tabular-nums' }}
               disabled={pending}
+              title={t('op.credentialWeightTip')}
               aria-label={t('op.credentialWeight')}
-              style={{ ...ZOOM_CTRL, width: 58, fontSize: 'var(--text-md)', textAlign: 'center' }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-              }}
-              onBlur={(e) => {
-                const n = Math.floor(Number(e.target.value));
-                const clamped = Number.isFinite(n) ? Math.min(Math.max(n, 1), CREDENTIAL_WEIGHT_MAX) : 1;
-                if (clamped !== (credential.weight ?? 1)) onEditWeight(credential, clamped);
-                else e.target.value = String(credential.weight ?? 1);
-              }}
-            />
+              onClick={() => onEditWeight(credential)}
+            >
+              {credential.weight ?? 1}
+            </button>
           ) : (
             (credential.weight ?? 1) > 1 && (
               <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
@@ -1081,10 +1031,6 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           {/* Suspect-clear is a per-row conditional (suspect rows only), so it
               rides the status cell instead of an always-empty column. */}
           {action('clearSuspect')}
-          {/* Explicit "normal" word: an empty cell reads as broken data. */}
-          {!credential.disabled && !credential.suspect && remaining <= 0 && (credential.limits ?? []).length === 0 && !credential.quota && (
-            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>
-          )}
         </span>
       </td>
       {/* One action per column — the short header above names the action; the
@@ -1242,6 +1188,128 @@ const CredentialLimitsDialog: React.FC<{
   );
 };
 
+/**
+ * Label editor for ONE credential. A DIALOG, not an inline cell editor: the
+ * maintenance table measures its columns from the first row, and an inline
+ * input plus its save/cancel buttons overflowed the name column into the key
+ * column. Empty input is the CLEAR gesture (backend: '' is a valid label).
+ */
+const CredentialLabelDialog: React.FC<{
+  credential: CredentialHealth;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (label: string) => void;
+}> = ({ credential, busy, onCancel, onSave }) => {
+  const { t } = useI18n();
+  const current = credential.label?.trim() ?? '';
+  const [draft, setDraft] = useState(credential.label ?? '');
+  const next = draft.trim();
+  const submit = () => {
+    if (busy || next === current) return;
+    onSave(next);
+  };
+  return (
+    <Dialog
+      title={t('op.credentialRename')}
+      subtitle={credentialName(credential, t('op.credentialUnnamed'))}
+      onClose={onCancel}
+      closeLabel={t('common.cancel')}
+      closeDisabled={busy}
+      width={420}
+      footerRight={
+        <>
+          <button className="btn btn-sm" onClick={onCancel}>
+            <span>{t('common.cancel')}</span>
+          </button>
+          {/* An emptied draft is the CLEAR gesture — the title says so. */}
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy || next === current}
+            title={next ? t('op.credentialRename') : t('op.credentialClearLabel')}
+            onClick={submit}
+          >
+            <Check size={12} />
+            <span>{t('common.confirm')}</span>
+          </button>
+        </>
+      }
+    >
+      <input
+        className="input"
+        style={{ fontSize: 'var(--text-sm)', width: '100%' }}
+        aria-label={t('op.credentialLabelPlaceholder')}
+        placeholder={t('op.credentialLabelPlaceholder')}
+        maxLength={80}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          // Enter with an empty draft is the CLEAR gesture, not a no-op.
+          if (e.key === 'Enter') submit();
+        }}
+        autoFocus
+      />
+    </Dialog>
+  );
+};
+
+/**
+ * Spread-weight editor for ONE credential — same dialog-only rule as the label
+ * editor (no inline number input inside the measured table). Shapes NEW-session
+ * placement only; the backend clamps, and the draft mirrors the same 1..MAX range.
+ */
+const CredentialWeightDialog: React.FC<{
+  credential: CredentialHealth;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (weight: number) => void;
+}> = ({ credential, busy, onCancel, onSave }) => {
+  const { t } = useI18n();
+  const current = credential.weight ?? 1;
+  const [draft, setDraft] = useState(String(current));
+  const parsed = Math.floor(Number(draft));
+  const next = draft.trim() && Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), CREDENTIAL_WEIGHT_MAX) : current;
+  const submit = () => {
+    if (busy || next === current) return;
+    onSave(next);
+  };
+  return (
+    <Dialog
+      title={t('op.credentialWeight')}
+      subtitle={t('op.credentialWeightTip')}
+      onClose={onCancel}
+      closeLabel={t('common.cancel')}
+      closeDisabled={busy}
+      width={420}
+      footerRight={
+        <>
+          <button className="btn btn-sm" onClick={onCancel}>
+            <span>{t('common.cancel')}</span>
+          </button>
+          <button className="btn btn-sm btn-primary" disabled={busy || next === current} onClick={submit}>
+            <Check size={12} />
+            <span>{t('common.confirm')}</span>
+          </button>
+        </>
+      }
+    >
+      <input
+        type="number"
+        className="input"
+        min={1}
+        max={CREDENTIAL_WEIGHT_MAX}
+        style={{ fontSize: 'var(--text-sm)', width: '100%' }}
+        aria-label={t('op.credentialWeight')}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit();
+        }}
+        autoFocus
+      />
+    </Dialog>
+  );
+};
+
 
 export const KeysPage: React.FC = () => {
   const { t } = useI18n();
@@ -1389,7 +1457,21 @@ export const KeysPage: React.FC = () => {
   // "Hide connected" in the catalog tab means HAS A CREDENTIAL — a merely
   // defined provider (e.g. a plugin-registered preset awaiting its key) must
   // stay searchable; connectedIds is the pre-write snapshot for the connect flow.
-  const keyedProviderIds = useMemo(() => new Set(ocProviders.filter((p) => p.auth.connected).map((p) => p.id)), [ocProviders]);
+  /**
+   * The providers that are actually CONNECTED — a credential exists for them.
+   * One derivation for every consumer on this page (card list, badge, status
+   * counts, origin options, catalog "connected" filter), so they can never
+   * disagree.
+   *
+   * A DEF is not a connection: plugin presets, the boot credential-bind sweep
+   * and a hand-written defs entry all materialize nodes with no key behind
+   * them. Those stay fully registered and routable — they are simply not
+   * "connected", and the catalog tab is where they surface as connectable
+   * rows. (Listing them here used to present providers the operator never
+   * connected, including ones they had deliberately deleted.)
+   */
+  const keyedProviders = useMemo(() => ocProviders.filter((p) => p.auth.connected), [ocProviders]);
+  const keyedProviderIds = useMemo(() => new Set(keyedProviders.map((p) => p.id)), [keyedProviders]);
 
   // Decision 1: whether a submitted key ADDS an credential or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
@@ -1440,9 +1522,11 @@ export const KeysPage: React.FC = () => {
   }, [credentialsByProvider]);
   const now = useCountdownClock(maxCooldownUntil);
   const [pendingCredential, setPendingCredential] = useState<string | null>(null);
-  // `${providerId}:${credentialId}` of the row in label-edit mode (page-owned so it
-  // closes only when the rename write succeeds).
-  const [renameKey, setRenameKey] = useState<string | null>(null);
+  // Credential whose label / spread-weight dialog is open. The row cells never
+  // own an input (an inline editor overflowed the measured column); the dialog
+  // stays open until the write succeeds, so a failure keeps the draft.
+  const [renameTarget, setRenameTarget] = useState<CredentialHealth | null>(null);
+  const [weightTarget, setWeightTarget] = useState<CredentialHealth | null>(null);
   // Provider whose credential list is open in the zoom dialog (page-scoped:
   // the dialog shares the card rows' handler wiring).
   const [zoomProviderId, setZoomProviderId] = useState<string | null>(null);
@@ -1537,7 +1621,7 @@ export const KeysPage: React.FC = () => {
     try {
       const res = await opencodeApi.renameProviderCredential(a.providerId, a.id, label);
       applyCredentialList(a.providerId, res.credentials);
-      setRenameKey(null);
+      setRenameTarget(null);
       toast.success(label ? t('op.credentialRenamed', { label }) : t('op.credentialLabelCleared'));
     } catch (err: any) {
       toast.error(reasonError(err));
@@ -1546,12 +1630,13 @@ export const KeysPage: React.FC = () => {
     }
   };
 
-  /** Spread weight commit (zoom-table editor). Shapes NEW-session placement only. */
+  /** Spread weight commit (page-owned weight dialog). Shapes NEW-session placement only. */
   const handleCredentialWeight = async (a: CredentialHealth, weight: number) => {
     setPendingCredential(`${a.providerId}:${a.id}`);
     try {
       const res = await opencodeApi.setProviderCredentialWeight(a.providerId, a.id, weight);
       applyCredentialList(a.providerId, res.credentials);
+      setWeightTarget(null);
       toast.success(t('op.credentialWeightSet', { label: credentialName(a, t('op.credentialUnnamed')), weight }));
     } catch (err: any) {
       toast.error(reasonError(err));
@@ -1748,28 +1833,39 @@ export const KeysPage: React.FC = () => {
     ...pluginIds.map((id) => ({ value: id, label: `${t('op.pluginTag')} · ${id}` })),
   ];
   // Plugin ids among connected providers (mirrors the catalog tab's origin
-  // dropdown options).
+  // dropdown options). Scoped to the SAME population `connectedResults` renders:
+  // an option derived from a def with no credential would be selectable while
+  // matching no card (a plugin that registered a preset the operator never
+  // connected is exactly that case).
   const connectedPluginIds = useMemo(
-    () => [...new Set(ocProviders.map((p) => p.pluginOrigin).filter((p): p is string => Boolean(p)))],
-    [ocProviders]
+    () => [
+      ...new Set(
+        keyedProviders
+          .map((p) => p.pluginOrigin)
+          .filter((p): p is string => Boolean(p))
+      ),
+    ],
+    [keyedProviders]
   );
   const connectedResults = useMemo(() => {
     const q = connectedQuery.trim().toLowerCase();
-    const list = q
-      ? ocProviders.filter(
-          (p) =>
-            p.id.toLowerCase().includes(q) ||
-            (p.name || '').toLowerCase().includes(q) ||
-            (p.baseURL || '').toLowerCase().includes(q) ||
-            p.models.some((m) => m.toLowerCase().includes(q))
-        )
-      : [...ocProviders];
+    const list = keyedProviders.filter(
+      (p) =>
+        !q ||
+        p.id.toLowerCase().includes(q) ||
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.baseURL || '').toLowerCase().includes(q) ||
+        p.models.some((m) => m.toLowerCase().includes(q))
+    );
     return list
       .filter((p) => matchOrigin(connectedOrigin, p))
       .filter((p) => connectedStatus === 'all' || Boolean(p.disabled) === (connectedStatus === 'disabled'))
       .sort(byDisplayName);
-  }, [ocProviders, connectedQuery, connectedOrigin, connectedStatus]);
-  const takedownCount = useMemo(() => ocProviders.filter((p) => p.disabled).length, [ocProviders]);
+  }, [keyedProviders, connectedQuery, connectedOrigin, connectedStatus]);
+  const takedownCount = useMemo(() => keyedProviders.filter((p) => p.disabled).length, [keyedProviders]);
+  /** The Connected tab's badge and its status-filter counts — the same
+   *  population `connectedResults` renders, never `ocProviders.length`. */
+  const keyedCount = keyedProviders.length;
   const pagedConnected = useMemo(() => {
     const start = (connectedPage - 1) * connectedPageSize;
     return connectedResults.slice(start, start + connectedPageSize);
@@ -2175,7 +2271,7 @@ export const KeysPage: React.FC = () => {
           >
             <Plug size={13} />
             <span>{t('op.tabConnected')}</span>
-            <span style={countStyle(activeTab === 'connected')}>{ocProviders.length}</span>
+            <span style={countStyle(activeTab === 'connected')}>{keyedCount}</span>
           </button>
           <button
             role="tab"
@@ -2261,8 +2357,8 @@ export const KeysPage: React.FC = () => {
               below it then narrows within the chosen state. */}
           <div role="group" aria-label={t('op.filterStatus')} style={{ ...segTrackStyle, flexShrink: 0 }}>
             {([
-              ['all', t('op.filterStatusAll'), ocProviders.length],
-              ['enabled', t('op.filterStatusEnabled'), ocProviders.length - takedownCount],
+              ['all', t('op.filterStatusAll'), keyedCount],
+              ['enabled', t('op.filterStatusEnabled'), keyedCount - takedownCount],
               ['disabled', t('op.filterStatusDisabled'), takedownCount],
             ] as const).map(([value, label, count]) => {
               const active = connectedStatus === value;
@@ -3144,17 +3240,22 @@ export const KeysPage: React.FC = () => {
           const ambiguousMasks = new Set(masks.filter((m, i) => masks.indexOf(m) !== i));
           const showWeight = Boolean(caps?.weight);
           const actLabel = (short: string, full: string) => <span title={full}>{short}</span>;
+          // Width budget: the dialog's content box is 860px max minus 40px
+          // card padding, the 2px body rail and the ~8px vertical scrollbar
+          // gutter — 808px measured. These tracks total 788px, so the DEFAULT
+          // dialog renders with no horizontal scrollbar; the remaining slack
+          // stretches the tracks proportionally.
           const zoomColumns: ScrollTableColumn[] = [
             { key: 'position', label: '#', width: 36, align: 'center' },
             { key: 'name', label: t('op.credentialZoomColName'), width: 140 },
-            { key: 'key', label: t('op.credentialZoomColKey'), width: 156 },
+            { key: 'key', label: t('op.credentialZoomColKey'), width: 148 },
             ...(showWeight ? [{ key: 'weight', width: 64, align: 'center' as const, label: <>{t('op.credentialWeight')} <InfoTip text={t('op.credentialWeightTip')} /></> }] : []),
             { key: 'status', label: t('op.credentialZoomColStatus'), width: 200 },
-            { key: 'pin', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColPin'), t('op.credentialPin')) },
-            { key: 'test', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColTest'), t('op.credentialTest')) },
-            { key: 'limits', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColLimits'), t('op.credentialLimits')) },
-            { key: 'toggle', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColToggle'), `${t('op.credentialDisable')} / ${t('op.credentialEnable')}`) },
-            { key: 'disconnect', width: 44, align: 'center' as const, label: actLabel(t('op.credentialZoomColDisconnect'), t('op.credentialDisconnect')), headStyle: { color: 'var(--accent-rose)' } },
+            { key: 'pin', width: 40, align: 'center' as const, label: actLabel(t('op.credentialZoomColPin'), t('op.credentialPin')) },
+            { key: 'test', width: 40, align: 'center' as const, label: actLabel(t('op.credentialZoomColTest'), t('op.credentialTest')) },
+            { key: 'limits', width: 40, align: 'center' as const, label: actLabel(t('op.credentialZoomColLimits'), t('op.credentialLimits')) },
+            { key: 'toggle', width: 40, align: 'center' as const, label: actLabel(t('op.credentialZoomColToggle'), `${t('op.credentialDisable')} / ${t('op.credentialEnable')}`) },
+            { key: 'disconnect', width: 40, align: 'center' as const, label: actLabel(t('op.credentialZoomColDisconnect'), t('op.credentialDisconnect')), headStyle: { color: 'var(--accent-rose)' } },
           ];
           const zoomMinWidth = zoomColumns.reduce((sum, c) => sum + (typeof c.width === 'number' ? c.width : 0), 0);
           const rowProps = (a: CredentialHealth, i: number) => ({
@@ -3167,19 +3268,16 @@ export const KeysPage: React.FC = () => {
             pending: pendingCredential === `${p.id}:${a.id}`,
             testing: testingIds.has(`${p.id}:${a.id}`),
             onTest: (acc: CredentialHealth) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, credentialId: acc.id }),
-            renaming: renameKey === `${p.id}:${a.id}`,
-            onStartRename: () => setRenameKey(`${p.id}:${a.id}`),
-            onCancelRename: () => setRenameKey(null),
+            onStartRename: () => setRenameTarget(a),
             now,
             onPin: handleCredentialPin,
-            onRename: handleCredentialRename,
             onDisconnect: handleCredentialDisconnect,
             onToggleDisabled: handleCredentialToggleDisabled,
             onClearSuspect: handleCredentialClearSuspect,
             canReveal: webAuthActive,
             onCopyKey: handleCredentialCopyKey,
             onEditLimits: (acc: CredentialHealth) => openLimitsDialog(p.id, acc),
-            onEditWeight: handleCredentialWeight,
+            onEditWeight: (acc: CredentialHealth) => setWeightTarget(acc),
           });
           return (
             <Dialog
@@ -3230,6 +3328,25 @@ export const KeysPage: React.FC = () => {
             </Dialog>
           );
         })()}
+
+        {/* Credential editors live OUTSIDE the zoom table (rendered after it so
+            their portals stack above it) — the row cells own no inputs. */}
+        {renameTarget && (
+          <CredentialLabelDialog
+            credential={renameTarget}
+            busy={pendingCredential === `${renameTarget.providerId}:${renameTarget.id}`}
+            onCancel={() => setRenameTarget(null)}
+            onSave={(label) => handleCredentialRename(renameTarget, label)}
+          />
+        )}
+        {weightTarget && (
+          <CredentialWeightDialog
+            credential={weightTarget}
+            busy={pendingCredential === `${weightTarget.providerId}:${weightTarget.id}`}
+            onCancel={() => setWeightTarget(null)}
+            onSave={(weight) => handleCredentialWeight(weightTarget, weight)}
+          />
+        )}
 
         {/* Probe failure detail: the card row keeps only the classification;
             the full (redacted, 600-char-bounded) upstream body lands here,

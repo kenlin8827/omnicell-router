@@ -1,5 +1,6 @@
 import { globMatch } from '../utils/glob.js';
 import { DEFAULT_FORWARD_PROXY_INTERCEPT } from '../config/defaults.js';
+import type { ClaimEgressSource } from '../plugins/gateways.js';
 import type { ForwardProxyRule, InterceptPosture, RuleEgress, RuleExit, RuleIngress } from '../config/types.js';
 
 /**
@@ -102,17 +103,31 @@ export interface RuleDecision {
   /** Intercept (false) or blind tunnel (true). */
   tunnel: boolean;
   /**
-   * `loopback` / `rule` / `claim` / `fallback` — why.
+   * `loopback` / `rule` / `claim` / `fallback` — why the connection is
+   * decrypted or tunneled the way it is.
    *
-   * - `rule`     → a row decided (a SPECIFIC row always does; the catch-all
-   *                row does when it is `reject`);
+   * - `rule`     → a row decided the ingress axis (a SPECIFIC row always does;
+   *                the catch-all row does when it is `reject`);
    * - `claim`    → no specific row, but a live client-gateway plugin claims the
-   *                host: decrypted (ADR-0018 Revision 4);
-   * - `fallback` → no row decided the decrypt axis: the catch-all's `egress`
-   *                applies and the connection is tunneled unless the audit
-   *                posture (`intercept: 'all'`) is on.
+   *                host, so it is decrypted (ADR-0018 Revision 4);
+   * - `fallback` → nothing decided the decrypt axis: the connection is tunneled
+   *                unless the audit posture (`intercept: 'all'`) is on.
    */
   reason: 'loopback' | 'rule' | 'claim' | 'fallback';
+  /**
+   * Set ONLY when a claiming gateway decided the EXIT — the tier of the claim
+   * that spoke (ADR-0018 Revision 5). It is the one fact a caller needs apart
+   * from the decision, for two reasons:
+   *
+   * - an empty rule table means "no table opinion = the historical direct", and
+   *   that escape must not swallow a declaration, because a declaration is not a
+   *   table row (`transitEgressFor`);
+   * - a specific row's `egress` is INERT over a host whose claim spoke — the
+   *   console says so instead of letting the operator believe their row applies.
+   *   That holds even when the row names the same leg: "the claim owns this
+   *   exit" is the truth either way.
+   */
+  egressClaim?: ClaimEgressSource;
   /** Position in the table (present only for `reason: 'rule'`). */
   ruleIndex?: number;
   /** The glob that matched (present only for `reason: 'rule'`). */
@@ -125,6 +140,22 @@ export interface ResolveOptions {
   claimed?: ReadonlySet<string>;
   /** Interception posture; absent = `DEFAULT_FORWARD_PROXY_INTERCEPT`. */
   intercept?: InterceptPosture;
+  /**
+   * Ask the claim of a host what outbound leg it wants (`claimEgressFor()`).
+   * Receives the host TRIMMED and LOWERCASED (the resolver normalizes before
+   * asking), so an implementation's lookup is an exact match.
+   *
+   * A callback, not a snapshot map, because the answer is the plugin's CODE
+   * running per request: a gateway may route the mapped models of one host one
+   * way and its unmapped ones another, and a saved config must take effect
+   * without rebuilding any table.
+   *
+   * It outranks every `egress` in the table, because the claim is the unit of
+   * ownership for the leg (ADR-0018 Revision 5). It is outranked by the two things
+   * that are not opinions about a leg: `reject` (permission to read a host is
+   * not permission to reach it) and loopback (cycle safety).
+   */
+  claimEgress?: (host: string) => { action: RuleEgress; source: ClaimEgressSource } | undefined;
 }
 
 /** Case-insensitive membership: plugin manifests are hand-written. */
@@ -144,6 +175,7 @@ export const RULE_WARNING_CODES = [
   'no-catch-all',
   'catch-all-intercepts',
   'proxy-rule-without-proxy',
+  'claim-owns-egress',
 ] as const;
 
 export type RuleWarningCode = (typeof RULE_WARNING_CODES)[number];
@@ -170,20 +202,25 @@ export function normalizeRules(raw: unknown): ForwardProxyRule[] {
  * absolute-URI leg, the tunnels, h2-forward, the client-gateway relay) and the
  * console preview call this, so they can never disagree.
  *
- * Order (ADR-0018 Revision 4):
+ * Order (ADR-0018 Revision 4, with the exit half amended by Revision 5):
  *
  *   1. loopback               → direct + tunnel (unchanged invariant)
- *   2. a SPECIFIC matching row → that row's `ingress`/`egress`, verbatim: the
- *                                operator outranks a claim, so `reject` and
- *                                `passthrough` can both override one
- *   3. the host is CLAIMED     → the catch-all's `egress`, decrypted
- *   4. `intercept: 'all'`      → the catch-all's `egress`, decrypted (audit)
- *   5. otherwise               → the catch-all's `egress`, blind tunnel
+ *   2. `reject`               → the admission gate, from ANY row that matches
+ *                               first: permission to READ a host is never
+ *                               permission to REACH it, so no claim un-blocks
+ *   3. a SPECIFIC matching row → that row's `ingress` verbatim; the `egress` is
+ *                               the claim's when a gateway spoke for this host
+ *                               and the table's otherwise
+ *   4. the host is CLAIMED    → decrypted, on the claim's egress when it made
+ *                               one, otherwise the catch-all's
+ *   5. `intercept: 'all'`     → the catch-all's `egress`, decrypted (audit)
+ *   6. otherwise              → the catch-all's `egress`, blind tunnel
  *
  * The catch-all row's `ingress` is therefore only the default posture for hosts
- * nothing declares — except `reject`, which keeps its admission-gate meaning
- * (an operator blocklist no claim can un-block; write a specific row above it
- * for the exception).
+ * nothing declares. A row's `egress` is a statement about the hosts the TABLE
+ * owns; over a claimed host the claim owns the leg (Revision 5), which is why
+ * `lintRules` flags the inert half instead of letting the operator read a rule
+ * that no longer routes anything.
  */
 export function resolveHost(host: string, rules?: ForwardProxyRule[], options?: ResolveOptions): RuleDecision {
   // Brackets are IPv6 syntax, not part of the name: a CONNECT target arrives as
@@ -191,19 +228,31 @@ export function resolveHost(host: string, rules?: ForwardProxyRule[], options?: 
   const h = (host || '').trim().replace(/^\[|\]$/g, '');
   if (!h) return { action: 'direct', tunnel: false, reason: 'fallback' };
   if (isLoopbackHost(h)) return { action: 'direct', tunnel: true, reason: 'loopback' };
+  // Whose opinion, if any, owns the EXIT of this host. The caller injects it
+  // because it is the plugin's code answering, per request (Revision 5); a claim that
+  // has nothing to say returns undefined and the table decides. The host is
+  // lowercased before the lookup: a claim key is an exact host name and
+  // manifests are hand-written, so one host must never get two spellings.
+  const claim = options?.claimEgress?.(h.toLowerCase());
   let catchAll: { rule: ForwardProxyRule; index: number } | undefined;
   for (let i = 0; i < (rules?.length ?? 0); i += 1) {
     const rule = rules![i];
     if (!rule?.match) continue; // invalid slot — never matches
     if (!globMatch(rule.match, h)) continue;
     if (rule.match !== '*') {
-      return {
+      const row: RuleDecision = {
         action: ruleExit(rule.egress, rule.ingress),
         tunnel: isPassthroughIngress(rule.ingress),
         reason: 'rule',
         ruleIndex: i,
         match: rule.match,
       };
+      // `reject` is an admission verdict, not a leg: there is nothing to route.
+      if (rule.ingress === 'reject' || !claim) return row;
+      // The claim OWNS the exit over this host, so the row's `egress` is inert —
+      // even when it happens to name the same leg. Crediting the row would teach
+      // the operator that their row applies when removing it changes nothing.
+      return { ...row, action: claim.action, egressClaim: claim.source };
     }
     // The catch-all: first match wins, so nothing after it is reachable and its
     // ingress is the DEFAULT posture, resolved below.
@@ -216,7 +265,11 @@ export function resolveHost(host: string, rules?: ForwardProxyRule[], options?: 
   // No specific row decided: the catch-all's egress still governs where the
   // bytes go (an absent catch-all means the historical `direct`).
   const egress = catchAll?.rule.egress ?? 'direct';
-  if (isClaimedHost(options?.claimed, h)) return { action: egress, tunnel: false, reason: 'claim' };
+  if (isClaimedHost(options?.claimed, h)) {
+    return claim
+      ? { action: claim.action, tunnel: false, reason: 'claim', egressClaim: claim.source }
+      : { action: egress, tunnel: false, reason: 'claim' };
+  }
   if ((options?.intercept ?? DEFAULT_FORWARD_PROXY_INTERCEPT) === 'all') {
     return { action: egress, tunnel: false, reason: 'fallback' };
   }
@@ -236,11 +289,20 @@ export function resolveHost(host: string, rules?: ForwardProxyRule[], options?: 
  * `'claims'` it decrypts nothing for the hosts nothing claims — exactly the
  * misconfiguration the operator cannot see in the row itself, hence the
  * `catch-all-intercepts` warning.
+ *
+ * `claimedEgress` is the snapshot of hosts whose client-gateway claim speaks
+ * about the leg (Revision 5). Over such a host the row's `egress` is not consulted, so
+ * a row that EXPLICITLY declared a different one gets `claim-owns-egress`: the
+ * operator typed a leg that routes nothing, and the only way to see that is to
+ * be told. Absent (boot, before any plugin loads) simply means no opinion is
+ * knowable yet, which is why it is a parameter and not something the
+ * function reads.
  */
 export function lintRules(
   raw: unknown,
   proxyEnabled: boolean,
   intercept: InterceptPosture = DEFAULT_FORWARD_PROXY_INTERCEPT,
+  claimedEgress?: ReadonlyMap<string, RuleEgress>,
 ): RuleWarning[] {
   const entries = Array.isArray(raw) ? raw : [];
   const warnings: RuleWarning[] = [];
@@ -281,6 +343,25 @@ export function lintRules(
     seen.add(key);
     if (egress === 'proxy' && !proxyEnabled) {
       warnings.push({ code: 'proxy-rule-without-proxy', ruleIndex, detail: match });
+    }
+    // Revision 5 — over a host whose claim speaks about the leg, the ROW's `egress` is
+    // never consulted. Only an explicitly typed one is worth reporting (an
+    // inherited default claims the operator never made), and never the catch-all:
+    // `*` still routes every host nothing claims, so flagging it would bury the
+    // rows that are genuinely inert in `detail`. A `reject` row is exempt too:
+    // there is no leg to route, so its `egress` is not being shadowed.
+    if (claimedEgress?.size && match !== '*' && rule.ingress !== 'reject' && (entry ?? {}).egress !== undefined) {
+      const shadowed = [...claimedEgress].filter(([host, action]) => action !== egress && globMatch(match, host));
+      if (shadowed.length > 0) {
+        const [host, action] = shadowed[0];
+        warnings.push({
+          code: 'claim-owns-egress',
+          ruleIndex,
+          detail: `egress "${egress}" unused on ${host} (its gateway routes "${action}")${
+            shadowed.length > 1 ? `, +${shadowed.length - 1} more` : ''
+          }`,
+        });
+      }
     }
   });
   if (catchAllAt < 0) warnings.push({ code: 'no-catch-all' });

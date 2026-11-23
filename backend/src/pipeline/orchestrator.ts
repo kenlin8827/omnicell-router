@@ -21,7 +21,7 @@ import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../config/defaults.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
-import { ProviderRegistry } from '../providers/registry.js';
+import { ProviderRegistry, type AttemptEgress } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { protocolForWire } from '../providers/vocabulary.js';
@@ -1605,6 +1605,11 @@ export class PipelineOrchestrator {
     // §1). Buffered by construction on the cascade's lite lead (it is never
     // given a relay) and whenever `streaming.upstream.mode` is `buffered`.
     let upstreamStream: 'sse' | 'buffered' | undefined = undefined;
+    // Outbound egress of the SERVED attempt (ADR-0018). Resolved at the dial
+    // (see executeCandidatePool), never at trace time — the proxy config
+    // hot-applies, so a read after a long stream can describe a different
+    // dial. undefined = unknown (plugin transport / mock), never direct.
+    let servedEgress: AttemptEgress | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices, combos AND
@@ -1669,6 +1674,7 @@ export class PipelineOrchestrator {
           inplaceRetries += liteResult.inplaceRetries;
           servedCredentialPrefix = liteResult.servedCredentialPrefix;
           upstreamStream = liteResult.transport;
+          servedEgress = liteResult.egress;
         } else {
           assertionError = validation.error || 'Schema validation assertion failed';
         }
@@ -1753,6 +1759,7 @@ export class PipelineOrchestrator {
         servedCredentialPrefix = plusResult.servedCredentialPrefix;
         poolTiming = plusResult.timing;
         upstreamStream = plusResult.transport;
+        servedEgress = plusResult.egress;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -1932,6 +1939,7 @@ export class PipelineOrchestrator {
       actualTier = execResult.tierUsed!;
       poolTiming = execResult.timing;
       upstreamStream = execResult.transport;
+      servedEgress = execResult.egress;
       // Recompute `actualEffort` against the model that ACTUALLY served the
       // request — failover may have shifted to a different model than the
       // one `pickModelForEffort` originally picked, with a different effort
@@ -2206,6 +2214,15 @@ export class PipelineOrchestrator {
         // tag (ADR-0008 §1). 'sse' with clientStream:false is the accumulate
         // mode: the gateway read a stream and answered in JSON.
         upstreamStream,
+        // Outbound egress of the served attempt (ADR-0018 vocabulary), as
+        // resolved at the dial. Absent = unknown (legacy row / plugin-owned
+        // transport / mock), never read as direct.
+        ...(servedEgress
+          ? {
+              egress: servedEgress.mode,
+              ...(servedEgress.mode === 'proxy' ? { egressProxy: servedEgress.origin } : {}),
+            }
+          : {}),
         fallbackReason,
         failoverOccurred,
         failoverAttempts,
@@ -2420,6 +2437,13 @@ export class PipelineOrchestrator {
      * buffered provider call. Registry-reported, never inferred from timing.
      */
     transport?: 'sse' | 'buffered';
+    /**
+     * Outbound egress of the SERVED attempt, resolved immediately before its
+     * dial (the proxy config hot-applies, so trace-time resolution could
+     * describe a different dial). Undefined = unknown: the transport does not
+     * report a dial base (plugin executor) or nothing was dialed (mock).
+     */
+    egress?: AttemptEgress;
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -2730,6 +2754,8 @@ export class PipelineOrchestrator {
       // Transport the served attempt actually used (registry-reported, once
       // per attempt). Reset per attempt: a retry re-issues with a fresh tag.
       let transport: 'sse' | 'buffered' | undefined;
+      // Outbound egress resolved at THIS attempt's dial (AttemptEgress).
+      let attemptEgress: AttemptEgress | undefined;
       const timingRelay: StreamRelay | undefined = opts.relay
         ? {
           stageRouting: (facts) => opts.relay!.stageRouting(facts),
@@ -2761,6 +2787,9 @@ export class PipelineOrchestrator {
 
       for (let attempt = 0; attempt <= maxInplaceAttempts; attempt++) {
         try {
+          // Resolve egress at the dial: the proxy config hot-applies, so a
+          // read at trace time could describe a different dial than this one.
+          attemptEgress = this.registry.egressFor(candidate);
           candidateResponse = await this.registry.execute(
             candidateReq,
             candidate,
@@ -2931,6 +2960,8 @@ export class PipelineOrchestrator {
           // Served-attempt transport tag. `opts.relay` absent = the executor
           // was never given a relay, so the buffered call is certain.
           transport: opts.relay ? transport : 'buffered',
+          // Served-attempt egress, resolved at the dial by this pool.
+          egress: attemptEgress,
         };
       }
     }

@@ -35,19 +35,23 @@ describe('subscription rule import', () => {
       { type: 'DOMAIN-SUFFIX', payload: 'apple.com', target: 'PROXY' },
       { type: 'DOMAIN-SUFFIX', payload: 'corp.internal', target: 'DIRECT' },
       { type: 'DOMAIN-KEYWORD', payload: 'ads', target: 'REJECT' },
+      // GEOIP/GEOSITE import like any whitelisted type; the geo databases are
+      // an explicit download and the save route refuses the list without them.
+      { type: 'GEOIP', payload: 'CN', target: 'DIRECT' },
+      { type: 'GEOSITE', payload: 'netflix', target: 'PROXY' },
       { type: 'IP-CIDR', payload: '192.168.0.0/16', target: 'DIRECT' },
       { type: 'DOMAIN-SUFFIX', payload: 'dup', target: 'DIRECT' },
     ]);
-    // Two group targets (not DIRECT/REJECT) became PROXY.
-    expect(result.mappedToProxy).toBe(2);
+    // Three group targets (not DIRECT/REJECT) became PROXY.
+    expect(result.mappedToProxy).toBe(3);
     expect(result.total).toBe(12);
   });
 
   test('unsupported types and unpairable rows are reported, never shipped', () => {
     const result = importRulesFromYaml(SUBSCRIPTION);
     const byReason = Object.fromEntries(result.skipped.map(entry => [entry.reason, entry.count]));
-    expect(byReason.GEOIP).toBe(1);
-    expect(byReason.GEOSITE).toBe(1);
+    expect(byReason.GEOIP).toBeUndefined();
+    expect(byReason.GEOSITE).toBeUndefined();
     expect(byReason['RULE-SET']).toBe(1);
     expect(byReason.LOGICAL).toBe(1);
     // `DOMAIN,bad,payload,DIRECT` carries a separator inside the payload.

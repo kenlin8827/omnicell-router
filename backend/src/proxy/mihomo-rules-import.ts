@@ -9,10 +9,12 @@
  *   gateway's single group. Importing their groups instead would put two
  *   selection sets in one config, and the node picked in the console would then
  *   apply to only half the traffic.
- * - rule types the core cannot evaluate without a geo database or an external
- *   rule-set fetch (GEOIP / GEOSITE / RULE-SET / logical rules) are dropped.
- *   Shipping them changes egress silently when the data is missing — the one
- *   failure mode an operator cannot see from the console.
+ * - rule types the core cannot evaluate at all — `RULE-SET` (fetches a remote
+ *   document at load), logical rules, unknown source-scoped variants — are
+ *   dropped and counted. `GEOIP` / `GEOSITE` are importable: they need the geo
+ *   databases, but those are an explicit download and the save route refuses a
+ *   geo-rule table without them, so an imported row can never be silently
+ *   routed around.
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -22,7 +24,7 @@ import type { MihomoCustomRule, MihomoRuleType } from '../config/types.js';
 
 /** Everything that could not be imported, keyed by why it could not. */
 export interface RuleImportSkip {
-  /** `GEOIP`, `GEOSITE`, `RULE-SET`, `MATCH`, `LOGICAL`, `unknown-target`, `limit` … */
+  /** `RULE-SET`, `MATCH`, `LOGICAL`, `unknown-target`, `limit` … */
   reason: string;
   count: number;
 }
@@ -38,10 +40,8 @@ export interface RuleImportResult {
 
 const DIRECT_OR_REJECT = new Set(['DIRECT', 'REJECT']);
 const TYPE_SET = new Set<string>(MIHOMO_CUSTOM_RULE_TYPES);
-/** Types that exist in Clash but need data this deployment does not carry. */
+/** Types that exist in Clash but whose semantics these flat rows cannot carry. */
 const UNSUPPORTED_HINT: Record<string, string> = {
-  GEOIP: 'GEOIP',
-  GEOSITE: 'GEOSITE',
   'SRC-GEOIP': 'GEOIP',
   'SRC-GEOSITE': 'GEOSITE',
   'IP-ASN': 'IP-ASN',

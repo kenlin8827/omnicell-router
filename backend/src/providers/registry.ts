@@ -18,6 +18,7 @@ import { canonicalProtocol } from './protocol.js';
 import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type ModelHealthView } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
+import { redactProxyUrl, resolveProxyUrl } from '../utils/proxy.js';
 import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_IDS, type ExpandedMembers } from './member-match.js';
 
 /**
@@ -67,6 +68,13 @@ function reportToolMarkupLeak(leak: ToolMarkupLeak | null, model: ModelRegistrat
       'converting its own tool-call format; point the provider at an API that parses it',
   });
 }
+
+/**
+ * Outbound egress of ONE dial attempt (ADR-0018 vocabulary): straight out of
+ * the machine, or through the operator's outbound proxy (ADR-0022), whose
+ * redacted endpoint rides along. Absent = unknown — never read as direct.
+ */
+export type AttemptEgress = { mode: 'direct' } | { mode: 'proxy'; origin: string };
 
 export class ProviderRegistry {
   private providers = new Map<string, LLMProvider>();
@@ -1096,6 +1104,24 @@ export class ProviderRegistry {
       else pool.push({ model: entry.model, weight: entry.weight });
     }
     return { pool, excluded };
+  }
+
+  /**
+   * Outbound egress the CORE transport will take for `model`, resolved from
+   * the same `resolveProxyUrl` the executors call at dial time (ADR-0018 /
+   * ADR-0022). Call this IMMEDIATELY before `execute()` and keep the value
+   * with the attempt: the proxy config hot-applies, so a read after a long
+   * stream can describe a different dial.
+   *
+   * `undefined` = UNKNOWN, never direct: nothing was dialed (mock mode) or
+   * the transport does not report its dial base (plugin-owned executors).
+   */
+  public egressFor(model: ModelRegistration): AttemptEgress | undefined {
+    if (this.mockMode) return undefined;
+    const base = this.providers.get(model.provider)?.dialBaseFor?.(model);
+    if (!base) return undefined;
+    const proxy = resolveProxyUrl(base, { provider: model.provider, model: model.id });
+    return proxy ? { mode: 'proxy', origin: redactProxyUrl(proxy) } : { mode: 'direct' };
   }
 
   /**

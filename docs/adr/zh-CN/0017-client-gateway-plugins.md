@@ -19,7 +19,7 @@ Cursor 无法通过配置指向自定义端点 —— 它的 AI 流量硬编码�
 
 client-gateway 插件声明接管入站 forward proxy 上的整台 SNI 主机，并拥有这些主机解密流量的处置权。模块导出 `createPlugin(host: ClientGatewayHost): ClientGatewayPlugin`：
 
-- `hosts: readonly string[]` —— 接管的主机（如 `api2.cursor.sh`）。
+- `hosts: readonly string[]` —— 接管的主机（如 `api2.cursor.sh`）。声明只携带一条传输事实：这些主机的出站腿（ADR-0018 修订 5）——它指定的是某条**腿**，永远不是地址；取值按「运营者的插件级开关 → 网关自己的 `egressFor()` → manifest 的 `egress`」决定。SPECIFIC 行的 `egress` 对这些主机不生效；行仍然决定 `ingress`。
 - `match(info)` / `handle(req, res)` —— 每请求准入与完整生命周期。网关在 h1 腿看到 node-http req/res，在 h2 腿看到 http2 兼容层（同形 API）。
 - `ClientGatewayHost` SDK（自包含，与 model-service host SDK 同规则 —— 打包插件永不按路径 import backend 模块）：`chat(body, sink, signal)` 让一次规范 OpenAI 形态的补全走与 `/v1/chat/completions` 完全相同的 `dispatchSurface` 管线（模型解析、tier、熔断、捕获全部生效）；`catalog()` 暴露路由面供 AvailableModels 类应答构造；`ocrHome()` 供工件状态使用。
 
@@ -53,7 +53,7 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 
 - **抓取（插件，写路径）** —— 插件把每个解密块直接流式写入旁挂文件 `<ocrHome>/plugins/traffic/<id>/bodies/<YYYYMMDD>/<exchangeId>-<side>.bin`，并往当天的 JSONL 追加**一行**元数据（头、字节数、状态、腿、文件引用）。内存里不缓冲任何东西：一次长 `StreamChat` 的代价是 O(chunk)，不是 O(body)。body **绝不为存储而截断** —— 唯一的天花板是插件自己声明的失控保护（具体数字随插件文档），它停下写入并打上诚实的 `truncated` 标记。按天目录的保留同样由插件自己的写路径清理。
 - **解码（插件，读路径）** —— 后端在**读取时**用抓到的字节调用插件的 `dissect(exchange)`，返回具名的协议层。协议知识因此留在拥有那条线的插件里；控制台渲染它从未听说过的层。
-- **展示（核心路由，读路径）** —— 路由每侧只读一个固定**窗口**（解析器 32 KiB，内联 hex 预览 1 KiB），只下发字节数与文件引用，永不下发 payload。`/api/admin/traffic-body/:token` 流式返回完整抓取以供下载 —— 与 proxy 日志用的是**同一个**中立端点，所以控制台永不知道是哪个子系统存的字节；全保真一键可得，而浏览器的 DOM 永不会收到几兆的 body。
+- **展示（核心路由，读路径）** —— 路由每侧只读一个固定**窗口**（解析器 256 KiB，内联首帧 hex 预览 1 KiB），只下发字节数与文件引用，永不下发 payload；读取只按 body 实际拥有的字节分配，所以窗口是上限而不是每行的固定成本。抽屉从 token 指向的 body 里最多渲染 1 MiB —— 在打开时加载，从不随行下发 —— 因此即便尾部有 500 行，单行 payload 仍只是一个字节数。`/api/admin/traffic-body/:token` 流式返回完整抓取以供下载 —— 与 proxy 日志用的是**同一个**中立端点，所以控制台永不知道是哪个子系统存的字节；全保真一键可得，而浏览器的 DOM 永不会收到几兆的 body。
 - **一条时间线，一套筛选** —— 被解析的行并入既有的 proxy access-log 表（不新开 tab，不新开视图）。各列分类的是传输，不是厂商：type（`http` / `connect`）、protocol（`h1` / `h2` / `ws` / connect-rpc）、host、method、path、status、duration、↑/↓ body 字节数。
 - **实时与历史是作用域，不是存储** —— `scope=live` 读的是 proxy 环加各 feed 的有界尾部；`scope=history` 扫描持久化的 day JSONL。清空跟着作用域走：实时清空只移除环内行，并为插件行写入仅实时生效的墓碑（`<ocrHome>/plugins/traffic/live-hidden.json`，由实时读取应用）；历史清空只重写 day JSONL 与 body 旁挂文件。两者都不动对方的作用域，因此一边清掉的行在另一边可能仍被列出，直到该作用域自己的保留期/重放把它丢掉；只有显式全量清除（`/api/admin/traffic-clear`）才同时清空两边。
 - **一个抽屉，一个解码器注册表** —— 每一行（proxy 或 gateway）都由**同一个**详情组件按归一化的单侧模型（头、字节、层、下载引用）渲染；行的种类只负责构建这个模型。一个 body 就是字节加上一串声称能解它的解码器：`hex` 是**兜底**解码器（Wireshark 的 `data` —— 永远适用，即回退项），内置 `text` / `json` / `image` / `pdf`，而每个插件解析层都排在它们之上。默认视图是排名最高且适用的解码器，于是协议知识无需 UI 里的排序逻辑就压过 hex，新增一种格式只是注册表里多一项 —— 永不新增一个分支。层输出由解析器打上**单侧标记**（`req` / `res`）：空响应 body 绝不能以已解码的样子出现。
@@ -61,6 +61,8 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 后果：控制台永不学习厂商协议，未声明解析器的插件干脆不出现。feed 布局与尾部上限属于核心路由（另加控制台的按需清空/删除）；字节归属与写路径清扫属于插件。
 
 ### 6. 控制台归属
+
+**修订 2026-11-22：** 下段成文于客户端 id 迁移之前。控制台/CLI 词表不再是封闭的 `SupportedClient` 联合——该类型已删除，客户端 id（`cursor-proxy`、`qoder-proxy`、`jetbrains-proxy`、`opencode-gateway`）是由各自包在运行时声明的字符串，适配器（`CursorProxyClientAdapter` 等）住在所属包里，不在核心。下文的 launcher vs config 词表分流仍然成立，但 launcher 卡片的各客户端文案取自包 manifest 的 `clientText`（`warningLabels` 机制），永不取自核心 i18n。
 
 `/admin/clients` 新增 `cursor-proxy` 与 `qoder-proxy` 作为代理接入客户端（`SupportedClient`、`CursorProxyClientAdapter`、`QoderProxyClientAdapter`）。setup 无法写厂商配置文件 —— 它 (a) 要求 `forwardProxy.enabled`，(b) 写 `cursor-launcher.cmd|.sh|.command`（CLI 存在时再写 `cursor-agent-launcher.*`）以及 Qoder 桌面/CLI 启动器，对 Chromium 腿设 `--proxy-server`，对 Node/gRPC 腿设小写 `http(s)_proxy`/`grpc_proxy` + `NODE_EXTRA_CA_CERTS` + `NO_PROXY`。控制台卡片的模型面属于插件：没有已加载的网关插件时，启动器只产出透明代理，不公布任何 OCR 目录。按应用启动器是刻意的：不接管系统代理（那会和 Clash/v2ray 抢同一组注册表键），也不上内核重定向器。CA 信任保持 forward-proxy CA 原样（不新增信任材料）；安装仍是 operator 显式动作。状态探测按平台取证 —— Windows 查 Root 存储（`certutil`）、macOS 用 `security verify-cert` 走 SSL 信任策略、Linux 查锚点目录 + 合并 bundle + Chromium/Electron 实际读取的 NSS 数据库 —— 探测无法执行时返回 `unknown`，绝不猜。代理注入只在进程启动时生效：Dock / 开始菜单 / `.desktop` 启动会绕过启动器，已运行的单实例会吞掉后来的启动器调用。macOS 的 `.command` 以脱离方式启动 Cursor（`nohup … &`），所以关掉双击它的那个终端窗口不会带走 Cursor；Linux 的 `.sh` 保留 `exec`，因为它本身就是那个终端会话。teardown 只删除该适配器拥有的启动器，永不触碰 CA，永不触碰客户端自身文件；CLI 已不在时 setup 会清掉过期的 CLI 启动器。状态回显同时发布**两条**启动器路径（`configPath` 加 `artifacts` 里的 CLI 启动器 —— 仅当 CLI 已安装或此前 setup 留下的启动器文件仍在时才发布，否则 `artifacts` 缺省不存在），控制台卡片据此列出 setup 拥有的每一个启动器，而不是只显示 IDE 那一个。`ocr cursor` / `ocr cursor-agent` / `ocr qoder` / `ocr qoder-cli` 是直通动词：直接执行托管启动器（转发 stdio 与**启动器**的退出码，被信号终止时为 `128+signum`），不再另行推导 env —— 命令行与双击共用同一份契约。Windows/macOS 的 IDE 启动器是刻意脱离的（`start`/`nohup`），因此那里的退出码属于启动器，`--help`/`--version` 的输出属于它启动的应用而非 `ocr …` —— CLI 会明说这一点，而不是静默退出 0；Linux 的 `.sh` 与两个 agent 启动器保持挂接，转发真实退出码。
 
@@ -78,6 +80,8 @@ Cursor 的流式端点强制 HTTP/2（h1 客户端吃 464）；forward proxy 的
 advisory code，就在本包 manifest 的 `warningLabels` 里声明文案（沿用 `description` 的 locale-map
 契约）。插件拥有措辞，宿主拥有渲染 —— CLI 取 en-US，控制台按当前 UI 语言取值 —— 因此插件告警永远
 不需要新增 core 的 i18n 条目或改 core 的文案。
+
+**修订 2026-11-23（插件更新日志）：** 插件可在 `plugin.json` 声明 `changelog` —— 一个 `{version, date?, notes}` 数组，由控制台的「插件管理」页以行内操作打开抽屉渲染。`notes` 沿用同一套 locale-map 约定并按 markdown 渲染；条目按**manifest 顺序**展示（作者最新在前），控制台绝不从 git、`version` 字段或包归档推断发布历史：未声明的包就没有该操作。它只是展示数据 —— `PluginView.changelog` 把它带到控制台，加载器、路由与配置合并路径都不读它。校验在安装/加载时拒绝畸形条目（空 notes、非 `YYYY-MM-DD` 的日期、重复版本），否则它们会渲染成静默的空白块或被折叠的行。
 
 同一页还能导出插件：`GET /api/admin/plugins/:id/package` 对已打包插件原样返回其安装 zip，对 dev 树插件则先将其入口 **bundle**（第三方依赖内联）再用与 `plugins:build` **同一个确定性打包器**压包——下回来的包可直接再 Install，且与构建产物逐字节相同。
 
@@ -98,6 +102,10 @@ advisory code，就在本包 manifest 的 `warningLabels` 里声明文案（沿�
 控制台：`GET /api/admin/plugins/:id/config` 返回 `{schema, values}`，`PUT` 校验 + 持久化 + 触发插件可选的 `onConfigChange(config)`（钩子失败绝不回滚已持久化的保存；合并值无论如何都会通过 `config()` 到达插件）。无 schema 的插件不暴露任何字段并拒绝写入 —— 不存在自由参数袋。
 
 网关用该机制承载它的整个 operator 面 —— 抓包、模型目录、循环、接管范围、测试开关。**哪些字段**属于插件的声明，记录在它自己的仓库里，绝不在此枚举：schema 增删或改名不该需要修订本记录。Client Hub 卡片只编辑该 schema 的模型目录子集；Plugins 页抽屉渲染其余字段。卡片从声明中推导该子集的词表——UI「不设置」对应的枚举值与承载所选 key id 的 `apiKey` 控件字段（host 的 `chat()` seam 按 `accountKeyId` 取绑定 key，所以**这一个** key 是契约；「不设置」的拼写不是）——保存时绝不写入另一网关的拼写：host 会按未知键丢弃或按枚举校验失败回落，静默丢掉操作者的模型列表选择。
+
+**2026-11-22 修订（卡片契约、别名行）：** 对 §7 中 `card` 部分的两处更正，均来自 Antigravity 钩子的实践：(a) Client Hub 卡片的共用模型列表块（模式 / 快照 / 替换 / 前缀 / 默认 / 强制）是**声明词汇**，不是固定装置——只有当清单声明了其中至少一个键时才渲染，保存也只写已声明的键；model 面是别的东西的网关因此不会再带一个无用的模型列表编辑器。(b) `aliases` 加入封闭控件词汇（仅 `string[]`）：`<客户端>=<目标>[#标签]` 映射行的表格，左边是客户端自己的模型 id，右边是网关真正执行的模型。它存在的原因是：客户端可以把模型表编译进二进制（任何新增 id 都不会执行），却仍允许网关给已发布的 id 换标签并改写它的请求——映射表就是编辑这个面的方式，而在这种客户端上它是网关**唯一**的模型面。
+
+**2026-11-23 修订（映射行携带档位）：** 映射行的语法是 `<客户端>=<目标>[@<档位>][#<标签>]`。右边是 OCR 的模型**地址**，档位属于「这个客户端 id 意味着什么」的一部分：结尾可选的 `@<档位>`（取值属于 OCR 努力梯）会作为 `reasoning_effort` 钉在该行服务的每个请求上，因此优先于请求自带的 `thinkingConfig`——带档位后缀的客户端 id（`gemini-4-hydrogen-high`）即使客户端省略了该字段、或发来网关读不懂的拼写（枚举数字形式的档位只记 dropped，绝不猜成某个档位），也仍保住自己的强弱。`none` 是显式要求，不是缺省。推理链缺失的安全规则仍高于钉档位：assistant 轮次带 `tool_calls` 却没有 `reasoning_content` 时，无论行上钉了什么都不思考。只有**结尾**的梯级值才算档位——其他 `@` 属于模型 id，带 `@` 的上游 id 不会被截断。同一模型不同档位的两行各自保留不同的默认标题（`OCR · <目标> · <档位>`），这正是带档位后缀的选择器需要的。
 
 ## 后果
 

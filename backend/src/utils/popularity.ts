@@ -1,6 +1,3 @@
-import type { SupportedClient } from '../cli/types.js';
-import type { HarnessHostId } from '../harness/types.js';
-
 /**
  * ONE popularity order for every runtime this build lists — the Clients page's
  * one-click roster and the harness artifact rail share it, so the two surfaces
@@ -22,21 +19,20 @@ import type { HarnessHostId } from '../harness/types.js';
  *    WorkBuddy (Tencent's office-agent IDE) has no index figure — it sits with
  *    the other vendor IDEs between Grok and Qoder by judgment, not measurement.
  *
- * Aliases share their product's row (`cursor-proxy` = Cursor,
- * `opencode-gateway` = OpenCode proxy mode, `qoder-proxy` = Qoder). `universal` is not a
+ * Package client ids (cursor-proxy, opencode-gateway, …) rank via their
+ * manifest's `clientRank`, not this table — core never string-references a
+ * package hook id (ADR-0027). `universal` is not a
  * product and is deliberately absent — the rail pins it first by id. A runtime
  * absent here sorts after every ranked one (the host catalog breaks the tie).
  */
-type RankedRuntimeId = SupportedClient | Exclude<HarnessHostId, 'universal'>;
-
-const POPULARITY_ROWS: readonly (readonly RankedRuntimeId[])[] = [
+const POPULARITY_ROWS: readonly (readonly string[])[] = [
   ['claude'],
   ['codex'],
-  ['cursor', 'cursor-proxy'],
+  ['cursor'],
   ['antigravity'],
   ['zed'],
   ['dsh'],
-  ['opencode', 'opencode-gateway'],
+  ['opencode'],
   ['pi'],
   ['openclaw'],
   ['gemini-cli'],
@@ -47,8 +43,6 @@ const POPULARITY_ROWS: readonly (readonly RankedRuntimeId[])[] = [
   ['kimi'],
   ['grok'],
   ['workbuddy'],
-  ['qoder-proxy'],
-  ['jetbrains-proxy'],
   ['factory'],
 ];
 

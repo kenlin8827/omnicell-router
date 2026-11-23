@@ -156,6 +156,16 @@ export async function proxiedFetch(
 ): Promise<Response> {
   const proxy = resolveProxyUrl(url, match);
   if (!proxy) return fetch(url, init);
+  return fetchViaProxy(url, init, proxy);
+}
+
+/**
+ * fetch through an EXPLICIT proxy endpoint, bypassing the `proxy.enabled` /
+ * include-exclude policy. Callers that already decided the egress themselves
+ * (the geo download legs, ADR-0022) name the endpoint they mean. Bun honors
+ * the `proxy` option; Node's fetch cannot, so the request opens the proxy.
+ */
+export async function fetchViaProxy(url: string, init: RequestInit, proxy: string): Promise<Response> {
   if (isBunRuntime()) {
     return fetch(url, { ...init, proxy } as RequestInit & { proxy: string });
   }

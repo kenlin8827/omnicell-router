@@ -10,7 +10,7 @@ import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
-import { reconcileMihomoSidecar } from './proxy/mihomo-sidecar.js';
+import { reconcileMihomoSidecar, stopSpawnedMihomoSync } from './proxy/mihomo-sidecar.js';
 import { isRestartSupervisorProcess, runRestartSupervisor, takeRestartSelfRegisterFlag, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
@@ -128,21 +128,22 @@ async function main() {
   const config = loadConfig();
   initProxyConfig(config.proxy);
 
-  // Mihomo sidecar (ADR-0022): when outbound proxy mode is mihomo and the
-  // master switch is on, adopt a healthy local controller or spawn mihomo.
-  // Fire-and-forget — a missing binary is logged, never a boot failure, and
-  // the download helper stays opt-in (POST /api/admin/proxy/mihomo/install).
-  if (config.proxy?.enabled === true && config.proxy.mode === 'mihomo') {
-    void reconcileMihomoSidecar(config.proxy)
-      .then((r) => {
-        if (r.ok) console.log(`[OCR] clash sidecar ${r.action}${r.pid ? ` (pid ${r.pid})` : ''}`);
-        else console.warn(`[OCR] clash sidecar ${r.action} failed: ${r.error}`);
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[OCR] mihomo sidecar auto-start threw: ${message}`);
-      });
-  }
+  // Mihomo sidecar (ADR-0022): reconcile by `autoStart` — NOT by the outbound
+  // mode — so "core runs while outbound is direct" (and "stopped stays
+  // stopped") survive a gateway restart. The reconcile adopts a healthy local
+  // controller, spawns when the run policy says it should exist, and stops
+  // only a core this gateway shape spawned. Fire-and-forget — a missing binary
+  // is logged, never a boot failure, and the download helper stays opt-in
+  // (POST /api/admin/proxy/mihomo/install).
+  void reconcileMihomoSidecar(config.proxy)
+    .then((r) => {
+      if (r.ok) console.log(`[OCR] clash sidecar ${r.action}${r.pid ? ` (pid ${r.pid})` : ''}`);
+      else console.warn(`[OCR] clash sidecar ${r.action} failed: ${r.error}`);
+    })
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[OCR] mihomo sidecar auto-start threw: ${message}`);
+    });
 
   // Headroom sidecar association (opt-in compression.headroom.autoStart):
   // probe <url>/health → adopt a running instance, else detached-spawn one.
@@ -502,6 +503,10 @@ async function main() {
   process.on('exit', () => {
     breakerStore.flush();
     orchestrator.getSessionManager().flushPersist();
+    // The Clash core is OUR child (ADR-0022): a cooperative exit takes it with
+    // us, exactly like the console's Stop. Synchronous by necessity; an
+    // adopted (operator-owned) core has no in-memory pid and is left running.
+    stopSpawnedMihomoSync();
   });
 }
 

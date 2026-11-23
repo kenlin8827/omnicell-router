@@ -1,5 +1,5 @@
 import type http from 'node:http';
-import type { ClientGatewayPlugin } from './types.js';
+import type { ClientGatewayPlugin, PluginClaimEgress } from './types.js';
 
 /**
  * Registry of client-gateway plugins (the second plugin type, ADR-0017).
@@ -47,6 +47,32 @@ export const WILDCARD_HOST_CLAIM = '*';
 
 const gateways = new Map<string, ClientGatewayPlugin>();
 
+/**
+ * The outbound-leg opinions each live gateway holds for its claimed hosts,
+ * keyed by plugin id. It rides the SAME staging/commit/prune cycle as
+ * `gateways`, so it can never outlive a claim: an uninstalled or disabled
+ * plugin stops declaring on the same swap that stops it intercepting. A
+ * parallel map is deliberate — the two tiers in here are what the MANIFEST and
+ * the OPERATOR said, and a gateway's own code must not be able to rewrite them.
+ */
+const claimEgress = new Map<string, ClaimEgressSources>();
+
+/** What the non-code tiers said about this gateway's hosts. `operator` is the
+ *  value stored in `plugins/config/<id>.json`; it outranks the code. */
+export interface ClaimEgressSources {
+  manifest?: PluginClaimEgress;
+  operator?: PluginClaimEgress;
+}
+
+/** The three tiers, RUNTIME data so the console mirror can be parity-checked
+ *  instead of drifting silently (the drawer translates each one by name). */
+export const CLAIM_EGRESS_SOURCES = ['operator', 'code', 'manifest'] as const;
+
+/** Which tier of the claim answered for a host (ADR-0018 Revision 5). The console
+ *  prints this, because "the plugin routes it" and "the operator told it to"
+ *  are different things an operator is entitled to tell apart. */
+export type ClaimEgressSource = (typeof CLAIM_EGRESS_SOURCES)[number];
+
 /** Decrypted-request shape both proxy legs can provide (h1 native, h2 compat layer). */
 export interface GatewayRequestInfo {
   method?: string;
@@ -57,10 +83,39 @@ export interface GatewayRequestInfo {
 
 /** Atomic-rebuild staging map (plugins/host.ts owns the rebuild cycle). */
 const nextGateways = new Map<string, ClientGatewayPlugin>();
+const nextClaimEgress = new Map<string, ClaimEgressSources>();
 
-/** Register one gateway under its plugin id (staging side of the swap). */
-export function stageGateway(id: string, gateway: ClientGatewayPlugin): void {
+/** Register one gateway under its plugin id (staging side of the swap).
+ *  `egress` holds what the two NON-CODE tiers said about this gateway's hosts:
+ *  the manifest's default leg and the operator's plugin-level switch. An
+ *  `inherit` or absent tier stores nothing, so a host with no opinion from that
+ *  tier is simply not represented rather than present with a no-op value. */
+export function stageGateway(
+  id: string,
+  gateway: ClientGatewayPlugin,
+  egress?: ClaimEgressSources
+): void {
   nextGateways.set(id, gateway);
+  const manifest = egress?.manifest && egress.manifest !== 'inherit' ? egress.manifest : undefined;
+  const operator = egress?.operator && egress.operator !== 'inherit' ? egress.operator : undefined;
+  if (manifest || operator) nextClaimEgress.set(id, { manifest, operator });
+  else nextClaimEgress.delete(id);
+}
+
+/** Replace only the OPERATOR tier for a live gateway (config hot-apply).
+ *
+ * A config save must take effect on the next request, and the full
+ * stage/commit cycle is the wrong tool: it rebuilds every gateway from the
+ * packages on disk, which drags in unrelated load failures and re-runs each
+ * plugin's activation hooks for a value that lives in a JSON file. The instance
+ * is left alone — the switch is a vote about the transport under it, not a
+ * reason to hand the plugin a new one. The staging side needs no write because
+ * the rebuild re-reads the stored config, which this call runs after. */
+export function setGatewayOperatorEgress(id: string, egress?: PluginClaimEgress): void {
+  const value = egress && egress !== 'inherit' ? egress : undefined;
+  const manifest = claimEgress.get(id)?.manifest;
+  if (!value && !manifest) claimEgress.delete(id);
+  else claimEgress.set(id, { manifest, operator: value });
 }
 
 /** Drop staged gateways for ids that did NOT load (fail-closed at the commit
@@ -72,19 +127,27 @@ export function retainStagedGateways(loadedIds: ReadonlySet<string>): void {
   for (const id of [...nextGateways.keys()]) {
     if (!loadedIds.has(id)) nextGateways.delete(id);
   }
+  for (const id of [...nextClaimEgress.keys()]) {
+    if (!loadedIds.has(id)) nextClaimEgress.delete(id);
+  }
 }
 
 /** Swap the staged set into the live registry (end of a host rebuild). */
 export function commitGateways(): void {
   gateways.clear();
+  claimEgress.clear();
   for (const [k, v] of nextGateways) gateways.set(k, v);
+  for (const [k, v] of nextClaimEgress) claimEgress.set(k, v);
   nextGateways.clear();
+  nextClaimEgress.clear();
 }
 
 /** Drop one gateway immediately (disable/uninstall hot-unplug half). */
 export function removeGateway(id: string): void {
   gateways.delete(id);
+  claimEgress.delete(id);
   nextGateways.delete(id);
+  nextClaimEgress.delete(id);
 }
 
 /** A plugin claims the wildcard — it answers where no exact claim did. */
@@ -99,6 +162,87 @@ export function listGatewayHosts(): Set<string> {
   const hosts = new Set<string>();
   for (const gw of gateways.values()) for (const h of gw.hosts) hosts.add(h);
   return hosts;
+}
+
+/**
+ * Who decides the outbound leg of a host a client gateway claims, and in what
+ * order (ADR-0018 Revision 5). Once a package claims a host, the leg under that host
+ * is the package's business:
+ *
+ *   1. the OPERATOR's plugin-level switch (`plugins/config/<id>.json`), when it
+ *      explicitly picked a leg — the operator outranks the code they installed;
+ *   2. the gateway's own CODE (`egressFor`), which may answer host by host and
+ *      change its mind per request;
+ *   3. the MANIFEST's declared default leg.
+ *
+ * `undefined` means the claim has no opinion, which is the only way the rule
+ * table's `egress` reaches a claimed host.
+ *
+ * Two refusals keep the blast radius equal to the claim:
+ *  - a WILDCARD claim never votes. `'*'` is a read permission over every host
+ *    the machine reaches, not a statement about any one of them;
+ *  - a host two gateways answer OPPOSITELY yields no opinion, not a winner.
+ *    Order between two installed packages is a load artifact, and a silent pick
+ *    is how one plugin ends up routing another vendor's traffic.
+ */
+export function claimEgressFor(
+  host: string
+): { action: 'proxy' | 'direct'; source: ClaimEgressSource } | undefined {
+  const h = String(host || '').toLowerCase();
+  if (!h || h === WILDCARD_HOST_CLAIM) return undefined;
+  const votes: Array<{ action: 'proxy' | 'direct'; source: ClaimEgressSource }> = [];
+  for (const [id, gw] of gateways) {
+    if (claimsWildcard(gw)) continue;
+    if (!gw.hosts.some((x) => String(x).toLowerCase() === h)) continue;
+    const tiered = claimEgress.get(id);
+    const byOperator = tiered?.operator;
+    const byCode = byOperator ? undefined : codeEgress(gw, h);
+    const action = byOperator ?? byCode ?? tiered?.manifest;
+    if (action !== 'proxy' && action !== 'direct') continue;
+    votes.push({ action, source: byOperator ? 'operator' : byCode ? 'code' : 'manifest' });
+  }
+  if (votes.length === 0) return undefined;
+  if (votes.some((v) => v.action !== votes[0].action)) return undefined;
+  // When several gateways agree, the console says who SPOKE, and an explicit
+  // operator switch outranks a package's code the same way it does within one
+  // package — otherwise the row would credit a manifest default the operator
+  // actually overrode.
+  const byTier: ClaimEgressSource[] = ['operator', 'code', 'manifest'];
+  const speaker = byTier.find((t) => votes.some((v) => v.source === t));
+  return { action: votes[0].action, source: speaker! };
+}
+
+/** The gateway's own per-host answer. A throwing hook is silence, not a
+ *  routing decision: a plugin bug must not strand the transport of the host it
+ *  claims (same contract as `match()` declining in `accepts()`). */
+function codeEgress(gw: ClientGatewayPlugin, host: string): PluginClaimEgress | undefined {
+  if (!gw.egressFor) return undefined;
+  try {
+    const v = gw.egressFor({ host });
+    return v === 'proxy' || v === 'direct' ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Every concretely claimed host whose claim currently speaks about the leg.
+ * A snapshot, so the table LINT can ask "is this row's `egress` reachable?"
+ * without treating plugin code as a lint input; routing itself asks
+ * `claimEgressFor()` per request.
+ */
+export function listClaimedEgress(): Map<string, 'proxy' | 'direct'> {
+  const out = new Map<string, 'proxy' | 'direct'>();
+  for (const gw of gateways.values()) {
+    if (claimsWildcard(gw)) continue;
+    for (const host of gw.hosts) {
+      const h = String(host).toLowerCase();
+      if (h === WILDCARD_HOST_CLAIM || out.has(h)) continue;
+      const claim = claimEgressFor(h);
+      if (claim) out.set(h, claim.action);
+    }
+  }
+  return out;
 }
 
 /** Live gateway instance by plugin id (config-change hot-apply hook). */

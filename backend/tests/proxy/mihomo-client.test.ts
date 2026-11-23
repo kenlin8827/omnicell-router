@@ -72,6 +72,18 @@ describe('MihomoClient', () => {
           res.end(JSON.stringify({ 'node-a': 17, DIRECT: 0 }));
           return;
         }
+        if (req.url?.startsWith('/group/DEAD/delay')) {
+          // Every member failed: mihomo renders the whole batch as 504.
+          res.writeHead(504, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'get delay: all proxies timeout' }));
+          return;
+        }
+        if (req.url?.startsWith('/group/SLOW/delay')) {
+          // Forks that answer the request-timeout status instead.
+          res.writeHead(408, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'Timeout' }));
+          return;
+        }
         if (req.url === '/providers/proxies' && req.method === 'GET') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -124,6 +136,10 @@ describe('MihomoClient', () => {
     const providers = await client.providers();
     expect(providers[0]).toMatchObject({ name: 'alpha', nodeCount: 2, updatedAt: '2026-01-01T00:00:00Z' });
     expect(await client.groupDelay('PROXY')).toEqual({ 'node-a': 17 });
+    // A whole-batch failure is the same failed test the single route reports,
+    // not a controller fault: both statuses normalize to the stable timeout code.
+    await expect(client.groupDelay('DEAD')).rejects.toMatchObject({ code: 'timeout', status: 504 });
+    await expect(client.groupDelay('SLOW')).rejects.toMatchObject({ code: 'timeout', status: 408 });
     await client.refreshProvider('alpha');
     expect(seen.every((call) => call.auth === `Bearer ${SECRET}`)).toBe(true);
     const select = seen.find((call) => call.url === '/proxies/PROXY');

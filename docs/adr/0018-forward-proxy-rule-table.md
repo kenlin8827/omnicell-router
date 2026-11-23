@@ -1,7 +1,7 @@
 # ADR-0018: The Forward-Proxy Rule Table
 
 Date: 2026-12
-Status: Accepted (revised three times — see the Revision sections)
+Status: Accepted (revised five times — see the Revision sections)
 Governs: `backend/src/forward-proxy/rules.ts` (the resolver),
 `backend/src/forward-proxy/egress.ts` (`ruleDecision` / `isRuleRejected` /
 `ruleTunnels` / `transitEgressFor` / `transitProxyFor`),
@@ -46,6 +46,88 @@ complaint: one host's outcome lived in two lists, and the word "decrypt" became 
 first-class config concept. Interception is the product's default posture, not a
 mode — so it belongs in a DEFAULT, not in a table of its own.
 
+## Revision 5 — a claim owns the EXIT under its hosts
+
+Revision 4 derived the decrypt axis from the claim because *"this host is worth
+reading"* is vendor knowledge. The exit under the same host is that same kind of
+fact one level down: **this vendor's endpoint is not reachable direct from most
+places.** Leaving it to the catch-all made a gateway relay through the outbound
+proxy only by coincidence — an operator who set the catch-all to `direct` for
+unrelated reasons silently moved every installed gateway off the proxy.
+
+So the same inversion applies to the other axis: **once a package claims a host,
+the outbound leg under that host is the package's business.** The operator keeps
+the last word over the code they installed, but that word is spoken ONCE per
+plugin — one switch covering every host it claims — not once per host.
+
+The exit over a CONCRETELY claimed host comes from the claim's ladder, in order:
+
+1. the operator's switch in the plugin's own settings drawer. Core injects an
+   `egress: inherit | proxy | direct` enum into the gateway's `configSchema`
+   (`inherit` is the untouched default and is never a choice, so an untouched
+   switch cannot silence the plugin's own answer), and the value is consumed by
+   core rather than handed to the package as a new capability;
+2. the gateway's own code — `egressFor({ host })`, evaluated per request, so it
+   may answer host by host and change its mind;
+3. the manifest's declared default (`PluginPart.egress`, in `parts[]` or the
+   flat single-part shorthand);
+4. nothing said ⇒ the rule table decides exactly as before: a matching specific
+   row, else the catch-all, else `direct`.
+
+Deliberately OUTSIDE the ladder:
+
+- **`reject` is an admission verdict, not a leg.** Permission to read a host is
+  never permission to reach it, so no claim opinion un-blocks a reject row.
+- **loopback** stays `direct` + blind tunnel (cycle safety).
+- **`ingress` never follows the ladder.** A specific row's `ingress` is still
+  read verbatim — the claim owns the LEG, never the operator's right to blind a
+  host — and the console prints the per-host `tunnel` so a `passthrough` row
+  that blinds a claiming gateway is visible instead of implied.
+
+What keeps the ladder from becoming a second configuration plane:
+
+- **It names a LEG, never an address.** `proxy` resolves through
+  `outboundProxyUrl()` exactly like any `proxy` row (§4) — the operator's
+  `proxy.enabled` + `proxy.url` / mihomo endpoint. A package cannot point the
+  machine's traffic anywhere it chose.
+- **Its reach is exactly the claim set.** The lookup is an exact lowercase host
+  match, never a glob. A **wildcard claim (`'*'`, ADR-0026) may not carry a
+  declaration at all** — the manifest validator refuses the combination,
+  because `'*'` is not a host and such a declaration would pin the egress of
+  every host the machine reaches. A wildcard gateway never votes, and two
+  gateways answering one host *oppositely* yield silence, not a load-order
+  winner: which package happened to load first is not an operator decision.
+- **The table keeps the ingress axis and every unclaimed host.** Over a claimed
+  host a row's `egress` is inert, so `lintRules` reports `claim-owns-egress` on
+  every explicit-`egress` row whose value the claim overrides (`reject` rows and
+  the catch-all are exempt — there is no leg to shadow, and `*` still routes
+  every host nothing claims).
+
+Two consequences are load-bearing for the one-truth property of the resolver:
+
+- `resolveHost` stays pure: the caller injects `ResolveOptions.claimEgress`, a
+  CALLBACK rather than a snapshot, because the tier that answers may be the
+  plugin's code running for THIS request. The console's dry-run preview injects
+  the same callback (`/api/admin/forward-proxy/rules/resolve`), and
+  `RuleDecision.egressClaim: 'operator' | 'code' | 'manifest'` records which
+  tier decided — including when the row happens to name the same leg, because
+  "the claim owns this exit" is the truth either way.
+- `transitEgressFor` keeps "an empty table means the historical `direct`" ONLY
+  where the table is what decided. A claim's leg is not a table row, so an empty
+  table must not swallow it — otherwise the relay goes direct while every
+  preview of the same host reads `proxy`, the same preview/reality split from
+  the other side.
+
+The console's claims dialog is therefore READ-ONLY: each claimed host's exit
+comes from the same resolver call (`claimSources[].outcomes`), and the
+operator's overrule lives in the plugin's settings drawer. There is deliberately
+no control that writes rule rows: a row meaning "the claim owns it" would be a
+second truth, and an uninstalled plugin would leave residue behind it.
+
+`docs/adr/0017-client-gateway-plugins.md` §1 owns the claim contract itself; the
+leg is the one transport fact that contract now carries. Everything else about
+transport remains core's (ADR-0017: `relayUpstream` is the only dial path).
+
 ## Revision 4 — interception is DECIDED (the claims posture)
 
 Revisions 1–3 all kept one unexamined premise: **interception is the default**,
@@ -77,11 +159,12 @@ forwardProxy:
 passes the claim set in, so the module never imports the plugin registry):
 
 1. **loopback** → `direct` + blind tunnel (unchanged invariant);
-2. **a SPECIFIC matching row** (`match !== '*'`) → that row's `ingress`/`egress`
-   verbatim: the operator outranks every claim, so `reject` and `passthrough`
-   both override one;
+2. **a SPECIFIC matching row** (`match !== '*'`) → that row's `ingress`
+   verbatim, and a `reject` verdict always applies; its `egress` is the row's
+   only when no claim spoke for this host (Revision 5);
 3. **the host is CLAIMED** by a live client-gateway plugin (`listGatewayHosts()`,
-   ADR-0017) → the catch-all's `egress`, decrypted, `reason: 'claim'`;
+   ADR-0017) → decrypted, `reason: 'claim'`, on the claim's own ladder
+   (Revision 5) or — with no opinion from it — the catch-all's;
 4. **`intercept: 'all'`** → the catch-all's `egress`, decrypted (audit mode);
 5. **otherwise** → the catch-all's `egress`, blind tunnel.
 
@@ -96,8 +179,10 @@ Consequences of that order, stated plainly because each one is a decision:
   every host it covers, and no claim un-blocks it — a claim is permission to
   read, never permission to reach. Write a specific row above it for the
   exception.
-- **`egress` is unchanged.** The posture touches exactly one axis; a `proxy` row
-  is still `proxy`, and every transit leg keeps calling the same resolver.
+- **`egress` is untouched by the POSTURE.** The posture touches exactly one
+  axis; a `proxy` row is still `proxy`, and every transit leg keeps calling the
+  same resolver. (Revision 5 moves a CLAIMED host's exit from the row to the
+  claim's ladder; the table still decides every host nothing claims.)
 - **`reason` gains `claim`.** The ledger and the console probe can now say "this
   was decrypted because a plugin declared it", instead of implying the operator
   wrote a row.
@@ -400,9 +485,11 @@ An ordered table is only readable if you can ask it a question, so
   Revision 4 the response also carries `intercept` (the live posture or the
   UNSAVED one from the request body), `claimed` (the live claim set) and
   `claimSources` (the same set grouped per plugin — the console's "who decrypts
-  this host" answer), because those now decide `tunnel` for every host no
-  specific row names — a preview that omitted them would answer a different
-  question than the proxy does.
+  this host" answer, each entry carrying the legs its claims ask for (Revision 5)
+  plus the per-host `outcomes` the dialog prints, each with the `egressClaim`
+  tier that decided), because those now decide `tunnel` for
+  every host no specific row names — a preview that omitted them would answer a
+  different question than the proxy does.
 
 The console speaks the row's OWN two fields and nothing else: one dropdown for
 `ingress` (Intercept / Passthrough / Reject), one toggle for `egress`
@@ -426,6 +513,33 @@ should not be sent to the proxy at all. `proxy` rows must reach the proxy,
 bypass list even though its `egress` is `direct`. This also
 fixes an old inconsistency — `bypassHosts` used to be written into the OS
 bypass list even when its egress was "via proxy".
+
+> **Amendment — the OS proxy has TWO OCR targets, one owner.** `system-proxy.ts`
+> can now point the OS at either the inbound forward proxy (`owner: 'forward'`,
+> the default and the historical behaviour) or the Clash core's mixed port
+> (`owner: 'clash'`). Both targets are assigned from ONE dedicated System Proxy
+> page in the Proxy group: that page is the only surface that enables or
+> switches the OS pointer, because a switch has to answer "which target?", and
+> per-panel switches would each be able to claim the single slot. Every other
+> surface — the inbound card (and its setup wizard), the Clash
+> panel, the outbound page — keeps status, bypass / env copy and the restore
+> action, each linking to the System Proxy page
+> (`/proxy-system?target=forward|clash`).
+> The snapshot slot stays SINGLE and always holds the PRE-OCR state: the
+> first enable records it, re-enabling the same endpoint only refreshes, and
+> switching endpoints rewrites the OS pointer plus the snapshot's `owner`
+> without ever re-reading the OS (whose values at that moment are ours).
+> Restore returns what the OS held before OCR first took ownership, whichever
+> target set it. The bypass list is per target, because the endpoints route
+> differently: the inbound proxy tunnels unmatched traffic, so it bypasses only
+> loopback and the literal `direct` rows; the Clash config ends in
+> `MATCH,<group>`, so private / link-local / CGNAT ranges (the PAC's direct set,
+> expressed as WinINET `x.*` wildcards or CIDR) also stay DIRECT. Two
+> consequences the console must not hide: while Clash owns the OS proxy nothing
+> enters the gateway, so capture is empty (the card says so), and enabling is
+> gated on the core answering — pointing the OS at a dead port is one click from
+> a dead network, and a core stopped later raises the same restore warning the
+> inbound card carries.
 
 ## Consequences
 

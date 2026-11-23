@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, RefreshCw, Puzzle, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
+import { Download, RefreshCw, Puzzle, ScrollText, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
 import { ScrollTable } from '../components/ScrollTable';
 import { Combobox } from '../components/Combobox';
+import { Drawer } from '../components/Drawer';
+import { Prose } from '../components/Prose';
 import { PluginConfigDrawer } from '../components/PluginConfigDrawer';
 import { opencodeApi, type PluginViewInfo } from '../lib/api';
 import { isDesktopShell } from '../lib/download';
@@ -10,6 +12,7 @@ import { startDownload } from '../lib/download-manager';
 import { useI18n } from '../i18n/I18nContext';
 import { pickLocaleText } from '../lib/plugin-config';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { FONT_MONO } from '../lib/fonts';
 
 /**
@@ -19,8 +22,10 @@ import { FONT_MONO } from '../lib/fonts';
  * gateways, ADR-0017); this page lists what is installed, which type and
  * wires it serves, and whether it loaded. Disable/enable toggles a plugin
  * without deleting anything (works for dev-tree plugins too); uninstall
- * removes packages; Download exports an installable package (a dev-tree
- * plugin is zipped on the fly by the backend).
+ * removes the package, its settings and every provider def it registered
+ * (credentials survive — they are operator state, not plugin state); Download
+ * exports an installable package (a dev-tree plugin is zipped on the fly by
+ * the backend).
  * Reload re-scans and rebuilds the routing pool so changes apply without a
  * restart.
  * Settings opens the operator-facing config drawer (`PluginConfigDrawer`, shared
@@ -50,6 +55,7 @@ const DETAIL_CLAMP: React.CSSProperties = {
 export function PluginsManagePage(): React.ReactElement {
   const { t, lang } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [plugins, setPlugins] = useState<PluginViewInfo[]>([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
@@ -61,6 +67,8 @@ export function PluginsManagePage(): React.ReactElement {
   /** Settings drawer target. Non-null mounts the shared drawer, which loads the
    *  plugin's schema/values itself. */
   const [configTarget, setConfigTarget] = useState<PluginViewInfo | null>(null);
+  /** Changelog drawer target: the manifest's declared release history. */
+  const [changelogTarget, setChangelogTarget] = useState<PluginViewInfo | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -76,7 +84,16 @@ export function PluginsManagePage(): React.ReactElement {
   }, [load]);
 
   const uninstall = async (id: string): Promise<void> => {
-    if (!window.confirm(t('pluginPage.uninstallConfirm').replace('{name}', id))) return;
+    // Uninstall is destructive BEYOND the package: it deletes the plugin's
+    // settings and every provider def it registered (including models that were
+    // auto-pulled), so the confirmation names the full scope.
+    const ok = await confirmDialog({
+      title: t('pluginPage.uninstallConfirm').replace('{name}', id),
+      description: t('pluginPage.uninstallConfirmDetail'),
+      danger: true,
+      confirmLabel: t('pluginPage.uninstall'),
+    });
+    if (!ok) return;
     try {
       const res = await opencodeApi.uninstallPlugin(id);
       setPlugins(res.plugins ?? []);
@@ -96,17 +113,29 @@ export function PluginsManagePage(): React.ReactElement {
     }
   };
 
-  const install = async (file: File): Promise<void> => {
+  /** One picker, N packages: the install endpoint takes a single .zip body
+   *  (per-package rollback included), so a batch is N sequential uploads. A
+   *  failed package must not swallow the rest — collect its reason and keep
+   *  going, then report the failures in one toast. */
+  const install = async (files: File[]): Promise<void> => {
     setInstalling(true);
+    const failures: string[] = [];
     try {
-      const res = await opencodeApi.installPlugin(await file.arrayBuffer());
-      setPlugins(res.plugins ?? []);
-      toast.success(t('pluginPage.installOk').replace('{name}', res.id));
-    } catch (err) {
-      toast.error(`${t('pluginPage.installFail')}: ${err instanceof Error ? err.message : String(err)}`);
+      for (const file of files) {
+        try {
+          const res = await opencodeApi.installPlugin(await file.arrayBuffer());
+          setPlugins(res.plugins ?? []);
+          toast.success(t('pluginPage.installOk').replace('{name}', res.id));
+        } catch (err) {
+          failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     } finally {
       setInstalling(false);
       if (fileInput.current) fileInput.current.value = '';
+    }
+    if (failures.length > 0) {
+      toast.error(`${t('pluginPage.installFail')}: ${failures.join('; ')}`);
     }
   };
 
@@ -130,7 +159,13 @@ export function PluginsManagePage(): React.ReactElement {
     try {
       const res = await opencodeApi.reloadPlugins();
       setPlugins(res.plugins ?? []);
-      toast.success(t('pluginPage.reloadOk'));
+      // A no-op reload and a repaired one both "succeed" — name what changed,
+      // or the operator cannot tell a dead preset def from a working one.
+      if (res.registered?.length) {
+        toast.success(t('pluginPage.reloadRegistered').replace('{names}', res.registered.join(', ')));
+      } else {
+        toast.success(t('pluginPage.reloadOk'));
+      }
     } catch (err) {
       toast.error(`${t('pluginPage.reloadFail')}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -164,10 +199,11 @@ export function PluginsManagePage(): React.ReactElement {
             ref={fileInput}
             type="file"
             accept=".zip"
+            multiple
             style={{ display: 'none' }}
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void install(file);
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) void install(files);
             }}
           />
           <button className="btn" onClick={() => fileInput.current?.click()} disabled={installing}>
@@ -215,9 +251,9 @@ export function PluginsManagePage(): React.ReactElement {
           { key: 'version', label: t('pluginPage.colVersion'), width: 80 },
           { key: 'type', label: t('pluginPage.colType'), width: 190 },
           { key: 'status', label: t('pluginPage.colStatus'), width: 140 },
-          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 400 },
+          { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 540 },
         ]}
-        minWidth={880}
+        minWidth={1080}
         empty={loading ? t('common.loading') : (query || statusFilter) ? t('pluginPage.noMatch') : t('pluginPage.empty')}
       >
         {plugins
@@ -320,6 +356,18 @@ export function PluginsManagePage(): React.ReactElement {
                   <Download size={12} aria-hidden />
                   {t('pluginPage.download')}
                 </button>
+                {/* Only a package that declares a history gets the action; an
+                    always-present button would open an empty drawer on most rows. */}
+                {p.changelog?.length ? (
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => setChangelogTarget(p)}
+                    title={t('pluginPage.changelog')}
+                  >
+                    <ScrollText size={12} aria-hidden />
+                    {t('pluginPage.changelog')}
+                  </button>
+                ) : null}
                 <button
                   className="btn btn-sm"
                   onClick={() => setConfigTarget(p)}
@@ -345,6 +393,42 @@ export function PluginsManagePage(): React.ReactElement {
       </ScrollTable>
       {configTarget ? (
         <PluginConfigDrawer plugin={configTarget} onClose={() => setConfigTarget(null)} />
+      ) : null}
+      {changelogTarget ? (
+        <Drawer
+          title={t('pluginPage.changelogTitle')}
+          subtitle={`${changelogTarget.name} · v${changelogTarget.version}`}
+          onClose={() => setChangelogTarget(null)}
+          closeLabel={t('common.close')}
+          width="min(600px, 94vw)"
+        >
+          {/* Manifest order IS the display order (the author declares newest
+              first); the entry matching the installed version is marked so the
+              operator does not have to compare version strings by eye. The
+              timeline styling lives in styles/index.css (`.plugin-changelog`). */}
+          <div className="plugin-changelog">
+            {(changelogTarget.changelog ?? []).map((entry) => {
+              const notes = pickLocaleText(entry.notes, lang) ?? '';
+              const current = entry.version === changelogTarget.version;
+              return (
+                <article key={entry.version} className="plugin-changelog-entry" data-current={current}>
+                  <div className="plugin-changelog-head">
+                    <span className="plugin-changelog-version">v{entry.version}</span>
+                    {entry.date ? <span className="plugin-changelog-date">{entry.date}</span> : null}
+                    {current ? (
+                      <span className="badge badge-success plugin-changelog-current">
+                        {t('pluginPage.changelogCurrent')}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="plugin-changelog-notes">
+                    <Prose text={notes} markdown open hideToggle bg="transparent" border="transparent" />
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </Drawer>
       ) : null}
     </>
   );

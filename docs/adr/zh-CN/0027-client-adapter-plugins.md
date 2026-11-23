@@ -3,6 +3,11 @@
 - **状态：** 已实现
 - **日期：** 2026-11-15
 - **关联：** [ADR-0017](./0017-client-gateway-plugins.md)（插件契约）、[ADR-0026](./0026-mitm-canonical-seam.md)（模型流量归网关）、[ADR-0015](./0015-harness-artifacts.md)（roster 排序）
+- **修订 2026-11-22 —— 客户端 id 由包在运行时声明；`SupportedClient` 已删除。** 核心永不字符串引用包客户端 id：客户端 id 是运行时声明的字符串（`ClientAdapter.name`、`ClientHookStatus.name`、`CliOptions.client`），核心里唯一的封闭集合是 `cli/clients/reserved.ts` 之上的 `CoreClientId`。包自带的呈现随 id 一起迁移，参照 `plugins/antigravity-gateway/` 的模式：
+  - **manifest `clientText`**：setupOk / teardownOk / hint / errors（键为适配器自身的 `reasonCode` 拼写）/ family 文案，均为 `string | Record<locale,string>`。机制与 `warningLabels` 完全一致——manifest 校验、宿主渲染流程、按 locale 解析、`{param}` 插值；hook 的 toast 与 hint 永不需要核心 i18n 词条。
+  - **manifest `clientRank`**：对 Client Hub 名册中该包贡献的 hook 排序（`registerPluginClientAdapter(pluginId, adapter, rank?)` + `pluginClientRank(name)`，先按 rank 再 localeCompare）；核心热度表仍只归宿主/核心，不含任何包 id。
+  - **`ClientAdapter.exclusiveWith?: readonly string[]`**：`setupClient` 里的通用兄弟拆卸，取代写死的 opencode/opencode-gateway 特例——一边声明另一边即覆盖两个方向。
+  - 所有自带客户端 hook 的包都随包携带文案：`cursor-gateway`（`cursor-proxy`，rank 3）、`opencode-gateway`（rank 7）、`qoder-gateway`（`qoder-proxy`，rank 18）、`jetbrains-gateway`（`jetbrains-proxy`，rank 19）以及 `antigravity-gateway`（声明文案但无 `clientRank`，排在所有带 rank 的 hook 之后）；控制台按行的 `pluginId` 解析文案与排序。
 
 ## 背景
 
@@ -71,6 +76,7 @@ OpenCode 代理模式 hook 离开核心时是 `plugins/opencode-proxy/`（366 �
 ## 后果
 
 - **`ClientAdapter` 的 id 不再是编译期穷尽的。** 自带表类型为 `Record<CoreClientId, …>`，键来自 `cli/clients/reserved.ts` 的保留 id 清单；`SupportedClient` 则为控制台与 CLI 能**寻址**的 id（自带 hook 加上文档化的包 hook）提供类型。不在联合里的插件 id 在边界处仍按 `SupportedClient` 处理（适配器对象结构化转换）——所以那个联合是**标签/CLI** 词表，不是运行时白名单。把它做成运行时白名单等于重新关掉扩展点。
+  **修订 2026-11-22：** 那个联合的另一半也没了——`SupportedClient` 不复存在。`ClientAdapter.name`、`ClientHookStatus.name`、`CliOptions.client` 都是普通字符串；核心唯一的封闭 id 集合是 `cli/clients/reserved.ts` 之上的 `CoreClientId`，包贡献的 id 只是经插件注册表解析的字符串（见上文修订说明）。
 - **控制台 roster 变成安装相关的。** `client-adapter` 行只在其包被加载且启用时出现。插件页用独立标签渲染第三种类型（`pluginPage.typeClientAdapter`，八种语言齐备）。
 - **这一步时包还没有随桌面端分发。**（曾被 ADR-0029 §1 取代，最终由 ADR-0032 定在反方向：插件一律可选，任何发行物都不分发插件包——运营者从控制台自行安装，默认没有任何步骤播种 `<ocrHome>/plugins/bundled`。）`tauri.conf.json` 的 resources 只有 `frontend/dist` + 后端二进制，没有任何步骤往应用自有层播种。因此把一个 hook 移出核心，意味着运维必须自己装包（或用 dev 树）。对 `opencode-proxy` 这种需要主动选择的细分模式可以接受，这也是**没有任何默认 hook 被移走**的原因。把插件包纳入随包分发是移走默认 hook 的前提，那是打包任务，不是插件契约变更。
 - **CLI 懒加载插件。** `setupClient` / `teardownClient` / `getAllClientStatuses` 会 await `ensurePluginClientAdapters()`——在本进程还没跑过插件宿主时（`isPluginHostInitialized()`）跑一次，所以从不启动服务端的独立 CLI 里 `ocr setup opencode-gateway` 依然可用。**核心命令**绝不预加载宿主：只有非 OCR 命令（启动动词候选）或 `help` 会加载，因此 `ocr shims-status` 这类纯 JSON 命令不会被插件启动输出污染。

@@ -9,7 +9,7 @@ import { SegGroup } from './SegGroup';
 import { Switch } from './Switch';
 import { api, opencodeApi, type ApiKeyItem, type PluginConfigFieldInfo, type PluginConfigSectionInfo, type PluginViewInfo } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
-import { groupVisibleFields, pickLocaleText } from '../lib/plugin-config';
+import { drawerFields, groupVisibleFields, isCoreEgressField, pickLocaleText } from '../lib/plugin-config';
 import { sortModelOptions } from '../lib/model-options';
 import { useToast } from './ToastProvider';
 import { FONT_MONO } from '../lib/fonts';
@@ -297,15 +297,25 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({
     }
   };
 
+  /** The three states of the core outbound-leg switch, in the operator's words
+   *  (ADR-0018 Revision 5). Core INJECTS that field, so its labels are console chrome
+   *  and come from the translation tables — a package author's manifest never
+   *  names its own override. */
+  const coreEgressLabel = (value: string): string =>
+    value === 'proxy' ? t('pluginPage.egressProxy')
+      : value === 'direct' ? t('pluginPage.egressDirect')
+        : t('pluginPage.egressInherit');
+
   const renderConfigField = (field: PluginConfigFieldInfo): React.ReactNode => {
-    const declared = pickLocaleText(field.title, lang);
+    const coreEgress = isCoreEgressField(field);
+    const declared = coreEgress ? t('pluginPage.egressTitle') : pickLocaleText(field.title, lang);
     // A manifest may omit `title` entirely or ship it only for other locales
     // (the BCP-47 map falls through to en-US). Rather than print the raw
     // identifier as a heading, fall back to a spaced-out key; the exact key
     // stays on the label's tooltip, because that is what backend warnings quote
     // and what config/<id>.json stores.
     const label = declared ?? humanizeKey(field.key);
-    const hint = pickLocaleText(field.desc, lang);
+    const hint = coreEgress ? t('pluginPage.egressDesc') : pickLocaleText(field.desc, lang);
     const raw = draft[field.key];
     const setField = (value: string | boolean): void => setDraft((prev) => ({ ...prev, [field.key]: value }));
 
@@ -368,7 +378,9 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({
             onChange={setField}
             options={(((field.values as string[] | undefined) ?? []) as string[]).map((value) => ({
               value,
-              label: pickLocaleText(field.enumLabels?.[value], lang) ?? value,
+              label: coreEgress
+                ? coreEgressLabel(value)
+                : pickLocaleText(field.enumLabels?.[value], lang) ?? value,
             }))}
           />
         );
@@ -430,17 +442,17 @@ export const PluginConfigDrawer: React.FC<PluginConfigDrawerProps> = ({
   // per-section `advanced` collapsing is dropped — the subset is already the
   // short form, so collapsing it again would hide declared essentials.
   const hasEssential = schema.some((field) => field.essential === true);
+  // `quick` applies only when the manifest marks essentials; otherwise the
+  // schema has ONE view and the subset filter would empty the drawer.
+  const quickView = mode === 'quick' && hasEssential;
   // Placement is the manifest's call: `card` fields belong to the Client Hub
   // card and `none` fields are dead config — neither is rendered a second time
   // here; the apiKey control is card state by contract.
   const cardFields = schema.filter((field) => field.placement === 'card');
-  const visibleSchema = schema
-    .filter((field) => (field.placement ?? 'drawer') === 'drawer' && field.control !== 'apiKey')
-    .filter((field) => (mode === 'quick' ? field.essential === true : true));
-  const visibleSections =
-    mode === 'quick'
-      ? sections.filter((s) => visibleSchema.some((f) => f.section === s.id)).map((s) => ({ ...s, advanced: false }))
-      : sections;
+  const visibleSchema = drawerFields(schema, quickView ? 'quick' : 'advanced');
+  const visibleSections = quickView
+    ? sections.filter((s) => visibleSchema.some((f) => f.section === s.id)).map((s) => ({ ...s, advanced: false }))
+    : sections;
   // `visibleWhen` filters the RENDER only (ADR-0017 §7): the draft keeps every
   // value, so a field that is hidden at the moment still saves what it last held
   // — and the backend still validates it. Grouping inherits the same rule: an

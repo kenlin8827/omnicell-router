@@ -16,16 +16,16 @@ export type CliAction =
   | 'version'
   | 'help';
 
-/** Every client id the console and CLI can ADDRESS: the hooks this build ships
- *  plus the documented package hooks (`cursor-proxy`, `qoder-proxy`,
- *  `jetbrains-proxy`, `opencode-gateway` — their adapters arrive with the
- *  package, see ADR-0030). Listing an id here claims nothing about where it
- *  lives; `CORE_ADAPTERS` is the build's own set. */
-export type SupportedClient = 'opencode' | 'opencode-gateway' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw' | 'workbuddy' | 'cursor-proxy' | 'qoder-proxy' | 'jetbrains-proxy';
+/** Client ids have NO core vocabulary beyond the hooks this build ships
+ *  (`CoreClientId`, `cli/clients/reserved.ts`): package hooks arrive with
+ *  their adapters and register any string id at runtime (ADR-0027). Core code
+ *  must never string-reference a package client id — presentation text,
+ *  roster rank and hook exclusivity are declared by the package (manifest
+ *  `clientText` / `clientRank`, `ClientAdapter.exclusiveWith`). */
 
 export interface CliOptions {
   action: CliAction;
-  client?: SupportedClient;
+  client?: string;
   port?: number;
   host?: string;
   daemon?: boolean;
@@ -54,7 +54,7 @@ export interface DaemonInfo {
 export type ClientHookKind = 'config' | 'launcher' | 'service-env' | 'proxy-config';
 
 export interface ClientHookStatus {
-  name: SupportedClient;
+  name: string;
   displayName: string;
   /** Where the hook lands, stamped by the registry from `ClientAdapter.hookKind`
    *  (`getStatus` does not produce it). */
@@ -78,6 +78,9 @@ export interface ClientHookStatus {
   /** Passthrough launch verbs this hook publishes (`['cursor','cursor-agent']`)
    *  — the console renders `ocr <verb>`; absent = nothing to launch. */
   launch?: string[];
+  /** Retired spellings of `launch` verbs (`ClientLaunchVerb.aliases`): the CLI
+   *  refuses them by name, so a copyable `ocr …` hint must never use one. */
+  launchAliases?: string[];
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -96,6 +99,16 @@ export interface ClientHookStatus {
 
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
+
+  /**
+   * Client-owned model ids this hook OBSERVED at runtime. A client that
+   * compiles its model table into its binary publishes the list only in its
+   * own catalog read, so traffic is the one place it can be learned. The
+   * console OFFERS these ids where an operator must name one (a mapping row's
+   * left side); it never injects entries into the client's list. Absent =
+   * nothing observed yet.
+   */
+  catalogIds?: string[];
 
   /** Additional files this adapter owns beyond `configPath` — Cursor publishes
    *  a second launcher for the `cursor-agent` CLI. `exists` is probed at status

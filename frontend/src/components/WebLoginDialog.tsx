@@ -127,7 +127,7 @@ export const WebLoginDialog: React.FC<{
       subtitle={providerName}
       onClose={onClose}
       closeLabel={t('common.close')}
-      width={560}
+      width={620}
     >
       {switcher}
       {/* The tip describes the WEB flow only — it belongs inside the flow
@@ -137,24 +137,34 @@ export const WebLoginDialog: React.FC<{
       {phase === 'starting' && <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)', margin: 0 }}>{t('op.webLoginStarting')}</p>}
       {phase !== 'starting' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div>
-            <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', margin: '0 0 4px' }}>{t('op.webLoginAuthUrlLabel')}</div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <code
-                style={{
-                  flex: 1,
-                  fontFamily: FONT_MONO,
-                  fontSize: 'var(--text-xs)',
-                  padding: '7px 9px',
-                  border: '1px solid var(--card-border)',
-                  borderRadius: 6,
-                  wordBreak: 'break-all',
-                  background: 'var(--chip-bg)',
-                  userSelect: 'all',
-                }}
-              >
-                {authUrl}
-              </code>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)' }}>{t('op.webLoginAuthUrlLabel')}</div>
+            {/* Full-width block: a device-flow URL is hundreds of chars long,
+                and sharing the row with the actions squeezed it into a narrow
+                column. Bounded height keeps the waiting/submit copy visible;
+                the box scrolls for the rare URL that still overflows. */}
+            <code
+              style={{
+                display: 'block',
+                boxSizing: 'border-box',
+                width: '100%',
+                maxHeight: 104,
+                overflowY: 'auto',
+                fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)',
+                lineHeight: 1.5,
+                padding: '7px 9px',
+                border: '1px solid var(--card-border)',
+                borderRadius: 6,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+                background: 'var(--chip-bg)',
+                userSelect: 'all',
+              }}
+            >
+              {authUrl}
+            </code>
+            <div style={{ display: 'flex', justifyContent: 'flex-start', gap: 6, flexWrap: 'wrap' }}>
               <button
                 className="btn btn-sm"
                 title={t('op.webLoginCopyUrl')}
@@ -167,8 +177,9 @@ export const WebLoginDialog: React.FC<{
                 }}
               >
                 {copied ? <Check size={12} /> : <Copy size={12} />}
+                <span>{t('op.webLoginCopyUrl')}</span>
               </button>
-              <a className="btn btn-sm" href={authUrl} target="_blank" rel="noopener noreferrer" title={t('op.webLoginOpenBrowser')}>
+              <a className="btn btn-sm btn-primary" href={authUrl} target="_blank" rel="noopener noreferrer" title={t('op.webLoginOpenBrowser')}>
                 <ExternalLink size={12} />
                 <span>{t('op.webLoginOpenBrowser')}</span>
               </a>

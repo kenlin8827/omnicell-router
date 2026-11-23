@@ -124,7 +124,7 @@ export const AddCredentialDialog: React.FC<{
       footerRight={
         <button className="btn btn-sm btn-primary" disabled={busy || !key.trim()} onClick={save}>
           <Check size={12} />
-          <span>{t(multiCredential ? 'op.addKeyCredential' : 'op.updateKey')}</span>
+          <span>{t(multiCredential ? 'op.saveKey' : 'op.updateKey')}</span>
         </button>
       }
     >

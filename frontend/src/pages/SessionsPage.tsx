@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2, X } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency } from '../lib/format';
+import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency, lastActiveParts } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
@@ -96,6 +96,37 @@ const TokenStatRow: React.FC<{ label: string; value: string; color?: string; tit
     </span>
   </div>
 );
+
+/**
+ * Last-active cell. The clock line is the row's staleness anchor; a row from
+ * another day stacks its localized date above the clock so "14:32" on a
+ * three-day-old session never reads as today. The extra line costs no height —
+ * the tokens cell beside it is a 4-row stack already — and keeps the column
+ * narrow (see `lastActiveParts`). `0` / unusable stamps render '—' with no
+ * tooltip: the backend's trace-reconstruction fallback (`?? 0`) is "unknown",
+ * not a 1970 instant.
+ */
+const LastActiveCell: React.FC<{ at: number }> = ({ at }) => {
+  const parts = lastActiveParts(at);
+  if (!parts) return <span style={{ color: 'var(--text-dim)' }}>—</span>;
+  return (
+    <span title={new Date(at).toLocaleString()}>
+      {parts.date !== null && (
+        <span
+          style={{
+            display: 'block',
+            fontSize: 'var(--text-2xs)',
+            color: 'var(--text-dim)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {parts.date}
+        </span>
+      )}
+      <span style={{ display: 'block', fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>{parts.time}</span>
+    </span>
+  );
+};
 
 /**
  * One `label value` pair inside a summary series. Labels stay dim and small,
@@ -1005,7 +1036,10 @@ export const SessionsPage: React.FC = () => {
     tokens: 150,
     speed: 140,
     cost: 96,
-    active: 68,
+    // 84 (was 68): a non-today row stacks its date above the clock, and the
+    // widest honest date line (a cross-year `11/21/2026` in text-2xs mono) must
+    // fit whole rather than ellipsize — the date is the message there.
+    active: 84,
     actions: 128,
   } as const;
   const colMinWidth =
@@ -1650,8 +1684,8 @@ export const SessionsPage: React.FC = () => {
                   >
                     {formatCostCompact(s.costUsd)}
                   </td>
-                  <td style={{ padding: '10px 14px', color: 'var(--text-dim)', textAlign: 'center' }}>
-                    {new Date(s.lastActiveAt).toLocaleTimeString()}
+                  <td style={{ padding: '10px 8px', color: 'var(--text-dim)', textAlign: 'center' }}>
+                    <LastActiveCell at={s.lastActiveAt} />
                   </td>
                   <td
                   style={{
@@ -2502,14 +2536,23 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                       width: 176,
                       align: 'center',
                     },
+                    // Outbound egress (ADR-0018): its own self-describing
+                    // track, same convention as stream/protocol, so "did this
+                    // turn leave through the proxy?" is one scannable column.
+                    {
+                      key: 'egress',
+                      label: <span title={t('sessions.colEgressTip')}>{t('sessions.colEgress')}</span>,
+                      width: 84,
+                      align: 'center',
+                    },
                   ]}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 1248 = the 15 declared tracks (34+66+66+210+92+62+58+66+
-                  // 88+52+60+62+52+104+176); + 220 for the elastic prompt
+                  // 1332 = the 16 declared tracks (34+66+66+210+92+62+58+66+
+                  // 88+52+60+62+52+104+176+84); + 220 for the elastic prompt
                   // column.
-                  minWidth={1248 + 220}
+                  minWidth={1332 + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
@@ -2627,6 +2670,28 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                             outbound={tr.execution.wireKind}
                             tip={t('sessions.protocolTip')}
                           />
+                        )}
+                      </td>
+                      <td style={DETAIL_TD_CENTER}>
+                        {/* Outbound egress of THIS turn (ADR-0018): the
+                            redacted proxy origin rides the PROXY tooltip.
+                            Absent = unknown (legacy row / plugin transport),
+                            rendered '—' — never as direct. */}
+                        {tr.execution.egress === 'proxy' ? (
+                          <span
+                            className="badge badge-info"
+                            title={`${t('sessions.egressProxyTip')}: ${tr.execution.egressProxy ?? ''}`}
+                          >
+                            PROXY
+                          </span>
+                        ) : tr.execution.egress === 'direct' ? (
+                          <span style={{ color: 'var(--text-dim)' }} title={t('sessions.egressDirectTip')}>
+                            DIRECT
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-dim)' }} title={t('sessions.egressUnknownTip')}>
+                            —
+                          </span>
                         )}
                       </td>
                     </tr>

@@ -29,10 +29,9 @@ import { WorkBuddyClientAdapter } from './workbuddy.js';
  *
  * Typed `Record<CoreClientId, …>`, not `Record<string, …>`: the key list in
  * `reserved.ts` is the single source, so a hook added or removed here without
- * the id list (or the other way round) is a compile error. `SupportedClient`
- * still types the ids the console and CLI can ADDRESS (core hooks plus the
- * package hooks the product documents), not the subset that ships in core.
- */
+ * the id list (or the other way round) is a compile error. Package hooks are
+ * NOT typed here: they register any string id at runtime (ADR-0027), and core
+ * code must never string-reference one. */
 export const CORE_ADAPTERS: Record<CoreClientId, ClientAdapter> = {
   opencode: new OpenCodeClientAdapter(),
   claude: new ClaudeClientAdapter(),

@@ -621,6 +621,73 @@ details.tool-call > summary::-webkit-details-marker {
 .md-well hr { border: none; border-top: 1px solid var(--divider); margin: 10px 0; }
 .md-well img { max-width: 100%; border-radius: 6px; }
 
+/* Plugins page → changelog drawer. Releases read as a timeline, not a stack of
+   boxed cards: the rail owns the continuity, the marker is the release anchor,
+   and only the INSTALLED release's marker carries the accent. Notes stay
+   markdown (Prose) with a transparent shell so the rail, not a border, gives
+   each entry its shape. */
+.plugin-changelog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-left: 22px;
+}
+.plugin-changelog::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  background: var(--divider);
+}
+.plugin-changelog-entry { position: relative; min-width: 0; }
+.plugin-changelog-entry::before {
+  content: '';
+  position: absolute;
+  left: -22px;
+  top: 4px;
+  width: 7px;
+  height: 7px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+}
+.plugin-changelog-entry[data-current='true']::before {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.plugin-changelog-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plugin-changelog-version {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-main);
+}
+.plugin-changelog-entry[data-current='true'] .plugin-changelog-version { color: var(--accent); }
+.plugin-changelog-date {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+.plugin-changelog-current { margin-left: auto; }
+.plugin-changelog-notes { margin-top: 2px; }
+/* Prose wraps its markdown in a 6px/10px padded shell; cancel it here so the
+   notes align with the version line instead of sitting ten pixels inside it.
+   The shell stays (it owns markdown flow + sanitization), only its inset goes. */
+.plugin-changelog-notes > div {
+  margin-left: -10px;
+  margin-right: -10px;
+}
+
 .card-header {
   display: flex;
   align-items: center;

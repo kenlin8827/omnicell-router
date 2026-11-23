@@ -10,7 +10,7 @@
  * extension point is claimed SNI hosts; the runtime view reads `wires ?? []`),
  * every other shape rule holds for both plugin types.
  */
-import type { PluginManifest, PluginPart, PluginType } from './types.js';
+import type { PluginClaimEgress, PluginConfigField, PluginManifest, PluginPart, PluginType } from './types.js';
 
 /** Contract version the CURRENT host implements. v1 is the FIRST plugin
  *  mechanism: there is no legacy or forward compatibility — a package must
@@ -22,6 +22,21 @@ export const SUPPORTED_PLUGIN_API = 1;
 /** Where a config field is edited: the plugin drawer (default), the Client Hub
  *  card the hook backs, or nowhere (stored, but dead for this hook). */
 export const CONFIG_PLACEMENTS = ['drawer', 'card', 'none'] as const;
+
+/**
+ * The plugin-level outbound-leg switch (ADR-0018 Revision 5), keyed and valued by
+ * CORE. Once a package claims a host, the leg under that host is the package's
+ * business — but the operator keeps the last word over the code they installed,
+ * and that word is spoken ONCE per plugin, not once per host: one switch that
+ * reaches every host this gateway claims.
+ *
+ * The default is `inherit`, deliberately NOT the manifest's own declaration:
+ * the switch sits ABOVE the plugin's code, and a default of `proxy` would make
+ * every untouched plugin a silent override of its own `egressFor()` answers.
+ * `inherit` is the state that leaves the claim in charge.
+ */
+export const GATEWAY_EGRESS_CONFIG_KEY = 'egress';
+export const GATEWAY_EGRESS_VALUES = ['inherit', 'proxy', 'direct'] as const;
 
 /** Reject a package built for any other contract version. Called at INSTALL
  *  (before anything touches disk) and at LOAD (packages already on disk). */
@@ -52,7 +67,67 @@ export function isPluginType(value: unknown): value is PluginType {
 export function normalizePluginParts(manifest: PluginManifest): PluginPart[] {
   if (Array.isArray(manifest.parts) && manifest.parts.length > 0) return manifest.parts;
   if (!isPluginType(manifest.type)) return [];
-  return [{ type: manifest.type, wires: manifest.wires, hosts: manifest.hosts }];
+  return [{ type: manifest.type, wires: manifest.wires, hosts: manifest.hosts, egress: manifest.egress }];
+}
+
+/** The hosts a manifest's client-gateway part claims, under BOTH spellings
+ *  (`type`/top-level `hosts`, or the `parts` entry). Empty for a package that
+ *  is not a gateway at all. */
+export function gatewayClaimedHosts(manifest: PluginManifest): string[] {
+  return normalizePluginParts(manifest).find((p) => p.type === 'client-gateway')?.hosts ?? [];
+}
+
+/**
+ * Whether the console should offer the operator the plugin-level leg switch:
+ * a gateway with at least one CONCRETE claimed host. A wildcard gateway claims
+ * no host, so a switch over it would be a switch over traffic it does not own
+ * (the same refusal the manifest validator applies to `egress` on `'*'`).
+ */
+export function hasOwnableClaim(manifest: PluginManifest): boolean {
+  return gatewayClaimedHosts(manifest).some((h) => String(h).trim() !== '*');
+}
+
+/**
+ * The field core injects into a gateway's `configSchema` so the operator's
+ * switch appears in the plugin's own settings drawer (ADR-0018 Revision 5). No
+ * `title`/`desc`/`enumLabels` on purpose: this row is CORE chrome, not package
+ * content, so its wording comes from the console's translation tables the same
+ * as every other label (`isCoreEgressField` in the frontend recognizes it) and
+ * never from a package author's English.
+ */
+export function gatewayEgressField(): PluginConfigField {
+  return {
+    key: GATEWAY_EGRESS_CONFIG_KEY,
+    type: 'enum',
+    values: [...GATEWAY_EGRESS_VALUES],
+    default: 'inherit',
+    control: 'segmented',
+    essential: true,
+  };
+}
+
+/**
+ * The operator's EXPLICIT leg choice out of a merged plugin config. `inherit` —
+ * the untouched default — is deliberately NOT a choice: it means "let the claim
+ * answer", so it must not outrank the plugin's own `egressFor()` the way a
+ * picked value does.
+ */
+export function operatorEgressChoice(values: Record<string, unknown>): PluginClaimEgress | undefined {
+  const v = values[GATEWAY_EGRESS_CONFIG_KEY];
+  return v === 'proxy' || v === 'direct' ? v : undefined;
+}
+
+/**
+ * Add the core switch to a gateway manifest, idempotently and without touching
+ * any other field. Called at MANIFEST READ, before the host SDK hands the
+ * manifest to a plugin's `config()` closure: injected later, the drawer, the
+ * merge and the plugin's own read would disagree about whether the key exists.
+ */
+export function withGatewayEgressField(manifest: PluginManifest): PluginManifest {
+  if (!hasOwnableClaim(manifest)) return manifest;
+  const schema = manifest.configSchema ?? [];
+  if (schema.some((f) => f.key === GATEWAY_EGRESS_CONFIG_KEY)) return manifest;
+  return { ...manifest, configSchema: [gatewayEgressField(), ...schema] };
 }
 
 /** A plugin id is a PATH COMPONENT — `<pluginsRoot>/<id>.zip`,
@@ -105,6 +180,19 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
       fail(`${label} must be a non-empty-string array`);
     }
   };
+  // The claim's outbound-leg declaration (ADR-0018 step 3). Refused on a
+  // wildcard claim: `'*'` is not a host, and a declaration that reached every
+  // host would let one installed package pin the egress of the whole machine —
+  // the exact blast radius Revision 4 was written to keep out of a claim.
+  const claimEgress = (value: unknown, label: string, hosts: unknown): void => {
+    if (value === undefined) return;
+    if (value !== 'inherit' && value !== 'proxy' && value !== 'direct') {
+      fail(`${label} must be 'inherit', 'proxy' or 'direct'`);
+    }
+    if (Array.isArray(hosts) && hosts.some((h) => String(h).trim() === '*')) {
+      fail(`${label} cannot ride a wildcard claim — it would pin the egress of every host`);
+    }
+  };
   if (m.type === undefined && m.parts === undefined) {
     fail('needs `type` (one axis) or `parts` (the axes this package occupies)');
   }
@@ -146,6 +234,9 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
           fail(`parts[${i}] is a client-gateway part and needs a non-empty hosts array`);
         }
         wildcardExclusive(part.hosts as unknown[], `parts[${i}].hosts`, fail);
+        claimEgress(part.egress, `parts[${i}].egress`, part.hosts);
+      } else if (part.egress !== undefined) {
+        fail(`parts[${i}].egress declares the exit of a host, and only a client-gateway part claims hosts`);
       }
       if (partType === 'client-adapter' && (part.wires !== undefined || part.hosts !== undefined)) {
         fail(`parts[${i}] is a client-adapter part — it contributes a Client Hub hook, not wires or hosts`);
@@ -161,6 +252,9 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
         fail('a client-gateway manifest needs a non-empty hosts array');
       }
       wildcardExclusive(m.hosts as unknown[], 'hosts', fail);
+      claimEgress(m.egress, 'egress', m.hosts);
+    } else if (m.egress !== undefined) {
+      fail('`egress` declares the exit of a host, and only a client-gateway plugin claims hosts');
     }
   }
   // Flat primitives only (ADR-0017 §7): a malformed schema fails loudly
@@ -169,6 +263,19 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   if (m.configSections !== undefined && m.configSchema === undefined) {
     fail('configSections without configSchema groups nothing');
   }
+  // The leg switch is core-owned vocabulary (`GATEWAY_EGRESS_CONFIG_KEY`), and
+  // core INJECTS it into a gateway's schema. A package that declares the key
+  // itself is refused here rather than silently shadowed: two rows named
+  // `egress` in one drawer means the merged read can no longer say which one
+  // the operator touched, and the operator's word on the leg is the whole
+  // contract of that field.
+  if (
+    hasOwnableClaim(m as unknown as PluginManifest) &&
+    Array.isArray(m.configSchema) &&
+    (m.configSchema as Array<Record<string, unknown>>).some((f) => f?.key === GATEWAY_EGRESS_CONFIG_KEY)
+  ) {
+    fail(`configSchema may not declare '${GATEWAY_EGRESS_CONFIG_KEY}' — the outbound-leg switch belongs to core`);
+  }
   if (m.logo !== undefined && typeof m.logo !== 'string') fail('logo must be a string');
   if (
     m.description !== undefined &&
@@ -176,6 +283,40 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
     (typeof m.description !== 'object' || m.description === null)
   ) {
     fail('description must be a string or locale map');
+  }
+  // Release history is presentation only, but a malformed entry is still a
+  // packaging bug the console would render as a blank drawer: every field is
+  // checked here, at the same install/load gate as the rest of the manifest.
+  // Duplicate versions are refused because the console keys rows by version —
+  // two notes for one release would silently collapse into one.
+  if (m.changelog !== undefined) {
+    if (!Array.isArray(m.changelog)) fail('changelog must be an array of release entries');
+    const seenVersions = new Set<string>();
+    (m.changelog as unknown[]).forEach((raw, i) => {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) fail(`changelog[${i}] must be an object`);
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.version !== 'string' || !entry.version.trim()) {
+        fail(`changelog[${i}].version must be a non-empty string`);
+      } else if (seenVersions.has(entry.version)) {
+        fail(`changelog declares version '${entry.version}' twice`);
+      } else {
+        seenVersions.add(entry.version);
+      }
+      if (entry.date !== undefined && (typeof entry.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.date))) {
+        fail(`changelog[${i}].date must be a YYYY-MM-DD string`);
+      }
+      const notes = entry.notes;
+      // EVERY declared locale must carry text: the console picks one locale and
+      // renders it verbatim, so an empty value is a blank drawer for exactly the
+      // operator whose language the author thought was translated.
+      const notesPresent =
+        typeof notes === 'string'
+          ? notes.trim().length > 0
+          : isTextOrLocaleMap(notes) &&
+            Object.keys(notes as Record<string, string>).length > 0 &&
+            Object.values(notes as Record<string, string>).every((text) => text.trim().length > 0);
+      if (!notesPresent) fail(`changelog[${i}].notes must be a non-empty string or a locale map of strings`);
+    });
   }
   if (m.warningLabels !== undefined) {
     if (typeof m.warningLabels !== 'object' || m.warningLabels === null || Array.isArray(m.warningLabels)) {
@@ -186,6 +327,41 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
       if (!/^[a-z][a-z0-9_]*$/.test(code)) fail(`warningLabels key '${code}' must be a lowercase code (a-z, 0-9, _)`);
       if (!isTextOrLocaleMap(text)) fail(`warningLabels['${code}'] must be a string or a locale map of strings`);
     }
+  }
+  if (m.clientText !== undefined) {
+    const ct = m.clientText;
+    if (typeof ct !== 'object' || ct === null || Array.isArray(ct)) {
+      fail('clientText must be an object');
+    } else {
+      const rec = ct as Record<string, unknown>;
+      for (const key of Object.keys(rec)) {
+        if (key !== 'setupOk' && key !== 'teardownOk' && key !== 'hint' && key !== 'errors' && key !== 'family') {
+          fail(`clientText key '${key}' is not one of setupOk, teardownOk, hint, errors, family`);
+        }
+      }
+      for (const simple of ['setupOk', 'teardownOk', 'hint'] as const) {
+        const v = rec[simple];
+        if (v !== undefined && !isTextOrLocaleMap(v)) {
+          fail(`clientText.${simple} must be a string or a locale map of strings`);
+        }
+      }
+      for (const mapName of ['errors', 'family'] as const) {
+        const map = rec[mapName];
+        if (map === undefined) continue;
+        if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+          fail(`clientText.${mapName} must be an object keyed by code`);
+          continue;
+        }
+        for (const [code, text] of Object.entries(map as Record<string, unknown>)) {
+          // A code is the ABI the hook returns; the console looks it up verbatim.
+          if (!/^[a-z][a-zA-Z0-9_]*$/.test(code)) fail(`clientText.${mapName} key '${code}' must be a lowerCamel or snake_case code`);
+          if (!isTextOrLocaleMap(text)) fail(`clientText.${mapName}['${code}'] must be a string or a locale map of strings`);
+        }
+      }
+    }
+  }
+  if (m.clientRank !== undefined && (typeof m.clientRank !== 'number' || !Number.isInteger(m.clientRank) || m.clientRank < 1)) {
+    fail('clientRank must be a positive integer');
   }
   if (m.presets !== undefined) {
     if (!Array.isArray(m.presets)) fail('presets must be an array');
@@ -218,6 +394,9 @@ const CONFIG_CONTROLS: Record<string, Record<string, true>> = {
   textarea: { string: true, 'string[]': true },
   model: { string: true },
   models: { 'string[]': true },
+  // A mapping table of `client=target[#label]` specs; each row maps one of the
+  // client's OWN model ids onto an OCR model the gateway rewrites to.
+  aliases: { 'string[]': true },
   // A short closed choice rendered as joined buttons instead of a dropdown --
   // the console's own mode switches (none / custom / follow) use the same shape.
   segmented: { enum: true },

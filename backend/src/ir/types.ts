@@ -171,7 +171,8 @@ export interface MessageItem {
 
 export interface ToolCallItem {
   type: 'tool_call';
-  /** Item id (Responses `id`); carriers without item ids reuse `callId`. */
+  /** Item id (Responses `id`); carriers without item ids reuse `callId`, and a
+   *  Responses encoder then derives the prefixed item id (`fc_`/`ctc_`). */
   id: string;
   /** Correlation id the tool result must reference (Responses `call_id`). */
   callId?: string;

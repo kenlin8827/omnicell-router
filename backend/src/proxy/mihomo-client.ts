@@ -162,7 +162,20 @@ export class MihomoClient {
       timeout: String(timeoutMs),
       url: testUrl,
     });
-    const body = await this.request('GET', `/group/${encodeURIComponent(name)}/delay?${q}`, undefined, timeoutMs + 2000);
+    let body: unknown;
+    try {
+      body = await this.request('GET', `/group/${encodeURIComponent(name)}/delay?${q}`, undefined, timeoutMs + 2000);
+    } catch (err) {
+      // mihomo answers a batch whose members ALL failed with 504 and the
+      // "get delay: all proxies timeout" message — a failed test, not a
+      // controller fault, so it keeps the stable `timeout` code the single
+      // node route uses. 408 is kept for builds that answer the request
+      // timeout status instead.
+      if (err instanceof MihomoControllerError && (err.status === 504 || err.status === 408)) {
+        throw new MihomoControllerError('delay test timed out (no member answered)', err.status, 'timeout');
+      }
+      throw err;
+    }
     const out: Record<string, number> = {};
     if (body && typeof body === 'object') {
       for (const [node, value] of Object.entries(body as Record<string, unknown>)) {

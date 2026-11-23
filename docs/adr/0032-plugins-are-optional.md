@@ -43,7 +43,7 @@ Install/upgrade/refusal/tombstone behavior is unchanged (ADR-0029 §2–4). The 
 
 ### 5. The install surface is the console
 
-The Plugins page remains the one place a package is added (`POST /plugins/install`, upload a zip from `.plugin-dist/` or from a package's own release). There is no automatic download, no update channel, and no first-boot fetch: an operator who wants a gateway, a model service, or a client hook installs it, and an operator who does not gets a gateway with no plugin rows.
+The Plugins page remains the one place a package is added (`POST /plugins/install`, upload a zip from `.plugin-dist/` or from a package's own release). The picker accepts several packages at once: the console uploads them **one at a time**, so each `POST` still carries exactly one zip and keeps its per-package rollback, and a package that fails is reported without cancelling the rest of the batch. There is no automatic download, no update channel, and no first-boot fetch: an operator who wants a gateway, a model service, or a client hook installs it, and an operator who does not gets a gateway with no plugin rows.
 
 ## Consequences
 

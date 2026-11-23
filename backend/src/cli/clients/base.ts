@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ClientHookKind, ClientHookStatus, SupportedClient } from '../types.js';
+import { ClientHookKind, ClientHookStatus } from '../types.js';
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
 import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_GATEWAY_PORT } from '../../config/defaults.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
@@ -216,7 +216,10 @@ export function pluginWarningText(
 }
 
 export interface ClientAdapter {
-  name: SupportedClient;
+  /** Any string id the package declares (ADR-0027: dynamic registration —
+   *  `plugin-adapters.ts` refuses only core and retired ids). Core hooks type
+   *  their literals through `CORE_ADAPTERS`' `CoreClientId` keys. */
+  name: string;
   displayName: string;
   /** Where the hook lands; the registry stamps it into every status row. */
   hookKind: ClientHookKind;
@@ -228,6 +231,14 @@ export interface ClientAdapter {
    * drives. Declared here so the console never carries a client→logo table.
    */
   icon?: string;
+  /**
+   * Hook ids this hook MUTUALLY EXCLUDES: setting this hook up tears the
+   * sibling down first, and the registry tears this hook down when one of the
+   * listed ids is set up (both directions need only ONE side to declare).
+   * Only ids that can actually be installed are legal; the pairing is
+   * consulted by the generic `setupClient` logic — never hardcoded per id.
+   */
+  exclusiveWith?: readonly string[];
   /**
    * Bare product name, for a surface whose context already implies the variant
    * (the Clients tab header shows `OpenCode`, the flat overview list shows

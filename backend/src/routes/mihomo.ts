@@ -8,13 +8,18 @@
  */
 import crypto from 'node:crypto';
 import net from 'node:net';
+import tls from 'node:tls';
 import type { FastifyInstance } from 'fastify';
 import { parse, stringify } from 'yaml';
 import { loadConfig, mergeProxyConfig, sanitizeProxyConfig, saveConfig } from '../config/index.js';
+import { osProxyBypasses, readOsProxyEndpoint } from '../forward-proxy/system-proxy.js';
+import type { OsProxyEndpoint } from '../forward-proxy/system-proxy.js';
 import { isManualNodeProtocol, manualNodeCatalog, sanitizeTypedNode } from '../proxy/manual-node-spec.js';
 import type { MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoSubscription, ProxyConfig } from '../config/types.js';
 import { installMihomoBinary } from '../proxy/mihomo-binary.js';
 import { MihomoClient, MihomoControllerError } from '../proxy/mihomo-client.js';
+import { downloadMihomoGeoAssets, geoAssetsPresent, geoFetchForLeg, geoReport, rulesNeedGeo } from '../proxy/mihomo-geo.js';
+import { clearMihomoCoreLogs, mihomoCoreLogs } from '../proxy/mihomo-logs.js';
 import { MANUAL_NODE_FORM_KEYS, manualNodeFields, manualNodeMapping, redactSubscriptionUrl } from '../proxy/mihomo-config.js';
 import { fetchSubscriptionYaml, importRulesFromYaml, readCachedProviderYaml } from '../proxy/mihomo-rules-import.js';
 import {
@@ -26,7 +31,7 @@ import {
   stopMihomoSidecar,
   type MihomoOpResult,
 } from '../proxy/mihomo-sidecar.js';
-import { DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_TEST_URL, MIHOMO_DELAY_TIMEOUT_MS, MIHOMO_NODE_PROBE_TIMEOUT_MS } from '../config/defaults.js';
+import { DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_TEST_URL, MIHOMO_CN_DIRECT_RULES, MIHOMO_DELAY_TIMEOUT_MS, MIHOMO_LAN_DIRECT_RULES, MIHOMO_NODE_PROBE_TIMEOUT_MS } from '../config/defaults.js';
 import { PAC_PATH, buildPacScript } from '../proxy/mihomo-pac.js';
 
 function currentProxy(): ProxyConfig {
@@ -59,6 +64,7 @@ function normalizeDraft(body: any, id: string): MihomoSubscription {
     name: typeof body?.name === 'string' ? body.name : '',
     url: typeof body?.url === 'string' ? body.url : '',
     interval: typeof body?.interval === 'number' ? body.interval : undefined,
+    ...(typeof body?.proxy === 'string' ? { proxy: body.proxy } : {}),
     enabled: body?.enabled !== false,
   };
 }
@@ -163,6 +169,17 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
       }
     }
     return { status: 'ok', ...status, routingMode: configured, liveRoutingMode: live };
+  });
+
+  // The core's own output, captured from the process this gateway spawned.
+  // Memory-only and deliberately independent of the controller: a core that
+  // just died still has its last lines here. An adopted core was not spawned
+  // by this process, so it contributes nothing.
+  app.get('/api/admin/proxy/mihomo/logs', async () => ({ status: 'ok', lines: mihomoCoreLogs() }));
+
+  app.delete('/api/admin/proxy/mihomo/logs', async () => {
+    clearMihomoCoreLogs();
+    return { status: 'ok' };
   });
 
   // Outbound mode (rule / global / direct) — the deliberate kill switch next to
@@ -283,6 +300,91 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     }
   });
 
+  // The two direct presets the console offers. Served from the backend so the
+  // rule rows have ONE declaration (a frontend copy would be a drift twin of
+  // the seeded defaults) and the console never hardcodes a payload.
+  app.get('/api/admin/proxy/mihomo/rules/presets', async () => ({
+    status: 'ok',
+    defaults: MIHOMO_LAN_DIRECT_RULES,
+    cn: MIHOMO_CN_DIRECT_RULES,
+  }));
+
+  // State of the geo databases GEOIP/GEOSITE rules are evaluated against.
+  // Sizes only — no content, no path beyond the file names mihomo owns.
+  app.get('/api/admin/proxy/mihomo/geo', async () => ({
+    status: 'ok',
+    ...geoReport(mihomoWorkDir()),
+  }));
+
+  // Explicit geo-data install. NDJSON for the same reason as the binary
+  // download: two files, ~12 MB together, and a silent multi-second request is
+  // indistinguishable from a hang. `progress` events carry the asset key and
+  // byte counts, then exactly one `result`.
+  //
+  // `leg` names the egress (ADR-0022): `machine` (the default) is the
+  // machine's own network — OS system proxy when one is enabled, bypass list
+  // honoured, direct otherwise — and `node` goes through the core's mixed
+  // port, i.e. the selected node. The node leg refuses while the core is down;
+  // the machine leg never needs the core.
+  app.post('/api/admin/proxy/mihomo/geo', async (req, reply) => {
+    const body = (req.body ?? {}) as { leg?: unknown; refresh?: unknown };
+    const leg = body.leg === undefined ? 'machine' : body.leg === 'machine' || body.leg === 'node' ? body.leg : null;
+    if (leg === null) {
+      return reply.status(400).send({ status: 'error', message: 'leg must be machine or node' });
+    }
+    const refresh = body.refresh === true;
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
+    let closed = false;
+    raw.on('close', () => {
+      closed = true;
+    });
+    const send = (evt: Record<string, unknown>) => {
+      if (closed) return;
+      try {
+        raw.write(`${JSON.stringify(evt)}\n`);
+      } catch {
+        closed = true;
+      }
+    };
+    let lastSent = 0;
+    try {
+      const dir = mihomoWorkDir();
+      let fetchImpl: typeof fetch | undefined;
+      if (leg === 'node' && (refresh || !geoAssetsPresent(dir))) {
+        // The node leg is the core's own exit; a configured controller is not
+        // proof the mixed port is listening, so ask the live status.
+        const status = await getMihomoStatus();
+        if (!status.running) {
+          send({ type: 'result', status: 'error', ok: false, code: 'not-running', present: false, files: geoReport(dir).files });
+          raw.end();
+          return;
+        }
+        fetchImpl = await geoFetchForLeg('node', { mixedPort: currentProxy().mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT });
+      } else if (leg === 'machine') {
+        fetchImpl = await geoFetchForLeg('machine', { osProxyReader });
+      }
+      const result = await downloadMihomoGeoAssets(dir, {
+        fetchImpl,
+        refresh,
+        // One event per 100ms is plenty for a progress bar and keeps a fast
+        // link from flooding the socket.
+        onProgress: (file, downloaded, total) => {
+          const now = Date.now();
+          if (now - lastSent < 100 && downloaded !== total) return;
+          lastSent = now;
+          send({ type: 'progress', file, downloaded, total });
+        },
+      });
+      send({ type: 'result', status: result.ok ? 'ok' : 'error', ...result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      send({ type: 'result', status: 'error', ok: false, code: 'geo-download-failed', error: message, present: geoAssetsPresent(mihomoWorkDir()), files: geoReport(mihomoWorkDir()).files });
+    }
+    raw.end();
+  });
+
   // Operator-authored rules. The body is the WHOLE ordered list: this is a rule
   // TABLE, so a patch-style merge would silently reorder or resurrect rows the
   // operator deleted. Sanitizing happens on the config boundary (whitelisted
@@ -295,6 +397,17 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     }
     const proxy = currentProxy();
     const merged = mergeProxyConfig(proxy, { mihomo: { rules: body.rules as MihomoCustomRule[] } });
+    // A GEOIP/GEOSITE row without its geo databases would kill the core at the
+    // next start (mihomo parses the data before it listens). Refuse to SAVE it:
+    // persisting first and failing the reconcile would leave the file and the
+    // process disagreement in place for every later boot.
+    if (rulesNeedGeo(merged.mihomo?.rules) && !geoAssetsPresent(mihomoWorkDir())) {
+      return reply.status(400).send({
+        status: 'error',
+        code: 'geo-missing',
+        message: 'GEOIP/GEOSITE rules need the geo databases — download them in the Clash panel first',
+      });
+    }
     const result = persistProxy(merged);
     if (!result.success) return reply.status(400).send({ status: 'error', message: result.error || 'save failed' });
     const sidecar = await reconcileMihomoSidecar();
@@ -804,19 +917,36 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     }
   });
 
-  // Reachability is not latency. This endpoint answers only "can the
-  // configured URL be fetched THROUGH the proxy": mihomo runs its delay test
-  // on the group's currently selected node. The add-node dialog's "test
-  // connection" is the opposite by design — a direct TCP probe of the node's
-  // server:port with no proxy.
+  // Reachability is not latency. This endpoint answers "can the configured URL
+  // be fetched" over ONE of two legs, chosen by `mode` (default `tunnel`):
+  //  - `tunnel` — mihomo's delay test on the group's currently selected node;
+  //  - `machine` — the machine's own egress: what any other application on
+  //    this box would do. Goes through the OS system proxy when one is enabled
+  //    (respecting its bypass list) and connects directly otherwise. It needs
+  //    no running core and never uses `proxiedFetch` (whose `proxy.enabled`
+  //    policy would silently re-route the leg). The shell's HTTP_PROXY /
+  //    HTTPS_PROXY are IGNORED: they describe how this gateway was launched,
+  //    not what the machine is configured to use. See `probeUrlMachine` for
+  //    why it cannot use an HTTP client stack at all.
+  // The add-node dialog's "test connection" is the opposite by design — a
+  // direct TCP probe of the node's server:port with no proxy.
   app.post('/api/admin/proxy/mihomo/test-url', async (req, reply) => {
     const proxy = currentProxy();
-    const client = clientOrNull(proxy);
-    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
-    const body = (req.body ?? {}) as { url?: unknown; group?: unknown; timeoutMs?: unknown };
+    const body = (req.body ?? {}) as { url?: unknown; group?: unknown; timeoutMs?: unknown; mode?: unknown };
+    const mode = body.mode === undefined ? 'tunnel' : body.mode === 'tunnel' || body.mode === 'machine' ? body.mode : null;
+    if (mode === null) return reply.status(400).send({ status: 'error', message: 'invalid mode' });
     const requested = parseRequestTestUrl(body.url);
     if (requested === null) return reply.status(400).send({ status: 'error', message: 'invalid test URL' });
     const url = requested || proxy.mihomo?.testUrl || DEFAULT_MIHOMO_TEST_URL;
+    if (mode === 'machine') {
+      const outcome = await probeUrlMachine(url, requestedDelayTimeout(body.timeoutMs), await osProxyReader());
+      const route = { status: 'ok', mode, via: outcome.via, ...(outcome.proxy ? { proxy: outcome.proxy } : {}) };
+      return outcome.ms !== undefined
+        ? { ...route, reachable: true, url, ms: outcome.ms }
+        : { ...route, reachable: false, url, error: outcome.error };
+    }
+    const client = clientOrNull(proxy);
+    if (!client) return reply.status(409).send({ status: 'error', code: 'not-running', message: 'Clash core is not running' });
     // The console shows the RUNNING core's group; a group edited but not yet
     // applied exists only in config, so the request may name the live one.
     const requestedGroup = typeof body.group === 'string' ? body.group.trim() : '';
@@ -834,7 +964,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     }
     try {
       const ms = await client.delay(node, requestedDelayTimeout(body.timeoutMs), url);
-      return { status: 'ok', reachable: true, url, node, ms };
+      return { status: 'ok', mode, reachable: true, url, node, ms };
     } catch (err) {
       // Give the console something actionable: a timeout stays a stable code
       // (localized in the UI), everything else carries the controller's own
@@ -842,9 +972,149 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
       const failure = err instanceof MihomoControllerError
         ? (err.code === 'delay-missing' || err.code === 'timeout' ? 'timeout' : err.message)
         : 'error';
-      return { status: 'ok', reachable: false, url, node, error: failure };
+      return { status: 'ok', mode, reachable: false, url, node, error: failure };
     }
   });
+}
+
+/**
+ * The machine leg's egress resolver. Defaults to the OS system-proxy reader;
+ * tests redirect it because a CI box's own OS settings are not the fixture.
+ */
+let osProxyReader: () => Promise<OsProxyEndpoint | undefined> = readOsProxyEndpoint;
+export function setUrlProbeOsProxyReaderForTests(
+  reader?: () => Promise<OsProxyEndpoint | undefined>,
+): void {
+  osProxyReader = reader ?? readOsProxyEndpoint;
+}
+
+/** `system-proxy` means the request left through the OS proxy the machine is
+ *  configured to use; `direct` means there was none (or this host bypasses it). */
+type MachineVia = 'direct' | 'system-proxy';
+
+/**
+ * The `machine` leg of the endpoint check: one request sent the way the
+ * machine's other applications send theirs — through the OS system proxy when
+ * one is enabled, straight out when none is.
+ *
+ * It speaks HTTP/1.1 over a raw `net`/`tls` socket rather than an HTTP client
+ * because on this runtime BOTH `fetch` and `node:http`/`node:https` consult
+ * `HTTP_PROXY`/`HTTPS_PROXY` from the environment (verified: a dead env proxy
+ * fails them all, even `fetch(url, { proxy: '' })`), and those variables
+ * describe how the gateway process was launched — not the machine. A raw
+ * socket lets this leg follow the OS setting and nothing else.
+ *
+ * Resolves on the response head (reachability, not latency grading) and never
+ * throws — the route reports `{ ms }` or `{ error }`.
+ */
+function probeUrlMachine(
+  url: string,
+  timeoutMs: number,
+  osProxy: OsProxyEndpoint | undefined,
+): Promise<{ ms?: number; error?: string; via: MachineVia; proxy?: string }> {
+  const parsed = new URL(url);
+  const secure = parsed.protocol === 'https:';
+  // `URL.hostname` keeps IPv6 brackets; sockets want the bare address, and an
+  // address must never be sent as SNI (TLS libraries reject IP servernames).
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  const port = Number(parsed.port) || (secure ? 443 : 80);
+  const path = `${parsed.pathname || '/'}${parsed.search}`;
+  const proxied = osProxy && !osProxyBypasses(host, osProxy.bypass) ? splitProxyEndpoint(osProxy.server) : undefined;
+  const via: MachineVia = proxied ? 'system-proxy' : 'direct';
+  return new Promise((resolve) => {
+    const started = performance.now();
+    let settled = false;
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    let socket: net.Socket | undefined;
+    const finish = (outcome: { ms?: number; error?: string }): void => {
+      if (settled) return;
+      settled = true;
+      if (guard) clearTimeout(guard);
+      socket?.destroy();
+      resolve({ ...outcome, via, ...(proxied ? { proxy: `${proxied.host}:${proxied.port}` } : {}) });
+    };
+    const elapsed = (): number => Math.round(performance.now() - started);
+    guard = setTimeout(() => finish({ error: 'timeout' }), timeoutMs);
+
+    const servername = net.isIP(host) !== 0 ? undefined : host;
+    const dial = proxied ?? { host, port };
+    socket = net.connect({ host: dial.host, port: dial.port });
+    socket.on('error', (err) => finish({ error: (err as NodeJS.ErrnoException).code || 'error' }));
+    socket.on('close', () => finish({ error: 'eof' }));
+
+    const headers =
+      'User-Agent: OmniCellRouter/endpoint-probe\r\nAccept: */*\r\nConnection: close\r\n';
+    const originRequest = `GET ${path} HTTP/1.1\r\nHost: ${parsed.host}\r\n${headers}\r\n`;
+    // Through a proxy an http:// target uses the absolute form; https:// must
+    // first open a CONNECT tunnel and then speak TLS on it.
+    const proxyAuth = proxied?.auth ? `Proxy-Authorization: ${proxied.auth}\r\n` : '';
+    const absoluteRequest =
+      `GET ${parsed.protocol}//${parsed.host}${path} HTTP/1.1\r\nHost: ${parsed.host}\r\n${proxyAuth}${headers}\r\n`;
+
+    /** The final leg on the wire: TLS once secure, plain otherwise. */
+    const sendOverTls = (transport: net.Socket): void => {
+      const tlsSocket = tls.connect({ socket: transport, servername });
+      socket = tlsSocket;
+      tlsSocket.on('error', (err) => finish({ error: (err as NodeJS.ErrnoException).code || 'error' }));
+      tlsSocket.once('secureConnect', () => tlsSocket.write(originRequest));
+      tlsSocket.once('data', () => finish({ ms: elapsed() }));
+    };
+
+    socket.once('connect', () => {
+      if (!proxied) {
+        if (secure) sendOverTls(socket as net.Socket);
+        else {
+          socket!.write(originRequest);
+          socket!.once('data', () => finish({ ms: elapsed() }));
+        }
+        return;
+      }
+      if (!secure) {
+        socket!.write(absoluteRequest);
+        socket!.once('data', () => finish({ ms: elapsed() }));
+        return;
+      }
+      socket!.write(
+        `CONNECT ${parsed.hostname}:${port} HTTP/1.1\r\nHost: ${parsed.hostname}:${port}\r\n${proxyAuth}\r\n`,
+      );
+      let buffered = Buffer.alloc(0);
+      const onData = (chunk: Buffer): void => {
+        buffered = Buffer.concat([buffered, chunk]);
+        const end = buffered.indexOf('\r\n\r\n');
+        if (end < 0) return;
+        socket!.off('data', onData);
+        const code = Number(/^HTTP\/1\.[01] (\d{3})/.exec(buffered.subarray(0, end).toString('latin1'))?.[1] ?? 0);
+        // A proxy that refuses the tunnel is the answer, not a transport error.
+        if (code !== 200) {
+          finish({ error: `proxy-${code || 'error'}` });
+          return;
+        }
+        sendOverTls(socket as net.Socket);
+      };
+      socket!.on('data', onData);
+    });
+  });
+}
+
+/** `user:pass@host:port` (WinINET stores auth this way) → dial coordinates. */
+function splitProxyEndpoint(server: string): { host: string; port: number; auth?: string } {
+  let rest = server.trim();
+  let auth: string | undefined;
+  const at = rest.lastIndexOf('@');
+  if (at >= 0) {
+    const userinfo = rest.slice(0, at).split(':').map((part) => {
+      try { return decodeURIComponent(part); } catch { return part; }
+    }).join(':');
+    rest = rest.slice(at + 1);
+    auth = `Basic ${Buffer.from(userinfo).toString('base64')}`;
+  }
+  const v6 = /^\[([^\]]+)\](?::(\d+))?$/.exec(rest);
+  if (v6) return { host: v6[1], port: Number(v6[2]) || 80, auth };
+  const colon = rest.lastIndexOf(':');
+  if (colon > 0 && /^\d+$/.test(rest.slice(colon + 1))) {
+    return { host: rest.slice(0, colon), port: Number(rest.slice(colon + 1)), auth };
+  }
+  return { host: rest, port: 80, auth };
 }
 
 function controllerFailure(err: unknown): { status: 'error'; code: string; message: string } {

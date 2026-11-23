@@ -3,7 +3,7 @@ import https from 'node:https';
 import net from 'node:net';
 import type { InterceptPosture, ForwardProxyConfig, ForwardProxyRule } from '../config/types.js';
 import { DEFAULT_FORWARD_PROXY_INTERCEPT } from '../config/defaults.js';
-import { listGatewayHosts } from '../plugins/gateways.js';
+import { listGatewayHosts, claimEgressFor } from '../plugins/gateways.js';
 import { resolveHost, type RuleDecision } from './rules.js';
 import { outboundProxyUrl } from '../utils/proxy.js';
 
@@ -52,11 +52,13 @@ export function currentInterceptPosture(): InterceptPosture {
  * Claims are read from the LIVE plugin registry on every call (the host swaps it
  * atomically on install/uninstall/disable, ADR-0017), and the posture comes from
  * the live config ref — so neither a plugin install nor a console save needs a
- * restart.
+ * restart. The egress callback is live for the same reason: the tier that owns a
+ * claimed host's leg may be the plugin's own code answering for THIS request.
  */
 export function ruleDecision(host: string): RuleDecision {
   return resolveHost(host, currentRules(), {
     claimed: listGatewayHosts(),
+    claimEgress: claimEgressFor,
     intercept: currentInterceptPosture(),
   });
 }
@@ -83,14 +85,19 @@ export function ruleTunnels(host: string): boolean {
  * proxy URL is resolved straight from the outbound proxy settings.
  */
 export interface TransitEgress {
-  /** Rule-table egress for this host: true = via the outbound proxy, false = direct, undefined = no table installed. */
+  /** Egress decided for this host — table and claim together: true = via the outbound proxy, false = direct, undefined = no table installed. */
   proxy?: boolean;
 }
 
 export function transitEgressFor(host: string): TransitEgress {
+  const decision = ruleDecision(host);
   const rules = currentRules();
-  if (!rules || rules.length === 0) return {};
-  return { proxy: ruleDecision(host).action === 'proxy' };
+  // An empty table means "no table installed", which is the historical DIRECT.
+  // A claim's own leg is not a table row, so the escape must not swallow it:
+  // relaying direct while every preview of the same host reads `proxy` is
+  // exactly the preview/reality split this module exists to prevent.
+  if ((!rules || rules.length === 0) && !decision.egressClaim) return {};
+  return { proxy: decision.action === 'proxy' };
 }
 
 const HOP_BY_HOP: Record<string, true> = {
@@ -272,6 +279,39 @@ const TLS_HANDSHAKE_CODES: Record<string, true> = {
 export const UPSTREAM_TIMEOUT_CODE = 'OCR_UPSTREAM_TIMEOUT';
 
 const DNS_CODES: Record<string, true> = { ENOTFOUND: true, EAI_AGAIN: true, EAI_FAIL: true, EAI_NONAME: true };
+
+/**
+ * Origin-leg failures that provably delivered nothing. An exchange is replayed
+ * ONLY when nothing was written toward the origin (`sentBytes === 0`) and no
+ * response byte reached the client, so the retry can never double-execute a
+ * request the origin already saw. The outbound proxy in between (mihomo/Clash)
+ * does close freshly opened tunnels; without this, one dropped tunnel surfaces
+ * as a 502 in the client and the hub gives up.
+ */
+const RETRYABLE_ORIGIN_CODES: Record<string, true> = {
+  ERR_SOCKET_CLOSED: true,
+  ECONNRESET: true,
+  EPIPE: true,
+};
+
+/** Human label for a failed origin leg: the socket code when it has one. */
+export function failureLabel(err: unknown): string {
+  if (err && typeof err === 'object') {
+    if ('code' in err && typeof err.code === 'string' && err.code) return err.code;
+    if ('message' in err && typeof err.message === 'string' && err.message) return err.message;
+  }
+  return String(err);
+}
+
+export function shouldRetryOriginLeg(
+  err: unknown,
+  state: { headersSent: boolean; sentBytes: number; attempts: number }
+): boolean {
+  if (state.headersSent || state.sentBytes > 0 || state.attempts >= 1) return false;
+  if (!err || typeof err !== 'object' || !('code' in err)) return false;
+  const { code } = err;
+  return typeof code === 'string' && RETRYABLE_ORIGIN_CODES[code] === true;
+}
 
 /**
  * Classify an origin-leg error.

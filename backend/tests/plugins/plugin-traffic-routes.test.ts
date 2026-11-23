@@ -105,9 +105,9 @@ describe('plugin-traffic routes', () => {
     expect(row.reqBodyBytes).toBe(4 * 1024 * 1024);
     expect(row.reqBodyFile).toBe(`${day}/cx-1-req.bin`);
     expect(row.reqBody).toBeUndefined();
-    expect((row.reqHex as string).length).toBe(1024 * 2); // 1 KiB hex preview
-    // The dissector was handed the WINDOW (32 KiB), not the 4 MiB body.
-    expect(Buffer.from(seen[0]!.reqBody ?? '', 'base64').length).toBe(32 * 1024);
+    expect((row.reqHex as string).length).toBe(1024 * 2); // 1 KiB first-paint hex preview
+    // The dissector was handed the WINDOW (256 KiB), not the 4 MiB body.
+    expect(Buffer.from(seen[0]!.reqBody ?? '', 'base64').length).toBe(256 * 1024);
   });
 
   it('streams the whole captured body through the NEUTRAL token route', async () => {

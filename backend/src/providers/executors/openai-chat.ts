@@ -21,6 +21,10 @@ export class OpenAIChatProvider implements LLMProvider {
     this.config = config;
   }
 
+  dialBaseFor(): string {
+    return this.config.baseUrl;
+  }
+
   private headers(credential?: CallCredential): Record<string, string> {
     const headers: Record<string, string> = {
       ...this.config.headers,

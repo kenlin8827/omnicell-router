@@ -106,3 +106,16 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 
 - **在入库时翻译，不在 `wireFor` 里加别名。** `normalizeModelsDev`（所有 `provider-catalog` 源）以及 models.dev 的 cache / stale 回放都把字符串送进 `protocolIdFromNpm`（`currentPackageFor`：`@ai-sdk/*` 与 `@opencode/ai/providers/<segment>`）。已经是协议 id 的原样通过。未知包名转成小写后原样通过，不猜测。`readOverridesStore` 在读取时做同一映射，不回写 `overrides.json`；下一次 override 写入会把译好的 id 落盘，因为它往返的是这个读视图。`upsertOverride` 在写入时翻译，避免提交上来的 SDK 包名原样落盘。
 - **`ocr.json` 版本 5。** 版本 4 的快照在这个槽里仍是 SDK 包名。store 签名不含代码变更，因此 4 被烧毁（单调递增、永不复用），下次启动从已经翻译过的源重建聚合。上文「版本 4」那一条记录的是书册统一修订案，不是当前文件版本。
+
+## 修订案 —— 预设生命周期说了算：修复、删除即持久、死 wire 清理（2026-11-23）
+
+旧版插件把预设的 protocol 写成客户端 SDK 包名（`@opencode/ai/providers/<vendor>`）。`wireFor` 对该前缀直接判 `unroutable`（绝不猜测），而控制台仍按已加载 manifest 展示该预设行——于是那行提供 web-login 按钮，路由却只能回答 `provider '…' is not on a plugin wire with a web-login capability`；`Reload` 因为 def 已存在而变成空操作。预设 def 的生命周期现在由六条规则明确。
+
+**范围。** 本修订案收窄本 ADR 之前的两句表述。其一，「带任何运维内容（name、baseURL/settings、models、headers）的 def 永不被覆盖」只约束**能路由**的内容：wire 到不了任何执行器的 def 属于不可达状态，不是运维状态。其二，「卸载删除未被改动的预设 def，也一并删除其 models」不再以"未被改动"为判据，而以"该 wire 失去最后一个声明者"为判据——auto-pull 来的内容只能跑在该执行器上，执行器走它就跟着走。
+
+- **到不了任何执行器的 def 属于不可达状态，不是运维意图。** 预设的 provider id 上若已有 def、且其当前 package 经 `wireFor` 解析为 `unroutable`，`syncPluginPresets` 只重写路由槽（`package` = 预设的协议 id），其余槽位原样保留：name、settings/baseURL、headers、env、body、models。因此一次 reload（或启动、或安装）即可修复被旧代插件写坏的 def。修复后的节点成为注册快照（`written`），后续漂移规则以"实际最后写入的内容"为准。任何**可路由** wire 上的 def 永不被触碰（运维可能有意把预设 id 指向兼容端点）；退役的**节点形状**（节点级 `npm`/`options`）仍归 defs 导入负责。
+- **manifest 的 protocol 必须是 OCR 协议 id**（ADR-0033：只有一种协议词汇，绝不写 SDK 包名）。既不是核心 wire、也不是某个已加载插件声明的 wire 时，预设注册拒绝写入（日志点名并跳过）——把这种值原样写进 def，正是"写的时候就已经不可路由"的来源。
+- **卸载/禁用拥有它所撤走的执行器对应的 def。** 插件不在之后，某个 wire 已无执行器（插件 wire 无其他声明者，或是 `unroutable` 拼写）时，即使节点已经漂移也删除该 def——auto-pull 拉进来的 models、headers 并不能把死 def 变成运维内容；没有这条，每个连过的预设 provider 都会比插件活得更久，永远留在「已连接」面上。运维把 def 改指到可路由 wire 的，脱离插件仍能执行，继续适用精确快照的漂移规则。升级时**只是删掉某个预设**的，不用死 wire 规则、仍用漂移规则：插件还在服务它的 wire，没有任何东西变死。
+- **删除是持久的；连接意图才解除。** 删除 provider 时把它的 id 记进所属插件的注册账本（`{ providers, written?, deleted? }`；`deleted` 可选，旧行没有也照常读）——任何插件的安装/reload 都会对所有插件重跑注册，不记就会被立刻重建。磁盘上重新出现 def（运维用 key 或 web-login 按钮重新连接；`ensurePresetProvider` 会物化预设并解除墓碑）即清除该记录。墓碑随所属插件的账本存亡，因此卸载/禁用**所属**插件会一并忘记它：全新安装注册全新预设。删除后仍留在凭据库里的凭据会经启动绑定扫描重建节点——那是凭据真相；要断开走 purge 路径。来源视图（`pluginProviderOrigins`、控制台的来源标签）随注册记录一起失去该 id。
+- **账本丢弃已不存在的包的行。** 包改名（`qoder` → `qoder-models`）会把旧 id 的注册记录留在原地；sync 只遍历已加载的 id，卸载只删除自己的键，所以那行永远读不到。现在 sync 会清理上次加载视图中不存在的账本键——已加载、加载失败、已禁用都算存在。**加载失败**的包保留其行：包还在磁盘上，卸载必须仍能删掉它注册的 def。
+- **reload 如实汇报。** `/plugins/reload` 返回 `registered`（新建或修复的 provider id），控制台点名列出——空操作的 reload 与真正修复的 reload 一眼可辨。

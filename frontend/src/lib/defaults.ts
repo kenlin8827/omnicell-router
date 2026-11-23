@@ -23,6 +23,14 @@ export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
 
 /** `forwardProxy.accessLog.bodyBytes` backend default (per-side inline cap, 1 MiB). */
 export const DEFAULT_PROXY_ACCESS_LOG_BODY_BYTES = 1_048_576;
+
+/** Traffic feed drawers render at most this many bytes of a token-addressed
+ *  body — mirrors backend `DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES`
+ *  (backend/src/config/defaults.ts, 1 MiB). The backend's DISSECTOR window is
+ *  a separate number (`DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES`, 256 KiB) and
+ *  allocates only `min(fileSize, window)` per side, so it is a ceiling rather
+ *  than a fixed per-row cost. Update both copies in the same commit. */
+export const DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES = 1_048_576;
 /** `persistDays` clamp bounds — mirrors backend
  *  `PROXY_ACCESS_LOG_PERSIST_DAYS_MIN/MAX` (backend/src/config/defaults.ts). */
 export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;
@@ -117,3 +125,12 @@ export const DEFAULT_PROVIDER_TIMEOUT_MS = 30 * 60 * 1000;
 /** Streamed idle watchdog timeout (ms) — mirrors backend `DEFAULT_STREAM_IDLE_TIMEOUT_MS`
  *  (backend/src/config/defaults.ts). Update both in the same commit. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+
+/** The core-injected outbound-leg switch — mirrors backend
+ *  `GATEWAY_EGRESS_CONFIG_KEY` / `GATEWAY_EGRESS_VALUES`
+ *  (backend/src/plugins/manifest.ts). Its wording is CONSOLE chrome, not package
+ *  content, so the drawer translates it from the i18n tables and therefore has
+ *  to recognize the field by key and value set. Update both in the same commit;
+ *  `forward-proxy-console-vocabulary-parity.test.ts` pins the two lists. */
+export const GATEWAY_EGRESS_CONFIG_KEY = 'egress';
+export const GATEWAY_EGRESS_VALUES = ['inherit', 'proxy', 'direct'] as const;

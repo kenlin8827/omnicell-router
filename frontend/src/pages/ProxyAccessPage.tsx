@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { ShieldCheck, Save, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2, RefreshCw, MonitorCog, Undo2, Terminal, Copy, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
-import { api, type GatewayStatusResponse, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type CaMeta, type CaTrustResponse, type ClaimSource } from '../lib/api';
+import { api, type GatewayStatusResponse, type SystemProxyStatus, type InterceptPosture, type RuleIngress, type ForwardProxyRule, type HostDecision, type RuleWarning, type CaMeta, type CaTrustResponse, type ClaimSource, type ClaimHostOutcome } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
@@ -248,7 +248,6 @@ function insertRule<T extends { match: string }>(rules: T[], make: (catchAll: T 
   return next;
 }
 
-
 const ENV_SNIPPETS = (server: string, caPath: string): Record<string, string> => ({
   PowerShell: `$env:HTTP_PROXY='${server}'\n$env:HTTPS_PROXY='${server}'\n$env:NO_PROXY='localhost,127.0.0.1'\n$env:NODE_EXTRA_CA_CERTS='${caPath}'`,
   cmd: `set HTTP_PROXY=${server}\r\nset HTTPS_PROXY=${server}\r\nset NO_PROXY=localhost,127.0.0.1\r\nset NODE_EXTRA_CA_CERTS=${caPath}`,
@@ -305,16 +304,15 @@ const verifyRows = (snippet: string): { os: string; cmd: string; hint?: string }
   });
 
 /**
- * OS system-proxy ownership card: snapshot → point the OS at the inbound
- * forward proxy → one-click restore. WinINET / networksetup / gsettings per
- * platform (backend forward-proxy/system-proxy.ts); unsupported platforms
- * render an explanatory note only. Env snippets stay clipboard-only.
- * Embedded form drops the outer card frame — it is one route of the wizard's
- * client-routing step, not a card nested inside another card. `readOnly` keeps
- * the restore half alive while the forward proxy is off: pointing the OS at a
- * port nobody listens on must never be one click away in that state.
+ * OS system-proxy status card: snapshot state, the bypass the target would
+ * write, restore, and the per-shell env snippet. It is READ-ONLY on the
+ * pointer — the OS proxy has one owner and one switch, and that switch lives
+ * on the System Proxy page. `restore` stays here because recovering from a
+ * stale pointer must not require finding that page. Env snippets stay
+ * clipboard-only. Embedded form drops the outer card frame — it is one route
+ * of the wizard's client-routing step, not a card nested inside another card.
  */
-const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({ embedded = false, readOnly = false }) => {
+const SystemProxyCard: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [st, setSt] = useState<SystemProxyStatus | null>(null);
@@ -340,12 +338,12 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
     setShowEnv(st.state !== 'on');
   }, [st]);
 
-  const act = async (kind: 'enable' | 'disable') => {
+  const restore = async () => {
     setBusy(true);
     try {
-      setSt(kind === 'enable' ? await api.enableSystemProxy() : await api.disableSystemProxy());
+      setSt(await api.disableSystemProxy());
     } catch (err: any) {
-      toast.error((kind === 'enable' ? t('proxyLog.sysEnableBtn') : t('proxyLog.sysDisableBtn')) + ': ' + (err?.message || err));
+      toast.error(t('proxyLog.sysDisableBtn') + ': ' + (err?.message || err));
     } finally {
       setBusy(false);
     }
@@ -358,6 +356,10 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
     stale: 'proxyLog.sysStateStale',
     unsupported: 'proxyLog.sysStateUnsupported',
   };
+  /** The Clash egress can own the same snapshot slot; this card must then tell
+   *  the truth instead of claiming the OS points at the inbound proxy. */
+  const ownedByClash = st?.owner === 'clash' && (st.state === 'on' || st.state === 'stale');
+  const badgeKey = st?.state === 'on' && st.owner === 'clash' ? 'proxyLog.sysStateOnClash' : stateKey[st?.state ?? 'off'] || 'proxyLog.sysStateOff';
   const stateColor = st?.state === 'on' ? 'var(--accent-emerald)' : st?.state === 'stale' || st?.state === 'external' ? 'var(--accent-amber)' : 'var(--text-dim)';
 
   return (
@@ -368,20 +370,18 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
           <span>{t('proxyLog.sysTitle')}</span>
           {st && (
             <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: stateColor, background: 'var(--chip-bg)' }}>
-              {t(stateKey[st.state] || 'proxyLog.sysStateOff')}
+              {t(badgeKey)}
             </span>
           )}
         </div>
         {st?.supported && (
           <div style={{ display: 'flex', gap: '8px' }}>
-            {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t('proxyLog.sysStaleHint')}</span>}
-            {!readOnly && (
-              <button className="btn btn-primary btn-sm" disabled={busy || st.state === 'on'} onClick={() => act('enable')}>
-                <MonitorCog size={12} />
-                <span>{t('proxyLog.sysEnableBtn')}</span>
-              </button>
-            )}
-            <button className="btn btn-sm" disabled={busy || st.state === 'off'} onClick={() => act('disable')}>
+            {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t(ownedByClash ? 'proxyLog.sysStaleHintClash' : 'proxyLog.sysStaleHint')}</span>}
+            <Link to="/proxy-system?target=forward" className="btn btn-sm">
+              <MonitorCog size={12} />
+              <span>{t('proxyLog.sysOpenPage')}</span>
+            </Link>
+            <button className="btn btn-sm" disabled={busy || (st.state !== 'on' && st.state !== 'stale')} onClick={() => void restore()}>
               <Undo2 size={12} />
               <span>{st.state === 'stale' ? t('proxyLog.sysRestoreBtn') : t('proxyLog.sysDisableBtn')}</span>
             </button>
@@ -390,7 +390,7 @@ const SystemProxyCard: React.FC<{ embedded?: boolean; readOnly?: boolean }> = ({
       </div>
 
       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', padding: '0 14px 10px' }}>
-        {t('proxyLog.sysHint')}
+        {t(ownedByClash ? 'proxyLog.sysHintClashOwned' : 'proxyLog.sysHint')}
       </div>
 
       {st?.supported && st.override && (
@@ -527,6 +527,9 @@ export const ProxyAccessPage: React.FC = () => {
   /** The same claim set attributed per plugin — the "who decrypts what" dialog. */
   const [claimSources, setClaimSources] = useState<ClaimSource[]>([]);
   const [claimsOpen, setClaimsOpen] = useState(false);
+  /** Plugin filter of the claims dialog ('' = every plugin). Reset on open so a
+   *  stale selection never hides rows the operator just asked to see. */
+  const [claimPlugin, setClaimPlugin] = useState('');
   const [tightening, setTightening] = useState(false);
 
   /** The config AS LOADED — the diff baseline for boot-frozen fields. The live
@@ -692,12 +695,46 @@ export const ProxyAccessPage: React.FC = () => {
    *  the probe must not invent a second name for what the operator just picked. */
   const ingressLabel = (tunnel: boolean): string =>
     tunnel ? t('forwardProxy.ingressPassthrough') : t('forwardProxy.ingressIntercept');
-  /** Columns of the "decrypted without a rule" dialog: the host, and WHICH live
-   *  plugin declares it (that attribution is the whole reason the list exists). */
+  /** Columns of the "decrypted without a rule" dialog: the host, WHICH live
+   *  plugin declares it, and where its bytes actually exit — decided by the
+   *  SAME backend resolver the relay calls, so this list is not an
+   *  interpretation of the manifest. */
   const claimColumns: ScrollTableColumn[] = [
-    { key: 'host', label: t('forwardProxy.ruleClaimsColHost'), width: '64%' },
-    { key: 'plugin', label: t('forwardProxy.ruleClaimsColPlugin') },
+    // Host takes whatever the two fixed tracks leave: it is the one column whose
+    // content is unbounded, so it stretches with the dialog instead of wrapping a
+    // domain at a fixed percentage. Plugin and egress widths are pinned to their
+    // content, so a wide dialog buys the host ALL the extra room.
+    { key: 'host', label: t('forwardProxy.ruleClaimsColHost') },
+    { key: 'plugin', label: t('forwardProxy.ruleClaimsColPlugin'), width: 190 },
+    { key: 'egress', label: t('forwardProxy.ruleClaimsColEgress'), width: 96 },
   ];
+  /** The plugin picker is driven by the LIVE claim set, and a selection whose
+   *  plugin disappeared (uninstalled while the dialog was open) falls back to
+   *  "all" instead of an empty table nobody can explain. */
+  const activeClaimPlugin = claimSources.some(s => s.pluginId === claimPlugin) ? claimPlugin : '';
+  const claimPluginOptions: ComboboxOption[] = claimSources.map(s => ({
+    value: s.pluginId,
+    label: s.pluginId,
+    meta: String(s.hosts.length),
+  }));
+  const visibleClaimSources = activeClaimPlugin
+    ? claimSources.filter(s => s.pluginId === activeClaimPlugin)
+    : claimSources;
+  /** Claim rows: host names and plugin ids are single unbreakable tokens, and the
+   *  table is `table-layout: fixed`, so such a token paints straight over the next
+   *  column instead of widening its own. Break them inside the track. */
+  const CLAIM_CELL_WRAP: React.CSSProperties = { overflowWrap: 'anywhere' };
+  /** WHICH TIER owns a claimed host's exit (ADR-0018 Revision 5). Over a claimed host
+   *  the claim outranks the table, so the operator reading their own row as the
+   *  answer would be reading a lie — the column names the tier instead, and the
+   *  plugin's settings drawer is where the operator's word actually is. */
+  const claimEgressSource = (o: ClaimHostOutcome): string => {
+    if (o.egressClaim === 'operator') return t('forwardProxy.ruleClaimsEgressFromOperator');
+    if (o.egressClaim === 'code') return t('forwardProxy.ruleClaimsEgressFromPlugin');
+    if (o.egressClaim === 'manifest') return t('forwardProxy.ruleClaimsEgressFromManifest');
+    if (o.reason === 'rule') return t('forwardProxy.ruleClaimsEgressFromRule');
+    return t('forwardProxy.ruleClaimsEgressFromCatchAll');
+  };
   /** Row-level lint sentence for EVERY code in the mirrored union. Banner-level
    *  codes return null (the note above the table already says it); the `never`
    *  assertion makes a new backend code a typecheck failure here rather than a
@@ -706,6 +743,10 @@ export const ProxyAccessPage: React.FC = () => {
     switch (code) {
       case 'invalid-rule': return t('forwardProxy.ruleInvalid');
       case 'unreachable-rule': return t('forwardProxy.ruleUnreachable');
+      // Row-level: the row's `egress` is never consulted on these hosts because
+      // their gateway claim owns the leg — the operator must be told, not left
+      // to debug a rule that looks correct.
+      case 'claim-owns-egress': return t('forwardProxy.ruleClaimOwnsEgress');
       case 'proxy-rule-without-proxy': return null;
       case 'no-catch-all': return null;
       // Table-level: the catch-all row reads as "decrypt everything" but the
@@ -808,8 +849,10 @@ export const ProxyAccessPage: React.FC = () => {
   /** A disabled forward proxy can leave the machine pointed at a dead port
    *  (`on`) or leave an un-restored snapshot (`stale`). Both are visible here
    *  with a direct restore, so recovery never depends on finding the wizard
-   *  sub-route. `proxyEnabled` is the RUNTIME flag, not the form draft. */
-  const sysRestoreRow = sysStatus && sysStatus.proxyEnabled === false && (sysStatus.state === 'on' || sysStatus.state === 'stale') ? (
+   *  sub-route. `proxyEnabled` is the RUNTIME flag, not the form draft.
+   *  A Clash-owned snapshot is excluded: this hint names the inbound proxy as
+   *  the cause, and the Clash panel carries its own core-down warning. */
+  const sysRestoreRow = sysStatus && sysStatus.owner !== 'clash' && sysStatus.proxyEnabled === false && (sysStatus.state === 'on' || sysStatus.state === 'stale') ? (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: 'var(--text-sm)' }}>
       <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: 'var(--accent-amber)', background: 'var(--chip-bg)' }}>
         {t('proxyLog.sysRestoreBarTitle')}
@@ -1126,14 +1169,16 @@ export const ProxyAccessPage: React.FC = () => {
               <EgressNote tone="warn" text={t('forwardProxy.interceptAllWarning')} />
             )}
             {claimedHosts.length > 0 && (
-              <button
-                className="btn btn-sm"
-                style={{ marginBottom: '10px', gap: '6px' }}
-                onClick={() => setClaimsOpen(true)}
-              >
-                <ShieldCheck size={13} />
-                <span>{t('forwardProxy.ruleClaimsBtn', { n: String(claimedHosts.length) })}</span>
-              </button>
+              <div style={{ marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <button
+                  className="btn btn-sm"
+                  style={{ alignSelf: 'flex-start', gap: '6px' }}
+                  onClick={() => { setClaimPlugin(''); setClaimsOpen(true); }}
+                >
+                  <ShieldCheck size={13} />
+                  <span>{t('forwardProxy.ruleClaimsBtn', { n: String(claimedHosts.length) })}</span>
+                </button>
+              </div>
             )}
             {fp.enabled !== true && <EgressNote tone="info" text={t('forwardProxy.ruleDormant')} />}
             {ruleWarnings.some(w => w.code === 'proxy-rule-without-proxy') && (
@@ -1416,10 +1461,10 @@ export const ProxyAccessPage: React.FC = () => {
             </div>
             {/* The wizard has no steps to show, but the OS-proxy snapshot may
                 still outlive a disabled or crashed forward proxy. Only draw the
-                restore panel when OCR actually owns (or owned) the OS proxy —
-                a fresh install should not see an empty system-proxy card.
-                Read-only so the OS cannot be pointed at a dead port. */}
-            {(sysStatus?.state === 'on' || sysStatus?.state === 'stale') && <SystemProxyCard embedded readOnly />}
+                status/restore panel when OCR actually owns (or owned) the OS
+                proxy — a fresh install should not see an empty system-proxy
+                card. The pointer switch lives on the System Proxy page. */}
+            {(sysStatus?.state === 'on' || sysStatus?.state === 'stale') && <SystemProxyCard embedded />}
           </div>
         ) : (
           <>
@@ -1497,18 +1542,80 @@ export const ProxyAccessPage: React.FC = () => {
           subtitle={t('forwardProxy.ruleClaimsHint')}
           onClose={() => setClaimsOpen(false)}
           closeLabel={t('common.close')}
-          width={580}
+          width={780}
         >
-          <ScrollTable columns={claimColumns} maxHeight={380} empty={t('forwardProxy.ruleClaimsEmpty')}>
-            {claimSources.flatMap(src =>
-              src.hosts.map(host => (
-                <tr key={`${src.pluginId}:${host}`}>
-                  <td style={{ padding: '8px 10px', fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' }}>{host}</td>
-                  <td style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{src.pluginId}</td>
-                </tr>
-              )),
+          {/* A view control, not a config one: on a long claim set "which plugin
+              drags THIS host in" is usually asked about one plugin at a time. */}
+          {claimSources.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                {t('forwardProxy.ruleClaimsColPlugin')}
+              </span>
+              <Combobox
+                value={activeClaimPlugin}
+                onChange={setClaimPlugin}
+                options={claimPluginOptions}
+                placeholder={t('forwardProxy.ruleClaimsFilterAll')}
+                // Five plugins today, but the operator types a name to jump to it;
+                // the shared threshold (options > 8) would hide the search box.
+                forceFilter
+                clearable
+                style={{ width: '240px' }}
+              />
+            </div>
+          )}
+          {/* The horizontal floor keeps the auto host track from crushing a domain on a
+              narrow window; below it the body scrolls sideways instead. */}
+          <ScrollTable columns={claimColumns} maxHeight={420} minWidth={600} empty={t('forwardProxy.ruleClaimsEmpty')}>
+            {visibleClaimSources.flatMap(src =>
+              src.hosts.map(host => {
+                const o = src.outcomes.find(x => x.host === host);
+                return (
+                  <tr key={`${src.pluginId}:${host}`}>
+                    <td style={{ padding: '8px 10px', fontFamily: FONT_MONO, fontSize: 'var(--text-sm)', ...CLAIM_CELL_WRAP }}>
+                      {/* A break opportunity AFTER each dot: a wrap lands on a label boundary
+                          (`generativelanguage.` / `googleapis.com`) instead of the arbitrary
+                          point `overflow-wrap: anywhere` would otherwise pick. */}
+                      {host.split('.').map((part, i, parts) => (
+                        <React.Fragment key={i}>
+                          {part}
+                          {i < parts.length - 1 ? <>.<wbr /></> : null}
+                        </React.Fragment>
+                      ))}
+                    </td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', ...CLAIM_CELL_WRAP }}>{src.pluginId}</td>
+                    <td style={{ padding: '8px 10px', fontSize: 'var(--text-sm)' }}>
+                      {o ? (
+                        <span data-tip={claimEgressSource(o)}>
+                          {exitLabel(o.action)}
+                          {/* A row that names a claimed host with `passthrough`
+                              blinds the gateway that claims it — the exit still
+                              resolves, but nothing parses it. This is the one
+                              place an operator looking at claims can see that. */}
+                          {o.tunnel && (
+                            <span style={{ color: '#f87171', marginLeft: '6px' }}>
+                              {t('forwardProxy.ruleClaimsEgressBlinded')}
+                            </span>
+                          )}
+                        </span>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                );
+              }),
             )}
           </ScrollTable>
+          {/* There is deliberately NO egress control in this dialog. Over a
+              claimed host the claim owns the leg (ADR-0018 Revision 5), so the
+              operator's switch lives with the plugin it speaks for — the
+              settings drawer — and this table is the read-only answer to "what
+              does that mean for each of my hosts?" The plugin picker above only
+              narrows that answer; it writes nothing. */}
+          {claimSources.length > 0 && (
+            <div style={{ marginTop: '12px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              {t('forwardProxy.ruleClaimsEgressDrawerHint')}
+            </div>
+          )}
         </Dialog>
       )}
     </div>

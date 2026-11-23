@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import os from 'node:os';
 import Fastify from 'fastify';
 import { parse } from 'yaml';
 import { loadConfig, saveConfig } from '../../src/config/index.js';
-import { registerMihomoRoutes } from '../../src/routes/mihomo.js';
+import { MIHOMO_CN_DIRECT_RULES, MIHOMO_LAN_DIRECT_RULES } from '../../src/config/defaults.js';
+import { registerMihomoRoutes, setUrlProbeOsProxyReaderForTests } from '../../src/routes/mihomo.js';
 import { setMihomoDownloadFetchForTests } from '../../src/proxy/mihomo-binary.js';
+import { appendMihomoCoreLog, clearMihomoCoreLogs } from '../../src/proxy/mihomo-logs.js';
 import { mihomoWorkDir, setMihomoSidecarDepsForTests } from '../../src/proxy/mihomo-sidecar.js';
 import zlib from 'node:zlib';
 import fs from 'node:fs/promises';
@@ -21,10 +24,16 @@ describe('mihomo admin routes', () => {
   const app = Fastify();
 
   beforeAll(async () => {
+    // The machine leg reads the OS system proxy; a real CI/dev box's own
+    // settings are not the fixture. Tests that exercise the proxied path
+    // override this reader for their duration.
+    setUrlProbeOsProxyReaderForTests(async () => undefined);
     setMihomoSidecarDepsForTests({
       persistSecret: () => {},
       binaryResolver: () => ({ path: null, source: null }),
       spawnImpl: () => ({ pid: 1, on() {}, unref() {} }),
+      // A recorded pid in a failing-start path must never reach the real taskkill.
+      killTreeImpl: () => true,
     });
     controller = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -81,6 +90,12 @@ describe('mihomo admin routes', () => {
         if (url.startsWith('/proxies/') && url.includes('/delay')) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ delay: 11 }));
+          return;
+        }
+        if (url.startsWith('/group/DEAD/delay')) {
+          // Every member failed: mihomo renders the whole batch as 504.
+          res.writeHead(504, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'get delay: all proxies timeout' }));
           return;
         }
         if (url.startsWith('/group/') && url.includes('/delay')) {
@@ -270,6 +285,47 @@ describe('mihomo admin routes', () => {
     expect(unknown.json().code).toBe('node-not-found');
   });
 
+  test('a group batch test reports per-member delays or one stable timeout code', async () => {
+    const batch = await app.inject({
+      method: 'POST',
+      url: '/api/admin/proxy/mihomo/proxies/test',
+      payload: { name: 'PROXY', group: true },
+    });
+    expect(batch.statusCode).toBe(200);
+    expect(batch.json()).toMatchObject({ status: 'ok', group: 'PROXY', delays: { 'node-a': 11, DIRECT: 1 } });
+
+    // mihomo answers "no member answered" with 504; the console needs the
+    // stable timeout code, not the raw controller string.
+    const dead = await app.inject({
+      method: 'POST',
+      url: '/api/admin/proxy/mihomo/proxies/test',
+      payload: { name: 'DEAD', group: true },
+    });
+    expect(dead.statusCode).toBe(502);
+    expect(dead.json()).toMatchObject({ status: 'error', code: 'timeout' });
+  });
+
+  test('the captured core log ring is readable and clearable', async () => {
+    clearMihomoCoreLogs();
+    appendMihomoCoreLog('stderr', 'level=error msg="config parse failed"');
+    appendMihomoCoreLog('gateway', 'core process started (pid 1)');
+
+    const listed = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/logs' });
+    expect(listed.statusCode).toBe(200);
+    const body = listed.json() as { status: string; lines: Array<{ stream: string; text: string }> };
+    expect(body.status).toBe('ok');
+    expect(body.lines.map((line) => line.text)).toEqual([
+      'level=error msg="config parse failed"',
+      'core process started (pid 1)',
+    ]);
+    expect(body.lines[0].stream).toBe('stderr');
+
+    const cleared = await app.inject({ method: 'DELETE', url: '/api/admin/proxy/mihomo/logs' });
+    expect(cleared.statusCode).toBe(200);
+    const after = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/logs' });
+    expect((after.json() as { lines: unknown[] }).lines).toEqual([]);
+  });
+
   test('subscription crud rejects a bad url and keeps the token out of the error', async () => {
     const bad = await app.inject({
       method: 'POST',
@@ -281,11 +337,12 @@ describe('mihomo admin routes', () => {
     const created = await app.inject({
       method: 'POST',
       url: '/api/admin/proxy/mihomo/subscriptions',
-      payload: { name: 'Alpha', url: 'https://sub.example/feed?token=hide-me', interval: 600 },
+      payload: { name: 'Alpha', url: 'https://sub.example/feed?token=hide-me', interval: 600, proxy: 'HK-01' },
     });
     expect(created.statusCode).toBe(200);
     const id = created.json().subscription.id as string;
     expect(created.json().subscription.url).toContain('token=hide-me');
+    expect(created.json().subscription.proxy).toBe('HK-01');
     expect(JSON.stringify(created.json().sidecar)).not.toContain('hide-me');
 
     const list = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/subscriptions' });
@@ -542,8 +599,11 @@ describe('mihomo admin routes', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { rules: unknown[]; skipped: unknown[]; mappedToProxy: number };
-    expect(body.rules).toEqual([{ type: 'DOMAIN-SUFFIX', payload: 'a.com', target: 'PROXY', source: 'paste' }]);
-    expect(body.skipped).toEqual([{ reason: 'GEOIP', count: 1 }]);
+    expect(body.rules).toEqual([
+      { type: 'DOMAIN-SUFFIX', payload: 'a.com', target: 'PROXY', source: 'paste' },
+      { type: 'GEOIP', payload: 'CN', target: 'DIRECT', source: 'paste' },
+    ]);
+    expect(body.skipped).toEqual([]);
     expect(body.mappedToProxy).toBe(1);
     // The import is a DRAFT: an import must never move traffic on its own.
     expect(loadConfig().proxy?.mihomo?.rules ?? []).toEqual(before);
@@ -612,8 +672,8 @@ describe('mihomo admin routes', () => {
         rules: [
           { type: 'DOMAIN-SUFFIX', payload: 'corp.internal', target: 'DIRECT' },
           { type: 'IP-CIDR', payload: '10.0.0.0/8', target: 'PROXY' },
-          // No geo database here: an unusable type must be dropped, never shipped.
-          { type: 'GEOIP', payload: 'CN', target: 'PROXY' },
+          // A separator inside the payload would splice extra fields into the
+          // generated document, so it is dropped, never shipped.
           { type: 'DOMAIN', payload: 'a,b', target: 'PROXY' },
         ],
       },
@@ -635,6 +695,95 @@ describe('mihomo admin routes', () => {
 
     // Restore the empty list so later tests see the shipped default.
     await app.inject({ method: 'PUT', url: '/api/admin/proxy/mihomo/rules', payload: { rules: [] } });
+  });
+
+  test('the rules presets are served from the backend declaration', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/rules/presets' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { status: string; defaults: { target: string; source?: string }[]; cn: unknown[] };
+    expect(body.status).toBe('ok');
+    // One declaration shared with the fresh-config seed — not a console copy.
+    expect(body.defaults.length).toBe(MIHOMO_LAN_DIRECT_RULES.length);
+    expect(body.defaults.every((rule) => rule.target === 'DIRECT' && rule.source === 'default')).toBe(true);
+    expect(body.cn).toEqual(MIHOMO_CN_DIRECT_RULES);
+  });
+
+  test('geo status names the two database files', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/geo' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { status: string; present: boolean; files: { key: string; file: string; exists: boolean }[] };
+    expect(body.status).toBe('ok');
+    expect(body.present).toBe(false);
+    expect(body.files.map((file) => [file.key, file.file, file.exists])).toEqual([
+      ['geoip', 'geoip.metadb', false],
+      ['geosite', 'GeoSite.dat', false],
+    ]);
+  });
+
+  test('the geo download leg is validated and the node leg wants a live core', async () => {
+    const parseEvents = (raw: string) => raw.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    const bad = await app.inject({ method: 'POST', url: '/api/admin/proxy/mihomo/geo', payload: { leg: 'socks' } });
+    expect(bad.statusCode).toBe(400);
+
+    const dir = mihomoWorkDir();
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'geoip.metadb'), 'stub');
+    await fs.writeFile(path.join(dir, 'GeoSite.dat'), 'stub');
+    try {
+      // Installed files mean nothing is fetched: the node leg answers ok
+      // without a core and without touching the network.
+      const ok = await app.inject({ method: 'POST', url: '/api/admin/proxy/mihomo/geo', payload: { leg: 'node' } });
+      expect(parseEvents(ok.body).at(-1)).toMatchObject({ type: 'result', ok: true, present: true });
+
+      // Files gone + no live controller: the same call refuses up front
+      // instead of dialing a dead mixed port (or GitHub).
+      await fs.rm(path.join(dir, 'geoip.metadb'), { force: true });
+      await fs.rm(path.join(dir, 'GeoSite.dat'), { force: true });
+      const before = loadConfig();
+      saveConfig({ proxy: { mihomo: { ...before.proxy?.mihomo, controllerSecret: '' } } });
+      try {
+        const refused = await app.inject({ method: 'POST', url: '/api/admin/proxy/mihomo/geo', payload: { leg: 'node' } });
+        expect(parseEvents(refused.body).at(-1)).toMatchObject({ type: 'result', ok: false, code: 'not-running', present: false });
+      } finally {
+        saveConfig({ proxy: { ...before.proxy } });
+      }
+    } finally {
+      await fs.rm(path.join(dir, 'geoip.metadb'), { force: true });
+      await fs.rm(path.join(dir, 'GeoSite.dat'), { force: true });
+    }
+  });
+
+  test('a geo rule list is refused before it reaches the file or the core', async () => {
+    const before = loadConfig().proxy?.mihomo?.rules ?? [];
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/proxy/mihomo/rules',
+      payload: { rules: [{ type: 'GEOIP', payload: 'CN', target: 'DIRECT' }] },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect((refused.json() as { code?: string }).code).toBe('geo-missing');
+    // Nothing was persisted: the file and the process never disagree.
+    expect(loadConfig().proxy?.mihomo?.rules ?? []).toEqual(before);
+
+    // With both databases present the same list saves and round-trips.
+    const dir = mihomoWorkDir();
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'geoip.metadb'), 'stub');
+    await fs.writeFile(path.join(dir, 'GeoSite.dat'), 'stub');
+    try {
+      const saved = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/proxy/mihomo/rules',
+        payload: { rules: [{ type: 'GEOIP', payload: 'CN', target: 'DIRECT' }] },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect((saved.json() as { rules: unknown[] }).rules).toEqual([{ type: 'GEOIP', payload: 'CN', target: 'DIRECT' }]);
+    } finally {
+      await fs.rm(path.join(dir, 'geoip.metadb'), { force: true });
+      await fs.rm(path.join(dir, 'GeoSite.dat'), { force: true });
+      await app.inject({ method: 'PUT', url: '/api/admin/proxy/mihomo/rules', payload: { rules: [] } });
+    }
   });
 
   test('provider-backed nodes keep their type when /proxies omits them', async () => {
@@ -736,6 +885,187 @@ describe('mihomo admin routes', () => {
       payload: { url: 'file:///etc/passwd' },
     });
     expect(bad.statusCode).toBe(400);
+  });
+
+  test('the URL check has a machine leg that bypasses the controller', async () => {
+    const target = http.createServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    await new Promise<void>((done) => target.listen(0, '127.0.0.1', () => done()));
+    const port = (target.address() as AddressInfo).port;
+    try {
+      const machine = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: `http://127.0.0.1:${port}/generate_204`, mode: 'machine' },
+      });
+      // The machine leg is a raw socket from the gateway process: no node
+      // attribution, no controller round trip — its `ms` is this machine's own
+      // egress, and with no OS proxy configured that egress is direct.
+      expect(machine.json()).toMatchObject({
+        status: 'ok', mode: 'machine', via: 'direct', reachable: true, url: `http://127.0.0.1:${port}/generate_204`,
+      });
+      expect(typeof machine.json().ms).toBe('number');
+      expect(machine.json().node).toBeUndefined();
+      expect(machine.json().proxy).toBeUndefined();
+
+      // The tunnel leg keeps its shape and names its mode. (An earlier test
+      // left the selector on the timeout node; pin the healthy one.)
+      await app.inject({ method: 'POST', url: '/api/admin/proxy/mihomo/proxies/select', payload: { name: 'node-a' } });
+      const tunnel = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: 'https://probe.example/ping' },
+      });
+      expect(tunnel.json()).toMatchObject({ status: 'ok', mode: 'tunnel', reachable: true, node: 'node-a' });
+
+      // An unknown mode is a 400 — never a silent fallback to the tunnel leg.
+      const badMode = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { mode: 'bogus' },
+      });
+      expect(badMode.statusCode).toBe(400);
+    } finally {
+      await new Promise<void>((done) => target.close(() => done()));
+    }
+  });
+
+  test('the machine leg follows the OS system proxy, and its bypass list', async () => {
+    const lan = Object.values(os.networkInterfaces())
+      .flat()
+      .find((iface) => iface && iface.family === 'IPv4' && !iface.internal)?.address;
+    if (!lan) return; // No non-loopback fixture address on this box.
+    const target = http.createServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    await new Promise<void>((done) => target.listen(0, '0.0.0.0', () => done()));
+    const targetPort = (target.address() as AddressInfo).port;
+    // A stand-in OS proxy: it answers the absolute-form GET itself and also
+    // records that it was asked for a CONNECT tunnel (https target).
+    const seen: string[] = [];
+    const proxy = http.createServer((req, res) => {
+      seen.push(`GET ${req.url}`);
+      res.writeHead(204);
+      res.end();
+    });
+    proxy.on('connect', (_req, socket) => {
+      seen.push('CONNECT');
+      socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
+    });
+    await new Promise<void>((done) => proxy.listen(0, '127.0.0.1', () => done()));
+    const proxyPort = (proxy.address() as AddressInfo).port;
+    try {
+      // (a) no bypass entry ⇒ the OS proxy carries the request.
+      setUrlProbeOsProxyReaderForTests(async () => ({ server: `127.0.0.1:${proxyPort}`, bypass: [] }));
+      const viaProxy = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: `http://${lan}:${targetPort}/generate_204`, mode: 'machine' },
+      });
+      expect(viaProxy.json()).toMatchObject({
+        status: 'ok', mode: 'machine', via: 'system-proxy', proxy: `127.0.0.1:${proxyPort}`, reachable: true,
+      });
+      expect(seen).toContain(`GET http://${lan}:${targetPort}/generate_204`);
+
+      // (b) a bypass entry for the host ⇒ direct, never touching the proxy.
+      const before = seen.length;
+      setUrlProbeOsProxyReaderForTests(async () => ({ server: `127.0.0.1:${proxyPort}`, bypass: [lan] }));
+      const bypassed = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: `http://${lan}:${targetPort}/generate_204`, mode: 'machine' },
+      });
+      expect(bypassed.json()).toMatchObject({ status: 'ok', mode: 'machine', via: 'direct', reachable: true });
+      expect(seen.length).toBe(before);
+
+      // (c) an https target must open a CONNECT tunnel; a proxy that refuses
+      // is the answer, not a transport error.
+      setUrlProbeOsProxyReaderForTests(async () => ({ server: `127.0.0.1:${proxyPort}`, bypass: [] }));
+      const refused = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: `https://${lan}:${targetPort}/`, mode: 'machine' },
+      });
+      expect(refused.json()).toMatchObject({
+        status: 'ok', mode: 'machine', via: 'system-proxy', reachable: false, error: 'proxy-502',
+      });
+      expect(seen).toContain('CONNECT');
+    } finally {
+      setUrlProbeOsProxyReaderForTests(async () => undefined);
+      await new Promise<void>((done) => proxy.close(() => done()));
+      await new Promise<void>((done) => target.close(() => done()));
+    }
+  });
+
+  test('the machine leg ignores HTTP_PROXY/HTTPS_PROXY from the environment', async () => {
+    // On this runtime `fetch` AND node:http/node:https honor the env proxies
+    // (a dead one fails them all), so the leg follows only the OS setting —
+    // and here there is none. The target must be a NON-loopback address: the
+    // runtime auto-bypasses env proxies for loopback, so a 127.0.0.1 target
+    // would pass through either implementation and prove nothing.
+    const lan = Object.values(os.networkInterfaces())
+      .flat()
+      .find((iface) => iface && iface.family === 'IPv4' && !iface.internal)?.address;
+    const target = http.createServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    await new Promise<void>((done) => target.listen(0, '0.0.0.0', () => done()));
+    const port = (target.address() as AddressInfo).port;
+    const savedEnv = { http: process.env.HTTP_PROXY, https: process.env.HTTPS_PROXY };
+    try {
+      process.env.HTTP_PROXY = 'http://127.0.0.1:1';
+      process.env.HTTPS_PROXY = 'http://127.0.0.1:1';
+      if (lan) {
+        // An env-aware client stack would report ECONNREFUSED (the dead proxy).
+        const machine = await app.inject({
+          method: 'POST',
+          url: '/api/admin/proxy/mihomo/test-url',
+          payload: { url: `http://${lan}:${port}/generate_204`, mode: 'machine' },
+        });
+        expect(machine.json()).toMatchObject({ status: 'ok', mode: 'machine', via: 'direct', reachable: true });
+        expect(typeof machine.json().ms).toBe('number');
+      }
+    } finally {
+      if (savedEnv.http === undefined) delete process.env.HTTP_PROXY;
+      else process.env.HTTP_PROXY = savedEnv.http;
+      if (savedEnv.https === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = savedEnv.https;
+      await new Promise<void>((done) => target.close(() => done()));
+    }
+  });
+  test('the URL check answers the machine leg with no core configured', async () => {
+    const target = http.createServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    await new Promise<void>((done) => target.listen(0, '127.0.0.1', () => done()));
+    const port = (target.address() as AddressInfo).port;
+    const saved = loadConfig().proxy;
+    try {
+      // No controllerSecret/port ⇒ no client. The machine leg must still
+      // answer: the whole point is diagnosing a suspect tunnel.
+      saveConfig({ proxy: { mihomo: { controllerSecret: '', controllerPort: undefined } } });
+      const machine = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: `http://127.0.0.1:${port}/`, mode: 'machine' },
+      });
+      expect(machine.json()).toMatchObject({ status: 'ok', mode: 'machine', via: 'direct', reachable: true });
+
+      const tunnel = await app.inject({
+        method: 'POST',
+        url: '/api/admin/proxy/mihomo/test-url',
+        payload: { url: `http://127.0.0.1:${port}/` },
+      });
+      expect(tunnel.statusCode).toBe(409);
+    } finally {
+      saveConfig({ proxy: saved });
+      await new Promise<void>((done) => target.close(() => done()));
+    }
   });
   test('the catalog exposes protocols, fields and enum whitelists', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/nodes/catalog' });

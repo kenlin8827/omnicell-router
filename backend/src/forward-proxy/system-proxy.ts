@@ -7,19 +7,32 @@ import { getRuntimeConfigRef } from '../config/index.js';
 import { caCertPath } from './ca.js';
 
 /**
- * Cross-platform OS system-proxy ownership for the inbound forward proxy.
+ * Cross-platform OS system-proxy ownership for OCR's two local endpoints: the
+ * inbound forward proxy (`owner: 'forward'`) and the Clash core's mixed port
+ * (`owner: 'clash'`).
  *
- * Model — snapshot-and-restore, never blind-off:
+ * Model — ONE owner, snapshot-and-restore, never blind-off:
  *  - `enable` reads the CURRENT OS proxy settings (whatever they point at —
  *    including a user's clash/v2ray), snapshots them to
  *    `<ocrHome>/forward-proxy/system-proxy.json`, then points the OS proxy at
- *    127.0.0.1:<port> with a bypass list (loopback + the literal `direct` rules).
- *  - `disable` restores the snapshot verbatim and deletes it. Without a
- *    snapshot OCR owns nothing, so disable is a NO-OP — it never blind-offs
- *    a proxy it did not set (a user's clash/v2ray keeps working).
+ *    127.0.0.1:<port> with a bypass list.
+ *  - There is exactly ONE snapshot slot, and it always holds the PRE-OCR
+ *    state. Re-enabling the same endpoint refreshes; enabling the OTHER
+ *    endpoint REWRITES the OS pointer and updates the snapshot's `owner` —
+ *    it never re-reads the OS, whose values at that moment are ours.
+ *  - `disable` restores the snapshot verbatim and deletes it, whichever owner
+ *    set it. Without a snapshot OCR owns nothing, so disable is a NO-OP — it
+ *    never blind-offs a proxy it did not set (a user's clash/v2ray keeps
+ *    working).
  *  - The snapshot file doubles as crash detection: if it exists while the OS
  *    no longer points at us (or after a hard kill), the state reads `stale`
  *    and the console offers one-click restore.
+ *
+ * The bypass list differs BY OWNER, because the endpoints route differently:
+ * the inbound proxy decides ingress per rule (unmatched traffic is tunneled
+ * through), so only loopback + literal `direct` hosts are bypassed; the Clash
+ * core's generated config ends in `MATCH,<group>`, so private/LAN ranges must
+ * also stay DIRECT or they would be dragged into the tunnel.
  *
  * Platforms: win32 (WinINET registry), darwin (networksetup, every enabled
  * network service), linux with GNOME/gsettings. Anything else reports
@@ -29,11 +42,15 @@ import { caCertPath } from './ca.js';
 const exec = promisify(execFile);
 
 export type SystemProxyState = 'off' | 'on' | 'external' | 'stale' | 'unsupported';
+/** Which OCR endpoint the OS proxy points at. */
+export type SystemProxyOwner = 'forward' | 'clash';
 
 export interface SystemProxyStatus {
   platform: NodeJS.Platform;
   supported: boolean;
   state: SystemProxyState;
+  /** Owner recorded in the snapshot; ABSENT while OCR owns nothing. */
+  owner?: SystemProxyOwner;
   /** OS proxy server currently configured, when readable. */
   currentServer?: string;
   /** The server WE would set / have set. */
@@ -66,6 +83,9 @@ interface SystemProxySnapshot {
   platform: NodeJS.Platform;
   setAt: number;
   targetServer: string;
+  /** Endpoint this OCR surface pointed the OS at. Absent in older snapshots =
+   *  `forward`, the only owner that existed then. */
+  owner: SystemProxyOwner;
   win?: WinSnapshot;
   mac?: MacServiceSnapshot[];
   gnome?: GnomeSnapshot;
@@ -76,7 +96,9 @@ const snapshotPath = (): string => path.join(getOcrHomeDir(), 'forward-proxy', '
 function readSnapshot(): SystemProxySnapshot | undefined {
   try {
     const raw = fs.readFileSync(snapshotPath(), 'utf8');
-    return JSON.parse(raw) as SystemProxySnapshot;
+    const parsed = JSON.parse(raw) as SystemProxySnapshot;
+    if (!parsed.owner) parsed.owner = 'forward';
+    return parsed;
   } catch {
     return undefined;
   }
@@ -100,6 +122,53 @@ export function buildOverride(bypassList: string[], platform: NodeJS.Platform): 
     if (h) hosts.push(h);
   }
   return platform === 'win32' ? hosts.join(';') : JSON.stringify(hosts);
+}
+
+/**
+ * What an enable call does with the snapshot slot:
+ *  - `snapshot` — no owner yet, so the current OS settings ARE the user's and
+ *    must be recorded before we overwrite them;
+ *  - `refresh` — we already point the OS at this exact endpoint; re-enabling
+ *    must NOT re-read the snapshot slot (the OS now holds OUR value);
+ *  - `switch` — we own a different endpoint; rewrite the OS pointer and the
+ *    snapshot's owner/target, keeping the PRE-OCR payload untouched.
+ */
+export type SystemProxyPlan = 'snapshot' | 'refresh' | 'switch';
+
+export function planSystemProxyAction(
+  snapshot: Pick<SystemProxySnapshot, 'targetServer'> | undefined,
+  targetServer: string,
+): SystemProxyPlan {
+  if (!snapshot) return 'snapshot';
+  return snapshot.targetServer === targetServer ? 'refresh' : 'switch';
+}
+
+/**
+ * Private / link-local / CGNAT ranges that stay DIRECT when the OS proxy points
+ * at the Clash mixed port. Same set as the PAC's direct list
+ * (proxy/mihomo-pac.ts `PRIVATE_RANGES`), in each bypass syntax: WinINET takes
+ * `x.*` wildcards, the networksetup / gsettings lists take CIDR.
+ */
+const LAN_BYPASS_WILDCARDS: readonly string[] = [
+  '10.*',
+  '172.16.*', '172.17.*', '172.18.*', '172.19.*',
+  '172.20.*', '172.21.*', '172.22.*', '172.23.*',
+  '172.24.*', '172.25.*', '172.26.*', '172.27.*',
+  '172.28.*', '172.29.*', '172.30.*', '172.31.*',
+  '192.168.*',
+  '169.254.*',
+  '100.64.*',
+];
+const LAN_BYPASS_CIDR: readonly string[] = [
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '169.254.0.0/16',
+  '100.64.0.0/10',
+];
+
+export function lanBypassHosts(platform: NodeJS.Platform): string[] {
+  return [...(platform === 'win32' ? LAN_BYPASS_WILDCARDS : LAN_BYPASS_CIDR)];
 }
 
 /* ── win32 ─────────────────────────────────────────────────────────────── */
@@ -281,6 +350,125 @@ async function readCurrentServer(platform: NodeJS.Platform): Promise<string | un
   return undefined;
 }
 
+/** The HTTP proxy the OS itself is using right now, with its bypass list —
+ *  the egress a normal application on this machine would take. A PAC
+ *  (`AutoConfigURL`) is NOT resolvable from a socket probe, so it yields
+ *  nothing and callers fall back to a direct connection instead of guessing. */
+export interface OsProxyEndpoint {
+  /** `host:port`, possibly with `user:pass@` — Windows stores auth that way. */
+  server: string;
+  bypass: string[];
+}
+
+export async function readOsProxyEndpoint(): Promise<OsProxyEndpoint | undefined> {
+  const platform = process.platform;
+  try {
+    if (platform === 'win32') {
+      const s = await winRead();
+      if (!s.ProxyEnable || s.AutoConfigURL.trim()) return undefined;
+      const server = pickWinServer(s.ProxyServer);
+      if (!server) return undefined;
+      return { server, bypass: s.ProxyOverride.split(';').map(v => v.trim()).filter(Boolean) };
+    }
+    if (platform === 'darwin') {
+      for (const svc of await macServices()) {
+        const s = await macRead(svc);
+        const pick = s.secure.enabled && s.secure.host ? s.secure : s.web.enabled && s.web.host ? s.web : undefined;
+        if (pick) return { server: `${pick.host}:${pick.port}`, bypass: s.bypass };
+      }
+      return undefined;
+    }
+    if (platform === 'linux') {
+      const g = await gnomeRead();
+      if (g.mode !== 'manual') return undefined;
+      const pick = g.https.host ? g.https : g.http.host ? g.http : undefined;
+      return pick ? { server: `${pick.host}:${pick.port}`, bypass: g.ignoreHosts } : undefined;
+    }
+  } catch {
+    // A probe must never fail because the OS settings are unreadable; the
+    // caller treats "no endpoint" as "connect directly".
+    return undefined;
+  }
+  return undefined;
+}
+
+/** WinINET's per-scheme form (`http=host:port;https=host:port`) reduces to
+ *  one endpoint; an `http://` prefix is stripped but `user:pass@` is kept.
+ *  A SOCKS-only config (`socks=host:port`) yields nothing: the machine leg
+ *  speaks the HTTP proxy protocol, and reporting a direct run is honester
+ *  than dialing `socks=...` as a hostname. */
+function pickWinServer(raw: string): string | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+  const https = /(?:^|;)https=([^;]+)/i.exec(value)?.[1];
+  const http = /(?:^|;)http=([^;]+)/i.exec(value)?.[1];
+  const pick = (https || http || value.split(';')[0]).trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (!pick || /^[a-z]+=/i.test(pick)) return undefined;
+  return pick;
+}
+
+function ipv4ToInt(addr: string): number | undefined {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr);
+  if (!m) return undefined;
+  const parts = m.slice(1).map(Number);
+  if (parts.some(n => n > 255)) return undefined;
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+const isLoopbackHost = (host: string): boolean =>
+  host === 'localhost' || host === '::1' || /^127\./.test(host);
+
+/**
+ * Would the OS send `host` through its proxy, given the OS bypass list?
+ * Covers the syntaxes the three platforms actually store: WinINET wildcards
+ * (`192.168.*`, `<local>`), macOS/Linux CIDR entries and domain suffixes.
+ * Loopback is ALWAYS direct — a proxy in front of a loopback target would
+ * either loop back into this gateway or fail for no diagnosable reason.
+ */
+export function osProxyBypasses(host: string, bypass: string[]): boolean {
+  const name = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (isLoopbackHost(name)) return true;
+  const ip = ipv4ToInt(name);
+  for (const entry of bypass) {
+    const e = entry.trim().toLowerCase();
+    if (!e) continue;
+    if (e === '*') return true;
+    if (e === '<local>') {
+      // WinINET: plain host names, no dot. An IP address is never "<local>".
+      if (!name.includes('.') && !ip) return true;
+      continue;
+    }
+    if (e.includes('/') && ip !== undefined) {
+      const m = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(e);
+      if (m) {
+        const base = ipv4ToInt(m[1]);
+        const bits = Number(m[2]);
+        if (base !== undefined && bits >= 0 && bits <= 32) {
+          const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+          if ((ip & mask) === (base & mask)) return true;
+        }
+      }
+      continue;
+    }
+    if (e.startsWith('*.')) {
+      const suffix = e.slice(1); // `.example.com`
+      if (name === e.slice(2) || name.endsWith(suffix)) return true;
+      continue;
+    }
+    if (e.startsWith('.')) {
+      if (name === e.slice(1) || name.endsWith(e)) return true;
+      continue;
+    }
+    if (e.includes('*')) {
+      const pattern = e.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+      if (new RegExp(`^${pattern}$`).test(name)) return true;
+      continue;
+    }
+    if (name === e) return true;
+  }
+  return false;
+}
+
 export async function getSystemProxyStatus(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
   const platform = process.platform;
   const supported = platformSupported(platform);
@@ -298,35 +486,48 @@ export async function getSystemProxyStatus(targetPort: number, bypassList: strin
   const currentServer = await readCurrentServer(platform);
   if (snapshot) {
     const owned = currentServer === snapshot.targetServer;
-    return { ...base, state: owned ? 'on' : 'stale', currentServer, snapshot };
+    return { ...base, state: owned ? 'on' : 'stale', owner: snapshot.owner, currentServer, snapshot };
   }
   return { ...base, state: currentServer ? 'external' : 'off', currentServer };
 }
 
-/** Point the OS proxy at the inbound forward proxy, snapshotting first. */
-export async function enableSystemProxy(targetPort: number, bypassList: string[]): Promise<SystemProxyStatus> {
+/**
+ * Point the OS proxy at one of OCR's local endpoints, snapshotting first.
+ * See `planSystemProxyAction` for how an existing snapshot is treated.
+ */
+export async function enableSystemProxy(
+  targetPort: number,
+  bypassList: string[],
+  owner: SystemProxyOwner = 'forward',
+): Promise<SystemProxyStatus> {
   const platform = process.platform;
   if (!platformSupported(platform)) throw new Error(`system proxy not supported on ${platform}`);
-  // Idempotent ownership: a second enable MUST NOT re-read the OS settings
-  // through the snapshot slot — at that point they point at OUR server, so
-  // re-snapshotting would overwrite (and permanently lose) the user's
-  // original proxy configuration. Treat re-enable as a status refresh.
-  if (readSnapshot()) return getSystemProxyStatus(targetPort, bypassList);
   const targetServer = `127.0.0.1:${targetPort}`;
+  const snapshot = readSnapshot();
+  const plan = planSystemProxyAction(snapshot, targetServer);
+  if (plan === 'refresh') {
+    // Same endpoint: never re-read the OS here — it points at OUR server, and
+    // re-snapshotting would overwrite (and permanently lose) the user's
+    // original proxy configuration. Only a relabelled owner is worth a write.
+    if (snapshot!.owner !== owner) writeSnapshot({ ...snapshot!, owner });
+    return getSystemProxyStatus(targetPort, bypassList);
+  }
   const overrideHosts = ['localhost', '127.0.0.1', '<local>', ...bypassList.filter(Boolean)];
+  /** `switch` keeps the snapshot's PRE-OCR payload; only `snapshot` reads the OS. */
+  const original = plan === 'snapshot' ? undefined : snapshot!;
   if (platform === 'win32') {
-    const snap = await winRead();
+    const snap = original ? original.win! : await winRead();
     await winSet(targetServer, buildOverride(bypassList, platform));
-    writeSnapshot({ platform, setAt: Date.now(), targetServer, win: snap });
+    writeSnapshot({ platform, setAt: Date.now(), targetServer, owner, win: snap });
   } else if (platform === 'darwin') {
     const services = await macServices();
-    const snaps = await Promise.all(services.map(macRead));
+    const snaps = original ? original.mac! : await Promise.all(services.map(macRead));
     await Promise.all(services.map(svc => macSet(svc, targetServer, overrideHosts)));
-    writeSnapshot({ platform, setAt: Date.now(), targetServer, mac: snaps });
+    writeSnapshot({ platform, setAt: Date.now(), targetServer, owner, mac: snaps });
   } else {
-    const snap = await gnomeRead();
+    const snap = original ? original.gnome! : await gnomeRead();
     await gnomeSet(targetServer, overrideHosts);
-    writeSnapshot({ platform, setAt: Date.now(), targetServer, gnome: snap });
+    writeSnapshot({ platform, setAt: Date.now(), targetServer, owner, gnome: snap });
   }
   return getSystemProxyStatus(targetPort, bypassList);
 }

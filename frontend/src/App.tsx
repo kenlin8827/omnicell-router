@@ -8,6 +8,7 @@ import { ModelsPage } from './pages/ModelsPage';
 import { CatalogSourcesPage } from './pages/CatalogSourcesPage';
 import { ProxyPage } from './pages/ProxyPage';
 import { MihomoPage } from './pages/MihomoPage';
+import { SystemProxyPage } from './pages/SystemProxyPage';
 import { ProxyPatternsPage } from './pages/ProxyPatternsPage';
 import { ProxyAccessPage } from './pages/ProxyAccessPage';
 import { ProxyLogPage } from './pages/ProxyLogPage';
@@ -116,6 +117,7 @@ export const App: React.FC = () => {
         <Route path="catalog" element={<CatalogSourcesPage />} />
         <Route path="proxy-upstream" element={<ProxyPage />} />
         <Route path="proxy-clash" element={<MihomoPage />} />
+        <Route path="proxy-system" element={<SystemProxyPage />} />
         {/* The pre-split address (`/proxy-mihomo`) keeps a redirect so saved bookmarks still resolve. */}
         <Route path="proxy-mihomo" element={<Navigate to="/proxy-clash" replace />} />
         <Route path="proxy-patterns" element={<ProxyPatternsPage />} />

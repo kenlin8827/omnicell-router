@@ -9,10 +9,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  drawerFields,
+  formatAliasSpec,
+  gatewayCardShape,
   gatewayModeValue,
   gatewayVocabulary,
   groupVisibleFields,
   isFieldVisible,
+  matchAliasPattern,
+  parseAliasRows,
+  parseAliasSpec,
   parseGatewayCfg,
   pickLocaleText,
 } from './plugin-config';
@@ -208,5 +214,114 @@ describe('gateway card vocabulary', () => {
     // no-list-set state.
     const legacy = parseGatewayCfg({ modelListMode: 'none' }, { unsetMode: 'none', keyField: '' });
     expect(legacy.modelListMode).toBe('default');
+  });
+});
+
+describe('gatewayCardShape', () => {
+  it('draws the shared model-list block only for a gateway that declares it', () => {
+    const cursorLike: PluginConfigFieldInfo[] = [
+      { key: 'model', type: 'string' },
+      { key: 'forceModel', type: 'boolean' },
+      { key: 'modelListMode', type: 'enum', values: ['default', 'custom', 'follow'] },
+      { key: 'models', type: 'string[]' },
+    ];
+    expect(gatewayCardShape(cursorLike)).toEqual({ modelList: true, routingDefault: true });
+    // A mapping-table gateway adds no models: neither block may render.
+    const aliasOnly: PluginConfigFieldInfo[] = [
+      { key: 'accountKeyId', type: 'string' },
+      { key: 'modelAliases', type: 'string[]', control: 'aliases' },
+    ];
+    expect(gatewayCardShape(aliasOnly)).toEqual({ modelList: false, routingDefault: false });
+  });
+});
+
+describe('alias rows', () => {
+  it('parses `clientId=target[@effort][#label]` and drops entries that could never match', () => {
+    expect(parseAliasSpec('gemini-4-argon-high=kimi-code-plan-cn/k3#OCR · K3')).toEqual({
+      clientId: 'gemini-4-argon-high',
+      target: 'kimi-code-plan-cn/k3',
+      effort: '',
+      label: 'OCR · K3',
+    });
+    expect(parseAliasSpec('gemini-4-argon-high=workbuddy/default-model')).toEqual({
+      clientId: 'gemini-4-argon-high',
+      target: 'workbuddy/default-model',
+      effort: '',
+      label: '',
+    });
+    // A trailing ladder token pins the level; the label may still follow.
+    expect(parseAliasSpec('gemini-4-hydrogen-high=deepseek/deepseek-flash@high#OCR · Flash')).toEqual({
+      clientId: 'gemini-4-hydrogen-high',
+      target: 'deepseek/deepseek-flash',
+      effort: 'high',
+      label: 'OCR · Flash',
+    });
+    // Only a LADDER token is a level — anything else stays part of the id.
+    expect(parseAliasSpec('a=vendor/model@2026-11')).toEqual({ clientId: 'a', target: 'vendor/model@2026-11', effort: '', label: '' });
+    expect(parseAliasSpec('no-equals')).toBeUndefined();
+    expect(parseAliasSpec('=target')).toBeUndefined();
+    expect(parseAliasSpec('client=')).toBeUndefined();
+    expect(parseAliasRows(['a=b', 'junk', 'c=d#L'])).toEqual([
+      { clientId: 'a', target: 'b', effort: '', label: '' },
+      { clientId: 'c', target: 'd', effort: '', label: 'L' },
+    ]);
+  });
+
+  it('formats a row back into the stored spelling, and refuses an incomplete one', () => {
+    expect(formatAliasSpec({ clientId: ' a ', target: 'b/c', effort: '', label: '' })).toBe('a=b/c');
+    expect(formatAliasSpec({ clientId: 'a', target: 'b/c', effort: '', label: 'OCR · X' })).toBe('a=b/c#OCR · X');
+    expect(formatAliasSpec({ clientId: 'a', target: 'b/c', effort: 'xhigh', label: '' })).toBe('a=b/c@xhigh');
+    expect(formatAliasSpec({ clientId: 'a', target: 'b/c', effort: 'none', label: 'OCR · X' })).toBe('a=b/c@none#OCR · X');
+    expect(formatAliasSpec({ clientId: 'a', target: '  ', effort: '', label: '' })).toBe('');
+    expect(formatAliasSpec({ clientId: '', target: 'b', effort: '', label: '' })).toBe('');
+  });
+
+  it('round-trips a level-pinned row', () => {
+    const spec = 'gemini-4-hydrogen-xhigh=deepseek/deepseek-flash@xhigh#OCR · Flash XL';
+    expect(formatAliasSpec(parseAliasSpec(spec)!)).toBe(spec);
+  });
+});
+
+describe('matchAliasPattern', () => {
+  const ids = ['gemini-4-argon-high', 'gemini-4-argon-low', 'gemini-4-neon-high', 'claude-opus-5-5-high', 'gpt-oss-120b-medium'];
+
+  it('expands `*` over the client ids and ignores case', () => {
+    expect(matchAliasPattern('gemini-4*', ids)).toEqual(['gemini-4-argon-high', 'gemini-4-argon-low', 'gemini-4-neon-high']);
+    expect(matchAliasPattern('*-high', ids)).toEqual(['gemini-4-argon-high', 'gemini-4-neon-high', 'claude-opus-5-5-high']);
+    expect(matchAliasPattern('GEMINI-4-ARGON-*', ids)).toEqual(['gemini-4-argon-high', 'gemini-4-argon-low']);
+    expect(matchAliasPattern('gpt-oss-120b-medium', ids)).toEqual(['gpt-oss-120b-medium']);
+  });
+
+  it('treats everything but `*` literally and matches nothing on an empty pattern', () => {
+    expect(matchAliasPattern('gemini.4*', ids)).toEqual([]);
+    expect(matchAliasPattern('gemini-4-*-(high|low)', ids)).toEqual([]);
+    expect(matchAliasPattern('   ', ids)).toEqual([]);
+  });
+});
+describe('drawerFields', () => {
+  const field = (key: string, extra: Record<string, unknown> = {}) =>
+    ({ key, type: 'boolean' as const, ...extra });
+
+  it('renders every drawer field when the schema marks no essentials', () => {
+    // The gateway manifests declare no `essential`, so the quick subset must not
+    // apply — filtering by it emptied the settings drawer (a Save button over an
+    // empty body) for every one of them.
+    const schema = [field('logFrames'), field('interceptGenerate'), field('errorAsText')];
+    expect(drawerFields(schema, 'quick').map((f) => f.key)).toEqual(['logFrames', 'interceptGenerate', 'errorAsText']);
+  });
+
+  it('keeps card fields and the apiKey control out of the drawer', () => {
+    const schema = [
+      field('logFrames'),
+      field('modelAliases', { placement: 'card' }),
+      field('accountKeyId', { control: 'apiKey' }),
+    ];
+    expect(drawerFields(schema, 'advanced').map((f) => f.key)).toEqual(['logFrames']);
+  });
+
+  it('narrows to essentials only when the schema declares them', () => {
+    const schema = [field('a', { essential: true }), field('b'), field('c', { essential: true })];
+    expect(drawerFields(schema, 'quick').map((f) => f.key)).toEqual(['a', 'c']);
+    expect(drawerFields(schema, 'advanced').map((f) => f.key)).toEqual(['a', 'b', 'c']);
   });
 });

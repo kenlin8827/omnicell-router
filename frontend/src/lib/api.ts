@@ -60,6 +60,9 @@ export interface ClientStatus {
   /** Passthrough launch verbs the hook publishes (`['cursor','cursor-agent']`)
    *  — the console renders `ocr <verb>` from here. */
   launch?: string[];
+  /** Retired spellings of the verbs above — refused by the CLI, so never
+   *  rendered as a start command (backend `ClientHookStatus.launchAliases`). */
+  launchAliases?: string[];
   /** Brand asset key for this row's logo; absent = the client id is the asset
    *  name. Declared by the hook, so no client→logo table lives here. */
   icon?: string;
@@ -72,6 +75,10 @@ export interface ClientStatus {
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
+  /** Client-owned model ids the hook observed at runtime (a client whose model
+   *  table is compiled publishes it only in its own catalog read). The console
+   *  offers these ids when a mapping row names one; absent = none observed. */
+  catalogIds?: string[];
   /** Installed CLI version vs the adapter's minimum-compatible floor (absent = adapter declares no probe). */
   version?: { current: string; min?: string; meetsMin: boolean };
   /** This client's model slots; value undefined = auto (intelligent routing). */
@@ -599,11 +606,19 @@ export interface SystemProxyStatus {
   platform: string;
   supported: boolean;
   state: 'off' | 'on' | 'external' | 'stale' | 'unsupported';
+  /** Which OCR endpoint owns (or owned) the OS proxy; absent while OCR owns
+   *  nothing. ONE snapshot slot, two targets. */
+  owner?: 'forward' | 'clash';
   currentServer?: string;
   targetServer?: string;
   override?: string;
   caPath: string;
   proxyEnabled?: boolean;
+  forward?: { port: number; enabled: boolean };
+  clash?: { mixedPort: number; running: boolean; override?: string };
+  /** PAC URL on the gateway's own origin (request Host + gateway port), never
+   *  the console document's origin. Optional: older gateways omit it. */
+  pacUrl?: string;
 }
 
 /**
@@ -676,7 +691,8 @@ export type RuleWarningCode =
   | 'unreachable-rule'
   | 'no-catch-all'
   | 'catch-all-intercepts'
-  | 'proxy-rule-without-proxy';
+  | 'proxy-rule-without-proxy'
+  | 'claim-owns-egress';
 
 export interface RuleWarning {
   code: RuleWarningCode;
@@ -686,12 +702,23 @@ export interface RuleWarning {
   detail?: string;
 }
 
+/** Which tier of a client-gateway claim owns the leg under its hosts (backend
+ *  `ClaimEgressSource`): the operator's plugin-level switch, the plugin's own
+ *  per-request code, or the manifest's declared default. */
+export type ClaimEgressSource = 'operator' | 'code' | 'manifest';
+
 /** The full decision for a probe host — the console preview + the ledger note. */
 export interface HostDecision {
   action: RuleExit;
   tunnel: boolean;
   /** `claim` = a live client-gateway plugin claims this host, so it is decrypted. */
   reason: 'loopback' | 'rule' | 'claim' | 'fallback';
+  /**
+   * Set when a claiming gateway's own tier decided the EXIT: which tier spoke
+   * (ADR-0018 Revision 5). The provenance the probe needs, because `reason` says why
+   * the host is decrypted and nothing about who chose the leg under it.
+   */
+  egressClaim?: ClaimEgressSource;
   ruleIndex?: number;
   match?: string;
 }
@@ -716,6 +743,35 @@ export interface RulesResolveResponse {
 export interface ClaimSource {
   pluginId: string;
   hosts: string[];
+  /**
+   * The legs this plugin's claims currently ask for (ADR-0018 Revision 5) — normally
+   * one entry, empty when nothing speaks (the table decides) and two when the
+   * hosts differ, which the plugin's own per-host answer can do legitimately.
+   * It is a leg name, never a proxy address.
+   */
+  egress: Array<'proxy' | 'direct'>;
+  /**
+   * Each claimed host resolved through the SAME backend resolver the proxy legs
+   * call, so the dialog shows what the table plus the claim actually decide
+   * today — not just what the manifest intends. `tunnel` is the field that
+   * matters here: a `passthrough` row over a claimed host blinds the gateway
+   * that claims it (the claim owns the LEG, never the operator's right to
+   * decrypt).
+   */
+  outcomes: ClaimHostOutcome[];
+}
+
+/** One claimed host as the resolver sees it, right now, with the unsaved table. */
+export interface ClaimHostOutcome {
+  host: string;
+  action: RuleExit;
+  tunnel: boolean;
+  /** Why the host is decrypted / tunneled. */
+  reason: HostDecision['reason'];
+  /** Which tier of the claim owns the exit; absent means the table does. */
+  egressClaim?: ClaimEgressSource;
+  /** Which raw table row decided, when `reason` is `rule`. */
+  ruleIndex?: number;
 }
 
 /** `POST /api/admin/forward-proxy/tighten` — the catch-all rewritten to a blind tunnel. */
@@ -825,6 +881,16 @@ export interface TraceRecord {
      * legacy traces.
      */
     wireKind?: string;
+    /**
+     * Outbound egress of the SERVED attempt (mirrors backend ExecutionTrace):
+     * `'direct'` = straight out of the machine, `'proxy'` = through the
+     * outbound proxy whose redacted endpoint rides in `egressProxy`. Absent on
+     * legacy rows and on transports that do not report a dial base (plugin
+     * executors) — UNKNOWN, never rendered as direct.
+     */
+    egress?: 'direct' | 'proxy';
+    /** Redacted `scheme://host:port` of the outbound proxy; only with `egress: 'proxy'`. */
+    egressProxy?: string;
   };
   finops: {
     inputTokens: number;
@@ -1659,6 +1725,7 @@ export interface MihomoSubscription {
   name: string;
   url: string;
   interval?: number;
+  proxy?: string;
   enabled?: boolean;
 }
 /** Protocols a hand-authored node can speak (backend whitelist, ADR-0022). */
@@ -1755,11 +1822,14 @@ export interface MihomoStatus {
   liveRoutingMode: MihomoRoutingMode | null;
 }
 
-/** Rule types that need no external data (no GEOIP/GEOSITE/RULE-SET) — the
- *  backend whitelist, mirrored here so the editor can only offer what renders. */
+/** Rule types the backend whitelist accepts, mirrored here so the editor can
+ *  only offer what renders. GEOIP / GEOSITE need the geo databases the Clash
+ *  panel downloads; the backend refuses to save or start without them. */
 export type MihomoRuleType =
   | 'DOMAIN' | 'DOMAIN-SUFFIX' | 'DOMAIN-KEYWORD'
-  | 'IP-CIDR' | 'IP-CIDR6' | 'DST-PORT' | 'SRC-PORT'
+  | 'IP-CIDR' | 'IP-CIDR6'
+  | 'GEOIP' | 'GEOSITE'
+  | 'DST-PORT' | 'SRC-PORT'
   | 'PROCESS-NAME' | 'PROCESS-PATH';
 
 export type MihomoRuleTarget = 'PROXY' | 'DIRECT' | 'REJECT';
@@ -1799,6 +1869,45 @@ export interface MihomoCustomRulesResult {
   message?: string;
 }
 
+/** Direct-bypass presets served by the backend, so the row payloads have one
+ *  declaration (the seeded LAN baseline and the opted-in CN rows). */
+export interface MihomoRulePresets {
+  status: 'ok';
+  defaults: MihomoCustomRule[];
+  cn: MihomoCustomRule[];
+}
+
+export interface MihomoGeoFileInfo {
+  key: 'geoip' | 'geosite';
+  file: string;
+  exists: boolean;
+  size: number;
+  /** mtime (epoch ms) of the installed copy; absent while the file does not. */
+  updatedAt?: number;
+  /** Installed but past the advisory window — show the re-sync hint. */
+  stale: boolean;
+}
+
+/** Which egress the geo download takes: the machine's own network (OS system
+ *  proxy when one is enabled, bypass list honoured) or the Clash node. */
+export type MihomoGeoLeg = 'machine' | 'node';
+
+/** State of the geo databases GEOIP/GEOSITE rules are evaluated against. */
+export interface MihomoGeoReport {
+  status: 'ok';
+  present: boolean;
+  files: MihomoGeoFileInfo[];
+}
+
+export interface MihomoGeoDownloadResult {
+  status: 'ok' | 'error';
+  ok: boolean;
+  present: boolean;
+  files?: MihomoGeoFileInfo[];
+  code?: string;
+  error?: string;
+}
+
 /** mihomo's outbound mode — NOT the gateway's `proxy.mode` (manual vs. core). */
 export type MihomoRoutingMode = 'rule' | 'global' | 'direct';
 
@@ -1827,6 +1936,15 @@ export interface MihomoProviderInfo {
   vehicleType?: string;
   updatedAt?: string;
   nodeCount?: number;
+}
+
+/** One captured line of the Clash core's own output. `gateway` marks a
+ *  lifecycle marker written by the gateway (spawn/exit), not core output. */
+export interface MihomoCoreLogLine {
+  id: string;
+  ts: number;
+  stream: 'stdout' | 'stderr' | 'gateway';
+  text: string;
 }
 
 export interface InstallMihomoResult {
@@ -2728,9 +2846,28 @@ export const api = {
     return res.json();
   },
 
-  async enableSystemProxy(): Promise<SystemProxyStatus> {
-    const res = await fetch('/api/admin/system-proxy/enable', { method: 'POST' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  /**
+   * Point the OS proxy at one of OCR's local endpoints. `forward` (default) is
+   * the inbound forward proxy on the Proxy access page; `clash` is the Clash
+   * core's mixed port. ONE snapshot slot: switching endpoints rewrites the OS
+   * pointer and keeps the pre-OCR snapshot for restore.
+   */
+  async enableSystemProxy(target: 'forward' | 'clash' = 'forward'): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy/enable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    if (!res.ok) {
+      // The route answers a code body (e.g. `not-running`) — surface the code,
+      // not the transport status, so the console can localize it.
+      let code = `HTTP ${res.status}`;
+      try {
+        const body = (await res.json()) as { code?: string };
+        if (body?.code) code = body.code;
+      } catch {}
+      throw new Error(code);
+    }
     return res.json();
   },
 
@@ -2894,6 +3031,62 @@ export const api = {
     return body as MihomoCustomRulesResult;
   },
 
+  /** The LAN baseline and the opt-in CN direct rows. */
+  async getMihomoRulePresets(): Promise<MihomoRulePresets> {
+    const res = await fetch('/api/admin/proxy/mihomo/rules/presets');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoRulePresets;
+  },
+
+  async getMihomoGeo(): Promise<MihomoGeoReport> {
+    const res = await fetch('/api/admin/proxy/mihomo/geo');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw mihomoError(body, res.status);
+    return body as MihomoGeoReport;
+  },
+
+  /**
+   * Download the geo databases GEOIP/GEOSITE rules need. NDJSON: `progress`
+   * events carry the asset key and byte counts, then exactly one `result`
+   * (total 0 = unknown size). `leg` picks the egress: `machine` (default) is
+   * the machine's own network, `node` goes through the Clash core. `refresh`
+   * replaces files that already exist; without it only missing files are
+   * fetched.
+   */
+  async downloadMihomoGeo(
+    leg: MihomoGeoLeg,
+    opts: { refresh?: boolean; onProgress?: (file: string, downloaded: number, total: number) => void } = {},
+  ): Promise<MihomoGeoDownloadResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/geo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ leg, refresh: opts.refresh === true }),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.body || !contentType.includes('ndjson')) {
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw mihomoError(body, res.status);
+      return body as MihomoGeoDownloadResult;
+    }
+    let out: MihomoGeoDownloadResult | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return; // A malformed line must not kill the stream — skip it.
+      }
+      if (evt.type === 'progress' && typeof evt.downloaded === 'number') {
+        opts.onProgress?.(typeof evt.file === 'string' ? evt.file : '', evt.downloaded, typeof evt.total === 'number' ? evt.total : 0);
+      } else if (evt.type === 'result') {
+        out = evt as unknown as MihomoGeoDownloadResult;
+      }
+    });
+    if (!out) throw new Error(`geo download stream ended without a result (HTTP ${res.status})`);
+    return out;
+  },
+
   async startMihomo(): Promise<MihomoOpResult> {
     const res = await fetch('/api/admin/proxy/mihomo/start', { method: 'POST' });
     return res.json();
@@ -2942,7 +3135,7 @@ export const api = {
     return res.json();
   },
 
-  async addMihomoSubscription(body: { name: string; url: string; interval?: number; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+  async addMihomoSubscription(body: { name: string; url: string; interval?: number; proxy?: string; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
     const res = await fetch('/api/admin/proxy/mihomo/subscriptions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3043,12 +3236,17 @@ export const api = {
     return json;
   },
 
-  /** Connectivity check: fetch the configured URL THROUGH the current proxy
-   *  node; unlike
-   *  `testMihomoNode` (a direct TCP probe) this proves the tunnel + URL pair.
-   *  `group` names the RUNNING group shown in the console (config may differ). */
-  async testMihomoUrl(url?: string, group?: string): Promise<{ status: string; reachable?: boolean; ms?: number; node?: string; url?: string; error?: string; message?: string }> {
-    const body: Record<string, string> = {};
+  /** Connectivity check with TWO legs (`mode`): `tunnel` (default) fetches the
+   *  URL THROUGH the current proxy node — it proves the tunnel + URL pair;
+   *  `machine` sends the request the way the rest of this machine does — via
+   *  the OS system proxy when one is enabled (`via: 'system-proxy'`), directly
+   *  otherwise — the baseline that tells a node/subscription fault apart from
+   *  a local-egress one. `group` names the RUNNING group shown in the console
+   *  (config may differ) and is ignored by the machine leg. Unlike
+   *  `testMihomoNode` (a direct TCP probe of a node's server), both legs
+   *  request the URL itself. */
+  async testMihomoUrl(url?: string, group?: string, mode: 'tunnel' | 'machine' = 'tunnel'): Promise<{ status: string; mode?: 'tunnel' | 'machine'; via?: 'direct' | 'system-proxy'; proxy?: string; reachable?: boolean; ms?: number; node?: string; url?: string; error?: string; message?: string }> {
+    const body: Record<string, string> = { mode };
     if (url) body.url = url;
     if (group) body.group = group;
     const res = await fetch('/api/admin/proxy/mihomo/test-url', {
@@ -3088,6 +3286,22 @@ export const api = {
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw mihomoError(json, res.status);
     return json;
+  },
+
+  /** The core's captured stdout/stderr, oldest first (bounded ring, memory-only). */
+  async getMihomoLogs(): Promise<MihomoCoreLogLine[]> {
+    const res = await fetch('/api/admin/proxy/mihomo/logs');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw mihomoError(json, res.status);
+    return Array.isArray(json.lines) ? json.lines : [];
+  },
+
+  async clearMihomoLogs(): Promise<void> {
+    const res = await fetch('/api/admin/proxy/mihomo/logs', { method: 'DELETE' });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw mihomoError(json, res.status);
+    }
   },
 
   async getTierPools(): Promise<TierPoolsResponse> {
@@ -5081,6 +5295,28 @@ export interface PluginProviderPresetInfo {
   description?: string;
 }
 
+/** Mirrors backend `PluginView.clientText` (manifest `clientText`): the package's
+ *  own presentation copy for its client hook, per locale or plain string.
+ *  `errors` keys are the adapter's emitted `reasonCode` spellings; `family`
+ *  keys are snake_case (product_count, ca, ca_imported, …). */
+export interface PluginClientText {
+  setupOk?: string | Record<string, string>;
+  teardownOk?: string | Record<string, string>;
+  hint?: string | Record<string, string>;
+  errors?: Record<string, string | Record<string, string>>;
+  family?: Record<string, string | Record<string, string>>;
+}
+
+/** One release note of a plugin's manifest `changelog` (presentation only).
+ *  `notes` is a plain string or a locale map; the console renders it as markdown
+ *  and keys rows by `version`. */
+export interface PluginChangelogEntry {
+  version: string;
+  /** `YYYY-MM-DD`; absent = undated entry. */
+  date?: string;
+  notes: string | Record<string, string>;
+}
+
 export interface PluginViewInfo {
   id: string;
   name: string;
@@ -5091,9 +5327,15 @@ export interface PluginViewInfo {
    *  A multi-part package renders one label per entry. */
   types?: string[];
   wires: string[];
+
   description?: string | Record<string, string>;
   /** Package-declared warning texts, keyed by the advisory code it emits. */
   warningLabels?: Record<string, string | Record<string, string>>;
+  /** Package-declared client copy (manifest `clientText`): setup/teardown toasts,
+   *  per-reasonCode errors, hook hint and family (multi-product) strings. */
+  clientText?: PluginClientText;
+  /** Release history from the manifest, in declared (newest-first) order. */
+  changelog?: PluginChangelogEntry[];
   presets?: PluginProviderPresetInfo[];
   source: 'dev' | 'packaged';
   path: string;
@@ -5120,7 +5362,7 @@ export interface PluginConfigFieldInfo {
   enumLabels?: Record<string, string | Record<string, string>>;
   /** Widget from the closed console vocabulary (mirrors backend
    *  `PluginConfigControl`). Omitted = the type's default control. */
-  control?: 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
+  control?: 'text' | 'textarea' | 'model' | 'models' | 'aliases' | 'segmented' | 'apiKey';
   /** Id of the plugin's `configSections` entry this field belongs to; omitted =
    *  the leading ungrouped block. */
   section?: string;
@@ -6203,7 +6445,7 @@ export const opencodeApi = {
     return { ...parsed, id: parsed.id ?? '' };
   },
 
-  async reloadPlugins(): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+  async reloadPlugins(): Promise<{ status: string; plugins: PluginViewInfo[]; registered: string[] }> {
     return ocJson(
       await fetch('/api/admin/plugins/reload', {
         method: 'POST',

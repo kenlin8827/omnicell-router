@@ -24,14 +24,22 @@ import type {
   PluginConfigSection,
   PluginEntryResult,
   PluginManifest,
+  PluginProviderPreset,
   PluginView,
 } from './types.js';
 import type { ClientAdapter } from '../cli/clients/base.js';
 import { beginPluginClientAdapterRebuild, commitPluginClientAdapterRebuild, registerPluginClientAdapter } from '../cli/clients/plugin-adapters.js';
-import { commitGateways, removeGateway, retainStagedGateways, stageGateway, getGatewayById, WILDCARD_HOST_CLAIM } from './gateways.js';
+import { commitGateways, removeGateway, retainStagedGateways, setGatewayOperatorEgress, stageGateway, getGatewayById, WILDCARD_HOST_CLAIM } from './gateways.js';
 import { getGatewayChatServices } from '../surfaces/gateway-chat.js';
 import { invalidatePluginConfigCache, mergedPluginConfig, pluginConfigPath, writePluginConfig } from './config.js';
-import { assertSupportedPluginApi, isValidPluginId, normalizePluginParts, validatePluginManifest } from './manifest.js';
+import {
+  assertSupportedPluginApi,
+  isValidPluginId,
+  normalizePluginParts,
+  operatorEgressChoice,
+  validatePluginManifest,
+  withGatewayEgressField,
+} from './manifest.js';
 import { compareVersions } from '../utils/semver.js';
 import { seedBundledPlugins } from './seed.js';
 import { forwardH2 } from '../forward-proxy/h2-forward.js';
@@ -39,8 +47,9 @@ import { getProxyCaller } from '../forward-proxy/caller-context.js';
 import { forwardTo, proxyFail, RULE_REJECTED_MESSAGE, type ForwardTarget } from '../forward-proxy/server.js';
 import { resolveUpstreamTls } from '../forward-proxy/upstream-tls.js';
 import { isRuleRejected } from '../forward-proxy/egress.js';
-import { claimPluginWires, isCoreWire } from '../providers/plugin-wires.js';
+import { claimPluginWires, isCoreWire, isPluginWire } from '../providers/plugin-wires.js';
 import { currentProtocol } from '../providers/protocol.js';
+import { wireFor } from '../providers/wire.js';
 /**
  * Plugin host: discovers, unpacks and loads plugins. Two types today
  * (ADR-0017): 'model-service' (outbound executors, registry below) and
@@ -126,6 +135,7 @@ function buildHostSdk(manifest: PluginManifest, dir: string): ModelServicePlugin
     },
     constants: { providerTimeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS },
     config: () => mergedPluginConfig(manifest.id, manifest.configSchema),
+    ocrHome: () => getOcrHomeDir(),
     pluginDir: () => dir,
     // Filled by pluginPullServices() BEFORE createPlugin is invoked.
     pull: {
@@ -325,7 +335,13 @@ function asEntryResult(raw: unknown): PluginEntryResult {
 function readManifest(dir: string): PluginManifest {
   const raw = JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')) as unknown;
   validatePluginManifest(raw, 'invalid plugin.json');
-  return raw as PluginManifest;
+  // The operator's outbound-leg switch is injected HERE, at the single point a
+  // manifest becomes runtime data: the validator above has already refused a
+  // package that declares the key itself, and every reader downstream — the
+  // console drawer, the config merge, and a plugin's own `config()` closure —
+  // then sees the SAME schema. Injected later, the drawer would offer a control
+  // the merge drops.
+  return withGatewayEgressField(raw as PluginManifest);
 }
 
 /** Extract one packaged zip when the unpacked copy is missing or stale. */
@@ -442,6 +458,8 @@ async function importPlugin(
     wires: modelPart?.wires ?? manifest.wires ?? [],
     description: manifest.description,
     warningLabels: manifest.warningLabels,
+    clientText: manifest.clientText,
+    changelog: manifest.changelog,
     presets: manifest.presets,
     logo: manifest.logo,
     source,
@@ -519,8 +537,19 @@ async function importPlugin(
   // the package (a built-in/retired/duplicate client id throws). Staging the
   // gateway before it would leave a package that failed to load still owning
   // its hosts — "broken row, traffic still intercepted", the worst of both.
-  if (loaded.clientAdapter) registerPluginClientAdapter(manifest.id, loaded.clientAdapter);
-  if (loaded.gateway) stageGateway(manifest.id, loaded.gateway);
+  if (loaded.clientAdapter) registerPluginClientAdapter(manifest.id, loaded.clientAdapter, manifest.clientRank);
+  // The claim's outbound-leg tiers (ADR-0018 Revision 5) travel with the registration,
+  // not with the module object: `plugin.json` is the manifest truth, the stored
+  // config is the operator's word, and the gateway's own `egressFor()` is the
+  // third voice the registry asks between them. An untouched switch merges back
+  // as `inherit`, which is not a choice — so it never reaches the registry and
+  // never silences the plugin's per-host answer.
+  if (loaded.gateway) {
+    stageGateway(manifest.id, loaded.gateway, {
+      manifest: gatewayPart?.egress,
+      operator: operatorEgressChoice(mergedPluginConfig(manifest.id, manifest.configSchema)),
+    });
+  }
   manifestsById.set(manifest.id, manifest);
   return { ...loaded, view };
 }
@@ -547,6 +576,9 @@ function failedView(
     type: parts[0]?.type ?? 'model-service',
     types: parts.map((p) => p.type),
     wires: [],
+    // Identity for a row that failed to load: the console can still tell the
+    // operator what the package claims to change.
+    changelog: declared?.changelog,
     source,
     path,
     loaded: false,
@@ -769,6 +801,7 @@ function stubDisabledView(
       types: parts.map((p) => p.type),
       wires: parts.find((p) => p.type === 'model-service')?.wires ?? m.wires ?? [],
       description: m.description,
+      changelog: m.changelog,
       presets: m.presets,
       logo: m.logo,
       source,
@@ -1078,6 +1111,12 @@ interface RegistrationEntry {
   providers: string[];
   /** providerId → the def node this plugin wrote, for the drift comparison. */
   written?: Record<string, unknown>;
+  /** provider ids the OPERATOR deleted. Preset registration must not recreate
+   *  them (a reload/install of ANY plugin re-runs it for every plugin), and a
+   *  def that reappears clears its own tombstone — that is connect intent.
+   *  The tombstone lives with this plugin's ledger, so uninstalling the OWNING
+   *  plugin forgets it (a fresh install registers fresh presets). */
+  deleted?: string[];
 }
 
 function registrationsPath(): string {
@@ -1102,11 +1141,14 @@ function readRegistrations(): Record<string, RegistrationEntry> {
       continue;
     }
     if (!value || typeof value !== 'object') continue;
-    const entry = value as { providers?: unknown; written?: unknown };
+    const entry = value as { providers?: unknown; written?: unknown; deleted?: unknown };
     out[pluginId] = {
       providers: Array.isArray(entry.providers) ? entry.providers.filter((v): v is string => typeof v === 'string') : [],
       ...(entry.written && typeof entry.written === 'object' && !Array.isArray(entry.written)
         ? { written: entry.written as Record<string, unknown> }
+        : {}),
+      ...(Array.isArray(entry.deleted)
+        ? { deleted: entry.deleted.filter((v): v is string => typeof v === 'string') }
         : {}),
     };
   }
@@ -1135,6 +1177,53 @@ export function pluginProviderOrigins(): Record<string, string> {
   return out;
 }
 
+/** Forget ONE provider id in every preset ledger entry and tombstone it. Called
+ *  when the operator DELETES a provider: that is intent, so a later boot/reload
+ *  (any plugin's install re-runs registration for ALL plugins) must not
+ *  resurrect the preset's def. Clearing the tombstone is an explicit connect —
+ *  see `ensurePresetProvider`. A credential still in the store keeps the
+ *  provider alive through the boot bind sweep — that is credential truth;
+ *  disconnecting is the purge path, not the delete path. */
+export function forgetProviderRegistration(providerId: string): void {
+  const ledger = readRegistrations();
+  let changed = false;
+  for (const [id, entry] of Object.entries(ledger)) {
+    if (!entry.providers.includes(providerId) && !entry.written?.[providerId]) continue;
+    const providers = entry.providers.filter((p) => p !== providerId);
+    const written = entry.written ? { ...entry.written } : undefined;
+    if (written) delete written[providerId];
+    const deleted = [...new Set([...(entry.deleted ?? []), providerId])];
+    ledger[id] = {
+      providers,
+      ...(written && Object.keys(written).length > 0 ? { written } : {}),
+      deleted,
+    };
+    changed = true;
+  }
+  if (changed) writeRegistrations(ledger);
+}
+
+/** Lift every deletion tombstone for one provider id (explicit connect intent). */
+function clearProviderDeletion(providerId: string): void {
+  const ledger = readRegistrations();
+  let changed = false;
+  for (const [id, entry] of Object.entries(ledger)) {
+    if (!entry.deleted?.includes(providerId)) continue;
+    const deleted = entry.deleted.filter((p) => p !== providerId);
+    if (entry.providers.length === 0 && Object.keys(entry.written ?? {}).length === 0 && deleted.length === 0) {
+      delete ledger[id];
+    } else {
+      ledger[id] = {
+        providers: entry.providers,
+        ...(entry.written && Object.keys(entry.written).length > 0 ? { written: entry.written } : {}),
+        ...(deleted.length > 0 ? { deleted } : {}),
+      };
+    }
+    changed = true;
+  }
+  if (changed) writeRegistrations(ledger);
+}
+
 /** True when the def currently on disk is byte-for-byte what the plugin wrote
  *  (no operator edit since). `snapshot === undefined` means the ledger predates
  *  snapshots, so the caller falls back to the heuristic below. */
@@ -1161,16 +1250,66 @@ function isMeaningfulDef(raw: Record<string, unknown> | undefined): boolean {
   );
 }
 
+/** The wire a RAW defs-file node currently resolves to — the same precedence
+ *  the console probe and the web-login resolver use (`wireFor(npm)` first,
+ *  baseURL fingerprint only when no package is declared). */
+function defWireOf(raw: Record<string, unknown>): string {
+  const pkg = typeof raw.package === 'string' ? raw.package : typeof raw.npm === 'string' ? raw.npm : '';
+  if (pkg) return wireFor(pkg);
+  const settings = raw.settings && typeof raw.settings === 'object' ? (raw.settings as Record<string, unknown>) : {};
+  const options = raw.options && typeof raw.options === 'object' ? (raw.options as Record<string, unknown>) : {};
+  const base = (settings.baseURL ?? options.baseURL ?? raw.baseURL ?? '') as string;
+  return base ? wireFor(undefined, base) : 'unroutable';
+}
+
+/** A preset def that exists but can never reach ANY executor: the current
+ *  spelling resolves to `unroutable` (wireFor refuses it rather than guessing —
+ *  e.g. an older plugin generation's `@opencode/ai/providers/<vendor>`). That
+ *  is unreachable state, not operator intent, so the preset's declared wire
+ *  wins. A def on a routable wire is left alone (an operator may deliberately
+ *  point the preset id at a compatible endpoint), and a retired NODE shape
+ *  belongs to the defs import, not here. */
+function presetWireIsBroken(raw: Record<string, unknown>): boolean {
+  if (raw.npm !== undefined || raw.options !== undefined) return false; // v1 node shape: the import owns it
+  return defWireOf(raw) === 'unroutable';
+}
+
+/** Rewrite ONLY the routing slot of a broken preset def. Every other slot the
+ *  operator owns (name, baseURL/settings, headers, env, body, models) rides
+ *  through untouched — the def could not have routed anywhere before, so no
+ *  working configuration is lost. */
+function repairPresetWire(raw: Record<string, unknown>, presetWire: string): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...raw, package: presetWire };
+  delete next.npm;
+  return next;
+}
+
+/** Def name a preset registers: the manifest's `displayName` (plain string) or
+ *  its en-US entry, first-locale as the last resort. ONE spelling for every
+ *  writer of a preset def (sync, ensure-on-connect). */
+function presetDefName(preset: PluginProviderPreset): string {
+  const dn = preset.displayName;
+  return typeof dn === 'string' ? dn : (dn['en-US'] ?? Object.values(dn)[0] ?? preset.providerId);
+}
+
 /** Register every not-yet-defined preset of every loaded plugin, and RETIRE the
  *  ones the plugin no longer declares. A preset is skipped whenever the defs
- *  file already holds ANY node with that id — even a bare New-custom stub — so
- *  presets never take over operator file state. Retirement uses the same drift
- *  rule as uninstall: a def still identical to what the plugin wrote is ours to
- *  delete; one the operator edited stays, it just stops being claimed.
- *  Returns the created provider ids (for boot/reload logging). */
+ *  file already holds a MEANINGFUL node with that id, so presets never take
+ *  over operator file state; a bare package-only stub (the New-custom form or
+ *  the boot bind sweep's node — machine-written, no operator content) is fair
+ *  game and the preset overwrites it. The ONE exception is an unroutable wire
+ *  spelling (an older plugin generation's SDK package, e.g.
+ *  `@opencode/ai/providers/<vendor>`): that def can never execute, so the
+ *  preset rewrites the routing slot alone and keeps the rest — otherwise a
+ *  reload would report success while the provider stays dead
+ *  (`provider '…' is not on a plugin wire with a web-login capability`).
+ *  Retirement uses the same drift rule as uninstall: a def still identical to
+ *  what the plugin wrote is ours to delete; one the operator edited stays, it
+ *  just stops being claimed.
+ *  Returns the provider ids registered or wire-repaired (boot/reload logging). */
 export async function syncPluginPresets(): Promise<string[]> {
   const { upsertProviderDef, deleteProviderDef } = await import('../opencode/user-config.js');
-  const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
+  const { readProviderDefsFile, writeProviderDefs } = await import('../opencode/provider-defs.js');
   const created: string[] = [];
   const ledger = readRegistrations();
   for (const { view } of registry.values()) {
@@ -1188,26 +1327,65 @@ export async function syncPluginPresets(): Promise<string[]> {
     }
     const mine = new Set<string>();
     const written: Record<string, unknown> = {};
+    // Tombstones this entry keeps after the pass (an id whose def reappeared is
+    // connect intent and loses its tombstone below).
+    const deleted = new Set(entry.deleted ?? []);
     for (const preset of view.presets ?? []) {
+      const presetWire = currentProtocol(preset.protocol || preset.npm!);
+      // A manifest protocol must be an OCR protocol id (ADR-0033: one protocol
+      // vocabulary, never an SDK package): a core wire, or a wire some LOADED
+      // plugin claims. Anything else — an SDK package from an older plugin
+      // build, a typo — would be written as a def that can never
+      // route (`wireFor` → `unroutable`), so refuse it at the write boundary and
+      // name the offender instead of poisoning providers.json.
+      if (!isCoreWire(presetWire) && !isPluginWire(presetWire)) {
+        console.warn(
+          `[OCR] plugins: preset '${preset.providerId}' of ${view.id} declares protocol '${preset.protocol ?? preset.npm}' which is not an OCR protocol id — skipped`
+        );
+        continue;
+      }
       const raw = readProviderDefsFile()?.providers?.[preset.providerId] as Record<string, unknown> | undefined;
+      if (deleted.has(preset.providerId)) {
+        // The operator deleted this provider: never resurrect it. A def that is
+        // BACK on disk means the operator connected it again (or re-created it
+        // by hand) — that clears the tombstone and the normal rules apply.
+        if (!raw) continue;
+        deleted.delete(preset.providerId);
+      }
       if (raw) {
-        // Pre-existing def with the same id: never overwritten (ADR-0010).
-        // A def WE wrote earlier keeps its snapshot (so uninstall can still
-        // tell it apart from an operator edit); any other def only joins the
-        // ledger when MEANINGFUL, and then has no snapshot — so uninstall
-        // leaves it alone (isMeaningfulDef fallback).
+        // Pre-existing def with the same id: a def WE wrote earlier keeps its
+        // snapshot (so uninstall can still tell it apart from an operator
+        // edit); a MEANINGFUL def is operator-owned and never overwritten —
+        // it only joins the ledger, so uninstall leaves it alone. A BARE
+        // stub (isMeaningfulDef === false) is machine residue, not operator
+        // state: fall through and let the preset take the id over.
+        if (presetWireIsBroken(raw)) {
+          const repaired = repairPresetWire(raw, presetWire);
+          const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+          providers[preset.providerId] = repaired;
+          writeProviderDefs(providers);
+          mine.add(preset.providerId);
+          written[preset.providerId] = repaired;
+          created.push(preset.providerId);
+          console.warn(
+            `[OCR] plugins: repaired provider '${preset.providerId}' (plugin ${view.id}) — wire '${defWireOf(raw)}' -> '${presetWire}'`
+          );
+          continue;
+        }
         if (entry.written?.[preset.providerId] !== undefined) {
           mine.add(preset.providerId);
           written[preset.providerId] = entry.written[preset.providerId];
-        } else if (isMeaningfulDef(raw)) {
-          mine.add(preset.providerId);
+          continue;
         }
-        continue;
+        if (isMeaningfulDef(raw)) {
+          mine.add(preset.providerId);
+          continue;
+        }
       }
       const result = upsertProviderDef({
         id: preset.providerId,
-        name: typeof preset.displayName === 'string' ? preset.displayName : (preset.displayName['en-US'] ?? Object.values(preset.displayName)[0]),
-        npm: currentProtocol(preset.protocol || preset.npm!),
+        name: presetDefName(preset),
+        npm: presetWire,
         baseURL: preset.baseUrl,
       });
       if (result.success) {
@@ -1221,10 +1399,70 @@ export async function syncPluginPresets(): Promise<string[]> {
         console.warn(`[OCR] plugins: preset '${preset.providerId}' of ${view.id} failed to register: ${result.error}`);
       }
     }
-    if (mine.size > 0) ledger[view.id] = { providers: [...mine], ...(Object.keys(written).length > 0 ? { written } : {}) };
+    if (mine.size > 0 || deleted.size > 0) {
+      ledger[view.id] = {
+        providers: [...mine],
+        ...(Object.keys(written).length > 0 ? { written } : {}),
+        ...(deleted.size > 0 ? { deleted: [...deleted] } : {}),
+      };
+    }
+  }
+  // Orphan ledger rows: a package RENAMED between releases leaves its old id's
+  // entry behind (this loop only iterates loaded ids, uninstall only deletes its
+  // own key), so that row could never be read again — drop it. A DISABLED or
+  // failed package keeps its row: uninstall still needs it to remove the defs.
+  // Gated on a load that SAW plugins: an unreadable/empty root is not proof that
+  // every ledger row is stale.
+  if (hostInitialized && lastViews.length + disabledViews.length > 0) {
+    const known = new Set([...lastViews, ...disabledViews].map((v) => v.id));
+    for (const id of Object.keys(ledger)) if (!known.has(id)) delete ledger[id];
   }
   writeRegistrations(ledger);
   return created;
+}
+
+/** Operator CONNECT INTENT for a preset provider (the console's web-login
+ *  button): lift the deletion tombstone and materialize the def when it is
+ *  missing. Without this a provider the operator once deleted keeps advertising
+ *  its login button (the row comes from the manifest) while every route answers
+ *  `provider '…' not found`. Returns true when a def is on disk afterwards. */
+export async function ensurePresetProvider(providerId: string): Promise<boolean> {
+  for (const { view } of registry.values()) {
+    const preset = (view.presets ?? []).find((p) => p.providerId === providerId);
+    if (!preset) continue;
+    // Same write-boundary rule as registration: a manifest that still declares
+    // an SDK package must never materialize a def the core cannot route.
+    const presetWire = currentProtocol(preset.protocol || preset.npm!);
+    if (!isCoreWire(presetWire) && !isPluginWire(presetWire)) {
+      console.warn(
+        `[OCR] plugins: preset '${preset.providerId}' of ${view.id} cannot be materialized — protocol '${preset.protocol ?? preset.npm}' is not an OCR protocol id`
+      );
+      return false;
+    }
+    clearProviderDeletion(providerId);
+    const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
+    if (readProviderDefsFile()?.providers?.[providerId]) return true;
+    const { upsertProviderDef } = await import('../opencode/user-config.js');
+    return upsertProviderDef({
+      id: preset.providerId,
+      name: presetDefName(preset),
+      npm: presetWire,
+      baseURL: preset.baseUrl,
+    }).success;
+  }
+  return false;
+}
+
+/** True when `wire` still has an executor once plugin `excludeId` is gone:
+ *  core wires execute in-process, every other wire needs a loaded plugin that
+ *  claims it (the OCR-native identity floor does NOT count — an absent plugin
+ *  has no executor either way). */
+function wireSurvivesWithout(wire: string, excludeId: string): boolean {
+  if (isCoreWire(wire)) return true;
+  for (const { view } of registry.values()) {
+    if (view.id !== excludeId && view.wires.includes(wire)) return true;
+  }
+  return false;
 }
 
 /** Remove the provider defs a plugin auto-registered (hot-unplug half). */
@@ -1236,12 +1474,22 @@ async function removePluginRegistrations(id: string): Promise<string[]> {
   const removed: string[] = [];
   for (const pid of entry?.providers ?? []) {
     const current = readProviderDefsFile()?.providers?.[pid] as Record<string, unknown> | undefined;
-    // Operator-owned now (keyed models, rename, own baseURL) — uninstall must
-    // not destroy it. Decided by DRIFT from what the plugin wrote: an exact
-    // match is ours to remove. A def with no snapshot predates this ledger
-    // (legacy `string[]`), so the old heuristic decides for it.
-    const ours = entry?.written?.[pid] !== undefined ? matchesRegistration(entry.written[pid], current) : !isMeaningfulDef(current);
-    if (!ours) continue;
+    if (!current) continue;
+    // A def whose wire has NO executor once this plugin is gone is dead state,
+    // not operator content: delete it even when the node drifted (auto-pulled
+    // models, headers) — otherwise every connected preset provider outlives the
+    // plugin and lingers on the Connected surface forever. A def the operator
+    // repointed to a routable wire still works without this plugin and stays.
+    const currentWire = defWireOf(current);
+    const dead = currentWire === 'unroutable' || !wireSurvivesWithout(currentWire, id);
+    if (!dead) {
+      // Operator-owned now (keyed models, rename, own baseURL) — uninstall must
+      // not destroy it. Decided by DRIFT from what the plugin wrote: an exact
+      // match is ours to remove. A def with no snapshot predates this ledger
+      // (legacy `string[]`), so the old heuristic decides for it.
+      const ours = entry?.written?.[pid] !== undefined ? matchesRegistration(entry.written[pid], current) : !isMeaningfulDef(current);
+      if (!ours) continue;
+    }
     const result = deleteProviderDef(pid);
     if (result.success) removed.push(pid);
   }
@@ -1388,7 +1636,15 @@ export async function applyPluginConfig(
   if (!manifest) throw new Error('unknown or unloaded plugin');
   if (!manifest.configSchema?.length) throw new Error('plugin declares no configurable fields');
   const result = writePluginConfig(id, manifest.configSchema, values);
-  const target = getGatewayById(id) ?? [...registry.values()].find((r) => r.view.id === id)?.plugin;
+  // The leg switch is the one config value CORE consumes rather than forwards:
+  // replacing the registry tier makes the operator's pick authoritative from the
+  // NEXT request to a claimed host, with no restart and no package rebuild for a
+  // value that lives in a JSON file. It runs before `onConfigChange` so a plugin
+  // that warms its transports in that hook does so under the leg the operator
+  // just chose.
+  const gateway = getGatewayById(id);
+  if (gateway) setGatewayOperatorEgress(id, operatorEgressChoice(result.values));
+  const target = gateway ?? [...registry.values()].find((r) => r.view.id === id)?.plugin;
   try {
     await target?.onConfigChange?.(result.values);
   } catch (err) {

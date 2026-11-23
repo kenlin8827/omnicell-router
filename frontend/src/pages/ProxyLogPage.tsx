@@ -10,6 +10,7 @@ import { Pagination } from '../components/Pagination';
 import { Drawer } from '../components/Drawer';
 import { Prose, proseIsLong } from '../components/Prose';
 import { applicableDecoders, decoderLabel, hexDumpToBytes, type DecoderContext, type SideDecoder } from '../lib/sideDecoders';
+import { DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES } from '../lib/defaults';
 import { copyToClipboard } from '../lib/clipboard';
 import { saveBlobAs, startDownload } from '../lib/download-manager';
 import { FONT_MONO } from '../lib/fonts';
@@ -115,15 +116,20 @@ export interface DetailSideModel {
   /** Pre-formatted `name: value` lines, or null when nothing was captured. */
   headers: string | null;
   bodyTitle: string;
-  /** Suffix on the body title (` · 1.2 KiB · preview truncated`). */
-  bodyBadge?: string;
   /** Captured window bytes — the input every decoder claims. */
   bytes?: Uint8Array | null;
-  /** Full captured size, when the gateway knows it. */
+  /** Full captured size, when the gateway knows it. Drives the size badge and
+   *  the truncation state shown on the body title. */
   bodyBytes?: number;
+  /** True when the capture itself stopped at the capability cap (the body on
+   *  disk is already short — no amount of reading recovers the tail). */
+  bodyTruncated?: boolean;
   /** Opaque body token: the drawer loads a preview from it and offers it as
    *  the download. One shape for every row, no storage detail. */
   bodyToken?: string;
+  /** The inline `bytes` are only a first-paint prefix (a plugin feed ships a
+   *  small hex preview); once the token resolves, its bytes replace them. */
+  inlineIsPreview?: boolean;
   /** Plugin dissector layers for this side (server-side protocol knowledge). */
   layers?: { name: string; frames?: unknown[] }[];
   contentType?: string;
@@ -197,9 +203,31 @@ const DetailSidePane: React.FC<{ side: DetailSideModel }> = ({ side }) => {
   const [exp, setExp] = useState({ h: false, b: false });
   const flip = (k: keyof typeof exp, v: boolean): void => setExp((st) => ({ ...st, [k]: v }));
   const fileBytes = useBodyBytes(side.bodyToken);
-  const bytes = side.bytes ?? fileBytes.bytes;
-  const bodyBytes = side.bodyBytes ?? bytes?.length ?? 0;
+  /**
+   * Plugin feeds ship a tiny hex preview for first paint; the token addresses
+   * the FULL capture. Once it resolves, prefer those bytes and cap what
+   * reaches the DOM at the shared preview window — the rest stays one
+   * download away (ADR-0017 §5), so a multi-megabyte body never lands here.
+   */
+  const tokenBytes = fileBytes.bytes;
+  const preferToken = side.inlineIsPreview === true && tokenBytes !== null;
+  const source: Uint8Array | null = (preferToken ? tokenBytes : (side.bytes ?? tokenBytes)) ?? null;
+  // Memoized so the decoder list is not recomputed (and no view object is
+  // reallocated) on every render: the slice is identity-stable across renders.
+  const bytes = useMemo(
+    () =>
+      preferToken && source !== null && source.length > DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES
+        ? source.subarray(0, DEFAULT_TRAFFIC_BODY_PREVIEW_BYTES)
+        : source,
+    [source, preferToken]
+  );
+  const bodyBytes = side.bodyBytes ?? source?.length ?? 0;
   const windowed = Boolean(bytes && bodyBytes > bytes.length);
+  const badgeParts: string[] = [];
+  if (side.bodyBytes) badgeParts.push(fmtBytes(side.bodyBytes));
+  if (side.bodyTruncated) badgeParts.push(t('proxyLog.truncated'));
+  else if (windowed) badgeParts.push(t('proxyLog.previewWindowed'));
+  const bodyBadge = badgeParts.length > 0 ? ` · ${badgeParts.join(' · ')}` : '';
   const ctx: DecoderContext = { bytes: bytes ?? null, bodyBytes, windowed, contentType: side.contentType, layers: side.layers, decoderName: side.decoderName };
   const decoders = useMemo(() => applicableDecoders(ctx), [bytes, bodyBytes, side.contentType, side.layers]);
   const [picked, setPicked] = useState<string | null>(null);
@@ -222,7 +250,7 @@ const DetailSidePane: React.FC<{ side: DetailSideModel }> = ({ side }) => {
       >
         {side.headers ? <Prose text={side.headers} clamp={10} open={exp.h} onOpenChange={(v) => flip('h', v)} hideToggle scrollClamp /> : empty}
       </DetailSection>
-      <DetailSection title={`${side.bodyTitle}${side.bodyBadge ?? ''}`} expanded={exp.b}>
+      <DetailSection title={`${side.bodyTitle}${bodyBadge}`} expanded={exp.b}>
         {(decoders.length > 1 || side.bodyToken || (output && output.kind !== 'none')) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
             {decoders.length > 1 && (
@@ -495,13 +523,6 @@ const PluginAccessDetail: React.FC<{ ev: PluginTrafficEvent; decoder: string }> 
     hex ? new Uint8Array((hex.match(/.{2}/g) ?? []).map((h) => parseInt(h, 16))) : null;
   const layersOf = (side: 'req' | 'res'): { name: string; frames?: unknown[] }[] =>
     (ev.decoded?.layers ?? []).filter((l) => (l.side ?? 'req') === side).map((l) => ({ name: l.name, frames: l.frames }));
-  const badge = (total: number | undefined, truncated: boolean | undefined, window: string | undefined): string => {
-    const parts: string[] = [];
-    if (total && total > 0) parts.push(fmtBytes(total));
-    if (truncated) parts.push(t('proxyLog.truncated'));
-    else if (total && total > (window ? window.length / 2 : 0)) parts.push(t('proxyLog.previewWindowed'));
-    return parts.length > 0 ? ` · ${parts.join(' · ')}` : '';
-  };
   const meta = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
@@ -526,9 +547,10 @@ const PluginAccessDetail: React.FC<{ ev: PluginTrafficEvent; decoder: string }> 
         headersTitle: t('proxyLog.reqHeaders'),
         headers: headerText(ev.reqHeaders),
         bodyTitle: t('proxyLog.reqBody'),
-        bodyBadge: badge(ev.reqBodyBytes, ev.reqTruncated, ev.reqHex),
         bytes: bytesOf(ev.reqHex),
         bodyBytes: ev.reqBodyBytes,
+        bodyTruncated: ev.reqTruncated,
+        inlineIsPreview: true,
         layers: layersOf('req'),
         contentType: ev.reqContentType,
         decoderName: decoder,
@@ -539,9 +561,10 @@ const PluginAccessDetail: React.FC<{ ev: PluginTrafficEvent; decoder: string }> 
         headersTitle: t('proxyLog.resHeaders'),
         headers: headerText(ev.resHeaders),
         bodyTitle: t('proxyLog.resBody'),
-        bodyBadge: badge(ev.resBodyBytes, ev.resTruncated, ev.resHex),
         bytes: bytesOf(ev.resHex),
         bodyBytes: ev.resBodyBytes,
+        bodyTruncated: ev.resTruncated,
+        inlineIsPreview: true,
         layers: layersOf('res'),
         contentType: ev.resContentType,
         decoderName: decoder,

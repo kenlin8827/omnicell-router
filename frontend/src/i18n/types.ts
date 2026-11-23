@@ -331,6 +331,9 @@ export interface TranslationDict {
     proxyPatterns: string;
     /** Nav label: the built-in Clash panel under Proxy Management. */
     proxyMihomo: string;
+    /** Nav label: the machine-wide OS proxy page (one slot; the target is the
+     *  inbound forward proxy or the Clash egress). */
+    systemProxy: string;
     /** Nav label: the inbound proxy's traffic log page (the observation half
      *  of the inbound capability; the settings page owns the rules). Kept to
      *  one short word pair — the card header carries the full name. */
@@ -572,6 +575,7 @@ export interface TranslationDict {
     badgeOauth: string;
     modelsCount: string;
     updateKey: string;
+    saveKey: string;
     updateKeyPrompt: string;
     keyUpdated: string;
     addKeyCredential: string;
@@ -1348,6 +1352,16 @@ hiddenBadge: string;
     colStreamTip: string;
     /** Protocol-map column header (inbound surface → outbound wireKind). */
     colProtocol: string;
+    /** Outbound-egress column header (direct / proxy / unknown). */
+    colEgress: string;
+    /** Egress column tooltip: the three states. */
+    colEgressTip: string;
+    /** PROXY badge tooltip prefix (the redacted origin is appended after the colon). */
+    egressProxyTip: string;
+    /** DIRECT state tooltip. */
+    egressDirectTip: string;
+    /** Unknown state tooltip (legacy row / transport that does not report its egress). */
+    egressUnknownTip: string;
     promptFallbackTip: string;
     /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
     inboundStreamTip: string;
@@ -2366,30 +2380,31 @@ hiddenBadge: string;
      *  resolved file and the merge/reopen semantics. */
     workbuddyHint: string;
     versionOk: string;
+    /** Generic hook hint for clients whose package declares no `clientText.hint`. */
+    caHint: string;
     versionBelow: string;
-    proxyErrForwardProxyDisabled: string;
-    proxyErrCaMissing: string;
-    proxyErrServiceProbe: string;
-    proxyErrServiceSetEnv: string;
-    proxyErrServiceStart: string;
-    proxyErrNotActive: string;
-    proxyTeardownOk: string;
-    proxySetupOk: string;
-    cursorHint: string;
-    cursorErrForwardProxyDisabled: string;
-    cursorErrCaMissing: string;
-    cursorErrNotFound: string;
-    cursorSetupOk: string;
-    cursorTeardownOk: string;
     clientErrNotActive: string;
     clientErrTakeoverLost: string;
-    cursorErrRemoveFailed: string;
     gatewayModels: string;
     gatewayModelsInfo: string;
     gatewayReplace: string;
     gatewayModelList: string;
     gatewayDefaultModel: string;
     gatewayForceModel: string;
+    aliasRowClientId: string;
+    aliasRowTarget: string;
+    aliasRowLevel: string;
+    aliasRowLabel: string;
+    aliasRowRemove: string;
+    aliasAddByPattern: string;
+    aliasPatternPlaceholder: string;
+    aliasPatternHint: string;
+    aliasCatalogEmpty: string;
+    aliasPatternNoMatch: string;
+    aliasPatternNeedsTarget: string;
+    gatewaySchemaUnavailable: string;
+    aliasAdd: string;
+    aliasEmpty: string;
     gatewayCatalogPrefix: string;
     gatewaySaveDropped: string;
     gatewayAutoSaveHint: string;
@@ -2403,21 +2418,7 @@ hiddenBadge: string;
     gatewayPluginDisabled: string;
     gatewayPluginNotLoaded: string;
     gatewayPluginRequired: string;
-    jetbrainsHint: string;
-    jetbrainsSetupOk: string;
-    jetbrainsTeardownOk: string;
-    /** Family card: "N IDEs" badge on the collapsed row. */
-    jetbrainsProductCount: string;
-    qoderErrNotFound: string;
-    qoderHint: string;
-    qoderSetupOk: string;
     warnCaNotTrusted: string;
-    jetbrainsCa: string;
-    jetbrainsCaImported: string;
-    jetbrainsCaAbsent: string;
-    jetbrainsCaUnknown: string;
-    jetbrainsCaNotHooked: string;
-    jetbrainsCaReimport: string;
     warnIdeRunning: string;
     /** Consent dialog title: a client is running while the operator asks to hook/unhook it. */
     ideRunningTitle: string;
@@ -2433,7 +2434,6 @@ hiddenBadge: string;
     warnIdeTruststoreReadonly: string;
     /** A plugin-owned advisory code with no text declared in its package. */
     warnUndeclaredAdvisory: string;
-    qoderTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;
     models: string;
@@ -2479,7 +2479,6 @@ hiddenBadge: string;
     smartScopeKey: string;
     smartScopeNone: string;
     smartScopeEmpty: string;
-    proxyHint: string;
     /** Hook-tab roster filter placeholder */
     filterPh: string;
     /** Proxy-tab prerequisite banners (inbound forward proxy off / not running) */
@@ -2676,6 +2675,12 @@ hiddenBadge: string;
     endpointManage: string;
     disabled: string;
     saveHint: string;
+    /** Button + dialog title: multi-select picker of `<provider>/*` patterns from CONNECTED providers. */
+    quickAdd: string;
+    /** Dialog subtitle: where the patterns come from, and that picking only appends. */
+    quickAddHint: string;
+    /** Apply button, `{n}` = number of ticked patterns (disabled at 0). */
+    quickAddApply: string;
   };
   /** The inbound forward-proxy ACCESS page (ProxyAccessPage): CA trust, the
    *  setup wizard and the OS-proxy controls. Rule-table keys live under
@@ -2735,6 +2740,7 @@ hiddenBadge: string;
     installingSize: string;
     errDisabled: string;
     errPortCollision: string;
+    errPortInUse: string;
     errBinaryMissing: string;
     errStart: string;
     errReload: string;
@@ -2754,9 +2760,16 @@ hiddenBadge: string;
     clientAccess: string;
     pacOpen: string;
     pacSummary: string;
+    /** Quiet owner line on the outbound page: the OS proxy currently points at
+     *  the Clash mixed port (`{port}`). */
+    sysProxyOwner: string;
     nodeAllSources: string;
     nodeAllTypes: string;
     tabRules: string;
+    tabLogs: string;
+    logsHint: string;
+    logsEmpty: string;
+    logsAdopted: string;
     rulesNoCore: string;
     rulesEmpty: string;
     rulesCustomTitle: string;
@@ -2786,6 +2799,27 @@ hiddenBadge: string;
     rulesSelectRow: string;
     rulesClearSel: string;
     errImport: string;
+    /** Save/start refused: a GEOIP/GEOSITE row without the geo databases. */
+    errGeoMissing: string;
+    /** The explicit geo-data download failed (network / HTTP / disk). */
+    errGeoDownload: string;
+    /** Geo database card (basic settings): installed files and their sync. */
+    geoSyncTitle: string;
+    geoSyncHint: string;
+    geoSyncLegMachine: string;
+    geoSyncLegNode: string;
+    /** The node leg needs a running core; doubles as its tooltip and hint. */
+    geoSyncNodeNeedsCore: string;
+    geoSyncLegHint: string;
+    geoSyncAction: string;
+    /** `{file}` = geo asset key (geoip / geosite); the percentage is appended by the page. */
+    geoSyncDownloading: string;
+    geoSyncDone: string;
+    geoFileMissing: string;
+    /** `{time}` = localized timestamp of the installed copy. */
+    geoUpdatedAt: string;
+    /** Advisory: the installed copy is past the re-sync window. */
+    geoStale: string;
     rulesImportCacheNote: string;
     rulesImportNetNote: string;
     rulesImportPreview: string;
@@ -2795,6 +2829,24 @@ hiddenBadge: string;
     rulesSource: string;
     rulesSourceAll: string;
     rulesSourceManual: string;
+    /** Provenance of a seeded row (`source: 'default'`). */
+    rulesSourceDefault: string;
+    /** Provenance of a one-click preset row (`source: 'preset'`). */
+    rulesSourcePreset: string;
+    rulesPreset: string;
+    rulesPresetTitle: string;
+    rulesPresetSubtitle: string;
+    rulesPresetLan: string;
+    rulesPresetLanHint: string;
+    rulesPresetCn: string;
+    rulesPresetCnHint: string;
+    rulesPresetGeoReady: string;
+    rulesPresetGeoMissing: string;
+    rulesPresetApply: string;
+    rulesPresetAdded: string;
+    rulesPresetNothing: string;
+    /** `{file}` = geo asset key (geoip / geosite); the percentage is appended by the page. */
+    rulesPresetDownloading: string;
     rulesShown: string;
     rulesViewEdit: string;
     rulesViewLive: string;
@@ -2829,6 +2881,11 @@ hiddenBadge: string;
     subInterval: string;
     subAutoEvery: string;
     subIntervalHint: string;
+    subProxy: string;
+    subProxyHint: string;
+    subProxyFollow: string;
+    subProxyMachine: string;
+    subProxyMissing: string;
     subEnabled: string;
     subDisabled: string;
     subEnabledHint: string;
@@ -2852,15 +2909,32 @@ hiddenBadge: string;
     nodeSelected: string;
     nodeCurrent: string;
     nodeNone: string;
+    /** AXIS 2 — ACTION: measure one node's LATENCY (ADR-0022 "latency"). It is
+     *  never the word for the connectivity verdict (`testUrlBtn`) or for the
+     *  direct-TCP port check (`tcpProbe`); mixing them costs a node. */
     nodeTest: string;
     nodeTestAll: string;
-    nodeTestConn: string;
+    /** In-flight label for a latency measurement (`nodeTest` / `nodeTestAll`). */
     nodeTesting: string;
-    nodeTestOk: string;
-    nodeTestFail: string;
+    /** AXIS 3 — ACTION: direct TCP connect to an unsaved node's server:port.
+     *  This is the only check a row that is not in the config yet can answer,
+     *  and it proves nothing about the proxy (ADR-0022). */
+    tcpProbe: string;
+    /** In-flight label for `tcpProbe`. */
+    tcpProbeRunning: string;
+    /** `tcpProbe` outcome: the port accepted a direct socket. */
+    tcpOk: string;
+    /** `tcpProbe` outcome: the direct socket failed. `{error}`. */
+    tcpFail: string;
+    /** Says out loud what `tcpProbe` does NOT prove, and where the real answer
+     *  lives. Without it an operator reads "port reachable" as "this node
+     *  works" and saves a node that cannot carry traffic. */
+    tcpProbeHint: string;
     nodeTestUrl: string;
     nodeTestUrlHint: string;
     nodeDelay: string;
+    /** Column header: the latency reading, not the action. */
+    nodeColDelay: string;
     nodeSortDelay: string;
     nodeType: string;
     nodeOffline: string;
@@ -2914,7 +2988,37 @@ hiddenBadge: string;
     nodePorts: string;
     nodeFieldInvalid: string;
     nodeUnmodeled: string;
+    /** AXIS 1 — ACTION: fetch one endpoint THROUGH the proxy (ADR-0022
+     *  "connectivity"). The answer is a verdict about the proxy, not a node
+     *  ranking, so its result string never shares a word with AXIS 2. */
     testUrlBtn: string;
+    /** In-flight label for `testUrlBtn`. */
+    testUrlRunning: string;
+    /** `testUrlBtn` outcome: the tunnel carried the request. `{ms}` is the
+     *  round trip through the proxy, spelled as such so it is never read as a
+     *  node latency. */
+    connOk: string;
+    /** `testUrlBtn` outcome: the proxy did not carry the request. `{error}`. */
+    connFail: string;
+    /** Machine-leg outcome: the machine's own egress reached the endpoint.
+     *  `{ms}` is the machine's round trip, never read as node latency. */
+    connMachineOk: string;
+    /** Machine-leg outcome: the machine's own egress failed. `{error}`. */
+    connMachineFail: string;
+    /** Suffix on a machine-leg outcome when the request left through the OS
+     *  system proxy: which endpoint carried it. `{proxy}`. */
+    connMachineViaProxy: string;
+    /** Endpoint-check leg: through the Clash node (default). */
+    testLegTunnel: string;
+    /** Endpoint-check leg: the machine's own egress — through the OS system
+     *  proxy when one is enabled, directly otherwise. Needs no running core. */
+    testLegMachine: string;
+    /** Shown while the machine leg is active: how it leaves this machine and
+     *  what its result compared with the tunnel answers. */
+    testLegMachineHint: string;
+    /** Shown while the machine leg is active AND the OS system proxy is held by
+     *  Clash: the leg follows that proxy, so it shares the node path. */
+    testLegMachineOnClash: string;
     testCurrentNode: string;
     testCurrentUrl: string;
     testChangeUrl: string;
@@ -2923,7 +3027,8 @@ hiddenBadge: string;
     testCustomLabel: string;
     testCustomHint: string;
     testUrlTimeout: string;
-    testUrlAllNodes: string;
+    /** Batch of `testUrlBtn` over every candidate endpoint. Node latency is
+     *  AXIS 2 and lives on the nodes tab only. */
     testUrlBatch: string;
     /** {done} of {n} endpoints probed so far. */
     testUrlBatchRunning: string;
@@ -2980,7 +3085,17 @@ hiddenBadge: string;
     ruleClaimsHint: string;
     ruleClaimsColHost: string;
     ruleClaimsColPlugin: string;
+    ruleClaimsFilterAll: string;
     ruleClaimsEmpty: string;
+    ruleClaimsColEgress: string;
+    ruleClaimsEgressFromOperator: string;
+    ruleClaimsEgressFromPlugin: string;
+    ruleClaimsEgressFromManifest: string;
+    ruleClaimsEgressFromRule: string;
+    ruleClaimsEgressFromCatchAll: string;
+    ruleClaimsEgressBlinded: string;
+    ruleClaimsEgressDrawerHint: string;
+    ruleClaimOwnsEgress: string;
     ruleProbe: string;
     ruleProbeRule: string;
     ruleProbeLoopback: string;
@@ -3125,6 +3240,29 @@ hiddenBadge: string;
     sysOverrideLabel: string;
     sysEnvBtn: string;
     sysUnsupportedNote: string;
+    /** OS proxy owned by the Clash endpoint (ONE snapshot slot, two targets). */
+    sysStateOnClash: string;
+    sysHintClashOwned: string;
+    sysSwitchBtn: string;
+    /** Dedicated system-proxy page: one machine-wide slot, two OCR targets. */
+    sysPageIntro: string;
+    sysForwardTitle: string;
+    sysForwardOff: string;
+    sysOpenPage: string;
+    sysActiveBtn: string;
+    sysCurrentLabel: string;
+    sysClashTitle: string;
+    sysClashHint: string;
+    sysClashNeedCore: string;
+    sysClashCoreDown: string;
+    sysStaleHintClash: string;
+    /** Short state tokens for the Mihomo page header pill ("OS proxy · <token>"):
+     *  the state vocabulary without its own "system proxy" prefix. */
+    sysPillClash: string;
+    sysPillOcr: string;
+    sysPillOff: string;
+    sysPillExternal: string;
+    sysPillStale: string;
     autoHint: string;
     refresh: string;
     clear: string;
@@ -3229,6 +3367,7 @@ hiddenBadge: string;
     desc: string;
     reload: string;
     reloadOk: string;
+    reloadRegistered: string;
     reloadFail: string;
     colLoadedAt: string;
     install: string;
@@ -3240,6 +3379,7 @@ hiddenBadge: string;
     downloadOk: string;
     uninstall: string;
     uninstallConfirm: string;
+    uninstallConfirmDetail: string;
     uninstallOk: string;
     uninstallFail: string;
     empty: string;
@@ -3267,6 +3407,9 @@ hiddenBadge: string;
     typeClientGateway: string;
     typeClientAdapter: string;
     settings: string;
+    changelog: string;
+    changelogTitle: string;
+    changelogCurrent: string;
     configTitle: string;
     configSave: string;
     configSaved: string;
@@ -3275,6 +3418,11 @@ hiddenBadge: string;
     configInvalid: string;
     configWarnings: string;
     configEmpty: string;
+    egressTitle: string;
+    egressDesc: string;
+    egressInherit: string;
+    egressProxy: string;
+    egressDirect: string;
     configAddModel: string;
     configModeQuick: string;
     configModeAdvanced: string;

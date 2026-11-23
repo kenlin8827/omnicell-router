@@ -36,10 +36,15 @@ import type { AccessTap } from '../forward-proxy/access-log.js';
 /** The three extension axes a plugin can occupy (ADR-0017 / ADR-0027). */
 export type PluginType = 'model-service' | 'client-gateway' | 'client-adapter';
 
+/** The outbound leg a gateway declares for the hosts it claims (ADR-0018
+ *  precedence step 3). `inherit` — the spelling of "absent" — means the
+ *  catch-all row still decides, so declaring a claim changes no routing. */
+export type PluginClaimEgress = 'inherit' | 'proxy' | 'direct';
+
 /**
  * One slot a package fills. `wires` belongs to a model-service part, `hosts`
- * to a client-gateway part; a client-adapter part carries neither (its
- * contribution is a Client Hub hook, not a wire or a claim).
+ * and `egress` to a client-gateway part; a client-adapter part carries none of
+ * them (its contribution is a Client Hub hook, not a wire or a claim).
  */
 export interface PluginPart {
   type: PluginType;
@@ -49,6 +54,11 @@ export interface PluginPart {
   /** SNI hosts this part claims on the forward proxy. Required non-empty on a
    *  client-gateway part, rejected elsewhere. */
   hosts?: string[];
+  /** Where the bytes of EXACTLY these hosts leave the machine. Vendor knowledge
+   *  ("this endpoint is unreachable direct here"), never an address: the
+   *  outbound proxy it means is the operator's `config.proxy`. Rejected on a
+   *  wildcard claim, which would pin every host on the machine. */
+  egress?: PluginClaimEgress;
 }
 
 export interface PluginManifest {
@@ -72,6 +82,8 @@ export interface PluginManifest {
    *  metadata only — the runtime truth is the module's `hosts`). Single-part
    *  form of `parts[].hosts`. */
   hosts?: string[];
+  /** Outbound leg for the claimed hosts. Single-part form of `parts[].egress`. */
+  egress?: PluginClaimEgress;
   /** Plain string, or a locale map ({"zh-CN": …, "en-US": …}) — the console
    *  picks by current UI locale and falls back to en-US / the raw value. */
   description?: string | Record<string, string>;
@@ -81,10 +93,24 @@ export interface PluginManifest {
    *  warning's `params`. Core-owned codes (`ca_not_trusted`, …) keep core
    *  wording — a package declares only codes it introduced. */
   warningLabels?: Record<string, string | Record<string, string>>;
-  /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
+  /** Package-owned client presentation texts (ADR-0027): success toasts, the
+   *  card hint, per-reasonCode failure copy and family-card labels — every
+   *  string the console used to hardcode per client id. Core must never
+   *  string-reference a package client id; the copy travels with the package. */
+  clientText?: ClientTextManifest;
+  /** Roster sort key among contributed hooks (lower sorts first). Absent =
+   *  alphabetical after every ranked hook; the core popularity table
+   *  (`utils/popularity.ts`) stays host/core-only. */
+  clientRank?: number;
   logo?: string;
   /** Provider presets this plugin can pre-provision (shown on the plugins page). */
   presets?: PluginProviderPreset[];
+  /** Release history shown by the console's Plugins page. Entries
+   *  are declared NEWEST FIRST; the console renders them in manifest order and
+   *  never re-sorts, so a pre-release or a backported fix keeps the author's
+   *  placement. Purely presentational: nothing in the loader, router or config
+   *  merge reads it. */
+  changelog?: PluginChangelogEntry[];
   /** Operator-facing configuration fields (ADR-0017). Flat primitives only —
    *  the console renders the settings form generically from this; values are
    *  stored as a plugin artifact (<pluginsRoot>/config/<id>.json), never in
@@ -129,9 +155,11 @@ export interface PluginConfigSection {
 /** The closed widget vocabulary the CONSOLE owns (ADR-0017 §7). A plugin names
  *  a control, never a layout, ordering or markup: 'text' is the default for a
  *  `string`, 'textarea' a multi-line box, 'model' a single model-ref picker
- *  bound to the gateway catalog, 'models' a multi-pick list of model refs.
+ *  bound to the gateway catalog, 'models' a multi-pick list of model refs,
+ *  'aliases' a row table of `client=target[#label]` mapping specs (a client's
+ *  own model id on the left, an OCR model on the right).
  *  A control that cannot drive the field's type fails the manifest. */
-export type PluginConfigControl = 'text' | 'textarea' | 'model' | 'models' | 'segmented' | 'apiKey';
+export type PluginConfigControl = 'text' | 'textarea' | 'model' | 'models' | 'aliases' | 'segmented' | 'apiKey';
 
 /** One flat field of a plugin's operator-facing configuration. Primitives
  *  only: the console renders string/number/boolean/string[]/enum inputs
@@ -189,6 +217,20 @@ export interface PluginProbeOptions {
   baseURL: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
+}
+
+/** One release note of a plugin's `changelog` (manifest presentation only).
+ *  `version` need not equal the manifest version — the history keeps the
+ *  versions an operator already knows, and the console marks the entry that
+ *  matches the installed one. `notes` follows the manifest locale-map
+ *  convention and is rendered as markdown. */
+export interface PluginChangelogEntry {
+  /** Release identifier as the package names it (semver is not required). */
+  version: string;
+  /** Release date, `YYYY-MM-DD`; display only. Absent = undated entry. */
+  date?: string;
+  /** Release notes — plain string or BCP-47 keyed map of strings. */
+  notes: string | Record<string, string>;
 }
 
 /** A provider definition the plugin offers to pre-provision (e.g. one per
@@ -372,6 +414,10 @@ export interface ModelServicePluginHost {
   /** Operator configuration, merged (defaults ← stored artifact, validated).
    *  Call-time lookup — always current after a console save. */
   config(): Record<string, unknown>;
+  /** The live OCR home directory — plugin state that must outlive the process
+   *  (a device identity, sidecar files) belongs under it, never next to the
+   *  packaged bundle, which an upgrade replaces. */
+  ocrHome(): string;
   /** The directory this plugin's files were loaded from — the ONE asset root.
    *  Packaged plugins are a SINGLE flattened `index.js`, so a path derived
    *  from `import.meta.url` of an inner source module does not survive
@@ -437,6 +483,24 @@ export interface ClientGatewayPlugin {
   /** Optional: notified after the operator saves plugin settings; the merged
    *  values arrive pre-validated (same object `host.config()` returns). */
   onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
+  /**
+   * The outbound leg this gateway claims for one of its hosts (ADR-0018 Revision 5).
+   * Evaluated PER REQUEST, so a gateway may change its mind as its own state
+   * changes, and it may answer host by host — this is the half where vendor
+   * knowledge lives, and it is the plugin's code speaking, never a rule row the
+   * operator has to keep. `undefined` means "code has no opinion", and the
+   * decision falls to what the operator set for this plugin, then to the
+   * manifest declaration.
+   *
+   * It is OVERRULED, not consulted, when the operator explicitly picked a leg
+   * for this plugin in the settings drawer: the plugin-level switch is the
+   * operator's word on every host this package claims.
+   *
+   * A WILDCARD gateway gets no vote: `'*'` is a read permission over every host
+   * the machine reaches, and an egress opinion attached to it would pin
+   * traffic this package does not own.
+   */
+  egressFor?(info: { host: string }): PluginClaimEgress | undefined;
 }
 
 /** One decrypted `Upgrade:` handshake handed to a client gateway. */
@@ -630,6 +694,24 @@ export interface ClientAdapterHost {
   createApiKey(opts: { name: string; description?: string }): { key: string } | null;
 }
 
+/** Text or locale map — the same shape `description` / `warningLabels` use;
+ *  `{param}` placeholders interpolate like the warning labels do. */
+export type ClientTextEntry = string | Record<string, string>;
+
+/**
+ * Package-owned client presentation texts (ADR-0027). `errors` keys mirror the
+ * adapter's own `ClientActionResult.reasonCode` spellings (lowerCamel or
+ * snake_case, verbatim); `family` keys label the `ClientHookStatus.products`
+ * rendering (product_count, ca, ca_imported, …).
+ */
+export interface ClientTextManifest {
+  setupOk?: ClientTextEntry;
+  teardownOk?: ClientTextEntry;
+  hint?: ClientTextEntry;
+  errors?: Record<string, ClientTextEntry>;
+  family?: Record<string, ClientTextEntry>;
+}
+
 /** One plugin known to the host — loaded, or the reason it could not load. */
 export interface PluginView {
   id: string;
@@ -645,6 +727,10 @@ export interface PluginView {
   description?: string | Record<string, string>;
   /** This package's own advisory texts, keyed by warning code (see PluginManifest). */
   warningLabels?: Record<string, string | Record<string, string>>;
+  /** Package-owned client presentation texts (see PluginManifest.clientText). */
+  clientText?: ClientTextManifest;
+  /** Release history (see PluginManifest.changelog); rendered in declared order. */
+  changelog?: PluginChangelogEntry[];
   presets?: PluginProviderPreset[];
   /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
   logo?: string;

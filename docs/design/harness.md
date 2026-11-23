@@ -190,9 +190,11 @@ location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 12 with a p
 | grok | √ | √ (CLI) | √ | `grok mcp add … [-s user\|project]` → `~/.grok/config.toml` / project `.grok/config.toml` (TOML, read-only); `grok plugin install {url} --trust` |
 | openclaw | √ | √ (CLI) | √ | `openclaw mcp add …` → `~/.openclaw/openclaw.json` (JSON5, read-only, global-only); `openclaw plugins install <spec> --force` |
 
+**Amended 2026-11-22:** the paragraph below predates the client-id migration — `SupportedClient` no longer exists. Client ids are runtime-declared strings (core hooks are the closed `CoreClientId` set in `cli/clients/reserved.ts`; package hooks like `opencode-gateway` / `cursor-proxy` are declared by their packages). The host/client separation below is unchanged, now against the runtime id registry (ADR-0015 §D2, ADR-0027 amendment).
+
 `opencode-gateway` never appears: proxy mode is a hook mode of `opencode`, not a separate host. The same
 holds for `cursor-proxy` — its harness host is `cursor`, the artifact landing, not the traffic hook
-(Qoder has no harness host yet). Hosts are **not** `SupportedClient`: VS Code/Zed/Windsurf remain
+(Qoder has no harness host yet). Hosts are **not** traffic client ids: VS Code/Zed/Windsurf remain
 artifact hosts only, and welding the two vocabularies would pollute the traffic domain (ADR-0015 §D2).
 
 **A host is a reader, not a location.** Fifteen hosts read the project `.agents/skills` tree and
@@ -293,7 +295,7 @@ Anything the operator types is passed through verbatim — no tag is ever append
 ```ts
 type CopyState = {
   scope: 'global' | 'project';       // 'project' only on copies installed before the scope gate
-  host: HostId;                        // harness host, NOT SupportedClient (ADR-0015 §D2)
+  host: HostId;                        // harness host, NOT a traffic client id (ADR-0015 §D2; `SupportedClient` is gone)
   rootId: string;                      // display hint only; absolute `path` is the identity
   path: string;                        // reconcile key (claims.json is keyed by this)
   profile?: string;                    // per-profile runtime store (DSH): web / desktop / custom

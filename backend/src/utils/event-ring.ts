@@ -14,6 +14,10 @@ export const EVENT_RING_CAPACITY = 500;
  * EventRing constructor; never re-declare per module).
  */
 export const PROXY_ACCESS_RING_CAPACITY = 300;
+/** Clash-core output ring capacity — memory-only, but a captured line is wide,
+ * so it carries its own budget (pass to the EventRing constructor; never
+ * re-declare per module). */
+export const MIHOMO_LOG_RING_CAPACITY = 500;
 /** Repeats of the same coalescing key inside this window fold into one row. */
 export const EVENT_COALESCE_WINDOW_MS = 10_000;
 /** Error/note text bound — a row is an observation, not an archive of the wire body. */

@@ -8,8 +8,8 @@ import { isCoreClientId, RETIRED_CLIENT_IDS } from './reserved.js';
  *
  *  - the core registry is the answer to "what can this build hook?", a fixed
  *    map keyed by the reserved id list in `reserved.ts` — compile-time
- *    knowledge the CLI help text, the console roster and the i18n labels are
- *    built on;
+ *    knowledge the CLI help text and the console roster are built on (a
+ *    package hook's own copy and rank travel in its manifest, ADR-0027);
  *  - this map is the answer to "what has this install additionally hooked?",
  *    which changes at runtime (install / uninstall / disable / a failed load)
  *    and must never be able to shadow a core id.
@@ -28,9 +28,15 @@ import { isCoreClientId, RETIRED_CLIENT_IDS } from './reserved.js';
  * legs keep serving. Registration outside a rebuild (tests, callers without a
  * host) writes to the live map.
  */
-const byName = new Map<string, { pluginId: string; adapter: ClientAdapter }>();
+interface Entry {
+  pluginId: string;
+  adapter: ClientAdapter;
+  /** Manifest `clientRank`: the hook's roster sort key among contributed hooks. */
+  rank?: number;
+}
+const byName = new Map<string, Entry>();
 /** Staging target while a rebuild is open; undefined = write live. */
-let staged: Map<string, { pluginId: string; adapter: ClientAdapter }> | undefined;
+let staged: Map<string, Entry> | undefined;
 
 /** Open a rebuild: registrations land in a staging map until the commit. */
 export function beginPluginClientAdapterRebuild(): void {
@@ -57,7 +63,7 @@ export function clearPluginClientAdapters(): void {
  * must surface as a load error on the plugin's own console row, never as a
  * silent override.
  */
-export function registerPluginClientAdapter(pluginId: string, adapter: ClientAdapter): void {
+export function registerPluginClientAdapter(pluginId: string, adapter: ClientAdapter, rank?: number): void {
   const name = String(adapter?.name ?? '').trim().toLowerCase();
   if (!name) throw new Error('client-adapter plugin returned no adapter name');
   if (isCoreClientId(name)) {
@@ -77,7 +83,7 @@ export function registerPluginClientAdapter(pluginId: string, adapter: ClientAda
   if (existing && existing.pluginId !== pluginId) {
     throw new Error(`client '${name}' is already provided by plugin '${existing.pluginId}'`);
   }
-  target.set(name, { pluginId, adapter });
+  target.set(name, { pluginId, adapter, ...(rank !== undefined ? { rank } : {}) });
 }
 
 /** One plugin-contributed adapter by client id (core lookup already missed). */
@@ -93,4 +99,9 @@ export function pluginIdForClient(name: string): string | undefined {
 /** All plugin-contributed adapters, registration order. */
 export function listPluginClientAdapters(): ClientAdapter[] {
   return [...byName.values()].map((entry) => entry.adapter);
+}
+
+/** Manifest `clientRank` for a contributed hook — undefined = unranked tail. */
+export function pluginClientRank(name: string): number | undefined {
+  return byName.get(String(name ?? '').trim().toLowerCase())?.rank;
 }

@@ -30,7 +30,22 @@ semantic model. The model must sit above all of them.
    - tools are a typed union: `function`, `custom`, `builtin` and `extension`;
      `tool_choice` includes Responses `allowed_tools`;
    - tool calls keep both item `id` and correlation `callId`; malformed argument
-     JSON fails at a target that requires an object instead of being rewritten;
+     JSON fails at a target that requires an object instead of being rewritten.
+     Carriers without item ids (Chat, Anthropic, Gemini) put the tool-call id in
+     both slots, and the Responses wire rejects a `function_call` / `custom_tool_call`
+     item id that does not start with `fc_` / `ctc_` ("Expected an ID that begins
+     with 'fc'", param `input[n].id`). The Responses adapters therefore derive the
+     item id from the incoming tool-call id deterministically
+     (`responsesToolItemId`), keeping `call_id` untouched — the same history must
+     yield the same item id on every turn, or the replayed prompt prefix turns
+     over and the upstream prompt cache misses. The derivation is also injective:
+     a tool-call id that is not already safe in charset and length is hashed
+     (SHA-256, truncated to the same 48-char budget) instead of sanitized or
+     truncated, because the chat client owns that string and dropping characters
+     would merge two calls onto one item id. Item ids already carrying the
+     right prefix (a real Responses replay) pass through verbatim, and buffered
+     and streamed encoders share the derivation so an emitted item never changes
+     id between `output_item.added` and the terminal response;
    - reasoning text, summary parts, signatures and encrypted content are
      distinct fields — text is never relabelled as a summary;
    - generation, structured-output, reasoning, cache, stateful-request and

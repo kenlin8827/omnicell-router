@@ -3,9 +3,13 @@
  *
  * The gateway owns the process it spawns: pid file + an `owner` marker
  * (`spawned` vs `adopted`) live under `<env>/mihomo/`. A controller that is
- * already healthy is adopted and left running. Explicit stop kills a local
- * listener either way. When the run policy turns the core off, only a process
- * this gateway spawned is stopped — an operator's own mihomo is not touched.
+ * already healthy is adopted; one this gateway spawned — including an orphan
+ * left by a hard-killed previous gateway — stays BOUND to the current
+ * gateway's lifetime and is killed on its exit. Every failed start reaps the
+ * process it just spawned, so a refused start never leaks a deaf listener into
+ * the next one. When the run policy turns the core off, only a process this
+ * gateway spawned is stopped — an operator's own mihomo (`adopted`) is never
+ * touched.
  *
  * Run policy is `proxy.mihomo.autoStart`, NOT the outbound mode. The core is an
  * independent capability: it can serve a manual-URL outbound setup (pre-warm
@@ -32,11 +36,15 @@ import type { ProxyConfig } from '../config/types.js';
 import { resolveMihomoBinary } from './mihomo-binary.js';
 import { MihomoClient } from './mihomo-client.js';
 import { mihomoConfigSummary, renderMihomoConfig } from './mihomo-config.js';
+import { geoAssetsPresent, rulesNeedGeo } from './mihomo-geo.js';
+import { appendMihomoCoreLog, attachMihomoCoreLog, clearMihomoCoreLogs } from './mihomo-logs.js';
 
 export type MihomoSidecarCode =
   | 'disabled'
   | 'port-collision'
+  | 'port-in-use'
   | 'binary-missing'
+  | 'geo-missing'
   | 'spawn-failed'
   | 'spawn-exited'
   | 'not-ready'
@@ -48,6 +56,8 @@ export interface MihomoChildLike {
   pid?: number;
   on?(event: string, listener: (...args: any[]) => void): void;
   unref?(): void;
+  stdout?: { on(event: string, listener: (chunk: unknown) => void): void } | null;
+  stderr?: { on(event: string, listener: (chunk: unknown) => void): void } | null;
 }
 
 export type MihomoSpawnLike = (cmd: string, args: string[], opts: Record<string, unknown>) => MihomoChildLike;
@@ -100,10 +110,18 @@ const DEFAULT_POLL_INTERVAL_MS = 200;
 let testDeps: MihomoSidecarDeps | null = null;
 let queue: Promise<unknown> = Promise.resolve();
 let lastError: { error: string | null; code: MihomoSidecarCode | null } = { error: null, code: null };
+/** The child THIS process spawned and still owns. Only a pid in here is killed
+ *  on gateway exit; an adopted (operator-owned) core has none. */
+let spawnedPid: number | null = null;
+
+/** mihomo's own words when a listener cannot take its port. */
+const BIND_FAILURE_RE = /bind:|address already in use|Only one usage of each socket address/i;
 
 export function setMihomoSidecarDepsForTests(deps: MihomoSidecarDeps | null): void {
   testDeps = deps;
   lastError = { error: null, code: null };
+  spawnedPid = null;
+  clearMihomoCoreLogs();
 }
 
 function merged(extra?: MihomoSidecarDeps): MihomoSidecarDeps {
@@ -205,6 +223,13 @@ function ownerOf(dir: string): 'spawned' | 'adopted' | null {
 function writeOwner(dir: string, owner: 'spawned' | 'adopted'): void {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'owner'), owner, 'utf8');
+}
+
+/** Markers describe a LIVE managed process; they leave with it. */
+function removeMarkers(dir: string): void {
+  for (const name of ['mihomo.pid', 'owner']) {
+    try { fs.unlinkSync(path.join(dir, name)); } catch { /* already gone */ }
+  }
 }
 
 async function probe(fetchImpl: typeof fetch, port: number, secret: string): Promise<{ ok: boolean; version: string | null }> {
@@ -396,6 +421,14 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     return fail('spawn-failed', `could not write the Clash config (${message})`);
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const pidFile = path.join(dir, 'mihomo.pid');
+  // GEOIP / GEOSITE rows make the core download its geo databases while parsing
+  // the config, and a failed download is fatal ("can't download MMDB"). The
+  // files are an explicit console action, so a missing pair stops the start /
+  // reload here with a code the console can explain, instead of a dead core.
+  if (rulesNeedGeo(proxy.mihomo?.rules) && !geoAssetsPresent(dir)) {
+    return fail('geo-missing', 'GEOIP/GEOSITE rules need the geo databases — download them in the Clash panel first');
+  }
   const health = await probe(fetchImpl, controller, secret);
   if (health.ok) {
     if (written.changed) {
@@ -406,9 +439,17 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
         return fail('reload-failed', `Clash config reload failed (${message})`);
       }
     }
-    const pidFile = path.join(dir, 'mihomo.pid');
     const recorded = readPid(pidFile);
-    if (!ownerOf(dir)) writeOwner(dir, 'adopted');
+    const owner = ownerOf(dir);
+    if (!owner) writeOwner(dir, 'adopted');
+    else if (owner === 'spawned') {
+      // An orphan this gateway shape spawned (a previous gateway was hard-killed)
+      // is taken over: from here it is ours to kill on exit. Markers naming a
+      // DEAD pid are stale — the live core is not the recorded one, so it is an
+      // operator's core and the marker must say so.
+      if (recorded != null && pidAlive(recorded)) spawnedPid = recorded;
+      else writeOwner(dir, 'adopted');
+    }
     await applySelection(proxy, controller, secret, fetchImpl);
     remember(null, null);
     console.log(`[Clash] ${written.changed ? 'reloaded' : 'adopted'} ${written.summary}`);
@@ -423,6 +464,23 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     };
   }
 
+  // A pid file outlives its process on purpose, but a recorded process that
+  // holds NEITHER port failed to bind: it answers nothing while making every
+  // later start collide. Reap it instead of stacking another listener on top —
+  // but only an orphan this gateway shape spawned. An operator's own core
+  // (`adopted`) is never killed, even when it looks deaf.
+  const recorded = readPid(pidFile);
+  if (ownerOf(dir) === 'spawned' && recorded != null && pidAlive(recorded)) {
+    const pidByPort = deps.pidByPortImpl ?? defaultPidByPort;
+    const holdsPort = pidByPort(mixed) === recorded || pidByPort(controller) === recorded;
+    if (!holdsPort) {
+      (deps.killTreeImpl ?? defaultKill)(recorded);
+      if (spawnedPid === recorded) spawnedPid = null;
+      removeMarkers(dir);
+      appendMihomoCoreLog('gateway', `reaped unresponsive core (pid ${recorded})`);
+    }
+  }
+
   const resolved = (deps.binaryResolver ?? resolveMihomoBinary)(proxy.mihomo?.binaryPath);
   if (!resolved.path) return fail('binary-missing', 'Clash core binary not found — install it or set proxy.mihomo.binaryPath');
   const spawnImpl = deps.spawnImpl ?? defaultSpawn;
@@ -432,7 +490,10 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     child = spawnImpl(resolved.path, ['-d', dir, '-f', written.yamlPath], {
       cwd: dir,
       detached: false,
-      stdio: 'ignore',
+      // Piped so the core's own output can be captured (the Logs section);
+      // both pipes are drained immediately below, so a chatty core never
+      // blocks on a full pipe buffer.
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,
     });
@@ -440,16 +501,52 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
     const message = err instanceof Error ? err.message : 'spawn failed';
     return fail('spawn-failed', `failed to spawn the Clash core (${message})`);
   }
+  const captured: string[] = [];
+  attachMihomoCoreLog(child, (line) => {
+    captured.push(line);
+    if (captured.length > 40) captured.shift();
+  });
+  const childPid = child.pid ?? null;
+  const reap = (): void => {
+    // A kill that failed leaves a LIVE process behind; its markers must stay so
+    // the next start's self-heal — or the exit teardown — can find it again.
+    const killed = childPid == null || (deps.killTreeImpl ?? defaultKill)(childPid);
+    if (!killed) return;
+    if (childPid != null && childPid === spawnedPid) spawnedPid = null;
+    // Only markers that name THIS child leave with it — a pre-existing core's
+    // markers are not ours to delete.
+    if (childPid != null && readPid(pidFile) === childPid) removeMarkers(dir);
+  };
+  /** mihomo's bind refusal is the useful diagnosis whenever the core dies. */
+  const bindFailure = (): MihomoOpResult | null => {
+    const bind = captured.find((line) => BIND_FAILURE_RE.test(line));
+    if (!bind) return null;
+    const port = /:(\d{2,5})\b/.exec(bind)?.[1] ?? null;
+    return fail(
+      'port-in-use',
+      `the Clash core could not bind ${port ? `127.0.0.1:${port}` : 'its ports'} — another program is holding it`,
+    );
+  };
   child.on?.('error', (err: Error) => {
     spawnState.error = err;
+    appendMihomoCoreLog('gateway', `spawn error: ${err.message}`);
   });
   child.on?.('exit', (code: number | null) => {
     spawnState.exitCode = code;
+    appendMihomoCoreLog('gateway', `core process exited (code ${code ?? 'null'})`);
+    // Markers describe a live managed process; a core that exited on its own
+    // leaves nothing to manage (the log line above is the evidence).
+    if (child.pid != null && readPid(pidFile) === child.pid) {
+      removeMarkers(dir);
+      if (spawnedPid === child.pid) spawnedPid = null;
+    }
   });
   child.unref?.();
   if (child.pid) {
-    writePid(path.join(dir, 'mihomo.pid'), child.pid);
+    writePid(pidFile, child.pid);
     writeOwner(dir, 'spawned');
+    spawnedPid = child.pid;
+    appendMihomoCoreLog('gateway', `core process started (pid ${child.pid})`);
   }
 
   const readyTimeoutMs = deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
@@ -458,10 +555,13 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
   for (;;) {
     if (spawnState.error) {
       const code = (spawnState.error as NodeJS.ErrnoException).code;
-      return fail('spawn-exited', `the Clash core exited immediately (${spawnState.error.message}${code ? ` [${code}]` : ''})`);
+      reap();
+      return bindFailure()
+        ?? fail('spawn-exited', `the Clash core exited immediately (${spawnState.error.message}${code ? ` [${code}]` : ''})`);
     }
     if (spawnState.exitCode !== null) {
-      return fail('spawn-exited', `the Clash core exited immediately (code ${spawnState.exitCode})`);
+      reap();
+      return bindFailure() ?? fail('spawn-exited', `the Clash core exited immediately (code ${spawnState.exitCode})`);
     }
     const again = await probe(fetchImpl, controller, secret);
     if (again.ok) {
@@ -471,7 +571,11 @@ async function startUnlocked(deps: MihomoSidecarDeps): Promise<MihomoOpResult> {
       return { ok: true, action: 'start', reused: false, pid: child.pid ?? null, version: again.version, error: null, code: null };
     }
     if (Date.now() >= deadline) {
-      return fail('not-ready', `the Clash core did not become ready within ${Math.round(readyTimeoutMs / 1000)}s`);
+      // The core's own words decide the code: a listener that could not take
+      // its port is a configuration/ownership conflict, not a slow start.
+      reap();
+      return bindFailure()
+        ?? fail('not-ready', `the Clash core did not become ready within ${Math.round(readyTimeoutMs / 1000)}s`);
     }
     await new Promise((r) => setTimeout(r, pollIntervalMs));
   }
@@ -499,17 +603,42 @@ async function stopUnlocked(deps: MihomoSidecarDeps, onlySpawned: boolean): Prom
     }
   }
   if (pid == null) {
-    try { fs.unlinkSync(pidFile); } catch { /* already gone */ }
-    try { fs.unlinkSync(path.join(dir, 'owner')); } catch { /* already gone */ }
+    removeMarkers(dir);
+    spawnedPid = null;
     remember(null, null);
     return { ok: true, action: 'noop', reused: false, pid: null, version: null, error: null, code: null };
   }
   if (!kill(pid)) return fail('kill-failed', `failed to terminate the Clash core process ${pid}`);
-  try { fs.unlinkSync(pidFile); } catch { /* already gone */ }
-  try { fs.unlinkSync(path.join(dir, 'owner')); } catch { /* already gone */ }
+  removeMarkers(dir);
+  spawnedPid = null;
   remember(null, null);
   console.log(`[Clash] stopped pid=${pid}`);
   return { ok: true, action: 'stop', reused: false, pid, version: null, error: null, code: null };
+}
+
+/**
+ * Synchronous teardown for the gateway's own exit handlers (ADR-0022): a core
+ * this process spawned is OUR child and must not survive the process that owns
+ * it. `process.on('exit')` allows only synchronous work, and the Windows kill
+ * is already `taskkill` via spawnSync — so this is the one place that is safe
+ * there. An adopted (operator-owned) core never has an entry here and is left
+ * running; a hard-killed gateway cannot run any handler, and the next boot
+ * adopts the survivor (taking ownership) or reaps it if it holds no port.
+ */
+export function stopSpawnedMihomoSync(kill: (pid: number) => boolean = defaultKill): void {
+  const pid = spawnedPid;
+  spawnedPid = null;
+  if (pid == null || !pidAlive(pid)) return;
+  // The markers are the ownership record: a pid they no longer name has been
+  // replaced (or reused by an unrelated process) since we spawned it.
+  const dir = mihomoWorkDir();
+  const recorded = readPid(path.join(dir, 'mihomo.pid'));
+  if (recorded != null && recorded !== pid) return;
+  try {
+    if (kill(pid) && recorded === pid) removeMarkers(dir);
+  } catch {
+    // Best effort: the teardown must never wedge process exit.
+  }
 }
 
 export function getMihomoStatus(extra?: MihomoSidecarDeps): Promise<MihomoStatus> {

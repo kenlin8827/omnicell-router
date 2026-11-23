@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { strToU8, unzipSync, zipSync } from 'fflate';
 import {
   applyPluginConfig,
+  ensurePresetProvider,
+  forgetProviderRegistration,
   getModelServicePlugin,
   installPluginPackage,
   listInstalledPlugins,
@@ -19,6 +21,9 @@ import {
 import { bundlePluginDir } from '../../src/plugins/pack.js';
 import { readProviderDefsFile, writeProviderDefs } from '../../src/opencode/provider-defs.js';
 import { deleteProviderDef } from '../../src/opencode/user-config.js';
+
+/** The RAW def node for an id, or undefined when the file has no such entry. */
+const defOf = (pid: string) => readProviderDefsFile()?.providers?.[pid] as Record<string, unknown> | undefined;
 
 /**
  * App-owned (`<pluginsRoot>/bundled/*.zip`, an explicitly staged package set —
@@ -40,6 +45,8 @@ const IDS = [
   'coexist-legacy',
   'coexist-broken-bundled',
   'coexist-assets',
+  'coexist-changelog',
+  'coexist-changelog-broken',
 ];
 
 function packageZip(id: string, version: string, apiVersion = 1): Uint8Array {
@@ -313,6 +320,36 @@ describe('plugin coexistence: official vs third-party', () => {
       rmSync(src, { recursive: true, force: true });
     }
   });
+
+  it('carries the manifest changelog into every console row state', async () => {
+    const id = 'coexist-changelog';
+    const changelog = [
+      { version: '1.2.0', date: '2026-11-23', notes: { 'en-US': '- Notes', 'zh-CN': '- 说明' } },
+      { version: '1.0.0', notes: '- First release' },
+    ];
+    const manifest = { id, name: 'Changelog', version: '1.2.0', apiVersion: 1, type: 'model-service', wires: [id], changelog };
+    installPluginPackage(bareZip(id, manifest));
+    expect((await loadInstalledPlugins()).find((v) => v.id === id)?.changelog).toEqual(changelog);
+
+    // A disabled package is never imported; its facts still come from the
+    // manifest, changelog included.
+    await setPluginDisabled(id, true);
+    await loadInstalledPlugins();
+    expect(listInstalledPlugins().find((v) => v.id === id)?.changelog).toEqual(changelog);
+
+    // A package that fails to load keeps the history its manifest declares —
+    // it is part of the broken row's identity, read straight from the zip.
+    const brokenId = 'coexist-changelog-broken';
+    installPluginPackage(
+      zipSync({
+        'plugin.json': strToU8(JSON.stringify({ ...manifest, id: brokenId, name: brokenId, wires: [brokenId] })),
+        'index.js': strToU8('throw new Error("boom")'),
+      })
+    );
+    const failed = (await loadInstalledPlugins()).find((v) => v.id === brokenId);
+    expect(failed?.loaded).toBe(false);
+    expect(failed?.changelog).toEqual(changelog);
+  });
 });
 
 describe('install → uninstall lifecycle', () => {
@@ -400,6 +437,23 @@ describe('install → uninstall lifecycle', () => {
     const result = await uninstallPlugin(ID);
     expect(result.providersRemoved).toEqual([]);
     expect(defOf(PROVIDER)).toMatchObject({ settings: { baseURL: 'https://operator.invalid/v1' } });
+  });
+  it('takes a preset id back from a bare package-only stub', async () => {
+    // Regression: the boot credential-bind sweep writes a BARE node for every
+    // store-backed provider (`{"package":"openai-chat"}` — the DEFAULT_NPM
+    // fallback). That machine-written stub blocked the preset registration
+    // forever, and the provider then resolved to a core wire with no web-login
+    // capability ("provider 'workbuddy' is not on a plugin wire…"). A stub is
+    // not operator state: the preset overwrites it.
+    writeProviderDefs({ [PROVIDER]: { package: 'openai-chat' } });
+    installPluginPackage(presetPackage());
+    await loadInstalledPlugins();
+    expect(await syncPluginPresets()).toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toMatchObject({ name: 'Life Cycle', package: 'openai-chat', settings: { baseURL: 'https://example.invalid/v1' } });
+    // uninstall still cleans up the def it (re)wrote.
+    const result = await uninstallPlugin(ID);
+    expect(result.providersRemoved).toEqual([PROVIDER]);
+    expect(defOf(PROVIDER)).toBeUndefined();
   });
 
   it('leaves NOTHING behind on uninstall (config included)', async () => {
@@ -564,5 +618,174 @@ describe('install → uninstall lifecycle', () => {
     expect(row?.loaded).toBe(true);
     const v3 = getModelServicePlugin(ID) as unknown as { createProvider: () => { name?: string } };
     expect(v3.createProvider()?.name).toBe('V3');
+  });
+});
+describe('preset registration: wire repair, protocol guard, ledger hygiene', () => {
+  const ID = 'wire-repair';
+  const PROVIDER = 'wire-repair-provider';
+
+  /** One preset on the plugin's own (plugin-claimed) wire. */
+  function repairPackage(protocol = ID): Uint8Array {
+    return zipSync({
+      'plugin.json': strToU8(
+        JSON.stringify({
+          id: ID,
+          name: 'Wire Repair',
+          version: '1.0.0',
+          apiVersion: 1,
+          type: 'model-service',
+          wires: [ID],
+          presets: [{ presetId: 'wire-repair-preset', providerId: PROVIDER, protocol, baseUrl: 'https://preset.invalid/v1', displayName: 'Wire Repair' }],
+        })
+      ),
+      'index.js': strToU8('export function createPlugin() { return { createProvider() {} }; }'),
+      'package.json': strToU8(JSON.stringify({ type: 'module' })),
+    });
+  }
+
+  afterEach(async () => {
+    rmSync(join(pluginsRoot(), `${ID}.zip`), { force: true });
+    rmSync(join(pluginsRoot(), 'unpacked', ID), { recursive: true, force: true });
+    rmSync(join(pluginsRoot(), 'config', `${ID}.json`), { force: true });
+    await setPluginDisabled(ID, false);
+    if (defOf(PROVIDER)) deleteProviderDef(PROVIDER);
+  });
+
+  it('rewrites ONLY the routing slot of a def stuck on an unroutable wire', async () => {
+    // An older plugin generation wrote the preset with the opencode SDK package
+    // (`@opencode/ai/providers/…`); the current core refuses that spelling, so
+    // the def could never reach an executor.
+    writeProviderDefs({
+      [PROVIDER]: {
+        name: 'Operator Name',
+        package: '@opencode/ai/providers/wire-repair',
+        settings: { baseURL: 'https://keep.invalid/v1' },
+        headers: { 'X-Keep': '1' },
+        models: { keep: { name: 'Keep' } },
+      },
+    });
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+
+    expect(await syncPluginPresets()).toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toMatchObject({
+      name: 'Operator Name',
+      package: ID,
+      settings: { baseURL: 'https://keep.invalid/v1' },
+      headers: { 'X-Keep': '1' },
+      models: { keep: { name: 'Keep' } },
+    });
+  });
+
+  it('repairs a plugin-written def that drifted back to an unroutable spelling', async () => {
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+    await syncPluginPresets();
+    expect(defOf(PROVIDER)?.package).toBe(ID);
+
+    const defs = readProviderDefsFile()!;
+    (defs.providers[PROVIDER] as Record<string, unknown>).package = 'azure';
+    writeProviderDefs(defs.providers);
+
+    expect(await syncPluginPresets()).toContain(PROVIDER);
+    expect(defOf(PROVIDER)?.package).toBe(ID);
+  });
+
+  it('never overwrites a def that already routes (operator endpoint wins)', async () => {
+    writeProviderDefs({
+      [PROVIDER]: { name: 'Mine', package: 'openai-chat', settings: { baseURL: 'https://mine.invalid/v1' } },
+    });
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+
+    expect(await syncPluginPresets()).not.toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toMatchObject({ package: 'openai-chat', settings: { baseURL: 'https://mine.invalid/v1' } });
+  });
+
+  it('refuses a preset protocol that is not an OCR protocol id', async () => {
+    // Older manifests carried the client SDK package; writing it verbatim is
+    // what poisons providers.json, so a manifest this old registers nothing.
+    installPluginPackage(repairPackage('@opencode/ai/providers/wire-repair'));
+    await loadInstalledPlugins();
+
+    expect(await syncPluginPresets()).not.toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toBeUndefined();
+  });
+
+  it('drops a ledger row whose plugin no longer exists, and keeps a failed package row', async () => {
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+    await syncPluginPresets();
+    const ledgerPath = join(pluginsRoot(), 'registrations.json');
+    const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8')) as Record<string, unknown>;
+    ledger['ghost-plugin'] = { providers: ['ghost-provider'] };
+    writeFileSync(ledgerPath, JSON.stringify(ledger));
+
+    expect(await syncPluginPresets()).toEqual([]); // the preset is already registered
+    const after = JSON.parse(readFileSync(ledgerPath, 'utf8')) as Record<string, unknown>;
+    expect(after['ghost-plugin']).toBeUndefined();
+    expect(after[ID]).toBeDefined();
+
+    // A BROKEN upgrade still owns its row: the package is on disk (so uninstall
+    // must be able to remove the defs it registered), it just cannot load.
+    const broken = unzipSync(repairPackage());
+    broken['index.js'] = strToU8('throw new Error("boom")');
+    installPluginPackage(zipSync(broken));
+    await loadInstalledPlugins();
+    expect(listInstalledPlugins().find((v) => v.id === ID)?.loaded).toBe(false);
+    await syncPluginPresets();
+    const brokenLedger = JSON.parse(readFileSync(ledgerPath, 'utf8')) as Record<string, unknown>;
+    expect(brokenLedger[ID]).toBeDefined();
+  });
+
+  it('uninstall removes a preset def that drifted (auto-pulled models)', async () => {
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+    await syncPluginPresets();
+    // Connecting a preset provider auto-pulls its models into the def; the node
+    // no longer matches the registration snapshot, but without the plugin there
+    // is no executor for its wire — the def is dead state, so uninstall owns it.
+    const defs = readProviderDefsFile()!;
+    (defs.providers[PROVIDER] as Record<string, unknown>).models = { pulled: { name: 'Pulled' } };
+    writeProviderDefs(defs.providers);
+
+    expect((await uninstallPlugin(ID)).providersRemoved).toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toBeUndefined();
+  });
+
+  it('uninstall keeps a def the operator repointed to a routable wire', async () => {
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+    await syncPluginPresets();
+    const defs = readProviderDefsFile()!;
+    defs.providers[PROVIDER] = { name: 'Mine', package: 'openai-chat', settings: { baseURL: 'https://mine.invalid/v1' } };
+    writeProviderDefs(defs.providers);
+
+    expect((await uninstallPlugin(ID)).providersRemoved).not.toContain(PROVIDER);
+    expect(defOf(PROVIDER)).toMatchObject({ package: 'openai-chat', settings: { baseURL: 'https://mine.invalid/v1' } });
+  });
+
+  it('a deleted provider is not resurrected while the plugin is still installed', async () => {
+    installPluginPackage(repairPackage());
+    await loadInstalledPlugins();
+    await syncPluginPresets();
+    expect(defOf(PROVIDER)).toBeDefined();
+
+    // What the console delete route does: remove the def, tombstone its id.
+    deleteProviderDef(PROVIDER);
+    forgetProviderRegistration(PROVIDER);
+
+    // ANY plugin install/reload re-runs registration for every plugin; the
+    // tombstone is the only thing that keeps the operator's delete honest.
+    expect(await syncPluginPresets()).toEqual([]);
+    expect(defOf(PROVIDER)).toBeUndefined();
+    expect(pluginProviderOrigins()[PROVIDER]).toBeUndefined();
+
+    // An explicit connect (the web-login button) is intent the other way: it
+    // materializes the preset again and lifts the tombstone.
+    expect(await ensurePresetProvider(PROVIDER)).toBe(true);
+    expect(defOf(PROVIDER)?.package).toBe(ID);
+    await syncPluginPresets();
+    expect(pluginProviderOrigins()[PROVIDER]).toBe(ID);
   });
 });
