@@ -100,17 +100,29 @@ export function PluginsManagePage(): React.ReactElement {
     }
   };
 
-  const install = async (file: File): Promise<void> => {
+  /** One picker, N packages: the install endpoint takes a single .zip body
+   *  (per-package rollback included), so a batch is N sequential uploads. A
+   *  failed package must not swallow the rest — collect its reason and keep
+   *  going, then report the failures in one toast. */
+  const install = async (files: File[]): Promise<void> => {
     setInstalling(true);
+    const failures: string[] = [];
     try {
-      const res = await opencodeApi.installPlugin(await file.arrayBuffer());
-      setPlugins(res.plugins ?? []);
-      toast.success(t('pluginPage.installOk').replace('{name}', res.id));
-    } catch (err) {
-      toast.error(`${t('pluginPage.installFail')}: ${err instanceof Error ? err.message : String(err)}`);
+      for (const file of files) {
+        try {
+          const res = await opencodeApi.installPlugin(await file.arrayBuffer());
+          setPlugins(res.plugins ?? []);
+          toast.success(t('pluginPage.installOk').replace('{name}', res.id));
+        } catch (err) {
+          failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     } finally {
       setInstalling(false);
       if (fileInput.current) fileInput.current.value = '';
+    }
+    if (failures.length > 0) {
+      toast.error(`${t('pluginPage.installFail')}: ${failures.join('; ')}`);
     }
   };
 
@@ -168,10 +180,11 @@ export function PluginsManagePage(): React.ReactElement {
             ref={fileInput}
             type="file"
             accept=".zip"
+            multiple
             style={{ display: 'none' }}
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void install(file);
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) void install(files);
             }}
           />
           <button className="btn" onClick={() => fileInput.current?.click()} disabled={installing}>
