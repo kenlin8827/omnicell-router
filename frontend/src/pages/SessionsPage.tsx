@@ -255,11 +255,9 @@ const MODEL_LINE_STYLE: React.CSSProperties = {
   textOverflow: 'ellipsis',
 };
 
-/**
- * One numeric cell of the request-detail table: mono, centered, small — the
- * density the hand-rolled grid had. Kept as one constant so the thirteen
- * columns cannot drift into different paddings.
- */
+const DETAIL_PROTOCOL_WIDTH = 244;
+
+/** Shared compact style for centered cells in the request-detail table. */
 const DETAIL_TD_CENTER: React.CSSProperties = {
   padding: '6px 8px',
   textAlign: 'center',
@@ -293,16 +291,26 @@ const STREAM_TAG_STYLE: React.CSSProperties = {
 };
 /** `inbound surface → outbound protocol` using unambiguous canonical protocol ids
  *  (legacy rows are normalized at the backend read boundary). */
-const ProtocolMap: React.FC<{ inbound?: string; outbound?: string; tip: string }> = ({ inbound, outbound, tip }) => (
+const ProtocolMap: React.FC<{ inbound?: string; outbound?: string; tip: string; wrap?: boolean }> = ({ inbound, outbound, tip, wrap }) => (
   <span
     className="badge"
     title={`${tip}
 ${inbound ?? '—'} → ${outbound ?? '—'}`}
-    style={STREAM_TAG_STYLE}
+    style={wrap ? {
+      ...STREAM_TAG_STYLE,
+      boxSizing: 'border-box',
+      maxWidth: '100%',
+      whiteSpace: 'normal',
+      flexWrap: 'wrap',
+      justifyContent: 'center',
+      overflowWrap: 'anywhere',
+    } : STREAM_TAG_STYLE}
   >
-    {inbound ?? '—'}
-    <span style={{ margin: '0 3px', color: 'var(--text-dim)', opacity: 0.7 }}>→</span>
-    {outbound ?? '—'}
+    <span style={wrap ? { minWidth: 0 } : undefined}>
+      {inbound ?? '—'}
+      <span style={{ margin: '0 3px', color: 'var(--text-dim)', opacity: 0.7 }}>→</span>
+    </span>
+    <span style={wrap ? { minWidth: 0 } : undefined}>{outbound ?? '—'}</span>
   </span>
 );
 
@@ -2525,15 +2533,13 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                       width: 104,
                       align: 'center',
                     },
-                    // Own track too, sized the same way: the pair runs up to
-                    // `UNROUTABLE → WORKBUDDY` / `RESPONSES → ANTHROPIC`
-                    // (~158px at `--text-2xs` mono), so the track takes that
-                    // worst case plus padding instead of letting the badge ride
-                    // into the neighbouring column.
+                    // Leave room for common canonical protocol pairs on one
+                    // line. Longer names wrap inside the badge, not into the
+                    // neighboring column.
                     {
                       key: 'protocol',
                       label: <span title={t('sessions.protocolTip')}>{t('sessions.colProtocol')}</span>,
-                      width: 176,
+                      width: DETAIL_PROTOCOL_WIDTH,
                       align: 'center',
                     },
                     // Outbound egress (ADR-0018): its own self-describing
@@ -2549,10 +2555,9 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
-                  // 1332 = the 16 declared tracks (34+66+66+210+92+62+58+66+
-                  // 88+52+60+62+52+104+176+84); + 220 for the elastic prompt
-                  // column.
-                  minWidth={1332 + 220}
+                  // The fixed tracks other than the protocol column total
+                  // 1156px; reserve another 220px for the prompt.
+                  minWidth={1156 + DETAIL_PROTOCOL_WIDTH + 220}
                   headCellStyle={{ padding: '6px 8px', textAlign: 'center' }}
                   // The card already draws the frame: the table drops its own
                   // border/radius and insets to the card padding instead, so
@@ -2669,6 +2674,7 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                             inbound={tr.request?.inboundWire}
                             outbound={tr.execution.wireKind}
                             tip={t('sessions.protocolTip')}
+                            wrap
                           />
                         )}
                       </td>
