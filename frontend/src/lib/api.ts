@@ -6445,7 +6445,7 @@ export const opencodeApi = {
     return { ...parsed, id: parsed.id ?? '' };
   },
 
-  async reloadPlugins(): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+  async reloadPlugins(): Promise<{ status: string; plugins: PluginViewInfo[]; registered: string[] }> {
     return ocJson(
       await fetch('/api/admin/plugins/reload', {
         method: 'POST',

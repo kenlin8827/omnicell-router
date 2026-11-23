@@ -12,6 +12,7 @@ import { startDownload } from '../lib/download-manager';
 import { useI18n } from '../i18n/I18nContext';
 import { pickLocaleText } from '../lib/plugin-config';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { FONT_MONO } from '../lib/fonts';
 
 /**
@@ -21,8 +22,10 @@ import { FONT_MONO } from '../lib/fonts';
  * gateways, ADR-0017); this page lists what is installed, which type and
  * wires it serves, and whether it loaded. Disable/enable toggles a plugin
  * without deleting anything (works for dev-tree plugins too); uninstall
- * removes packages; Download exports an installable package (a dev-tree
- * plugin is zipped on the fly by the backend).
+ * removes the package, its settings and every provider def it registered
+ * (credentials survive — they are operator state, not plugin state); Download
+ * exports an installable package (a dev-tree plugin is zipped on the fly by
+ * the backend).
  * Reload re-scans and rebuilds the routing pool so changes apply without a
  * restart.
  * Settings opens the operator-facing config drawer (`PluginConfigDrawer`, shared
@@ -52,6 +55,7 @@ const DETAIL_CLAMP: React.CSSProperties = {
 export function PluginsManagePage(): React.ReactElement {
   const { t, lang } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [plugins, setPlugins] = useState<PluginViewInfo[]>([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
@@ -80,7 +84,16 @@ export function PluginsManagePage(): React.ReactElement {
   }, [load]);
 
   const uninstall = async (id: string): Promise<void> => {
-    if (!window.confirm(t('pluginPage.uninstallConfirm').replace('{name}', id))) return;
+    // Uninstall is destructive BEYOND the package: it deletes the plugin's
+    // settings and every provider def it registered (including models that were
+    // auto-pulled), so the confirmation names the full scope.
+    const ok = await confirmDialog({
+      title: t('pluginPage.uninstallConfirm').replace('{name}', id),
+      description: t('pluginPage.uninstallConfirmDetail'),
+      danger: true,
+      confirmLabel: t('pluginPage.uninstall'),
+    });
+    if (!ok) return;
     try {
       const res = await opencodeApi.uninstallPlugin(id);
       setPlugins(res.plugins ?? []);
@@ -146,7 +159,13 @@ export function PluginsManagePage(): React.ReactElement {
     try {
       const res = await opencodeApi.reloadPlugins();
       setPlugins(res.plugins ?? []);
-      toast.success(t('pluginPage.reloadOk'));
+      // A no-op reload and a repaired one both "succeed" — name what changed,
+      // or the operator cannot tell a dead preset def from a working one.
+      if (res.registered?.length) {
+        toast.success(t('pluginPage.reloadRegistered').replace('{names}', res.registered.join(', ')));
+      } else {
+        toast.success(t('pluginPage.reloadOk'));
+      }
     } catch (err) {
       toast.error(`${t('pluginPage.reloadFail')}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {

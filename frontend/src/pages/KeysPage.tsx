@@ -560,20 +560,6 @@ function credentialName(a: CredentialMeta, unnamed: string): string {
   return a.label?.trim() || unnamed;
 }
 
-/** Short fingerprint chip text (`#abcdef0123`); the full value rides in the title. */
-const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) => {
-  const { t } = useI18n();
-  if (!credential.keyHashPrefix) return null;
-  return (
-    <span
-      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO }}
-      title={t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id })}
-    >
-      #{credential.keyHashPrefix.slice(0, 8)}
-    </span>
-  );
-};
-
 type CredentialZoomRowProps = {
   credential: CredentialHealth;
   caps: CredentialStoreCapabilities;
@@ -1471,7 +1457,21 @@ export const KeysPage: React.FC = () => {
   // "Hide connected" in the catalog tab means HAS A CREDENTIAL — a merely
   // defined provider (e.g. a plugin-registered preset awaiting its key) must
   // stay searchable; connectedIds is the pre-write snapshot for the connect flow.
-  const keyedProviderIds = useMemo(() => new Set(ocProviders.filter((p) => p.auth.connected).map((p) => p.id)), [ocProviders]);
+  /**
+   * The providers that are actually CONNECTED — a credential exists for them.
+   * One derivation for every consumer on this page (card list, badge, status
+   * counts, origin options, catalog "connected" filter), so they can never
+   * disagree.
+   *
+   * A DEF is not a connection: plugin presets, the boot credential-bind sweep
+   * and a hand-written defs entry all materialize nodes with no key behind
+   * them. Those stay fully registered and routable — they are simply not
+   * "connected", and the catalog tab is where they surface as connectable
+   * rows. (Listing them here used to present providers the operator never
+   * connected, including ones they had deliberately deleted.)
+   */
+  const keyedProviders = useMemo(() => ocProviders.filter((p) => p.auth.connected), [ocProviders]);
+  const keyedProviderIds = useMemo(() => new Set(keyedProviders.map((p) => p.id)), [keyedProviders]);
 
   // Decision 1: whether a submitted key ADDS an credential or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
@@ -1833,28 +1833,39 @@ export const KeysPage: React.FC = () => {
     ...pluginIds.map((id) => ({ value: id, label: `${t('op.pluginTag')} · ${id}` })),
   ];
   // Plugin ids among connected providers (mirrors the catalog tab's origin
-  // dropdown options).
+  // dropdown options). Scoped to the SAME population `connectedResults` renders:
+  // an option derived from a def with no credential would be selectable while
+  // matching no card (a plugin that registered a preset the operator never
+  // connected is exactly that case).
   const connectedPluginIds = useMemo(
-    () => [...new Set(ocProviders.map((p) => p.pluginOrigin).filter((p): p is string => Boolean(p)))],
-    [ocProviders]
+    () => [
+      ...new Set(
+        keyedProviders
+          .map((p) => p.pluginOrigin)
+          .filter((p): p is string => Boolean(p))
+      ),
+    ],
+    [keyedProviders]
   );
   const connectedResults = useMemo(() => {
     const q = connectedQuery.trim().toLowerCase();
-    const list = q
-      ? ocProviders.filter(
-          (p) =>
-            p.id.toLowerCase().includes(q) ||
-            (p.name || '').toLowerCase().includes(q) ||
-            (p.baseURL || '').toLowerCase().includes(q) ||
-            p.models.some((m) => m.toLowerCase().includes(q))
-        )
-      : [...ocProviders];
+    const list = keyedProviders.filter(
+      (p) =>
+        !q ||
+        p.id.toLowerCase().includes(q) ||
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.baseURL || '').toLowerCase().includes(q) ||
+        p.models.some((m) => m.toLowerCase().includes(q))
+    );
     return list
       .filter((p) => matchOrigin(connectedOrigin, p))
       .filter((p) => connectedStatus === 'all' || Boolean(p.disabled) === (connectedStatus === 'disabled'))
       .sort(byDisplayName);
-  }, [ocProviders, connectedQuery, connectedOrigin, connectedStatus]);
-  const takedownCount = useMemo(() => ocProviders.filter((p) => p.disabled).length, [ocProviders]);
+  }, [keyedProviders, connectedQuery, connectedOrigin, connectedStatus]);
+  const takedownCount = useMemo(() => keyedProviders.filter((p) => p.disabled).length, [keyedProviders]);
+  /** The Connected tab's badge and its status-filter counts — the same
+   *  population `connectedResults` renders, never `ocProviders.length`. */
+  const keyedCount = keyedProviders.length;
   const pagedConnected = useMemo(() => {
     const start = (connectedPage - 1) * connectedPageSize;
     return connectedResults.slice(start, start + connectedPageSize);
@@ -2260,7 +2271,7 @@ export const KeysPage: React.FC = () => {
           >
             <Plug size={13} />
             <span>{t('op.tabConnected')}</span>
-            <span style={countStyle(activeTab === 'connected')}>{ocProviders.length}</span>
+            <span style={countStyle(activeTab === 'connected')}>{keyedCount}</span>
           </button>
           <button
             role="tab"
@@ -2346,8 +2357,8 @@ export const KeysPage: React.FC = () => {
               below it then narrows within the chosen state. */}
           <div role="group" aria-label={t('op.filterStatus')} style={{ ...segTrackStyle, flexShrink: 0 }}>
             {([
-              ['all', t('op.filterStatusAll'), ocProviders.length],
-              ['enabled', t('op.filterStatusEnabled'), ocProviders.length - takedownCount],
+              ['all', t('op.filterStatusAll'), keyedCount],
+              ['enabled', t('op.filterStatusEnabled'), keyedCount - takedownCount],
               ['disabled', t('op.filterStatusDisabled'), takedownCount],
             ] as const).map(([value, label, count]) => {
               const active = connectedStatus === value;

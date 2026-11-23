@@ -3723,7 +3723,14 @@ export function registerConsoleRoutes(
     webLoginPluginFor: async (id: string) => {
       const { getProviderNodeById } = await import('../opencode/user-config.js');
       const { wireFor } = await import('../providers/wire.js');
-      const def = getProviderNodeById(id);
+      let def = getProviderNodeById(id);
+      if (!def) {
+        // The catalog row comes from the manifest, so the login button stays
+        // offered even for a provider the operator deleted. A click IS connect
+        // intent: materialize the preset (and lift its deletion tombstone).
+        const { ensurePresetProvider } = await import('../plugins/host.js');
+        if (await ensurePresetProvider(id)) def = getProviderNodeById(id);
+      }
       if (!def) return { error: `provider '${id}' not found` };
       const node = def as { baseURL?: string; options?: { baseURL?: string }; npm?: string; package?: string };
       const baseURL = (node.options?.baseURL ?? node.baseURL ?? '').replace(/\/+$/, '');
@@ -4125,6 +4132,12 @@ export function registerConsoleRoutes(
           // nor miss the standalone store's credentials.json (the B3 regression).
           const result = deleteProviderDef(id);
           if (!result.success) return reply.status(400).send(result);
+          // Delete is intent: without this, the next plugin reload/install sees
+          // the preset's def missing and re-creates it (the row reappears on the
+          // Connected surface). A surviving credential still re-creates a node
+          // through the boot bind sweep — credential truth outranks the def.
+          const { forgetProviderRegistration } = await import('../plugins/host.js');
+          forgetProviderRegistration(id);
           // Decision 8 double confirmation is enforced by the console UI
           // (purgeAuth opt-in) — server-side the loop reports honestly.
           const purge = purgeAuth ? await purgeProviderCredentials(store, id) : null;
