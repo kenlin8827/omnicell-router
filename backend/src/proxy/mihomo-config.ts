@@ -175,6 +175,8 @@ export function renderMihomoConfig(input: RenderMihomoInput): RenderedMihomoConf
       url: sub.url,
       interval: sub.interval ?? DEFAULT_MIHOMO_SUB_INTERVAL_SEC,
       path: `./providers/${sub.id}.yaml`,
+      // Forces the download through one proxy/group instead of the rule set.
+      ...(sub.proxy ? { proxy: sub.proxy } : {}),
       // Disabled on purpose: the group's own url-test already walks every
       // member, so a second provider-level probe would only double the test
       // traffic. The cadence still comes from the shared resolver — the old

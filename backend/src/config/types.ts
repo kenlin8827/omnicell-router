@@ -326,6 +326,12 @@ export interface MihomoSubscription {
   url: string;
   /** Refresh interval in seconds (mihomo proxy-provider `interval`). */
   interval?: number;
+  /** Fetch through this proxy or group name (mihomo proxy-provider `proxy`).
+   *  Absent follows the rule set: the download is an INNER connection, so
+   *  `MATCH` routes it into the generated group, which is DIRECT until a
+   *  working node exists. A subscription host the local network blocks (TLS
+   *  handshake timeout, SNI reset) needs a reachable node or group here. */
+  proxy?: string;
   /** Absent or true = included in the generated config. */
   enabled?: boolean;
 }

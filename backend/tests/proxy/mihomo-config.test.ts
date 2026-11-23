@@ -45,6 +45,19 @@ describe('sanitizeProxyConfig', () => {
     expect(proxy.mihomo?.subscriptions?.[0].url).toContain('token=secret');
   });
 
+  test('a subscription download proxy is kept trimmed and dropped when blank', () => {
+    const kept = sanitizeProxyConfig({
+      mihomo: { subscriptions: [{ id: 'sub', name: 'Sub', url: 'https://example.com/sub', proxy: '  HK-01  ' }] },
+    }).mihomo?.subscriptions?.[0];
+    expect(kept?.proxy).toBe('HK-01');
+
+    // Absence and an empty string are the same state: follow the rule set.
+    const blank = sanitizeProxyConfig({
+      mihomo: { subscriptions: [{ id: 'sub', name: 'Sub', url: 'https://example.com/sub', proxy: '   ' }] },
+    }).mihomo?.subscriptions?.[0];
+    expect(blank).not.toHaveProperty('proxy');
+  });
+
   test('a current file without mihomo keys loads the defaults', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mihomo-cfg-'));
     const file = path.join(dir, 'config.yaml');
@@ -147,6 +160,22 @@ describe('renderMihomoConfig', () => {
     expect(doc['proxy-groups'][0].use).toEqual(['alpha']);
     expect(doc.rules).toEqual(['MATCH,PROXY']);
     expect(rendered.providerNames).toEqual(['alpha']);
+  });
+
+  test('a subscription can force its download through a named proxy', () => {
+    type RenderedProviders = { 'proxy-providers': Record<string, { proxy?: string }> };
+    const doc = parse(renderMihomoConfig({
+      mixedPort: 7890,
+      controllerPort: 9090,
+      secret,
+      subscriptions: [
+        { id: 'alpha', name: 'Alpha', url: 'https://sub.example/a', proxy: 'HK-01' },
+        { id: 'beta', name: 'Beta', url: 'https://sub.example/b' },
+      ],
+    }).yaml) as RenderedProviders;
+    expect(doc['proxy-providers'].alpha.proxy).toBe('HK-01');
+    // Absent stays absent: emitting DIRECT would bypass the operator's rules.
+    expect(doc['proxy-providers'].beta).not.toHaveProperty('proxy');
   });
 
   test('an automatic group carries the test url and never a DIRECT member', () => {

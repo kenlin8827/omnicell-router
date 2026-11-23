@@ -54,7 +54,15 @@ other clients), and it can be stopped while `mode: mihomo` stays configured.
 The gateway writes a mihomo config under `<env>/mihomo/` (`mixed-port`,
 `external-controller: 127.0.0.1:<controllerPort>`, `secret`, one
 `proxy-provider` per enabled subscription, one proxy group (`select` by
-default — see `groupType`), `MATCH` to that group). It adopts a controller
+default — see `groupType`), `MATCH` to that group). Each provider may also
+carry `proxy: <node|group>` (mihomo's provider-level `proxy`): the download is
+an INNER connection matched against the rule set, so an empty value routes it
+into the group — direct until a working node exists — while a subscription
+host the local network blocks (TLS handshake timeout, SNI reset) needs a
+reachable node or group named here. The value is stored as a free-form name and
+never validated against the live proxy table, because existence is a runtime
+fact; the console offers a picker, but a name whose provider is gone stays
+stored and only that provider's fetch fails — it never fails the config. It adopts a controller
 that is already healthy, otherwise it
 spawns `mihomo -d <dir> -f <config>`. A pid file and an `owner` marker
 (`spawned` / `adopted`) record who started it. Explicit stop kills a local
@@ -229,6 +237,13 @@ set — that shape predates `mode` and still asks for the core.
   `interval`): the core re-fetches on that interval **only while it runs**, and
   saving a subscription while the core runs restarts it so the new interval
   applies.
+  Each row also names the proxy its own download uses (`proxy`): follow the
+  rules (into the `MATCH` group), this machine directly (`DIRECT` — the core's
+  own dial, which does not read the OS proxy, unlike the Geo sync's machine
+  leg), the group, or a node. The picker lists manual nodes from the config
+  plus the live provider nodes, and keeps a stored name the live list cannot
+  offer as an explicit row instead of rendering it as empty. A blocked
+  subscription host is fixed by naming a reachable node.
   The subscriptions panel keeps the two verbs apart: the form above the list
   only ever creates — a half-filled add form can never be mistaken for a
   pending edit — editing a row opens a dialog, and each row carries its own

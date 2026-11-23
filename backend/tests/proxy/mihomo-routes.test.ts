@@ -337,11 +337,12 @@ describe('mihomo admin routes', () => {
     const created = await app.inject({
       method: 'POST',
       url: '/api/admin/proxy/mihomo/subscriptions',
-      payload: { name: 'Alpha', url: 'https://sub.example/feed?token=hide-me', interval: 600 },
+      payload: { name: 'Alpha', url: 'https://sub.example/feed?token=hide-me', interval: 600, proxy: 'HK-01' },
     });
     expect(created.statusCode).toBe(200);
     const id = created.json().subscription.id as string;
     expect(created.json().subscription.url).toContain('token=hide-me');
+    expect(created.json().subscription.proxy).toBe('HK-01');
     expect(JSON.stringify(created.json().sidecar)).not.toContain('hide-me');
 
     const list = await app.inject({ method: 'GET', url: '/api/admin/proxy/mihomo/subscriptions' });

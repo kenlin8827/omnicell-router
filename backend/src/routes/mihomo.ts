@@ -64,6 +64,7 @@ function normalizeDraft(body: any, id: string): MihomoSubscription {
     name: typeof body?.name === 'string' ? body.name : '',
     url: typeof body?.url === 'string' ? body.url : '',
     interval: typeof body?.interval === 'number' ? body.interval : undefined,
+    ...(typeof body?.proxy === 'string' ? { proxy: body.proxy } : {}),
     enabled: body?.enabled !== false,
   };
 }

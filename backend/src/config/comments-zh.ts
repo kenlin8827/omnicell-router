@@ -160,7 +160,7 @@ export const YAML_FIELD_COMMENTS_ZH: Record<string, string> = {
   'proxy.mihomo.mixedPort': '网关作为出站代理使用的本机混合端口（HTTP + SOCKS，默认 7890），只绑 127.0.0.1。必须与 controllerPort 不同',
   'proxy.mihomo.controllerPort': '本机 External Controller 端口（默认 9090）。网关用 Authorization: Bearer <controllerSecret> 调用它。该端口在 loopback 上，代理规则不会把这些调用再送回混合端口',
   'proxy.mihomo.controllerSecret': 'External Controller 的 Bearer 密钥。首次启动前为空，启动时生成并写回。环境归档会脱敏。绝不写入日志',
-  'proxy.mihomo.subscriptions': '订阅列表 { id, name, url, interval?, enabled? }。id 即核心内 proxy-provider 名称（[A-Za-z0-9_-]，最长 64）。interval 单位为秒（默认 3600，钳制 300..86400）。url 可能含令牌——归档脱敏，绝不记日志。enabled 为 false 的行不写入生成的配置',
+  'proxy.mihomo.subscriptions': '订阅列表 { id, name, url, interval?, proxy?, enabled? }。id 即核心内 proxy-provider 名称（[A-Za-z0-9_-]，最长 64）。interval 单位为秒（默认 3600，钳制 300..86400）。proxy 指定核心拉取该订阅时使用的节点或分组名（DIRECT 或代理名）；留空则按规则走，没有可用节点时即直连——本机网络阻断的订阅站点需要在这里填一个可达节点。url 可能含令牌——归档脱敏，绝不记日志。enabled 为 false 的行不写入生成的配置',
   'proxy.mihomo.manualNodes': '手动添加的节点，写入生成配置的 proxies: 段并与订阅节点一起加入策略组。表单录入的行是 { id, name, type, server, port } 加上该协议的字段：ss → cipher/password；vmess → uuid/alterId/network/tls/sni/wsPath/wsHost；vless → uuid/network/tls/sni/flow/wsPath/wsHost；trojan/hysteria2 → password/sni/skipCertVerify；http/socks5 → username/password/tls/skipCertVerify。YAML 录入的行带 { id, name, type, server, port, yaml }，yaml 是规范化后的 Clash 代理定义并原样输出，因此 client-fingerprint / reality-opts / 插件键都会保留。缺少身份字段（白名单协议还要求凭据字段）的行在加载时被丢弃；与内建名或所选分组重名的行同样丢弃。凭据（以及整段原始 yaml）在环境归档中脱敏，绝不写入日志',
   'proxy.mihomo.routingMode': "核心自身的出站模式：'rule'（默认）/ 'global' / 'direct'。规则列表为空时生成的配置只注入一条 MATCH 规则，因此此时 'rule' 与 'global' 等价；'direct' 完全绕过隧道（相当于保留订阅更新的「断流开关」）。控制台修改后经控制器热生效，不重启核心",
   'proxy.mihomo.selectedGroup': '写入生成配置的选择器策略组名（默认 PROXY）。到达核心的出站 HTTP 流量都走这个组（MATCH 规则）',

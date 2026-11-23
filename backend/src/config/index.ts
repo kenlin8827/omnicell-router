@@ -828,11 +828,16 @@ function sanitizeSubscriptions(raw: unknown): MihomoSubscription[] {
     if (typeof rec.interval === 'number' && Number.isFinite(rec.interval)) {
       interval = Math.min(MIHOMO_SUB_INTERVAL_MAX_SEC, Math.max(MIHOMO_SUB_INTERVAL_MIN_SEC, Math.round(rec.interval)));
     }
+    // A free-form mihomo name (`DIRECT`, a node, or the generated group). Not
+    // checked against the live proxy table: existence is a runtime fact and a
+    // stale name must not block the file from loading.
+    const proxy = typeof rec.proxy === 'string' ? rec.proxy.trim().slice(0, 80) : '';
     out.push({
       id,
       name: name.slice(0, 80),
       url,
       interval,
+      ...(proxy ? { proxy } : {}),
       enabled: rec.enabled !== false,
     });
   }

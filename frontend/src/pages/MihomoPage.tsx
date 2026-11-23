@@ -577,8 +577,8 @@ export const MihomoPage: React.FC = () => {
   const [groupType, setGroupType] = useState<MihomoGroupType>('select');
   /** The add form only ever creates: editing a row opens `editSub` as a dialog,
    *  so a half-filled add form can never be mistaken for an edit in progress. */
-  const [newSub, setNewSub] = useState({ name: '', url: '', interval: String(DEFAULT_MIHOMO_SUB_INTERVAL_SEC) });
-  const [editSub, setEditSub] = useState<{ id: string; name: string; url: string; interval: string; enabled: boolean } | null>(null);
+  const [newSub, setNewSub] = useState({ name: '', url: '', interval: String(DEFAULT_MIHOMO_SUB_INTERVAL_SEC), proxy: '' });
+  const [editSub, setEditSub] = useState<{ id: string; name: string; url: string; interval: string; proxy: string; enabled: boolean } | null>(null);
   /** The PAC URL is reference copy, not a field: it opens in a dialog so the
    *  general tab does not carry a permanently read-only input. */
   const [pacOpen, setPacOpen] = useState(false);
@@ -1362,9 +1362,10 @@ export const MihomoPage: React.FC = () => {
         name: newSub.name.trim(),
         url: newSub.url.trim(),
         interval: Number.isFinite(interval) ? interval : DEFAULT_MIHOMO_SUB_INTERVAL_SEC,
+        proxy: newSub.proxy.trim(),
         enabled: true,
       });
-      setNewSub({ name: '', url: '', interval: String(DEFAULT_MIHOMO_SUB_INTERVAL_SEC) });
+      setNewSub({ name: '', url: '', interval: String(DEFAULT_MIHOMO_SUB_INTERVAL_SEC), proxy: '' });
       commitSubs(await refreshSubs());
       toast.success(t('proxy.savedNotice'));
     } catch (err: any) {
@@ -1383,6 +1384,7 @@ export const MihomoPage: React.FC = () => {
         name: editSub.name.trim(),
         url: editSub.url.trim(),
         interval: Number.isFinite(interval) ? interval : DEFAULT_MIHOMO_SUB_INTERVAL_SEC,
+        proxy: editSub.proxy.trim(),
         enabled: editSub.enabled,
       });
       setEditSub(null);
@@ -1860,6 +1862,31 @@ export const MihomoPage: React.FC = () => {
     for (const sub of subs) byId.set(sub.id, sub.name || sub.id);
     return byId;
   }, [mihomo.subscriptions, subs]);
+
+  /** Choices for a subscription's own download path. The vocabulary mirrors the
+   *  Geo sync card's legs — this machine's direct route, or through a node —
+   *  plus the generated group, because an empty value (follow the rules) is a
+   *  real state and the default. Live provider nodes only exist once the core
+   *  fetched them, so manual nodes are listed from the config first. */
+  const subProxyOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string; meta?: string }> = [
+      { value: '', label: t('proxy.subProxyFollow') },
+      { value: 'DIRECT', label: t('proxy.subProxyMachine') },
+      { value: group, label: `${t('proxy.group')}: ${group}` },
+    ];
+    const seen = new Set(options.map(option => option.value));
+    for (const node of mihomo.manualNodes ?? []) {
+      if (!node.name || seen.has(node.name)) continue;
+      seen.add(node.name);
+      options.push({ value: node.name, label: node.name, meta: node.type });
+    }
+    for (const node of nodes) {
+      if (node.source.kind === 'builtin' || !node.name || seen.has(node.name)) continue;
+      seen.add(node.name);
+      options.push({ value: node.name, label: node.name, meta: node.type });
+    }
+    return options;
+  }, [group, mihomo.manualNodes, nodes, t]);
 
   /** One label per origin that actually contributed a node. Built-ins are
    *  deliberately absent: filtering to DIRECT is a list of one and the source
@@ -2474,7 +2501,7 @@ export const MihomoPage: React.FC = () => {
             {/* Create-only panel. Editing is per row (see below): one form
                 could not tell "add" and "edit" apart, and the enable switch
                 was buried inside it instead of sitting on the row it governs. */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr 120px auto', gap: '8px', alignItems: 'end' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr 1fr 120px auto', gap: '8px', alignItems: 'end' }}>
               <div>
                 <label style={fieldLabel}>{t('proxy.subName')}</label>
                 <input className="input" value={newSub.name} onChange={e => setNewSub({ ...newSub, name: e.target.value })} />
@@ -2482,6 +2509,15 @@ export const MihomoPage: React.FC = () => {
               <div>
                 <label style={fieldLabel}>{t('proxy.subUrl')}</label>
                 <input className="input" value={newSub.url} onChange={e => setNewSub({ ...newSub, url: e.target.value })} placeholder="https://" />
+              </div>
+              <div>
+                <label style={fieldLabel}>{t('proxy.subProxy')}</label>
+                <Combobox
+                  value={newSub.proxy}
+                  onChange={value => setNewSub({ ...newSub, proxy: value })}
+                  options={subProxyOptions}
+                  clearable
+                />
               </div>
               <div>
                 <label style={fieldLabel}>{t('proxy.subInterval')}</label>
@@ -2493,6 +2529,7 @@ export const MihomoPage: React.FC = () => {
               </button>
             </div>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxy.subIntervalHint')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxy.subProxyHint')}</div>
             {subs.length === 0 ? (
               <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('proxy.subEmpty')}</div>
             ) : (
@@ -2529,7 +2566,7 @@ export const MihomoPage: React.FC = () => {
                         <Switch checked={enabled} size="sm" ariaLabel={t('proxy.subEnabled')} disabled={busy === `toggle:${sub.id}`} onChange={v => void toggleSub(sub, v)} />
                         <button
                           className="btn btn-sm"
-                          onClick={() => setEditSub({ id: sub.id, name: sub.name, url: sub.url, interval: String(sub.interval ?? DEFAULT_MIHOMO_SUB_INTERVAL_SEC), enabled })}
+                          onClick={() => setEditSub({ id: sub.id, name: sub.name, url: sub.url, interval: String(sub.interval ?? DEFAULT_MIHOMO_SUB_INTERVAL_SEC), proxy: sub.proxy ?? '', enabled })}
                         >
                           {t('proxy.subEdit')}
                         </button>
@@ -2574,10 +2611,24 @@ export const MihomoPage: React.FC = () => {
                   <input className="input" value={editSub.url} onChange={e => setEditSub({ ...editSub, url: e.target.value })} />
                 </div>
                 <div>
+                  <label style={fieldLabel}>{t('proxy.subProxy')}</label>
+                  <Combobox
+                    value={editSub.proxy}
+                    onChange={value => setEditSub({ ...editSub, proxy: value })}
+                    options={editSub.proxy && !subProxyOptions.some(option => option.value === editSub.proxy)
+                    // A stored name the live list cannot offer (core stopped,
+                    // provider removed) stays visible instead of reading as empty.
+                    ? [...subProxyOptions, { value: editSub.proxy, label: editSub.proxy, meta: t('proxy.subProxyMissing') }]
+                    : subProxyOptions}
+                    clearable
+                  />
+                </div>
+                <div>
                   <label style={fieldLabel}>{t('proxy.subInterval')}</label>
                   <input className="input" type="number" value={editSub.interval} onChange={e => setEditSub({ ...editSub, interval: e.target.value })} />
                 </div>
                 <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('proxy.subIntervalHint')}</div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('proxy.subProxyHint')}</div>
                 <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t('proxy.subEnabledHint')}</div>
               </div>
             </Dialog>

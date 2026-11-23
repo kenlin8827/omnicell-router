@@ -1725,6 +1725,7 @@ export interface MihomoSubscription {
   name: string;
   url: string;
   interval?: number;
+  proxy?: string;
   enabled?: boolean;
 }
 /** Protocols a hand-authored node can speak (backend whitelist, ADR-0022). */
@@ -3134,7 +3135,7 @@ export const api = {
     return res.json();
   },
 
-  async addMihomoSubscription(body: { name: string; url: string; interval?: number; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
+  async addMihomoSubscription(body: { name: string; url: string; interval?: number; proxy?: string; enabled?: boolean }): Promise<{ status: string; subscription?: MihomoSubscription; message?: string }> {
     const res = await fetch('/api/admin/proxy/mihomo/subscriptions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
