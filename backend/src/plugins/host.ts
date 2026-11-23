@@ -126,6 +126,7 @@ function buildHostSdk(manifest: PluginManifest, dir: string): ModelServicePlugin
     },
     constants: { providerTimeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS },
     config: () => mergedPluginConfig(manifest.id, manifest.configSchema),
+    ocrHome: () => getOcrHomeDir(),
     pluginDir: () => dir,
     // Filled by pluginPullServices() BEFORE createPlugin is invoked.
     pull: {

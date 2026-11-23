@@ -382,6 +382,10 @@ export interface ModelServicePluginHost {
   /** Operator configuration, merged (defaults ← stored artifact, validated).
    *  Call-time lookup — always current after a console save. */
   config(): Record<string, unknown>;
+  /** The live OCR home directory — plugin state that must outlive the process
+   *  (a device identity, sidecar files) belongs under it, never next to the
+   *  packaged bundle, which an upgrade replaces. */
+  ocrHome(): string;
   /** The directory this plugin's files were loaded from — the ONE asset root.
    *  Packaged plugins are a SINGLE flattened `index.js`, so a path derived
    *  from `import.meta.url` of an inner source module does not survive
