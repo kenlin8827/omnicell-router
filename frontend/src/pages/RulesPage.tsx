@@ -804,7 +804,7 @@ export const RulesPage: React.FC = () => {
     toast.success(t('tierPolicy.addedToExclude'));
   };
 
-  /** Remove a model from the GLOBAL denylist — restores it as unclassified (still callable by id). */
+  /** Remove a model from the GLOBAL denylist — restores it to whatever pools its member lists claim (still callable by id regardless). */
   const removeFromExclude = (modelId: string) => {
     setGlobalExclude((prev) => {
       const lines = splitPatterns(prev).filter((x) => x !== modelId);

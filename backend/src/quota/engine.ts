@@ -3,6 +3,7 @@ import { BUILTIN_QUOTA_DECLARATIONS, builtinAdapters } from './declarations.js';
 import { evalSuccessIf, resolveWindows, validateEntry } from './dsl.js';
 import { captureBody, resolveVerdict, upstreamCode } from './verdict.js';
 import { getQuotaStore } from './store.js';
+import { proxiedFetch } from '../utils/proxy.js';
 import type {
   QuotaCodeAdapter,
   LastProbeCapture,
@@ -499,7 +500,33 @@ export async function probePair(target: QuotaTarget, opts: RunProbeOpts): Promis
     // id stands in for a URL here: the throw happened before (or outside) any
     // exchange core could see.
     try {
-      outcome = await target.adapter.probe({ providerId: opts.providerId, key: opts.key, fetchImpl: opts.fetchImpl, now, timeoutMs: opts.timeoutMs });
+      // A plugin-mediated adapter declares the origins it dials; the transport
+      // they get is proxy-guarded per call site (ADR-0022), so the operator's
+      // split governs a plugin-wire quota read too. The url argument a caller
+      // passes to `fetchImpl` is the classification key.
+      let adapterFetch = opts.fetchImpl;
+      if (!adapterFetch && target.adapter.egressOrigins) {
+        adapterFetch = async (input: string | URL | Request, init?: RequestInit) => {
+          // A Request carries its own method/headers/body. When the caller
+          // supplies no explicit init, preserve them — extracting only `.url`
+          // would silently degrade a credentialed POST quota read to a bare
+          // GET. Read the body as text so no stream/duplex handling is needed.
+          if (input instanceof Request && !init) {
+            const body = input.body ? await input.text() : undefined;
+            return proxiedFetch(
+              input.url,
+              { method: input.method, headers: input.headers, ...(body !== undefined ? { body } : {}) },
+              { provider: opts.providerId }
+            );
+          }
+          return proxiedFetch(
+            typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+            init,
+            { provider: opts.providerId }
+          );
+        };
+      }
+      outcome = await target.adapter.probe({ providerId: opts.providerId, key: opts.key, fetchImpl: adapterFetch, now, timeoutMs: opts.timeoutMs });
       http = outcome.http;
     } catch (err) {
       const reason = classifyThrownFailure(err);

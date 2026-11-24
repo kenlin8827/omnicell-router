@@ -382,6 +382,15 @@ export interface QuotaCodeAdapter {
   id: string;
   /** Which covered providers resolve to this adapter (region-aware sets). */
   providerIds: string[];
+  /**
+   * Origins this adapter may dial for `providerId` — absent when the adapter
+   * has no plugin-mediated transport to describe (a core code adapter that
+   * already dials through `proxiedFetch`). Present: the engine hands `probe()`
+   * a `fetchImpl` that applies `proxy.includes` / `proxy.excludes` to whichever
+   * of these URLs the adapter actually requests, so a plugin-owned entry is
+   * proxied exactly like a built-in one.
+   */
+  egressOrigins?(providerId: string, baseURL?: string): readonly string[];
   probe(ctx: QuotaAdapterContext): Promise<QuotaProbeOutcome>;
 }
 

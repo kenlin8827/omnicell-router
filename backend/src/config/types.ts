@@ -65,9 +65,25 @@ export interface ModelRegistration {
    * expansion); POOL MEMBERSHIP never does — pools are the per-tier
    * projection of the member lists, so a model may serve in several tiers
    * at once.
+   *
+   * `undefined` is the FOURTH state, not an error: no tier's member list
+   * claims the model, so it joins NO candidate pool. It is a plain optional
+   * value rather than a widened union so TIER_RANK / failover chains / the
+   * session ratchet keep operating on the strict four-value TierLevel; every
+   * reader must therefore state what "no home tier" means for it.
    */
-  tier: TierLevel;
-  pricing: ModelPricing;
+  tier?: TierLevel;
+  /**
+   * USD per 1M tokens, when the model's price is actually KNOWN.
+   *
+   * Absent means "unknown", never "free": a vendor may publish no dollar
+   * price at all (qoder publishes only a `price_factor` credit multiplier), in
+   * which case every cost surface must say so instead of inventing one. Cost
+   * consumers therefore treat a missing `pricing` as unpriceable. Nothing
+   * infers TIER MEMBERSHIP from price any more — a model joins the pools its
+   * `tiers[t].members` list claims, full stop.
+   */
+  pricing?: ModelPricing;
   /** Resolved wire for direct execution (model-level npm beats provider npm).
    *  Core shapes plus PLUGIN-owned wire ids — the plugin half is open-ended,
    *  filled from the loaded plugin manifests (`providers/plugin-wires.ts`). */
@@ -85,6 +101,9 @@ export interface ModelRegistration {
    *  is treated as supporting the FULL `EFFORT_LADDER` (all 6 levels, `none`
    *  included) — see `modelSupportsEfforts` in types/router.ts. */
   supportsReasoningEffort?: boolean;
+  /** The vendor's on/off fact (ADR-0035): `false` = the model ALWAYS thinks;
+   *  `none` is withheld from every resolved effort set at routing time. */
+  reasoningDisableable?: boolean;
   supportsPromptCaching?: boolean;
   /**
    * Tri-state sampling-parameter capability flag (from the models.dev catalog).
@@ -133,21 +152,17 @@ export interface ModelRegistration {
    */
   variants?: ModelVariant[];
   /**
-   * Inputs captured by the smart-match boot paths (boot-direct / sync).
-   * Presence marks the model as RUNTIME-RECLASSIFIABLE: the registry replays
-   * tiers[t].match + catalog overrides against these inputs without a restart.
-   * Hand-configured models omit it and keep their explicit tier forever.
+   * Provenance: this model's tier is DERIVED from `tiers[t].members`, so the
+   * registry is allowed to re-project it at every commit. Hand-configured
+   * models (an explicit `tier` in the defs file) omit the stamp and their
+   * tier is permanent — member-list edits never move them (ADR-0003).
+   *
+   * Only the PRESENCE matters; there is no payload. It is the one switch the
+   * registry branches on to tell "machine-assigned" from "operator-declared".
    */
-  tierMatch?: { rawInputPerM?: number; reasoningFlag: boolean };
+  autoTier?: true;
   /** Explicit tier from the defs-file model definition (catalog overrides are read live) */
   configTier?: TierLevel;
-  /**
-   * Fourth state: no tier's member list claims the model. It joins NO
-   * candidate pool. Kept as a flag rather than widening `tier` so
-   * TIER_RANK / failover chains / session ratchet keep operating on the
-   * strict four-state TierLevel.
-   */
-  unclassified?: boolean;
   /**
    * The home tier's thinking-level translation (the first claiming member
    * rule's effortMap, re-applied on every commit). Pools carry their OWN
@@ -207,8 +222,8 @@ export interface FallbackConfig {
 
 /**
  * Per-tier composition policy. Pool membership has exactly ONE basis: the
- * explicit `members` list below — a model matching no rule ends up
- * `unclassified` and joins no pool. List order IS the chain/priority order;
+ * explicit `members` list below — a model no rule matches carries no home
+ * tier and joins no pool. List order IS the chain/priority order;
  * selection strategy and per-rule weights shape HOW the pool is used,
  * never WHO is in it.
  */
@@ -247,23 +262,6 @@ export interface TierPolicy {
   /** explicit member list — routing's ONLY pool-membership source. */
   members?: TierMemberRule[];
   selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
-  /**
-   * @deprecated never consulted by routing or boot seeding. The classifier
-   * survives as the suggestion engine (catalog suggestions, /tiers
-   * preview / save-time checks) and still reads this config.
-   */
-  match?: {
-    patterns?: string[]; // wildcard patterns over model id (all tiers claim)
-    minInputPerM?: number; // price-band floor — configured for EVERY tier incl. plus
-    maxInputPerM?: number; // price-band ceiling; a band with no ceiling is a WEAK condition (consulted last)
-    exclude?: string[]; // vetoes this tier's auto-claim (explicit pins bypass it)
-    /**
-     * Anchor-exclude: a model matching ANY condition (patterns / price
-     * band / thinking-effort flag) of one of these tiers may not be AUTO-claimed by
-     * THIS tier. Runtime filter derived from the other tiers' own conditions.
-     */
-    excludeTiers?: TierLevel[];
-  };
 }
 
 export interface TiersConfig {

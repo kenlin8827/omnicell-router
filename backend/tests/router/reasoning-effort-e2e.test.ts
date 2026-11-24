@@ -19,6 +19,8 @@ function configWithEffortTiers(
     id: string;
     tier: 'lite' | 'plus' | 'pro' | 'ultra';
     supportedReasoningEfforts?: readonly ReasoningEffort[];
+    supportsReasoningEffort?: boolean;
+    reasoningDisableable?: boolean;
   }>
 ): RouterConfig {
   return {
@@ -33,6 +35,8 @@ function configWithEffortTiers(
       tier: m.tier,
       pricing: { input: 1, output: 2, cacheRead: 0.5 },
       supportedReasoningEfforts: m.supportedReasoningEfforts,
+      ...(m.supportsReasoningEffort !== undefined ? { supportsReasoningEffort: m.supportsReasoningEffort } : {}),
+      ...(m.reasoningDisableable !== undefined ? { reasoningDisableable: m.reasoningDisableable } : {}),
       wire: 'openai-chat',
     })),
   };
@@ -173,6 +177,43 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     assert.strictEqual(result.modelUsed, 'pinned-high', 'explicit pin must win over re-routing');
     assert.strictEqual(result.actualEffort, 'high', 'but actual effort reflects what was served');
     assert.strictEqual(result.reasoningDegraded, true);
+  });
+});
+
+describe('End-to-End: always-think withholding survives an explicit none ask (ADR-0035)', () => {
+  it('explicit none on an always-think model with a declared ladder clamps to the lowest rung, never none', async () => {
+    // ADR-0035: the withholding is ABSOLUTE — "the router can never request
+    // none" for a disableable:false model. A client explicitly asking for
+    // thinking-off must still land on the lowest declared rung, not the
+    // forbidden none that earns the vendor's 1210/400 refusal.
+    const cfg = configWithEffortTiers([
+      { id: 'always-think', tier: 'plus', supportedReasoningEfforts: ['low', 'high'], reasoningDisableable: false },
+    ]);
+    const reg = new ProviderRegistry(cfg, true);
+    const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
+    const result = await processIR(orch, {
+      model: 'always-think',
+      messages: [{ role: 'user', content: 'hi' }],
+      reasoning_effort: 'none',
+    } as ChatCompletionRequest);
+    assert.strictEqual(result.modelUsed, 'always-think');
+    assert.strictEqual(result.actualEffort, 'low', 'an always-think model must never serve the forbidden none');
+  });
+
+  it('a plain model that allows off still mirrors an explicit none ask', async () => {
+    // The withholding is specific to disableable:false. A model whose ladder
+    // includes none (or that allows off) honors the client's thinking-off.
+    const cfg = configWithEffortTiers([
+      { id: 'allows-off', tier: 'plus', supportedReasoningEfforts: ['none', 'low', 'high'] },
+    ]);
+    const reg = new ProviderRegistry(cfg, true);
+    const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
+    const result = await processIR(orch, {
+      model: 'allows-off',
+      messages: [{ role: 'user', content: 'hi' }],
+      reasoning_effort: 'none',
+    } as ChatCompletionRequest);
+    assert.strictEqual(result.actualEffort, 'none');
   });
 });
 

@@ -6,6 +6,7 @@ import { strToU8, unzipSync, zipSync } from 'fflate';
 import { loadConfig } from '../../src/config/index.js';
 import { createServer } from '../../src/server.js';
 import { applyPluginConfig, getPluginConfig, listInstalledPlugins, loadInstalledPlugins, pluginsRoot } from '../../src/plugins/host.js';
+import { SUPPORTED_PLUGIN_API } from '../../src/plugins/manifest.js';
 
 /**
  * The console INSTALL route (ADR-0017 §6) — the one entry point an operator
@@ -25,7 +26,7 @@ const ID = 'route-install';
 
 /** A loadable package; `marker` is what the entry reports, so a stale module
  *  cache would be visible as the OLD marker after an upgrade. */
-function packageZip(version: string, marker: string): Uint8Array {
+function packageZip(version: string, marker: string, extra: Record<string, unknown> = {}): Uint8Array {
   return zipSync({
     'plugin.json': strToU8(
       JSON.stringify({
@@ -36,6 +37,7 @@ function packageZip(version: string, marker: string): Uint8Array {
         type: 'model-service',
         wires: [ID],
         configSchema: [{ key: 'greeting', type: 'string', label: 'Greeting', default: 'hi' }],
+        ...extra,
       })
     ),
     'index.js': strToU8(
@@ -163,5 +165,40 @@ describe('console plugin install route', () => {
     const res = await install(new Uint8Array([1, 2, 3, 4]));
     expect(res.statusCode).toBe(400);
     expect(listInstalledPlugins().some((v) => v.id === ID)).toBe(false);
+  });
+
+  it('refuses an ENGINE-INCOMPATIBLE upload before anything lands, naming the gateway', async () => {
+    // ADR-0036 §5: `installPluginPackage` runs the engine gate before the first
+    // byte reaches disk, so the operator gets a 400 carrying the core sentence
+    // (which side is behind and what to do) instead of a green toast over a
+    // package that will never load, and nothing half-installed is left behind.
+    //
+    // The declaration is the contract INTEGER one step ahead of this host: the
+    // package was built against a surface this gateway does not implement.
+    const res = await install(packageZip('1.0.0', 'V1', { apiVersion: SUPPORTED_PLUGIN_API + 1 }));
+    expect(res.statusCode, res.body).toBe(400);
+    const body = JSON.parse(res.body) as { status?: string; error?: string };
+    expect(body.status).toBe('error');
+    expect(body.error ?? '').toMatch(/newer than this gateway's/);
+    expect(body.error ?? '').toMatch(/update OmniCellRouter/);
+
+    // Nothing landed and no row claims the id: a refused upload is a no-op.
+    expect(fs.existsSync(path.join(pluginsRoot(), `${ID}.zip`))).toBe(false);
+    expect(listInstalledPlugins().some((v) => v.id === ID)).toBe(false);
+  });
+
+  it('still discards a failed load of an operator-DISABLED plugin', async () => {
+    // The incompatible path is keyed on the row's own `incompatible` flag, not
+    // on `disabled && !loaded` — that shape also describes a plain disabled
+    // package, whose failed load must still be discarded and rolled back.
+    await install(packageZip('1.0.0', 'V1'));
+    const { setPluginDisabled } = await import('../../src/plugins/host.js');
+    await setPluginDisabled(ID, true);
+    await loadInstalledPlugins();
+
+    const res = await install(brokenPackage('2.0.0'));
+    expect(res.statusCode).toBe(422);
+    expect(res.body).toContain('rolled back');
+    expect(rows()[0].version).toBe('1.0.0');
   });
 });

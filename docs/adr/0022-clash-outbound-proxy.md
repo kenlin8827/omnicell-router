@@ -3,9 +3,15 @@
 Date: 2026-11-13
 Status: Accepted
 Governs: `backend/src/config/types.ts` (`ProxyConfig`), `backend/src/utils/proxy.ts`,
+`backend/src/opencode/probe.ts` (probe egress stamp),
+`backend/src/plugins/types.ts` (`ModelServicePluginHost.fetch` / `resolveProxy`,
+`PluginWebLoginOptions.provider`, `ModelServicePlugin.egressOrigins`),
+`backend/src/plugins/host.ts`, `backend/src/quota/engine.ts` (plugin-owned quota
+reads),
 `backend/src/utils/proxy-node.ts`, `backend/src/proxy/mihomo-*.ts`,
 `backend/src/proxy/asset-download.ts`, `backend/src/routes/mihomo.ts`,
-`frontend/src/pages/ProxyPage.tsx`, `frontend/src/pages/MihomoPage.tsx`.
+`frontend/src/pages/ProxyPage.tsx`, `frontend/src/pages/MihomoPage.tsx`,
+`frontend/src/pages/ProxyPatternsPage.tsx`.
 
 ## Context
 
@@ -212,6 +218,60 @@ set — that shape predates `mode` and still asks for the core.
   `Proxy settings` for `manual`, `Clash core` for `mihomo`. A manual
   install therefore never opens on the core tab reporting a core it was never
   asked to run.
+- **A probe reports the egress it took.** `ProbeResult.egress`
+  (`direct` / `proxy`) plus `egressProxy` (redacted origin) ride the provider
+  test reply (`POST /api/admin/opencode/providers/:id/test`) and the console
+  renders the limb next to the verdict. The include/exclude page states
+  INTENT; only the probe states OUTCOME, because the two ways an operator gets
+  this wrong are both silent — `forwardProxy.rules` is host-scoped and never
+  governs gateway-originated traffic (ADR-0018), and an exclude-only config
+  proxies nothing at all, since `includes` is the allowlist. A wire with no
+  host seam at all leaves `egress` unset (UNKNOWN), never `direct`: the core
+  did not open that socket and must not claim a direction for it. The value is
+  resolved once by `resolveProxyUrl()` at the dial, so the stamp cannot drift
+  from the routing decision it describes. The patterns page carries the same
+  boundary as prose (`proxyPatterns.scopeHint` / `excludesHint`), where the
+  mistake is actually made.
+- **A plugin wire takes the same egress as a built-in transport.** A
+  model-service plugin may not dial its upstream with the global `fetch`:
+  `ModelServicePluginHost.fetch(url, init, { provider, model })` wraps the
+  core's `proxiedFetch`, so `proxy.enabled`, `proxy.includes`,
+  `proxy.excludes`, the `manual`/`mihomo` endpoint choice and the loopback
+  bypass all apply to plugin traffic exactly as they do to the four built-in
+  wires. `resolveProxy(url, match)` is the no-dial twin a plugin's `probe()`
+  reads to stamp the direction it took. Both run the SAME resolver, so the
+  stamp can never disagree with the dial.
+  The gap this closes was a capability hole, not a policy: a plugin that
+  called the global `fetch` went direct whatever the operator configured, and
+  the probe had no honest direction to report — which is why the trace left it
+  UNKNOWN instead of claiming `direct`. A wire that owns its transport is
+  still allowed to answer for itself, but it now has a correct way not to.
+  Two request classes stay DIRECT on purpose: loopback targets, and any call
+  the evidence cannot classify. Sign-in / token-refresh is NOT one of them: the
+  console always holds the provider entry it is connecting (it is the route's
+  `:id`), so `webLogin.start/poll/submit` carry it as `PluginWebLoginOptions.provider`
+  and the plugin hands it to `host.fetch` like any other call. A vendor login
+  host is exactly the geo-blocked host an operator routes through a proxy, so
+  leaving sign-in direct made "completions work, connect does not" the default
+  outcome for those vendors. Omitting `provider` (a caller that genuinely has
+  none) still resolves direct — the split never invents a provider.
+  Quota reads a plugin owns are covered too, without the plugin naming a
+  proxy: `egressOrigins(providerId)` declares the upstreams it dials per
+  entry, and the quota engine turns them into a proxy-guarded `fetchImpl` for
+  `probe()` — so a plugin-wire provider's quota row obeys the same split.
+- **`provider/*` means the whole provider, model or not.** A pattern is tested
+  against `provider/modelId`, the bare provider, the bare model id, and — when
+  the call carries no model at all — the provider's own `provider/` prefix. The
+  last target exists because a quota read, a catalog pull and a sign-in
+  exchange have no model dimension (`RunProbeOpts` has none to give), so
+  without it `qoder/*` — the natural spelling of "everything under this
+  provider" — silently matched inference ONLY and left that same provider's
+  quota and sign-in traffic direct. A MODEL-scoped pattern still never hits a
+  model-less call: `workbuddy/gpt-*` cannot proxy a call with no model to test
+  against, and guessing one would be worse than answering direct. `excludes`
+  keeps winning over every target, and the sibling prefix stays out
+  (`qoder-work/*` does not reach `qoder-work-cn`, whose prefix target is
+  `qoder-work-cn/`).
 - The admin surface is `/api/admin/proxy/mihomo/*` and the Proxy page's
   six Mihomo sections (general, subscriptions, nodes, rules, connectivity, logs).
   Controller-backed actions (node select/test, subscription refresh) stay

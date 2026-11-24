@@ -619,6 +619,14 @@ export interface TranslationDict {
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOkMsg: string;
     testFailMsg: string;
+    /** Egress limb of a probe verdict: the probe went through the outbound proxy
+     *  (`{origin}` = redacted origin). Proves the model-scoped proxy split
+     *  actually reached this provider. */
+    probeEgressProxy: string;
+    /** Egress limb of a probe verdict: the probe dialed the machine's own
+     *  network. A provider the split was meant to cover reading `direct` here is
+     *  the misconfiguration signature. */
+    probeEgressDirect: string;
     probeDetailTitle: string;
     probeDetailOpen: string;
     probeDetailCopied: string;
@@ -1334,6 +1342,7 @@ hiddenBadge: string;
     thTokensTotal: string;
     tokensTotalTip: string;
     thCost: string;
+    costUnknownTip: string;
     requestsTitle: string;
     requestsSortAsc: string;
     requestsSortDesc: string;
@@ -2565,7 +2574,6 @@ hiddenBadge: string;
     saveBtn: string;
     savedNotice: string;
     navNet: string;
-    navCache: string;
     navCapture: string;
     navResponses: string;
     navWebAuth: string;
@@ -2587,10 +2595,6 @@ hiddenBadge: string;
     host: string;
     hostAuthHint: string;
     hostAuthJump: string;
-    cacheTitle: string;
-    cacheEnable: string;
-    cacheSim: string;
-    cacheTtl: string;
     capTitle: string;
     capEnable: string;
     capRetention: string;
@@ -2704,6 +2708,12 @@ hiddenBadge: string;
     activeHint: string;
     /** Status detail: the master switch is off, so the rules do nothing. */
     disabledHint: string;
+    /** Scope boundary: these rules are the ONLY thing that proxies an upstream
+     *  call; the inbound forward-proxy rule table is host-scoped and never
+     *  applies to gateway-originated traffic. */
+    scopeHint: string;
+    /** Allowlist reminder: an exclude-only config proxies nothing. */
+    excludesHint: string;
     saveHint: string;
     /** Button + dialog title: multi-select picker of `<provider>/*` patterns from CONNECTED providers. */
     quickAdd: string;
@@ -3429,6 +3439,8 @@ hiddenBadge: string;
     sourceDev: string;
     sourcePackaged: string;
     statusDisabled: string;
+    statusIncompatible: string;
+    incompatibleHint: string;
     disable: string;
     disableOk: string;
     disableFail: string;

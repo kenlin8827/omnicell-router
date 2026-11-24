@@ -185,7 +185,7 @@ The gateway enforces strict operational boundaries based on entry mode:
 
 | Entry Mode | Eligible Triggers | Tier Movement by Judgment | Directives | Ratchet Locked |
 | :--- | :--- | :--- | :--- | :--- |
-| **`auto`** | Bare `auto`, tier aliases, classifier model names | Allowed (full cascade) | Active (both axes) | Yes |
+| **`auto`** | Bare `auto`, unregistered names (resolve to `auto`) | Allowed (full cascade) | Active (both axes) | Yes |
 | **`explicit`** | Registered physical models, forced tier aliases | Forbidden (contract verbatim) | Ignored (ledgered `explicit_choice`) | No (fixed tier) |
 | **`combo`** | Configured virtual combo IDs | Forbidden (pool internal) | Ignored | No |
 

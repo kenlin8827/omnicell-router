@@ -45,7 +45,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { Switch } from '../components/Switch';
 import { InfoTip } from '../components/InfoTip';
-import { useModelTest } from '../lib/useModelTest';
+import { useModelTest, composeEgressLabel } from '../lib/useModelTest';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
@@ -2630,18 +2630,38 @@ export const KeysPage: React.FC = () => {
                           ? [
                               testResults[p.id].model,
                               `${testResults[p.id].latencyMs} ms`,
+                              composeEgressLabel(testResults[p.id], t),
                               testResults[p.id].credential
                                 ? credentialName(testResults[p.id].credential as CredentialMeta, t('op.credentialUnnamed'))
                                 : undefined,
                             ]
                               .filter(Boolean)
                               .join(' · ')
-                          : undefined
+                          : composeEgressLabel(testResults[p.id], t)
                       }
                     >
                       {testResults[p.id].ok
                         ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
                         : `✗ ${testResults[p.id].errorShort || testResults[p.id].error || t('op.testFailMsg')}`}
+                      {/* Egress rides the SAME row as the verdict: the operator's
+                          question after a split change is "did this provider take
+                          the proxy", and a failure that is really a wrong egress
+                          (geo block, proxy down) is indistinguishable from a bad
+                          key without it. Unknown (plugin wire) renders nothing. */}
+                      {composeEgressLabel(testResults[p.id], t) && (
+                        <span
+                          style={{
+                            marginLeft: '6px',
+                            padding: '0 5px',
+                            borderRadius: 'var(--radius-sm, 6px)',
+                            border: '1px solid var(--divider)',
+                            color: 'var(--text-dim)',
+                            fontSize: 'var(--text-2xs, 10px)',
+                          }}
+                        >
+                          {composeEgressLabel(testResults[p.id], t)}
+                        </span>
+                      )}
                     </span>
                     {/* Failure detail behind an explicit click: the upstream
                         body is multi-line JSON, so a hover bubble is the wrong

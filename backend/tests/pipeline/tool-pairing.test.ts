@@ -145,7 +145,7 @@ describe('tool-pairing: the orchestrator repairs the forwarded payload', () => {
       session: { enabled: true, strategy: 'monotonic', ttlSeconds: 3600, maxSessions: 100 },
     } as unknown as RouterConfig;
     const registry = new ProviderRegistry(config, false);
-    registry.setAutoRefreshTierMatch(false);
+    registry.setAutoRefreshMembers(false);
     const seen: CanonicalRequest[] = [];
     const stub: LLMProvider = {
       name: 'p1',

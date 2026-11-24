@@ -5,6 +5,7 @@ import path from 'node:path';
 import { strToU8, unzipSync, zipSync } from 'fflate';
 import { loadConfig } from '../../src/config/index.js';
 import { createServer } from '../../src/server.js';
+import { SUPPORTED_PLUGIN_API } from '../../src/plugins/manifest.js';
 import { bundlePluginDir, externalSpecifiers, PACKAGE_ENTRY } from '../../src/plugins/pack.js';
 import { installPluginPackage, loadInstalledPlugins } from '../../src/plugins/host.js';
 
@@ -191,6 +192,27 @@ describe('plugin package export', () => {
     expect(entries).toContain('plugin.json');
     expect(entries).toContain(PACKAGE_ENTRY);
     expect(entries).not.toContain('index.ts');
+  });
+
+  it('refuses to MINT a package whose contract declaration is invalid', async () => {
+    // The packager copies `plugin.json` verbatim, so this is the only place a
+    // bad declaration can be caught before an operator receives a package that
+    // can never load (ADR-0036 Amendment 1).
+    const src = path.join(tmpHome, 'src');
+    writeSource(src);
+    const manifestPath = path.join(src, 'plugin.json');
+    const declared = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...declared, apiVersion: '1' }));
+
+    await expect(bundlePluginDir(src)).rejects.toThrow(/apiVersion must be a positive integer/);
+
+    // ...and a valid integer still packages, shipping the declaration verbatim.
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...declared, apiVersion: SUPPORTED_PLUGIN_API }));
+    const zip = await bundlePluginDir(src);
+    const shipped = JSON.parse(new TextDecoder().decode(unzipSync(zip)['plugin.json'] as Uint8Array)) as {
+      apiVersion?: number;
+    };
+    expect(shipped.apiVersion).toBe(SUPPORTED_PLUGIN_API);
   });
 
   it('refuses a source-only package with the repack instruction', async () => {

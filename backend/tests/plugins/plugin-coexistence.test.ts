@@ -19,6 +19,7 @@ import {
   uninstallPlugin,
 } from '../../src/plugins/host.js';
 import { bundlePluginDir } from '../../src/plugins/pack.js';
+import { SUPPORTED_PLUGIN_API } from '../../src/plugins/manifest.js';
 import { readProviderDefsFile, writeProviderDefs } from '../../src/opencode/provider-defs.js';
 import { deleteProviderDef } from '../../src/opencode/user-config.js';
 
@@ -49,7 +50,11 @@ const IDS = [
   'coexist-changelog-broken',
 ];
 
-function packageZip(id: string, version: string, apiVersion = 1): Uint8Array {
+/** The refusal sentence for a contract newer than this engine, built from the
+ *  shipped constant so an engine bump moves the assertion instead of rotting it. */
+const TOO_NEW = new RegExp(`targets plugin contract ${SUPPORTED_PLUGIN_API + 1}, newer than this gateway's ${SUPPORTED_PLUGIN_API}`);
+
+function packageZip(id: string, version: string, apiVersion = SUPPORTED_PLUGIN_API): Uint8Array {
   const manifest = { id, name: id, version, apiVersion, type: 'model-service', wires: [id] };
   return zipSync({
     'plugin.json': strToU8(JSON.stringify(manifest)),
@@ -93,15 +98,19 @@ afterEach(async () => {
 describe('plugin coexistence: official vs third-party', () => {
   it('refuses another contract version — at install and at load', async () => {
     const id = 'coexist-newer';
-    const mismatched = packageZip(id, '1.0.0', 2);
-    expect(() => installPluginPackage(mismatched)).toThrow(/does not match this host's plugin contract/);
+    const mismatched = packageZip(id, '1.0.0', SUPPORTED_PLUGIN_API + 1);
+    expect(() => installPluginPackage(mismatched)).toThrow(TOO_NEW);
     expect(existsSync(join(pluginsRoot(), `${id}.zip`))).toBe(false);
 
     mkdirSync(pluginsRoot(), { recursive: true });
     writeFileSync(join(pluginsRoot(), `${id}.zip`), mismatched);
-    const view = (await loadInstalledPlugins()).find((v) => v.id === id);
+    // `loadInstalledPlugins()` returns only the LIVE load result; an
+    // incompatible package is a console row, never a loaded plugin.
+    expect((await loadInstalledPlugins()).some((v) => v.id === id)).toBe(false);
+    const view = listInstalledPlugins().find((v) => v.id === id);
     expect(view?.loaded).toBe(false);
-    expect(view?.error ?? '').toMatch(/does not match this host's plugin contract/);
+    expect(view?.disabled).toBe(true);
+    expect(view?.error ?? '').toMatch(TOO_NEW);
   });
 
   it('lets the bundled package win over an installed copy of the same id', async () => {
@@ -147,7 +156,9 @@ describe('plugin coexistence: official vs third-party', () => {
     // Facts come from the package zip: a tombstoned app-owned package is never
     // extracted, so the console must not degrade to a bare `?` row.
     expect(row?.version).toBe('1.0.0');
-    expect(row?.wires).toEqual([id]);
+    // No wire: a dormant row answers no protocol, so the console's wire column
+    // must not promise one (the same rule a refused row follows).
+    expect(row?.wires).toEqual([]);
   });
 
   it('an install replaces a stale package of the same id under a free-form name', async () => {
@@ -266,21 +277,27 @@ describe('plugin coexistence: official vs third-party', () => {
     expect(existsSync(join(pluginsRoot(), 'ocr-shadow.zip'))).toBe(false);
   });
 
-  it('does not duplicate an id when the app-owned copy fails to load', async () => {
+  it('does not duplicate an id when the app-owned copy is incompatible', async () => {
     const id = 'coexist-broken-bundled';
     // App-owned copy is unloadable (other contract version); the operator copy
     // is fine. The app-owned copy still OWNS the id: one row, no silent pickup.
     mkdirSync(join(pluginsRoot(), 'bundled'), { recursive: true });
-    writeFileSync(join(pluginsRoot(), 'bundled', `official-${id}.zip`), packageZip(id, '9.9.9', 2));
+    writeFileSync(join(pluginsRoot(), 'bundled', `official-${id}.zip`), packageZip(id, '9.9.9', SUPPORTED_PLUGIN_API + 1));
     // The operator copy predates the app-owned one (an install would be
     // refused), so it can only get here as a file that is already on disk.
     mkdirSync(pluginsRoot(), { recursive: true });
     writeFileSync(join(pluginsRoot(), `${id}.zip`), packageZip(id, '1.0.0'));
 
-    const rows = (await loadInstalledPlugins()).filter((v) => v.id === id);
+    // The app-owned copy OWNS the id even while refused, so the console lists
+    // exactly one row for it and the operator copy stays unloaded.
+    const live = (await loadInstalledPlugins()).filter((v) => v.id === id);
+    expect(live).toHaveLength(0);
+    const rows = listInstalledPlugins().filter((v) => v.id === id);
     expect(rows).toHaveLength(1);
     expect(rows[0].loaded).toBe(false);
-    expect(rows[0].error ?? '').toMatch(/does not match this host's plugin contract/);
+    expect(rows[0].disabled).toBe(true);
+    expect(rows[0].version).toBe('9.9.9');
+    expect(rows[0].error ?? '').toMatch(TOO_NEW);
   });
 
   it('lets a packaged plugin resolve its shipped assets through host.pluginDir()', async () => {
@@ -292,7 +309,7 @@ describe('plugin coexistence: official vs third-party', () => {
     try {
       mkdirSync(join(src, 'common'), { recursive: true });
       mkdirSync(join(src, 'data'), { recursive: true });
-      writeFileSync(join(src, 'plugin.json'), JSON.stringify({ id, name: id, version: '1.0.0', apiVersion: 1, type: 'model-service', wires: [id] }));
+      writeFileSync(join(src, 'plugin.json'), JSON.stringify({ id, name: id, version: '1.0.0', apiVersion: SUPPORTED_PLUGIN_API, type: 'model-service', wires: [id] }));
       writeFileSync(
         join(src, 'index.ts'),
         "import { readMarker } from './common/reader.js';\n" +
@@ -327,7 +344,7 @@ describe('plugin coexistence: official vs third-party', () => {
       { version: '1.2.0', date: '2026-11-23', notes: { 'en-US': '- Notes', 'zh-CN': '- 说明' } },
       { version: '1.0.0', notes: '- First release' },
     ];
-    const manifest = { id, name: 'Changelog', version: '1.2.0', apiVersion: 1, type: 'model-service', wires: [id], changelog };
+    const manifest = { id, name: 'Changelog', version: '1.2.0', apiVersion: SUPPORTED_PLUGIN_API, type: 'model-service', wires: [id], changelog };
     installPluginPackage(bareZip(id, manifest));
     expect((await loadInstalledPlugins()).find((v) => v.id === id)?.changelog).toEqual(changelog);
 
@@ -364,7 +381,7 @@ describe('install → uninstall lifecycle', () => {
           id: ID,
           name: 'Life Cycle',
           version,
-          apiVersion: 1,
+          apiVersion: SUPPORTED_PLUGIN_API,
           type: 'model-service',
           wires: [ID],
           configSchema: [{ key: 'greeting', type: 'string', label: 'Greeting', default: 'hi' }],
@@ -522,7 +539,7 @@ describe('install → uninstall lifecycle', () => {
           id: ID,
           name: 'Life Cycle',
           version,
-          apiVersion: 1,
+          apiVersion: SUPPORTED_PLUGIN_API,
           type: 'model-service',
           wires: [ID],
           presets: providerIds.map((pid) => ({
@@ -632,7 +649,7 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
           id: ID,
           name: 'Wire Repair',
           version: '1.0.0',
-          apiVersion: 1,
+          apiVersion: SUPPORTED_PLUGIN_API,
           type: 'model-service',
           wires: [ID],
           presets: [{ presetId: 'wire-repair-preset', providerId: PROVIDER, protocol, baseUrl: 'https://preset.invalid/v1', displayName: 'Wire Repair' }],

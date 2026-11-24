@@ -896,8 +896,9 @@ export interface TraceRecord {
     inputTokens: number;
     outputTokens: number;
     cachedTokens: number;
-    /** Actual cost (USD) recorded at request time; no cost UI yet. */
-    costUsd: number;
+    /** Actual cost (USD) recorded at request time. Absent when the serving
+     *  model carried no price — unknown, NOT free. */
+    costUsd?: number;
   };
 }
 
@@ -1324,8 +1325,12 @@ export interface SessionRecord {
   outputTokens: number;
   /** Cumulative cache-read input tokens across the session's traces. */
   cachedTokens: number;
-  /** Cumulative recorded actual cost (USD) across the session's traces. */
+  /** Cumulative recorded actual cost (USD) across the session's traces —
+   *  priced turns only; see {@link unpricedTurns}. */
   costUsd: number;
+  /** Turns whose model carried no price, excluded from `costUsd`. Non-zero
+   *  means the total is a floor, not the session's real spend. */
+  unpricedTurns: number;
   /** Summed end-to-end latency (ms) across the session's traces. Part of the
    *  admin payload; the console renders per-turn latency instead. */
   totalLatencyMs: number;
@@ -1388,6 +1393,8 @@ export interface KeyUsageRow {
   cachedTokens: number;
   latencyMsSum: number;
   costUsd: number;
+  /** Turns of this row whose model carried no price (excluded from `costUsd`). */
+  unpricedRequests: number;
   /** Output tokens over STREAMED turns only — decode-TPS numerator. */
   genOutputTokens: number;
   /** Summed decode window (ms) over the same turns — decode-TPS denominator. */
@@ -1402,7 +1409,11 @@ export interface UsageStatsResponse {
     outputTokens: number;
     cachedTokens: number;
     avgLatencyMs: number;
+    /** Cost of the requests that could be priced; see {@link unpricedRequests}. */
     costUsd: number;
+    /** Requests whose model carried no price, excluded from `costUsd`.
+     *  Non-zero means the total is a floor, not the window's real spend. */
+    unpricedRequests: number;
     /** Same streamed-turns-only pairing as KeyUsageRow, window-wide. */
     genOutputTokens: number;
     genMsSum: number;
@@ -5370,6 +5381,12 @@ export interface PluginViewInfo {
   loadedAt?: number;
   error?: string;
   disabled?: boolean;
+  /** Set by the loader when this gateway's plugin ENGINE refuses the package
+   *  (`apiVersion` contract mismatch, ADR-0036). The row is
+   *  `disabled` and carries the refusal in `error`: it answers no traffic, and
+   *  its fix is an upgrade of either side — nothing the operator can toggle
+   *  here, so the drawer hides the disable/enable actions for it. */
+  incompatible?: boolean;
 }
 
 /** One operator-facing plugin setting, mirroring backend/src/plugins/types.ts. */
@@ -5634,6 +5651,17 @@ export interface TestProviderResult {
   unroutableCode?: 'unknownPackage' | 'dedicatedTransport';
   unroutableNpm?: string;
   upstreamBody?: string;
+  /**
+   * Egress the probe ACTUALLY took (ADR-0018 / ADR-0022 vocabulary): `direct`
+   * straight out of the machine, `proxy` through the outbound proxy whose
+   * redacted origin rides in `egressProxy`. Absent = UNKNOWN (plugin wire with
+   * its own transport), never read as direct.
+   *
+   * This is the ground truth behind the include/exclude split: a rule that
+   * never matched this provider shows up here as `direct`.
+   */
+  egress?: 'direct' | 'proxy';
+  egressProxy?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
   /** Credential rotation: masked rows tried, in order (only when > 1). */
@@ -5852,7 +5880,10 @@ export interface QuotaPairUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /** Cost of the requests that could be priced; see {@link unpricedRequests}. */
   costUsd: number;
+  /** Turns of this pair whose model carried no price (excluded from `costUsd`). */
+  unpricedRequests: number;
 }
 
 /** One connected (provider × credential) pair directory row — mirrors
@@ -6480,7 +6511,18 @@ export const opencodeApi = {
     return parsed;
   },
 
-  async installPlugin(bytes: ArrayBuffer): Promise<{ status: string; id: string; plugins: PluginViewInfo[] }> {
+  async installPlugin(bytes: ArrayBuffer): Promise<{
+    status: string;
+    id: string;
+    plugins: PluginViewInfo[];
+    version?: string;
+    replacedVersion?: string;
+    registered?: string[];
+    /** Engine-refused package: INSTALLED (listed, disabled) but answers nothing
+     *  until one side is updated — a green toast over this row is forbidden. */
+    incompatible?: boolean;
+    error?: string;
+  }> {
     const res = await fetch(`/api/admin/plugins/install`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
@@ -6489,8 +6531,25 @@ export const opencodeApi = {
     const text = await res.text();
     // An empty body (proxy cut, server abort) must not surface as a cryptic
     // "Unexpected end of JSON input" — report the HTTP status instead.
-    const parsed = (text ? JSON.parse(text) : {}) as { status: string; id?: string; error?: string; plugins: PluginViewInfo[] };
-    if (!res.ok || parsed.status !== 'ok') throw new Error(parsed.error ?? `HTTP ${res.status}${text ? '' : ' (empty response)'}`);
+    const parsed = (text ? JSON.parse(text) : {}) as {
+      status: string;
+      id?: string;
+      error?: string;
+      plugins: PluginViewInfo[];
+      version?: string;
+      replacedVersion?: string;
+      registered?: string[];
+      incompatible?: boolean;
+    };
+    if (!res.ok || parsed.status !== 'ok') {
+      // An engine-INCOMPATIBLE package is INSTALLED (listed, disabled) and its
+      // bytes stay, so the row has to reach the page with the error: a thrown
+      // message would leave the operator looking at a list without it.
+      if (parsed.plugins?.length) {
+        throw Object.assign(new Error(parsed.error ?? `HTTP ${res.status}`), { plugins: parsed.plugins });
+      }
+      throw new Error(parsed.error ?? `HTTP ${res.status}${text ? '' : ' (empty response)'}`);
+    }
     return { ...parsed, id: parsed.id ?? '' };
   },
 

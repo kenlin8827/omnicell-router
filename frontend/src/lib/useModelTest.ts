@@ -117,7 +117,26 @@ export interface ModelTestOutcome {
    *  (addressed probe) or the chain entry that answered (provider-level probe,
    *  which rotates the enabled chain until one key works). */
   credential?: { id: string; label?: string };
+  /** Egress the probe actually used (backend vocabulary, api.ts). Absent =
+   *  unknown: a plugin wire owns its transport, so the core cannot observe it. */
+  egress?: 'direct' | 'proxy';
+  /** Redacted outbound-proxy origin; only with `egress: 'proxy'`. */
+  egressProxy?: string;
 }
+
+/**
+ * Localized egress limb of a probe verdict — `via <origin>` or `direct`.
+ * Returns undefined when the egress is UNKNOWN (plugin-owned transport), so a
+ * surface renders nothing rather than claiming a path the core never saw.
+ *
+ * This is the only place a test result can prove the model-scoped proxy split
+ * reached a provider: the include/exclude page states intent, not outcome.
+ */
+export const composeEgressLabel = (r: { egress?: 'direct' | 'proxy'; egressProxy?: string }, t: TFn): string | undefined => {
+  if (r.egress === 'proxy') return t('op.probeEgressProxy', { origin: r.egressProxy ?? '?' });
+  if (r.egress === 'direct') return t('op.probeEgressDirect');
+  return undefined;
+};
 
 const CONCURRENCY = 4;
 /** Batch tests above this count fire real inference calls — confirm first. */

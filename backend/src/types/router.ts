@@ -7,11 +7,14 @@ import type { ModelAvailability } from '../resilience/circuit-breaker-manager.js
 export type TierLevel = 'lite' | 'plus' | 'pro' | 'ultra';
 
 /**
- * What a model's smart-match classification yields. `TierLevel`
- * is the REQUEST-side four-state vocabulary (targetTier, TIER_RANK,
- * escalateTier, session ratchet); `'unclassified'` is a
- * MODEL-side pool-membership outcome only. Kept as a separate type so the
- * two axes can't be conflated.
+ * What the member lists yield for a model. `TierLevel` is the REQUEST-side
+ * four-state vocabulary (targetTier, TIER_RANK, escalateTier, session
+ * ratchet); `'unclassified'` is a MODEL-side pool-membership outcome only —
+ * no member list claims the model, so it joins no pool and carries no home
+ * tier. Kept as a separate type so the two axes can't be conflated: it is a
+ * CLAIM RESULT, never a value stored on a registration (`ModelRegistration.tier`
+ * stays `TierLevel | undefined` precisely so TIER_RANK and the ratchet never
+ * see a fifth level).
  *
  * Tier naming: strength-gradient labels that work across model vendors
  * (Claude, GPT-*, Gemini, etc.) instead of vendor-specific brand names.
@@ -104,13 +107,32 @@ export type EffortSource = 'client' | 'l2-decision' | 'entry' | 'directive' | 'd
  */
 export function downgradeReasoning(
   requested: ReasoningEffort,
-  supported: readonly ReasoningEffort[] | undefined
+  supported: readonly ReasoningEffort[] | undefined,
+  alwaysThink = false
 ): ReasoningEffort {
   const reqRank = EFFORT_LADDER.indexOf(requested);
   const candidates = (supported ?? EFFORT_LADDER)
     .filter((lvl) => EFFORT_LADDER.indexOf(lvl) <= reqRank)
     .sort((a, b) => EFFORT_LADDER.indexOf(b) - EFFORT_LADDER.indexOf(a));
-  return candidates[0] ?? 'none';
+  if (candidates.length > 0) return candidates[0]!;
+  // Nothing in the ladder sits at or below the ask. An ALWAYS-THINK model
+  // carries no `none` by construction (ADR-0035 withholding), so answering
+  // thinking-off here would send a level its vendor refuses — land on the
+  // lowest rung the model actually declares. A plain table that merely omits
+  // `none` keeps the ADR-0011 down-direction contract: thinking-off is legal.
+  if (alwaysThink) return lowestSupportedEffort(supported) ?? 'none';
+  return 'none';
+}
+
+/** The lowest level a DECLARED support set can serve (`undefined` for an empty
+ *  or undeclared set). The floor an always-think model is clamped to when an
+ *  ask or a directive step would otherwise land on `none` the vendor forbids
+ *  (ADR-0035: a table without `none` can never serve thinking-off). */
+export function lowestSupportedEffort(
+  supported: readonly ReasoningEffort[] | undefined
+): ReasoningEffort | undefined {
+  if (!supported || supported.length === 0) return undefined;
+  return [...supported].sort((a, b) => EFFORT_LADDER.indexOf(a) - EFFORT_LADDER.indexOf(b))[0];
 }
 
 /**
@@ -128,13 +150,26 @@ export type EffortMap = Partial<Record<ReasoningEffort, ReasoningEffort>>;
  *   - the legacy boolean `true` → the full EFFORT_LADDER;
  *   - otherwise `undefined` = "no explicit effort control" (callers decide:
  *     selection skips the candidate; wire-side recompute clamps to `[]`).
+ * `disableable === false` (the vendor's always-think fact, ADR-0035) strips
+ * `none` from the resolved set on EVERY branch — the withholding must hold at
+ * the routing plane, not only on the published effort table.
  */
 export function modelSupportsEfforts(
   supported: readonly ReasoningEffort[] | undefined,
-  legacyFlag: boolean | undefined
+  legacyFlag: boolean | undefined,
+  disableable?: boolean
 ): ReasoningEffort[] | undefined {
-  if (supported && supported.length > 0) return [...supported];
-  if (legacyFlag === true) return [...EFFORT_LADDER];
+  // An always-think model NEVER serves `none` (ADR-0035): strip it from any
+  // resolved set — a stale config table, a legacy boolean expansion, a hand-
+  // written registration. A set that empties under the strip falls through to
+  // "no explicit effort control", never back to a ladder that re-admits it.
+  const withoutNone = (levels: readonly ReasoningEffort[]): ReasoningEffort[] =>
+    disableable === false ? levels.filter((e) => e !== 'none') : [...levels];
+  if (supported && supported.length > 0) {
+    const kept = withoutNone(supported);
+    if (kept.length > 0) return kept;
+  }
+  if (legacyFlag === true) return withoutNone(EFFORT_LADDER);
   return undefined;
 }
 
@@ -152,7 +187,10 @@ export interface TierModelConfig {
   upstreamModel?: string;
   realModel?: string;
   tier?: TierLevel;
-  pricing: ModelPricing;
+  /** USD per 1M tokens, or absent when the price is unknown (see
+   *  {@link ModelRegistration.pricing}). Cost maths must treat a missing
+   *  value as unpriceable rather than as zero. */
+  pricing?: ModelPricing;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
   supportsJsonSchema?: boolean;
@@ -160,21 +198,29 @@ export interface TierModelConfig {
    * Subset of `ReasoningEffort` this model can natively serve. Empty /
    * missing means "no explicit effort control — the model handles effort
    * internally". Default for thinking-capable models is the full
-   * `EFFORT_LADDER` (all 6 levels).
+   * `EFFORT_LADDER` (all 7 levels).
    */
   supportedReasoningEfforts?: readonly ReasoningEffort[];
   /**
    * Legacy boolean kept for back-compat with catalog / config files that
    * pre-date the per-level vocabulary. When true and no
    * `supportedReasoningEfforts` is set, `modelSupportsEfforts` resolves it to
-   * the FULL `EFFORT_LADDER` (all 6 levels, `none` included). Carrying `none`
+   * the FULL `EFFORT_LADDER` (all 7 levels, `none` included). Carrying `none`
    * is a no-op on every generic path: a `none` target short-circuits before
    * the support set is read, and a clamp that can reach only `none` yields
-   * `'none'` anyway. The ONE place where legacy still means the 5 non-`none`
+   * `'none'` anyway. The ONE place where legacy still means the 6 non-`none`
    * levels is the System One wire, whose vendor enum has no `none`
    * (protocols/systemone/convert.ts → `'low'`).
    */
   supportsReasoningEffort?: boolean;
+  /**
+   * The vendor's on/off fact for a thinking model (ADR-0035): `false` = the
+   * model ALWAYS thinks, so `none` is withheld from every resolved effort set
+   * (`modelSupportsEfforts`) — including a legacy boolean expansion and a
+   * stale config table. Written by the shared catalog-def mapper; absent =
+   * off allowed / not stated.
+   */
+  reasoningDisableable?: boolean;
   supportsPromptCaching?: boolean;
   isDefaultInTier?: boolean;
 }

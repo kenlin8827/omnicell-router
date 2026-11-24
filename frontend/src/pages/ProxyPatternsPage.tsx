@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeftRight, Info, ListFilter, Save } from 'lucide-react';
+import { ArrowLeftRight, Info, ListFilter, Save, ShieldAlert } from 'lucide-react';
 import { api, opencodeApi } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -158,6 +158,18 @@ export const ProxyPatternsPage: React.FC = () => {
                       ? t('proxyPatterns.activeHint')
                       : t('proxyPatterns.idleHint')}
                 </span>
+              </div>
+            </div>
+            {/* Scope boundary, stated where the mistake is made (ADR-0018 vs
+                ADR-0022): operators configure `forwardProxy.rules` expecting it
+                to govern upstream calls, and read an empty Include list as "no
+                exclusions". Both leave every probe and every completion direct,
+                which then looks like the split silently failing. */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', paddingTop: '6px', borderTop: '1px solid var(--divider)' }}>
+              <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: '2px', color: 'var(--text-dim)' }} aria-hidden="true" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, color: 'var(--text-dim)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-normal)' }}>
+                <span>{t('proxyPatterns.scopeHint')}</span>
+                <span>{t('proxyPatterns.excludesHint')}</span>
               </div>
             </div>
           </div>

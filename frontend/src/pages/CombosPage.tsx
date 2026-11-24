@@ -506,8 +506,8 @@ export const CombosPage: React.FC = () => {
         setCombos((comboRes.combos || []).map(toDraft));
         // Registered physical models only — virtual tier aliases (auto + bare tier names) and combos
         // are owned_by 'omnicell-router'. Tier presence is deliberately NOT
-        // the criterion: combos are the sanctioned way to call pool-less
-        // (unclassified) models, so those must stay selectable here.
+        // the criterion: combos are the sanctioned way to call models that no
+        // tier member list claims, so those must stay selectable here.
         const registered = models.filter(m => m.owned_by !== 'omnicell-router');
         const connected = new Set((provRes.providers || []).filter(p => p.auth?.connected).map(p => p.id));
         setRegisteredIds(new Set(registered.map(m => m.id)));

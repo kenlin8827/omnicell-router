@@ -125,8 +125,20 @@ export function PluginsManagePage(): React.ReactElement {
         try {
           const res = await opencodeApi.installPlugin(await file.arrayBuffer());
           setPlugins(res.plugins ?? []);
-          toast.success(t('pluginPage.installOk').replace('{name}', res.id));
+          // An engine-refused package still answers 200 (it lands as a
+          // DISABLED row), so the green toast must be gated on the refusal
+          // flag — a green "installed" over a red row is the one reading an
+          // operator must not be left with.
+          if (res.incompatible) {
+            failures.push(`${file.name}: ${res.error ?? res.id}`);
+          } else {
+            toast.success(t('pluginPage.installOk').replace('{name}', res.id));
+          }
         } catch (err) {
+          // A refused install still changed the list (an incompatible package
+          // lands as a disabled row), so take its rows before reporting why.
+          const rows = (err as { plugins?: PluginViewInfo[] }).plugins;
+          if (rows) setPlugins(rows);
           failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
@@ -234,6 +246,7 @@ export function PluginsManagePage(): React.ReactElement {
               { value: '', label: t('pluginPage.statusAll') },
               { value: 'loaded', label: t('pluginPage.statusLoaded') },
               { value: 'disabled', label: t('pluginPage.statusDisabled') },
+              { value: 'incompatible', label: t('pluginPage.statusIncompatible') },
               { value: 'error', label: t('pluginPage.statusError') },
             ]}
           />
@@ -262,7 +275,10 @@ export function PluginsManagePage(): React.ReactElement {
             const d = p.description;
             const desc = typeof d === 'string' ? d : Object.values(d ?? {}).join(' ');
             if (q && !`${p.name} ${p.version} ${desc}`.toLowerCase().includes(q)) return false;
-            if (statusFilter === 'disabled' && !p.disabled) return false;
+            // `incompatible` rows are ALSO disabled, so the disabled bucket must
+            // exclude them or the same row answers two filters.
+            if (statusFilter === 'incompatible' && !p.incompatible) return false;
+            if (statusFilter === 'disabled' && (!p.disabled || p.incompatible)) return false;
             if (statusFilter === 'loaded' && (p.disabled || !p.loaded)) return false;
             if (statusFilter === 'error' && (p.disabled || p.loaded)) return false;
             return true;
@@ -276,7 +292,19 @@ export function PluginsManagePage(): React.ReactElement {
                   the full text plus where the plugin was loaded from. */}
               {p.error ? (
                 <div style={{ ...DETAIL_CLAMP, color: 'var(--accent-rose)' }} title={p.error}>
-                  {p.error}
+                  {/* A refused package gets the localised ACTION first: the core
+                      sentence names which side is behind, but "update the
+                      gateway or the plugin" is what the operator has to do. */}
+                  {p.incompatible ? (
+                    <>
+                      {t('pluginPage.incompatibleHint', { version: p.version, name: p.name })}
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 2 }}>
+                        {p.error}
+                      </div>
+                    </>
+                  ) : (
+                    p.error
+                  )}
                 </div>
               ) : (
                 (() => {
@@ -321,8 +349,19 @@ export function PluginsManagePage(): React.ReactElement {
               )}
             </td>
             <td style={CELL}>
-              <span className={`badge ${p.disabled ? 'badge-warning' : p.loaded ? 'badge-success' : 'badge-danger'}`}>
-                {p.disabled ? t('pluginPage.statusDisabled') : p.loaded ? t('pluginPage.statusLoaded') : t('pluginPage.statusError')}
+              <span
+                className={`badge ${p.incompatible ? 'badge-danger' : p.disabled ? 'badge-warning' : p.loaded ? 'badge-success' : 'badge-danger'}`}
+                title={
+                  p.incompatible ? t('pluginPage.incompatibleHint', { version: p.version, name: p.name }) : undefined
+                }
+              >
+                {p.incompatible
+                  ? t('pluginPage.statusIncompatible')
+                  : p.disabled
+                    ? t('pluginPage.statusDisabled')
+                    : p.loaded
+                      ? t('pluginPage.statusLoaded')
+                      : t('pluginPage.statusError')}
               </span>
               {/* Folded in from its own column for the same reason as `wires`: one
                   timestamp per row does not earn a track. */}
@@ -340,14 +379,26 @@ export function PluginsManagePage(): React.ReactElement {
                   7px-padded cell pushes the row past every other management table.
                   flex containers ignore text-align, so the button row centers itself. */}
               <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-                <button
-                  className={p.disabled ? 'btn btn-sm btn-success' : 'btn btn-sm btn-warning'}
-                  onClick={() => void toggle(p)}
-                  title={p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
-                >
-                  {p.disabled ? <Power size={12} aria-hidden /> : <PowerOff size={12} aria-hidden />}
-                  {p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
-                </button>
+                {/* No switch on a refused row: `incompatible` comes from the
+                    ENGINE gate, so enabling it would change the ledger and
+                    nothing else — the remedy is an upgrade, tooltip included. */}
+                {p.incompatible ? (
+                  <span
+                    style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', alignSelf: 'center', maxWidth: 200 }}
+                    title={t('pluginPage.incompatibleHint', { version: p.version, name: p.name })}
+                  >
+                    {t('pluginPage.statusIncompatible')}
+                  </span>
+                ) : (
+                  <button
+                    className={p.disabled ? 'btn btn-sm btn-success' : 'btn btn-sm btn-warning'}
+                    onClick={() => void toggle(p)}
+                    title={p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
+                  >
+                    {p.disabled ? <Power size={12} aria-hidden /> : <PowerOff size={12} aria-hidden />}
+                    {p.disabled ? t('pluginPage.enable') : t('pluginPage.disable')}
+                  </button>
+                )}
                 <button
                   className="btn btn-sm"
                   onClick={() => void download(p.id)}

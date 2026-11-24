@@ -184,7 +184,7 @@ export async function resolveClientModelMeta(ids: string[]): Promise<Record<stri
       }
       const reg = registry.getModel(id);
       if (reg) {
-        const supported = modelSupportsEfforts(reg.supportedReasoningEfforts, reg.supportsReasoningEffort);
+        const supported = modelSupportsEfforts(reg.supportedReasoningEfforts, reg.supportsReasoningEffort, reg.reasoningDisableable);
         const cat = await findCatalogModel(id, catalogList);
         out[id] = {
           ...(cat ? displayMeta(cat) : {}),

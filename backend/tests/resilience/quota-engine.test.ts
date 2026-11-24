@@ -1174,6 +1174,27 @@ describe('trace per-pair aggregation', () => {
     assert.equal(a.requests, 2);
     assert.equal(a.costUsd, 0.3);
   });
+
+  it('counts unpriced turns as a floor, never folding them in as 0', () => {
+    const t = new TraceTracker(100, undefined);
+    const mk = (prefix: string, cost: number | undefined) => ({
+      requestId: `tr-${prefix}-${cost}`,
+      sessionId: 's',
+      requestNumber: 1,
+      timestamp: Date.now(),
+      request: { model: 'm', userPromptSummary: '', messageCount: 1, hasSystemPrompt: false, hasToolsOrSchema: false },
+      routing: { layerUsed: 'layer0', targetTier: 'lite', confidence: 1, reason: 'x', sessionRatchetApplied: false },
+      execution: { modelUsed: 'm', provider: 'p1', credentialKeyHashPrefix: prefix, tierUsed: 'lite', latencyMs: 5, fallbackOccurred: false },
+      finops: { inputTokens: 10, outputTokens: 1, cachedTokens: 0, costUsd: cost },
+    } as any);
+    t.record(mk('AAA', 0.1));
+    t.record(mk('AAA', undefined));
+    const rows = t.getCredentialPairUsageStats();
+    const a = rows.find((r) => r.provider === 'p1' && r.keyHashPrefix === 'AAA')!;
+    assert.equal(a.requests, 2);
+    assert.equal(a.costUsd, 0.1, 'unpriced turn excluded from the sum');
+    assert.equal(a.unpricedRequests, 1, 'unpriced turn counted, not folded in as 0');
+  });
 });
 
 // ─── Console surface (GET /api/admin/quota) — wire-shape smoke ─────────────

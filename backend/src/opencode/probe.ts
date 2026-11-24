@@ -13,10 +13,13 @@
  * baseURLs / wrong model ids before the first genuine request fails.
  *
  * Outbound traffic honors the gateway proxy policy (proxiedFetch), so probing
- * a geo-restricted upstream works identically to routed inference.
+ * a geo-restricted upstream works identically to routed inference — and the
+ * result REPORTS which egress it took (`egress` / `egressProxy`), because the
+ * include/exclude page cannot otherwise tell the operator whether their split
+ * reached this provider at all.
  */
 
-import { proxiedFetch } from '../utils/proxy.js';
+import { proxiedFetch, redactProxyUrl, resolveProxyUrl } from '../utils/proxy.js';
 import { wireFor, unroutableInfo, anthropicMessagesUrl, type WireKind } from '../providers/wire.js';
 import { redactBodySecrets } from './credentials/opencode-v2-store.js';
 import { redactUpstreamBody } from '../observability/upstream-body-redaction.js';
@@ -66,6 +69,10 @@ export interface ProbeOptions {
   kind?: ProbeKind;
   /** Provider-configured extra headers (defs-file options.headers). */
   headers?: Record<string, string>;
+  /** Model capabilities the caller already knows (from its def/catalog). A
+   *  vendor plugin probe builds a REAL request, so a flag it must guess is a
+   *  model it can mis-test — forwarded verbatim to `PluginProbeOptions`. */
+  capabilities?: { reasoning?: boolean; vision?: boolean };
   timeoutMs?: number;
 }
 
@@ -100,6 +107,19 @@ export interface ProbeResult {
    * Security P3-5: redaction happens BEFORE truncation (upstreams echo the
    * submitted key; slicing first could re-expose chars at the boundary). */
   upstreamBody?: string;
+  /**
+   * Where the probe's bytes actually left (ADR-0018 / ADR-0022 vocabulary).
+   * `direct` = straight out of the machine, `proxy` = through the operator's
+   * outbound proxy at `egressProxy` (redacted origin). A plugin wire that owns
+   * its own transport leaves BOTH unset: the core cannot observe that hop, so
+   * UNKNOWN is the only honest answer — never read it as direct.
+   *
+   * This is the console's answer to "did my proxy split actually apply", which
+   * the include/exclude page cannot answer on its own.
+   */
+  egress?: 'direct' | 'proxy';
+  /** Redacted `scheme://host:port` of the outbound proxy; only with `egress: 'proxy'`. */
+  egressProxy?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -172,6 +192,9 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
   // implemented by the model-service plugin. Built-in wires have no plugin
   // and fall through to the wire-specific HTTP logic.
   const plugin = getModelServicePlugin(kind);
+  // A plugin probe runs ITS OWN transport: the core never touches the socket, so
+  // `egress` stays unset (UNKNOWN) — reporting `direct` would be a lie whenever
+  // the vendor client honors its own proxy settings.
   if (plugin?.probe) return { ...(await plugin.probe(opts)), kind };
   if (!BUILTIN_PROBE_KINDS[kind]) {
     // a vendor plugin wire with no plugin present: falling through would fire
@@ -229,7 +252,16 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
             : { model: opts.model, max_tokens: 16, stream: false, messages: [{ role: 'user', content: 'ping' }] };
 
   const started = Date.now();
+  // Resolve the egress ONCE and reuse it for the dial: the operator's question is
+  // "did my include/exclude split apply to THIS provider/model", and the probe is
+  // the only place that can answer before a real request burns a turn. Same
+  // resolver the executors call at dial time, so the answer cannot drift.
+  const proxyUrl = resolveProxyUrl(url, { provider: opts.provider, model: opts.model });
+  const egress: 'direct' | 'proxy' = proxyUrl ? 'proxy' : 'direct';
+  const egressProxy = proxyUrl ? redactProxyUrl(proxyUrl) : undefined;
   try {
+    // proxiedFetch resolves the proxy itself from these same arguments — the
+    // pre-resolved `proxyUrl` above is only for the REPORT, never a second gate.
     const res = await proxiedFetch(
       url,
       {
@@ -252,6 +284,8 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
         upstreamBody: `Upstream redirected (${res.status}); credentialed probes do not follow redirects.`,
         transportCode: 'unreachable',
         transportUrl: url,
+        egress,
+        ...(egressProxy ? { egressProxy } : {}),
       };
     }
     const latencyMs = Date.now() - started;
@@ -284,9 +318,11 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
         httpStatus: res.status,
         hintCode,
         upstreamBody: text || undefined,
+        egress,
+        ...(egressProxy ? { egressProxy } : {}),
       };
     }
-    return { ok: true, kind, model: opts.model, latencyMs };
+    return { ok: true, kind, model: opts.model, latencyMs, egress, ...(egressProxy ? { egressProxy } : {}) };
   } catch (err: any) {
     const latencyMs = Date.now() - started;
     const aborted = err?.name === 'AbortError' || err?.name === 'TimeoutError';
@@ -300,6 +336,8 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
       transportUrl: url,
       transportCause: cause ? String(cause) : undefined,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      egress,
+      ...(egressProxy ? { egressProxy } : {}),
     };
   }
 }

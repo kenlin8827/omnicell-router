@@ -10,7 +10,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
-import { useModelTest, apiErrorText } from '../lib/useModelTest';
+import { useModelTest, apiErrorText, composeEgressLabel } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
 import { Switch } from './Switch';
 import { fmtLatency } from '../lib/format';
@@ -852,6 +852,27 @@ export const ProviderModelsDialog: React.FC<{
                       }
                     >
                       {probe.ok ? `✓${fmtLatency(probe.latencyMs ?? NaN)}` : '✗'}
+                    </span>
+                  )}
+                  {/* Egress is ALWAYS visible in the row, next to the verdict it
+                      qualifies: this dialog is where models get wired to a split,
+                      and a hover-only answer would hide the one fact that proves
+                      the rule took effect. Unknown (plugin wire) renders nothing. */}
+                  {probe && composeEgressLabel(probe, t) && (
+                    <span
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 'var(--text-2xs)',
+                        whiteSpace: 'nowrap',
+                        color: 'var(--text-dim)',
+                        padding: '0 4px',
+                        border: '1px solid var(--divider)',
+                        borderRadius: 'var(--radius-sm, 6px)',
+                        marginLeft: '4px',
+                      }}
+                      title={probe.egressProxy ?? undefined}
+                    >
+                      {composeEgressLabel(probe, t)}
                     </span>
                   )}
                   <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || probe ? 0 : 'auto' }}>

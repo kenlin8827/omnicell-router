@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy, PowerOff } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
-import { useModelTest } from '../lib/useModelTest';
+import { useModelTest, composeEgressLabel } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { ModelEditDialog } from '../components/ModelEditDialog';
@@ -375,9 +375,34 @@ export const ModelsPage: React.FC = () => {
                                   whiteSpace: 'nowrap',
                                   color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                                 }}
-                                title={res.ok ? `${res.latencyMs} ms` : res.error}
+                                title={
+                                  res.ok
+                                    ? `${res.latencyMs} ms`
+                                    : res.error
+                                }
                               >
                                 {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
+                              </span>
+                            )}
+                            {/* Egress is ALWAYS on screen, never hover-only: the
+                                whole point of a split is knowing which way a
+                                provider went, and a title attribute is invisible
+                                in a list the operator scans. Unknown (plugin
+                                wire) renders nothing — see composeEgressLabel. */}
+                            {res && composeEgressLabel(res, t) && (
+                              <span
+                                style={{
+                                  fontFamily: mono,
+                                  fontSize: 'var(--text-2xs)',
+                                  whiteSpace: 'nowrap',
+                                  color: 'var(--text-dim)',
+                                  padding: '0 4px',
+                                  border: '1px solid var(--divider)',
+                                  borderRadius: 'var(--radius-sm, 6px)',
+                                }}
+                                title={res.egressProxy ?? undefined}
+                              >
+                                {composeEgressLabel(res, t)}
                               </span>
                             )}
                             <button

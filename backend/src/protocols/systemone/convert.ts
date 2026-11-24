@@ -112,12 +112,19 @@ const DECISION_SYSTEM_PROMPT = [
 export function decisionReasoningEffort(model: {
   supportedReasoningEfforts?: readonly ReasoningEffort[];
   supportsReasoningEffort?: boolean;
+  reasoningDisableable?: boolean;
   effortMap?: EffortMap;
 }): ReasoningEffort | undefined {
   const mapped = applyEffortMap(model.effortMap, 'none');
   if (mapped !== 'none') return mapped;
 
-  const explicit = model.supportedReasoningEfforts;
+  // An always-think model (ADR-0035) never serves `none`: strip it before
+  // reading the lowest level, or a stale table would pin thinking-off on the
+  // decision wire. A set that empties under the strip falls through.
+  const explicit =
+    model.reasoningDisableable === false
+      ? model.supportedReasoningEfforts?.filter((e) => e !== 'none')
+      : model.supportedReasoningEfforts;
   if (explicit && explicit.length > 0) {
     let lowest = explicit[0];
     for (const level of explicit) {

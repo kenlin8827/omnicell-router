@@ -10,7 +10,7 @@ import { currentYaml } from '../helpers/current-config.js';
 /**
  * Hand-edited-YAML safety net for combos (ADR-0003 two-axis liveness): a
  * combo that lands on disk WITHOUT a console save event must register on the
- * lazy maybeRefreshTierMatch replay (2 s TTL; the first pool read fires it),
+ * lazy maybeRefreshMembers replay (2 s TTL; the first pool read fires it),
  * not wait for a restart. Regression cover for the incident where combos
  * present in config.yaml stayed invisible to routing (console badge
  * "inactive") until a manual re-save. Also pins the unchanged-section guard:

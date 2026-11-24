@@ -29,6 +29,7 @@ const sumRows = (rows: KeyUsageRow[]): UsageStatsResponse['totals'] => {
   let cachedTokens = 0;
   let latencyMsSum = 0;
   let costUsd = 0;
+  let unpricedRequests = 0;
   let genOutputTokens = 0;
   let genMsSum = 0;
   for (const r of rows) {
@@ -38,6 +39,7 @@ const sumRows = (rows: KeyUsageRow[]): UsageStatsResponse['totals'] => {
     cachedTokens += r.cachedTokens;
     latencyMsSum += r.latencyMsSum;
     costUsd += r.costUsd;
+    unpricedRequests += r.unpricedRequests;
     genOutputTokens += r.genOutputTokens;
     genMsSum += r.genMsSum;
   }
@@ -48,6 +50,7 @@ const sumRows = (rows: KeyUsageRow[]): UsageStatsResponse['totals'] => {
     cachedTokens,
     avgLatencyMs: requests > 0 ? Math.round(latencyMsSum / requests) : 0,
     costUsd: Number(costUsd.toFixed(6)),
+    unpricedRequests,
     genOutputTokens,
     genMsSum,
   };
@@ -94,6 +97,7 @@ export const UsagePage: React.FC = () => {
     let cachedTokens = 0;
     let latencyMsSum = 0;
     let costUsd = 0;
+    let unpricedRequests = 0;
     let genOutputTokens = 0;
     let genMsSum = 0;
     for (const r of tr) {
@@ -101,7 +105,10 @@ export const UsagePage: React.FC = () => {
       outputTokens += r.finops.outputTokens;
       cachedTokens += r.finops.cachedTokens;
       latencyMsSum += r.execution.latencyMs;
-      costUsd += r.finops.costUsd;
+      // Unpriced turns are skipped, not folded in as 0 — the sum then reads as
+      // "cost of what we could price". `unpricedTurns` below flags the gap.
+      if (r.finops.costUsd !== undefined) costUsd += r.finops.costUsd;
+      else unpricedRequests++;
       // Decode-TPS pairing: both sides accumulate over streamed turns only.
       if (typeof r.execution.genMs === 'number') {
         genOutputTokens += r.finops.outputTokens;
@@ -115,6 +122,7 @@ export const UsagePage: React.FC = () => {
       cachedTokens,
       avgLatencyMs: tr.length > 0 ? Math.round(latencyMsSum / tr.length) : 0,
       costUsd: Number(costUsd.toFixed(6)),
+      unpricedRequests,
       genOutputTokens,
       genMsSum,
     };
@@ -177,7 +185,14 @@ export const UsagePage: React.FC = () => {
         },
         // Total = in + out; cached is a subset of input, never added again.
         { label: t('sessions.thTokensTotal'), value: (totals.inputTokens + totals.outputTokens).toLocaleString(), color: 'var(--text-main)', tip: t('sessions.tokensTotalTip') },
-        { label: t('sessions.thCost'), value: formatCost(totals.costUsd), color: 'var(--accent-amber)' },
+        {
+          label: t('sessions.thCost'),
+          // `≥` (dimmed) when some requests could not be priced: the sum is a
+          // floor, and an undimmed total would read as the window's real spend.
+          value: totals.unpricedRequests > 0 ? `≥ ${formatCost(totals.costUsd)}` : formatCost(totals.costUsd),
+          color: totals.unpricedRequests > 0 ? 'var(--text-dim)' : 'var(--accent-amber)',
+          ...(totals.unpricedRequests > 0 ? { tip: t('sessions.costUnknownTip') } : {}),
+        },
         { label: t('overview.avgLatency'), value: fmtLatency(totals.avgLatencyMs), tip: `${totals.avgLatencyMs} ms`, color: 'var(--text-main)' },
         { label: t('usage.thToks'), value: formatRate(toksRate), color: 'var(--text-dim)', tip: t('usage.toksTip') },
       ]
@@ -370,8 +385,11 @@ export const UsagePage: React.FC = () => {
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO, color: 'var(--accent-amber)' }}>
-                      {formatCost(r.costUsd)}
+                    <td
+                      style={{ padding: '10px 14px', fontFamily: FONT_MONO, color: r.unpricedRequests > 0 ? 'var(--text-dim)' : 'var(--accent-amber)' }}
+                      title={r.unpricedRequests > 0 ? t('sessions.costUnknownTip') : undefined}
+                    >
+                      {r.unpricedRequests > 0 ? `≥ ${formatCost(r.costUsd)}` : formatCost(r.costUsd)}
                     </td>
                     <td
                       style={{ padding: '10px 14px', fontFamily: FONT_MONO }}

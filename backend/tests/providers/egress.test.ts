@@ -25,7 +25,7 @@ function makeRegistry(): ProviderRegistry {
     models: [],
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false);
+  registry.setAutoRefreshMembers(false);
   return registry;
 }
 

@@ -505,7 +505,11 @@ export interface EffortDirectiveResult {
 export function applyEffortDirectives(
   actions: readonly DirectiveAction[],
   baseEffort: ReasoningEffort | undefined,
-  supportedEfforts?: readonly ReasoningEffort[]
+  supportedEfforts?: readonly ReasoningEffort[],
+  /** The model's vendor forbids thinking-off (ADR-0035). A step or pin that
+   *  cannot land at-or-above a declared rung serves the LOWEST declared rung
+   *  rather than the `none` this model cannot answer. */
+  alwaysThink = false
 ): EffortDirectiveResult {
   const supportedEmpty = !!supportedEfforts && supportedEfforts.length === 0;
   const noop = (delta: number, pinned: boolean, suffix?: string): EffortDirectiveResult => ({
@@ -525,7 +529,7 @@ export function applyEffortDirectives(
     const target = pin as ReasoningEffort;
     const suffix = `effort-${target}`;
     if (supportedEmpty) return noop(0, true, suffix);
-    const served = downgradeReasoning(target, supportedEfforts);
+    const served = downgradeReasoning(target, supportedEfforts, alwaysThink);
     const baseRank = baseEffort === undefined ? -1 : EFFORT_LADDER.indexOf(baseEffort);
     const servedRank = EFFORT_LADDER.indexOf(served);
     return {
@@ -588,7 +592,7 @@ export function applyEffortDirectives(
     };
   }
 
-  const served = downgradeReasoning(candidate, supportedEfforts);
+  const served = downgradeReasoning(candidate, supportedEfforts, alwaysThink);
   return {
     effort: served,
     delta,

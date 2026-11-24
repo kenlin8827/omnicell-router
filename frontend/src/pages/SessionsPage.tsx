@@ -1677,8 +1677,6 @@ export const SessionsPage: React.FC = () => {
                     style={{
                       padding: '10px 14px',
                       textAlign: 'center',
-                      // Amber = money, consistent with the /usage table & cards.
-                      color: 'var(--accent-amber)',
                       fontFamily: FONT_MONO,
                       // Belt and braces after the width fix: a cost figure with
                       // more digits than the column allows must ellipsize in
@@ -1687,10 +1685,17 @@ export const SessionsPage: React.FC = () => {
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
+                      // Unpriced turns make the sum a FLOOR; dim the figure so a
+                      // partial total never reads as the session's real spend.
+                      color: s.unpricedTurns > 0 ? 'var(--text-dim)' : 'var(--accent-amber)',
                     }}
-                    title={formatCost(s.costUsd)}
+                    title={
+                      s.unpricedTurns > 0
+                        ? `${formatCost(s.costUsd)} — ${t('sessions.costUnknownTip')}`
+                        : formatCost(s.costUsd)
+                    }
                   >
-                    {formatCostCompact(s.costUsd)}
+                    {s.unpricedTurns > 0 ? `≥ ${formatCostCompact(s.costUsd)}` : formatCostCompact(s.costUsd)}
                   </td>
                   <td style={{ padding: '10px 8px', color: 'var(--text-dim)', textAlign: 'center' }}>
                     <LastActiveCell at={s.lastActiveAt} />
@@ -1867,6 +1872,23 @@ export const SessionsPage: React.FC = () => {
                   {ref.kind} · {ref.id}
                 </span>
               ))}
+              {/* Session title (first user prompt, backend-capped): the list row
+                  shows an ellipsized single line, and this dialog is where the
+                  operator confirms what the conversation was about before
+                  reading it. Same copy affordance as the row. */}
+              {timeline.session.firstUserMessage && (
+                <span
+                  title={timeline.session.firstUserMessage}
+                  style={{ color: 'var(--text-dim)', cursor: 'copy' }}
+                  onClick={async () => {
+                    const ok = await copyToClipboard(timeline.session.firstUserMessage!);
+                    if (ok) toast.success(t('sessions.copiedPrompt'));
+                    else toast.error(t('sessions.copyFailed'));
+                  }}
+                >
+                  {timeline.session.firstUserMessage}
+                </span>
+              )}
             </span>
           }
           onClose={() => setTimeline(null)}
@@ -2023,7 +2045,7 @@ export const SessionsPage: React.FC = () => {
                               fontSize: 'var(--text-sm)',
                             }}
                           >
-                            {formatCost(timeline.session.costUsd)}
+                            {timeline.session.unpricedTurns > 0 ? `≥ ${formatCost(timeline.session.costUsd)}` : formatCost(timeline.session.costUsd)}
                           </span>
                         ),
                       },
@@ -2619,8 +2641,8 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                         {tr.finops.cachedTokens.toLocaleString()}
                       </td>
                       <td
-                        style={{ ...DETAIL_TD_CENTER, color: 'var(--accent-amber)' }}
-                        title={formatCost(tr.finops.costUsd)}
+                        style={{ ...DETAIL_TD_CENTER, color: tr.finops.costUsd === undefined ? 'var(--text-dim)' : 'var(--accent-amber)' }}
+                        title={tr.finops.costUsd === undefined ? t('sessions.costUnknownTip') : formatCost(tr.finops.costUsd)}
                       >{formatCostCompact(tr.finops.costUsd)}</td>
                       <td style={DETAIL_TD_CENTER} title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
                         {tr.execution.ttftMs != null ? fmtLatency(tr.execution.ttftMs) : '—'}

@@ -149,6 +149,64 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
   });
+
+  /**
+   * A model-less call (quota read, catalog pull, sign-in exchange) carries only
+   * `{ provider }` — there is no model dimension to match against. `provider/*`
+   * is the natural way to write "everything under this provider", and before
+   * the `provider/` target existed it matched inference ONLY, silently leaving
+   * the same provider's quota and sign-in traffic direct. These cases pin the
+   * whole-provider reading without weakening the model-scoped one.
+   */
+  describe('provider-scoped patterns reach model-less calls', () => {
+    test('`provider/*` matches a call that has only a provider', () => {
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['qoder-work/*'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://openapi.qoder.sh/api/v2/quota/usage', { provider: 'qoder-work' })).toBe(
+        'http://proxy:8080'
+      );
+      // ...and still matches the model-carrying form of the same provider.
+      expect(
+        resolveProxyUrl('https://openapi.qoder.sh/algo', { provider: 'qoder-work', model: 'kimi-k2' })
+      ).toBe('http://proxy:8080');
+    });
+
+    test('a bare `provider` (no `/`) also matches a model-less call', () => {
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['workbuddy'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://api.workbuddy.example/v3/config', { provider: 'workbuddy' })).toBe(
+        'http://proxy:8080'
+      );
+    });
+
+    test('a MODEL-scoped pattern never matches a model-less call', () => {
+      // There is no model to test, so requiring one to match would be a guess.
+      // `workbuddy/gpt-*` proxying the whole provider would be a regression.
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['workbuddy/gpt-*'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://api.workbuddy.example/v3/config', { provider: 'workbuddy' })).toBeUndefined();
+      expect(
+        resolveProxyUrl('https://api.workbuddy.example/v1/chat', { provider: 'workbuddy', model: 'gpt-5' })
+      ).toBe('http://proxy:8080');
+      expect(
+        resolveProxyUrl('https://api.workbuddy.example/v1/chat', { provider: 'workbuddy', model: 'claude-sonnet-4' })
+      ).toBeUndefined();
+    });
+
+    test('a sibling provider with the same prefix is still excluded', () => {
+      // `qoder-work/*` must not swallow `qoder-work-cn`: the prefix target is
+      // `qoder-work/`, and `qoder-work-cn/` does not equal it.
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['qoder-work/*'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://openapi.qoder.com.cn/api/v2/quota/usage', { provider: 'qoder-work-cn' })).toBeUndefined();
+    });
+
+    test('excludes still win for a model-less call', () => {
+      initProxyConfig({
+        enabled: true,
+        url: 'http://proxy:8080',
+        includes: ['*'],
+        excludes: ['qoder-work'],
+      } as ProxyConfig);
+      expect(resolveProxyUrl('https://openapi.qoder.sh/api/v2/quota/usage', { provider: 'qoder-work' })).toBeUndefined();
+    });
+  });
 });
 
 describe('proxiedFetch against an authenticated mock proxy', () => {

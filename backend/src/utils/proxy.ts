@@ -53,13 +53,29 @@ export function isLoopbackUrl(url: string): boolean {
   }
 }
 
-/** A pattern hits when it matches `provider/modelId`, the bare provider, or the bare model id. */
+/**
+ * A pattern hits when it matches `provider/modelId`, the bare provider, the bare
+ * model id, or — for a call that has no model at all — the provider's own
+ * `provider/` prefix.
+ *
+ * That last target exists because a model-LESS call (a quota read, a catalog
+ * pull, a sign-in exchange) would otherwise be unreachable by the natural way
+ * to write "everything under this provider": `qoder/*` requires a model
+ * segment, so it silently matched inference ONLY and left the same provider's
+ * quota traffic direct. Offering `provider/` (which `provider/*` matches, `*`
+ * being allowed to match the empty string) makes one pattern cover the whole
+ * provider. A model-scoped pattern like `workbuddy/gpt-*` still does NOT hit a
+ * model-less call — there is no model to test, and guessing one would be wrong.
+ */
 function patternHits(pattern: string, match?: { provider?: string; model?: string }): boolean {
   if (!match) return false;
   const targets: string[] = [];
   if (match.model) targets.push(match.model);
   if (match.provider && match.model) targets.push(`${match.provider}/${match.model}`);
-  else if (match.provider) targets.push(match.provider);
+  else if (match.provider) {
+    targets.push(match.provider);
+    targets.push(`${match.provider}/`);
+  }
   return targets.some((t) => globMatch(pattern, t));
 }
 

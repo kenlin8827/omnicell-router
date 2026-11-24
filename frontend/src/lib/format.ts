@@ -68,8 +68,17 @@ export const formatSpeed = (rate: number | null): string =>
  * the grouping stays stable across locales (labels are translated, numbers
  * are data).
  */
-export const formatCost = (usd: number): string =>
-  '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+/**
+ * Placeholder for a cost figure that does not EXIST (as opposed to one that is
+ * zero). An unpriced model — the vendor bills in credits and published no
+ * dollar price — must read as "unknown", never as "free".
+ */
+export const COST_UNKNOWN = '—';
+
+export const formatCost = (usd: number | undefined): string =>
+  usd === undefined
+    ? COST_UNKNOWN
+    : '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 
 /**
  * Dense-table cost label. Same intent as `formatCost`, but capped at the width
@@ -79,12 +88,14 @@ export const formatCost = (usd: number): string =>
  * wider than any sane cost column and the excess decimals never matter at that
  * magnitude. Pair with `formatCost` in the cell's tooltip for the exact value.
  */
-export const formatCostCompact = (usd: number): string =>
-  '$' +
-  usd.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: Math.abs(usd) >= 1 ? 2 : 6,
-  });
+export const formatCostCompact = (usd: number | undefined): string =>
+  usd === undefined
+    ? COST_UNKNOWN
+    : '$' +
+      usd.toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: Math.abs(usd) >= 1 ? 2 : 6,
+      });
 
 /**
  * Locale-formatted wall-clock label for a timestamp a peer reported (ISO

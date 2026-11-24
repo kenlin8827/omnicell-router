@@ -15,7 +15,7 @@ import { processIR, responseIR } from '../helpers/ir.js';
  *
  * A pinned model is switched out when either force hits:
  *   CONFIG — the model no longer joins the pool its live member lists give it
- *            (unclassified / global denylist / unresolvable zombie pin);
+ *            (no home tier / global denylist / unresolvable zombie pin);
  *   HEALTH — the model CAPABILITY view (registry.modelHealthView): evict
  *            only at 'unavailable' (model breaker OPEN, or every pair
  *            hard-OPEN / SUSPECT / operator-DISABLED). 'recovering' — a
@@ -29,8 +29,8 @@ import { processIR, responseIR } from '../helpers/ir.js';
  * contract).
  *
  * Harness mirrors credential-affinity-orchestrator.test.ts (stub providers, real
- * orchestrator, manual breaker drives). Models carry tierMatch so they are
- * reclassification-capable — and are built FRESH per fixture, because
+ * orchestrator, manual breaker drives). Models carry the `autoTier` stamp so
+ * their tier follows the member lists — and are built FRESH per fixture, because
  * reclassifyTiers mutates the live registration objects and the credential-state
  * store persists (any DISABLED must be re-ENABLED in the same test).
  */
@@ -49,9 +49,9 @@ const mkModel = (id: string, provider: string, tier: TierLevel, isDefault?: bool
   upstreamModel: id.split('/')[1],
   tier,
   isDefaultInTier: isDefault,
-  // Captured models reclassify against member lists; without this flag a
+  // Captured models reclassify against member lists; without this stamp a
   // model is hand-configured and member-list edits never move it.
-  tierMatch: { reasoningFlag: false },
+  autoTier: true,
   pricing: { input: 1, output: 2, cacheRead: 0.1 },
 });
 
@@ -98,7 +98,7 @@ function makeConfig(base: unknown, extras: Record<string, unknown> = {}) {
 function makeFixture(mode: 'both' | 'm1only' = 'both', extras: Record<string, unknown> = {}) {
   const config = makeConfig(loadConfig(), extras);
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false);
+  registry.setAutoRefreshMembers(false);
   const stub1 = makeStub('p1');
   const stub2 = makeStub('p2');
   const m1 = mkModel(ALPHA, 'p1', 'plus', true);
@@ -223,17 +223,17 @@ describe('config eviction: removed from tier members', () => {
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
   });
 
-  it('hand-configured models (no tierMatch) are never member-list-evicted', async () => {
+  it('hand-configured models (no autoTier stamp) are never member-list-evicted', async () => {
     const { orchestrator, registry, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-hand';
-    const hand = { ...m2, tierMatch: undefined } as unknown as ModelRegistration;
+    const hand = { ...m2, autoTier: undefined } as unknown as ModelRegistration;
     registry.registerModel(hand); // re-register m2 as hand-configured
     await processIR(orchestrator, turn('first hello'), sessCtx(sessionId));
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
 
     // Empty the plus list: m1 (captured) falls out of every pool and gets
-    // evicted; m2 (hand-configured) is reclassify-immune and stays in the
-    // pool through its declared tier — and serves as the landing.
+    // evicted; m2 (hand-configured) keeps its declared tier and stays in the
+    // pool through it — and serves as the landing.
     commitMembers(registry, { plus: [] });
     const r2 = await processIR(orchestrator, turn('second hello'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
@@ -402,7 +402,7 @@ describe('eviction scope: only ratchet-mode pins are hard-switched', () => {
     const sessionId = 'sess-ev-explicit';
     await processIR(orchestrator, turn('first hello', 'p1/alpha'), sessCtx(sessionId));
 
-    commitMembers(registry, { plus: [{ pattern: 'p2/*' }] }); // m1 unclassified
+    commitMembers(registry, { plus: [{ pattern: 'p2/*' }] }); // m1 loses its home tier
 
     const r2 = await processIR(orchestrator, turn('second hello', 'p1/alpha'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // client named it, registry still has it
@@ -414,7 +414,7 @@ describe('eviction scope: only ratchet-mode pins are hard-switched', () => {
       combos: [{ id: 'evcombo', models: [ALPHA, BETA] }],
     });
     const registry = new ProviderRegistry(config, false);
-    registry.setAutoRefreshTierMatch(false);
+    registry.setAutoRefreshMembers(false);
     const stub1 = makeStub('p1');
     const stub2 = makeStub('p2');
     const m1 = mkModel(ALPHA, 'p1', 'plus', true);
@@ -426,7 +426,7 @@ describe('eviction scope: only ratchet-mode pins are hard-switched', () => {
     // (the constructor already applied config.combos — member lists own the pool)
     const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
 
-    commitMembers(registry, { plus: [{ pattern: 'p2/*' }] }); // m1 unclassified by tier
+    commitMembers(registry, { plus: [{ pattern: 'p2/*' }] }); // m1 loses its home tier
     const r = await processIR(orchestrator, turn('combo hello', 'evcombo'), sessCtx('sess-ev-combo'));
     expect(r.modelUsed).toBe(m1.id); // member list owns the combo pool; tier eviction is not combo eviction
   });

@@ -118,8 +118,8 @@ export class ProviderRegistry {
    */
   private credentialChains = new Map<string, CallCredential[]>();
   private mockMode = false;
-  private autoRefreshTierMatch = true;
-  private lastMatchRefreshAt = 0;
+  private autoRefreshMembers = true;
+  private lastMembersRefreshAt = 0;
 
   constructor(config: RouterConfig, mockMode = false, providerConfigs: ProviderConfig[] = []) {
     this.mockMode = mockMode;
@@ -282,12 +282,14 @@ export class ProviderRegistry {
     this.models.set(model.id, model);
     this.circuitBreakerManager.registerModel(model);
     this.indexVariants(model);
-    // an UNCLAIMED model must never become a tier's representative —
-    // it joins no pool, so promoting it would hand routing a model the pools
-    // themselves filter out. Explicit `isDefault` pinning stays authoritative.
-    if (model.unclassified && !isDefault) return;
-    if (isDefault || !this.tierDefaults.has(model.tier)) {
-      this.tierDefaults.set(model.tier, model);
+    // an UNCLAIMED model (no home tier) must never become a tier's
+    // representative — it joins no pool, so promoting it would hand routing a
+    // model the pools themselves filter out. Explicit `isDefault` pinning stays
+    // authoritative.
+    if (model.tier === undefined && !isDefault) return;
+    const home = model.tier;
+    if (home !== undefined && (isDefault || !this.tierDefaults.has(home))) {
+      this.tierDefaults.set(home, model);
     }
   }
 
@@ -350,6 +352,17 @@ export class ProviderRegistry {
     for (const m of models) {
       const existing = this.models.get(m.id);
       if (existing) {
+        // Replace-in-place, NOT Object.assign: a fresh record that OMITS a
+        // provenance/capability key must not leave the old value routable.
+        // Boot emits EITHER configTier OR autoTier, and reasoningDisableable /
+        // pricing only when the vendor states them — Object.assign would keep
+        // a stale autoTier (silently re-claiming a freshly pinned model), a
+        // stale always-think fact, or a stale price forever after the source
+        // changed. Identity is preserved (the Map entry and any held reference
+        // stay valid) while absent keys are reset.
+        for (const key of Object.keys(existing)) {
+          if (!(key in m)) delete (existing as unknown as Record<string, unknown>)[key];
+        }
         Object.assign(existing, m);
         this.indexVariants(existing);
       } else {
@@ -419,8 +432,10 @@ export class ProviderRegistry {
       if (m.upstreamModel === bareName) hits.push(m);
     }
     // Locale-independent tiebreak: strict code-unit order, not localeCompare.
+    // Unpriced models sort last: an unknown price cannot claim to be the
+    // cheapest, and `Infinity` keeps that ordering without inventing a number.
     const byPrice = (a: ModelRegistration, b: ModelRegistration) =>
-      (a.pricing.input ?? Infinity) - (b.pricing.input ?? Infinity) ||
+      (a.pricing?.input ?? Infinity) - (b.pricing?.input ?? Infinity) ||
       (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     const host = normalizeHostHeader(upstreamHost);
     if (host) {
@@ -457,9 +472,8 @@ export class ProviderRegistry {
 
   /**
    * Why a model is rejected from every pool ('' = allowed). The ONLY pool
-   * filter left: the GLOBAL denylist (tiers.exclude) — unconditional, it
-   * outranks even an explicit pin. Per-tier vetoes (match.exclude)
-   * and the model-side excludeTiers live inside the classification gate.
+   * filter: the GLOBAL denylist (tiers.exclude) — unconditional, it outranks
+   * even an explicit pin.
    */
   private policyRejectionReason(policies: TiersConfig | undefined, m: ModelRegistration): string {
     const exclude = policies?.exclude;
@@ -525,9 +539,10 @@ export class ProviderRegistry {
    * Membership is a PER-TIER projection of the member lists: every rule in
    * THIS tier's list claims models independently of the other tiers, so a
    * model (or a combo's expanded members) may join several pools at once.
-   * Hand-configured models (no tierMatch) are reclassification-immune: they
-   * join exactly their explicit tier, with weight from this tier's matching
-   * rule when one exists (default 1). Chain order = claiming-rule weight
+   * Hand-configured models (no autoTier stamp) never move: their explicit
+   * tier is permanent. They join exactly their explicit tier, with weight
+   * from this tier's matching rule when one exists (default 1). Chain order =
+   * claiming-rule weight
    * (desc) then rule list position (asc); entries carry the claiming rule's
    * weight and effortMap — the translation that applies when the model
    * serves from THIS pool.
@@ -538,9 +553,9 @@ export class ProviderRegistry {
   ): { model: ModelRegistration; weight: number; effortMap?: EffortMap; rank: number }[] {
     const entries: { model: ModelRegistration; weight: number; effortMap?: EffortMap; rank: number }[] = [];
     for (const m of this.models.values()) {
-      if (!m.tierMatch) {
+      if (!m.autoTier) {
         // Hand-configured model: explicit tier, member rules never move it.
-        if (m.unclassified || m.tier !== tier) continue;
+        if (m.tier !== tier) continue;
         const claim = claimInTier(tier, m.id, members);
         entries.push({
           model: m,
@@ -567,12 +582,12 @@ export class ProviderRegistry {
    * The effort translation that applies when `model` serves from `tier`'s
    * pool: the claiming rule's effortMap in THAT tier (a model holding
    * membership in several tiers translates differently per pool).
-   * Hand-configured models keep their stored translation
-   * (reclassification-immune); a model absent from this tier (escalation-tail
-   * resolution) falls back to the stored home-tier translation.
+   * Hand-configured models keep their stored translation; a model absent from
+   * this tier (escalation-tail resolution) falls back to the stored home-tier
+   * translation.
    */
   public effortMapFor(model: ModelRegistration, tier: TierLevel): EffortMap | undefined {
-    if (!model.tierMatch) return model.effortMap;
+    if (!model.autoTier) return model.effortMap;
     const claim = claimInTier(tier, model.id, this.committedMembers);
     if (claim) return claim.rule.effortMap; // this pool's rule is authoritative (undefined = passthrough)
     return model.effortMap; // serving outside its pools — home-tier translation
@@ -584,23 +599,23 @@ export class ProviderRegistry {
    * checks. Hand-configured models expose exactly their explicit tier.
    */
   public tiersOf(model: ModelRegistration): TierLevel[] {
-    if (!model.tierMatch) return model.unclassified ? [] : [model.tier];
+    if (!model.autoTier) return model.tier === undefined ? [] : [model.tier];
     return matchingTiers(model.id, this.committedMembers);
   }
 
   /**
-   * Runtime tier reclassification — tier membership is pure file-derived data
+   * Runtime tier membership replay — membership is pure file-derived data
    * (config `tiers[t].members`), replayed against each model id on
    * pool resolution instead of waiting for a gateway restart. Model UNIVERSE
    * (providers/credentials/wire) stays a boot snapshot.
    */
 
   /** Hot-path guard: replay member lists + the combo map + policies at most every 2 seconds. */
-  private maybeRefreshTierMatch(): void {
-    if (!this.autoRefreshTierMatch) return;
+  private maybeRefreshMembers(): void {
+    if (!this.autoRefreshMembers) return;
     const now = Date.now();
-    if (now - this.lastMatchRefreshAt < 2000) return;
-    this.lastMatchRefreshAt = now;
+    if (now - this.lastMembersRefreshAt < 2000) return;
+    this.lastMembersRefreshAt = now;
     try {
       const fresh = loadConfig();
       // Combos share the hand-edited-YAML safety net: a combo write that
@@ -614,18 +629,18 @@ export class ProviderRegistry {
       this.tierPolicies = tiers; // the global denylist lives here too
       this.reclassifyTiers(this.expandedMemberRules(tiers).tiers);
     } catch {
-      // transient config/IO error — keep the current classification
+      // transient config/IO error — keep the current membership
     }
   }
 
-  /** Latest committed `tiers` config (snapshot; updated by applyTierConfigNow / maybeRefreshTierMatch). */
+  /** Latest committed `tiers` config (snapshot; updated by applyTierConfigNow / maybeRefreshMembers). */
   public getTierPolicies(): TiersConfig {
     return this.tierPolicies;
   }
 
   /** Test hook: silence the lazy config re-read (explicit reclassifyTiers still works). */
-  public setAutoRefreshTierMatch(on: boolean): void {
-    this.autoRefreshTierMatch = on;
+  public setAutoRefreshMembers(on: boolean): void {
+    this.autoRefreshMembers = on;
   }
 
   /** Registered member refs of one combo (config order, deduped, unregistered
@@ -650,18 +665,18 @@ export class ProviderRegistry {
   /**
    * COMMIT path — the only one that rewrites live pool membership. Called on
    * every config-save event (console routes) so edits take effect immediately;
-   * the lazy maybeRefreshTierMatch replay (tiers AND combos) remains only as
+   * the lazy maybeRefreshMembers replay (tiers AND combos) remains only as
    * the out-of-band (hand-edited YAML) safety net.
    */
   public applyTierConfigNow(): void {
     if (this.mockMode) return;
     const tiers = loadConfig().tiers || {};
     this.tierPolicies = tiers;
-    this.lastMatchRefreshAt = Date.now(); // the file was just read — skip the TTL replay
+    this.lastMembersRefreshAt = Date.now(); // the file was just read — skip the TTL replay
     this.reclassifyTiers(this.expandedMemberRules(tiers).tiers);
   }
 
-  /** Replays the member lists over every reclassifiable model and stores
+  /** Replays the member lists over every stamped model and stores
    * them as the committed pool view (buildTierPoolEntries reads exactly this
    * snapshot). What is stored per model is the DERIVED HOME view used by
    * single-tier consumers (pinned force_tier, tier-keyed reporting,
@@ -672,15 +687,14 @@ export class ProviderRegistry {
     if (this.mockMode) return;
     this.committedMembers = members;
     for (const m of this.models.values()) {
-      if (!m.tierMatch) continue; // hand-configured: never moved
+      if (!m.autoTier) continue; // hand-configured: never moved
       const home = claimModel(m.id, members);
       if (home === 'unclassified') {
-        m.unclassified = true;
+        m.tier = undefined;
         m.isDefaultInTier = false;
         delete m.effortMap;
         continue;
       }
-      m.unclassified = false;
       m.tier = home.tier;
       m.priority = home.index + 1; // home list order (derived view)
       m.isDefaultInTier = home.index === 0; // the home list leader
@@ -701,16 +715,16 @@ export class ProviderRegistry {
    * Returns all candidate models registered for a given tier, in chain order
    * (member-list order). If healthyOnly is true, only returns models
    * where the circuit breaker allows execution. The global denylist
-   * (tiers.exclude) is applied first; unclaimed (`unclassified`) models join no
-   * pool. Membership is the per-tier projection (buildTierPoolEntries) —
-   * a model may serve in several tiers at once.
+   * (tiers.exclude) is applied first; models no member list claims (no home
+   * tier) join no pool. Membership is the per-tier projection
+   * (buildTierPoolEntries) — a model may serve in several tiers at once.
    */
   public getCandidateModelsForTier(
     tier: TierLevel,
     healthyOnly = true,
     opts?: { decisionSurface?: boolean }
   ): ModelRegistration[] {
-    this.maybeRefreshTierMatch();
+    this.maybeRefreshMembers();
     return this.tierPoolEntries(tier, healthyOnly, opts).map(({ model }) => model);
   }
 
@@ -819,8 +833,12 @@ export class ProviderRegistry {
         if (best === null || gap < best.gap) best = { model: m, actualEffort: 'none', gap };
         continue;
       }
-      const supported = modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort);
+      const supported = modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort, m.reasoningDisableable);
       if (!supported) continue; // no explicit effort control → cannot serve a mapped level
+      // Deliberately the 2-arg form: this is ROUTING, where an unreachable ask
+      // means SKIP the candidate (never serve above what was asked). The
+      // always-think floor belongs to the sites that must serve one fixed model
+      // (orchestrator / directives), not here.
       const actual = downgradeReasoning(target, supported);
       if (actual === 'none') continue; // capability can't reach any real level → skip
       const gap = reqRank - EFFORT_LADDER.indexOf(actual);
@@ -853,14 +871,14 @@ export class ProviderRegistry {
     const chain = order.filter((t, i, all) => t !== tier && all.indexOf(t) === i);
     for (const step of chain) {
       const rep = this.tierDefaults.get(step);
-      if (rep && !rep.unclassified) {
+      if (rep && rep.tier !== undefined) {
         console.warn(`[Registry] Tier '${tier}' has no candidate model — falling back to '${step}' (${rep.id}), reason=empty-pool`);
         return rep;
       }
     }
-    const any = Array.from(this.models.values()).find((m) => !m.unclassified);
+    const any = Array.from(this.models.values()).find((m) => m.tier !== undefined);
     if (!any) {
-      throw new Error(`No routable models registered (every model is unclassified or excluded).`);
+      throw new Error(`No routable models registered (no model's tier membership is claimed by any pool).`);
     }
     console.warn(`[Registry] Tier '${tier}' has no candidate model — falling back to the first registered model (${any.id}), reason=empty-pool`);
     return any;
@@ -943,7 +961,7 @@ export class ProviderRegistry {
 
   /**
    * (Re)register combo definitions — used at boot, for hot-apply on console
-   * config saves, and by the lazy maybeRefreshTierMatch safety net. A section
+   * config saves, and by the lazy maybeRefreshMembers safety net. A section
    * byte-identical to the last applied one is a no-op (keeps round-robin
    * cursors, avoids repeat skip warnings): skip outcomes depend only on the
    * section plus the monotonically grown model map, and every read path
@@ -1069,9 +1087,10 @@ export class ProviderRegistry {
    * freshly-edited form state for previews without committing; runtime
    * callers omit it and get the construction-time snapshot. Pool order =
    * rule weight (desc) then member-list order; entries carry the claiming
-   * rule's weight (default 1). `unclassified` is the diagnostic fourth state:
+   * rule's weight (default 1). `'unclassified'` is the diagnostic fourth state:
    * models claimed by NO tier (it is never hidden by the denylist — the
-   * console must show it for the unpooled view / one-click join).
+   * console must show it for the unpooled view / one-click join). A model is
+   * in this view exactly when its home tier is undefined.
    */
   public resolveTierPool(
     tier: PoolMembership,
@@ -1087,9 +1106,9 @@ export class ProviderRegistry {
     if (tier === 'unclassified') {
       const pool: { model: ModelRegistration; weight: number }[] = [];
       for (const m of this.models.values()) {
-        if (!m.tierMatch) {
-          // Hand-configured model: unclassified exactly when registered so.
-          if (m.unclassified) pool.push({ model: m, weight: 1 });
+        if (!m.autoTier) {
+          // Hand-configured model: unclaimed exactly when registered so.
+          if (m.tier === undefined) pool.push({ model: m, weight: 1 });
           continue;
         }
         if (claimModel(m.id, members) === 'unclassified') pool.push({ model: m, weight: 1 });

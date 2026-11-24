@@ -532,6 +532,12 @@ export class RateLimiter {
     if (!rules) return;
     for (const c of rules) {
       if (c.countable === 'requests') continue;
+      // An UNPRICED turn passes no `costUsd` (unknown price, not zero), so the
+      // guard below skips it instead of adding 0 — a `costUsd` budget rule
+      // therefore never fires for an unpriced model, which is the honest
+      // outcome: a spend cap cannot be enforced against a number nobody knows.
+      // (Adding 0 would be worse: it looks like the rule is working while the
+      // window silently ignores every such turn.)
       const amount = c.countable === 'tokens' ? usage.tokens ?? 0 : usage.costUsd ?? 0;
       if (amount > 0) this.window(subject, c).add(now, amount, c.windowMs);
     }

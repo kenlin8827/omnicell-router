@@ -63,6 +63,15 @@ export interface CatalogModel {
   defaultEffort?: ReasoningEffort;
   attachment?: boolean;
   reasoning?: boolean;
+  /**
+   * OCR extension (ADR-0035): the vendor's on/off fact for a thinking model.
+   * `false` = the model ALWAYS thinks — `none` must never enter its effort
+   * ladder, even when the def carries no reasoningOptions (the boolean would
+   * otherwise expand to the full ladder INCLUDING `none`, and the router
+   * would send thinking-off into the vendor's 1210 refusal). `true`/absent =
+   * off allowed / not stated. Written by the shared catalog-def mapper.
+   */
+  reasoningDisableable?: boolean;
   tool_call?: boolean;
   temperature?: boolean;
   /**

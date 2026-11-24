@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { CanonicalRequest, CanonicalResponse, StreamEvent, InputItem, MessageItem } from '../ir/types.js';
-import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning, effortFromThinkingBudget } from '../types/router.js';
+import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning, effortFromThinkingBudget, modelSupportsEfforts } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { repairToolCallPairing } from './tool-pairing.js';
@@ -449,6 +449,18 @@ export class PipelineOrchestrator {
   }
 
   /**
+   * The pool a model serves from, derived from its HOME tier — the single-tier
+   * question "is this pinned model still config-intended?". A model with no
+   * home tier serves from NO pool (empty list): every pool filters it out, so
+   * a pin on it is config-evicted and falls through to the ordinary
+   * replacement path. Callers must not treat the empty list as "tier down";
+   * that judgement belongs to `getModelForTier`.
+   */
+  private poolOfHomedModel(model: ModelRegistration): ModelRegistration[] {
+    return model.tier ? this.registry.getCandidateModelsForTier(model.tier, false) : [];
+  }
+
+  /**
    * Auto-request routing with the experience table in front of the decision layer
    * (ADR-0011): an entry hit short-circuits L2 entirely — the table IS a
    * prior judgment. Explicit request tiers (`forceTier`, incl. the
@@ -848,7 +860,7 @@ export class PipelineOrchestrator {
     }
 
     // 1A. Custom model combo: the client named a configured combo id — the
-    // combo's member list IS the candidate pool. Classifier tier routing,
+    // combo's member list IS the candidate pool. Tier-pool routing,
     // session ratchet and schema-assertion escalation are all bypassed
     // (explicit user composition wins, mirroring the exact-model
     // pass-through above).
@@ -866,7 +878,7 @@ export class PipelineOrchestrator {
       );
     }
     if (comboByName && this.registry.resolveCombo(comboByName).length === 0) {
-      // Fail fast instead of silently degrading to classifier routing: the
+      // Fail fast instead of silently degrading to pool routing: the
       // combo is still advertised via /v1/models, so routing it as `auto`
       // would be invisible billing/model drift.
       // 404 like the disabled branch above: the combo is not currently
@@ -1015,7 +1027,7 @@ export class PipelineOrchestrator {
     if (explicitModel && initialDecision.reasonCode === 'forced') {
       initialDecision.reasonCode = 'explicit.model';
       initialDecision.reason = `Explicit model '${explicitModel.id}' — routed to the named model, no tier judgment`;
-      initialDecision.reasonParams = { model: explicitModel.id, tier: explicitModel.tier };
+      initialDecision.reasonParams = { model: explicitModel.id, ...(explicitModel.tier ? { tier: explicitModel.tier } : {}) };
     }
 
     // ADR-0012 §1 + ADR-0011 floor: L2-decided effort joins the request
@@ -1106,7 +1118,7 @@ export class PipelineOrchestrator {
         // Tier representative for session bookkeeping (pin birth). An
         // explicitly named model IS the representative of its own turn —
         // consulting the pool for it would hard-throw in a pool-less
-        // deployment where every registered model is unclassified, even
+        // deployment where no member list claims any registered model, even
         // though the request itself is directly callable by design. Bare
         // `auto` keeps resolving through the pool (its empty-pool throw is
         // the honest "add tier members" answer).
@@ -1291,13 +1303,13 @@ export class PipelineOrchestrator {
       //   (removed from config.models; the unresolvable-pin / zombie case,
       //   which pre-fix silently re-fell back through the getModelForTier
       //   head below every turn without ever writing the pin back), it reads
-      //   `unclassified` (removed from every tier member list / no glob
-      //   claims it any more), or the global denylist (tiers.exclude) vetoes
-      //   it. A model MOVED to another tier is NOT evicted: the new tier's
-      //   member list claims it, so it still joins that pool (multi-membership
-      //   included — eviction fires only when NO pool claims the id).
-      //   Hand-configured models (no tierMatch) are reclassification-immune —
-      //   member-list edits never evict them; only the denylist or a registry
+      //   `unclaimed` (no tier member list claims it any more), or the global
+      //   denylist (tiers.exclude) vetoes it. A model MOVED to another tier is
+      //   NOT evicted: the new tier's member list claims it, so it still joins
+      //   that pool (multi-membership included — eviction fires only when NO
+      //   pool claims the id).
+      //   Hand-configured models (no autoTier stamp) never move
+      //   — member-list edits never evict them; only the denylist or a registry
       //   removal can. Checked with healthyOnly=false so health never
       //   masquerades as config intent (and vice versa below).
       //   HEALTH (runtime reality, model CAPABILITY view —
@@ -1320,7 +1332,7 @@ export class PipelineOrchestrator {
       const configEvicted =
         pinnedId !== undefined &&
         (preferredModel === null ||
-          !this.registry.getCandidateModelsForTier(preferredModel.tier, false).some((m) => m.id === pinnedId));
+          !this.poolOfHomedModel(preferredModel).some((m) => m.id === pinnedId));
       const healthEvicted = preferredModel !== null && this.registry.modelHealthView(preferredModel) === 'unavailable';
       if (pinnedId && (configEvicted || healthEvicted)) {
         const healthyReplacement = this.registry.getModelForTier(actualTier, true);
@@ -1369,9 +1381,11 @@ export class PipelineOrchestrator {
       const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
       preferredModel = pinnedId ? this.registry.getModel(pinnedId) ?? null : null;
       // Follow gates: a same-tier pin (pure KV affinity — serving it cannot
-      // cross the contract), the EMPTY-tier degraded landing (the pin IS the
-      // model getModelForTier degrades to), or a zombie id (repair to the
-      // forced tier's healthy head). Anything else — a pin in another tier
+      // cross the contract), a pin with NO home tier (nothing to compare
+      // against, so the affinity argument does not apply and eviction decides
+      // its fate), the EMPTY-tier degraded landing (the pin IS the model
+      // getModelForTier degrades to), or a zombie id (repair to the forced
+      // tier's healthy head). Anything else — a pin homed in another tier
       // while the forced pool has members — is neither followed nor
       // rewritten (ADR-0014).
       const tierPool = this.registry.getCandidateModelsForTier(actualTier, false);
@@ -1379,10 +1393,18 @@ export class PipelineOrchestrator {
         preferredModel !== null &&
         tierPool.length === 0 &&
         this.registry.getModelForTier(actualTier).id === preferredModel.id;
-      if (pinnedId && (preferredModel === null || preferredModel.tier === actualTier || degradeLanding)) {
+      const unhomed =
+        preferredModel !== null && preferredModel.tier === undefined;
+      if (
+        pinnedId &&
+        (preferredModel === null ||
+          unhomed ||
+          preferredModel.tier === actualTier ||
+          degradeLanding)
+      ) {
         const configEvicted =
           preferredModel === null ||
-          !this.registry.getCandidateModelsForTier(preferredModel.tier, false).some((m) => m.id === pinnedId);
+          !this.poolOfHomedModel(preferredModel).some((m) => m.id === pinnedId);
         const healthEvicted =
           preferredModel !== null && this.registry.modelHealthView(preferredModel) === 'unavailable';
         if (configEvicted || healthEvicted) {
@@ -1412,7 +1434,7 @@ export class PipelineOrchestrator {
     // resolution must not consult the tier pool when the request already
     // carries its own model: a combo is the sanctioned way to address
     // pool-less models, and an explicitly named model stays directly
-    // callable by design — when every registered model is unclassified the
+    // callable by design — when no member list claims any registered model the
     // tier lookup hard-throws and would kill both (and the placeholder is
     // overwritten by the executed member after the pool run regardless).
     // The combo's first resolved member is the honestest combo placeholder;
@@ -1473,10 +1495,19 @@ export class PipelineOrchestrator {
     // model pick can honour a raised level. Per-turn: it writes the request
     // for this call only and never records session state.
     if (directivesApplicable) {
-      const supportedEfforts = actualModel.supportedReasoningEfforts
-        ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : undefined);
+      // An EXPLICIT empty support set (a toggle model: `[]` from
+      // effortLadderFor) must stay `[]` here — applyEffortDirectives reads it
+      // as "no level control, directives are a no-op". modelSupportsEfforts
+      // collapses `[]` to undefined (the registry's "cannot serve a mapped
+      // level" rule), which would silently re-enable directives on toggle
+      // models, so the empty declaration is preserved before the resolution.
+      const declared = actualModel.supportedReasoningEfforts;
+      const supportedEfforts =
+        declared && declared.length === 0
+          ? declared
+          : modelSupportsEfforts(declared, actualModel.supportsReasoningEffort, actualModel.reasoningDisableable);
       const before = effortOf(normalizedRequest);
-      const effortDirective = applyEffortDirectives(directiveActions, before, supportedEfforts);
+      const effortDirective = applyEffortDirectives(directiveActions, before, supportedEfforts, actualModel.reasoningDisableable === false);
       if (effortDirective.applied) {
         const suffix = effortDirective.suffix ?? (effortDirective.delta > 0 ? 'effort-up' : 'effort-down');
         const token = `${directivePrefix}${suffix}`;
@@ -1564,15 +1595,23 @@ export class PipelineOrchestrator {
       // Explicit model choice / session pin: never re-route, but translate by
       // the model's pool effortMap first (none included), then clamp to what
       // it can serve and write back the truth.
+      const supported = modelSupportsEfforts(
+        preferredModel.supportedReasoningEfforts,
+        preferredModel.supportsReasoningEffort,
+        preferredModel.reasoningDisableable
+      ) ?? [];
+      const alwaysThink = preferredModel.reasoningDisableable === false;
+      // ADR-0035: an always-think model with a declared ladder never serves
+      // `none`, even for an explicit none ask or an effortMap→none translation.
+      const forbidsNone = alwaysThink && supported.length > 0;
       const target = applyEffortMap(this.registry.effortMapFor(preferredModel, actualTier), requestedEffort ?? 'none');
-      if (target === 'none') {
+      if (target === 'none' && !forbidsNone) {
         actualEffort = requestedEffort; // nothing in play — mirror exactly
       } else {
-        const supported = preferredModel.supportedReasoningEfforts
-          ?? (preferredModel.supportsReasoningEffort
-            ? EFFORT_LADDER
-            : []);
-        const recomputed = downgradeReasoning(target, supported);
+        let recomputed = downgradeReasoning(target, supported, alwaysThink);
+        // Same contradictory-data rule as resolveServedEffort: an empty resolved
+        // ladder on an always-think model never rewrites to the forbidden `none`.
+        if (recomputed === 'none' && alwaysThink && supported.length === 0) recomputed = target;
         actualEffort = recomputed;
         reasoningDegraded =
           EFFORT_LADDER.indexOf(recomputed) < EFFORT_LADDER.indexOf(requestedEffort ?? 'none');
@@ -1819,6 +1858,11 @@ export class PipelineOrchestrator {
           const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto';
           if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
             const rank = TIER_RANK;
+            // A model with no home tier ranks BELOW every pool tier — it serves
+            // from no pool, so "closest tier" is meaningless; it sorts last
+            // rather than being silently ranked as `plus`.
+            const rankOf = (m: ModelRegistration): number =>
+              (m.tier ? rank[m.tier] : undefined) ?? Number.MAX_SAFE_INTEGER;
             // Multi-membership admit: allowed when the id or ANY membership
             // tier passes (allow mode); denied when the id or ANY membership
             // tier is denied (deny mode).
@@ -1827,8 +1871,8 @@ export class PipelineOrchestrator {
               .filter((m) => isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m)))
               .sort(
                 (a, b) =>
-                  Math.abs((rank[a.tier] ?? 9) - (rank[actualTier] ?? 9)) - Math.abs((rank[b.tier] ?? 9) - (rank[actualTier] ?? 9)) ||
-                  (rank[a.tier] ?? 9) - (rank[b.tier] ?? 9)
+                  Math.abs(rankOf(a) - (rank[actualTier] ?? 9)) - Math.abs(rankOf(b) - (rank[actualTier] ?? 9)) ||
+                  rankOf(a) - rankOf(b)
               );
             if (widened.length > 0) pool = widened;
           }
@@ -2024,8 +2068,11 @@ export class PipelineOrchestrator {
       (servedEffort != null && servedEffort !== 'none') ||
       (typeof budgetTokens === 'number' && budgetTokens > 0);
     // 5-level default: `none` is a client toggle, not a capability.
-    const modelEfforts = actualModel.supportedReasoningEfforts
-      ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : []);
+    const modelEfforts = modelSupportsEfforts(
+      actualModel.supportedReasoningEfforts,
+      actualModel.supportsReasoningEffort,
+      actualModel.reasoningDisableable
+    ) ?? [];
     const supportsAnyThinking = modelEfforts.some((e) => e !== 'none');
     // Both warn paths go through the dedup + rate-limit warn throttle: at
     // QPS a misconfigured pool would otherwise print one warn per request.
@@ -2316,9 +2363,25 @@ export class PipelineOrchestrator {
         : undefined);
     const ask = effectiveRequested ?? 'none';
     const target = applyEffortMap(this.registry.effortMapFor(model, servedTier), ask);
-    if (target === 'none' && ask === 'none') return { actualEffort: effectiveRequested, degraded: false };
-    const supported = model.supportedReasoningEfforts ?? (model.supportsReasoningEffort ? EFFORT_LADDER : []);
-    const actual = target === 'none' ? 'none' : downgradeReasoning(target, supported);
+    const supported = modelSupportsEfforts(model.supportedReasoningEfforts, model.supportsReasoningEffort, model.reasoningDisableable) ?? [];
+    const alwaysThink = model.reasoningDisableable === false;
+    // ADR-0035 absolute withholding: an always-think model with a declared
+    // ladder can NEVER serve `none` — not even for an explicit client none-ask
+    // or an effortMap that translates to none. It clamps to its lowest rung.
+    const forbidsNone = alwaysThink && supported.length > 0;
+    if (target === 'none' && ask === 'none' && !forbidsNone) return { actualEffort: effectiveRequested, degraded: false };
+    // `downgradeReasoning` carries the always-think floor: a below-floor ask on
+    // a model whose vendor forbids thinking-off serves its lowest declared rung,
+    // never the `none` that earns a 400 (ADR-0035).
+    let actual = target === 'none' && !forbidsNone ? 'none' : downgradeReasoning(target, supported, alwaysThink);
+    // Contradictory data: the vendor says always-think but the resolved ladder
+    // is EMPTY (e.g. an operator override of only `none`, stripped to []).
+    // There is no declared rung to clamp to; minting `none` would write the
+    // forbidden thinking-off. Mirror the ask instead and let the vendor's own
+    // wire-side clamp / replay be the net — never rewrite to `none` here.
+    if (actual === 'none' && alwaysThink && supported.length === 0) {
+      actual = ask;
+    }
     return {
       actualEffort: actual,
       degraded: EFFORT_LADDER.indexOf(actual) < EFFORT_LADDER.indexOf(ask),
@@ -2463,8 +2526,12 @@ export class PipelineOrchestrator {
     //    Each entry carries its ACCESS tier (pool tier vs member home tier, see
     //    accessTierMode) and the effort translation that applies to it — a model
     //    holding membership in several tiers translates per serving pool.
+    //    `member-home` on a model with NO home tier (it serves from no pool)
+    //    falls back to the EXECUTION tier: the candidate is being tried from
+    //    this chain, so this chain's tier is the only tier that truthfully
+    //    describes the attempt.
     const accessTierOf = (m: ModelRegistration): TierLevel =>
-      opts.accessTierMode === 'member-home' ? m.tier : tier;
+      opts.accessTierMode === 'member-home' ? (m.tier ?? tier) : tier;
     let candidateList = opts.chain.map((m) => ({
       model: m,
       accessTier: accessTierOf(m),
@@ -2684,10 +2751,21 @@ export class PipelineOrchestrator {
             : undefined;
         const ask = opts.requestedEffort ?? budgetAsk ?? 'none';
         const target = applyEffortMap(candidateEffortMap, ask);
-        if (!(target === 'none' && ask === 'none')) {
-          const supported =
-            candidate.supportedReasoningEfforts ?? (candidate.supportsReasoningEffort ? EFFORT_LADDER : []);
-          const candidateEffort = target === 'none' ? 'none' : downgradeReasoning(target, supported);
+        const supported = modelSupportsEfforts(
+          candidate.supportedReasoningEfforts,
+          candidate.supportsReasoningEffort,
+          candidate.reasoningDisableable
+        ) ?? [];
+        const candidateAlwaysThink = candidate.reasoningDisableable === false;
+        // ADR-0035: an always-think model with a declared ladder never serves
+        // `none` — the rewire must run even for an explicit none ask so the
+        // upstream payload carries the clamped rung, not the forbidden none.
+        const forbidsNone = candidateAlwaysThink && supported.length > 0;
+        if (!(target === 'none' && ask === 'none') || forbidsNone) {
+          let candidateEffort = target === 'none' && !forbidsNone ? 'none' : downgradeReasoning(target, supported, candidateAlwaysThink);
+          if (candidateEffort === 'none' && candidateAlwaysThink && supported.length === 0) {
+            candidateEffort = ask;
+          }
           if (candidateEffort !== effortOf(request)) {
             candidateReq = {
               ...request,

@@ -607,7 +607,7 @@ interface QuotaPairRow {
   quota?: CredentialQuotaView;
   /** Attributed usage from the trace ring (undefined = nothing attributed
    *  yet — turns recorded before the attribution field, or chain-less). */
-  usage?: { requests: number; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number };
+  usage?: { requests: number; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; unpricedRequests: number };
 }
 
 async function buildQuotaPairRows(
@@ -681,6 +681,7 @@ async function buildQuotaPairRows(
         outputTokens: row.outputTokens,
         cachedTokens: row.cachedTokens,
         costUsd: row.costUsd,
+        unpricedRequests: row.unpricedRequests,
       };
     }
   }
@@ -2151,6 +2152,15 @@ export function registerConsoleRoutes(
    * NO tier ladder here: writing "ultra = broadest" made every role land on
    * `ultra`.
    */
+  /**
+   * Price sentence for the decision prompt. An UNPRICED model must not render
+   * as `$0/$0`: the LLM reads these lines when choosing a candidate, so a
+   * fabricated zero is an active instruction to prefer it as "free".
+   */
+  const priceLine = (p: ModelRegistration['pricing']): string =>
+    p
+      ? `price $${p.input}/$${p.output} per 1M tokens in/out`
+      : 'price unknown (no published dollar price — do NOT read this as free)';
   const describeCandidate = (rawId: string, note?: string, cat?: CatalogModel): string => {
     const m = registry.getModel(rawId);
     let body: string;
@@ -2158,7 +2168,7 @@ export function registerConsoleRoutes(
       const tiers = registry.tiersOf(m);
       const parts = [
         `registered model; tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}`,
-        `price $${m.pricing?.input ?? 0}/$${m.pricing?.output ?? 0} per 1M tokens in/out`,
+        priceLine(m.pricing),
         ...catalogTokens(cat),
       ];
       if (m.wire === 'systemone') {
@@ -2182,7 +2192,7 @@ export function registerConsoleRoutes(
       body =
         `variant of ${base.id} (pins reasoning_effort '${variant.reasoningEffort}'); ` +
         `tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}; ` +
-        `price $${base.pricing?.input ?? 0}/$${base.pricing?.output ?? 0} per 1M tokens in/out` +
+        priceLine(base.pricing) +
         (catTokens.length > 0 ? `; ${catTokens.join('; ')}` : '') +
         `; wire=${base.wire ?? 'unknown'}`;
     } else if (registry.isCombo(rawId)) {
@@ -2700,8 +2710,8 @@ export function registerConsoleRoutes(
   // tiers.exclude filter. No preview; what the runtime would actually use.
   //
   // Read-only on purpose: the previous version called applyTierConfigNow()
-  // here as a "force-commit view" trick, but that mutated m.tier / m.unclassified
-  // on every Live tab open — a stealth commit with no save event behind it.
+  // here as a "force-commit view" trick, but that mutated m.tier on every
+  // Live tab open — a stealth commit with no save event behind it.
   // The console must NEVER write routing state from a GET. Out-of-band file
   // edits get picked up on the next save commit (the console already triggers
   // applyTierConfigNow in handleSaveConfig / handleSaveRawYaml).
@@ -2759,13 +2769,13 @@ export function registerConsoleRoutes(
     const members = expanded.tiers;
     const modelIds = registry
       .getAllModels()
-      .filter((m) => m.tierMatch)
+      .filter((m) => m.autoTier)
       .map((m) => m.id);
     const orphans: { tier: string; pattern: string }[] = [];
     for (const tier of MEMBER_TIER_ORDER) {
       for (const rule of members[tier]) {
         // exact rules = combo-expanded ids: registered by construction, and a
-        // hand-configured member (no tierMatch) is not in modelIds — flagging
+        // hand-configured member (no autoTier stamp) is not in modelIds — flagging
         // them here would be a false positive; ref liveness is deadCombo's job
         if (rule.exact) continue;
         if (!modelIds.some((id) => globMatchAny([rule.pattern], id))) orphans.push({ tier, pattern: rule.pattern });
@@ -2784,7 +2794,7 @@ export function registerConsoleRoutes(
   // End-to-end tier test — one REAL minimal completion pinned to the tier via
   // the bare tier alias: the same force_tier path a client's
   // `model: "pro"` request takes (tier aliases are reserved gateway ids,
-  // never classifier-routed). One run only
+  // never pool-routed). One run only
   // exercises the SELECTED member (the default credential, or the weighted/round-robin
   // pick), never the whole pool — deep per-model checks stay on the providers
   // page. An EMPTY tier degrades inside getModelForTier (the session-pin birth
@@ -3747,7 +3757,9 @@ export function registerConsoleRoutes(
       const r = await ocHandlers.webLoginPluginFor(id);
       if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
       try {
-        const { authUrl } = await r.plugin.webLogin!.start({ baseURL: r.baseURL });
+        // `provider: id` lets the plugin hand this call to `host.fetch` and have
+        // the operator's proxy split govern sign-in too (ADR-0022).
+        const { authUrl } = await r.plugin.webLogin!.start({ baseURL: r.baseURL, provider: id });
         return { status: 'ok', authUrl };
       } catch (err) {
         return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
@@ -3758,7 +3770,7 @@ export function registerConsoleRoutes(
       const r = await ocHandlers.webLoginPluginFor(id);
       if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
       try {
-        const result = await r.plugin.webLogin!.poll({ baseURL: r.baseURL });
+        const result = await r.plugin.webLogin!.poll({ baseURL: r.baseURL, provider: id });
         if (!result.done) {
           return { status: 'ok', done: false, error: result.error };
         }
@@ -3796,7 +3808,7 @@ export function registerConsoleRoutes(
         return reply.code(404).send({ success: false, error: `provider '${id}' web-login has no manual token submission` });
       }
       try {
-        const result = await r.plugin.webLogin!.submit({ baseURL: r.baseURL, code });
+        const result = await r.plugin.webLogin!.submit({ baseURL: r.baseURL, code, provider: id });
         if (!result.ok) return { status: 'ok', connected: false, error: result.error };
         // Same wiring as a finished poll: credential-store write + connect-time
         // model auto-fill so the card flips to connected. A submit that
@@ -4008,6 +4020,12 @@ export function registerConsoleRoutes(
         });
       }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
+      // The verdict's egress (ADR-0018 / ADR-0022 vocabulary) is taken from the
+      // attempt that produced it and rides on the reply, so "Test" answers "did
+      // my model-scoped split apply" — the include/exclude page can only state
+      // intent, never what this provider actually dialed.
+      let egress: 'direct' | 'proxy' | undefined;
+      let egressProxy: string | undefined;
       const { baseForWire } = await import('../providers/wire.js');
       const { sanitizeExtraHeaders } = await import('../utils/http-headers.js');
       // Two nested rotation loops, both stopping on one green:
@@ -4037,12 +4055,22 @@ export function registerConsoleRoutes(
           // Responses API) beats provider-level npm when picking the wire shape.
           const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
           const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
+          // The model's own capability flags, read from the def the console
+          // holds — a plugin probe builds a REAL request, so guessing
+          // "not a reasoning model" makes it send thinking-off to a model that
+          // always thinks and report 400 for a model inference serves fine.
+          const modelDef = (defs as Record<string, any> | undefined)?.[modelId];
+          const catModel = cat?.models.find((mm) => mm.id === modelId);
           result = await probeProvider({
             baseURL: baseForWire(kind, baseURL),
             apiKey: attempt.key,
             model: modelId,
             provider: id,
             kind,
+            capabilities: {
+              reasoning: modelDef?.reasoning === true || Array.isArray(modelDef?.reasoningOptions) && modelDef.reasoningOptions.length > 0 || catModel?.reasoning === true,
+              vision: modelDef?.attachment === true || catModel?.modalities?.input?.includes('image') === true,
+            },
             headers: sanitizeExtraHeaders(
               def?.options?.headers
                 ? Object.fromEntries(
@@ -4051,6 +4079,17 @@ export function registerConsoleRoutes(
                 : undefined,
             ),
           });
+          // Stamp the egress the MOMENT the probe answers, before any break:
+          // `break probes` (a green verdict, or a mount failure) skips the rest
+          // of the loop body, and the operator's question — did MY split apply
+          // to this call — must be answered on success too, not only when the
+          // rotation happens to fall through. Assign UNCONDITIONALLY: the
+          // verdict belongs to the attempt that produced it, so its egress is
+          // the answer even when that attempt reports UNKNOWN (a pre-dial
+          // failure) — keeping a prior attempt's stamp would describe a dial
+          // the verdict never made (model rotation can switch the wire/baseURL).
+          egress = result.egress;
+          egressProxy = result.egressProxy;
           if (result.ok) break probes;
           // Key-scoped refusal → this key is done, hand over to the next one.
           if (result.hintCode === 'authFailed' || result.hintCode === 'rateLimited') break;
@@ -4080,6 +4119,8 @@ export function registerConsoleRoutes(
         ...(tried.length > 1 ? { triedModels: tried } : {}),
         ...(triedCredentials.length > 1 ? { triedCredentials } : {}),
         ...(credentialMeta ? { credential: credentialMeta } : {}),
+        ...(egress ? { egress } : {}),
+        ...(egressProxy ? { egressProxy } : {}),
         ...result,
       };
     },
@@ -5116,12 +5157,15 @@ export function registerConsoleRoutes(
             await import('../plugins/host.js');
           // Snapshot the version this upload is about to REPLACE (a packaged one
           // — a dev-tree plugin is not ours to materialize here). A failed upgrade
-          // must not delete a working install.
+          // must not delete a working install. `disabled` does NOT disqualify the
+          // snapshot: a switched-off package is still an install the operator
+          // owns, and a broken upload over it would otherwise leave them with
+          // nothing to roll back to.
           let previous: Uint8Array | undefined;
           try {
             const target = packageIdOf(new Uint8Array(bytes));
             const existing = listing().find((p) => p.id === target);
-            if (existing?.source === 'packaged' && !existing.disabled) previous = await pluginPackageZip(target);
+            if (existing?.source === 'packaged') previous = await pluginPackageZip(target);
           } catch {
             // unreadable upload: installPluginPackage below reports it properly
           }
@@ -5129,8 +5173,24 @@ export function registerConsoleRoutes(
           const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
           await loadInstalledPlugins();
           const plugins = listInstalledPlugins();
-          const view = plugins.find((p) => p.id === installed && !p.disabled);
-          if (!view?.loaded) {
+          // An engine-INCOMPATIBLE package is not a broken one: it is on disk,
+          // it is listed as disabled, and it becomes usable in place once the
+          // matching side is updated. Discarding it would only make the operator
+          // upload the same file again after that update, so the discard /
+          // rollback path below stays reserved for packages that genuinely fail
+          // to load. The test is the ROW'S OWN flag, never `disabled && !loaded`
+          // — an operator-disabled package satisfies that shape too, and a
+          // failed load of one must still be discarded and rolled back.
+          //
+          // An UPLOAD is normally refused before it ever lands
+          // (`installPluginPackage` → `assertSupportedPluginApi`), so a 400 with
+          // the core sentence is the common answer. This branch covers the case
+          // that reaches the disk anyway (a package that became incompatible
+          // under a downgraded gateway), where the refusal must be reported and
+          // NOT followed by a discard.
+          const view = plugins.find((p) => p.id === installed);
+          const incompatible = view?.incompatible === true;
+          if (!view?.loaded && !incompatible) {
             // a package that cannot load would re-fail every boot — discard it;
             // discard BEFORE preset sync / pool refresh so a broken package
             // registers nothing
@@ -5160,10 +5220,24 @@ export function registerConsoleRoutes(
           }
           // presets register at install time (same contract as boot/reload) —
           // after a verified successful load, BEFORE the pool refresh so the
-          // fresh defs are routable immediately
+          // defs are routable immediately on the next dispatch. An engine-refused
+          // package reaches this line too: it loaded nothing, so `syncPluginPresets`
+          // has nothing of it to register, and its row stays DISABLED in `plugins`.
           const registered = await syncPluginPresets();
           await refreshDirectPool(registry);
-          return { status: 'ok', id: installed, version: installedVersion, replacedVersion, plugins, registered };
+          return {
+            status: 'ok',
+            id: installed,
+            version: installedVersion,
+            replacedVersion,
+            plugins,
+            registered,
+            // Kept in the 200 body so the console can toast the honest outcome:
+            // the bytes landed, but the package answers nothing until one side
+            // is updated. A green "installed" toast over a red row is the one
+            // reading an operator must not be left with.
+            ...(incompatible ? { incompatible: true, error: view.error } : {}),
+          };
         } catch (err) {
           return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
         }
@@ -5460,7 +5534,7 @@ export function registerConsoleRoutes(
         // offer ONLY these — anything else would be clamped right back by
         // downgradeReasoning. `[]` is a REAL answer ("no explicit level
         // control", e.g. a toggle-only model), never "unknown".
-        efforts: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort) ?? [],
+        efforts: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort, m.reasoningDisableable) ?? [],
         // Resolved upstream wire (model-level npm beats provider npm, see
         // providers/wire.ts). Console pickers MUST read it from here instead of
         // re-deriving it from the provider's npm string — `systemone` marks a

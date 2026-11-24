@@ -1138,8 +1138,13 @@ export function createServer(
         ...(cat
           ? modelsDevBlock(cat)
           : {
-            reasoning: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort),
-            cost: { input: m.pricing.input, output: m.pricing.output, cache_read: m.pricing.cacheRead, ...(m.pricing.cacheWrite !== undefined ? { cache_write: m.pricing.cacheWrite } : {}) },
+            reasoning: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort, m.reasoningDisableable),
+            // Omit `cost` entirely when the price is unknown — an absent block
+            // makes the emitted catalog say "no price", whereas a synthesized
+            // one would be indistinguishable from a real quote.
+            ...(m.pricing
+              ? { cost: { input: m.pricing.input, output: m.pricing.output, cache_read: m.pricing.cacheRead, ...(m.pricing.cacheWrite !== undefined ? { cache_write: m.pricing.cacheWrite } : {}) } }
+              : {}),
           }),
         ocr: { tier: m.tier, model: m.id },
       };

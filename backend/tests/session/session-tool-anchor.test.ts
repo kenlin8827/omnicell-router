@@ -50,7 +50,7 @@ function makeOrchestrator(): PipelineOrchestrator {
     session: { enabled: true, strategy: 'monotonic', ttlSeconds: 3600, maxSessions: 100 },
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false);
+  registry.setAutoRefreshMembers(false);
   let served = 0;
   const provider: LLMProvider = {
     name: 'p1',

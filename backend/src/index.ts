@@ -85,10 +85,16 @@ function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined
   const plugin = entry?.plugin;
   const check = plugin?.quotaCheck;
   if (!plugin || !check || !entry) return undefined;
+  // The plugin names the origins it dials for this entry; the core turns them
+  // into a proxy-guarded transport. Without them the adapter would inherit the
+  // raw global `fetch` and `proxy.includes` would silently not apply — the
+  // exact gap that made plugin-wire providers unreachable through a split.
+  const egressOrigins = plugin.egressOrigins?.bind(plugin);
   return {
     id: `plugin:${entry.view.id}`,
     providerIds: [providerId],
     probe: (ctx) => check(ctx),
+    ...(egressOrigins ? { egressOrigins } : {}),
   };
 }
 
