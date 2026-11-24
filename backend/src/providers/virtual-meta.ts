@@ -141,16 +141,27 @@ function envelopeOf(
  * `lookup` resolves any single member id with the same precedence (used for the
  * chain-order leader, who must be found by IDENTITY even when other members
  * lack catalog records).
+ *
+ * Each pushed record's LOOKUP id is available from the `byId` map: callers
+ * that key by the registered id (`server.ts` catById.get(m.id)) must read that
+ * map, not the record's own `id` — a prefixed provider's registered id is
+ * `${provider}/${upstream}` while the catalog record keeps the bare upstream
+ * key, so indexing records by `rec.id` misses every prefixed provider.
  */
 export async function findMemberCatalogRecords(
   ids: string[],
   listCatalog: CatalogList
-): Promise<{ records: CatalogModel[]; lookup: (id: string) => CatalogModel | undefined }> {
+): Promise<{
+  records: CatalogModel[];
+  lookup: (id: string) => CatalogModel | undefined;
+  /** Resolved record keyed by the id it was looked up by (registered form). */
+  byId: Map<string, CatalogModel>;
+}> {
   let providers: CatalogProviderRecord[];
   try {
     providers = await listCatalog();
   } catch {
-    return { records: [], lookup: () => undefined };
+    return { records: [], lookup: () => undefined, byId: new Map() };
   }
   const byFull = new Map<string, CatalogModel>();
   const byBare = new Map<string, CatalogModel>();
@@ -162,11 +173,16 @@ export async function findMemberCatalogRecords(
   }
   const lookup = (id: string) => byFull.get(id) ?? byBare.get(id);
   const records: CatalogModel[] = [];
+  const byId = new Map<string, CatalogModel>();
   for (const id of ids) {
     const cat = lookup(id);
-    if (cat) records.push(cat);
+    if (!cat) continue;
+    records.push(cat);
+    // First writer wins: a repeated id must not let a later bare-key hit
+    // overwrite the prefixed provider's record.
+    if (!byId.has(id)) byId.set(id, cat);
   }
-  return { records, lookup };
+  return { records, lookup, byId };
 }
 
 /**

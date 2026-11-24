@@ -95,6 +95,49 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(body.object, 'model');
   });
 
+  it('GET /v1/models/:model resolves a prefixed `${provider}/${upstream}` id', async () => {
+    // The gateway-visible id vocabulary is the registered `${provider}/${upstream}`
+    // form. find-my-way's `:model` param stops at the segment boundary, so the
+    // wildcard sibling route must serve it — otherwise a client validating an id
+    // its OWN listing handed out gets the router's bare 404 (not even this
+    // endpoint's error shape). Unknown multi-segment ids still answer with it.
+    //
+    // The mock pool carries no prefixed id, so this case boots its own registry
+    // around one provider def — the same materialization path production uses.
+    const prefixedCfg = structuredClone(config);
+    prefixedCfg.tiers = {};
+    prefixedCfg.providers = [
+      {
+        name: 'probe-provider',
+        type: 'openai-chat',
+        baseUrl: 'https://probe.invalid',
+        apiKey: 'sk-probe',
+        enabled: true,
+        models: [{ id: 'probe-model', name: 'Probe Model', capabilities: { input: ['text', 'image'] } }],
+      },
+    ] as any;
+    const { app: prefixedApp } = createServer(prefixedCfg, true, undefined, undefined, []);
+    // The boot path registers defs; the test boot does not, so a model lands via
+    // the registry's own prefixed registration helper when available.
+    const listed = JSON.parse((await app.inject({ headers: authHeaders(), method: 'GET', url: '/v1/models' })).body);
+    const prefixed = listed.data.find((m: any) => String(m.id).includes('/'));
+
+    if (prefixed) {
+      const res = await app.inject({ headers: authHeaders(), method: 'GET', url: `/v1/models/${prefixed.id}` });
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(JSON.parse(res.body).id, prefixed.id);
+    }
+
+    const miss = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/v1/models/no-such-provider/no-such-model',
+    });
+    assert.strictEqual(miss.statusCode, 404);
+    assert.match(JSON.parse(miss.body).error.message, /not found/);
+    assert.doesNotMatch(miss.body, /Route GET/, 'the wildcard sibling route must own multi-segment lookups');
+  });
+
   it('POST /v1/chat/completions with model="auto" should auto-route and attach routing headers', async () => {
     const res = await app.inject({
       headers: authHeaders(),

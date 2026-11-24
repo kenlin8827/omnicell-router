@@ -1113,9 +1113,12 @@ export function createServer(
 
     // ── Concrete providers: catalog passthrough, registry fallback ──
     const allModels = registry.getAllModels();
-    const catById = new Map(
-      (await findMemberCatalogRecords(allModels.map((m) => m.id), listCatalogOnce)).records.map((c) => [c.id, c])
-    );
+    // Keyed by the LOOKUP id (the registered `${provider}/${upstream}` form),
+    // never by the record's own `id`: a prefixed provider's catalog record keeps
+    // the bare upstream key, so `[c.id, c]` missed EVERY prefixed provider and
+    // silently dropped its attachment/modalities/limit/tool_call from the
+    // public capability surface (only the registry fallback block survived).
+    const catById = (await findMemberCatalogRecords(allModels.map((m) => m.id), listCatalogOnce)).byId;
     const CATALOG_PROVIDER_NAME = new Map(catalogOnce.map((p) => [p.id, p.name]));
     const ensureProvider = (id: string) =>
       (providers[id] ??= { id, ...(CATALOG_PROVIDER_NAME.get(id) ? { name: CATALOG_PROVIDER_NAME.get(id) } : {}), models: {} });
@@ -1202,8 +1205,16 @@ export function createServer(
   };
 
   // 2B. Single model lookup (OpenAI standard)
-  app.get('/v1/models/:model', async (req, reply) => {
-    const { model } = req.params as { model: string };
+  //
+  // TWO routes, one handler: the gateway-visible id vocabulary contains a `/`
+  // (`${provider}/${upstream}` — e.g. `qoder-cn/dmodel`), which find-my-way's
+  // `:model` param does NOT capture (it stops at the segment boundary), so a
+  // concrete model validated by the id its own listing handed out used to fall
+  // through to the router's bare 404 — not even this handler's error shape. The
+  // wildcard covers those; a single-segment id still takes the cheaper param
+  // route.
+  const singleModel = async (req: any, reply: any) => {
+    const model = String((req.params as any)['*'] ?? (req.params as any).model ?? '').replace(/^\/+/, '');
     const policy = getModelAccessPolicy((req as any).authInfo?.keyConfig);
     const all = registry.getAllModels();
     const specific = all.find(m => m.id === model);
@@ -1257,7 +1268,9 @@ export function createServer(
         }
         : {}),
     };
-  });
+  };
+  app.get('/v1/models/:model', singleModel);
+  app.get('/v1/models/*', singleModel);
 
   // 3. FinOps Economics & Analytics Dashboard
   app.get('/api/admin/metrics', async () => {
