@@ -156,8 +156,12 @@ export class QuotaProber {
   public start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      this.tick().catch(() => {
-        // Background probe cycles swallow scheduling errors — next tick retries.
+      this.tick().catch((err) => {
+        // Background probe cycles never arm a retry from here — the next tick
+        // comes on its own schedule. But a crash must not be invisible: this is
+        // the ONE line that proves the cycle ran, and a silently dead prober
+        // looks exactly like a vendor that never answers.
+        console.warn(`[quota] probe cycle failed: ${err instanceof Error ? `${err.name}: ${err.message}${err.cause instanceof Error ? ` (${err.cause.message})` : ''}` : String(err)}`);
       });
     }, this.intervalMs);
     this.timer.unref?.();

@@ -287,6 +287,10 @@ export const QuotaPeek: React.FC = () => {
                     const windows = r.quota?.windows ?? [];
                     const w = headlineWindow(windows);
                     const balance = w ? undefined : windows.find((x) => x.nameCode === 'balance');
+                    // A stale read keeps its numbers AND its cause. The peek row
+                    // has no second line to spare, so the verdict rides the hover
+                    // title (the quota page renders it inline under the meters).
+                    const failed = failureCaption(r.quota, t);
                     let headValue: React.ReactNode;
                     let subLabel = '';
                     let pct: number | null = null;
@@ -319,7 +323,6 @@ export const QuotaPeek: React.FC = () => {
                       subLabel = winLabel(balance);
                     } else {
                       const quota = r.quota;
-                      const failed = failureCaption(quota, t);
                       headValue = (
                         <span
                           style={{
@@ -341,7 +344,7 @@ export const QuotaPeek: React.FC = () => {
                         key={`${r.providerId}#${r.keyHashPrefix}`}
                         className="quota-peek-row"
                         style={{ padding: '8px 10px', minWidth: 0 }}
-                        title={`${r.providerId}${r.label ? ` · ${r.label}` : ''}`}
+                        title={`${r.providerId}${r.label ? ` · ${r.label}` : ''}${failed ? ` — ${failed}` : ''}`}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', minWidth: 0 }}>
                           <span

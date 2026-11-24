@@ -1678,7 +1678,27 @@ hiddenBadge: string;
     failStatus: string;
     failShape: string;
     failNetwork: string;
+    failTimeout: string;
     failHttp: string;
+    /** Failure VERDICT words — the closed backend `QuotaFailureVerdict`
+     *  vocabulary, assigned server-side from structured signals (HTTP status,
+     *  envelope codes, declaration `refusalIf`), never from upstream prose.
+     *  These are what a user acts on; the `fail*` words above only name the
+     *  transport shape and are the fallback for pre-verdict records. */
+    verdictCredential: string;
+    verdictNoPlan: string;
+    verdictGone: string;
+    verdictRateLimited: string;
+    verdictUpstream: string;
+    verdictUnreadable: string;
+    /** Prefix for the upstream's own sentence, quoted verbatim as evidence. */
+    upstreamSaid: string;
+    /** Qualifies meters that are the last good read while the probe fails. */
+    staleNumbers: string;
+    /** Window value: absolute used/total plus the remaining percent, labeled. */
+    windowUsedOf: string;
+    /** Window value when only a percent is known. */
+    windowPctLeft: string;
     windowNoCap: string;
     windowResets: string;
     /** Quota-peek countdown (no leading separator — it stands alone). */
@@ -2763,6 +2783,8 @@ hiddenBadge: string;
     errInstall: string;
     errUnsupported: string;
     errUnpack: string;
+    errInstallChecksum: string;
+    errInstallInterrupted: string;
     portsLocked: string;
     pacLabel: string;
     pacHint: string;

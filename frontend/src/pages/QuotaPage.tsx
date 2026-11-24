@@ -15,7 +15,7 @@ import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
 import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
-import { failureCaption, quotaStateWord, quotaSyncFailed, type TFn } from '../lib/quotaFailure';
+import { failureCaption, quotaStateWord, quotaSyncFailed, staleNumbersPrefix, type TFn } from '../lib/quotaFailure';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -145,12 +145,17 @@ const WindowMeter: React.FC<{ w: QuotaWindow; t: (k: string, p?: Record<string, 
     value = t('quotaPage.windowNoCap');
     valueColor = 'var(--text-dim)';
   } else if (pct !== null) {
-    // Both planes on one line: absolute used/cap plus the burn percent —
-    // a bare "59%" hides the numbers the operator actually manages against.
+    // Both planes on one line, each LABELED: "used 1 / 100 · 99% left" — an
+    // unlabeled pair collides two mental models (used/total then remaining %)
+    // and reads as a contradiction.
     value =
       w.total !== null
-        ? `${(w.used ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} / ${w.total.toLocaleString(undefined, { maximumFractionDigits: 2 })} · ${Math.round(pct)}%`
-        : `${Math.round(pct)}%`;
+        ? t('quotaPage.windowUsedOf', {
+            used: (w.used ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 }),
+            total: w.total.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+            pct: Math.round(pct),
+          })
+        : t('quotaPage.windowPctLeft', { pct: Math.round(pct) });
     valueColor = pctColor(pct);
   } else {
     value = `${amount.toLocaleString()} / ${(w.total ?? 0).toLocaleString()}`;
@@ -421,9 +426,34 @@ export const QuotaPage: React.FC = () => {
                       (short-period) caps lead, credit pools sink; class ties
                       keep declaration order (byWindowClass). A pair with no
                       numbers shows the recorded verdict (why it is empty)
-                      instead of a mute dash. */}
+                      instead of a mute dash. A pair that HAS numbers but is
+                      stale shows the verdict UNDER them: the meters are the
+                      last good read, the line is why they stopped moving. */}
                   {row.quota && row.quota.windows.length > 0 ? (
-                    [...row.quota.windows].sort(byWindowClass).map((w) => <WindowMeter key={w.name} w={w} t={t} />)
+                    <>
+                      {[...row.quota.windows].sort(byWindowClass).map((w) => <WindowMeter key={w.name} w={w} t={t} />)}
+                      {(() => {
+                        const failed = failureCaption(row.quota, t);
+                        // Numbers on the card are the last SUCCESSFUL read — a
+                        // failing probe over live-looking bars reads as a
+                        // contradiction unless the line says so first.
+                        const stale = staleNumbersPrefix(row.quota, t, fmtDur);
+                        return failed ? (
+                          <div
+                            style={{
+                              marginTop: '8px',
+                              fontSize: 'var(--text-xs)',
+                              color: 'var(--accent-rose)',
+                              wordBreak: 'break-word',
+                            }}
+                            title={failed}
+                          >
+                            {stale ? `${stale} · ` : ''}
+                            {failed}
+                          </div>
+                        ) : null;
+                      })()}
+                    </>
                   ) : (() => {
                     const failed = failureCaption(row.quota, t);
                     return (
@@ -537,6 +567,13 @@ export const QuotaPage: React.FC = () => {
                   <span style={{ ...MONO, color: 'var(--text-dim)' }} title={`${lastProbe.http.durationMs} ms`}>{fmtLatency(lastProbe.http.durationMs)}</span>
                 )}
               </div>
+              {/* A transport failure has no body to inspect — the captured cause
+                  IS the whole answer, so it prints where the body would. */}
+              {lastProbe.http.detail && (
+                <div style={{ ...MONO, color: 'var(--accent-rose)', marginBottom: 8, wordBreak: 'break-all' }}>
+                  {lastProbe.http.detail}
+                </div>
+              )}
               <div style={{ ...MONO, color: 'var(--text-dim)', marginBottom: 8, wordBreak: 'break-all' }}>{lastProbe.http.url}</div>
               <pre
                 style={{

@@ -8,6 +8,7 @@ import {
   buildConfigEntry,
   buildEffectivePlan,
   clampTtl,
+  failureCause,
   probePair,
   runDslProbe,
   sanitizeProbePath,
@@ -193,6 +194,39 @@ describe('quota effective plan', () => {
       fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
     }
   });
+
+  it('probePair reads a negative cap as no stated ceiling, never as a number', async () => {
+    // Vendor sentinel (`cap: -1`) passed straight through rendered as a
+    // `0 / -1 · 0%` row — an empty pool the account does not have. The store
+    // AND the returned outcome are one accounting plane, so both must say
+    // 'no ceiling' rather than disagree.
+    const tmp = sandboxPaths('quota-negative-cap');
+    const store = new QuotaSnapshotStore({ paths: tmp, now: () => 1000 });
+    setQuotaStoreForTests(store);
+    try {
+      const adapter = {
+        id: 'plugin:qoder',
+        providerIds: ['qoder-cn'],
+        probe: async () => ({
+          ok: true as const,
+          windows: [{ name: 'Org pool', nameCode: 'orgPool', used: 0, total: -1, remainingPct: 0, unlimited: false }],
+        }),
+      };
+      const res = await probePair({ kind: 'adapter', adapter }, { providerId: 'qoder-cn', key: 'dt-x', prefix: 'KN' });
+      assert.ok(res.outcome.ok);
+      const stored = store.get('qoder-cn', 'KN')?.windows[0];
+      const returned = res.outcome.ok ? res.outcome.windows[0] : undefined;
+      for (const w of [stored, returned]) {
+        assert.equal(w?.total, null, 'the sentinel never survives as a credit count');
+        assert.equal(w?.unlimited, true);
+        assert.equal(w?.remainingPct, null, 'a percent computed against a fake cap is dropped too');
+        assert.equal(w?.used, 0);
+      }
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── Probe execution ────────────────────────────────────────────────────────
@@ -295,6 +329,10 @@ describe('quota probe execution', () => {
       assert.equal(net.ok, false);
       assert.equal(net.error, 'network');
       assert.equal(net.status, undefined, 'no response existed at all');
+      // ADR-0009 never-silent: the throw text survives into the capture AND the
+      // failure verdict, so the badge says what broke instead of "network".
+      assert.match(net.detail ?? '', /Error: connection reset/, 'a transport failure keeps its cause');
+      assert.match(store.getFailure('deepseek', 'KH')?.message ?? '', /connection reset/, 'the verdict carries the cause');
 
       // Capture churn never touches the snapshot: the first success survives.
       assert.equal(store.get('deepseek', 'KH')?.windows[0].name, 'Balance (CNY)');
@@ -302,6 +340,125 @@ describe('quota probe execution', () => {
       setQuotaStoreForTests(undefined);
       fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
     }
+  });
+
+  it('a rejected key keeps the upstream sentence (the commonest quota failure)', async () => {
+    // Every declaration-table provider answers a dead key with 401 plus a body
+    // that says why. Reading the body only on the success path left the badge
+    // with a reason word ("credential rejected") and the last-probe dialog
+    // empty — the silence this plane exists to remove.
+    const plan = buildEffectivePlan(undefined, () => undefined);
+    const target = plan.byProvider.get('deepseek')!;
+    if (target.kind !== 'dsl') throw new Error('deepseek resolves to a DSL entry in the built-in table');
+    const rejection = { error: { message: 'Authentication Fails, Your api key: ****invalid is invalid' } };
+    const run = await runDslProbe(target.entry, {
+      providerId: 'deepseek',
+      key: 'sk-dead',
+      prefix: 'KD',
+      fetchImpl: fetchStub(() => ({ status: 401, body: rejection })),
+    });
+    assert.equal(run.outcome.ok, false);
+    assert.equal(run.outcome.ok ? '' : run.outcome.reason, 'auth');
+    assert.equal(run.http?.status, 401);
+    assert.deepEqual(run.http?.body, rejection, 'the rejection body is the evidence — it must be captured');
+
+    const tmp = sandboxPaths('quota-reject-words');
+    const store = new QuotaSnapshotStore({ paths: tmp, now: () => 1000 });
+    setQuotaStoreForTests(store);
+    try {
+      await probePair(target, { providerId: 'deepseek', key: 'sk-dead', prefix: 'KD', fetchImpl: fetchStub(() => ({ status: 401, body: rejection })) });
+      const failure = store.getFailure('deepseek', 'KD');
+      assert.ok(failure);
+      assert.equal(failure!.reason, 'auth');
+      assert.match(failure!.message ?? '', /Authentication Fails/, 'the badge quotes the upstream, not just its own word');
+      assert.equal(failure!.statusCode, 401);
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('an adapter that THROWS still lands a verdict and a capture', async () => {
+    // An adapter is third-party code: it may reject instead of returning the
+    // failure object its contract asks for. Letting that escape killed the
+    // whole pair — no failure, no capture, other pairs unprobed — which reads
+    // to the operator as a probe that never ran.
+    const tmp = sandboxPaths('quota-adapter-throw');
+    const store = new QuotaSnapshotStore({ paths: tmp, now: () => 1000 });
+    setQuotaStoreForTests(store);
+    try {
+      const adapter = {
+        id: 'plugin:broken',
+        providerIds: ['qoder-cn'],
+        probe: async () => {
+          throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND openapi.qoder.com.cn'), { code: 'ENOTFOUND' }) });
+        },
+      };
+      const res = await probePair({ kind: 'adapter', adapter }, { providerId: 'qoder-cn', key: 'dt-x', prefix: 'KB' });
+      assert.equal(res.outcome.ok, false);
+      assert.equal(res.outcome.ok ? '' : res.outcome.reason, 'network');
+      const failure = store.getFailure('qoder-cn', 'KB');
+      assert.ok(failure, 'a throwing adapter still produces a verdict');
+      assert.match(failure!.message ?? '', /ENOTFOUND/, 'the cause survives into the badge');
+      const http = store.getLastHttp('qoder-cn#KB');
+      assert.ok(http, 'the last-probe dialog is never empty for a crash');
+      assert.match(http!.detail ?? '', /adapter threw: TypeError: fetch failed: ENOTFOUND/);
+      assert.equal(http!.url, 'adapter:plugin:broken', 'the adapter id stands in for a URL core never saw');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('failureCause names the class, the message and the transport code (never a bare "network")', () => {
+    const enotfound = Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('getaddrinfo ENOTFOUND gateway.qoder.com.cn'), { code: 'ENOTFOUND' }),
+    });
+    assert.equal(failureCause(enotfound), 'TypeError: fetch failed: ENOTFOUND');
+
+    const aborted = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+    assert.equal(failureCause(aborted), 'AbortError: This operation was aborted');
+
+    // A non-Error throw still reads, and the line stays display-bounded.
+    assert.equal(failureCause('socket hang up'), 'Error: socket hang up');
+    assert.ok(failureCause(new Error('x'.repeat(400))).length <= 160, 'bounded by FAILURE_MESSAGE_MAX_CHARS');
+  });
+
+  it('a probe that TIMES OUT is a transport verdict, never an auth failure', async () => {
+    // The real incident: the gateway hung, the leg's own `AbortSignal.timeout`
+    // fired, and Node reports it with `err.name === 'AbortError'` — the name the
+    // credential-rejection branch also matches. A slow gateway must not read as
+    // "key rejected": a false `auth` verdict makes the operator re-auth a
+    // working credential.
+    const plan = buildEffectivePlan(undefined, () => undefined);
+    const entry = (plan.byProvider.get('openrouter') as any).entry;
+    const probe = (err: unknown) =>
+      runDslProbe(entry, { key: 'k', providerId: 'openrouter', prefix: 'p', fetchImpl: (async () => { throw err; }) as typeof fetch });
+
+    const undici = Object.assign(new Error('Request timed out'), { name: 'AbortError', timedOut: true });
+    const undiciRun = await probe(undici);
+    assert.equal(undiciRun.outcome.ok ? '' : undiciRun.outcome.reason, 'timeout', 'undici\'s timedOut AbortError');
+
+    for (const err of [
+      Object.assign(new Error('Headers Timeout Error'), { name: 'HeadersTimeoutError' }),
+      Object.assign(new Error('body timeout'), { name: 'BodyTimeoutError' }),
+      Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect'), { code: 'ETIMEDOUT' }) }),
+    ]) {
+      const run = await probe(err);
+      assert.equal(run.outcome.ok ? '' : run.outcome.reason, 'timeout', `named/classified as timeout: ${err}`);
+      assert.equal(run.http?.error, 'timeout', 'the capture carries the same verdict the reason does');
+    }
+
+    // A PLAIN abort (operator cancel, no timeout provenance) is transport, but it
+    // is still not a credential verdict.
+    const bare = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+    const bareRun = await probe(bare);
+    assert.equal(bareRun.outcome.ok ? '' : bareRun.outcome.reason, 'network');
+    assert.notEqual(bareRun.outcome.ok ? '' : bareRun.outcome.reason, 'auth');
+
+    // A real dead key still reads `auth` — the timeout branch must not swallow it.
+    const dead = await runDslProbe(entry, { key: 'k', providerId: 'openrouter', prefix: 'p', fetchImpl: fetchStub(() => ({ status: 401 })) });
+    assert.equal(dead.outcome.ok ? '' : dead.outcome.reason, 'auth');
   });
 });
 
@@ -446,6 +603,42 @@ describe('minimax quota adapter', () => {
       }) as typeof fetch,
     });
     assert.ok(global[0].includes('minimax.io'), `global host must be minimax.io, got ${global[0]}`);
+  });
+
+  it('a transport throw keeps its cause AND the leg it happened on', async () => {
+    const urls: string[] = [];
+    const r = await MINIMAX_ADAPTER.probe({
+      providerId: 'minimax',
+      key: 'k',
+      now: () => 1_000_000,
+      fetchImpl: (async (u: any) => {
+        urls.push(String(u));
+        const cause = Object.assign(new Error('getaddrinfo ENOTFOUND www.minimax.io'), { code: 'ENOTFOUND' });
+        throw new TypeError('fetch failed', { cause });
+      }) as typeof fetch,
+    });
+    assert.equal(r.ok, false);
+    if (r.ok) return;
+    assert.equal(r.reason, 'network');
+    assert.ok(r.http, 'a failed leg records an exchange — the last-probe dialog must not be empty');
+    assert.equal(r.http?.error, 'network');
+    assert.match(r.http?.detail ?? '', /TypeError: fetch failed: ENOTFOUND/, 'the capture names what broke');
+    assert.match(r.http?.url ?? '', /coding_plan/, 'the leg reported is the LAST one attempted');
+    assert.equal(urls.length, 2, 'a network throw is endpoint-shaped, so the fallback chain continues');
+  });
+
+  it('a fallback chain reports the leg that answered, not a bare reason code', async () => {
+    const r = await MINIMAX_ADAPTER.probe({
+      providerId: 'minimax',
+      key: 'k',
+      now: () => 1_000_000,
+      fetchImpl: fetchStub((url) => ({ status: url.includes('coding_plan') ? 500 : 404 })),
+    });
+    assert.equal(r.ok, false);
+    if (r.ok) return;
+    assert.equal(r.reason, 'status');
+    assert.equal(r.http?.status, 500, 'the badge explains the LAST answer, not the first miss');
+    assert.match(r.http?.url ?? '', /coding_plan/);
   });
 });
 

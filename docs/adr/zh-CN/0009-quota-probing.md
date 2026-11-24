@@ -22,7 +22,7 @@
 ```
 QuotaSnapshot { providerId, keyHashPrefix, windows[], plan?, source, verifiedAt, entryId, lastFailureAt? }
 QuotaWindow   { name, used, total, remainingPct, resetAt, unlimited }
-QuotaProbeFailure { reason ∈ network|status|shape|auth, statusCode?, message?, at }
+QuotaProbeFailure { reason ∈ network|timeout|status|shape|auth, statusCode?, message?（上游原话，无体时为传输/凭据成因）, at }
 source ∈ probed | measured | declared | forked
 badge  ∈ probed | declared | unverified | stale        （控制台可见四态）
 ```
@@ -68,7 +68,7 @@ kimi 条目从同一次响应中读取两个窗口：顶层 `usage` 对象给出
 
 ### 6. DSL：十二构件、五类禁例
 
-构件（每个都无需计算即可解析）：窗口三形态（静态具名 / 数组 `each` / 键对象 `eachObject`）；`firstOf` 候选路径；**二推三**（used/total/remaining 任二者推出第三者）；对常量 `invert`；`scale`（比率→百分比）；`where` 门（**仅存在性 / 相等 / ∈**）；名称解析 = 纯 `{field}` 插值 + 字面量 `enumMap`（+ fallback），并携带可选的**不透明 i18n 身份**（`enumCode`/`code`/`argPath` 与窗口级 `nameCode` → 快照 `nameCode`/`nameArg`——供控制台翻译表映射为本地化标签的代码，绝非计算）；静态 headers 块；`successIf`（对 body 字段单等值）；`unlimited`（字面量或布尔路径）；`source: headers`；时间解析（秒/毫秒按量级判别、ISO、纯日期串）。缺 total 的退化（“无上限声明”）是**存在性**规则，不是值谓词。
+构件（每个都无需计算即可解析）：窗口三形态（静态具名 / 数组 `each` / 键对象 `eachObject`）；`firstOf` 候选路径；**二推三**（used/total/remaining 任二者推出第三者）；对常量 `invert`；`scale`（比率→百分比）；`where` 门（**仅存在性 / 相等 / ∈ / 布尔真值**）；名称解析 = 纯 `{field}` 插值 + 字面量 `enumMap`（+ fallback），并携带可选的**不透明 i18n 身份**（`enumCode`/`code`/`argPath` 与窗口级 `nameCode` → 快照 `nameCode`/`nameArg`——供控制台翻译表映射为本地化标签的代码，绝非计算）；静态 headers 块；`successIf`（对 body 字段单等值）；`refusalIf`（同一种门形状，指名那个声明「套餐级拒绝」的 body 字段——见下文判定规则）；`unlimited`（字面量或布尔路径）；`source: headers`；时间解析（秒/毫秒按量级判别、ISO、纯日期串）。缺 total 的退化（“无上限声明”）是**存在性**规则，不是值谓词。 唯一存在的值谓词在 DSL 之外，位于 `probePair` 的入库边界：负的 `total` 是供应商「未声明上限」的哨兵值，一律改写为 `total: null, unlimited: true`，并丢掉那个对着假上限算出来的 `remainingPct`——无论来源是声明条目还是适配器，哨兵值绝不允许作为数字到达控制台（`0 / -1`）。读供应商的可用性开关（`available: false` → 干脆不产出窗口）仍归适配器在自己的边界上做。
 
 **禁列五类**（拒绝是结构性的——schema 根本拼不出它们——且加载器额外拒绝未知键防夹带；违规条目**整条**丢弃、大声报出）：
 
@@ -88,7 +88,11 @@ due-based，形照主动健康 prober（借思路不借代码）：固定 tick�
 
 ### 8. 失败语义与路由面防火墙
 
+**判定由结构化信号决定，绝不由文案决定。** `QuotaProbeFailure.reason` 命名的是传输形态（`network` / `timeout` / `status` / `shape` / `auth`），对操作者毫无用处：套餐过期与从未开通，两者都以 HTTP 200 的 `shape` 抵达。因此同一条记录还携带封闭的 `verdict`——`credential-rejected` / `plan-inactive` / `endpoint-gone` / `rate-limited` / `upstream-error` / `unreadable` / `unreachable` / `timeout`——以及作为证据的 `upstreamCode`（`quota/verdict.ts`）。赋值次序：adapter 自己声明的结论（MiniMax 读 `base_resp.status_code`：1004 → `credential-rejected`，其他非零 → `plan-inactive`），然后声明表的 `refusalIf` 谓词，然后 HTTP 状态（401/403 → 凭据被拒，404 → 地址消失，429 → 限流），然后是结构化信封拒绝（`success: false` / 非零 `code`），最后才是传输理由。**消息文案永不决定判定**——额度端点用供应商本国语言的原话作答，按文案分类就要为每个供应商每种语言各写一份，而且供应商一改措辞就腐烂。原话作为证据传递（`message` 原样渲染，前置 `quotaPage.upstreamSaid`），判定作为代码传递，控制台只翻译一次、覆盖全部八种语言。动因案例是智谱：HTTP 200 返回 `{"code":500,"msg":"当前用户不存在coding plan","success":false}`——`success: false` 是机器可读字段，在表里声明为 `refusalIf: { where: { path: 'success', truthy: true } }`（普通 `where` 语法的加载期校验构件：存在性 / 相等 / ∈ / `truthy`，依旧无比较、无正则），旁边那句本地化 `msg` 从不参与匹配。前端对应规则是它的镜像：`frontend/src/lib/quotaFailure.ts` 只把判定码映射到 i18n key，绝不检查 `message`。
+
 **探测失败 ≠ 额度失败。** 失败尝试不进熔断器、不标 SUSPECT、不禁用、不进 trace 表：旧快照保留，`lastFailureAt` 把徽章翻成 `stale`；从未成功过的配对没有快照、保持 `unverified`——但如今同时保留**为什么**（`QuotaProbeFailure` 判定：理由 + HTTP 状态 + 上游自己的消息）。没有这份判定时，凭据被拒（401）或套餐未开通（MiniMax `base_resp.status_code: 2062 "no active token plan subscription"`，且 HTTP 200）的已覆盖配对，与「首次同步还没跑」完全无法区分——控制台只能永远重复 `unverified`，那是假话。四个徽章**状态**不变；控制台的**状态文案**由配对自身推导：有失败记录就显示「探测失败」（绝不显示「未同步」），并在任何「有覆盖但没数字」的位置渲染失败原因（额度页卡片、侧边栏 peek、逐凭据 tooltip）。成功一次即退役该判定（过期的证据不得比测量活得更久）。反向额度面消费推理侧证据只有一个方向：在熔断 manager 唯一失败汇聚点（`recordFailureScoped`）记录的每个 `QUOTA_EXHAUSTED` 诊断，在规则门控**之前**落 **`quota_events`** 账本一行（观测不是政策——关掉额度*跳闸*不得蒙住账本）。账本照限流账本纪律：环 500、`traces.db` 镜像（`quota_events` 表、独立 WAL 句柄、fail-open、启动 replay）。分类器新增中文撞顶 marker（额度措辞 + 会话频控措辞进入匹配字面量），使中文服务商的额度烧穿折入 QUOTA_EXHAUSTED（credential 作用域、12 小时下限、不打 SUSPECT——ADR-0004 语义不变）。词汇防火墙成立：`CLOSED/HALF_OPEN/OPEN` 仍是 CircuitBreaker 专属词；额度徽章态（`probed/declared/unverified/stale`）另立一轴，永不复用为健康词汇。撞顶下架继续走既有配对熔断 trip 语义；`resetAt` 对齐冷却整形为二期。
+
+**失败必须说出成因。** `QuotaProbeFailure.message` 有上游响应体时取体内的话，没有就取 `LastProbeCapture.detail` ——一行有界文本（`FAILURE_MESSAGE_MAX_CHARS`）：错误类别 + 消息 + `cause` 上挂的传输码（`ENOTFOUND`、`ECONNREFUSED`、超时中断）。只有理由码不算证据：`network` 同时盖住域名解析失败、连接被拒、请求被中断，以及**凭据链没走到额度端点**就被拒——于是屏幕上只剩一个「网络错误」，把最常见的那种（账号其实已退出登录）藏了起来。由此以下规则。（1）探测前先解析凭据链的 adapter，必须按链自身的拒绝类别上报：token 交换 / 设备刷新返回 400 / 401 / 403 是**凭据判定**（`reason: auth`，并记下它的 `statusCode`），408 / 429 / 5xx 才是传输——为了让传输叙事整齐而把拒绝压成 502 是 bug。（2）探测读的是**被问到的那把凭据**。插件按网关存一份登录包（qoder 设备 bundle），这份 bundle 绝不能替另一把已存 key 作答：那会让同一 provider 的每一行都显示同一个账号的数字，而真正在轮换的那把凭据的真实余量永远看不见。请求路径仍优先用 bundle（刷新轮换后靠它保住登录）；探测显式退出（`resolveAccessToken(key, gateway, { ownCredential: true })`）。祖先 token 是这条规则的例外，也印证了它本身：控制台在浏览器登录完成时把 access token 写进凭据存储，随后插件静默轮换——那行存量 key 其实是**本次登录的过期副本**，不是第二个账号。bundle 会记下自己被它顶替掉的前驱（`DeviceCredential.rotatedFrom`，上限 `ROTATED_HISTORY`；重新登录只在 uid 相同时续上这条链），链里的行按自己的登录身份去探。链外那把（粘进来的异机 token）就按自己作答，被拒即是这一行的诚实读法；把轮换后的 token 写回凭据存储需要 core 的 host 接缝（ADR-0006），此处刻意不做。（3）响应体在**判定之前**读，而且每个结局都读：死 key 的 401 自带解释，弃掉它的采集只能剩下一个理由词。（4）adapter 是第三方代码：它 **reject** 而不是按契约返回失败对象时，仍要落一条带成因的传输判定（`network`，时钟到点则 `timeout`）与采集（core 没见到 URL，故以 adapter id 占位）。让它抛出去会同时杀掉这一对与本轮后面所有的对——看上去跟「探测从没跑过」一模一样。（5）因为时钟到点而没拿到响应的腿是 `timeout`：`classifyThrownFailure` 只认 Node/undici 真正抛出的超时形状（`HeadersTimeoutError`、`BodyTimeoutError`、`ETIMEDOUT`、`timedOut: true`，以及带超时字样的 `AbortError`），插件侧同一规则镜像一份（`plugins/qoder-models/quota.ts`），因为插件只能 import core 的类型；没有超时出处的普通 `AbortError` 仍是 `network`；但传输分类绝不反过来决定消息——消息取抛出的那句话自己的原因（cause 链上第一条可读文本），因为 `AbortSignal.timeout`、外层墙钟中断、fetch 资源超时都以无名 `AbortError` 出现，只有抛出它的站点知道为何中断。不能重复第一版留下的塌陷：Node 把墙钟中断命名为 `AbortError`，跟凭据拒绝路径匹配的是同一个名字，于是一个卡住的网关被报成「凭据被拒」——假的 `auth` 判定会把操作者赶去重新登录一把本来好好的凭据。HTTP **响应**保持自己的类别：504 是 `status`（「上游拒绝 · HTTP 504」），因为上游确实开了口。
 
 ### 9. 消费面
 

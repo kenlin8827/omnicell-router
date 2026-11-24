@@ -350,7 +350,7 @@ describe('quota DSL loader validation (banned classes)', () => {
     const bad = mkEntry({
       windows: { form: 'static', windows: [{ name: 'W', where: { path: 'a', eq: 1, in: [1, 2] }, used: { path: 'b' } }] },
     });
-    assert.match(validateEntry(bad) ?? '', /exactly one of exists\/eq\/in/);
+    assert.match(validateEntry(bad) ?? '', /exactly one of exists\/truthy\/eq\/in/);
   });
 
   it('header value interpolation -> reject', () => {

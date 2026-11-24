@@ -89,6 +89,46 @@ export interface QuotaSnapshot {
 }
 
 /**
+ * Closed failure vocabulary of the probe plane. `timeout` is a leg that never
+ * got an answer because the clock ran out; `network` is every other transport
+ * fault; `status` is an HTTP ANSWER that failed (including 504 — the upstream
+ * did speak); `shape` is an answer the probe could not read; `auth` is a
+ * credential the upstream rejected. Nothing outside these five may appear.
+ */
+export type QuotaProbeFailureReason = 'network' | 'timeout' | 'status' | 'shape' | 'auth';
+
+/**
+ * The ACCOUNT-level conclusion a failing probe reached, on a closed vocabulary.
+ *
+ * Why this is separate from `reason`: `reason` names the transport shape (a
+ * status arrived, a body could not be read) and is useless to an operator —
+ * "shape" over a plan that expired and "status" over a subscription that was
+ * never opened look identical. This field names WHAT TO DO instead, and it is
+ * assigned only from STRUCTURED signals an upstream states in machine-readable
+ * form (an HTTP status, an envelope field like `success: false` / MiniMax
+ * `base_resp.status_code`, or a declaration-table `refusalIf` predicate) —
+ * never from pattern-matching a human sentence, which cannot be done once
+ * without hardcoding prose per vendor in every language.
+ *
+ * `credential-rejected` a 401/403 (or an adapter's own key-rejected code):
+ *   check the key. `plan-inactive` the account states it holds no active plan /
+ *   subscription: renew or subscribe. `endpoint-gone` a 404 (or a body claiming
+ *   the path does not exist): the probe URL is stale, the provider changed its
+ *   API. `rate-limited` 429. `upstream-error` any other answer that failed.
+ *   `unreadable` an answer the probe could not parse into windows. `unreachable`
+ *   / `timeout` no answer at all. Absent when the attempt succeeded.
+ */
+export type QuotaFailureVerdict =
+  | 'credential-rejected'
+  | 'plan-inactive'
+  | 'endpoint-gone'
+  | 'rate-limited'
+  | 'upstream-error'
+  | 'unreadable'
+  | 'unreachable'
+  | 'timeout';
+
+/**
  * WHY the last attempt produced nothing — the honest answer to "covered, but
  * empty". Without it a pair whose upstream answers 401 (dead credential) or
  * a plan-level refusal (e.g. MiniMax `base_resp.status_code: 2062 "no active
@@ -101,10 +141,17 @@ export interface QuotaSnapshot {
  */
 export interface QuotaProbeFailure {
   /** Same closed vocabulary as `QuotaProbeOutcome.reason`. */
-  reason: 'network' | 'status' | 'shape' | 'auth';
+  reason: QuotaProbeFailureReason;
+  /** Account-level conclusion, assigned from structured signals only (see
+   *  `QuotaFailureVerdict`). Absent on records written by an older build. */
+  verdict?: QuotaFailureVerdict;
+  /** Envelope/native code the upstream stated, when it stated one (MiniMax
+   *  `base_resp.status_code: 2062`, an `error.code` string, …). Evidence only. */
+  upstreamCode?: string | number;
   /** HTTP status when a response existed (absent for a transport failure). */
   statusCode?: number;
-  /** Upstream's own words, collapsed to one line and length-bounded. */
+  /** Upstream's own words when a body came back, else the transport/credential
+   *  cause (`LastProbeCapture.detail`) — collapsed to one line, length-bounded. */
   message?: string;
   /** Epoch ms of this attempt. */
   at: number;
@@ -153,15 +200,33 @@ export interface QuotaFieldSpec {
 /**
  * Presence/equality gate (construct `where`): `exists` = path must resolve to
  * a non-null value; `eq` = strict equality against one literal; `in` =
- * membership in a literal list. Value comparison (<, >, regex, time deltas)
- * is a BANNED class — the loader never accepts such keys (unrepresentable by
- * this shape).
+ * membership in a literal list; `truthy` = the resolved value is a truthy
+ * boolean (`false` = absent, so a gate can test `success == true`). Value
+ * comparison (<, >, regex, time deltas) is a BANNED class — the loader never
+ * accepts such keys (unrepresentable by this shape).
  */
 export interface QuotaWhereSpec {
   path: string;
   exists?: boolean;
   eq?: string | number | boolean;
   in?: (string | number)[];
+  truthy?: boolean;
+}
+
+/**
+ * How a declaration says "this answer, though it arrived, means the ACCOUNT
+ * has no plan" — the declarative carrier for `plan-inactive`.
+ *
+ * The predicate is the ordinary `where` shape (path equality / membership /
+ * presence over the parsed body), so the vendor's own structured field is the
+ * evidence: Zhipu answers `{ code: 500, msg: "…", success: false }` with HTTP
+ * 200, and `success: false` is a machine-readable refusal — no prose, no
+ * regex, no per-language string matching. A code adapter states the same
+ * conclusion directly with `verdict: 'plan-inactive'`.
+ */
+export interface QuotaRefusalSpec {
+  /** Body predicate marking a plan-level refusal. */
+  where: QuotaWhereSpec;
 }
 
 /** Window/plan label resolution (construct nameTemplate + enumMap). */
@@ -241,6 +306,10 @@ export interface QuotaProbeEntry {
   headers?: Record<string, string>;
   /** Single-equality success gate against a body field (e.g. code == 0). */
   successIf?: QuotaWhereSpec;
+  /** Plan-level refusal predicate: when it matches the (status-OK) body the
+   *  probe fails with `verdict: 'plan-inactive'` — the account says it holds
+   *  no active plan, which is an OPERATOR action (renew), not a code fault. */
+  refusalIf?: QuotaRefusalSpec;
   windows: QuotaWindowsSpec;
   /** Cache window for the snapshot; loader clamps to [60 s, 24 h]. */
   cacheTtlMs?: number;
@@ -263,8 +332,16 @@ export interface LastProbeCapture {
   status?: number;
   ok: boolean;
   durationMs?: number;
-  /** Transport-level failure — no response at all. */
-  error?: 'network';
+  /** Transport-level failure — no response at all (`timeout` = ran out of clock). */
+  error?: 'network' | 'timeout';
+  /** One display line naming the CAUSE when there is no upstream body to read:
+   *  error class + message + the transport code parked on `cause` (`ENOTFOUND`,
+   *  `ECONNREFUSED`, an abort, a rejected token-exchange chain). Without it a
+   *  dead socket, a refused credential chain and a timed-out request all collapse
+   *  into the same bare `network` verdict, which the console can only label
+   *  "network failure" — the probe plane never discards the error text
+   *  (ADR-0009 never-silent). */
+  detail?: string;
   /** Parsed JSON body, or truncated raw text when not JSON / oversized. */
   body?: unknown;
 }
@@ -272,7 +349,15 @@ export interface LastProbeCapture {
 /** Engine-level probe outcome, kept separate from the breaker vocabulary. */
 export type QuotaProbeOutcome =
   | { ok: true; windows: QuotaWindow[]; plan?: string; http?: LastProbeCapture }
-  | { ok: false; reason: 'network' | 'status' | 'shape' | 'auth'; http?: LastProbeCapture };
+  | {
+      ok: false;
+      reason: QuotaProbeFailureReason;
+      /** Set by a code adapter that already knows the account conclusion from a
+       *  structured field it read itself (MiniMax `base_resp`); the DSL path
+       *  leaves it absent and `resolveVerdict` derives it. */
+      verdict?: QuotaFailureVerdict;
+      http?: LastProbeCapture;
+    };
 
 // ─── Built-in code adapters (L-c) ───────────────────────────────────────────
 
