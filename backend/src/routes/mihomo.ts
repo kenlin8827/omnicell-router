@@ -8,6 +8,7 @@
  */
 import crypto from 'node:crypto';
 import net from 'node:net';
+import type { ServerResponse } from 'node:http';
 import tls from 'node:tls';
 import type { FastifyInstance } from 'fastify';
 import { parse, stringify } from 'yaml';
@@ -33,6 +34,58 @@ import {
 } from '../proxy/mihomo-sidecar.js';
 import { DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_TEST_URL, MIHOMO_CN_DIRECT_RULES, MIHOMO_DELAY_TIMEOUT_MS, MIHOMO_LAN_DIRECT_RULES, MIHOMO_NODE_PROBE_TIMEOUT_MS } from '../config/defaults.js';
 import { PAC_PATH, buildPacScript } from '../proxy/mihomo-pac.js';
+
+/**
+ * Asset transfers the gateway is running right now, keyed by leg (`core`,
+ * `geo:machine`, `geo:node`). The console needs an explicit stop because a
+ * walk-away is INVISIBLE here: measured on Bun 1.3.14, a client that abandons a
+ * hijacked NDJSON response fires no `close` on the request, the response or the
+ * socket until the response ends, and a queued write callback never runs. So
+ * the only reliable stop signal is the console saying so (ADR-0022), and it has
+ * to reach the transfer it belongs to — never the other leg.
+ */
+const liveTransfers = new Map<string, AbortController>();
+
+/** NDJSON legs: one core install, one geo sync per egress leg. */
+const CORE_LEG = 'core';
+const geoTransferLeg = (leg: 'machine' | 'node'): string => `geo:${leg}`;
+
+/**
+ * One resumable asset transfer wired to one NDJSON response: the signal the
+ * engine downloads under, a `send` that stops writing once the socket is gone,
+ * and `finish` to end the response and unregister the leg. The `close` listener
+ * stays as a safety net for runtimes that do report a disconnect; it must skip a
+ * normal end (`writableEnded`) and abort WITH a reason, so a stop surfaces as a
+ * cancelled outcome instead of the engine's reasonless AbortError.
+ */
+function startAssetTransfer(raw: ServerResponse, leg: string): {
+  signal: AbortSignal;
+  send: (evt: Record<string, unknown>) => void;
+  finish: () => void;
+} {
+  let closed = false;
+  const abort = new AbortController();
+  liveTransfers.set(leg, abort);
+  raw.on('close', () => {
+    closed = true;
+    if (!raw.writableEnded) abort.abort(new Error('client disconnected'));
+  });
+  return {
+    signal: abort.signal,
+    send: (evt) => {
+      if (closed) return;
+      try {
+        raw.write(`${JSON.stringify(evt)}\n`);
+      } catch {
+        closed = true;
+      }
+    },
+    finish: () => {
+      liveTransfers.delete(leg);
+      if (!raw.writableEnded) raw.end();
+    },
+  };
+}
 
 function currentProxy(): ProxyConfig {
   return loadConfig().proxy ?? {};
@@ -253,37 +306,47 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     reply.hijack();
     const raw = reply.raw;
     raw.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
-    let closed = false;
-    raw.on('close', () => {
-      closed = true;
-    });
-    const send = (evt: Record<string, unknown>) => {
-      if (closed) return;
-      try {
-        raw.write(`${JSON.stringify(evt)}\n`);
-      } catch {
-        closed = true;
-      }
-    };
+    const t = startAssetTransfer(raw, CORE_LEG);
     let lastSent = 0;
     try {
       const result = await installMihomoBinary({
         version,
+        signal: t.signal,
         // Coalesce byte ticks: one event per 100ms is plenty for a progress bar
         // and keeps a fast link from flooding the socket.
         onProgress: (downloaded, total) => {
           const now = Date.now();
           if (now - lastSent < 100 && downloaded !== total) return;
           lastSent = now;
-          send({ type: 'progress', downloaded, total });
+          t.send({ type: 'progress', downloaded, total });
         },
       });
-      send({ type: 'result', status: result.ok ? 'ok' : 'error', ...result });
+      t.send({ type: 'result', status: result.ok ? 'ok' : 'error', ...result });
     } catch (err) {
+      // An abort (disconnect, or shutdown mid-transfer) is a cancelled download,
+      // not a mystery: the `.part` and its sidecar stay on disk, so the next
+      // click resumes. Reporting it as `download-aborted` keeps the console on
+      // the resume copy instead of leaking the engine's abort wording.
+      const aborted = t.signal.aborted;
       const message = err instanceof Error ? err.message : String(err);
-      send({ type: 'result', status: 'error', ok: false, code: 'install-failed', error: message });
+      t.send({ type: 'result', status: 'error', ok: false, code: aborted ? 'download-aborted' : 'install-failed', error: aborted ? 'download cancelled' : message });
     }
-    raw.end();
+    t.finish();
+  });
+
+  // Stop a transfer the operator walked away from. The console calls this when
+  // it cancels or leaves the page (keepalive fetch) — see `liveTransfers` for
+  // why a disconnect cannot be detected from the socket here. The abort carries
+  // a reason so the engine reports `download-aborted`, and the `.part` plus its
+  // sidecar stay on disk: the next click resumes from the bytes it has.
+  app.post('/api/admin/proxy/mihomo/transfers/cancel', async (req) => {
+    const leg = typeof (req.body as { leg?: unknown } | null)?.leg === 'string'
+      ? (req.body as { leg: string }).leg
+      : '';
+    const controller = liveTransfers.get(leg);
+    if (!controller) return { status: 'ok', cancelled: false };
+    controller.abort(new Error('cancelled by the console'));
+    return { status: 'ok', cancelled: true };
   });
 
   // The rule table the RUNNING core reports: the console shows what is in
@@ -336,18 +399,7 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
     reply.hijack();
     const raw = reply.raw;
     raw.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
-    let closed = false;
-    raw.on('close', () => {
-      closed = true;
-    });
-    const send = (evt: Record<string, unknown>) => {
-      if (closed) return;
-      try {
-        raw.write(`${JSON.stringify(evt)}\n`);
-      } catch {
-        closed = true;
-      }
-    };
+    const t = startAssetTransfer(raw, geoTransferLeg(leg));
     let lastSent = 0;
     try {
       const dir = mihomoWorkDir();
@@ -357,8 +409,8 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
         // proof the mixed port is listening, so ask the live status.
         const status = await getMihomoStatus();
         if (!status.running) {
-          send({ type: 'result', status: 'error', ok: false, code: 'not-running', present: false, files: geoReport(dir).files });
-          raw.end();
+          t.send({ type: 'result', status: 'error', ok: false, code: 'not-running', present: false, files: geoReport(dir).files });
+          t.finish();
           return;
         }
         fetchImpl = await geoFetchForLeg('node', { mixedPort: currentProxy().mihomo?.mixedPort ?? DEFAULT_MIHOMO_MIXED_PORT });
@@ -368,21 +420,23 @@ export function registerMihomoRoutes(app: FastifyInstance): void {
       const result = await downloadMihomoGeoAssets(dir, {
         fetchImpl,
         refresh,
+        signal: t.signal,
         // One event per 100ms is plenty for a progress bar and keeps a fast
         // link from flooding the socket.
         onProgress: (file, downloaded, total) => {
           const now = Date.now();
           if (now - lastSent < 100 && downloaded !== total) return;
           lastSent = now;
-          send({ type: 'progress', file, downloaded, total });
+          t.send({ type: 'progress', file, downloaded, total });
         },
       });
-      send({ type: 'result', status: result.ok ? 'ok' : 'error', ...result });
+      t.send({ type: 'result', status: result.ok ? 'ok' : 'error', ...result });
     } catch (err) {
+      const aborted = t.signal.aborted;
       const message = err instanceof Error ? err.message : String(err);
-      send({ type: 'result', status: 'error', ok: false, code: 'geo-download-failed', error: message, present: geoAssetsPresent(mihomoWorkDir()), files: geoReport(mihomoWorkDir()).files });
+      t.send({ type: 'result', status: 'error', ok: false, code: aborted ? 'download-aborted' : 'geo-download-failed', error: aborted ? 'download cancelled' : message, present: geoAssetsPresent(mihomoWorkDir()), files: geoReport(mihomoWorkDir()).files });
     }
-    raw.end();
+    t.finish();
   });
 
   // Operator-authored rules. The body is the WHOLE ordered list: this is a rule

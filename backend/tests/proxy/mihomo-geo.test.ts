@@ -4,6 +4,7 @@
  * it has to fetch them itself and the fetch fails.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -113,13 +114,14 @@ describe('mihomo geo databases', () => {
     expect(result.ok).toBe(true);
     expect(result.present).toBe(true);
     // Only the missing file was fetched — a retry after a partial failure must
-    // not re-download a working copy.
-    expect(requested).toEqual([MIHOMO_GEO_ASSETS[1].url]);
+    // not re-download a working copy (the digest probe is the sibling request).
+    expect(requested.filter((url) => !url.endsWith('.sha256sum'))).toEqual([MIHOMO_GEO_ASSETS[1].url]);
     expect(fs.readFileSync(path.join(dir, 'geoip.metadb'), 'utf8')).toBe('already-here');
     expect(fs.readFileSync(path.join(dir, 'GeoSite.dat')).length).toBe(5);
     expect(progress).toContainEqual(['geosite', 5, 5]);
-    // The temporary download file never survives the rename.
-    expect(fs.existsSync(path.join(dir, 'GeoSite.dat.download'))).toBe(false);
+    // Neither the staging file nor its sidecar survives the rename.
+    expect(fs.existsSync(path.join(dir, 'GeoSite.dat.part'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'GeoSite.dat.part.json'))).toBe(false);
   });
 
   test('a failed download keeps the files that already exist', async () => {
@@ -146,11 +148,17 @@ describe('mihomo geo databases', () => {
 
     const result = await downloadMihomoGeoAssets(dir, { fetchImpl, refresh: true });
     expect(result.ok).toBe(true);
-    expect(requested).toHaveLength(2);
+    // Both databases re-fetched (the digest probe rides beside each one).
+    expect(requested.filter((url) => !url.endsWith('.sha256sum'))).toHaveLength(2);
     expect(fs.readFileSync(path.join(dir, 'geoip.metadb'), 'utf8')).toBe('new');
 
     // The operator's "sync" must never trade a working copy for a broken one.
-    const failing = (() => Promise.resolve(new Response('nope', { status: 503 }))) as unknown as typeof fetch;
+    // The sync that fails must still leave the working copies alone.
+    const failing = ((url: string) => Promise.resolve(
+      String(url).endsWith('.sha256sum')
+        ? new Response('nope', { status: 503 })
+        : new Response('nope', { status: 503 }),
+    )) as unknown as typeof fetch;
     const failed = await downloadMihomoGeoAssets(dir, { fetchImpl: failing, refresh: true });
     expect(failed.ok).toBe(false);
     expect(fs.readFileSync(path.join(dir, 'geoip.metadb'), 'utf8')).toBe('new');
@@ -168,10 +176,87 @@ describe('mihomo geo databases', () => {
   test('a body past the 64MB cap is refused instead of buffered', async () => {
     const dir = tempDir();
     const oversize = new Uint8Array(64 * 1024 * 1024 + 1);
-    const fetchImpl = (() => Promise.resolve(new Response(oversize, { status: 200 }))) as unknown as typeof fetch;
+    const fetchImpl = ((url: string) => Promise.resolve(
+      String(url).endsWith('.sha256sum')
+        ? new Response('no digest here', { status: 404 })
+        : new Response(oversize, { status: 200 }),
+    )) as unknown as typeof fetch;
     const result = await downloadMihomoGeoAssets(dir, { fetchImpl });
     expect(result.ok).toBe(false);
     expect(result.code).toBe('geo-download-too-large');
     expect(fs.existsSync(path.join(dir, 'geoip.metadb'))).toBe(false);
+  });
+  test('geo bytes are checked against the published digest, and an interrupted transfer resumes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-mihomo-geo-rs-'));
+    const asset = MIHOMO_GEO_ASSETS[0];
+    const body = new Uint8Array(2500).fill(7);
+    const digest = crypto.createHash('sha256').update(body).digest('hex');
+    const half = 1000;
+    const requested: Array<{ url: string; range: string | null }> = [];
+    let assetPasses = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const range = new Headers(init?.headers).get('range');
+      requested.push({ url: u, range });
+      if (u.endsWith('.sha256sum')) return new Response(`${digest}  ${asset.file}\n`, { status: 200 });
+      if (range) {
+        const from = Number(/bytes=(\d+)-/.exec(range)![1]);
+        return new Response(body.subarray(from), {
+          status: 206,
+          headers: {
+            'content-range': `bytes ${from}-${body.length - 1}/${body.length}`,
+            'content-length': String(body.length - from),
+            etag: '"geo-etag"',
+          },
+        });
+      }
+      // First pass: the host announces the whole database and stops halfway —
+      // the reported 503 / connection-reset shape.
+      if (u === asset.url && ++assetPasses === 1) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(body.subarray(0, half));
+            c.close();
+          },
+        }), { status: 200, headers: { 'content-length': String(body.length), etag: '"geo-etag"' } });
+      }
+      return new Response(body, { status: 200, headers: { etag: '"geo-etag"' } });
+    }) as unknown as typeof fetch;
+
+    const firstTicks: number[] = [];
+    const secondTicks: number[] = [];
+    const first = await downloadMihomoGeoAssets(dir, { fetchImpl, onProgress: (_file, downloaded) => { firstTicks.push(downloaded); } });
+    expect(first.ok).toBe(false);
+    expect(first.code).toBe('geo-download-failed');
+    // The prefix stays, with the validators that make resuming it safe.
+    expect(fs.readFileSync(path.join(dir, `${asset.file}.part`)).length).toBe(half);
+
+    const second = await downloadMihomoGeoAssets(dir, { fetchImpl, onProgress: (_file, downloaded) => { secondTicks.push(downloaded); } });
+    expect(second.ok).toBe(true);
+    expect(second.present).toBe(true);
+    // Exactly one range request, opened where the operator stopped reading — and
+    // the digest probe ran beside each asset, so the bytes came from the publisher.
+    expect(requested.filter((r) => r.range).map((r) => r.range)).toEqual([`bytes=${half}-`]);
+    // Resumed bytes are counted as bytes already had: the bar carries on from the
+    // prefix instead of starting over at zero.
+    expect(firstTicks[firstTicks.length - 1]).toBe(half);
+    expect(secondTicks[0]).toBeGreaterThanOrEqual(half);
+    expect(secondTicks[secondTicks.length - 1]).toBe(body.length);
+    expect(fs.readFileSync(path.join(dir, asset.file)).length).toBe(body.length);
+    expect(fs.existsSync(path.join(dir, `${asset.file}.part`))).toBe(false);
+    expect(fs.existsSync(path.join(dir, `${asset.file}.part.json`))).toBe(false);
+
+    // The probe result is consumed, not fetched for show: a published digest
+    // that does not match is refused, and the good database stays in place.
+    const poisoned = (async (url: string, init?: RequestInit) =>
+      String(url).endsWith('.sha256sum')
+        ? new Response(`${'0'.repeat(64)}  ${asset.file}
+`, { status: 200 })
+        : fetchImpl(url, init)) as unknown as typeof fetch;
+    const third = await downloadMihomoGeoAssets(dir, { fetchImpl: poisoned, refresh: true });
+    expect(third.ok).toBe(false);
+    expect(third.code).toBe('checksum-failed');
+    expect(fs.readFileSync(path.join(dir, asset.file)).length).toBe(body.length);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

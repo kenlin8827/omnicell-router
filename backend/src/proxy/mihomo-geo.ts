@@ -12,6 +12,9 @@
  * (the generated config leaves `geo-auto-update` off). Refreshing is an
  * operator action with two egress legs: the machine's own network (OS system
  * proxy when one is enabled, bypass list honoured) or the Clash node itself.
+ * Each asset streams through the shared resumable downloader
+ * (`proxy/asset-download.ts`), so an interrupted 8 MB database continues on the
+ * next click instead of starting from zero.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,11 +24,18 @@ import type { OsProxyEndpoint } from '../forward-proxy/system-proxy.js';
 import { osProxyBypasses, readOsProxyEndpoint } from '../forward-proxy/system-proxy.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { fetchViaProxy } from '../utils/proxy.js';
+import { assetPartPaths, cleanupAssetPart, downloadAssetToFile, parseAssetDigest, withAssetLock } from './asset-download.js';
 
 /** Release host shared with the binary installer (MetaCubeX publishes both). */
 const GEO_DOWNLOAD_BASE = 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest';
 const MAX_GEO_BYTES = 64 * 1024 * 1024;
 const USER_AGENT = 'omnicell-router';
+
+/** MetaDB/GeoSite release host: `…/latest/geoip.metadb.sha256sum` is a
+ * ~70-byte text file beside each database. The published digest comes from the
+ * same host as the database itself, so verification costs no API quota and
+ * stays as fresh as the asset. */
+const SHA256SUM_SUFFIX = '.sha256sum';
 
 export const MIHOMO_GEO_ASSETS = [
   // mihomo's default `geoip.metadb` (mmdb mode) — what `GEOIP` reads.
@@ -155,8 +165,13 @@ export interface DownloadMihomoGeoOptions {
    *  it a present file is kept, so a retry after a partial failure only
    *  fetches the missing one. */
   refresh?: boolean;
-  /** Per-file byte progress; `total` is 0 when the host sends no Content-Length. */
+  /** Per-file byte progress of the WHOLE asset (resumed prefix included);
+   *  `total` is 0 when the host sends no Content-Length. */
   onProgress?: (file: MihomoGeoKey, downloaded: number, total: number) => void;
+  /** Cancels the transfer. The bytes written so far are kept for the next
+   *  attempt, so closing the console tab pauses a geo sync rather than
+   *  discarding it. */
+  signal?: AbortSignal;
 }
 
 export interface DownloadMihomoGeoResult {
@@ -167,69 +182,82 @@ export interface DownloadMihomoGeoResult {
   code?: string;
 }
 
+/**
+ * The digest MetaCubeX publishes for one asset, or undefined when the host
+ * would not give one. Best-effort by design: a refused `.sha256sum` costs the
+ * verification, never the download — the operator still gets the database, and
+ * the transfer is still resumable from the recorded ETag.
+ */
+async function resolveAssetDigest(
+  fetchImpl: typeof fetch,
+  url: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    const res = await fetchImpl(`${url}${SHA256SUM_SUFFIX}`, { headers, ...(signal ? { signal } : {}) });
+    if (!res.ok) return undefined;
+    return parseAssetDigest((await res.text()).trim().split(/\s+/)[0]);
+  } catch {
+    return undefined;
+  }
+}
+
 async function fetchAsset(
   asset: typeof MIHOMO_GEO_ASSETS[number],
   dir: string,
   fetchImpl: typeof fetch,
   onProgress?: DownloadMihomoGeoOptions['onProgress'],
+  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; code: string; error: string }> {
-  let res: Response;
-  try {
-    res = await fetchImpl(asset.url, { headers: { 'User-Agent': USER_AGENT, Accept: 'application/octet-stream' } });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'network error';
-    return { ok: false, code: 'geo-download-failed', error: `geo data download failed (${message})` };
-  }
-  if (!res.ok) {
-    return { ok: false, code: 'geo-download-failed', error: `geo data download failed (${res.status})` };
-  }
-  const total = Number(res.headers.get('content-length') ?? '') || 0;
-  let bytes: Buffer;
-  try {
-    if (!res.body) {
-      bytes = Buffer.from(await res.arrayBuffer());
-      onProgress?.(asset.key, bytes.length, total || bytes.length);
-    } else {
-      const reader = res.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let downloaded = 0;
-      let lastReport = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        chunks.push(value);
-        downloaded += value.byteLength;
-        if (downloaded > MAX_GEO_BYTES) {
-          await reader.cancel().catch(() => undefined);
-          return { ok: false, code: 'geo-download-too-large', error: 'geo data download exceeded 64MB' };
-        }
-        const now = Date.now();
-        if (now - lastReport >= 100) {
-          lastReport = now;
-          onProgress?.(asset.key, downloaded, total);
-        }
-      }
-      bytes = Buffer.concat(chunks);
-      onProgress?.(asset.key, downloaded, total || downloaded);
+  const dest = path.join(dir, asset.file);
+  const { partPath } = assetPartPaths(dest);
+  const headers = { 'User-Agent': USER_AGENT, Accept: 'text/plain' };
+  const digest = await resolveAssetDigest(fetchImpl, asset.url, headers, signal);
+  const downloaded = await downloadAssetToFile({
+    url: asset.url,
+    partPath,
+    fetchImpl,
+    maxBytes: MAX_GEO_BYTES,
+    ...(digest ? { sha256: digest } : {}),
+    headers: { 'User-Agent': USER_AGENT },
+    ...(signal ? { signal } : {}),
+    ...(onProgress ? { onProgress: (bytes, total) => onProgress(asset.key, bytes, total) } : {}),
+  });
+  if (!downloaded.ok) {
+    if (downloaded.code === 'download-too-large') {
+      return { ok: false, code: 'geo-download-too-large', error: 'geo data download exceeded 64MB' };
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'download interrupted';
-    return { ok: false, code: 'geo-download-failed', error: `geo data download failed (${message})` };
+    if (downloaded.code === 'write-failed') {
+      const message = downloaded.error.includes('(') ? downloaded.error : `(${downloaded.error})`;
+      return { ok: false, code: 'geo-download-failed', error: `could not write ${asset.file} ${message}` };
+    }
+    if (downloaded.code === 'checksum-failed') {
+      // Distinct from a network failure: the host served a file that is not the
+      // published database, so retrying cannot help until upstream is fixed.
+      return { ok: false, code: 'checksum-failed', error: `${asset.file} did not match the published digest` };
+    }
+    // A cancelled or truncated transfer keeps its `.part`: the next sync picks up
+    // where this one stopped. Every other failure already destroyed the part.
+    return { ok: false, code: 'geo-download-failed', error: downloaded.error };
   }
-  if (bytes.length === 0) {
-    return { ok: false, code: 'geo-download-failed', error: `geo data download was empty (${asset.file})` };
-  }
+
+  // The verified bytes already sit in the staging file, so the install is the
+  // rename alone: they are never copied back through memory, and the database
+  // mihomo parses is never a half-written one.
   try {
-    // mihomo parses these on start; a torn file fails the whole config.
-    const dest = path.join(dir, asset.file);
-    const tmp = `${dest}.download`;
-    fs.writeFileSync(tmp, bytes);
-    renameWithRetry(tmp, dest);
+    if (fs.statSync(partPath).size === 0) {
+      cleanupAssetPart(partPath);
+      return { ok: false, code: 'geo-download-failed', error: `geo data download was empty (${asset.file})` };
+    }
+    renameWithRetry(partPath, dest);
   } catch (err) {
+    cleanupAssetPart(partPath);
     const message = err instanceof Error ? err.message : 'write failed';
-    return { ok: false, code: 'geo-download-failed', error: `could not write ${asset.file} (${message})` };
+    return { ok: false, code: 'geo-download-failed', error: `could not install ${asset.file} (${message})` };
   }
+  // The part is gone with the rename; this clears its sidecar.
+  cleanupAssetPart(partPath);
   return { ok: true };
 }
 
@@ -237,7 +265,8 @@ async function fetchAsset(
  * Install the geo databases into the core's work directory. Existing non-empty
  * files are kept unless `refresh` asks for replacement (a retry after a partial
  * failure only fetches the missing one); a file that fails to download or write
- * never replaces a working copy — the new bytes land in a temp file first.
+ * never replaces a working copy. Each asset is one critical section (ADR-0022):
+ * a second click waits instead of writing the same part file underneath it.
  */
 export async function downloadMihomoGeoAssets(
   dir: string,
@@ -247,7 +276,7 @@ export async function downloadMihomoGeoAssets(
   fs.mkdirSync(dir, { recursive: true });
   for (const asset of MIHOMO_GEO_ASSETS) {
     if (!opts.refresh && fileInfo(dir, asset).exists) continue;
-    const outcome = await fetchAsset(asset, dir, fetchImpl, opts.onProgress);
+    const outcome = await withAssetLock(path.join(dir, asset.file), () => fetchAsset(asset, dir, fetchImpl, opts.onProgress, opts.signal));
     if (!outcome.ok) {
       return { ok: false, present: geoAssetsPresent(dir), files: geoReport(dir).files, code: outcome.code, error: outcome.error };
     }

@@ -1954,6 +1954,10 @@ export interface InstallMihomoResult {
   version?: string;
   error?: string;
   code?: string;
+  /** Bytes reused from an interrupted transfer instead of refetched. */
+  resumedFrom?: number;
+  /** True when the downloaded asset matched the publisher's checksum. */
+  verified?: boolean;
 }
 
 export interface MihomoProxyGroup {
@@ -3056,12 +3060,13 @@ export const api = {
    */
   async downloadMihomoGeo(
     leg: MihomoGeoLeg,
-    opts: { refresh?: boolean; onProgress?: (file: string, downloaded: number, total: number) => void } = {},
+    opts: { refresh?: boolean; onProgress?: (file: string, downloaded: number, total: number) => void; signal?: AbortSignal } = {},
   ): Promise<MihomoGeoDownloadResult> {
     const res = await fetch('/api/admin/proxy/mihomo/geo', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ leg, refresh: opts.refresh === true }),
+      signal: opts.signal,
     });
     const contentType = res.headers.get('content-type') || '';
     if (!res.body || !contentType.includes('ndjson')) {
@@ -3103,12 +3108,33 @@ export const api = {
   },
 
   /**
+   * Stop a transfer the operator abandoned (`core`, `geo:machine`, `geo:node`).
+   * A walk-away fires no event the gateway can observe, so this call IS the stop
+   * signal (ADR-0022); the bytes already fetched stay staged and the next click
+   * resumes. `keepalive` lets it outlive the page during unmount, and a failure
+   * to deliver it is best-effort: the transfer simply finishes as before.
+   */
+  async cancelMihomoTransfer(leg: string): Promise<{ status: string; cancelled: boolean }> {
+    const res = await fetch('/api/admin/proxy/mihomo/transfers/cancel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ leg }),
+      keepalive: true,
+    }).catch(() => null);
+    if (!res) return { status: 'ok', cancelled: false };
+    return (await res.json().catch(() => null)) ?? { status: 'ok', cancelled: false };
+  },
+
+  /**
    * Install/update the mihomo core binary. The server answers NDJSON because the
    * download is tens of MB: `progress` events carry (downloaded, total) bytes and
    * exactly one `result` carries the install outcome (total 0 = unknown size).
    */
-  async installMihomo(onProgress?: (downloaded: number, total: number) => void): Promise<InstallMihomoResult> {
-    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  async installMihomo(
+    onProgress?: (downloaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<InstallMihomoResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal });
     const contentType = res.headers.get('content-type') || '';
     if (!res.body || !contentType.includes('ndjson')) return res.json();
     let out: InstallMihomoResult | null = null;
@@ -5764,15 +5790,38 @@ export interface LastProbeCapture {
   status?: number;
   ok: boolean;
   durationMs?: number;
-  error?: 'network';
+  error?: 'network' | 'timeout';
+  /** Mirror of backend `LastProbeCapture.detail`: one line naming the cause
+   *  when no upstream body exists (transport throw / rejected credential
+   *  chain), so the dialog never shows a bare "network failure". */
+  detail?: string;
   body?: unknown;
 }
 
 /** Why the last probe attempt produced nothing — mirrors backend
  *  `QuotaProbeFailure`. Display-safe: reason + HTTP status + the upstream's own
  *  short message (never headers, never key material). */
+/** Closed verdict vocabulary — mirrors backend `QuotaFailureVerdict`. Assigned
+ *  server-side from STRUCTURED signals (HTTP status, envelope codes such as
+ *  MiniMax `base_resp.status_code`, a declaration-table `refusalIf`), never
+ *  from matching the upstream's sentence. */
+export type QuotaFailureVerdict =
+  | 'credential-rejected'
+  | 'plan-inactive'
+  | 'endpoint-gone'
+  | 'rate-limited'
+  | 'upstream-error'
+  | 'unreadable'
+  | 'unreachable'
+  | 'timeout';
+
 export interface QuotaProbeFailure {
-  reason: 'network' | 'status' | 'shape' | 'auth';
+  reason: 'network' | 'timeout' | 'status' | 'shape' | 'auth';
+  /** Account-level conclusion the console translates; absent on records written
+   *  by a build that predates it. */
+  verdict?: QuotaFailureVerdict;
+  /** Upstream's own code when it stated one (evidence only, never a gate). */
+  upstreamCode?: string | number;
   statusCode?: number;
   message?: string;
   at: number;

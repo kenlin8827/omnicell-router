@@ -4,7 +4,8 @@
 状态: 已接受
 约束: `backend/src/config/types.ts`（`ProxyConfig`）、`backend/src/utils/proxy.ts`、
 `backend/src/utils/proxy-node.ts`、`backend/src/proxy/mihomo-*.ts`、
-`backend/src/routes/mihomo.ts`、`frontend/src/pages/ProxyPage.tsx`。
+`backend/src/proxy/asset-download.ts`、`backend/src/routes/mihomo.ts`、
+`frontend/src/pages/ProxyPage.tsx`、`frontend/src/pages/MihomoPage.tsx`。
 
 ## 背景
 
@@ -124,3 +125,21 @@ ADR-0018 的前向代理出口仍然只回答「走不走出站代理」，也�
 > `POST /api/admin/proxy/mihomo/geo` 接受 `leg: 'machine' | 'node'`（缺省 `machine`；其它任何值都是 400，绝不悄悄回落）与 `refresh: boolean`。本机腿是默认，因为它总能作答：系统代理启用时就走系统代理（与测通本机腿同一对 `readOsProxyEndpoint` + `osProxyBypasses`，按 URL 逐一判断，重定向到 `objects.githubusercontent.com` 时按它自己的主机判断绕过），否则直连——核心没跑也能用。节点腿走混合端口，因此只要真的会发生下载就要求核心**正在运行**（`getMihomoStatus`，而不是仅凭配置了控制器）；核心没跑时路由在发出任何下载请求之前就返回 `not-running`。有一个取舍直说而不藏：本运行时上的直连下载仍然会遵循环境变量里的 `HTTP_PROXY` / `HTTPS_PROXY`，与本进程里其它 `fetch` 完全一致。系统代理才是这条腿的定义，环境变量只是启动残留。
 >
 > 「同步」意味着**替换**：`refresh: true` 时即使文件已在也重下两个文件，各自先写临时文件再改名覆盖，刷新失败保留可用的旧文件——操作者的同步绝不拿可用的数据库换一个坏的。不带 `refresh` 时，已存在的非空文件被跳过；这正是国内预设走的方式（只补缺的，不重拉已有的）。
+
+> **修正——下载中断可以续传，字节要被校验。** 两处下载都是从 GitHub 拉数十 MB，而这条链路上中途 503、连接重置是常态；从前失败即整段作废：下一次点击从零重拉，发起它的那个控制台页签还在后台继续下载，因为没有任何东西观察到操作者已经离开。规则还各写各的——二进制用 `.download` 暂存且完全不校验，地理数据库只有上限与改名。
+>
+> `proxy/asset-download.ts`（`assetPartPaths`、`downloadAssetToFile`、`cleanupAssetPart`、`withAssetLock`、`parseAssetDigest`、`AssetSidecar`）把一个资源的传输收在一处，规则只说一遍。暂存文件是 `<target>.part`，旁边的 sidecar `<target>.part.json` 记 `{ url, etag, lastModified, sha256?, size, savedAt }`——分段与让它得以安全续传的验证符同行，绝不单独留下其一。只有在 sidecar 未超过分段保留期（24 小时）、指向同一个 URL、且至少带一个响应原样回送的实体验证符时，才发出 `Range: bytes=<size>-`；刻意不用 `If-Range`，比较在代码里明写。206 的 `Content-Range` 总长与记录值不符 ⇒ 分段作废、从零重来；总数一致的 416 是主机在说「你已经有了」⇒ 从磁盘重走校验。字节进度按 `size + written` 计，续传条从操作者离开的位置开始走。
+>
+> 校验锚在发布方，绝不是拿同一份响应自证一致。mihomo 的 release API 为了定版本本来就要回资源清单，每项自带 `digest`，因此校验二进制不多花一次请求；meta-rules-dat 在数据库旁边发布 `geoip.metadb.sha256sum`，地理侧尽力取那个同目录兄弟文件。主机不给摘要时退化为实体验证符，绝不停下下载；摘要对不上时分段销毁并回 `checksum-failed`——重试救不了，所以控制台说出是哪个文件、什么原因，而不是一句「安装失败」。
+>
+> 失败保留分段，因为下一次点击会接着传。例外——超出体积上限、写盘失败、校验不符、sidecar 过期或不匹配、显式重新同步、以及一个字节都没落盘的取消——各自删除分段，坏分段绝不让调用方陷入死循环；下载校验都过却解不开包的资源由调用方同样销毁。`installMihomoBinary` 因此先写入校验通过的压缩字节，再在 `withAssetLock(<part>)` **之内**解包，两段一起串行：从前两个页签会交错写同一个目标，并把撕坏的文件改名就位。
+>
+> 取消是穿透的，而且是**显式**的。`signal` 沿 `api.installMihomo` / `api.downloadMihomoGeo` → NDJSON 路由 → `installMihomoBinary` / `downloadMihomoGeoAssets` → `downloadAssetToFile`。做不到的是察觉操作者离开：在 Bun 1.3.14 加 Fastify 5 上实测，客户端丢下一个被 hijack 的 NDJSON 响应不管怎么表现——不关 socket、reader 被后台页签冻住、只隐藏不卸载——请求、响应、socket 三者的 `close` 在响应自然结束之前一个都不会触发，排在已接受但没人读的 body 后面的 `write()` 回调同样永不执行。于是只被隐藏的页签留下一段下载在无人接收地继续跑，下一次点击也接不上它的位。路由把在途的 controller 记在按腿命名的登记表里（`liveTransfers`，键为 `core`、`geo:machine`、`geo:node`，传输开始登记、handler 结束销账），并暴露 `POST /api/admin/proxy/mihomo/transfers/cancel { leg }`：一次调用只 abort 那一条腿，腿不在跑就回 `cancelled: false`——键写错或者早已过期，是无操作，不是报错。MihomoPage 在操作者按取消、以及页面卸载时调用它，卸载那一次带 `keepalive: true`，因为后台页签的 reader 会被冻结，页面自己的流 promise 就不是可靠的离开信号。同一条腿上的第二次点击会先等这次 cancel 被确认、再交出新 signal——等待是有上限的，确认悬住只是让同一个资源锁短暂重叠，不至于把按钮卡死；卸载那一次是发了就不管，因为组件已经不在了。`raw.on('close')` 保留，作为真会上报断开运行的兜底：它必须跳过正常结束（`writableEnded`——干净的 `raw.end()` 同样触发 `close`），并且带原因 abort。
+>
+> 停下来的字节必须活下来，否则续传就是假话。传输被中途切断时写盘队列是 flush（`end()`）而不是丢弃：实测带着缓冲字节 destroy 一个写流，只留下 0 字节的 `.part`，取消后重新点击反而整段重拉。一个字节都没落盘的分段不留 sidecar——孤零零的验证符会让从零重来看起来像续传。
+
+> 取消是**结果**，不是失败，而且只属于一条腿。每个 `abort()` 都带原因：路由以 `client disconnected` abort，页面说出自己的原因（`<leg> download cancelled by the operator`、`page closed during the <leg> download`）；页面按腿各持一个 controller（`useTransferAbort`），所以点 Geo 同步再也打不断正在跑的核心安装。不带原因的 `abort()` 正是那句引擎原文 "signal is aborted without reason" 被包成笼统"操作失败"的来源。两条 abort 路径都回 `download-aborted`，控制台按"传输已中断、下次点击接着传"渲染；路由的 catch 把 `signal.aborted` 映射到同一个 code 而不是 `install-failed`；流 promise 以 abort 拒绝时什么都不弹。
+>
+> 新代码沿用既有结果形状：`download-incomplete`、`download-aborted`、`checksum-failed`（两腿同一个码——字节栽在同一条检验上），安装结果另加 `resumedFrom` / `verified`。
+
+`.download` 作为**传输暂存名**退役：再没有东西往它里面下载，地理腿直接把校验过的 `.part` 改名就位，数据库因此不再回读进内存。它在另一处换了含义继续存在——安装路径把**解开后**的可执行文件写到那里再做最后一次改名，因为那些字节与 `.part` 里装的压缩包本就不是同一样东西。地理腿旧文里「各自先写临时文件再改名覆盖」的说法由这句替换：`refresh: true` 依然不会拿可用的数据库换一个坏的。

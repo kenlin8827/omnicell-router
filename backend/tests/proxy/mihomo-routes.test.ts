@@ -13,7 +13,7 @@ import { mihomoWorkDir, setMihomoSidecarDepsForTests } from '../../src/proxy/mih
 import zlib from 'node:zlib';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { mihomoAssetName } from '../../src/proxy/mihomo-binary.js';
+import { defaultMihomoBinaryPath, mihomoAssetName } from '../../src/proxy/mihomo-binary.js';
 
 describe('mihomo admin routes', () => {
   const SECRET = 'route-secret-value';
@@ -556,6 +556,147 @@ describe('mihomo admin routes', () => {
     const result = events.find((evt) => evt.type === 'result') as { ok?: boolean; version?: string } | undefined;
     expect(result?.ok).toBe(true);
     expect(result?.version).toBe('v1.2.3');
+  });
+
+  // The regression this locks: a cancel used to be invisible to the gateway (no
+  // disconnect event reaches a hijacked reply on this runtime) and reasonless
+  // when it did arrive, so the engine kept downloading to nobody behind the next
+  // click, and the operator saw a failure toast with engine text instead of a
+  // paused transfer. Stopping is now an explicit, per-leg call, and the staged
+  // bytes survive it (ADR-0022).
+  test('install: cancelling the leg stops the engine with a reason, reports an outcome, keeps the partial file', async () => {
+    const asset = mihomoAssetName(process.platform, process.arch, 'v1.2.3');
+    expect(asset).not.toBeNull();
+    let transferSignal: AbortSignal | undefined;
+    let pushed = 0;
+    let abandoned = false;
+    const chunk = new Uint8Array(8 * 1024);
+    setMihomoDownloadFetchForTests((async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/releases/')) {
+        return new Response(JSON.stringify({
+          tag_name: 'v1.2.3',
+          assets: [{ name: asset!.name, browser_download_url: 'https://example.test/mihomo.bin' }],
+        }));
+      }
+      transferSignal = init?.signal ?? undefined;
+      // Trickles forever with real validators: the transfer is still moving when
+      // the cancel lands, exactly as it would be if the operator walked away.
+      const body = new ReadableStream<Uint8Array>({
+        pull(stream) {
+          return new Promise<void>((resolve) => {
+            setTimeout(() => {
+              if (abandoned || pushed++ > 2000) {
+                try { stream.close(); } catch { /* the engine cancelled the body */ }
+                resolve();
+                return;
+              }
+              try {
+                stream.enqueue(chunk);
+              } catch {
+                abandoned = true;
+              }
+              resolve();
+            }, 1);
+          });
+        },
+      });
+      return new Response(body, {
+        headers: {
+          etag: '"mihomo-part-1"',
+          'last-modified': new Date(Date.UTC(2026, 0, 1)).toUTCString(),
+        },
+      });
+    }) as typeof fetch);
+
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const livePort = (app.server.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${livePort}/api/admin/proxy/mihomo`;
+    const dec = new TextDecoder();
+    /** NDJSON frames off one live stream, until the predicate matches. Spelled
+     *  with a newline constant instead of an escape so the fixture stays
+     *  copy-safe across line endings. */
+    async function readFrames(
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      done: (frame: Record<string, unknown>) => boolean,
+      limit = 400,
+    ): Promise<Record<string, unknown> | null> {
+      const NL = String.fromCharCode(10);
+      let buf = '';
+      for (let i = 0; i < limit; i++) {
+        const { value, done: ended } = await reader.read();
+        if (value) buf += dec.decode(value, { stream: true });
+        const parts = buf.split(NL);
+        buf = parts.pop() ?? '';
+        for (const part of parts) {
+          const text = part.trim();
+          if (!text) continue;
+          const frame = JSON.parse(text) as Record<string, unknown>;
+          if (done(frame)) return frame;
+        }
+        if (ended) return null;
+      }
+      return null;
+    }
+    const cancel = async (leg: string): Promise<boolean> => {
+      const r = await fetch(`${base}/transfers/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ leg }),
+      });
+      return ((await r.json()) as { cancelled: boolean }).cancelled;
+    };
+
+    // The client keeps the stream OPEN and reads slowly: nothing about this
+    // socket tells the gateway the operator is done, so the cancel call is the
+    // only signal that can work here.
+    const res = await fetch(`${base}/install`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    expect(await readFrames(reader, (f) => f.type === 'progress')).toBeTruthy();
+
+    // One leg only: the geo key matches nothing while a core install runs.
+    expect(await cancel('geo:node')).toBe(false);
+    expect(transferSignal?.aborted).toBe(false);
+
+    expect(await cancel('core')).toBe(true);
+    const result = await readFrames(reader, (f) => f.type === 'result');
+    // The engine saw OUR reason, and the route reported a cancelled download
+    // rather than an install failure.
+    expect(String(transferSignal?.reason)).toContain('cancelled by the console');
+    expect(result?.code).toBe('download-aborted');
+    // And the leg is released once the handler finishes, so a later cancel (the
+    // next click's cleanup, an unmount) has nothing left to stop.
+    let stillLive = await cancel('core');
+    for (let i = 0; i < 100 && stillLive; i++) {
+      await Bun.sleep(10);
+      stillLive = await cancel('core');
+    }
+    expect(stillLive).toBe(false);
+
+    // A cancel is a PAUSE, not a discard. The staged part and the sidecar that
+    // makes those bytes resumable both survive it, and they live in the bin
+    // directory next to where the executable would land (a core asset is never
+    // staged in the geo work dir).
+    const binDir = path.dirname(defaultMihomoBinaryPath());
+    const staged = (await fs.readdir(binDir)).filter((f) => f.endsWith('.part') || f.endsWith('.part.json'));
+    expect(staged.length).toBe(2);
+    const partName = staged.find((f) => f.endsWith('.part'));
+    const metaName = staged.find((f) => f.endsWith('.part.json'));
+    expect(partName).toBeDefined();
+    expect(metaName).toBeDefined();
+    expect((await fs.stat(path.join(binDir, partName as string))).size).toBeGreaterThan(0);
+    const meta = JSON.parse(await fs.readFile(path.join(binDir, metaName as string), 'utf8')) as {
+      url?: string; etag?: string; lastModified?: string;
+    };
+    // The sidecar is what turns held bytes into a continuation: the same url, and
+    // a validator the next attempt can present with its Range request.
+    expect(meta.url).toBe('https://example.test/mihomo.bin');
+    expect(meta.etag ?? meta.lastModified).toBeTruthy();
+    for (const f of staged) await fs.rm(path.join(binDir, f), { force: true });
+    setMihomoDownloadFetchForTests(undefined);
   });
 
   test('outbound mode is saved and hot-applied to the running core', async () => {
