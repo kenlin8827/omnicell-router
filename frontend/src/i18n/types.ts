@@ -1351,6 +1351,16 @@ hiddenBadge: string;
     requestsTitle: string;
     requestsSortAsc: string;
     requestsSortDesc: string;
+    /** Parent-band label for the `turnIndex: null` bucket — requests that
+     *  carried no user prompt (one-shot helper calls, ADR-0024). */
+    noTurnGroup: string;
+    /** Expand/collapse every turn band of the request-detail tree at once. */
+    expandAllTurns: string;
+    collapseAllTurns: string;
+    /** View-mode toggle for the request-detail list — each string names the
+     *  shape a click switches TO (tree bands vs one flat grid). */
+    viewTree: string;
+    viewFlat: string;
     detailTitle: string;
     viewDetail: string;
     viewUsage: string;

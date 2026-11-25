@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2, X } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronsUpDown, ListTree, Rows3, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Laptop, Maximize2, Minimize2, Server, User, Waypoints, Wrench, Search, Trash2, X } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtLatency, lastActiveParts } from '../lib/format';
+import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtDur, fmtLatency, lastActiveParts } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
@@ -12,7 +12,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { Dialog } from '../components/Dialog';
 import { Pagination } from '../components/Pagination';
-import { ScrollTable, stickyBodyCell } from '../components/ScrollTable';
+import { ScrollTable, stickyBodyCell, type ScrollTableColumn } from '../components/ScrollTable';
 import { Descriptions } from '../components/Descriptions';
 import { EgressIcon } from '../components/EgressIcon';
 
@@ -795,6 +795,68 @@ const buildSwitchTimeline = (traces: TraceRecord[], t: Translate): SwitchEvent[]
   return events;
 };
 
+/**
+ * One turn's slice of the request-detail tree: the `turnIndex` parent band and
+ * the exchanges (HTTP requests) it drove as children. Children keep their
+ * recorded order — the sort toggle only reorders the GROUPS — and the
+ * `turnIndex: null` traces (no user prompt, one-shot helper calls, ADR-0024)
+ * fold into ONE bucket because they belong to no turn.
+ *
+ * The trace plane knows no tool names: a child IS the exchange a tool result
+ * fed, marked by its blank `userPromptSummary` in the prompt cell. Named tool
+ * calls live in the capture archive, one click away.
+ */
+interface TurnGroup {
+  key: string;
+  turnIndex: number | null;
+  traces: TraceRecord[];
+  start: number;
+  end: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  costUsd: number;
+  unpriced: number;
+}
+
+const NO_TURN_KEY = 'turn:none';
+
+const groupByTurn = (traces: TraceRecord[]): TurnGroup[] => {
+  const byKey = new Map<string, TurnGroup>();
+  for (const tr of traces) {
+    const turnIndex = tr.turnIndex ?? null;
+    const key = turnIndex === null ? NO_TURN_KEY : `turn:${turnIndex}`;
+    let g = byKey.get(key);
+    if (!g) {
+      g = {
+        key,
+        turnIndex,
+        traces: [],
+        start: tr.timestamp,
+        end: tr.timestamp + tr.execution.latencyMs,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        costUsd: 0,
+        unpriced: 0,
+      };
+      byKey.set(key, g);
+    }
+    g.traces.push(tr);
+    g.start = Math.min(g.start, tr.timestamp);
+    g.end = Math.max(g.end, tr.timestamp + tr.execution.latencyMs);
+    g.inputTokens += tr.finops.inputTokens;
+    g.outputTokens += tr.finops.outputTokens;
+    g.cachedTokens += tr.finops.cachedTokens;
+    if (tr.finops.costUsd !== undefined) g.costUsd += tr.finops.costUsd;
+    else g.unpriced += 1;
+  }
+  // Chronological by first exchange: turn indexes are monotonic, and the
+  // no-turn bucket sorts by where it actually ran instead of pinning to an
+  // arbitrary end. The newest-first toggle reverses this array.
+  return [...byKey.values()].sort((a, b) => a.start - b.start);
+};
+
 export const SessionsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
@@ -823,14 +885,22 @@ export const SessionsPage: React.FC = () => {
   } | null>(null);
   // (Backdrop dismiss + Escape + body scroll lock come from the shared
   // Dialog shell; the modal renders only while `timeline` is set.)
-  // Request-detail list order: false = chronological (the traces' recorded
-  // order), true = newest first. Reset per open in openTimeline.
+  // Request-detail order: false = chronological (oldest turn band / row
+  // first), true = newest first. In tree view this reorders the BANDS only —
+  // the exchanges inside a band always keep their recorded order. Reset per
+  // open in openTimeline.
   const [detailDesc, setDetailDesc] = useState(true);
-  // Request-detail pager: long agent loops produce hundreds of trace rows —
-  // paginate client-side instead of rendering one giant grid. Reset per
-  // modal open alongside the sort order.
-  const [detailPage, setDetailPage] = useState(1);
-  const [detailPageSize, setDetailPageSize] = useState(20);
+  // Request-detail shape: `tree` folds the exchanges under their write-time
+  // `turnIndex` band (ADR-0024), `flat` is the whole recorded list as one
+  // grid. Same columns and rows either way; only the band lines differ.
+  // Reset per modal open.
+  const [detailView, setDetailView] = useState<'tree' | 'flat'>('tree');
+  // Request-detail tree: which `turnIndex` bands are open (their exchange
+  // children visible). Emptied per modal open — every band starts folded and
+  // its own line (time range, prompt, steps, sums) is the overview. There is no
+  // pager and no progressive sentinel: folding bounds the paint, and the bands
+  // are cheap one-line rows even for a hundred-turn session.
+  const [openTurns, setOpenTurns] = useState<Set<string>>(new Set());
   // Expanded toggle (header action): the card grows to 90vw × 90vh, keeping
   // a 10% viewport margin on all sides — windowed, not `full` mode. Reset
   // per modal open.
@@ -925,7 +995,8 @@ export const SessionsPage: React.FC = () => {
       // traces load survives. Fresh modal = newest first again (per-session
       // reset).
       setDetailDesc(true);
-      setDetailPage(1);
+      setDetailView('tree');
+      setOpenTurns(new Set());
       setDetailFull(false);
       setTimeline({
         session: s,
@@ -1065,6 +1136,187 @@ export const SessionsPage: React.FC = () => {
       : null;
   const shortModel = (ns: string | null, m: string): string =>
     ns && m.startsWith(`${ns}/`) ? m.slice(ns.length + 1) : m;
+
+  // Request-detail tree bands (chronological; the render reverses them for
+  // the newest-first toggle). `allTurnsOpen` drives the header's bulk toggle.
+  const turnGroups = timeline ? groupByTurn(timeline.traces) : [];
+  const allTurnsOpen = turnGroups.length > 0 && turnGroups.every(g => openTurns.has(g.key));
+  const toggleTurn = (key: string) =>
+    setOpenTurns(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  // Declared once so the band's `colSpan` can never drift from the child rows'
+  // column count.
+  const detailColumns: ScrollTableColumn[] = [
+    { key: 'n', label: '#', width: 34 },
+    { key: 'start', label: t('sessions.colStart'), width: 66 },
+    { key: 'end', label: t('sessions.colEnd'), width: 66 },
+    // Model is ONE full ref per row, so it gets a fixed track wide enough for
+    // `provider/model` at 11px mono; the prompt keeps the whole remaining
+    // width (the only truly elastic column — it is what operators actually
+    // read).
+    { key: 'model', label: t('sessions.colModel'), width: 210 },
+    { key: 'prompt', label: t('sessions.colPrompt') },
+    { key: 'think', label: t('sessions.colThink'), width: 92 },
+    { key: 'in', label: t('sessions.colIn'), width: 62 },
+    { key: 'out', label: t('sessions.colOut'), width: 58 },
+    { key: 'cached', label: t('sessions.colCached'), width: 66 },
+    { key: 'cost', label: t('sessions.colCost'), width: 88 },
+    { key: 'ttft', label: t('usage.ttft'), width: 52 },
+    { key: 'toks', label: t('usage.thToks'), width: 60 },
+    { key: 'stallRatio', label: t('sessions.speedStallRatio'), width: 62 },
+    { key: 'ms', label: t('sessions.colMs'), width: 52 },
+    // Its own declared track, not a badge riding the prompt's right edge: a
+    // header makes the mapping self-describing (no hover needed) and puts
+    // every turn's transport in one scannable vertical, which is how an
+    // accidental buffering shows up. 104px = the widest badge (`JSON → JSON`
+    // at `--text-2xs` mono, ~88px) plus the cell padding: a badge wider than
+    // its track spills over the next column.
+    {
+      key: 'stream',
+      label: <span title={t('sessions.colStreamTip')}>{t('sessions.colStream')}</span>,
+      width: 104,
+      align: 'center',
+    },
+    // Leave room for common canonical protocol pairs on one line. Longer
+    // names wrap inside the badge, not into the neighboring column.
+    {
+      key: 'protocol',
+      label: <span title={t('sessions.protocolTip')}>{t('sessions.colProtocol')}</span>,
+      width: DETAIL_PROTOCOL_WIDTH,
+      align: 'center',
+    },
+    // Outbound egress (ADR-0018): its own self-describing track, same
+    // convention as stream/protocol, so "did this turn leave through the
+    // proxy?" is one scannable column. One glyph per cell
+    // (components/EgressIcon.tsx), so the track only has to hold an icon,
+    // not a word.
+    {
+      key: 'egress',
+      label: <span title={t('sessions.colEgressTip')}>{t('sessions.colEgress')}</span>,
+      width: 56,
+      align: 'center',
+    },
+  ];
+
+  // ONE exchange row, shared by both view modes — the tree renders it under its
+  // turn band, the flat view as the whole list, so the two can never drift.
+  const renderTraceRow = (tr: TraceRecord) => {
+    // Same unit as the session row (share of the decode window), computed per
+    // turn; undefined when unmeasurable.
+    const stallShare =
+      tr.execution.stalledMs != null && tr.execution.genMs != null && tr.execution.genMs > 0
+        ? tr.execution.stalledMs / tr.execution.genMs
+        : undefined;
+    return (
+      <tr key={tr.requestId} style={{ borderBottom: '1px solid var(--divider)' }}>
+        <td style={{ ...DETAIL_TD_CENTER, boxShadow: 'inset 2px 0 0 var(--divider)' }}>#{tr.requestNumber}</td>
+        <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</td>
+        <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>
+          {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
+        </td>
+        {/* ONE line, the full model ref. The two-line id-over-provider cell
+            belongs to the dense LIST column, where width is scarce; this
+            table has room and the row is the unit being compared, so a
+            single line keeps every row the same height and never hides the
+            provider behind a header chip. Ellipsized with the full ref in
+            the tooltip only when the column is genuinely too narrow
+            (expanded mode shows it verbatim). */}
+        {/* Centered like every other column and like its own header. The span
+            is inline-block with maxWidth:100% (not the block MODEL_LINE_STYLE)
+            because a centered BLOCK would overflow on BOTH sides and clip the
+            left edge with no ellipsis — as an inline box it ellipsizes
+            cleanly against the cell and stays centered while it fits. */}
+        <td style={DETAIL_TD_CENTER}>
+          <span
+            title={tr.execution.modelUsed}
+            style={{ ...MODEL_LINE_STYLE, display: 'inline-block', maxWidth: '100%', verticalAlign: 'middle' }}
+          >
+            {tr.execution.modelUsed}
+          </span>
+        </td>
+        <td style={{ padding: '6px 8px', minWidth: 0 }}>
+          <PromptCell text={tr.request?.userPromptSummary ?? ''} />
+        </td>
+        <td style={DETAIL_TD_CENTER}><EffortCell tr={tr} /></td>
+        <td style={DETAIL_TD_CENTER}>{tr.finops.inputTokens.toLocaleString()}</td>
+        <td style={DETAIL_TD_CENTER}>{tr.finops.outputTokens.toLocaleString()}</td>
+        <td style={{ ...DETAIL_TD_CENTER, color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
+          {tr.finops.cachedTokens.toLocaleString()}
+        </td>
+        <td
+          style={{ ...DETAIL_TD_CENTER, color: tr.finops.costUsd === undefined ? 'var(--text-dim)' : 'var(--accent-amber)' }}
+          title={tr.finops.costUsd === undefined ? t('sessions.costUnknownTip') : formatCost(tr.finops.costUsd)}
+        >{formatCostCompact(tr.finops.costUsd)}</td>
+        <td style={DETAIL_TD_CENTER} title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
+          {tr.execution.ttftMs != null ? fmtLatency(tr.execution.ttftMs) : '—'}
+        </td>
+        <td style={DETAIL_TD_CENTER} title={t('sessions.speedOutputTip')}>
+          {tr.execution.genMs != null
+            ? `${formatSpeed(decodeRate(tr.finops.outputTokens, tr.execution.genMs))} ${t('usage.thToks')}`
+            : '—'}
+        </td>
+        {/* Perceived stall time for THIS turn: total time spent in ≥1 s
+            pauses. Amber when this turn's share crosses the same threshold
+            the session row uses, so a bad turn is findable by scanning
+            colours rather than reading numbers. */}
+        <td
+          style={{
+            ...DETAIL_TD_CENTER,
+            color:
+              stallShare !== undefined && stallShare >= STALL_RATIO_WARN
+                ? 'var(--accent-amber)'
+                : 'var(--text-dim)',
+          }}
+          title={
+            tr.execution.stalledMs != null
+              ? `${tr.execution.stalledMs} ms · ${t('sessions.speedStallRatioTip')}`
+              : t('sessions.speedStallRatioTip')
+          }
+        >
+          {fmtStallRatio(stallShare)}
+        </td>
+        <td style={DETAIL_TD_CENTER} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</td>
+        <td style={DETAIL_TD_CENTER}>
+          {/* Transport map of THIS turn (ADR-0008 §1): client shape → the
+              shape the provider leg actually ran on. Renders nothing when the
+              trace carries neither tag (legacy rows), so the cell stays blank
+              instead of claiming a shape it does not know. */}
+          {(tr.request?.clientStream !== undefined || tr.execution.upstreamStream !== undefined) && (
+            <StreamMap
+              client={tr.request?.clientStream}
+              upstream={tr.execution.upstreamStream === undefined ? undefined : tr.execution.upstreamStream === 'sse'}
+              tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
+            />
+          )}
+        </td>
+        <td style={DETAIL_TD_CENTER}>
+          {/* Protocol map (inbound surface → outbound wire); renders nothing
+              on legacy rows. */}
+          {(tr.request?.inboundWire !== undefined || tr.execution.wireKind !== undefined) && (
+            <ProtocolMap
+              inbound={tr.request?.inboundWire}
+              outbound={tr.execution.wireKind}
+              tip={t('sessions.protocolTip')}
+              wrap
+            />
+          )}
+        </td>
+        <td style={DETAIL_TD_CENTER}>
+          {/* Outbound egress of THIS turn (ADR-0018): one glyph, with the
+              redacted proxy origin on its hover tip. Absent = unknown (legacy
+              row / plugin transport), rendered as a dash — never as direct. */}
+          <EgressIcon
+            egress={tr.execution.egress}
+            proxy={tr.execution.egressProxy}
+          />
+        </td>
+      </tr>
+    );
+  };
 
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -1897,14 +2149,7 @@ export const SessionsPage: React.FC = () => {
               type="button"
               className="btn btn-sm"
               style={{ display: 'flex', alignItems: 'center', height: 24, padding: '0 6px' }}
-              onClick={() => {
-                const next = !detailFull;
-                setDetailFull(next);
-                // The 90vh card fits ~25 rows; the collapsed one ~20. Follow
-                // the toggle between those defaults, leaving a manually
-                // chosen page size (via the pager) untouched.
-                setDetailPageSize(s => (next ? (s === 20 ? 25 : s) : (s === 25 ? 20 : s)));
-              }}
+              onClick={() => setDetailFull(f => !f)}
               title={detailFull ? t('captures.collapse') : t('captures.expand')}
               aria-label={detailFull ? t('captures.collapse') : t('captures.expand')}
             >
@@ -2464,10 +2709,14 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                 </div>
               )}
             </div>
-            {/* Per-request detail: every turn's recorded token counts + actual
-                cost. Third card in the same shell as the two above — a
-                separated block, so the dialog reads as three stacked panels
-                instead of one panel plus two loose sections. */}
+            {/* Per-request detail, TWO views of the same rows: the default
+                TURN TREE groups one band per write-time `turnIndex` (ADR-0024)
+                with its exchanges as children — an agent turn is a parent with
+                N continuation hops, not N unrelated rows — and the flat view
+                is the whole recorded list on one grid. Third card in the same
+                shell as the two above — a separated block, so the dialog reads
+                as three stacked panels instead of one panel plus two loose
+                sections. */}
             {timeline.traces.length > 0 && (<>
               <div style={{
                 border: '1px solid var(--divider)',
@@ -2476,9 +2725,10 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                 // detailOpen: this card flex-fills the Dialog body's FIXED
                 // height (both modes are fixed-height now) so the request
                 // table scrolls internally — ScrollTable keeps its head
-                // OUTSIDE that scroller, and the pager below the table is
-                // therefore always at the dialog's bottom edge. Collapsed:
-                // content-sized.
+                // OUTSIDE that scroller. No pager in either view: the tree bounds the
+                // paint by folding exchanges under their turn bands, and the
+                // flat view is the whole recorded list on this one scrolling
+                // grid. Collapsed: content-sized.
                 display: 'flex',
                 flexDirection: 'column',
                 flex: timeline.detailOpen ? '1 1 0' : '0 0 auto',
@@ -2510,16 +2760,18 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                 >
                   {timeline.detailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <span>{t('sessions.requestsTitle', { count: timeline.traces.length })}</span>
-                  {/* Sort toggle: icon-only ghost button (same language as
-                      RoundCard's header icons — a boxed btn read too heavy
-                      on the 11px fold row). Title = what a click switches
-                      to; stopPropagation keeps the section fold. */}
+                  {/* View toggle: `tree` folds every exchange under its turn
+                      band, `flat` lays the whole recorded list out as one
+                      grid. Icon + title name the mode a click switches TO
+                      (same convention as the sort toggle); stopPropagation
+                      keeps the section fold. */}
                   <button
                     onClick={e => {
                       e.stopPropagation();
-                      setDetailDesc(d => !d);
+                      setDetailView(v => (v === 'tree' ? 'flat' : 'tree'));
                     }}
-                    title={detailDesc ? t('sessions.requestsSortAsc') : t('sessions.requestsSortDesc')}
+                    title={detailView === 'tree' ? t('sessions.viewFlat') : t('sessions.viewTree')}
+                    aria-label={detailView === 'tree' ? t('sessions.viewFlat') : t('sessions.viewTree')}
                     style={{
                       marginLeft: 'auto',
                       background: 'none',
@@ -2532,8 +2784,61 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                       flexShrink: 0,
                     }}
                   >
+                    {detailView === 'tree' ? <Rows3 size={12} /> : <ListTree size={12} />}
+                  </button>
+                  {/* Sort toggle: icon-only ghost button (same language as
+                      RoundCard's header icons — a boxed btn read too heavy
+                      on the 11px fold row). Reorders the turn BANDS in tree
+                      view and the ROWS in flat view; the exchanges inside a
+                      band always keep their recorded order. Title = what a
+                      click switches to; stopPropagation keeps the section
+                      fold. */}
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      setDetailDesc(d => !d);
+                    }}
+                    title={detailDesc ? t('sessions.requestsSortAsc') : t('sessions.requestsSortDesc')}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-dim)',
+                      cursor: 'pointer',
+                      padding: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
                     {detailDesc ? <ArrowDownWideNarrow size={12} /> : <ArrowUpNarrowWide size={12} />}
                   </button>
+                  {/* Bulk fold for the turn bands — one click opens (or folds)
+                      every group, so the old "everything on one grid" reading
+                      stays one click away (or switch to the flat view). Tree
+                      only: in flat view there is nothing folded. Same ghost
+                      language as the sort toggle. */}
+                  {detailView === 'tree' && (
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      setOpenTurns(allTurnsOpen ? new Set() : new Set(turnGroups.map(g => g.key)));
+                    }}
+                    title={allTurnsOpen ? t('sessions.collapseAllTurns') : t('sessions.expandAllTurns')}
+                    aria-label={allTurnsOpen ? t('sessions.collapseAllTurns') : t('sessions.expandAllTurns')}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-dim)',
+                      cursor: 'pointer',
+                      padding: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <ChevronsUpDown size={12} />
+                  </button>
+                  )}
                 </div>
                 {timeline.detailOpen && (
                 <ScrollTable
@@ -2544,59 +2849,7 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                   // replaced put the header inside its own scroller and lost
                   // it as soon as the list scrolled.
                   fill={timeline.detailOpen}
-                  columns={[
-                    { key: 'n', label: '#', width: 34 },
-                    { key: 'start', label: t('sessions.colStart'), width: 66 },
-                    { key: 'end', label: t('sessions.colEnd'), width: 66 },
-                    // Model is ONE full ref per row, so it gets a fixed track
-                    // wide enough for `provider/model` at 11px mono; the prompt
-                    // keeps the whole remaining width (the only truly elastic
-                    // column — it is what operators actually read).
-                    { key: 'model', label: t('sessions.colModel'), width: 210 },
-                    { key: 'prompt', label: t('sessions.colPrompt') },
-                    { key: 'think', label: t('sessions.colThink'), width: 92 },
-                    { key: 'in', label: t('sessions.colIn'), width: 62 },
-                    { key: 'out', label: t('sessions.colOut'), width: 58 },
-                    { key: 'cached', label: t('sessions.colCached'), width: 66 },
-                    { key: 'cost', label: t('sessions.colCost'), width: 88 },
-                    { key: 'ttft', label: t('usage.ttft'), width: 52 },
-                    { key: 'toks', label: t('usage.thToks'), width: 60 },
-                    { key: 'stallRatio', label: t('sessions.speedStallRatio'), width: 62 },
-                    { key: 'ms', label: t('sessions.colMs'), width: 52 },
-                    // Its own declared track, not a badge riding the prompt's
-                    // right edge: a header makes the mapping self-describing
-                    // (no hover needed) and puts every turn's transport in one
-                    // scannable vertical, which is how an accidental buffering
-                    // shows up. 104px = the widest badge (`JSON → JSON` at
-                    // `--text-2xs` mono, ~88px) plus the cell padding: a badge
-                    // wider than its track spills over the next column.
-                    {
-                      key: 'stream',
-                      label: <span title={t('sessions.colStreamTip')}>{t('sessions.colStream')}</span>,
-                      width: 104,
-                      align: 'center',
-                    },
-                    // Leave room for common canonical protocol pairs on one
-                    // line. Longer names wrap inside the badge, not into the
-                    // neighboring column.
-                    {
-                      key: 'protocol',
-                      label: <span title={t('sessions.protocolTip')}>{t('sessions.colProtocol')}</span>,
-                      width: DETAIL_PROTOCOL_WIDTH,
-                      align: 'center',
-                    },
-                    // Outbound egress (ADR-0018): its own self-describing
-                    // track, same convention as stream/protocol, so "did this
-                    // turn leave through the proxy?" is one scannable column.
-                    // One glyph per cell (components/EgressIcon.tsx), so the
-                    // track only has to hold an icon, not a word.
-                    {
-                      key: 'egress',
-                      label: <span title={t('sessions.colEgressTip')}>{t('sessions.colEgress')}</span>,
-                      width: 56,
-                      align: 'center',
-                    },
-                  ]}
+                  columns={detailColumns}
                   // Floor = the declared tracks plus a readable minimum for the
                   // one elastic (prompt) column; below it the body scrolls
                   // sideways instead of crushing every column into an ellipsis.
@@ -2609,170 +2862,144 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                   // there is one rectangle per section, not a box in a box.
                   style={{ border: 'none', borderRadius: 0, margin: '0 12px 12px' }}
                 >
-                  {(() => {
-                    const sorted = detailDesc ? [...timeline.traces].reverse() : timeline.traces;
-                    // Clamp: a sort toggle or page-size change can leave the
-                    // current page past the new last page.
-                    const maxPage = Math.max(1, Math.ceil(sorted.length / detailPageSize));
-                    const safePage = Math.min(detailPage, maxPage);
-                    return sorted
-                      .slice((safePage - 1) * detailPageSize, safePage * detailPageSize)
-                      .map(tr => {
-                    // Same unit as the session row (share of the decode
-                    // window), computed per turn; undefined when unmeasurable.
-                    const stallShare =
-                      tr.execution.stalledMs != null && tr.execution.genMs != null && tr.execution.genMs > 0
-                        ? tr.execution.stalledMs / tr.execution.genMs
-                        : undefined;
+                  {detailView === 'flat'
+                    ? (detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(renderTraceRow)
+                    : (detailDesc ? [...turnGroups].reverse() : turnGroups).map(g => {
+                    const open = openTurns.has(g.key);
+                    // The band's prompt comes from the prompt-start exchange;
+                    // continuation-only groups fall back to an empty line.
+                    const summary =
+                      g.traces.find(tr => (tr.request?.userPromptSummary ?? '').length > 0)?.request
+                        .userPromptSummary ?? '';
                     return (
-                    <tr key={tr.requestId} style={{ borderBottom: '1px solid var(--divider)' }}>
-                      <td style={DETAIL_TD_CENTER}>#{tr.requestNumber}</td>
-                      <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</td>
-                      <td style={{ ...DETAIL_TD_CENTER, color: 'var(--text-dim)' }}>
-                        {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
-                      </td>
-                      {/* ONE line, the full model ref. The two-line id-over-
-                          provider cell belongs to the dense LIST column, where
-                          width is scarce; this table has room and the row is
-                          the unit being compared, so a single line keeps every
-                          row the same height and never hides the provider
-                          behind a header chip. Ellipsized with the full ref in
-                          the tooltip only when the column is genuinely too
-                          narrow (expanded mode shows it verbatim). */}
-                      {/* Centered like every other column and like its own
-                          header. The span is inline-block with maxWidth:100%
-                          (not the block MODEL_LINE_STYLE) because a centered
-                          BLOCK would overflow on BOTH sides and clip the left
-                          edge with no ellipsis — as an inline box it ellipsizes
-                          cleanly against the cell and stays centered while it
-                          fits. */}
-                      <td style={DETAIL_TD_CENTER}>
-                        <span
-                          title={tr.execution.modelUsed}
-                          style={{ ...MODEL_LINE_STYLE, display: 'inline-block', maxWidth: '100%', verticalAlign: 'middle' }}
+                      <React.Fragment key={g.key}>
+                        {/* Turn band — the tree's parent line. Full-width by
+                            design: the band is a section header, and every
+                            column header above it belongs to the exchanges
+                            below. The band repeats the exchange-level facts
+                            that survive aggregation (time range, prompt,
+                            step count, token sums, cost) so a folded session
+                            still reads as a cost/latency overview. */}
+                        <tr
+                          onClick={() => toggleTurn(g.key)}
+                          style={{
+                            cursor: 'pointer',
+                            borderBottom: '1px solid var(--divider)',
+                            background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
+                          }}
                         >
-                          {tr.execution.modelUsed}
-                        </span>
-                      </td>
-                      <td style={{ padding: '6px 8px', minWidth: 0 }}>
-                        <PromptCell text={tr.request?.userPromptSummary ?? ''} />
-                      </td>
-                      <td style={DETAIL_TD_CENTER}><EffortCell tr={tr} /></td>
-                      <td style={DETAIL_TD_CENTER}>{tr.finops.inputTokens.toLocaleString()}</td>
-                      <td style={DETAIL_TD_CENTER}>{tr.finops.outputTokens.toLocaleString()}</td>
-                      <td style={{ ...DETAIL_TD_CENTER, color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
-                        {tr.finops.cachedTokens.toLocaleString()}
-                      </td>
-                      <td
-                        style={{ ...DETAIL_TD_CENTER, color: tr.finops.costUsd === undefined ? 'var(--text-dim)' : 'var(--accent-amber)' }}
-                        title={tr.finops.costUsd === undefined ? t('sessions.costUnknownTip') : formatCost(tr.finops.costUsd)}
-                      >{formatCostCompact(tr.finops.costUsd)}</td>
-                      <td style={DETAIL_TD_CENTER} title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
-                        {tr.execution.ttftMs != null ? fmtLatency(tr.execution.ttftMs) : '—'}
-                      </td>
-                      <td style={DETAIL_TD_CENTER} title={t('sessions.speedOutputTip')}>
-                        {tr.execution.genMs != null
-                          ? `${formatSpeed(decodeRate(tr.finops.outputTokens, tr.execution.genMs))} ${t('usage.thToks')}`
-                          : '—'}
-                      </td>
-                      {/* Perceived stall time for THIS turn: total time spent
-                          in ≥1 s pauses. Amber when this turn's share crosses
-                          the same threshold the session row uses, so a bad
-                          turn is findable by scanning colours rather than
-                          reading numbers. */}
-                      <td
-                        style={{
-                          ...DETAIL_TD_CENTER,
-                          color:
-                            stallShare !== undefined && stallShare >= STALL_RATIO_WARN
-                              ? 'var(--accent-amber)'
-                              : 'var(--text-dim)',
-                        }}
-                        title={
-                          tr.execution.stalledMs != null
-                            ? `${tr.execution.stalledMs} ms · ${t('sessions.speedStallRatioTip')}`
-                            : t('sessions.speedStallRatioTip')
-                        }
-                      >
-                        {fmtStallRatio(stallShare)}
-                      </td>
-                      <td style={DETAIL_TD_CENTER} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</td>
-                      <td style={DETAIL_TD_CENTER}>
-                        {/* Transport map of THIS turn (ADR-0008 §1): client shape
-                            → the shape the provider leg actually ran on. Renders
-                            nothing when the trace carries neither tag (legacy
-                            rows), so the cell stays blank instead of claiming a
-                            shape it does not know. */}
-                        {(tr.request?.clientStream !== undefined || tr.execution.upstreamStream !== undefined) && (
-                          <StreamMap
-                            client={tr.request?.clientStream}
-                            upstream={tr.execution.upstreamStream === undefined ? undefined : tr.execution.upstreamStream === 'sse'}
-                            tip={[t('sessions.inboundStreamTip'), t('sessions.outboundStreamTip')].join('\n')}
-                          />
-                        )}
-                      </td>
-                      <td style={DETAIL_TD_CENTER}>
-                        {/* Protocol map (inbound surface → outbound wire);
-                            renders nothing on legacy rows. */}
-                        {(tr.request?.inboundWire !== undefined || tr.execution.wireKind !== undefined) && (
-                          <ProtocolMap
-                            inbound={tr.request?.inboundWire}
-                            outbound={tr.execution.wireKind}
-                            tip={t('sessions.protocolTip')}
-                            wrap
-                          />
-                        )}
-                      </td>
-                      <td style={DETAIL_TD_CENTER}>
-                        {/* Outbound egress of THIS turn (ADR-0018): one glyph,
-                            with the redacted proxy origin on its hover tip.
-                            Absent = unknown (legacy row / plugin transport),
-                            rendered as a dash — never as direct. */}
-                        <EgressIcon
-                          egress={tr.execution.egress}
-                          proxy={tr.execution.egressProxy}
-                        />
-                      </td>
-                    </tr>
+                          <td colSpan={detailColumns.length} style={{ padding: '7px 10px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, fontSize: 'var(--text-sm)' }}>
+                              <span style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--text-muted)' }}>
+                                {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                              </span>
+                              <span style={{ fontFamily: FONT_MONO, fontWeight: 'var(--font-bold)', flexShrink: 0 }}>
+                                {g.turnIndex === null
+                                  ? t('sessions.noTurnGroup')
+                                  : t('captures.turnOrdinal', { n: g.turnIndex })}
+                              </span>
+                              <span
+                                title={`${new Date(g.start).toLocaleString()} – ${new Date(g.end).toLocaleString()}`}
+                                style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}
+                              >
+                                {new Date(g.start).toLocaleTimeString()} – {new Date(g.end).toLocaleTimeString()}
+                                {g.end > g.start ? ` · ${fmtDur(g.end - g.start)}` : ''}
+                              </span>
+                              {/* The sums sit LEFT of the prompt, not flush right: the band spans
+                                  every track, so a right-aligned cluster lands past the visible
+                                  viewport of any horizontally scrolling body and a folded session
+                                  would hide exactly the facts it exists to show. The prompt is the
+                                  elastic part and truncates instead. */}
+                              <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                                <SummarySeries
+                                  items={[
+                                    {
+                                      key: 'steps',
+                                      node: (
+                                        <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                                          {t('captures.turnStepsUnit', { n: g.traces.length })}
+                                        </span>
+                                      ),
+                                    },
+                                    {
+                                      key: 'in',
+                                      node: (
+                                        <SummaryStat
+                                          label={t('sessions.tokenIn')}
+                                          value={tokenDisplay(g.inputTokens)}
+                                          title={g.inputTokens.toLocaleString()}
+                                        />
+                                      ),
+                                    },
+                                    {
+                                      key: 'out',
+                                      node: (
+                                        <SummaryStat
+                                          label={t('sessions.tokenOut')}
+                                          value={tokenDisplay(g.outputTokens)}
+                                          title={g.outputTokens.toLocaleString()}
+                                          color="var(--text-muted)"
+                                        />
+                                      ),
+                                    },
+                                    {
+                                      key: 'cached',
+                                      node: (
+                                        <SummaryStat
+                                          label={t('sessions.tokenCached')}
+                                          value={tokenDisplay(g.cachedTokens)}
+                                          title={g.cachedTokens.toLocaleString()}
+                                          color={g.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
+                                        />
+                                      ),
+                                    },
+                                    {
+                                      key: 'cost',
+                                      node: (
+                                        <SummaryStat
+                                          label={t('sessions.thCost')}
+                                          value={
+                                            g.unpriced > 0
+                                              ? `≥ ${formatCostCompact(g.costUsd)}`
+                                              : formatCostCompact(g.costUsd)
+                                          }
+                                          title={
+                                            g.unpriced > 0
+                                              ? `${formatCost(g.costUsd)} — ${t('sessions.costUnknownTip')}`
+                                              : formatCost(g.costUsd)
+                                          }
+                                          color={g.unpriced > 0 ? 'var(--text-dim)' : 'var(--accent-amber)'}
+                                        />
+                                      ),
+                                    },
+                                  ]}
+                                />
+                              </span>
+                              {summary && (
+                                <span
+                                  title={summary}
+                                  style={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    fontWeight: 'var(--font-medium)',
+                                    color: 'var(--text-muted)',
+                                  }}
+                                >
+                                  {summary}
+                                </span>
+                              )}
+                              </div>
+                          </td>
+                        </tr>
+                        {open && g.traces.map(renderTraceRow)}
+                      </React.Fragment>
                     );
-                      });
-                  })()}
+                  })}
                 </ScrollTable>
                 )}
-                {timeline.detailOpen && (() => {
-                  const sorted = detailDesc ? [...timeline.traces].reverse() : timeline.traces;
-                  const maxPage = Math.max(1, Math.ceil(sorted.length / detailPageSize));
-                  const safePage = Math.min(detailPage, maxPage);
-                  // Guarded by detailOpen: a collapsed card must not strand a
-                  // pager under a fold that shows nothing to page through.
-                  // INSIDE the card on purpose: the card flex-fills the
-                  // fixed-height dialog body, so this footer sits at the
-                  // dialog's bottom edge in BOTH modes — no sticky, no bleed,
-                  // no second scroller. The table viewport above is the one
-                  // and only scrollbar (vertical and horizontal).
-                  return sorted.length > detailPageSize ? (
-                    // No top padding on purpose: Pagination carries its own
-                    // `margin-top: 12px` — stacking the two was the ~22px
-                    // whitespace band the operator flagged.
-                    // flex + marginTop override: Pagination's built-in
-                    // margin-top: 12px plus wrapper padding were compounding
-                    // into a 32px gap. We zero both and add only 4px top
-                    // (visual clearance from the table border) + 8px bottom
-                    // so the pager hugs the table tightly.
-                    <div style={{ padding: '0 12px 8px', flex: '0 0 auto' }}>
-                      <Pagination
-                        page={safePage}
-                        pageSize={detailPageSize}
-                        total={sorted.length}
-                        onChange={setDetailPage}
-                        showSummary
-                        pageSizeOptions={PAGE_SIZES}
-                        onPageSizeChange={(s) => { setDetailPageSize(s); setDetailPage(1); }}
-                        style={{ marginTop: 0 }}
-                      />
-                    </div>
-                  ) : null;
-                })()}
               </div>
             </>)}
         </Dialog>

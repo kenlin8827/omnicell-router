@@ -801,6 +801,13 @@ export interface TraceRecord {
   /** Gateway conversation entity id (ADR-0002). */
   sessionId: string;
   requestNumber: number;
+  /**
+   * Write-time turn identity (ADR-0024): the immutable, session-scoped turn
+   * ordinal stamped by the admission gate. `null` = the request carried no
+   * user prompt and belongs to no turn (one-shot helper calls). The detail
+   * tree groups exchanges by it; it is never re-derived from prompt text.
+   */
+  turnIndex: number | null;
   timestamp: number;
   /** Client API-key identity (application) that drove this turn, when known. */
   apiKey?: CaptureKeyIdentity;
