@@ -80,6 +80,19 @@ export interface TranslationDict {
     dismissToast: string;
     requiredFields: string;
   };
+  /** Outbound-egress glyph shared by every surface that shows where a request
+   *  left the machine (components/EgressIcon.tsx). One icon per row; the
+   *  endpoint and the gloss ride the hover tip. */
+  egress: {
+    /** PROXY glyph: through the outbound proxy (the redacted endpoint is
+     *  appended on its own tip line by the component). */
+    proxy: string;
+    /** DIRECT glyph: straight out of this machine, no outbound proxy. */
+    direct: string;
+    /** Unobserved egress — legacy row, or a transport (plugin executor) that
+     *  never reports its dial base. Never worded as "direct". */
+    unknown: string;
+  };
   pagination: {
     prev: string;
     next: string;
@@ -619,14 +632,6 @@ export interface TranslationDict {
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOkMsg: string;
     testFailMsg: string;
-    /** Egress limb of a probe verdict: the probe went through the outbound proxy
-     *  (`{origin}` = redacted origin). Proves the model-scoped proxy split
-     *  actually reached this provider. */
-    probeEgressProxy: string;
-    /** Egress limb of a probe verdict: the probe dialed the machine's own
-     *  network. A provider the split was meant to cover reading `direct` here is
-     *  the misconfiguration signature. */
-    probeEgressDirect: string;
     probeDetailTitle: string;
     probeDetailOpen: string;
     probeDetailCopied: string;
@@ -1363,14 +1368,8 @@ hiddenBadge: string;
     colProtocol: string;
     /** Outbound-egress column header (direct / proxy / unknown). */
     colEgress: string;
-    /** Egress column tooltip: the three states. */
+    /** Egress column tooltip: the three glyphs (see `egress.*`). */
     colEgressTip: string;
-    /** PROXY badge tooltip prefix (the redacted origin is appended after the colon). */
-    egressProxyTip: string;
-    /** DIRECT state tooltip. */
-    egressDirectTip: string;
-    /** Unknown state tooltip (legacy row / transport that does not report its egress). */
-    egressUnknownTip: string;
     promptFallbackTip: string;
     /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
     inboundStreamTip: string;

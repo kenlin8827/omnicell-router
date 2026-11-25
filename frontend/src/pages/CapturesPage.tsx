@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Combine, FileText, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send, CirclePlus } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Combine, FileText, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send, CirclePlus, Globe } from 'lucide-react';
 import { buildCurl, buildCurlPosix, buildReplaySpec } from '../lib/curl';
 import {
   api,
@@ -34,6 +34,7 @@ import { startDownload, startGeneratedDownload } from '../lib/download-manager';
 import { SessionTranscript } from '../components/SessionTranscript';
 import { Prose } from '../components/Prose';
 import { BackToTop } from '../components/BackToTop';
+import { EgressIcon } from '../components/EgressIcon';
 import { findMediaTokens, mergeSseToNonStream, parseAssistantResponse, unwrapHarnessText } from '../lib/transcript';
 import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
@@ -133,7 +134,7 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 // fall back to accent anyway, so it is written explicitly). The decision
 // surface shares the blue family with the per-request decision chips — the
 // hue this UI already uses for informational/system-metadata chips
-// (⇢ proxy, circled-plus day-span). Legacy archives without request lines
+// (egress glyph, circled-plus day-span). Legacy archives without request lines
 // stay unbadged.
 const PROTOCOL_LABEL: Record<NonNullable<CaptureSessionRow['protocol']>, string> = {
   'openai-chat': 'captures.protocolChat',
@@ -645,20 +646,15 @@ const CaptureDrawer: React.FC<{
               </span>
             );
           })()}
-          {/* Proxy badge — visible without opening the upstream tab. */}
+          {/* Egress glyph — visible without opening the upstream tab; the
+              redacted endpoint rides its hover tip (components/EgressIcon.tsx). */}
           {request.upstreamRequest?.proxy && (
-            <span
-              className="badge"
-              title={`${t('captures.viaProxy')}: ${request.upstreamRequest.proxy}`}
-              style={{
-                background: 'var(--hue-blue-soft)',
-                color: 'var(--hue-blue)',
-                fontFamily: FONT_MONO,
-                fontSize: 'var(--text-2xs)',
-              }}
-            >
-              ⇢ {request.upstreamRequest.proxy}
-            </span>
+            <EgressIcon
+              egress="proxy"
+              proxy={request.upstreamRequest.proxy}
+              size={13}
+              style={{ marginLeft: 2 }}
+            />
           )}
           {/* Per-direction latency: gateway = client cycle, upstream =
               upstream cycle. Missing when one side never fired. */}
@@ -993,7 +989,7 @@ const WireBlock: React.FC<{ event: CaptureEvent }> = ({ event }) => {
             fontFamily: FONT_MONO,
           }}
         >
-          ⇢ {t('captures.viaProxy')}: {event.proxy}
+          <Globe size={12} style={{ flexShrink: 0, verticalAlign: '-2px' }} /> {t('captures.viaProxy')}: {event.proxy}
         </div>
       )}
       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
@@ -3052,19 +3048,11 @@ export const CapturesPage: React.FC = () => {
                                   )}
                                 </span>
                                 {request.upstreamRequest?.proxy && (
-                                  <span
-                                    className="badge"
-                                    title={`${t('captures.viaProxy')}: ${request.upstreamRequest.proxy}`}
-                                    style={{
-                                      background: 'var(--hue-blue-soft)',
-                                      color: 'var(--hue-blue)',
-                                      fontFamily: FONT_MONO,
-                                      fontSize: 'var(--text-2xs)',
-                                      flexShrink: 0,
-                                    }}
-                                  >
-                                    ⇢ proxy
-                                  </span>
+                                  <EgressIcon
+                                    egress="proxy"
+                                    proxy={request.upstreamRequest.proxy}
+                                    size={12}
+                                  />
                                 )}
                                 {/* Compact leg chips: latency + decode rate inline; TTFT,
                                     raw ms and the timing gloss move to the tooltip so a

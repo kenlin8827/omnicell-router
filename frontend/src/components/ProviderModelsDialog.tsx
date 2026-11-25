@@ -10,8 +10,9 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
-import { useModelTest, apiErrorText, composeEgressLabel } from '../lib/useModelTest';
+import { useModelTest, apiErrorText } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
+import { EgressIcon } from './EgressIcon';
 import { Switch } from './Switch';
 import { fmtLatency } from '../lib/format';
 
@@ -855,25 +856,17 @@ export const ProviderModelsDialog: React.FC<{
                     </span>
                   )}
                   {/* Egress is ALWAYS visible in the row, next to the verdict it
-                      qualifies: this dialog is where models get wired to a split,
-                      and a hover-only answer would hide the one fact that proves
-                      the rule took effect. Unknown (plugin wire) renders nothing. */}
-                  {probe && composeEgressLabel(probe, t) && (
-                    <span
-                      style={{
-                        fontFamily: FONT_MONO,
-                        fontSize: 'var(--text-2xs)',
-                        whiteSpace: 'nowrap',
-                        color: 'var(--text-dim)',
-                        padding: '0 4px',
-                        border: '1px solid var(--divider)',
-                        borderRadius: 'var(--radius-sm, 6px)',
-                        marginLeft: '4px',
-                      }}
-                      title={probe.egressProxy ?? undefined}
-                    >
-                      {composeEgressLabel(probe, t)}
-                    </span>
+                      qualifies — but as one glyph, not a raw endpoint: this
+                      dialog is where models get wired to a split, so the row must
+                      show which way it went, and the tip carries the endpoint.
+                      Unknown (plugin wire) renders nothing. */}
+                  {probe && (
+                    <EgressIcon
+                      egress={probe.egress}
+                      proxy={probe.egressProxy}
+                      unknown="none"
+                      style={{ marginLeft: 4 }}
+                    />
                   )}
                   <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || probe ? 0 : 'auto' }}>
                     <button

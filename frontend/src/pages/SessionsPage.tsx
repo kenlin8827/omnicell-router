@@ -14,6 +14,7 @@ import { Dialog } from '../components/Dialog';
 import { Pagination } from '../components/Pagination';
 import { ScrollTable, stickyBodyCell } from '../components/ScrollTable';
 import { Descriptions } from '../components/Descriptions';
+import { EgressIcon } from '../components/EgressIcon';
 
 import { FONT_MONO } from '../lib/fonts';
 const PAGE_SIZES = [10, 20, 25, 50, 100, 200];
@@ -2567,10 +2568,12 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                     // Outbound egress (ADR-0018): its own self-describing
                     // track, same convention as stream/protocol, so "did this
                     // turn leave through the proxy?" is one scannable column.
+                    // One glyph per cell (components/EgressIcon.tsx), so the
+                    // track only has to hold an icon, not a word.
                     {
                       key: 'egress',
                       label: <span title={t('sessions.colEgressTip')}>{t('sessions.colEgress')}</span>,
-                      width: 84,
+                      width: 56,
                       align: 'center',
                     },
                   ]}
@@ -2701,26 +2704,14 @@ ${wires.filter((w) => w !== undefined).join(' · ')}`}
                         )}
                       </td>
                       <td style={DETAIL_TD_CENTER}>
-                        {/* Outbound egress of THIS turn (ADR-0018): the
-                            redacted proxy origin rides the PROXY tooltip.
+                        {/* Outbound egress of THIS turn (ADR-0018): one glyph,
+                            with the redacted proxy origin on its hover tip.
                             Absent = unknown (legacy row / plugin transport),
-                            rendered '—' — never as direct. */}
-                        {tr.execution.egress === 'proxy' ? (
-                          <span
-                            className="badge badge-info"
-                            title={`${t('sessions.egressProxyTip')}: ${tr.execution.egressProxy ?? ''}`}
-                          >
-                            PROXY
-                          </span>
-                        ) : tr.execution.egress === 'direct' ? (
-                          <span style={{ color: 'var(--text-dim)' }} title={t('sessions.egressDirectTip')}>
-                            DIRECT
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-dim)' }} title={t('sessions.egressUnknownTip')}>
-                            —
-                          </span>
-                        )}
+                            rendered as a dash — never as direct. */}
+                        <EgressIcon
+                          egress={tr.execution.egress}
+                          proxy={tr.execution.egressProxy}
+                        />
                       </td>
                     </tr>
                     );

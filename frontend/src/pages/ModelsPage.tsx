@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy, PowerOff } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
-import { useModelTest, composeEgressLabel } from '../lib/useModelTest';
+import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { ModelEditDialog } from '../components/ModelEditDialog';
@@ -10,6 +10,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { ScrollTable } from '../components/ScrollTable';
 import { Chip } from '../components/Chip';
+import { EgressIcon } from '../components/EgressIcon';
 import { fmtLatency } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
 
@@ -384,26 +385,18 @@ export const ModelsPage: React.FC = () => {
                                 {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
                               </span>
                             )}
-                            {/* Egress is ALWAYS on screen, never hover-only: the
-                                whole point of a split is knowing which way a
-                                provider went, and a title attribute is invisible
-                                in a list the operator scans. Unknown (plugin
-                                wire) renders nothing — see composeEgressLabel. */}
-                            {res && composeEgressLabel(res, t) && (
-                              <span
-                                style={{
-                                  fontFamily: mono,
-                                  fontSize: 'var(--text-2xs)',
-                                  whiteSpace: 'nowrap',
-                                  color: 'var(--text-dim)',
-                                  padding: '0 4px',
-                                  border: '1px solid var(--divider)',
-                                  borderRadius: 'var(--radius-sm, 6px)',
-                                }}
-                                title={res.egressProxy ?? undefined}
-                              >
-                                {composeEgressLabel(res, t)}
-                              </span>
+                            {/* Egress is ALWAYS on screen, but as one glyph, not
+                                a raw endpoint: the whole point of a split is
+                                knowing which way a provider went, and the row
+                                only carries that one bit (endpoint in the tip).
+                                Unknown (plugin wire) renders nothing. */}
+                            {res && (
+                              <EgressIcon
+                                egress={res.egress}
+                                proxy={res.egressProxy}
+                                unknown="none"
+                                style={{ marginLeft: 4 }}
+                              />
                             )}
                             <button
                               style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}

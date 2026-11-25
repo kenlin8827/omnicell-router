@@ -125,18 +125,9 @@ export interface ModelTestOutcome {
 }
 
 /**
- * Localized egress limb of a probe verdict — `via <origin>` or `direct`.
- * Returns undefined when the egress is UNKNOWN (plugin-owned transport), so a
- * surface renders nothing rather than claiming a path the core never saw.
- *
- * This is the only place a test result can prove the model-scoped proxy split
- * reached a provider: the include/exclude page states intent, not outcome.
+ * Localized egress limb of a probe verdict lives in `components/EgressIcon.tsx`:
+ * one glyph on screen, the redacted endpoint in its hover tip.
  */
-export const composeEgressLabel = (r: { egress?: 'direct' | 'proxy'; egressProxy?: string }, t: TFn): string | undefined => {
-  if (r.egress === 'proxy') return t('op.probeEgressProxy', { origin: r.egressProxy ?? '?' });
-  if (r.egress === 'direct') return t('op.probeEgressDirect');
-  return undefined;
-};
 
 const CONCURRENCY = 4;
 /** Batch tests above this count fire real inference calls — confirm first. */
