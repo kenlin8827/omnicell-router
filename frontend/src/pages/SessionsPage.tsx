@@ -1395,7 +1395,12 @@ export const SessionsPage: React.FC = () => {
                       // name — one ellipsized word). 8px keeps the column
                       // from touching its neighbors while the badge text
                       // gets the width back.
+                      // Centered like the head cell declares (`align:
+                      // 'center'`): badges ride the flex `justifyContent`
+                      // above, but the empty-state dash is plain text and
+                      // would otherwise sit left of a centered label.
                       padding: '10px 8px',
+                      textAlign: 'center',
                     }}
                   >
                     {(s.apiKeys && s.apiKeys.length > 0) || (s.clients && s.clients.length > 0) ? (
@@ -1807,17 +1812,17 @@ export const SessionsPage: React.FC = () => {
             </span>
           }
           subtitle={
-            <span
-              style={{
-                display: 'inline-flex',
-                flexDirection: 'column',
-                gap: '2px',
-                fontFamily: FONT_MONO,
-                fontSize: 'var(--text-xs)',
-                wordBreak: 'break-all',
-              }}
-            >
-              <span>
+            // The lines are DIRECT children of the Dialog's subtitle slot, which
+            // owns the multi-line rhythm (flex column, gap 4, text-xs, dim,
+            // leading-normal — Dialog.tsx), the same convention
+            // CatalogSourcesPage's subtitle uses. The first-prompt line used to
+            // sit here as the stack's last entry: 4px under the id line but
+            // 12px + the card's own padding above the summary grid, so it read
+            // as an orphan floating over the card. It is summary data, so it
+            // lives inside the card now (always visible, outside the
+            // collapsible grid).
+            <>
+              <span style={{ fontFamily: FONT_MONO, wordBreak: 'break-all' }}>
                 {/* Same minting-side marker as the table row, IN FRONT of the id
                     for the same reason (it labels the value that follows). The
                     dialog keeps the WORD beside the icon: it is where the
@@ -1863,7 +1868,7 @@ export const SessionsPage: React.FC = () => {
                 <span
                   key={`${ref.kind}:${ref.id}`}
                   title={t('sessions.clientRefTooltip', { kind: ref.kind, id: ref.id })}
-                  style={{ color: 'var(--text-dim)', cursor: 'copy' }}
+                  style={{ cursor: 'copy', fontFamily: FONT_MONO, wordBreak: 'break-all' }}
                   onClick={async () => {
                     const ok = await copyToClipboard(ref.id);
                     if (ok) toast.success(t('sessions.copiedClientRef'));
@@ -1873,24 +1878,7 @@ export const SessionsPage: React.FC = () => {
                   {ref.kind} · {ref.id}
                 </span>
               ))}
-              {/* Session title (first user prompt, backend-capped): the list row
-                  shows an ellipsized single line, and this dialog is where the
-                  operator confirms what the conversation was about before
-                  reading it. Same copy affordance as the row. */}
-              {timeline.session.firstUserMessage && (
-                <span
-                  title={timeline.session.firstUserMessage}
-                  style={{ color: 'var(--text-dim)', cursor: 'copy' }}
-                  onClick={async () => {
-                    const ok = await copyToClipboard(timeline.session.firstUserMessage!);
-                    if (ok) toast.success(t('sessions.copiedPrompt'));
-                    else toast.error(t('sessions.copyFailed'));
-                  }}
-                >
-                  {timeline.session.firstUserMessage}
-                </span>
-              )}
-            </span>
+            </>
           }
           onClose={() => setTimeline(null)}
           closeLabel={t('common.close')}
@@ -1996,6 +1984,38 @@ export const SessionsPage: React.FC = () => {
                   </span>
                 )}
               </button>
+              {/* Session title (first user prompt, backend-capped): the list row
+                  shows an ellipsized single line, and this dialog is where the
+                  operator confirms what the conversation was about before
+                  reading the trail. It lives inside the card but OUTSIDE the
+                  collapsible grid, so it stays visible whether the summary is
+                  open or collapsed (it used to sit in the subtitle, where the
+                  gap below it read as an orphan, and then in the grid, where
+                  collapsing the card hid it entirely). No label — the mono
+                  quote is self-evident. Same copy affordance as the row's. */}
+              {timeline.session.firstUserMessage && (
+                <div style={{ padding: '2px 12px 9px', minWidth: 0 }}>
+                  <span
+                    title={timeline.session.firstUserMessage}
+                    style={{
+                      display: 'block',
+                      cursor: 'copy',
+                      fontFamily: FONT_MONO,
+                      fontSize: 'var(--text-sm)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                    onClick={async () => {
+                      const ok = await copyToClipboard(timeline.session.firstUserMessage!);
+                      if (ok) toast.success(t('sessions.copiedPrompt'));
+                      else toast.error(t('sessions.copyFailed'));
+                    }}
+                  >
+                    {timeline.session.firstUserMessage}
+                  </span>
+                </div>
+              )}
               {timeline.summaryOpen && (
                 <div style={{ padding: '2px 12px 14px' }}>
                   {/* One bordered Descriptions list: label cell + value cell per

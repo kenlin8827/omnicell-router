@@ -95,6 +95,13 @@ export const ScrollTable: React.FC<{
   // to the tracks. The mirrored `scrollLeft` would then clamp short and leave every
   // column shifted by the overflow at the far right of the table.
   const [headWidth, setHeadWidth] = useState<number | null>(null);
+  // The width the body's vertical scrollbar takes from its client box. The head's
+  // scrollport has no bar, so it is this much WIDER than the body's. A `sticky
+  // right: 0` cell pins to its own scrollport's right edge, so without this inset
+  // the pinned HEAD cell lands one bar to the right of the pinned BODY cell
+  // (visible on narrow windows where the table overflows sideways: the opaque
+  // pinned cell clips its neighbour column and a ghost gap opens up in the head).
+  const [stickyInset, setStickyInset] = useState(0);
 
   const measure = () => {
     const row = bodyTableRef.current?.tBodies[0]?.rows[0];
@@ -117,8 +124,10 @@ export const ScrollTable: React.FC<{
     // from its client box (the head has no scrollbar, so without that term the head
     // would come up short by the bar's width even with no content overflow).
     const body = bodyRef.current;
-    const extent = body ? body.scrollWidth + (body.offsetWidth - body.clientWidth) : next.reduce((sum, w) => sum + w, 0);
+    const bar = body ? body.offsetWidth - body.clientWidth : 0;
+    const extent = body ? body.scrollWidth + bar : next.reduce((sum, w) => sum + w, 0);
     setHeadWidth((prev) => (prev !== null && Math.abs(prev - extent) < 0.5 ? prev : extent));
+    setStickyInset((prev) => (Math.abs(prev - bar) < 0.5 ? prev : bar));
   };
 
   // After every render: rows, column count, the body's scrollbar and any content that
@@ -196,7 +205,9 @@ export const ScrollTable: React.FC<{
                       ...HEAD_CELL,
                       ...headCellStyle,
                       ...(column.align ? { textAlign: column.align } : {}),
-                      ...(column.sticky ? stickyBodyCell : {}),
+                      // Pin with the body's bar inset so the seam lands on the
+                      // SAME x as the pinned body cell below it.
+                      ...(column.sticky ? { ...stickyBodyCell, right: stickyInset } : {}),
                       ...column.headStyle,
                     }}
                   >
