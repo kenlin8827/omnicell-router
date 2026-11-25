@@ -306,12 +306,20 @@ export interface ChatPluginProvider {
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    /**
+     * Resolved OCR conversation id for this call (`x-session-id`, a minted
+     * `sess_…`, or any other resolver result). Present on every routed
+     * execution. The capture handle has no session field.
+     */
+    sessionId?: string,
   ): Promise<ChatCompletionResponse>;
   createStream?(
     request: ChatCompletionRequest,
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    /** Same conversation id as `createCompletion`. */
+    sessionId?: string,
   ): Promise<AsyncIterable<ChatCompletionChunk>>;
 }
 

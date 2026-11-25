@@ -11,6 +11,7 @@ import type { ExecutionResult } from '../../src/types/router.js';
 import { createEventAccumulator } from '../../src/ir/stream.js';
 import { ChatStreamDecoder } from '../../src/ir/adapters/openai-chat-stream.js';
 import { OpenAIChatProvider } from '../../src/providers/executors/openai-chat.js';
+import { UpstreamEventContext } from '../../src/observability/upstream-events.js';
 import { UpstreamError } from '../../src/resilience/error-classifier.js';
 import type { ModelRegistration, ProviderConfig } from '../../src/config/types.js';
 import { responseIR, toIR } from '../helpers/ir.js';
@@ -356,7 +357,7 @@ describe('provider streaming leg (capture + error class)', () => {
       const stream = await provider.createStream(
         toIR({ model: 'x', messages: [] }),
         modelReg(),
-        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
+        new UpstreamEventContext({ recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' })
       );
       for await (const _c of stream) void _c;
     } finally {
@@ -394,7 +395,7 @@ describe('provider streaming leg (capture + error class)', () => {
       await provider.createStream(
         toIR({ model: 'x', messages: [] }),
         modelReg(),
-        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
+        new UpstreamEventContext({ recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' })
       );
     } catch (err) {
       caught = err;
@@ -433,7 +434,7 @@ describe('provider streaming leg (capture + error class)', () => {
       await provider.createStream(
         toIR({ model: 'x', messages: [] }),
         modelReg(),
-        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
+        new UpstreamEventContext({ recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' })
       );
     } catch (err) {
       caught = err;
@@ -471,7 +472,7 @@ describe('provider streaming leg (capture + error class)', () => {
       const stream = await provider.createStream(
         toIR({ model: 'x', messages: [] }),
         modelReg(),
-        { recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' } as any
+        new UpstreamEventContext({ recorder: fakeRecorder(events), sessionId: 's', requestId: 't', model: 'x' })
       );
       for await (const event of stream) {
         if (event.type === 'response.output_text.delta') seen.push(event.text);

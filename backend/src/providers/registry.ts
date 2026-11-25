@@ -1158,6 +1158,8 @@ export class ProviderRegistry {
     upstreamEventContext?: UpstreamEventContext,
     credentialKeyHashPrefix?: string,
     relay?: StreamRelay,
+    /** Resolved OCR conversation id. Not a capture field. */
+    sessionId?: string,
   ): Promise<CanonicalResponse> {
     if (this.mockMode) {
       relay?.onTransport?.('buffered');
@@ -1184,7 +1186,7 @@ export class ProviderRegistry {
           const scanner = recovery ? null : createToolMarkupScanner();
           const rewrite = recovery ? createToolMarkupStreamRecovery(request) : null;
           relay.onTransport?.('sse');
-          const stream = await provider.createStream!(request, model, upstreamEventContext, credential);
+          const stream = await provider.createStream!(request, model, upstreamEventContext, credential, sessionId);
           // Drain for terminal usage even if the client disconnected. Relay and
           // accounting consume the same event objects without history copies.
           for await (const event of stream) {
@@ -1206,7 +1208,7 @@ export class ProviderRegistry {
         }
         relay.onTransport?.('buffered');
       }
-      const buffered = await provider.createCompletion(request, model, upstreamEventContext, credential);
+      const buffered = await provider.createCompletion(request, model, upstreamEventContext, credential, sessionId);
       const finished = recovery ? recoverToolMarkupInResponse(buffered, request) : buffered;
       const leak = recovery ? finished.toolMarkupLeak ?? null : detectToolMarkupLeak(finished);
       if (!leak) return finished;

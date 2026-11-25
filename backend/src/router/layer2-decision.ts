@@ -4,7 +4,7 @@ import { Layer2DecisionConfig } from '../config/types.js';
 import { DEFAULT_LAYER2_TIMEOUT_MS } from '../config/defaults.js';
 import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import type { UpstreamEventContext } from '../providers/base.js';
+import { UpstreamEventContext } from '../observability/upstream-events.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SystemoneRequest } from '../protocols/systemone/types.js';
 import { captureDecision } from '../capture/decision-capture.js';
@@ -310,16 +310,13 @@ export class Layer2Decision {
         resolve(null);
       }, timeoutMs);
     });
-    // L2-DECISION-CALL CAPTURE gate (the single requestCapture.enabled master,
-    // checked HERE via the recorder carried by the outer identity; master off
-    // means the orchestrator never even passes a ctx).
-    // ON: reuse the OUTER request's requestId/sessionId so the decision layer's wire call
-    // joins the routed turn's archive, labeled purpose 'l2-decision' to tell it
-    // from candidate-execution events. OFF: undefined = silence, the exact
-    // call shape as today.
+    // Archive copy of the outer turn, present only while capture is on.
+    // The copied sessionId labels the decision wire's events so they join
+    // the routed turn. It is not passed to the executor as a conversation
+    // binding: a routing decision is not the user's conversation.
     const decisionCaptureCtx: UpstreamEventContext | undefined =
       decisionCapture && decisionCapture.recorder.isEnabled()
-        ? { ...decisionCapture, purpose: 'l2-decision' }
+        ? decisionCapture.withPurpose('l2-decision')
         : undefined;
     const pending = runSystemoneDecision(
       registry,

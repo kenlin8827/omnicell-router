@@ -24,12 +24,14 @@ export function createPluginProvider(
       model: ModelRegistration,
       upstreamEventContext?: UpstreamEventContext,
       credential?: CallCredential,
+      sessionId?: string,
     ): Promise<CanonicalResponse> {
       const response = await provider.createCompletion(
         irToChatRequest(request, model.upstreamModel, { carrierExtensions: false }),
         model,
         upstreamEventContext,
         credential,
+        sessionId,
       );
       return chatResponseToIR(response);
     },
@@ -38,6 +40,7 @@ export function createPluginProvider(
       model: ModelRegistration,
       upstreamEventContext?: UpstreamEventContext,
       credential?: CallCredential,
+      sessionId?: string,
     ): Promise<AsyncIterable<StreamEvent>> {
       if (!provider.createStream) throw new Error(`Plugin provider '${provider.name}' has no stream executor`);
       const stream = await provider.createStream(
@@ -45,6 +48,7 @@ export function createPluginProvider(
         model,
         upstreamEventContext,
         credential,
+        sessionId,
       );
       return {
         async *[Symbol.asyncIterator]() {

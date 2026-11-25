@@ -159,10 +159,10 @@ function plannedEffort(model: ModelRegistration): ReasoningEffort | 'omit' {
  * response_format (one omit each) — at most 5 wire calls, and any rejection
  * the fallbacks do not cover rethrows immediately.
  *
- * `upstreamEventContext` is the capture identity for the call (decision layer
- * plumbing or the surface pipeline itself), or undefined:
- * every attempt — including the pin-repair re-pins — is a real wire call,
- * so each gets its own event pair through the registry's normal mechanism.
+ * `upstreamEventContext` is the archive label for the call, or undefined
+ * when capture is off. Every attempt, including pin-repair re-pins, is a
+ * real wire call and gets its own event pair. The executor is not given a
+ * conversation id: this call is a routing decision, not the user's session.
  */
 async function executeDecision(
   registry: ProviderRegistry,
