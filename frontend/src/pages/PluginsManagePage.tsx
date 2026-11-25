@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Download, RefreshCw, Puzzle, ScrollText, Trash2, Upload, Power, PowerOff, Settings2 } from 'lucide-react';
 import { ScrollTable } from '../components/ScrollTable';
+import { ProviderLogo } from '../components/ProviderLogo';
 import { Combobox } from '../components/Combobox';
 import { Drawer } from '../components/Drawer';
 import { Prose } from '../components/Prose';
@@ -38,6 +39,9 @@ const HEADER: React.CSSProperties = { display: 'flex', alignItems: 'center', jus
 
 const TITLE: React.CSSProperties = { fontSize: 'var(--text-xl)', fontWeight: 'var(--font-bold)', display: 'flex', alignItems: 'center', gap: 8 };
 const CELL: React.CSSProperties = { padding: '7px 10px', verticalAlign: 'middle' };
+/** A dormant package keeps its mark but says so: same treatment the provider
+ *  cards give a disabled row, so a disabled plugin never reads as live. */
+const LOGO_DORMANT: React.CSSProperties = { filter: 'grayscale(1)', opacity: 0.55 };
 /** Description cell: three lines, then ellipsis (full text on hover). Unclamped,
  *  one long manifest turns its row into a scroll of its own. */
 const DETAIL_CLAMP: React.CSSProperties = {
@@ -199,6 +203,16 @@ export function PluginsManagePage(): React.ReactElement {
     if (target) setConfigTarget(target);
   }, [plugins, searchParams, setSearchParams]);
 
+  // Brand marks come from the packages themselves (`manifest.logo`, ADR-0036
+  // shape): the core never keeps a plugin→logo table. Rows that declare no
+  // asset are simply absent here and `ProviderLogo` steps down to its
+  // initial-letter chip.
+  const logoMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of plugins) if (p.logo) map[p.id] = opencodeApi.pluginLogoUrl(p.id);
+    return map;
+  }, [plugins]);
+
   return (
     <>
       <div style={HEADER}>
@@ -266,7 +280,7 @@ export function PluginsManagePage(): React.ReactElement {
           { key: 'status', label: t('pluginPage.colStatus'), width: 140 },
           { key: 'actions', label: t('pluginPage.colActions'), align: 'center', width: 540 },
         ]}
-        minWidth={1080}
+        minWidth={1160}
         empty={loading ? t('common.loading') : (query || statusFilter) ? t('pluginPage.noMatch') : t('pluginPage.empty')}
       >
         {plugins
@@ -286,6 +300,11 @@ export function PluginsManagePage(): React.ReactElement {
           .map((p) => (
           <tr key={p.id}>
             <td style={CELL}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={p.disabled ? LOGO_DORMANT : undefined}>
+                  <ProviderLogo providerId={p.id} logoMap={logoMap} size={40} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 'var(--font-semibold)' }}>{p.name}</div>
               {/* Error first (an operator scrolling the list needs the reason), then
                   the localized description clamped to two lines; the tooltip keeps
@@ -320,6 +339,8 @@ export function PluginsManagePage(): React.ReactElement {
                   );
                 })()
               )}
+                </div>
+              </div>
             </td>
             <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)' }}>{p.version}</td>
             <td style={CELL}>

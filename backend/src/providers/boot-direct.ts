@@ -20,6 +20,7 @@ import { assertAllowedUpstream, UpstreamUrlError } from '../utils/upstream-url-g
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
 import { getProviderTakedownStore } from './provider-takedown.js';
+import { getModelServicePlugin, pluginDeclinesCredentials } from '../plugins/host.js';
 
 /**
  * Build the direct execution pool WITHOUT the opencode daemon.
@@ -221,9 +222,15 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // Bake the default credential (P3 step 1); `resolved?.key` stays the defensive
     // fallback for a store whose chain read came back empty while resolveKey
     // answered — head === baked key is an invariant the registry relies on.
-    const apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
-
-    if (!apiKey) {
+    const pkg = typeof def?.npm === 'string' ? def.npm : typeof rec.npm === 'string' ? rec.npm : '';
+    // A plugin that declares only `none` owns login. A stored OCR key is not an account and is not required to route.
+    const credentialless = pkg ? pluginDeclinesCredentials(getModelServicePlugin(wireFor(pkg))) : false;
+    let apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
+    if (credentialless) {
+      apiKey = '';
+      storeCreds = [];
+      resolved = null;
+    } else if (!apiKey) {
       // catalog-universe providers without credentials are structural noise —
       // only surface when the user actually defined a config node for them.
       // the credential candidates are the inline def and
@@ -402,7 +409,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // Inline {env}/options.apiKey outranks the store for the baked default
     // (Decision 1) — it becomes the chain HEAD too, keeping the invariant
     // head === config.apiKey; store credentials stay selectable below it.
-    if (inlineKey) credentialChain.unshift(toCallCredential(inlineKey, 'inline'));
+    if (inlineKey && !credentialless) credentialChain.unshift(toCallCredential(inlineKey, 'inline'));
     instances.push({
       name: rec.id,
       config: {

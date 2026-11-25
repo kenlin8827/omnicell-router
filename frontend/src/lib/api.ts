@@ -1,7 +1,7 @@
 import type { Lang } from '../i18n/types';
 
 /** Credential methods a plugin's connect card may offer (backend PluginAuthType). */
-export type PluginAuthType = 'webLogin' | 'key';
+export type PluginAuthType = 'none' | 'webLogin' | 'key';
 
 export interface ProjectItem {
   id: string;
@@ -5381,6 +5381,9 @@ export interface PluginViewInfo {
   /** Release history from the manifest, in declared (newest-first) order. */
   changelog?: PluginChangelogEntry[];
   presets?: PluginProviderPresetInfo[];
+  /** Logo asset inside the package (manifest-declared relative path; served at
+   *  /api/admin/plugins/:id/logo — mirrors backend PluginView). */
+  logo?: string;
   source: 'dev' | 'packaged';
   path: string;
   loaded: boolean;
@@ -5490,6 +5493,10 @@ export interface OpenCodeProviderView {
     keyMasked?: string;
     inline?: boolean;
   };
+  /** Plugin-declared credential methods. Empty array = the plugin owns login. */
+  authTypes?: PluginAuthType[];
+  /** Already-localized how-to line from the owning preset. */
+  keyHint?: string;
 }
 
 export interface OpenCodeCatalogProvider {
@@ -5510,8 +5517,9 @@ export interface OpenCodeCatalogProvider {
    *  authorization) — the dialog shows the paste box. */
   webLoginSubmit?: boolean;
   /** Plugin-declared credential methods in display order; the FIRST entry is
-   *  the dialog's default selection. Absent = legacy behavior (key first,
-   *  web tab after it when webLogin is set). Mirrors backend PluginAuthType. */
+   *  the dialog's default selection. `none` connects with no credential,
+   *  `webLogin` is the web tab, `key` is the key form. Absent = legacy
+   *  behavior (key first, web tab after it when webLogin is set). */
   authTypes?: PluginAuthType[];
   /** Plugin-provided how-to hint (already localized server-side) rendered
    *  above the key form in the add-credential dialog — "where to get this
@@ -6504,6 +6512,13 @@ export const opencodeApi = {
     return `/api/admin/plugins/${encodeURIComponent(id)}/package`;
   },
 
+  /** URL of an installed plugin's brand mark. Empty result for a package that
+   *  declares no `logo` asset (or whose file is missing) — 404, and the logo
+   *  renderer steps down to its initial-letter chip. */
+  pluginLogoUrl(id: string): string {
+    return `/api/admin/plugins/${encodeURIComponent(id)}/logo`;
+  },
+
   async uninstallPlugin(id: string): Promise<{ status: string; removed: string[]; providersRemoved?: string[]; devOnly?: boolean; plugins: PluginViewInfo[] }> {
     const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/uninstall`, { method: 'DELETE' });
     const parsed = (await res.json()) as { status: string; error?: string; removed: string[]; plugins: PluginViewInfo[] };
@@ -6761,6 +6776,17 @@ export const opencodeApi = {
    * is ALSO the key its own CLI uses, so adding an credential must not repoint it).
    * The reply mirrors backend console.ts `connect` inline.
    */
+  /** Enable a preset whose plugin owns login. No credential is written. */
+  async connectLocal(id: string): Promise<{ status: string; success: boolean; connected: boolean }> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/connect-local`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+    );
+  },
+
   async connectProvider(
     id: string,
     apiKey: string,

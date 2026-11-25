@@ -985,6 +985,23 @@ export function getModelServicePlugin(wire: string): ModelServicePlugin | undefi
   return getModelServicePluginEntry(wire)?.plugin;
 }
 
+/** True when the declared methods are only `none` (no key, no web login).
+ *  Absent stays the legacy key form. */
+export function pluginDeclinesCredentials(plugin: { authTypes?: readonly PluginAuthType[] } | undefined): boolean {
+  const types = plugin?.authTypes;
+  return Array.isArray(types) && types.includes('none') && !types.some((t) => t === 'key' || t === 'webLogin');
+}
+
+/** True when `providerId` is a preset of a plugin that owns its own login. */
+export function providerDeclinesCredentials(providerId: string): boolean {
+  for (const { plugin, view } of registry.values()) {
+    if ((view.presets ?? []).some((preset) => preset.providerId === providerId)) {
+      return pluginDeclinesCredentials(plugin);
+    }
+  }
+  return false;
+}
+
 /** Manifest id of an uploaded package, read WITHOUT touching disk. The install
  *  route needs it up front to snapshot the version it is about to replace, so a
  *  failed upgrade can be rolled back instead of deleting a working install. */
@@ -1301,6 +1318,13 @@ export function pluginProviderOrigins(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [pluginId, entry] of Object.entries(readRegistrations())) {
     for (const id of entry.providers) out[id] = pluginId;
+  }
+  // A deleted preset leaves the ledger, but the connect catalog still lists it.
+  // Keep the plugin id on that row so the origin filter can find it.
+  for (const { view } of registry.values()) {
+    for (const preset of view.presets ?? []) {
+      if (!out[preset.providerId]) out[preset.providerId] = view.id;
+    }
   }
   return out;
 }
@@ -1651,7 +1675,9 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
   { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[]
 > {
   const { getCredentialStore } = await import('../opencode/credentials/index.js');
+  const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
   const store = await getCredentialStore();
+  const defs = readProviderDefsFile()?.providers ?? {};
   const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[] = [];
   for (const { plugin, view } of registry.values()) {
     const logoUrl = view.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
@@ -1673,7 +1699,12 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         npm: currentProtocol(preset.protocol || preset.npm!),
         baseURL: preset.baseUrl,
         custom: true,
-        connected: Boolean(store.resolveKey(preset.providerId)?.key),
+        // A plugin that owns login is connected when its def exists. A stored
+        // key is not an account for it, and a missing key must not keep the
+        // card on the connect form.
+        connected: pluginDeclinesCredentials(plugin)
+          ? Boolean(defs[preset.providerId])
+          : Boolean(store.resolveKey(preset.providerId)?.key),
         // Console connect card offers the web-authorization button when the
         // plugin declares the capability (vendor knowledge stays in-plugin).
         webLogin: typeof plugin.webLogin === 'object',
@@ -1691,7 +1722,13 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
 /** Serve a plugin package's logo asset (path-safe: manifest-declared only). */
 export function pluginLogoFile(id: string): string | undefined {
   if (!isValidPluginId(id)) return undefined;
-  for (const { view } of registry.values()) {
+  // Resolve over the LISTED VIEWS, not the provider registry: the registry holds
+  // only packages with a model-service half, so a pure client-gateway package —
+  // the rows that declare a brand mark most often — 404'd on its own manifest
+  // field. A logo is a static asset of the package, not a capability of the live
+  // host, so every row the console renders (loaded, disabled or refused) serves
+  // the mark it advertises.
+  for (const view of listInstalledPlugins()) {
     if (view.id !== id) continue;
     const rel = view.logo;
     if (!rel) return undefined;

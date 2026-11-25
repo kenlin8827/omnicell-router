@@ -14,6 +14,7 @@ import {
   sanitizeProbePath,
 } from '../../src/quota/engine.js';
 import { MINIMAX_ADAPTER } from '../../src/quota/adapters/minimax.js';
+import { CLI_LOGIN_QUOTA_PREFIX } from '../../src/quota/cli-login.js';
 import { QuotaProber, type QuotaRegistryView } from '../../src/quota/prober.js';
 import { QuotaSnapshotStore, setQuotaStoreForTests } from '../../src/quota/store.js';
 import { QuotaEventLog, setQuotaEventLogForTests } from '../../src/quota/events.js';
@@ -685,6 +686,25 @@ describe('quota prober scheduling', () => {
       setQuotaStoreForTests(undefined);
       fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
     }
+  });
+
+  it('a provider that owns its own login is one CLI-login pair, with no OCR key', () => {
+    const prober = new QuotaProber({
+      registry: {
+        ...fakeRegistry({}),
+        credentialless: (pid) => pid === 'qoder-cli-cn',
+      },
+      pluginLayer: {
+        candidateIds: () => ['qoder-cli-cn', 'deepseek'],
+        adapterFor: (pid) => pid === 'qoder-cli-cn'
+          ? { id: 'plugin:qoder-cli-models', providerIds: [pid], probe: async () => ({ ok: true, windows: [] }) }
+          : undefined,
+      },
+      config: () => baseCfg(),
+    });
+    const due = prober.planProbes(1000);
+    assert.deepEqual(due.map((p) => `${p.providerId}#${p.keyHashPrefix}`), [`qoder-cli-cn#${CLI_LOGIN_QUOTA_PREFIX}`]);
+    assert.equal(due[0]?.key, '');
   });
 
   it('a 429 arms the ENGINE-LEVEL global backoff gate (not a per-entry field)', async () => {

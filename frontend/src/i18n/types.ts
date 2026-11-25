@@ -613,6 +613,7 @@ export interface TranslationDict {
     copyFailed: string;
     connectBtn: string;
     connectMethodKey: string;
+    connectMethodNone: string;
     webLoginBtn: string;
     webLoginTip: string;
     webLoginTitle: string;
@@ -627,6 +628,7 @@ export interface TranslationDict {
     webLoginSubmitPlaceholder: string;
     webLoginSubmitBtn: string;
     connectOk: string;
+    connectLocalOk: string;
     testBtn: string;
     testing: string;
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
@@ -1671,6 +1673,8 @@ hiddenBadge: string;
     refreshUnavailable: string;
     searchPlaceholder: string;
     pairsEmpty: string;
+    /** Pair identity for a provider that logs in through the machine CLI, not an OCR key. */
+    cliLogin: string;
     /** Status segmented control next to the search: healthy (default —
      *  hides sync-failed pairs), failed only, or everything. */
     filterOk: string;

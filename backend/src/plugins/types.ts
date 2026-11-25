@@ -290,10 +290,13 @@ export interface PluginProviderPreset {
 }
 
 /** Credential methods the console may offer for this plugin's providers, in
- *  display order; the FIRST entry is the default selection. 'webLogin'
- *  requires the webLogin capability below. Absent = legacy behavior (the key
- *  form always renders, the web tab appears after it when webLogin exists). */
-export type PluginAuthType = 'webLogin' | 'key';
+ *  display order; the FIRST entry is the default selection.
+ *  - `none` — connect with no OCR credential (the plugin owns login)
+ *  - `webLogin` — console web login; requires the webLogin capability below
+ *  - `key` — paste a credential
+ *  Absent = legacy behavior (the key form always renders, the web tab appears
+ *  after it when webLogin exists). */
+export type PluginAuthType = 'none' | 'webLogin' | 'key';
 
 /** Chat is the versioned external plugin contract, never the core IR. */
 export interface ChatPluginProvider {

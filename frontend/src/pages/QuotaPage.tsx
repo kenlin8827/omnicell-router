@@ -247,8 +247,9 @@ export const QuotaPage: React.FC = () => {
   // never rendered (it used to leak here as an unreadable UUID); the
   // display-safe key hash stays in the tooltip and the search.
   const pairName = useCallback(
-    (row: QuotaPairRow): string => row.label || row.maskedKey || `#${row.keyHashPrefix.slice(0, 6)}`,
-    []
+    (row: QuotaPairRow): string =>
+      row.keyHashPrefix === 'cli-login' ? t('quotaPage.cliLogin') : row.label || row.maskedKey || `#${row.keyHashPrefix.slice(0, 6)}`,
+    [t]
   );
 
   const filteredPairs = useMemo(() => {

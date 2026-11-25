@@ -54,6 +54,7 @@ import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type 
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
+import { CLI_LOGIN_QUOTA_PREFIX, providerUsesCliLogin } from '../quota/cli-login.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import { CLASSIFIER_TAXONOMY } from '../resilience/index.js';
@@ -642,6 +643,10 @@ async function buildQuotaPairRows(
       overview = [];
     }
     for (const o of overview) {
+      if (providerUsesCliLogin(o.providerId)) {
+        add(o.providerId, CLI_LOGIN_QUOTA_PREFIX, undefined, undefined);
+        continue;
+      }
       let metas: CredentialMeta[] = [];
       try {
         metas = store.listCredentials(o.providerId);
@@ -661,6 +666,10 @@ async function buildQuotaPairRows(
   //    when a provider registered no chain (the chain-less degeneracy). Union
   //    with (1) — `add` dedupes by pair id, so a store row keeps its identity.
   for (const m of registry.getAllModels()) {
+    if (providerUsesCliLogin(m.provider)) {
+      add(m.provider, CLI_LOGIN_QUOTA_PREFIX, undefined, undefined);
+      continue;
+    }
     const chain = registry.getCredentialChain(m.provider) ?? [];
     for (const c of chain) add(m.provider, c.keyHashPrefix, c.label, maskSecret(c.key));
     if (chain.length === 0) {
@@ -853,6 +862,13 @@ async function storeProviderViews(store: CredentialStore, lang?: string): Promis
         // rename (providers.json is operator-owned, ADR-0010) stays untouched
         if (!v.name || v.name === preset.defaultName || v.name === preset.name) v.name = preset.name;
         if (preset.logo && !v.logo) v.logo = preset.logo;
+        v.authTypes = preset.authTypes;
+        v.keyHint = preset.keyHint;
+        // Credential-less preset: the def is the connection. Drop any stored
+        // key from the card summary so the console does not offer another one.
+        if (Array.isArray(preset.authTypes) && preset.authTypes.includes('none') && !preset.authTypes.some((t) => t === 'key' || t === 'webLogin')) {
+          v.auth = { connected: true };
+        }
       }
     }
   }
@@ -3728,6 +3744,20 @@ export function registerConsoleRoutes(
       }
     },
 
+    /** Connect a preset whose plugin owns login. Materializes the def and
+     *  lifts a deletion tombstone. Refuses a provider that still takes a key. */
+    connectLocal: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const { providerDeclinesCredentials, ensurePresetProvider } = await import('../plugins/host.js');
+      if (!providerDeclinesCredentials(id)) {
+        return reply.status(400).send({ success: false, error: `Provider '${id}' takes a credential` });
+      }
+      if (!(await ensurePresetProvider(id))) {
+        return reply.status(404).send({ success: false, error: `Provider '${id}' is not a plugin preset` });
+      }
+      return { status: 'ok', success: true, connected: true };
+    },
+
     /** Resolve the model-service plugin serving a provider def's wire
      *  (plugin wires only — the vendor protocol stays in the plugin). */
     webLoginPluginFor: async (id: string) => {
@@ -3971,6 +4001,12 @@ export function registerConsoleRoutes(
         probeAttempts.push({ key: inlineKey });
       } else {
         for (const c of enabledChain) probeAttempts.push({ key: c.key, credentialId: c.credentialId });
+      }
+      if (probeAttempts.length === 0) {
+        // `none` owns login outside the credential store. One empty attempt
+        // lets the plugin probe run; a missing key is not a failure.
+        const { providerDeclinesCredentials } = await import('../plugins/host.js');
+        if (providerDeclinesCredentials(id)) probeAttempts.push({ key: '' });
       }
       if (probeAttempts.length === 0) {
         // Every stored key parked: say THAT, not the misleading no-key/OAuth
@@ -4956,6 +4992,7 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers`, withPoolSync(registry, ocHandlers.create));
     app.patch(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.update));
     app.post(`${prefix}/opencode/providers/:id/connect`, withPoolSync(registry, ocHandlers.connect));
+    app.post(`${prefix}/opencode/providers/:id/connect-local`, withPoolSync(registry, ocHandlers.connectLocal));
     // Generic plugin web-authorization seam (device flow): start opens the
     // vendor login page; poll returns done+token and wires the fresh token
     // into the credential store. The plugin owns the whole protocol.

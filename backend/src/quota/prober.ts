@@ -1,5 +1,6 @@
 import type { RouterConfig } from '../config/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
+import { CLI_LOGIN_QUOTA_PREFIX } from './cli-login.js';
 import { buildEffectivePlan, probePair, clampTtl, type EffectiveQuotaPlan, type QuotaTarget } from './engine.js';
 import { getQuotaStore } from './store.js';
 import { clampProbeIntervalMs, DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
@@ -52,6 +53,11 @@ export interface QuotaRegistryView {
    * valid — the chain/baked fallbacks below then apply.
    */
   listStoredCredentials?(name: string): { keyHashPrefix: string; key: string }[];
+  /**
+   * The plugin owns login and stores no OCR key (`authTypes: ['none']`).
+   * Quota still activates: one pair, the machine CLI login.
+   */
+  credentialless?(name: string): boolean;
 }
 
 /** Outcome of one manual refresh (the console button). */
@@ -223,6 +229,10 @@ export class QuotaProber {
    *  then the registry chain, then the config-baked inference key (chain-less
    *  degeneracy). */
   private pairsOf(providerId: string): QuotaPairCandidate[] {
+    // One machine login is one account. Stray OCR keys are not extra rows.
+    if (this.registry.credentialless?.(providerId)) {
+      return [{ providerId, keyHashPrefix: CLI_LOGIN_QUOTA_PREFIX, key: '' }];
+    }
     const stored = this.registry.listStoredCredentials?.(providerId);
     if (stored && stored.length > 0) {
       return stored.map((c) => ({ providerId, keyHashPrefix: c.keyHashPrefix, key: c.key }));
