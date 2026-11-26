@@ -39,6 +39,16 @@ export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
 /** `compression.headroom.url` backend default (loopback-only sidecar). */
 export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 
+/** First port the local-model runner offers a launched engine — mirrors
+ *  backend `DEFAULT_LOCAL_RUN_PORT` (backend/src/config/defaults.ts). */
+export const DEFAULT_LOCAL_RUN_PORT = 4800;
+
+/** Context ladder the local-run ctx picker shows before the first plan
+ *  response arrives — mirrors backend `CTX_LADDER` (backend/src/local/plan.ts).
+ *  Once a plan lands, `LocalPlanResponse.ctxLadder` is the source and this
+ *  copy is never read again. Update both copies in the same commit. */
+export const LOCAL_CTX_LADDER = [8192, 16384, 32768, 65536, 131072] as const;
+
 /** `proxy.mihomo.mixedPort` backend default (ADR-0022). */
 export const DEFAULT_MIHOMO_MIXED_PORT = 7890;
 

@@ -31,6 +31,7 @@ import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_RULES, DEFAULT_FORWARD_PROXY_INTERCEPT, DEFAULT_MIHOMO_MIXED_PORT, PLUGIN_PACKAGE_MAX_BYTES, DEFAULT_TRAFFIC_DISSECT_WINDOW_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { registerMihomoRoutes } from './mihomo.js';
+import { registerLocalModelRoutes } from './local-models.js';
 import { reconcileMihomoSidecar, getMihomoStatus } from '../proxy/mihomo-sidecar.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
@@ -5760,6 +5761,10 @@ export function registerConsoleRoutes(
   });
 
   registerMihomoRoutes(app);
+
+  // Local inference engines (llama.cpp / Strata): catalog, dependency probe,
+  // streaming install, uninstall. Under /api/admin/* → covered by webAuth.
+  registerLocalModelRoutes(app);
 
   /* ---------------------------------------------------------------------- *
    * 12b. Request-capture archive browser (CaptureRecorder; opt-in audit log)

@@ -31,6 +31,12 @@ import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
 import { RouteEntriesPage } from './pages/RouteEntriesPage';
 import { YamlPage } from './pages/YamlPage';
+import { LocalModelsPage } from './pages/LocalModelsPage';
+import { LocalMonitorPage } from './pages/LocalMonitorPage';
+import { ModelMarketPage } from './pages/ModelMarketPage';
+import { InstalledModelsPage } from './pages/InstalledModelsPage';
+import { LocalRunPage } from './pages/LocalRunPage';
+import { LocalSettingsPage } from './pages/LocalSettingsPage';
 import { HarnessPage } from './pages/HarnessPage';
 import { McpDebugPage } from './pages/McpDebugPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
@@ -116,6 +122,12 @@ export const App: React.FC = () => {
         <Route path="models" element={<ModelsPage />} />
         <Route path="catalog" element={<CatalogSourcesPage />} />
         <Route path="proxy-upstream" element={<ProxyPage />} />
+        <Route path="local-models" element={<LocalModelsPage />} />
+        <Route path="model-market" element={<ModelMarketPage />} />
+        <Route path="installed-models" element={<InstalledModelsPage />} />
+        <Route path="local-run" element={<LocalRunPage />} />
+        <Route path="local-monitor" element={<LocalMonitorPage />} />
+        <Route path="local-settings" element={<LocalSettingsPage />} />
         <Route path="proxy-clash" element={<MihomoPage />} />
         <Route path="proxy-system" element={<SystemProxyPage />} />
         {/* The pre-split address (`/proxy-mihomo`) keeps a redirect so saved bookmarks still resolve. */}

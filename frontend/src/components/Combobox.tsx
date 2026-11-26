@@ -25,6 +25,10 @@ export interface ComboboxOption {
   swatch?: string;
   /** Leading glyph (brand mark, host icon) — rendered in trigger and panel, before the label. */
   icon?: React.ReactNode;
+  /** Hover tooltip for the panel row; defaults to `meta`. Use when the row's
+   *  hover should answer a DIFFERENT question than the inline meta (e.g. the
+   *  full filename behind a truncated label). */
+  tip?: string;
 }
 
 /** 10px color dot for `swatch` options — a real preview beats an emoji label. */
@@ -427,7 +431,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     key={o.value || `idx-${i}`}
                     role="option"
                     aria-selected={isSelected}
-                    data-tip={o.meta}
+                    data-tip={o.tip ?? o.meta}
                     data-tip-side={hoverMetaOnly ? 'right' : undefined}
                     onMouseEnter={() => setActive(i)}
                     onClick={() => pick(o)}

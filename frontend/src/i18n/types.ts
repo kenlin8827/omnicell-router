@@ -347,6 +347,19 @@ export interface TranslationDict {
     /** Nav label: the machine-wide OS proxy page (one slot; the target is the
      *  inbound forward proxy or the Clash egress). */
     systemProxy: string;
+    /** Nav label: the local inference engine page (llama.cpp / Strata). */
+    /** Nav label: the local inference engines page (llama.cpp / Strata). */
+    localModels: string;
+    /** Nav label: the local-run launch console. */
+    localRun: string;
+    /** Nav label: the local run monitor (live runs + gateway-side counters).
+     *  "Run Monitor" — it monitors RUNS, not the machine (no GPU/VRAM sampling). */
+    localMonitor: string;
+    /** Nav label: the HuggingFace model marketplace page. */
+    modelMarket: string;
+    /** Nav label: the installed-models registry page (downloaded GGUF files). */
+    installedModels: string;
+    localSettings: string;
     /** Nav label: the inbound proxy's traffic log page (the observation half
      *  of the inbound capability; the settings page owns the rules). Kept to
      *  one short word pair — the card header carries the full name. */
@@ -362,6 +375,8 @@ export interface TranslationDict {
     grpSafety: string;
     grpObservability: string;
     grpHarness: string;
+    /** Heading of the Local Models first-level group (engine management). */
+    grpLocal: string;
     skills: string;
     mcp: string;
     mcpBrowser: string;
@@ -376,6 +391,8 @@ export interface TranslationDict {
     shortSafety: string;
     shortObservability: string;
     shortHarness: string;
+    /** Rail caption (<= 76px) for the Local Models group. */
+    shortLocal: string;
     shortSystem: string;
     searchPlaceholder: string;
     collapse: string;
@@ -3734,6 +3751,427 @@ hiddenBadge: string;
     commentsTitle?: string;
     commentsHint?: string;
     commentsTruncated?: string;
+  };
+  /** Local Models console: engine catalog, dependency probe, install/uninstall. */
+  localModels: {
+    description: string;
+    refresh: string;
+    detectTitle: string;
+    detectAction: string;
+    detecting: string;
+    detectHint: string;
+    gpusLabel: string;
+    noGpu: string;
+    recommended: string;
+    recommendNone: string;
+    checkMissing: string;
+    notInstalled: string;
+    installed: string;
+    targetLabel: string;
+    targetAuto: string;
+    install: string;
+    reinstall: string;
+    /** Upgrade an installed build to the version the current release ships. */
+    update: string;
+    updateAvailableHint: string;
+    updateHint: string;
+    updateDone: string;
+    installing: string;
+    uninstall: string;
+    uninstallConfirmTitle: string;
+    uninstallConfirmDesc: string;
+    binariesLabel: string;
+    installedAt: string;
+    stageResolve: string;
+    latestRelease: string;
+    targetUnavailable: string;
+    errAssetMissing: string;
+    errVersionMissing: string;
+    errReleaseLookup: string;
+    errUnpackFailed: string;
+    errUnsupportedPlatform: string;
+    stageDownload: string;
+    stageExtract: string;
+    stageExtractPct: string;
+    stageFinalize: string;
+    installingPct: string;
+    installingSize: string;
+    installDone: string;
+    installCancelled: string;
+    installCancelLocked: string;
+    installFailed: string;
+    uninstalled: string;
+    resumableHint: string;
+    descLlamacpp: string;
+    descStrata: string;
+    /** HuggingFace marketplace (search → expand repo → download a GGUF). */
+    marketTitle: string;
+    marketSource: string;
+    marketSearchPlaceholder: string;
+    marketHint: string;
+    searchAction: string;
+    /** Shown (with a spinner) while a market search is in flight. */
+    searching: string;
+    marketEmpty: string;
+    downloadsLabel: string;
+    likesLabel: string;
+    filesTitle: string;
+    filesLoading: string;
+    filesNone: string;
+    filesOthers: string;
+    fitGpu: string;
+    fitSplit: string;
+    fitRam: string;
+    tabRecommended: string;
+    tabSearch: string;
+    /** Search-result row action: open the repo's version detail view. */
+    viewVersions: string;
+    detailBack: string;
+    /** Title fallback for a GGUF file with no parseable quant tag. */
+    quantOther: string;
+    /** Badge on a collapsed split-weight entry (`{{n}}` = shard count). */
+    shardBadge: string;
+    /** Detail-view filter input placeholder. */
+    filterVersions: string;
+    filesNoMatch: string;
+    fitOnly: string;
+    catAll: string;
+    catChat: string;
+    catCode: string;
+    catVision: string;
+    catReasoning: string;
+    speedSmooth: string;
+    speedRunnable: string;
+    speedStruggling: string;
+    /** Rough decode-speed estimate, e.g. `est. ~{n} tok/s`. */
+    estSpeed: string;
+    /** Appended to the market hint when the VRAM probe has a reading. */
+    fitHintOn: string;
+    modelDownload: string;
+    modelDownloadDone: string;
+    modelDownloadFailed: string;
+    modelRemove: string;
+    modelRemoveConfirmTitle: string;
+    modelRemoved: string;
+    /** Row action: name the model (the operator name becomes the gateway id `local/<name>`). */
+    modelNameAction: string;
+    modelNamePlaceholder: string;
+    modelNameSave: string;
+    modelNameSaved: string;
+    modelNameFailed: string;
+    /** The rename landed but config spots still reference the OLD gateway id. */
+    modelNameRefsWarning: string;
+    installedTitle: string;
+    installedNone: string;
+    /** Filter box on the installed-models list. */
+    installedSearchPlaceholder: string;
+    installedSearchEmpty: string;
+    diskUsage: string;
+    /** Import on-disk .gguf files (register in place, never copied). */
+    importAction: string;
+    importPlaceholder: string;
+    importDone: string;
+    importDuplicate: string;
+    importNoneFound: string;
+    /** Display name for rows whose repo is the `local-import` marker. */
+    importedRepo: string;
+    /** Source label for registry-downloaded rows (ADR-0038 §7 meta line). */
+    downloadedRepo: string;
+    /** Settings page (mirror / token / storage dir). */
+    settingsTitle: string;
+    settingsSubtitle: string;
+    settingsSave: string;
+    savedToast: string;
+    mirrorLabel: string;
+    mirrorHint: string;
+    tokenLabel: string;
+    tokenHint: string;
+    tokenSetPrefix: string;
+    tokenClear: string;
+    dirLabel: string;
+    dirHint: string;
+    dirDefaultPrefix: string;
+    sourceSetting: string;
+    sourceEnv: string;
+    sourceDefault: string;
+    /** Mirror preset list (latency probe + one-click apply). */
+    mirrorPresets: string;
+    pingAction: string;
+    pinging: string;
+    pingFailed: string;
+    useMirror: string;
+    mirrorInUse: string;
+    mirrorOfficial: string;
+    mirrorChina: string;
+    /** Short row label for a failed repo tree load (full error rides an InfoTip). */
+    loadFailed: string;
+    /** Folder picker (server-side browse). */
+    browse: string;
+    pickerTitleDir: string;
+    pickerTitleImport: string;
+    pickerUp: string;
+    pickerDrives: string;
+    pickerEmpty: string;
+    pickerChooseDir: string;
+    pickerChooseFile: string;
+    /** Editable path-bar placeholder (paste a path + Enter jumps there). */
+    pickerPathHint: string;
+    /** Run console — model pick, layered plan, launch options. */
+    runAction: string;
+    runManage: string;
+    runSelectModel: string;
+    runEngine: string;
+    runNoEngine: string;
+    runGoEngines: string;
+    runPlanTitle: string;
+    runPlanLoading: string;
+    runPlanFullGpu: string;
+    runPlanSplit: string;
+    runPlanCpu: string;
+    runGpuLabel: string;
+    runGpuDetailFull: string;
+    runGpuDetailSplit: string;
+    runRamLabel: string;
+    /** `{layers}` offloaded + `{reserve}` kept for the OS (resource switch). */
+    runRamDetailSplit: string;
+    /** `{reserve}` kept for the OS (resource switch). */
+    runRamDetailCpu: string;
+    runRamDetailIdle: string;
+    /** The machine card ("this computer") on the run console. */
+    runMachine: string;
+    runMachineNoGpu: string;
+    /** `{free}` available of `{total}` (VRAM / RAM availability rows). */
+    runMachineFree: string;
+    /** What this launch would spend: `{vram}` VRAM + `{ram}` RAM. */
+    runMachineUse: string;
+    /** CPU-only spend line: `{ram}` RAM. */
+    runMachineUseCpu: string;
+    /** Shown by the start button when free VRAM or RAM is below the estimate.
+     *  The plan is not recomputed. */
+    runMachineTight: string;
+    /** The model file's directory readout under the machine card. */
+    runModelFiles: string;
+    /** Speculative-draft switch (engines whose `accepts.spec` is true). */
+    runSpec: string;
+    runSpecAuto: string;
+    runSpecOff: string;
+    runSpecHint: string;
+    /** Vision-leg switch (engines whose `accepts.vision` is true). */
+    runVision: string;
+    runVisionLabel: string;
+    runVisionHint: string;
+    /** Resource-mode switch (gateway-owned placement only). */
+    runResources: string;
+    runResourcesBalanced: string;
+    runResourcesPerf: string;
+    runResourcesHint: string;
+    runDiskLabel: string;
+    runDiskNone: string;
+    runDiskStream: string;
+    runAdvanced: string;
+    runThreads: string;
+    runExtraArgs: string;
+    runCtxTitle: string;
+    runCtxAuto: string;
+    runCtxHint: string;
+    runNglTitle: string;
+    runNglTotal: string;
+    runNglHint: string;
+    runThinking: string;
+    runThinkingHint: string;
+    runAccel: string;
+    runAccelSummary: string;
+    runToggleOn: string;
+    runToggleOff: string;
+    runKvQ8: string;
+    runKvQ8Hint: string;
+    runAutoRestart: string;
+    runEstSpeed: string;
+    runFirstLoad: string;
+    runFirstLoadValue: string;
+    runStart: string;
+    runStarting: string;
+    runStarted: string;
+    runReady: string;
+    runStop: string;
+    runStopFailed: string;
+    runFailed: string;
+    runCopy: string;
+    runCopied: string;
+    runCopyFailed: string;
+    /** Ready-state block: the gateway-facing model id a client calls. */
+    runGatewayTitle: string;
+    /** How to point a client at the gateway ({base} = the gateway /v1 URL). */
+    runGatewayHint: string;
+    /** Label of the demoted raw engine endpoint row. */
+    runGatewayDirect: string;
+    /** Caption of the copyable cURL quick-call sample. */
+    runGatewayCurl: string;
+    /** Blocked-engine action: the engine builds its missing input, then runs. */
+    runBuild: string;
+    /** A build job is running. */
+    runBuilding: string;
+    runBuildStarted: string;
+    /** Toast: the build finished and the launch is firing. */
+    runBuildDone: string;
+    /** Status badge of a finished build. */
+    runBuildDoneShort: string;
+    runBuildFailed: string;
+    /** The build-log drawer toggle. */
+    runBuildLogs: string;
+    /** Models-page pack action: the engine builds its missing launch input
+     *  (the pack) WITHOUT launching — Run appears once it finishes (ADR-0039 §9). */
+    packAction: string;
+    /** Toast: the pack build job started from the models page. */
+    packStarted: string;
+    /** Toast: the pack finished; the model row now offers Run. */
+    packDone: string;
+    runLogs: string;
+    runLogsEmpty: string;
+    /** Live runs (ready or starting) listed above the picker. */
+    runLiveModels: string;
+    /** Title on a live-run name: select that model in the picker below. */
+    runPickLive: string;
+    /** Tooltip of the MoE badge when the family matches Strata's targets. */
+    moeHint: string;
+    runStrataNeedsProfile: string;
+    runStrataForeignFamily: string;
+    runAddProfile: string;
+    runPlanDeclared: string;
+    runDeclaredMtp: string;
+    runDeclaredNoMtp: string;
+    runDeclaredPle: string;
+    runDeclaredNoPle: string;
+    runDeclaredVision: string;
+    runDeclaredNoVision: string;
+    strataProfileSave: string;
+    strataProfileIntro: string;
+    strataWorkspace: string;
+    strataWorkspaceHint: string;
+    strataMtp: string;
+    strataMtpHint: string;
+    strataMmproj: string;
+    strataMmprojHint: string;
+    strataKv: string;
+    strataKvHint: string;
+    strataMaxContext: string;
+    strataMaxContextHint: string;
+    strataParallel: string;
+    strataParallelHint: string;
+    strataPython: string;
+    strataPythonHint: string;
+    /** Engine setup section (ADR-0039 §10) — installation facts per engine. */
+    engineSetupTitle: string;
+    /** Placeholder of a setup field: discovery owns the empty value. */
+    engineSetupAuto: string;
+    /** Tooltip of a setup field's directory-picker button. */
+    engineSetupBrowse: string;
+    /** Toast: engine setup saved. */
+    engineSetupSaved: string;
+    /** Label of the engine setup form's save button. */
+    engineSetupSave: string;
+    /** Intro line of Strata's engine setup (declared by the engine). */
+    strataSetupIntro: string;
+    strataDataRoot: string;
+    strataDataRootHint: string;
+    strataSectionAdvanced: string;
+    strataProfileMissing: string;
+    strataProfileSaveFailed: string;
+    strataProfileSaved: string;
+    strataProfileCleared: string;
+    strataProfileClear: string;
+    engineProfileSave: string;
+    engineProfileClear: string;
+    engineProfileSaved: string;
+    engineProfileCleared: string;
+    engineProfileSaveFailed: string;
+    engineProfileConfigured: string;
+    engineProfileUnset: string;
+    engineFieldUnset: string;
+    engineFieldOn: string;
+    engineFieldOff: string;
+    /** A `customizable` select's extra entry: swaps the dropdown for a typed
+     *  path input. */
+    engineFieldCustom: string;
+    /** Leaves the typed input and returns to the preset dropdown. */
+    engineFieldPresets: string;
+    /** Localized text for a run's `lastErrorCode` — the raw backend sentence in
+     *  `lastError` is never shown to the operator as-is. */
+    runErrEngineDied: string;
+    runErrLoadTimeout: string;
+    runErrEngineExited: string;
+    runErrCrashedRestarting: string;
+    runErrSpawnFailed: string;
+    runErrGatewayRestarted: string;
+    /** Localized `LocalRunStatus` labels — a status is never shown as its wire
+     *  token (`ready` → 就绪). */
+    runStatusStarting: string;
+    runStatusReady: string;
+    runStatusStopping: string;
+    runStatusStopped: string;
+    runStatusFailed: string;
+    /** Localized engine build-job error ({leg} / {exit} interpolated). */
+    buildErrLegExited: string;
+  };
+  /** Local run monitor board (ADR-0040): live runs with gateway-side counters. */
+  localMonitor: {
+    title: string;
+    /** Summary strip: runs that can answer right now. */
+    liveRuns: string;
+    /** Summary strip: every run the registry still remembers. */
+    totalRuns: string;
+    /** Gauge: requests currently being served. */
+    inFlight: string;
+    inFlightHint: string;
+    requests: string;
+    errors: string;
+    inputTokens: string;
+    outputTokens: string;
+    /** Decode speed (tok/s) over the first-delta → stream-end window. */
+    decode: string;
+    /** Time to first token. */
+    ttft: string;
+    /** Tooltip on a rolling average (replaces {avg} / {n}). */
+    rateHint: string;
+    /** TTFT caveat for a run whose requests were all buffered. */
+    ttftBuffered: string;
+    /** Uptime label for a LIVE run. */
+    uptime: string;
+    /** Uptime label for an ENDED run — the span it actually ran, which must not
+     *  keep ticking after the process is gone. */
+    ranFor: string;
+    /** Collapsible history section header ({n} = number of ended runs). */
+    history: string;
+    /** Delete ONE history record ({name} interpolated). */
+    delete: string;
+    deleteTitle: string;
+    deleteDesc: string;
+    deleteHint: string;
+    deleteFailed: string;
+    /** Bulk clear of every ended record. */
+    historyClearAll: string;
+    clearAllDesc: string;
+    /** Backend delete refusal: the run is still live (409 `run-live`). */
+    deleteErrRunLive: string;
+    /** Backend delete answer: the record was already gone (404 `not-found`). */
+    deleteErrNotFound: string;
+    restarts: string;
+    /** Shown on a live run that has served nothing yet. */
+    noTraffic: string;
+    /** The gateway's listen port (summary chip). */
+    gatewayPort: string;
+    gatewayPortHint: string;
+    /** Where clients should point ({port} = the gateway port). */
+    clientHint: string;
+    /** Counters are process-local — states the window. */
+    windowHint: string;
+    /** Empty board. */
+    empty: string;
+    /** Gateway predates the monitor route. */
+    unsupported: string;
+    stopTitle: string;
+    stopDesc: string;
+    stopping: string;
   };
   apiKeys: {
     title: string;

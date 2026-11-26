@@ -2700,6 +2700,34 @@ async function readNdjsonLines(res: Response, onLine: (line: string) => void): P
   }
 }
 
+/** Shared result-draining for the model download NDJSON streams. */
+async function readModelDownloadStream(
+  res: Response,
+  onEvent?: (event: LocalInstallProgress) => void,
+): Promise<LocalModelDownloadResult> {
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('ndjson')) {
+    const body = await res.json().catch(() => null);
+    return (body ?? { status: 'error', error: `HTTP ${res.status}` }) as LocalModelDownloadResult;
+  }
+  let out: LocalModelDownloadResult | null = null;
+  await readNdjsonLines(res, (line) => {
+    let evt: Record<string, unknown>;
+    try {
+      evt = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (evt.type === 'result') {
+      out = evt as unknown as LocalModelDownloadResult;
+    } else {
+      onEvent?.(evt as unknown as LocalInstallProgress);
+    }
+  });
+  if (!out) return { status: 'error', error: `download stream ended without a result (HTTP ${res.status})` };
+  return out;
+}
+
 /** Mirrors backend `UpdateCheckSnapshot` (backend/src/update/check.ts) plus the
  *  route envelope. Display-only: `checking` means the gateway's background
  *  GitHub call is still in flight. */
@@ -2715,6 +2743,549 @@ export interface UpdateCheckResponse {
   checking: boolean;
   error?: string;
 }
+
+/** ---- Local inference engines (Local Models console) ------------------- */
+
+/** Known ids keep autocomplete; the registry is the source of truth, so any
+ *  engine id a newer gateway reports is accepted (ADR-0039). */
+export type LocalEngineId = 'llamacpp' | 'strata' | (string & {});
+
+/** One operator profile input, as the engine declares it (ADR-0039). */
+export interface LocalEngineProfileField {
+  /** Dotted path into the profile (`vision.exe`). */
+  key: string;
+  /** i18n key of the label. */
+  label: string;
+  /** i18n key of the hint line. */
+  hint?: string;
+  /** The wire shape this input edits: text/number scalars, an enum, a toggle
+   *  or an argv list (`string[]`, whitespace-separated in the form). */
+  kind: 'text' | 'number' | 'select' | 'boolean' | 'list';
+  /** Choices for `kind: 'select'` (labels are literal — flag values — unless
+   *  `labelKey` names an i18n key, which wins). */
+  options?: Array<{ value: string; label: string; labelKey?: string }>;
+  /** A select that also accepts a typed value (a path override): the console
+   *  appends a "custom…" entry that swaps the dropdown for the text input. */
+  customizable?: boolean;
+  placeholder?: string;
+  mono?: boolean;
+  /** A filesystem path the console can offer a picker for. */
+  picker?: 'directory' | 'file';
+  /** The resolved value follows another setting: shown as a ghost placeholder,
+   *  pinned only when the operator actually edits it. */
+  derived?: boolean;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface LocalEngineProfileGroup {
+  id: string;
+  /** i18n key of the section title. */
+  label: string;
+  fields: LocalEngineProfileField[];
+}
+
+/** The serialisable half of an engine's runtime. */
+export interface LocalEngineRuntimeInfo {
+  /** `engine` = the engine owns ctx/placement (the console prints a declared
+   *  summary); `gateway` = the layer planner computes it. */
+  placement: 'gateway' | 'engine';
+  /** Which shared run controls this engine's binary actually takes. `spec` /
+   *  `vision` are the auto/off capability switches (draft head, vision leg);
+   *  the engine's profile owns how "off" is expressed. */
+  accepts: { ngl: boolean; threads: boolean; flashAttn: boolean; kv: boolean; reasoning: boolean; spec: boolean; vision: boolean };
+  /** Operator profile inputs; null = this engine needs none. */
+  profile: { intro: string; groups: LocalEngineProfileGroup[] } | null;
+  /** Installation-level setup inputs (ADR-0039 §10); absent = nothing to set up. */
+  setup?: { intro: string; fields: LocalEngineProfileField[] };
+}
+
+/** One build target of an engine catalog row (backend/src/local/engines.ts). */
+export interface LocalEngineTarget {
+  id: string;
+  backend: string;
+  label: string;
+  requires: string[];
+  approxBytes: number;
+}
+
+/** The persisted install record for one engine, absent when not installed. */
+export interface LocalEngineInstall {
+  engine: LocalEngineId;
+  version: string;
+  target: string;
+  installDir: string;
+  binaries: string[];
+  installedAt: number;
+}
+
+export interface LocalEngineCatalogRow {
+  id: LocalEngineId;
+  name: string;
+  repo: string;
+  description: string;
+  /** i18n key of the description; the engine supplies its own card text. */
+  descriptionKey?: string;
+  binaryNames: string[];
+  targets: LocalEngineTarget[];
+  /** Every build target installed for this engine (a CPU fallback beside the
+   *  GPU build); the run console offers each as a launch choice. */
+  installs: LocalEngineInstall[];
+  /** How this engine is launched; null = install-only, never a run target. */
+  runtime: LocalEngineRuntimeInfo | null;
+}
+
+export interface LocalEnginesResponse {
+  status: 'ok';
+  platform: string;
+  arch: string;
+  engines: LocalEngineCatalogRow[];
+}
+
+/** Availability of one build target in the engine's current release. */
+export interface LocalEngineTargetAvailability {
+  available: boolean;
+  version?: string;
+}
+
+/** The release probe for one engine card (backend/src/local/engines.ts). */
+export interface LocalEngineAvailabilityRow {
+  id: LocalEngineId;
+  tag?: string;
+  targets?: Record<string, LocalEngineTargetAvailability>;
+  error?: string;
+}
+
+export interface LocalEngineAvailabilityResponse {
+  status: 'ok';
+  checkedAt: number;
+  engines: LocalEngineAvailabilityRow[];
+}
+
+export interface LocalDepCheck {
+  id: string;
+  ok: boolean;
+  label: string;
+  detail: string;
+}
+
+export interface LocalDetectReport {
+  platform: string;
+  arch: string;
+  gpus: string[];
+  cudaVersion?: string;
+  /** Total discrete VRAM in MiB (NVIDIA only), for model-fit hints. */
+  vramMb?: number;
+  checks: LocalDepCheck[];
+}
+
+export interface LocalDetectResponse {
+  status: 'ok';
+  report: LocalDetectReport;
+  /** Recommended build target per engine id (absent/null = none detected). */
+  recommended: Record<string, string | null>;
+}
+
+/** NDJSON install stream: stage changes, byte progress per asset, one result. */
+export type LocalInstallProgress = {
+  stage?: 'resolve' | 'download' | 'extract' | 'finalize';
+  asset?: string;
+  downloaded?: number;
+  total?: number;
+  /** Position in a multi-asset install (1-based); absent on progress events. */
+  assetIndex?: number;
+  assetTotal?: number;
+};
+
+export interface LocalInstallResult {
+  status: 'ok' | 'error';
+  ok: boolean;
+  code?: string;
+  error?: string;
+  version?: string;
+  target?: string;
+  resumedFrom?: number;
+  installed?: LocalEngineInstall;
+}
+
+export interface LocalUninstallResponse {
+  status: 'ok' | 'error';
+  message?: string;
+}
+
+/** ---- HuggingFace marketplace (Local Models console) ------------------- */
+
+/** One model card from the marketplace search. */
+export interface LocalHfModelSummary {
+  id: string;
+  likes: number;
+  downloads: number;
+  tags: string[];
+  pipelineTag?: string;
+  lastModified?: string;
+  gated?: boolean;
+}
+
+export interface LocalHfSearchResponse {
+  status: 'ok';
+  models: LocalHfModelSummary[];
+  /** The hub base the gateway serves the market from (mirror badge). */
+  endpoint: string;
+  message?: string;
+}
+
+/** One downloadable file in a repo tree (GGUF entries carry quant metadata).
+ *  A split-weight model arrives collapsed: the entry is shard 1, `size` is
+ *  the whole set, and `parts` lists every shard for the group download. */
+export interface LocalHfFileEntry {
+  path: string;
+  size: number;
+  sha256?: string;
+  quant?: string;
+  paramsB?: number;
+  /** >1 when this entry anchors a split-weight group. */
+  shardCount?: number;
+  /** Every shard of the group (shard 1 first), with per-shard digests. */
+  parts?: Array<{ path: string; size: number; sha256?: string }>;
+}
+
+export interface LocalHfModelFilesResponse {
+  status: 'ok';
+  repo: string;
+  files: LocalHfFileEntry[];
+  message?: string;
+}
+
+/** One engine's verdict about one file (ADR-0039): the run console shows a
+ *  blocked engine with THIS reason instead of hiding it. */
+export interface LocalEngineVerdict {
+  serves: boolean;
+  /** The file is in this engine's family (badge material). */
+  family?: boolean;
+  /** Family matched, but the operator profile is missing/partial. */
+  needsSetup?: boolean;
+  /** The missing launch input is one the engine can build itself (ADR-0039
+   *  §9) — the console offers a build action instead of a form. */
+  buildable?: boolean;
+  /** Operator-facing refusal text. */
+  reason?: string;
+}
+
+/** Header facts the backend caches on a model record after its GGUF scan. */
+export interface LocalInstalledModelMeta {
+  at: number;
+  arch?: string;
+  name?: string;
+  layers?: number;
+  maxCtx?: number;
+  experts?: number;
+  expertsUsed?: number;
+  heads?: number;
+  kvHeads?: number;
+  headDim?: number;
+  embedding?: number;
+  /** Engines that can serve this file through the runner, per the registry. */
+  runnable: string[];
+  moe: boolean;
+  /** Per-engine verdicts — the console explains blocked engines from here. */
+  engines?: Record<string, LocalEngineVerdict>;
+  /** @deprecated ADR-0039: read `engines[id].family` instead. Present only on
+   *  records cached before the migration. */
+  strataFamily?: boolean;
+}
+
+/** The auxiliary vision leg of a Strata run (`strata-vision.exe`). */
+export interface LocalStrataVisionProfile {
+  exe: string;
+  mmproj?: string;
+  model?: string;
+  /** Raw argv with `{port}` / `{host}` / `{model}` / `{mmproj}` placeholders. */
+  args?: string[];
+  portFlag?: string;
+}
+
+/**
+ * Operator-supplied Strata launch profile (ADR-0038 §4). None of its inputs can
+ * be derived from the GGUF header, so this block is what makes `strata` a
+ * runnable engine rather than an informational badge.
+ */
+export interface LocalStrataProfile {
+  /** The compiled pack directory — it IS the model for Strata. */
+  pack: string;
+  /** The name the engine answers as `model` (Strata's `model_name`). */
+  modelName?: string;
+  native?: string;
+  pleGguf?: string;
+  expertProfile?: string;
+  expertCache?: string;
+  spec?: number;
+  specMinP?: number;
+  mtp?: string;
+  maxContext?: number;
+  kv?: string;
+  poolWorkers?: number;
+  portFlag?: string;
+  hostFlag?: string;
+  extraArgs?: string[];
+  vision?: LocalStrataVisionProfile;
+}
+
+/** The persisted record for one downloaded model file. */
+export interface LocalInstalledModel {
+  id: string;
+  /** Operator-chosen short name (ADR-0038 §7): the gateway id becomes
+   *  `local/<name>`, and the launched server answers as it. */
+  name?: string;
+  repo: string;
+  filename: string;
+  filePath: string;
+  size: number;
+  quant?: string;
+  paramsB?: number;
+  resumedFrom?: number;
+  downloadedAt: number;
+  meta?: LocalInstalledModelMeta;
+  /** Operator launch profiles, keyed by engine id (ADR-0039). */
+  profiles?: Record<string, unknown>;
+  /** Strata's profile, when the operator supplied one (legacy spelling). */
+  strata?: LocalStrataProfile;
+}
+
+export interface LocalModelsListResponse {
+  status: 'ok';
+  models: LocalInstalledModel[];
+  diskUsageBytes: number;
+}
+
+export interface LocalModelDownloadResult {
+  status: 'ok' | 'error';
+  ok?: boolean;
+  code?: string;
+  error?: string;
+  installed?: LocalInstalledModel;
+  resumedFrom?: number;
+}
+
+/** Result of importing on-disk .gguf files (repo `local-import`). */
+export interface LocalImportResponse {
+  status: 'ok';
+  imported: LocalInstalledModel[];
+  skipped: number;
+  errors: string[];
+}
+
+/** Where an effective settings value came from (console setting → env → default). */
+export type LocalSettingSource = 'setting' | 'env' | 'default' | 'none';
+
+export interface LocalModelSettingsResponse {
+  status: 'ok';
+  hfEndpoint: string;
+  hfEndpointSource: LocalSettingSource;
+  /** The console-stored override, '' when unset (drives the input's initial value). */
+  hfEndpointStored: string;
+  hfTokenSet: boolean;
+  hfTokenSource: LocalSettingSource;
+  /** Masked hint (`••••abcd`), '' when no token is in effect. */
+  hfTokenHint: string;
+  modelsDir: string;
+  modelsDirSource: LocalSettingSource;
+  defaultModelsDir: string;
+  /** Engine-level setup values per engine id (ADR-0039 §10). */
+  engineSetup: Record<string, Record<string, string>>;
+  /** Per-engine auto-discovered setup values (no stored override consulted) —
+   *  the setup form pre-fills these so the operator pins a real path. */
+  engineSetupResolved: Record<string, Record<string, string>>;
+}
+
+/** One row of the server-side directory listing. */
+export interface FsEntry {
+  name: string;
+  path: string;
+  type: 'dir' | 'file';
+}
+
+export interface FsListingResponse {
+  status: 'ok';
+  /** Resolved absolute path of the listed directory ('' = the drive list). */
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+}
+
+/** ---- Local model runs (the run console) --------------------------------- */
+
+export type LocalRunStatus = 'starting' | 'ready' | 'stopping' | 'stopped' | 'failed';
+
+/** Launch options for one run; ctx 0 / ngl -1 = the planner's auto values. */
+export interface LocalRunOptions {
+  ctx: number;
+  ngl: number;
+  flashAttn: boolean;
+  kvCacheQ8: boolean;
+  reasoning: boolean;
+  autoRestart: boolean;
+  /** Resource mode: true reserves VRAM/RAM headroom for the desktop and OS
+   *  ("leave room"), false budgets nearly everything ("full performance"). */
+  headroom: boolean;
+  threads: number;
+  extraArgs: string[];
+}
+
+export interface LocalRun {
+  id: string;
+  modelId: string;
+  engine: string;
+  target: string;
+  binary: string;
+  host: string;
+  port: number;
+  pid: number | null;
+  status: LocalRunStatus;
+  ctx: number;
+  ngl: number;
+  options: LocalRunOptions;
+  startedAt: number;
+  readyAt?: number;
+  stoppedAt?: number;
+  exitCode?: number | null;
+  lastError?: string;
+  /** Machine-readable class of `lastError` (backend `LocalRun.lastErrorCode`);
+   *  the console localizes on this and keeps `lastError` as the raw detail.
+   *  Absent on runs recorded before the field existed. */
+  lastErrorCode?: string;
+  restarts: number;
+  /** Auxiliary processes of this run (a vision leg, a helper server…). */
+  aux?: Array<{ name: string; pid: number | null; port?: number }>;
+  apiPath: string;
+}
+
+export interface LocalRunsResponse {
+  status: 'ok';
+  runs: LocalRun[];
+}
+
+/**
+ * A rolling timing observation (ADR-0040 §3): `avg` over every sample since
+ * this process started counting, `last` for "right now". `samples` lets the
+ * page say "3 samples" instead of presenting a one-request average as a trend.
+ */
+export interface LocalRateSample {
+  samples: number;
+  avg: number;
+  last: number;
+}
+
+/** Gateway-side counters for one run (ADR-0040 §2) — process-local by design.
+ *  Mirrors backend `LocalRunStats`. */
+export interface LocalRunStats {
+  runId: string;
+  inFlight: number;
+  requests: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  /** Request start → first streamed delta; null until one leg reported it. */
+  ttftMs: LocalRateSample | null;
+  /** Output tokens ÷ decode window; null until a streamed leg measured one. */
+  decodeTps: LocalRateSample | null;
+  /** True when every observation came from a buffered leg, so `ttftMs` means
+   *  "the whole response", not a first-token wait. */
+  bufferedOnly: boolean;
+  lastRequestAt: number;
+  /** Epoch ms this process began counting (a restart resets the window). */
+  since: number;
+}
+
+/** One monitor-board row: the run record plus its counters. */
+export interface LocalMonitorRow {
+  run: LocalRun;
+  stats: LocalRunStats;
+}
+
+export interface LocalMonitorResponse {
+  status: 'ok';
+  runs: LocalMonitorRow[];
+  summary: {
+    totalRuns: number;
+    liveRuns: number;
+    inFlight: number;
+    /** The gateway's own listen port — where clients point. */
+    gatewayPort: number;
+    now: number;
+  };
+}
+
+export interface LocalRunLogLine {
+  id: string;
+  ts: number;
+  stream: 'stdout' | 'stderr' | 'gateway';
+  text: string;
+}
+
+/** The automatic-layer-plan estimate for one (model, engine target, ctx) triple. */
+export interface LocalPlacementPlan {
+  backend: string;
+  layers: number;
+  gpuLayers: number;
+  fullGpu: boolean;
+  ctx: number;
+  kvBytes: number;
+  vramBytes: number;
+  vramTotalBytes: number;
+  ramBytes: number;
+  ramTotalBytes: number;
+  /** RAM the plan refused to spend (the resource switch's reserve). */
+  ramReserveBytes: number;
+  diskStreamed: boolean;
+  estTokPerSec: number;
+  maxCtx?: number;
+}
+
+export interface LocalPlanResponse {
+  status: 'ok';
+  /**
+   * `planned` = gateway-owned placement: the estimate below IS the launch
+   * (ctx/ngl). `declared` = the engine owns placement, so there is no layer
+   * plan to preview and `plan` is null (ADR-0038 §5 / ADR-0039).
+   */
+  mode?: 'planned' | 'declared';
+  plan: LocalPlacementPlan | null;
+  /** The -ngl the runner would pass for this plan (999 = every layer, -1 = n/a). */
+  ngl: number;
+  /** The planner's auto context pick; null when the engine decides. */
+  autoCtx: number | null;
+  /** The context the run will use; for `declared` this is the authority's pick. */
+  ctx?: number;
+  target: string;
+  backend: string;
+  /** Discrete GPU names from the machine probe (the "this computer" card). */
+  gpus?: string[];
+  vramMb: number | null;
+  /** Currently free discrete VRAM in MiB; null without a reading. */
+  vramFreeMb?: number | null;
+  ramBytes: number;
+  /** Currently free system RAM in bytes. */
+  ramFreeBytes?: number;
+  /** The backend-owned context ladder the ctx picker renders (never a
+   *  frontend copy). */
+  ctxLadder?: number[];
+  /** Present only for `mode: 'declared'` — what the launch actually declares,
+   *  in the engine's own words (argv lines + capability rows). */
+  declaration?: {
+    argv: string[];
+    features: Array<{ label: string; on: boolean }>;
+    /** Engine-owned rough decode speed (tokens/s) — the estimate card shows
+     *  it exactly like the planner's. */
+    estTokPerSec?: number;
+    /** Bytes the engine maps eagerly at load; the console applies its own
+     *  first-load rate to this fact. */
+    firstLoadBytes?: number;
+  };
+}
+
 
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
@@ -5279,7 +5850,416 @@ export const api = {
       }
     });
   },
+  /** ---- Local inference engines (Local Models console) ----------------- */
+
+  async getLocalEngines(): Promise<LocalEnginesResponse> {
+    const res = await fetch('/api/admin/local-models/engines');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalEnginesResponse;
+  },
+
+  async detectLocalDependencies(): Promise<LocalDetectResponse> {
+    const res = await fetch('/api/admin/local-models/detect', { method: 'POST' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalDetectResponse;
+  },
+
+  async getLocalEngineReleases(id: LocalEngineId): Promise<{ status: string; tags: string[]; message?: string }> {
+    const res = await fetch(`/api/admin/local-models/engines/${encodeURIComponent(id)}/releases`);
+    return res.json();
+  },
+
+  /** Which targets the current release actually ships (drives chip state). */
+  async getLocalEngineAvailability(): Promise<LocalEngineAvailabilityResponse> {
+    const res = await fetch('/api/admin/local-models/engines/availability');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalEngineAvailabilityResponse;
+  },
+
+  /**
+   * Install/update a local engine. NDJSON: `stage` events carry the install
+   * phase (resolve/download/extract/finalize), `progress` carries per-asset
+   * byte counts (total 0 = unknown size), exactly one `result` ends the
+   * stream. A cancelled transfer keeps its staged bytes — the next call
+   * resumes (same contract as the mihomo core install).
+   */
+  async installLocalEngine(
+    id: LocalEngineId,
+    opts: { target?: string; version?: string; onEvent?: (event: LocalInstallProgress) => void; signal?: AbortSignal } = {},
+  ): Promise<LocalInstallResult> {
+    const res = await fetch(`/api/admin/local-models/engines/${encodeURIComponent(id)}/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...(opts.target ? { target: opts.target } : {}), ...(opts.version ? { version: opts.version } : {}) }),
+      signal: opts.signal,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('ndjson')) {
+      const body = await res.json().catch(() => null);
+      return (body ?? { status: 'error', ok: false, error: `HTTP ${res.status}` }) as LocalInstallResult;
+    }
+    let out: LocalInstallResult | null = null;
+    await readNdjsonLines(res, (line) => {
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (evt.type === 'result') {
+        out = evt as unknown as LocalInstallResult;
+      } else {
+        opts.onEvent?.(evt as unknown as LocalInstallProgress);
+      }
+    });
+    if (!out) return { status: 'error', ok: false, error: `install stream ended without a result (HTTP ${res.status})` };
+    return out;
+  },
+
+  async uninstallLocalEngine(id: LocalEngineId, target: string): Promise<LocalUninstallResponse> {
+    const res = await fetch(`/api/admin/local-models/engines/${encodeURIComponent(id)}?target=${encodeURIComponent(target)}`, { method: 'DELETE' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) return { status: 'error', message: (body as { message?: string } | null)?.message || `HTTP ${res.status}` };
+    return body as LocalUninstallResponse;
+  },
+
+  /** ---- HuggingFace marketplace (Local Models console) ---------------- */
+
+  async searchHfModels(query: string, limit = 24): Promise<LocalHfSearchResponse> {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (query.trim()) q.set('q', query.trim());
+    const res = await fetch(`/api/admin/local-models/hf/search?${q}`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalHfSearchResponse;
+  },
+
+  async getHfModelFiles(repo: string): Promise<LocalHfModelFilesResponse> {
+    const res = await fetch(`/api/admin/local-models/hf/model?id=${encodeURIComponent(repo)}`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalHfModelFilesResponse;
+  },
+
+  async getLocalModels(): Promise<LocalModelsListResponse> {
+    const res = await fetch('/api/admin/local-models/models');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalModelsListResponse;
+  },
+
+  /** Local-models settings: effective values + where each came from. */
+  async getLocalModelSettings(): Promise<LocalModelSettingsResponse> {
+    const res = await fetch('/api/admin/local-models/settings');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalModelSettingsResponse;
+  },
+
+  /** Partial settings update: omitted keys unchanged, '' clears a field. An
+   *  engineSetup entry replaces that engine's setup ({} clears it). */
+  async updateLocalModelSettings(patch: { hfEndpoint?: string; hfToken?: string; modelsDir?: string; engineSetup?: Record<string, Record<string, string>> }): Promise<{ status: string; message?: string }> {
+    const res = await fetch('/api/admin/local-models/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as { status: string };
+  },
+
+  /** Server-side HEAD latency probe for a mirror base URL. */
+  async pingHfMirror(url: string): Promise<{ status: string; ok?: boolean; ms?: number; error?: string }> {
+    const res = await fetch('/api/admin/local-models/settings/mirrors/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as { status: string; ok?: boolean; ms?: number; error?: string };
+  },
+
+  /** Server-side directory listing for the folder picker (empty path = drives/home). */
+  async listFsDirectory(path = '', includeFiles = false): Promise<FsListingResponse> {
+    const qs = new URLSearchParams();
+    if (path) qs.set('path', path);
+    if (includeFiles) qs.set('files', '1');
+    const res = await fetch(`/api/admin/local-models/fs?${qs.toString()}`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as FsListingResponse;
+  },
+
+  /** Import on-disk .gguf files (one file or a folder) into the registry. */
+  async importLocalModels(path: string): Promise<LocalImportResponse> {
+    const res = await fetch('/api/admin/local-models/models/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalImportResponse;
+  },
+
+  /**
+   * Download one repo file. NDJSON: `stage` + `progress` events, exactly one
+   * `result`. A cancelled transfer keeps its staged bytes — the next call
+   * resumes (same contract as the engine install).
+   */
+  async downloadHfModel(
+    repo: string,
+    filename: string,
+    opts: { sha256?: string; size?: number; onEvent?: (event: LocalInstallProgress) => void; signal?: AbortSignal } = {},
+  ): Promise<LocalModelDownloadResult> {
+    const res = await fetch('/api/admin/local-models/models/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo,
+        filename,
+        ...(opts.sha256 ? { sha256: opts.sha256 } : {}),
+        ...(opts.size ? { size: opts.size } : {}),
+      }),
+      signal: opts.signal,
+    });
+    return readModelDownloadStream(res, opts.onEvent);
+  },
+
+  /**
+   * Download a split-weight group (all shards, shard 1 first). Same NDJSON
+   * protocol as a single-file download, but progress reports cumulative
+   * bytes across the whole group and the result registers ONE model.
+   */
+  async downloadHfModelGroup(
+    repo: string,
+    parts: Array<{ path: string; size?: number; sha256?: string }>,
+    opts: { onEvent?: (event: LocalInstallProgress) => void; signal?: AbortSignal } = {},
+  ): Promise<LocalModelDownloadResult> {
+    const res = await fetch('/api/admin/local-models/models/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo, files: parts }),
+      signal: opts.signal,
+    });
+    return readModelDownloadStream(res, opts.onEvent);
+  },
+
+  /** Stop a live model transfer (or any leg); staged bytes persist. */
+  async cancelLocalTransfer(leg: string): Promise<{ status: string; cancelled: boolean }> {
+    const res = await fetch('/api/admin/local-models/engines/transfers/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leg }),
+      keepalive: true,
+    }).catch(() => null);
+    if (!res) return { status: 'ok', cancelled: false };
+    return (await res.json().catch(() => null)) ?? { status: 'ok', cancelled: false };
+  },
+
+  async removeLocalModel(id: string): Promise<LocalUninstallResponse> {
+    const res = await fetch(`/api/admin/local-models/models/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || body?.status === 'error') {
+      return { status: 'error', message: (body as { message?: string } | null)?.message || `HTTP ${res.status}` };
+    }
+    return body as LocalUninstallResponse;
+  },
+
+  /** ---- Engine launch profiles (ADR-0038 §4 → ADR-0039) ----------------- */
+
+  /** Set (or clear, with '') the operator name of one model (ADR-0038 §7).
+   *  The answer carries the new gateway id plus every config spot still
+   *  referencing the retired one (`references`). */
+  async setLocalModelName(
+    id: string,
+    name: string
+  ): Promise<{
+    status: string;
+    model?: LocalInstalledModel;
+    gatewayId?: string;
+    previousGatewayId?: string;
+    references?: { kind: 'tier' | 'combo' | 'key' | 'setting'; ref: string }[];
+    code?: string;
+    message?: string;
+  }> {
+    const res = await fetch(`/api/admin/local-models/models/${encodeURIComponent(id)}/name`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    return (await res.json().catch(() => ({ status: 'error', message: `HTTP ${res.status}` }))) as {
+      status: string;
+      model?: LocalInstalledModel;
+      gatewayId?: string;
+      previousGatewayId?: string;
+      references?: { kind: 'tier' | 'combo' | 'key' | 'setting'; ref: string }[];
+      code?: string;
+      message?: string;
+    };
+  },
+
+  /** Set one model's launch profile for one engine; the response carries the
+   *  re-derived meta (`runnable` gains the engine the moment it is complete). */
+  async setLocalEngineProfile(
+    id: string,
+    engine: LocalEngineId,
+    profile: Record<string, unknown>
+  ): Promise<{ status: string; model?: LocalInstalledModel; code?: string; message?: string }> {
+    const res = await fetch(
+      `/api/admin/local-models/models/${encodeURIComponent(id)}/profiles/${encodeURIComponent(String(engine))}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile }),
+      }
+    );
+    return (await res.json().catch(() => ({ status: 'error', message: `HTTP ${res.status}` }))) as {
+      status: string;
+      model?: LocalInstalledModel;
+      code?: string;
+      message?: string;
+    };
+  },
+
+  /** Clear the profile — that engine leaves `runnable` with it. */
+  async clearLocalEngineProfile(
+    id: string,
+    engine: LocalEngineId
+  ): Promise<{ status: string; model?: LocalInstalledModel; message?: string }> {
+    const res = await fetch(
+      `/api/admin/local-models/models/${encodeURIComponent(id)}/profiles/${encodeURIComponent(String(engine))}`,
+      { method: 'DELETE' }
+    );
+    return (await res.json().catch(() => ({ status: 'error', message: `HTTP ${res.status}` }))) as {
+      status: string;
+      model?: LocalInstalledModel;
+      message?: string;
+    };
+  },
+
+  /** ---- Local model runs (launch / stop / logs) ------------------------- */
+
+  /** The automatic-layer-plan estimate for one model on one engine target. */
+  async getLocalPlan(query: { modelId: string; engine?: string; target?: string; ctx?: number; kvq8?: boolean; ngl?: number; headroom?: boolean }): Promise<LocalPlanResponse> {
+    const q = new URLSearchParams({ modelId: query.modelId });
+    if (query.engine) q.set('engine', query.engine);
+    if (query.target) q.set('target', query.target);
+    if (query.ctx) q.set('ctx', String(query.ctx));
+    if (query.ngl != null && query.ngl >= 0) q.set('ngl', String(query.ngl));
+    if (query.kvq8 === false) q.set('kvq8', '0');
+    if (query.headroom === false) q.set('headroom', '0');
+    const res = await fetch(`/api/admin/local-models/plan?${q}`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalPlanResponse;
+  },
+
+  async listLocalRuns(): Promise<LocalRunsResponse> {
+    const res = await fetch('/api/admin/local-models/runs');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalRunsResponse;
+  },
+
+  /** The monitor board (ADR-0040): every run with its gateway-side counters.
+   *  Additive route — an older gateway 404s and the page says so. */
+  async getLocalMonitor(): Promise<LocalMonitorResponse> {
+    const res = await fetch('/api/admin/local-models/monitor');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as LocalMonitorResponse;
+  },
+
+  /** Launch a model on an installed engine target; readiness is polled via
+   *  listLocalRuns (model load can take minutes for large files). */
+  async startLocalRun(opts: { modelId: string; engine?: string; target?: string } & Partial<LocalRunOptions>): Promise<{ status: string; run?: LocalRun; code?: string; message?: string }> {
+    const res = await fetch('/api/admin/local-models/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) return { status: 'error', code: (body as { code?: string } | null)?.code, message: (body as { message?: string } | null)?.message || `HTTP ${res.status}` };
+    return body as { status: string; run?: LocalRun };
+  },
+
+  async stopLocalRun(id: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/admin/local-models/runs/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) return { status: 'error', message: (body as { message?: string } | null)?.message || `HTTP ${res.status}` };
+    return body as { status: string };
+  },
+
+  async getLocalRunLogs(id: string, limit = 300): Promise<{ status: string; lines: LocalRunLogLine[] }> {
+    const res = await fetch(`/api/admin/local-models/runs/${encodeURIComponent(id)}/logs?limit=${limit}`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as { status: string; lines: LocalRunLogLine[] };
+  },
+
+  /** Drop ended run records from the registry (live runs are untouched). */
+  async pruneLocalRuns(): Promise<{ status: string; pruned: number }> {
+    const res = await fetch('/api/admin/local-models/runs', { method: 'DELETE' });
+    return (await res.json().catch(() => null)) ?? { status: 'error', pruned: 0 };
+  },
+
+  /** Drop ONE ended run record. A live run answers 409 `run-live`; a record
+   *  already gone answers 404 `not-found` (the board drops the stale row). */
+  async deleteLocalRun(id: string): Promise<{ status: string; code?: string; error?: string }> {
+    const res = await fetch(`/api/admin/local-models/runs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const body = await res.json().catch(() => null);
+    return (body as { status: string; code?: string; error?: string } | null) ?? { status: 'error', code: 'network' };
+  },
+
+  /** Start an engine build job (ADR-0039 §9) — the engine builds the launch
+   *  input it derives (Strata: the pack) with its own tooling. */
+  async startLocalBuild(opts: { modelId: string; engine: string }): Promise<{ status: string; job?: LocalBuildJob; code?: string; message?: string }> {
+    const res = await fetch('/api/admin/local-models/builds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) return { status: 'error', code: (body as { code?: string } | null)?.code, message: (body as { message?: string } | null)?.message || `HTTP ${res.status}` };
+    return body as { status: string; job?: LocalBuildJob };
+  },
+
+  async listLocalBuilds(): Promise<{ status: string; jobs: LocalBuildJob[] }> {
+    const res = await fetch('/api/admin/local-models/builds');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as { status: string; jobs: LocalBuildJob[] };
+  },
+
+  async getLocalBuildLogs(id: string, limit = 300): Promise<{ status: string; lines: LocalRunLogLine[] }> {
+    const res = await fetch(`/api/admin/local-models/builds/${encodeURIComponent(id)}/logs?limit=${limit}`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body as { message?: string } | null)?.message || `HTTP ${res.status}`);
+    return body as { status: string; lines: LocalRunLogLine[] };
+  },
 };
+
+/**
+ * One engine build job (ADR-0039 §9) — mirrors the backend's BuildJob: a build
+ * is not a run (no port, no health); it writes the launch input and finishes.
+ */
+export interface LocalBuildJob {
+  id: string;
+  modelId: string;
+  engine: string;
+  status: 'building' | 'done' | 'failed';
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+  /** Machine-readable class of `error` (backend `BuildJob.errorCode`). */
+  errorCode?: string;
+}
 
 export interface ApiKeyModelAccess {
   mode: 'allow' | 'deny';
@@ -7010,4 +7990,5 @@ export const opencodeApi = {
       })
     );
   },
+
 };

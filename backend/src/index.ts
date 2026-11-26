@@ -3,14 +3,14 @@ import { setPoolRefreshHook } from './providers/pool-refresh.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { refreshDirectPool } from './providers/boot-direct.js';
-import { DispatchingProvider } from './providers/executors/dispatch.js';
-import { buildDirectPool } from './providers/boot-direct.js';
+import { buildDirectPool, providerForInstance } from './providers/boot-direct.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
 import { reconcileMihomoSidecar, stopSpawnedMihomoSync } from './proxy/mihomo-sidecar.js';
+import { stopSpawnedLocalRunsSync } from './local/runner.js';
 import { isRestartSupervisorProcess, runRestartSupervisor, takeRestartSelfRegisterFlag, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
@@ -313,7 +313,7 @@ async function main() {
       // registry (raw keys stay in-process; no console/API serialization).
       registry.registerProvider(
         inst.name,
-        new DispatchingProvider(inst.config, inst.wireBases),
+        providerForInstance(inst),
         inst.credentialChain,
         inst.config
       );
@@ -515,6 +515,10 @@ async function main() {
     // us, exactly like the console's Stop. Synchronous by necessity; an
     // adopted (operator-owned) core has no in-memory pid and is left running.
     stopSpawnedMihomoSync();
+    // Same ownership rule for local inference engines this gateway launched
+    // (ADR-0037): spawned llama-server processes leave with the gateway;
+    // adopted survivors of a previous lifetime are left running.
+    stopSpawnedLocalRunsSync();
   });
 }
 

@@ -367,6 +367,13 @@ interface Row {
 
 const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' };
 
+/** Installs run as long client-side awaits (npm/git on the gateway) whose fetch is
+ *  never aborted by a route change, so the install completes server-side either
+ *  way. This module counter keeps a remounted page honest: a row whose install
+ *  outlived the previous mount stays busy for the remainder instead of offering
+ *  a second install the gateway has no lock against. */
+let installsInflight = 0;
+
 /**
  * Name column: the row's identity, plus the version the runtime's own store records.
  *
@@ -1381,7 +1388,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  detected the script): translating it again is pure waste, so the button is not offered. */
   const detailReadmeLocalized = !!detail?.readmeLang && detail.readmeLang === lang;
   const [installHosts, setInstallHosts] = useState<string[]>([]);
-  const [installBusy, setInstallBusy] = useState(false);
+  const [installBusy, setInstallBusyState] = useState(installsInflight > 0);
+  const setInstallBusy = (busy: boolean) => {
+    installsInflight = Math.max(0, installsInflight + (busy ? 1 : -1));
+    setInstallBusyState(installsInflight > 0);
+  };
   /** Mirrored stdout/stderr of the running plugin install (empty outside one). */
   const [installLog, setInstallLog] = useState('');
   /** Set while the post-install result is on screen; the footer stops being an install action. */

@@ -3,10 +3,10 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, AlertOctagon, Archive, ArrowLeftRight,
   BarChart3, Boxes, BrainCircuit, Cable, ChevronDown, CloudDownload, Compass, Cpu,
-  DoorOpen, FileCode2, FolderCog, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
-  MessagesSquare, Monitor, MonitorCog, MonitorSmartphone, Moon, Network, PanelLeftClose, PanelLeftOpen, Plug,
+  DoorOpen, FileCode2, FolderCog, FolderOpen, Gauge, Globe, KeyRound, Layers, LayoutGrid, ListFilter, LogOut, Menu,
+  MessagesSquare, Monitor, MonitorCog, MonitorSmartphone, Moon, Network, Package, PanelLeftClose, PanelLeftOpen, Play, Plug,
   Puzzle, RotateCcw, ScrollText, Search, Server, Settings, ShieldAlert,
-  ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, type LucideIcon,
+  ShieldCheck, Shuffle, Sliders, Sun, Timer, Users, Wallet, Waves, Waypoints, Zap, Github, HardDriveDownload, type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse, type UpdateCheckResponse } from '../lib/api';
 import { gatewayBaseUrl } from '../lib/gateway-url';
@@ -64,6 +64,23 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
     { to: '/proxy-patterns', labelKey: 'nav.proxyPatterns', icon: ListFilter },
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
+  ] },
+  /** Local inference (llama.cpp / Strata engines) and the HuggingFace model
+   *  market share one group: local models lead (the actual payload), the
+   *  market is how you get more, and engines are the infrastructure that
+   *  runs them. The run monitor sits LAST: it observes whatever the rows above
+   *  it configured and launched, so it reads as the end of the workflow rather
+   *  than a step inside it. */
+  { id: 'grp-local', headingKey: 'nav.grpLocal', shortKey: 'nav.shortLocal', icon: HardDriveDownload, items: [
+    { to: '/local-run', labelKey: 'nav.localRun', icon: Play },
+    { to: '/installed-models', labelKey: 'nav.installedModels', icon: FolderOpen },
+    { to: '/model-market', labelKey: 'nav.modelMarket', icon: Package },
+    { to: '/local-models', labelKey: 'nav.localModels', icon: HardDriveDownload },
+    { to: '/local-settings', labelKey: 'nav.localSettings', icon: Settings },
+    // Run Monitor observes whatever the rows above it configured and launched,
+    // so it closes the group: it reads as the end of the local workflow rather
+    // than a step inside it (ADR-0040).
+    { to: '/local-monitor', labelKey: 'nav.localMonitor', icon: Activity },
   ] },
   /** Proxy capability home (ADR-0018/0022 axis): the inbound forward-proxy
    *  rule table and the outbound endpoint live together, away from the model
@@ -137,6 +154,12 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
   '/harness/mcp-debug': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcpBrowser' },
   '/proxy-upstream': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxy' },
+  '/local-models': { groupKey: 'nav.grpLocal', titleKey: 'nav.localModels' },
+  '/model-market': { groupKey: 'nav.grpLocal', titleKey: 'nav.modelMarket' },
+  '/installed-models': { groupKey: 'nav.grpLocal', titleKey: 'nav.installedModels' },
+  '/local-run': { groupKey: 'nav.grpLocal', titleKey: 'nav.localRun' },
+  '/local-monitor': { groupKey: 'nav.grpLocal', titleKey: 'nav.localMonitor' },
+  '/local-settings': { groupKey: 'nav.grpLocal', titleKey: 'nav.localSettings' },
   '/proxy-clash': { groupKey: 'nav.grpProxy', titleKey: 'nav.proxyMihomo' },
   '/proxy-system': { groupKey: 'nav.grpProxy', titleKey: 'nav.systemProxy' },
   '/proxy-patterns': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxyPatterns' },

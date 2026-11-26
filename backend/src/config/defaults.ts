@@ -282,6 +282,25 @@ export const MIHOMO_DELAY_TIMEOUT_MS = 5000;
 export const DEFAULT_HEADROOM_PORT = 8787;
 export const DEFAULT_HEADROOM_URL = `http://127.0.0.1:${DEFAULT_HEADROOM_PORT}`;
 
+/**
+ * First port the local-model runner (backend/src/local/runner.ts) offers a
+ * launched inference server; later concurrent runs increment until a free
+ * port answers no listener. 4800 sits clear of the gateway (4000), the dev
+ * stack (4700), the forward proxy (4555) and llama.cpp's own 8080 default.
+ */
+export const DEFAULT_LOCAL_RUN_PORT = 4800;
+
+/** Wall-clock a local inference server may spend loading weights before the
+ *  run is called `failed` — multi-GB GGUF loads from disk legitimately take
+ *  minutes, so this is a hang guard, not a responsiveness budget. */
+export const LOCAL_RUN_READY_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Local run auto-restart budget: at most this many restarts inside the
+ *  window before the run is declared failed (a crash-looping engine stops
+ *  being restarted rather than being nursed forever). */
+export const LOCAL_RUN_MAX_RESTARTS = 3;
+export const LOCAL_RUN_RESTART_WINDOW_MS = 5 * 60 * 1000;
+
 /** Headroom call timeout when `compression.headroom.timeoutMs` is unset. */
 export const DEFAULT_HEADROOM_TIMEOUT_MS = 3000;
 

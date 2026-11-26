@@ -10,14 +10,15 @@
  * otherwise a node list saved here would resurrect a stale mode/URL (or the
  * reverse) from whichever page loaded first.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isAbortError, useTransferAbort } from '../hooks/useTransferAbort';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { isAbortError } from '../lib/transferStore';
+import { cancelTransfer, getTransferSnapshot, startTransfer, subscribeTransfers } from '../lib/transferStore';
 import { useNavigate } from 'react-router-dom';
 import { Activity, CheckCircle2, XCircle, Copy, ArrowDown, ArrowUp, ArrowUpDown, ArrowLeftRight, Cpu, Database, Download, Link2, Loader2, Network, Play, Plus, RefreshCw, Rss, Save, ScrollText, SlidersHorizontal, Sparkles, Square, Terminal, Trash2 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { BrandIcon } from '../components/BrandIcons';
 import { ProviderLogo } from '../components/ProviderLogo';
-import { api, OcApiError, type MihomoCoreLogLine, type MihomoGeoLeg, type MihomoGeoReport, type MihomoGroupType, type MihomoManualNode, type MihomoManualNodeType, type MihomoNodeCatalog, type MihomoNodeSource, type MihomoProviderInfo, type MihomoProxyGroup, type MihomoProxyNode, type MihomoRoutingMode, type MihomoStatus, type MihomoRuleRow, type MihomoSubscription, type MihomoCustomRule, type MihomoRuleImportResult, type MihomoRuleTarget, type MihomoRuleType, type SystemProxyStatus } from '../lib/api';
+import { api, OcApiError, type InstallMihomoResult, type MihomoCoreLogLine, type MihomoGeoLeg, type MihomoGeoReport, type MihomoGroupType, type MihomoManualNode, type MihomoManualNodeType, type MihomoNodeCatalog, type MihomoNodeSource, type MihomoProviderInfo, type MihomoProxyGroup, type MihomoProxyNode, type MihomoRoutingMode, type MihomoStatus, type MihomoRuleRow, type MihomoSubscription, type MihomoCustomRule, type MihomoRuleImportResult, type MihomoRuleTarget, type MihomoRuleType, type SystemProxyStatus } from '../lib/api';
 import { DEFAULT_MIHOMO_CONTROLLER_PORT, DEFAULT_MIHOMO_GROUP, DEFAULT_MIHOMO_GROUP_INTERVAL_SEC, DEFAULT_MIHOMO_GROUP_TOLERANCE_MS, DEFAULT_MIHOMO_MIXED_PORT, DEFAULT_MIHOMO_SUB_INTERVAL_SEC, DEFAULT_MIHOMO_TEST_URL, MIHOMO_GROUP_INTERVAL_MAX_SEC, MIHOMO_GROUP_INTERVAL_MIN_SEC, MIHOMO_GROUP_TOLERANCE_MAX_MS } from '../lib/defaults';
 import { fmtDur, formatTimestamp } from '../lib/format';
 import { delayColor, delayRank, pruneReadings, UNTESTED_DELAY, type DelayReading } from '../lib/delay';
@@ -561,9 +562,6 @@ export const MihomoPage: React.FC = () => {
   const [tab, setTab] = useState<Tab>('general');
   const [status, setStatus] = useState<MihomoStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  /** Live install download progress. `total` is 0 when the host sends no
-   *  Content-Length, in which case the label falls back to a byte count. */
-  const [installProgress, setInstallProgress] = useState<{ downloaded: number; total: number } | null>(null);
   const [subs, setSubs] = useState<MihomoSubscription[]>([]);
   const [providers, setProviders] = useState<MihomoProviderInfo[]>([]);
   const [groups, setGroups] = useState<MihomoProxyGroup[]>([]);
@@ -736,14 +734,20 @@ export const MihomoPage: React.FC = () => {
   /** The core's captured output. The ring outlives a crashed core, so reading
    *  it needs no live controller; polling runs only while this section is open. */
   const [coreLogs, setCoreLogs] = useState<MihomoCoreLogLine[]>([]);
-  /** Core and geo downloads run for minutes and may run at the same time, so each
-   *  leg owns its own controller AND its own gateway key (`hooks/useTransferAbort`):
-   *  leaving the page or restarting one leg stops that transfer only — the gateway
-   *  cannot see a client walk away, so the hook tells it to stop — the partial file
+  /** Core and geo downloads run for minutes and may run at the same time. They
+   *  live in the module-scope transfer registry (`lib/transferStore`): leaving
+   *  the page neither cancels them nor loses their progress readout — the old
+   *  `useTransferAbort` wiring treated a route change as "close the app" and
+   *  killed the transfer. The gateway still gets told first-class on a real
+   *  cancel (each leg carries its `cancelMihomoTransfer` key), the partial file
    *  stays on disk, and the next click resumes where it stopped (ADR-0022). */
-  const { begin, cancel, settle } = useTransferAbort((serverKey) => {
-    void api.cancelMihomoTransfer(serverKey);
-  });
+  const transfers = useSyncExternalStore(subscribeTransfers, getTransferSnapshot);
+  /** Active run view of one mihomo leg, or undefined when idle/finished. */
+  const mihomoRun = (leg: string) => {
+    const entry = transfers[leg];
+    return entry?.phase === 'active' ? entry.run : undefined;
+  };
+  const coreRun = mihomoRun('mihomo:core');
 
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const logFollowRef = useRef(true);
@@ -970,15 +974,17 @@ export const MihomoPage: React.FC = () => {
   const [presetPickDefaults, setPresetPickDefaults] = useState(true);
   const [presetPickCn, setPresetPickCn] = useState(false);
   const [presetGeoPresent, setPresetGeoPresent] = useState(false);
-  const [presetBusy, setPresetBusy] = useState(false);
-  const [presetProgress, setPresetProgress] = useState<{ file: string; downloaded: number; total: number } | null>(null);
+  /** The CN-preset geo download lives in the transfer store: progress and busy
+   *  state derive from it, so both survive a route switch. */
+  const presetRun = mihomoRun('mihomo:geo:machine');
+  const presetBusy = presetRun !== undefined;
   /** Installed geo databases (GEOIP/GEOSITE rules read them). Their refresh is
    *  an explicit operator action: the core itself never downloads them, and a
    *  missing pair makes both the rule save and the core start refuse. */
   const [geo, setGeo] = useState<MihomoGeoReport | null>(null);
   const [geoLeg, setGeoLeg] = useState<MihomoGeoLeg>('machine');
-  const [geoBusy, setGeoBusy] = useState(false);
-  const [geoProgress, setGeoProgress] = useState<{ file: string; downloaded: number; total: number } | null>(null);
+  const geoSyncRun = mihomoRun(`mihomo:geo:${geoLeg}`);
+  const geoBusy = geoSyncRun !== undefined;
   /** The rules section has TWO views that never render together: the editable
    *  draft and the read-only table of what the core actually loaded. Mixing them
    *  on one screen made the operator guess which rows were in force. */
@@ -1054,7 +1060,6 @@ export const MihomoPage: React.FC = () => {
     setPresetRows(null);
     setPresetPickDefaults(true);
     setPresetPickCn(false);
-    setPresetProgress(null);
     setPresetOpen(true);
     try {
       const [presets, geo] = await Promise.all([api.getMihomoRulePresets(), api.getMihomoGeo()]);
@@ -1079,15 +1084,22 @@ export const MihomoPage: React.FC = () => {
       ...(presetPickCn ? presetRows.cn : []),
     ];
     if (wanted.length === 0) return;
-    setPresetBusy(true);
     try {
       if (presetPickCn && !presetGeoPresent) {
-        setPresetProgress({ file: 'geoip', downloaded: 0, total: 0 });
-        const presetSignal = await begin('geo', 'geo:machine');
-        const result = await api.downloadMihomoGeo('machine', { onProgress: (file, downloaded, total) => setPresetProgress({ file, downloaded, total }), signal: presetSignal })
-          .finally(() => settle('geo', presetSignal));
-        if (!result.ok || !result.present) {
-          toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
+        // The geo download runs in the transfer store: progress survives a
+        // route switch, and `await` still gates the rule merge below on it.
+        const geoResult: { current: Awaited<ReturnType<typeof api.downloadMihomoGeo>> | null } = { current: null };
+        await startTransfer('mihomo:geo:machine', {
+          initial: { stage: 'download', asset: 'geoip', downloaded: 0, total: 0, assetIndex: 1, assetTotal: 1 },
+          cancelRemote: () => api.cancelMihomoTransfer('geo:machine'),
+          request: (signal, onEvent) => api.downloadMihomoGeo('machine', {
+            onProgress: (file, downloaded, total) => onEvent({ stage: 'download', asset: file, downloaded, total }),
+            signal,
+          }),
+          onOk: (result) => { geoResult.current = result; },
+        });
+        if (!geoResult.current || !geoResult.current.ok || !geoResult.current.present) {
+          if (geoResult.current) toast.error(t(CORE_ERROR_KEYS[geoResult.current.code ?? ''] ?? 'proxy.errGeoDownload'));
           return;
         }
         setPresetGeoPresent(true);
@@ -1112,9 +1124,6 @@ export const MihomoPage: React.FC = () => {
       setPresetOpen(false);
     } catch (err: any) {
       if (!isAbortError(err)) toastFailure(err);
-    } finally {
-      setPresetBusy(false);
-      setPresetProgress(null);
     }
   };
 
@@ -1124,29 +1133,24 @@ export const MihomoPage: React.FC = () => {
    * replaced — while a failed download keeps the old files: new bytes land in
    * a temp file first.
    */
-  const syncGeo = async () => {
-    setGeoBusy(true);
-    setGeoProgress({ file: 'geoip', downloaded: 0, total: 0 });
-    try {
-      const geoSignal = await begin('geo', `geo:${geoLeg}`);
-      const result = await api.downloadMihomoGeo(geoLeg, {
+  const syncGeo = () => {
+    const leg = `mihomo:geo:${geoLeg}`;
+    void startTransfer<Awaited<ReturnType<typeof api.downloadMihomoGeo>>>(leg, {
+      initial: { stage: 'download', asset: 'geoip', downloaded: 0, total: 0, assetIndex: 1, assetTotal: 1 },
+      cancelRemote: () => api.cancelMihomoTransfer(`geo:${geoLeg}`),
+      request: (signal, onEvent) => api.downloadMihomoGeo(geoLeg, {
         refresh: true,
-        onProgress: (file, downloaded, total) => setGeoProgress({ file, downloaded, total }),
-        signal: geoSignal,
-      }).finally(() => settle('geo', geoSignal));
-      if (result.ok && result.present) {
-        toast.success(t('proxy.geoSyncDone'));
-      } else {
-        toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
-      }
-    } catch (err: any) {
-      // Our own cancel is an outcome, not a failure: the next click resumes.
-      if (!isAbortError(err)) toastFailure(err);
-    } finally {
-      setGeoBusy(false);
-      setGeoProgress(null);
-      void refreshGeo();
-    }
+        onProgress: (file, downloaded, total) => onEvent({ stage: 'download', asset: file, downloaded, total }),
+        signal,
+      }),
+      onOk: (result) => {
+        if (result.ok && result.present) toast.success(t('proxy.geoSyncDone'));
+        else toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
+        void refreshGeo();
+      },
+      onCancelled: () => { void refreshGeo(); },
+      onError: (message) => { toast.error(message); void refreshGeo(); },
+    });
   };
 
   const toggleRuleSel = (index: number) => {
@@ -1336,47 +1340,60 @@ export const MihomoPage: React.FC = () => {
   };
 
   const runCore = async (action: 'start' | 'stop' | 'restart' | 'install') => {
+    // The install download runs in the module-scope transfer registry: a route
+    // switch does not cancel it, and the card re-attaches to its progress on
+    // return. The store entry drives the button label and the cancel control.
+    if (action === 'install') {
+      void startTransfer<InstallMihomoResult>('mihomo:core', {
+        initial: { stage: 'download', asset: '', downloaded: 0, total: 0, assetIndex: 1, assetTotal: 1 },
+        cancelRemote: () => api.cancelMihomoTransfer('core'),
+        request: (signal, onEvent) => api.installMihomo(
+          (downloaded, total) => onEvent({ stage: 'download', asset: '', downloaded, total }),
+          signal,
+        ),
+        onOk: (result) => {
+          if (result.ok === false || result.status === 'error') toastResultFailure(result);
+          else toast.success(t('proxy.installed'));
+          void refreshStatus();
+        },
+        onError: (message) => toast.error(message),
+      });
+      return;
+    }
     setBusy(action);
-    if (action === 'install') setInstallProgress(null);
-    // The install leg registers its gateway key BEFORE the transfer starts, so the
-    // stop control (and an unmount) reaches THIS transfer and never the geo one.
-    const coreSignal = action === 'install' ? await begin('core', 'core') : undefined;
     try {
-      if (action !== 'install' && proxy) {
+      if (proxy) {
         const next = await persistMihomo();
         setProxy(next);
         setSavedKey(mihomoKey(next));
       }
       const result = action === 'start' ? await api.startMihomo()
         : action === 'stop' ? await api.stopMihomo()
-        : action === 'restart' ? await api.restartMihomo()
-        : await api.installMihomo((downloaded, total) => setInstallProgress({ downloaded, total }), coreSignal);
+        : await api.restartMihomo();
       if (result.ok === false || result.status === 'error') {
         toastResultFailure(result);
       } else {
-        toast.success(action === 'install' ? t('proxy.installed') : t('proxy.savedNotice'));
+        toast.success(t('proxy.savedNotice'));
       }
       await refreshStatus();
-      if (action !== 'install') await adoptAutoStart();
+      await adoptAutoStart();
     } catch (err: any) {
       // A cancelled transfer is an outcome, not a failure (ADR-0022).
       if (!isAbortError(err)) toastFailure(err);
     } finally {
-      if (coreSignal) settle('core', coreSignal);
       setBusy(null);
-      setInstallProgress(null);
     }
   };
 
   /** Install button label: percentage while the size is known, MB otherwise. */
   const installLabel = (): string => {
-    if (busy !== 'install') return status?.installed ? t('proxy.reinstall') : t('proxy.install');
-    if (!installProgress) return t('proxy.installing');
-    if (installProgress.total > 0) {
-      const pct = Math.min(100, Math.floor((installProgress.downloaded / installProgress.total) * 100));
+    if (!coreRun) return status?.installed ? t('proxy.reinstall') : t('proxy.install');
+    if (coreRun.total > 0) {
+      const pct = Math.min(100, Math.floor((coreRun.downloaded / coreRun.total) * 100));
       return t('proxy.installingPct', { pct });
     }
-    return t('proxy.installingSize', { mb: (installProgress.downloaded / 1048576).toFixed(1) });
+    if (coreRun.downloaded > 0) return t('proxy.installingSize', { mb: (coreRun.downloaded / 1048576).toFixed(1) });
+    return t('proxy.installing');
   };
 
   /** Add form: always creates and always enabled. The enable state is a row
@@ -2120,17 +2137,18 @@ export const MihomoPage: React.FC = () => {
                     </span>
                   </label>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button className="btn btn-sm btn-primary" disabled={busy !== null || coreReady} title={coreReady ? t('proxy.alreadyRunning') : undefined} onClick={() => void runCore('start')}><Play size={13} /><span>{t('proxy.start')}</span></button>
-                    <button className="btn btn-sm" disabled={busy !== null || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('stop')}><Square size={13} /><span>{t('proxy.stop')}</span></button>
-                    <button className="btn btn-sm" disabled={busy !== null || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('restart')}><RefreshCw size={13} style={busy === 'restart' ? SPIN : undefined} /><span>{t('proxy.restart')}</span></button>
-                    <button className="btn btn-sm" disabled={busy !== null || coreReady} title={coreReady ? t('proxy.stopFirst') : undefined} onClick={() => void runCore('install')}>
+                    <button className="btn btn-sm btn-primary" disabled={busy !== null || coreRun !== undefined || coreReady} title={coreReady ? t('proxy.alreadyRunning') : undefined} onClick={() => void runCore('start')}><Play size={13} /><span>{t('proxy.start')}</span></button>
+                    <button className="btn btn-sm" disabled={busy !== null || coreRun !== undefined || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('stop')}><Square size={13} /><span>{t('proxy.stop')}</span></button>
+                    <button className="btn btn-sm" disabled={busy !== null || coreRun !== undefined || !coreReady} title={coreReady ? undefined : t('proxy.notRunning')} onClick={() => void runCore('restart')}><RefreshCw size={13} style={busy === 'restart' ? SPIN : undefined} /><span>{t('proxy.restart')}</span></button>
+                    <button className="btn btn-sm" disabled={busy !== null || coreRun !== undefined || coreReady} title={coreReady ? t('proxy.stopFirst') : undefined} onClick={() => void runCore('install')}>
+                      {coreRun && <Loader2 size={13} style={SPIN} />}
                       <span>{installLabel()}</span>
                     </button>
                     {/* A cancel the gateway can actually see: the transfer stops,
                         the bytes already fetched stay staged, and installing again
                         resumes from them (ADR-0022). */}
-                    {busy === 'install' && (
-                      <button className="btn btn-sm" onClick={() => cancel('core')}>
+                    {coreRun && (
+                      <button className="btn btn-sm" onClick={() => cancelTransfer('mihomo:core')}>
                         <Square size={13} />
                         <span>{t('common.cancel')}</span>
                       </button>
@@ -2322,16 +2340,16 @@ export const MihomoPage: React.FC = () => {
                         : t('proxy.geoSyncLegHint')}
                     </div>
                   </div>
-                  {geoBusy && geoProgress && (
+                  {geoBusy && geoSyncRun && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                       <Loader2 size={12} style={SPIN} />
-                      <span>{t('proxy.geoSyncDownloading', { file: geoProgress.file })}</span>
+                      <span>{t('proxy.geoSyncDownloading', { file: geoSyncRun.asset })}</span>
                       <span>
-                        {geoProgress.total > 0
-                          ? `${Math.min(100, Math.round((geoProgress.downloaded / geoProgress.total) * 100))}%`
-                          : `${(geoProgress.downloaded / 1_048_576).toFixed(1)} MB`}
+                        {geoSyncRun.total > 0
+                          ? `${Math.min(100, Math.round((geoSyncRun.downloaded / geoSyncRun.total) * 100))}%`
+                          : `${(geoSyncRun.downloaded / 1_048_576).toFixed(1)} MB`}
                       </span>
-                      <button className="btn btn-sm" onClick={() => cancel('geo')}>{t('common.cancel')}</button>
+                      <button className="btn btn-sm" onClick={() => cancelTransfer('mihomo:geo')}>{t('common.cancel')}</button>
                     </div>
                   )}
                 </div>
@@ -2998,17 +3016,17 @@ export const MihomoPage: React.FC = () => {
                       </span>
                     </span>
                   </label>
-                  {presetProgress && (
+                  {presetRun && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                       <Loader2 size={13} style={SPIN} />
                       <span>
-                        {t('proxy.rulesPresetDownloading', { file: presetProgress.file })}
+                        {t('proxy.rulesPresetDownloading', { file: presetRun.asset })}
                         {' '}
-                        {presetProgress.total > 0
-                          ? `${Math.min(100, Math.round((presetProgress.downloaded / presetProgress.total) * 100))}%`
-                          : `${(presetProgress.downloaded / 1_048_576).toFixed(1)} MB`}
+                        {presetRun.total > 0
+                          ? `${Math.min(100, Math.round((presetRun.downloaded / presetRun.total) * 100))}%`
+                          : `${(presetRun.downloaded / 1_048_576).toFixed(1)} MB`}
                       </span>
-                      <button className="btn btn-sm" onClick={() => cancel('geo')}>{t('common.cancel')}</button>
+                      <button className="btn btn-sm" onClick={() => cancelTransfer('mihomo:geo')}>{t('common.cancel')}</button>
                     </div>
                   )}
                 </div>

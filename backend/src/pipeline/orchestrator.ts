@@ -2857,7 +2857,12 @@ export class PipelineOrchestrator {
           // returns first, so the two can never disagree.
           const willRetryInPlace =
             diagnosis.isInPlaceRetriable && attempt < maxInplaceAttempts && !opts.relay?.committed;
-          if (!willRetryInPlace) {
+          // Operator-state errors are not upstream evidence (ADR-0038 §3): a
+          // local run that is stopped on purpose answers `local_run_inactive`,
+          // and recording it would turn a deliberate action into a breaker
+          // cooldown for a model that never failed.
+          const breakerExempt = (err as { breakerExempt?: unknown })?.breakerExempt === true;
+          if (!willRetryInPlace && !breakerExempt) {
             cbManager.recordFailureScoped(
               candidate.id,
               diagnosis,

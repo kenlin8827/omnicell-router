@@ -32,8 +32,9 @@ export const SegGroup: React.FC<{
   value: string;
   onChange: (v: string) => void;
   /** `icon` renders before the label; omit `label` for an icon-only switch (the title becomes the
-   *  accessible name). */
-  options: { value: string; label?: string; title?: string; icon?: React.ReactNode }[];
+   *  accessible name). `disabled` greys the segment out (e.g. a ctx step above the
+   *  planner's ceiling) — the option stays visible but cannot be picked. */
+  options: { value: string; label?: string; title?: string; icon?: React.ReactNode; disabled?: boolean }[];
   size?: 'sm' | 'md' | 'lg';
   embedded?: 'start' | 'end';
   /** Fixed control height (px or CSS length). Use it when the group shares a row with `.btn` and
@@ -42,19 +43,29 @@ export const SegGroup: React.FC<{
   /** Overrides the size's own minimum width per option button — use it to widen the hit targets
    *  of very short labels (Request / Hex) beyond the `sm`/`md`/`lg` floor. */
   optionMinWidth?: number;
-}> = ({ value, onChange, options, size = 'md', embedded, height, optionMinWidth }) => {
+  /** Let the group AUTO-WRAP when the column is too narrow for one row (long
+   *  labels, many options). Each segment then carries its own border with a
+   *  -1px overlap, so segments still read JOINED inside a wrapped row instead
+   *  of falling apart into floating chips. Implies a block-level group. */
+  wrap?: boolean;
+}> = ({ value, onChange, options, size = 'md', embedded, height, optionMinWidth, wrap }) => {
   const m = SIZES[size];
   return (
   <div
     role="group"
     style={{
-      display: 'inline-flex',
+      display: wrap ? 'flex' : 'inline-flex',
       alignItems: 'stretch',
+      ...(wrap ? { flexWrap: 'wrap' as const, gap: 6 } : {}),
       /* Hug the segments even when the parent is a column flex box (a `.sub-card`
        * field stack): a stretched group paints a dead full-width track beside the
-       * switch, which reads as an empty input rather than a mode selector. */
-      width: 'fit-content',
-      overflow: 'hidden',
+       * switch, which reads as an empty input rather than a mode selector. A
+       * wrapping group claims the row instead — it needs the width to know
+       * WHERE to break. */
+      width: wrap ? '100%' : 'fit-content',
+      /* Wrapped rows paint their own per-segment borders; the container frame
+       * (and its clipping) would double-draw them. */
+      overflow: wrap ? undefined : 'hidden',
       ...(embedded
         ? {
             border: 'none',
@@ -63,11 +74,13 @@ export const SegGroup: React.FC<{
             borderRadius: 0,
             background: 'transparent',
           }
-        : {
-            border: '1px solid var(--divider)',
-            borderRadius: m.radius,
-            background: 'var(--btn-bg)',
-          }),
+        : wrap
+          ? { background: 'transparent' }
+          : {
+              border: '1px solid var(--divider)',
+              borderRadius: m.radius,
+              background: 'var(--btn-bg)',
+            }),
       ...(height ? { height } : {}),
     }}
   >
@@ -78,7 +91,10 @@ export const SegGroup: React.FC<{
           key={o.value || 'all'}
           type="button"
           aria-pressed={active}
-          title={o.title}
+          /* The current pick never disables itself: greying it out would trap
+           * the operator with no way back to another segment. */
+          disabled={o.disabled && !active}
+          title={o.disabled && !active ? undefined : o.title}
           aria-label={o.label ? undefined : (o.title ?? o.value)}
           onClick={() => onChange(o.value)}
           style={{
@@ -92,11 +108,15 @@ export const SegGroup: React.FC<{
             alignItems: 'center',
             height: height ?? undefined,
             gap: 6,
-            border: 'none',
-            borderRight: i < options.length - 1 ? '1px solid var(--divider)' : 'none',
+            /* Wrapped rows: the container draws no frame, so each segment
+             * borders itself; the group's 6px gap keeps them apart as a chip
+             * row that wraps cleanly. */
+            border: wrap ? '1px solid var(--divider)' : 'none',
+            ...(wrap ? { borderRadius: m.radius } : { borderRight: i < options.length - 1 ? '1px solid var(--divider)' : 'none' }),
             background: active ? 'var(--btn-primary-bg)' : 'transparent',
             color: active ? 'var(--btn-primary-text)' : 'var(--text-main)',
-            cursor: 'pointer',
+            cursor: o.disabled ? 'not-allowed' : 'pointer',
+            opacity: o.disabled ? 0.4 : 1,
             whiteSpace: 'nowrap',
           }}
         >

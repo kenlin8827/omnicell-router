@@ -1,5 +1,6 @@
 import { ModelRegistration, ModelVariant, ProviderConfig } from '../config/types.js';
 import { DispatchingProvider } from './executors/dispatch.js';
+import type { LLMProvider } from './base.js';
 import type { ProviderRegistry } from './registry.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import { TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
@@ -21,6 +22,12 @@ import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/cr
 import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
 import { getProviderTakedownStore } from './provider-takedown.js';
 import { getModelServicePlugin, pluginDeclinesCredentials } from '../plugins/host.js';
+import {
+  LOCAL_BASE_SENTINEL,
+  LOCAL_PROVIDER_ID,
+  LocalDialProvider,
+  localModelRegistrations,
+} from '../local/local-provider.js';
 
 /**
  * Build the direct execution pool WITHOUT the opencode daemon.
@@ -460,6 +467,31 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     excluded.push({ provider: ex.provider, reason: `${ex.reasonCode}: ${ex.detail}`, reasonCode: ex.reasonCode });
   }
 
+  // ─── the core-owned `local` provider (ADR-0038 §1) ───
+  // Synthesized here, never written to providers.json: it is not an
+  // operator-defined provider (ADR-0010 stays whole), it carries no credential
+  // and no endpoint of its own. Its models' endpoints resolve per call from the
+  // LIVE run registry, which is why a run start or stop needs no pool rebuild.
+  // Riding this builder is what gives local models the same reconciliation,
+  // retirement and /v1/models listing as every other model — one refresh path.
+  const localModels = localModelRegistrations();
+  if (localModels.length > 0) {
+    instances.push({
+      name: LOCAL_PROVIDER_ID,
+      config: {
+        name: LOCAL_PROVIDER_ID,
+        type: 'openai-chat',
+        // A sentinel, not an upstream: nothing is ever dialed at :0.
+        baseUrl: LOCAL_BASE_SENTINEL,
+        apiKey: '',
+      },
+      wires: ['openai-chat'],
+      wireBases: {},
+      credentialChain: [],
+    });
+    models.push(...localModels);
+  }
+
   // ─── membership: explicit member lists are the ONLY source ──────
   // No runtime seeding and no shipped member defaults: DEFAULT_CONFIG.tiers
   // is four EMPTY tier shells (defaultConfigYaml() writes them into every
@@ -520,6 +552,18 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
 }
 
 /**
+ * The executor for one direct-pool instance. The `local` provider is the ONE
+ * exception to the per-provider DispatchingProvider: its endpoint is per MODEL,
+ * so its executor resolves the base at call time instead of baking it
+ * (ADR-0038 §1). Boot and every hot rebuild go through this single factory, so
+ * the two paths can never construct different executors for the same name.
+ */
+export function providerForInstance(inst: DirectBootResult['instances'][number]): LLMProvider {
+  if (inst.name === LOCAL_PROVIDER_ID) return new LocalDialProvider();
+  return new DispatchingProvider(inst.config, inst.wireBases);
+}
+
+/**
  * Hot pool rebuild (console provider-def mutations): the runtime twin of the
  * boot path — the SAME builder with the SAME invariants, reconciled into the
  * live registry without a gateway restart. Fail-open at the caller: a rebuild
@@ -530,7 +574,7 @@ export async function refreshDirectPool(registry: ProviderRegistry): Promise<Dir
   registry.applyDirectPool(
     boot.instances.map((inst) => ({
       name: inst.name,
-      provider: new DispatchingProvider(inst.config, inst.wireBases),
+      provider: providerForInstance(inst),
       config: inst.config,
       credentialChain: inst.credentialChain,
     })),
