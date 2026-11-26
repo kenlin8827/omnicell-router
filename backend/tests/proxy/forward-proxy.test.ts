@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import tls from 'node:tls';
@@ -938,5 +938,66 @@ describe('forward-proxy: per-host terminator cache', () => {
     assert.ok(evictions[1].includes('b.test'), `re-visit refreshes LRU order, got: ${evictions[1]}`);
 
     await handle.close();
+  });
+});
+
+describe('forward-proxy: framing-level refusals (clientError)', () => {
+  /**
+   * Pins the review finding that a framing error reached the client as a bare
+   * reset: bun 1.3.14 DISCARDS a synchronous `socket.end()` issued from inside a
+   * `clientError` listener (node v24 sends it), so the reply has to be deferred
+   * one tick to be portable. The status is pinned too — a header block that
+   * overran the parser is 431 (RFC 9110 15.5.21), not a generic 400.
+   */
+  const sendRaw = (port: number, head: string): Promise<string> =>
+    new Promise((resolve) => {
+      const sock = net.connect(port, '127.0.0.1', () => sock.write(head));
+      let buf = '';
+      sock.setEncoding('latin1');
+      sock.on('data', (d: string) => {
+        buf += d;
+        if (buf.includes('\r\n\r\n')) resolve(buf);
+      });
+      sock.on('close', () => resolve(buf));
+      sock.setTimeout(4000, () => resolve(buf));
+    });
+
+  let handle: Awaited<ReturnType<typeof createForwardProxyServer>> | undefined;
+
+  before(async () => {
+    handle = await createForwardProxyServer({
+      port: 0,
+      host: '127.0.0.1',
+      caDir: tmpCaDir(),
+      intercept: async () => false,
+    });
+  });
+
+  after(async () => {
+    await handle?.close();
+  });
+
+  it('answers a header block over the parser limit with 431, not a reset', async () => {
+    const huge = `GET http://example.test/ HTTP/1.1\r\nhost: example.test\r\nx-big: ${'A'.repeat(20 * 1024)}\r\n\r\n`;
+    const reply = await sendRaw(handle!.port, huge);
+    assert.ok(reply.startsWith('HTTP/1.1 431 '), `got: ${JSON.stringify(reply.slice(0, 60))}`);
+    assert.match(reply, /connection: close/i);
+  });
+
+  it('answers unparseable request syntax with 400', async () => {
+    // A header field with a space in its name is a hard parser error
+    // (HPE_INVALID_HEADER_TOKEN), which is what the clientError leg must answer.
+    const reply = await sendRaw(handle!.port, 'GET http://example.test/ HTTP/1.1\r\nbad header: x\r\n\r\n');
+    assert.ok(reply.startsWith('HTTP/1.1 400 '), `got: ${JSON.stringify(reply.slice(0, 60))}`);
+  });
+
+  it('answers an unsupported expectation with 417 (RFC 9110 10.1.1)', async () => {
+    // No code of ours is involved — the runtime refuses the unknown token before
+    // any listener runs. Pinned so a future listener cannot quietly swallow it.
+    const reply = await sendRaw(
+      handle!.port,
+      `POST http://example.test/v1/chat/completions HTTP/1.1\r\nhost: example.test\r\nexpect: 213-299/foo\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}`
+    );
+    assert.ok(reply.startsWith('HTTP/1.1 417 '), `got: ${JSON.stringify(reply.slice(0, 60))}`);
   });
 });

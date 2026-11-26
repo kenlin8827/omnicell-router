@@ -10,7 +10,7 @@ export type CommentLang = 'zh-CN' | 'en';
 export const YAML_FILE_HEADER_ZH = [
   'OmniCellRouter 网关配置（config.yaml）— schemaVersion 1（分组格式，演进规则见 docs/adr/0016-config-schema-evolution.md）',
   '配置层次（六组，每段唯一归属）：',
-  '  client      客户端接入面：port / host / adminKey / webAuth / apiKeys / rateLimit / forwardProxy —— 请求怎么进来',
+  '  client      客户端接入面：port / host / adminKey / webAuth / apiKeys / rateLimit / bodyLimits / forwardProxy —— 请求怎么进来',
   '  protocol    协议面：systemone / responses —— 网关对外说哪种协议',
   '  routing     流量编排面：strategy / tiers / classifier / session / directives / routeEntries / combos / profileMemory —— 请求路由到哪个模型',
   '  upstream    上游连接面：proxy / credentials / streaming / compression —— 怎么打到上游',
@@ -129,6 +129,9 @@ export const YAML_FIELD_COMMENTS_ZH: Record<string, string> = {
   'retry.failover.maxAttempts': '故障转移尝试次数',
   'retry.failover.tierCrossPolicy': '跨梯队策略：allow_escalate 允许向上升级',
   rateLimit: '限流策略开关（窗口本身在 apiKeys[].limits 与 credentials: 叠加层）',
+  bodyLimits: '请求体准入上限（ADR-0008），按 HTTP 面各一个，计的是解压后的体积：`maxBytes` 管推理面（chat / responses / anthropic 两条腿——原生监听与智能体 CLI 经前向代理 MITM 的那条，共用同一天花板），`adminMaxBytes` 管控制台面。重启网关生效——Fastify 在注册路由时读取 bodyLimit，改动随下一次受控重启落地（ADR-0007）。越界值夹到边界，非法值回退出厂默认。与捕捉旋钮不是一回事：`ops.requestCapture.maxBodyBytes` 只决定归档留存多少，从不拒请求。两个上传路由（账本导入、插件包上传）自带更大上限，不受本段约束。',
+  'bodyLimits.maxBytes': '推理面上限（字节，默认 33554432 = 32 MiB；夹到 65536…536870912 = 64 KiB…512 MiB）。超过即以 413 拒收并在消息里写明该数字；声明了网关无法解码的压缩格式（gzip / x-gzip / deflate / br）在读取请求体之前即 415 + `Accept-Encoding`；边解边膨胀触顶则 413。抬高前请知悉：每个在途请求都会按此规模占用内存。',
+  'bodyLimits.adminMaxBytes': '控制台面上限（字节，默认 8388608 = 8 MiB；边界同上）。覆盖所有未自报上限的 /api/admin/* 路由，其中最大的真实载荷是配置文件原始 YAML 保存（整个 config.yaml 塞进一个字符串）。需要更大的路由在注册时自报 bodyLimit，不受本上限约束。',
   'rateLimit.persist': '已触发限流事件账本的持久化：写入 traces.db（与 trace/FinOps 共库独立句柄），重启后 /rate-limit 页仍可回看上一次的触发历史；观测性写入 fail-open，永不阻塞请求路径',
   'rateLimit.persist.enabled': '限流持久化开关（默认开）：触发限流事件账本写入 traces.db（重启后 /rate-limit 页仍可回看上一次的触发历史），且滑动窗口每 30s checkpoint 一次并在优雅停机时冲刷、启动时重放（1d 类长窗口预算跨重启连续，硬杀最多丢最近一个 checkpoint 周期）；关闭=全部仅内存（重启清零）',
   'rateLimit.inboundGraceMs': '宽限等待（毫秒，默认 1000，上限 2000，0=关闭）：客户端密钥窗口满、但重开等待不超过该值时，网关原地等待窗口重开后复查一次（不循环），复查仍满或等待超限才回 429 + Retry-After——吸收亚秒级突发，避免短限流变成用户可见错误；长窗口维持快速失败：限流契约不变，等待归属客户端自己的退避',

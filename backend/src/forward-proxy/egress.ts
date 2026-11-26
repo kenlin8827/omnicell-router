@@ -110,6 +110,11 @@ const HOP_BY_HOP: Record<string, true> = {
   trailer: true,
   'transfer-encoding': true,
   upgrade: true,
+  // RFC 9110 7.6.1 lists `Expect` as hop-by-hop, and 10.1 makes it a demand on
+  // THIS recipient: the gateway has already consumed (or refused) the body, so a
+  // live `Expect: 100-continue` reaching the origin would make it wait for bytes
+  // that will never arrive. Node's own http agent strips the same field.
+  expect: true,
 };
 
 export function filterHeaders(headers: http.IncomingHttpHeaders): Record<string, string | string[]> {
@@ -121,6 +126,13 @@ export function filterHeaders(headers: http.IncomingHttpHeaders): Record<string,
     // h1 client throws ERR_INVALID_HTTP_TOKEN on them.
     if (k.startsWith(':')) continue;
     if (HOP_BY_HOP[k.toLowerCase()]) continue;
+    // An AMBIGUOUS `Content-Length` is never relayed (RFC 9112 6.3: a proxy must
+    // not forward a message whose framing it cannot determine). Bun accepts a
+    // duplicated CL and hands the app an array, so the value that reached us is
+    // already unrepresentable on the wire — dropping it lets the outbound client
+    // re-frame from the bytes it actually writes. A single well-formed value is
+    // kept: it is end-to-end, not hop-by-hop.
+    if (k.toLowerCase() === 'content-length' && (Array.isArray(v) || !/^\d+$/.test(v))) continue;
     out[k] = v;
   }
   return out;

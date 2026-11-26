@@ -60,6 +60,92 @@ when the request still succeeds.
   chunks forward `usage` intact. A field present on only one leg is a bug —
   Claude Code always streams.
 
+**Admission integrity** — what the gateway accepts, and what a refusal says, is ONE
+policy on both transports. Like the two gates above, a breach is silent: the client
+simply gets a confusing error.
+
+- Body limits are declared once, in `config/defaults.ts` (`GATEWAY_MAX_BODY_BYTES`
+  inference, `ADMIN_MAX_BODY_BYTES` control plane, `IMPORT_BODY_LIMIT_BYTES` /
+  `PLUGIN_PACKAGE_MAX_BYTES` operator uploads), and only `surfaces/body-admission.ts`
+  turns them into behavior. A route never re-declares a byte cap or hand-writes a
+  413/415/400 message. The two inference/admin tiers are additionally operator-tunable
+  as `client.bodyLimits` (`maxBytes` / `adminMaxBytes`), resolved and clamped into
+  `[BODY_LIMIT_MIN_BYTES, BODY_LIMIT_MAX_BYTES]` and installed once at boot
+  (`configureBodyLimits` → `bodyLimitFor(plane)`) because Fastify reads a route's
+  `bodyLimit` at registration — the knob is RESTART-ONLY (ADR-0007), never hot.
+- An inbound `Expect: 100-continue` is answered from the HEADERS before any body is read
+  (both legs), which RFC 9110 §10.1.1 requires of a server holding the expectation: send
+  an immediate final status when the method, target URI and fields already determine it —
+  a declared `Content-Length` over the cap, an undecodable `Content-Encoding`, a media
+  type the plane will not parse — otherwise `100` and let the body flow. A promise that
+  the server will accept the request is never issued ahead of a refusal. The refusal
+  answers through `settleContinuationExpectation`, NOT the framework's `expect-continue`
+  route (its default handler writes `100` and then demands the body, so the route would
+  500 with `Cannot have a body with expect-continue`) — answering a continuation in the
+  pre-dispatch handler is a protocol violation Node answers with `ECONNRESET`, and an
+  `expect-continue` route that does not consume its body leaves the exchange hanging.
+  Listeners are installed on the native leg AND both MITM inner legs (h1 inner + outer
+  proxy); an h2 leg needs none, because RFC 9113 §8.2.2 forbids `Expect`. INSTALLING a
+  `checkContinue` listener SUPPRESSES the server's own `request` delivery (verified on Bun
+  1.3.14 and Node 24), so every listener re-dispatches when the guard says continue — a
+  listener that only refuses is a hang.
+- Every listener the gateway owns ARMS its own inbound liveness bounds
+  (`applyInboundLiveness` in `utils/server-liveness.ts`, values
+  `SERVER_REQUEST_TIMEOUT_MS` = 5 min, `SERVER_HEADERS_TIMEOUT_MS` = 60 s,
+  `SERVER_KEEP_ALIVE_TIMEOUT_MS` = 5 s in `config/defaults.ts`): Node ships those
+  numbers, **Bun ships none**, so a stalled or half-open client socket was reaped on one
+  runtime and held forever on the other — the same class of bug as the original 413, an
+  invisible default under a hand-written path. Values match Node's so Node behaviour is
+  unchanged and Bun stops being undefined. The h2 inner listener carries none of these on
+  purpose (a multiplexed session may legitimately sit open between streams); its body is
+  still bounded by the transport timer below and its lifetime by the CONNECT keepalive.
+- A server-level clock cannot express per-body PROGRESS (`requestTimeout` measures the
+  whole request, so one byte a minute never trips it), so a body that STOPS arriving is
+  refused by the transport's own re-armed timer — `REQUEST_BODY_IDLE_TIMEOUT_MS` in
+  `readRequestBody` — with 408 `request_body_timeout`, never a second 413: the two verdicts
+  ask the client for opposite fixes (shrink the payload versus resend the same one). No
+  `Retry-After` rides with it (§10.2.3 scopes that field to 503/429, and nothing about the
+  request is wrong), and the answer is written before the socket is closed.
+- The surface registry (`surfaces/table.ts`) is never imported from a module inside the
+  config graph (`config/index.ts` → quota/plugin host → `forward-proxy/server.ts`): the
+  registry imports the surface modules, which import config, so the edge closes a load-time
+  cycle and a surface module as entry dies on `Cannot access 'responsesSurface' before
+  initialization`. `ForwardProxyDeps.detectSurface` is injected at boot for exactly this
+  reason; an un-injected proxy logs that its early refusal degraded to the body gate.
+- A 415 carries the negotiation field its cause owns: `Accept-Encoding` for a coding
+  refusal, `Accept` for a media-type refusal, and NEVER both (§15.5.16 pairs each cause
+  with its field; §12.5.3 makes the coding field a MUST NOT when the cause is unrelated to
+  codings). A 413 carries NEITHER — §15.5.14 names no negotiation field for it, and
+  advertising codings on a size refusal invites a retry that fails for the same reason.
+  No `Retry-After` either: §15.5.14 asks for it only "if the condition is temporary", and a
+  standing byte cap is not one. `connection: close` is stated because the refusal arrives
+  before any body. The gateway decodes `gzip`/`deflate`/`br`/`identity`; `zstd` is a
+  declared gap (no Node codec), and `deflate` stays accepted although §12.5.3 dropped it.
+- The same cap bounds the DECOMPRESSED body on both legs. An inbound
+  `Content-Encoding` the gateway cannot decode (`zstd`, a chain like `gzip, br`) is a 415
+  naming the token — never a body fed raw to a JSON parser, which reads as the client's
+  syntax error.
+- Absent or non-JSON `Content-Type` is refused the same way on both legs, naming what was
+  actually sent; a media-type refusal that guesses the type is a bug.
+- Every admission failure is answered in the plane's OWN envelope — surface
+  `error.{message,type,code}`, admin `{success:false,message}` — never the framework default
+  whose `error` is a reason-phrase string (that is what rendered as the unrenderable
+  `413 "Payload Too Large"`). On the Anthropic surface the `type` is `request_too_large`
+  (the only size-related member of its type list — §15.5.14 says the response should
+  identify the limiting factor, and a 413 has no other Anthropic type); an unframeable
+  `Content-Length` — duplicated values (Bun's parser hands the app an ARRAY where Node
+  errors at the socket), a non-numeric value, or bytes that do not match the declaration
+  — is `invalid_content_length` (400), because the framing lied, not the payload. The
+  gateway NEVER relays ambiguous framing: `filterHeaders` drops a non-singleton
+  `Content-Length` so the outbound client re-frames, and strips `Expect` (hop-by-hop,
+  §7.6.1) after the body was already consumed here. Every refusal logs one structured
+  `body_rejected` warn — with the LEG it fired on — a rejection the operator cannot see
+  is a support ticket.
+- Regression surface: `backend/tests/server/body-admission.test.ts`,
+  `backend/tests/server/body-limit.test.ts` (native + MITM legs, negotiation headers,
+  `Expect: 100-continue`, the configured cap), `backend/tests/config/config-body-limits.test.ts`
+  (resolution, clamping, disk round-trip, v4→v5).
+
 ## Common commands
 
 - `bun run typecheck` — **run this after any code change** (backend + frontend; exit 0 = clean).
@@ -168,8 +254,9 @@ backend + frontend mirror, provider × provider) is a drift twin: identical toda
 divergent after the next edit.
 
 - Backend defaults live in `backend/src/config/defaults.ts` (provider timeout, forward-proxy
-  port, headroom port/timeout, maxBodyBytes, layer2 timeout, route-entries cap, forward-proxy
-  hang guard). Config defaults, runtime fallbacks and CLI fallbacks all import from there.
+  port, headroom port/timeout, maxBodyBytes, the gateway/admin body tiers, layer2 timeout,
+  route-entries cap, forward-proxy hang guard). Config defaults, runtime fallbacks and CLI
+  fallbacks all import from there.
 - Frontend mirrors of backend defaults live in `frontend/src/lib/defaults.ts`; when a backend
   default changes, update the mirror in the **same** commit (header of that file says so).
 - The three observation ledgers (failure / ratelimit / quota events) share the ring skeleton

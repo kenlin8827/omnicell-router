@@ -10,6 +10,7 @@ import { isApiKeyUsable } from '../auth/api-keys.js';
 import { createForwardProxyServer, type ForwardProxyHandle } from './server.js';
 import { createProxyInterceptor } from './interceptor.js';
 import { setGatewayChatServices, buildGatewayChatServices } from '../surfaces/gateway-chat.js';
+import { detectSurface } from '../surfaces/table.js';
 import { setProxyAccessLogSettingsReader, setProxyAccessLogPersistDir, initProxyAccessLogPersistence } from './access-log.js';
 import { listGatewayHosts, WILDCARD_HOST_CLAIM } from '../plugins/gateways.js';
 import { setUpstreamTlsReader } from './upstream-tls.js';
@@ -150,6 +151,10 @@ export async function startForwardProxy(
     // Hot-apply seam: rules / intercept re-read the runtime ref per
     // request, so console saves need no restart.
     liveForwardProxy: () => getRuntimeConfigRef()?.forwardProxy,
+    // The MITM Expect: 100-continue guard answers in the served surface's own
+    // envelope, so it needs the registry — passed in, not imported by server.ts
+    // (that import closes a load-time cycle; see ForwardProxyDeps.detectSurface).
+    detectSurface,
     intercept,
     log: (m) => console.log(`[ForwardProxy] ${m}`),
   });

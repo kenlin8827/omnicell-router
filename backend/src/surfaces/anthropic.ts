@@ -102,7 +102,10 @@ function anthropicErrorBody(status: number, message: string, code?: string): unk
   return {
     type: 'error',
     error: {
-      type: status >= 500 ? 'api_error' : 'invalid_request_error',
+      // Anthropic's own error-type table gives 413 a dedicated type
+      // (`request_too_large`); folding it into `invalid_request_error` would
+      // tell a Claude Code client to fix its request shape rather than its size.
+      type: status >= 500 ? 'api_error' : status === 413 ? 'request_too_large' : 'invalid_request_error',
       message,
       ...(code ? { code } : {}),
     },

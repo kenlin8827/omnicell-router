@@ -10,7 +10,7 @@ import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { Dialog } from '../components/Dialog';
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX, DEFAULT_GATEWAY_PORT } from '../lib/defaults';
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX, DEFAULT_GATEWAY_PORT, DEFAULT_GATEWAY_MAX_BODY_BYTES, DEFAULT_ADMIN_MAX_BODY_BYTES, BODY_LIMIT_MIN_BYTES, BODY_LIMIT_MAX_BYTES } from '../lib/defaults';
 import { readNavPreference, writeNavPreference, type NavPreference, type NavStyleId } from '../lib/navStyle';
 
 // UI mirror of the backend's resolveDirectivePrefix (backend/src/pipeline/
@@ -202,6 +202,19 @@ export const SettingsPage: React.FC = () => {
       maxSessionMB: 512,
       storeMedia: true,
       ...(config.requestCapture || {}),
+      ...patch,
+    },
+  });
+  // Same whole-node discipline for `bodyLimits` (BodyLimitsConfig, ADR-0008). The
+  // fields are edited in MiB and stored in bytes — the unit the gateway answers
+  // 413 with and the unit config.yaml carries. Boot-frozen by Fastify's
+  // registration-time bodyLimit read, so the save reports restartRequired.
+  const patchBodyLimits = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    bodyLimits: {
+      maxBytes: DEFAULT_GATEWAY_MAX_BODY_BYTES,
+      adminMaxBytes: DEFAULT_ADMIN_MAX_BODY_BYTES,
+      ...(config.bodyLimits || {}),
       ...patch,
     },
   });
@@ -548,6 +561,56 @@ export const SettingsPage: React.FC = () => {
               {t('settings.respPersistHint')}
               <br />
               {t('settings.respRestartHint')}
+            </div>
+          </div>
+
+          {/* Body admission caps (ADR-0008) — the two numbers a 413 names. The
+              inference cap is ONE ceiling for all four wires on both legs (native
+              listener + the agent-CLI leg through the forward proxy), so it cannot
+              be set per wire; the console cap covers /api/admin/* except the two
+              upload routes, which declare larger caps of their own. MiB in the
+              field, bytes on disk; clamped server-side to BODY_LIMIT_*. */}
+          <div id="settings-bodylimits" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <ShieldCheck size={14} />
+              {t('settings.bodyLimits')}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <div>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capGatewayBytes')}</label>
+                <input
+                  type="number"
+                  min={Math.ceil(BODY_LIMIT_MIN_BYTES / 1048576)}
+                  max={Math.floor(BODY_LIMIT_MAX_BYTES / 1048576)}
+                  step="1"
+                  value={Math.round((config.bodyLimits?.maxBytes ?? DEFAULT_GATEWAY_MAX_BODY_BYTES) / 1048576)}
+                  onChange={e => {
+                    const mib = parseInt(e.target.value) || 0;
+                    const bytes = Math.min(Math.max(Math.round(mib * 1048576), BODY_LIMIT_MIN_BYTES), BODY_LIMIT_MAX_BYTES);
+                    patchBodyLimits({ maxBytes: bytes });
+                  }}
+                  className="input"
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capAdminBytes')}</label>
+                <input
+                  type="number"
+                  min={Math.ceil(BODY_LIMIT_MIN_BYTES / 1048576)}
+                  max={Math.floor(BODY_LIMIT_MAX_BYTES / 1048576)}
+                  step="1"
+                  value={Math.round((config.bodyLimits?.adminMaxBytes ?? DEFAULT_ADMIN_MAX_BODY_BYTES) / 1048576)}
+                  onChange={e => {
+                    const mib = parseInt(e.target.value) || 0;
+                    const bytes = Math.min(Math.max(Math.round(mib * 1048576), BODY_LIMIT_MIN_BYTES), BODY_LIMIT_MAX_BYTES);
+                    patchBodyLimits({ adminMaxBytes: bytes });
+                  }}
+                  className="input"
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+              {t('settings.bodyLimitsHint')}
             </div>
           </div>
 

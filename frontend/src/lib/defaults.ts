@@ -134,3 +134,19 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
  *  `forward-proxy-console-vocabulary-parity.test.ts` pins the two lists. */
 export const GATEWAY_EGRESS_CONFIG_KEY = 'egress';
 export const GATEWAY_EGRESS_VALUES = ['inherit', 'proxy', 'direct'] as const;
+
+/** `client.bodyLimits.maxBytes` backend default (32 MiB) — mirrors
+ *  `GATEWAY_MAX_BODY_BYTES` (backend/src/config/defaults.ts), the inference-plane
+ *  request-body admission cap. Update both copies in the same commit. */
+export const DEFAULT_GATEWAY_MAX_BODY_BYTES = 33_554_432;
+
+/** `client.bodyLimits.adminMaxBytes` backend default (8 MiB) — mirrors
+ *  `ADMIN_MAX_BODY_BYTES`, the console-plane cap (largest real payload is the
+ *  raw-YAML config save). */
+export const DEFAULT_ADMIN_MAX_BODY_BYTES = 8_388_608;
+
+/** Bounds the backend clamps the two caps into — mirrors
+ *  `BODY_LIMIT_MIN_BYTES` / `BODY_LIMIT_MAX_BYTES`. Out-of-range input is clamped
+ *  server-side on load, so the console shows the same floor and ceiling. */
+export const BODY_LIMIT_MIN_BYTES = 65_536;
+export const BODY_LIMIT_MAX_BYTES = 536_870_912;
