@@ -796,7 +796,9 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
     // tombstone is the only thing that keeps the operator's delete honest.
     expect(await syncPluginPresets()).toEqual([]);
     expect(defOf(PROVIDER)).toBeUndefined();
-    expect(pluginProviderOrigins()[PROVIDER]).toBeUndefined();
+    // The DEF stays deleted, but the installed plugin still catalogs the preset
+    // row, so the origin filter keeps finding it (pluginProviderOrigins).
+    expect(pluginProviderOrigins()[PROVIDER]).toBe(ID);
 
     // An explicit connect (the web-login button) is intent the other way: it
     // materializes the preset again and lifts the tombstone.

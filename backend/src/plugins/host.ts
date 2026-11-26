@@ -1320,13 +1320,28 @@ export function pluginProviderOrigins(): Record<string, string> {
     for (const id of entry.providers) out[id] = pluginId;
   }
   // A deleted preset leaves the ledger, but the connect catalog still lists it.
-  // Keep the plugin id on that row so the origin filter can find it.
+  // Keep the plugin id on that row so the origin filter can find it. Only a
+  // package still on disk may claim an origin: uninstall drops the ledger and
+  // artifacts at once while the registry keeps the last views until the
+  // caller's reload, so projecting from the registry alone would tag rows with
+  // a plugin the operator already removed.
   for (const { view } of registry.values()) {
+    if (!packageStillInstalled(view)) continue;
     for (const preset of view.presets ?? []) {
       if (!out[preset.providerId]) out[preset.providerId] = view.id;
     }
   }
   return out;
+}
+
+/** Disk truth behind a plugin view: a dev-tree package is operator-owned and
+ *  always "installed"; a packaged one counts only while a package artifact or
+ *  its unpacked tree is still present. */
+function packageStillInstalled(view: PluginView): boolean {
+  if (view.source === 'dev') return true;
+  if (bundledPackagePath(view.id)) return true;
+  if (packagePathsIn(pluginsRoot(), view.id).length > 0) return true;
+  return existsSync(join(pluginsRoot(), 'unpacked', view.id));
 }
 
 /** Forget ONE provider id in every preset ledger entry and tombstone it. Called
