@@ -13,13 +13,15 @@
  *   M1 client-destroy (socket.destroy() on the CLIENT side):
  *     • Node: `reply.raw` fires 'close' with writableEnded=false → the
  *       close listener synthesizes EXACTLY ONE 499 on both implementations.
- *     • Bun:  the abort is UNDETECTABLE (verified: res 'close' never fires,
- *       reply.raw.socket.destroyed stays false). Pre-flip produced ZERO
- *       response events (dangling request record). Post-flip the terminal
- *       send still finalizes — the transport's isClientGone() is false
- *       because Bun hides the state, so the pairing record is the real
- *       200. A 499 on this leg under Bun would be a FALSE POSITIVE and is
- *       asserted away.
+ *     • Bun < 1.4: the abort is UNDETECTABLE (verified on 1.3.14: res
+ *       'close' never fires, reply.raw.socket.destroyed stays false).
+ *       Pre-flip produced ZERO response events (dangling request record);
+ *       post-flip the terminal send still finalizes — the transport's
+ *       isClientGone() is false because Bun hides the state, so the pairing
+ *       record is the real 200. A 499 on this leg would be a FALSE POSITIVE
+ *       and is asserted away.
+ *     • Bun >= 1.4: the destroy IS detected, so the leg captures the 499 —
+ *       the same discipline the Node branch asserts (no blind 200).
  *   M2 server-destroy (socket.destroy() on the SERVER-side socket — the
  *   sanctioned simulation of "the state Node's runtime produces on abort",
  *   same technique as the MITM 499 case):
@@ -48,6 +50,14 @@ import { createServer } from '../../src/server.js';
 import { CaptureRecorder } from '../../src/capture/recorder.js';
 
 const IS_BUN = typeof (globalThis as { Bun?: unknown }).Bun === 'object';
+/** Client-side destroys became observable at Bun 1.4 (see the matrix above);
+ *  an older runtime still hides them, so a 499 there would be a false positive. */
+const BUN_DETECTS_CLIENT_DESTROY = IS_BUN && bunAtLeast(1, 4);
+
+function bunAtLeast(major: number, minor: number): boolean {
+  const [maj = 0, min = 0] = ((globalThis as { Bun: { version: string } }).Bun.version ?? '').split('.').map(Number);
+  return maj > major || (maj === major && min >= minor);
+}
 
 const TEST_KEY = 'sk-ocr-capture-abort-test';
 
@@ -183,17 +193,19 @@ async function abortCase(urlPath: string, bodyObj: Record<string, unknown>, mech
     // client-destroy on Node is a real abort the transports observe.
     assert.equal(resEvents.length, 1, `${urlPath}: Node must pair the request with the 499 record`);
     assertAbortRecord(resEvents[0]!, urlPath);
-  } else {
-    // Client-side destroys were a documented Bun blind spot (header matrix M1):
-    // the leg emitted nothing pre-flip and blind-paired the real 200 post-flip.
-    // Bun 1.4 detects the destroy, so the abort is now a real 499 here too —
-    // same discipline the Node branch asserts. An ABSENT record stays legal
-    // (a runtime that still hides the destroy emits nothing rather than a
-    // false 499); what must never happen is a 200 for a socket the client
-    // already killed.
+  } else if (BUN_DETECTS_CLIENT_DESTROY) {
+    // Same discipline the Node branch asserts. An ABSENT record stays legal;
+    // what must never happen is a 200 for a socket the client already killed.
     for (const ev of resEvents) {
       assert.equal(ev.wire.status, 499, `${urlPath}: a detected client destroy must capture the 499, never the real status`);
       assertAbortRecord(ev, urlPath);
+    }
+  } else {
+    // Bun < 1.4 hides the destroy (header matrix M1): the leg either emits
+    // nothing or blind-pairs the terminal send. A 499 here would be a false
+    // positive from broken gone-detection.
+    for (const ev of resEvents) {
+      assert.equal(ev.wire.status, 200, `${urlPath}: a hidden abort can only blind-pair the real status (never 499)`);
     }
   }
   sock.destroy();
