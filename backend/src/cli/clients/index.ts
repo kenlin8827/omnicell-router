@@ -5,6 +5,7 @@ import { ClientHookStatus } from '../types.js';
 import { popularityRank } from '../../utils/popularity.js';
 import { compareVersions } from '../../utils/semver.js';
 import { getPluginClientAdapter, listPluginClientAdapters, pluginClientRank, pluginIdForClient } from './plugin-adapters.js';
+import { noteClientSetup } from './activity.js';
 
 /** The hooks this build ships (`core-adapters.ts`) — the authoritative answer
  *  for "what is always available", even before the plugin host has run. */
@@ -237,7 +238,13 @@ export async function setupClient(
   }
   const result = await adapter.setup(options);
   // A hook flip invalidates the roster snapshot: the next read rebuilds.
-  if (result.success) rosterCache.at = 0;
+  // The success moment is also the client's "接入" timestamp — the activity
+  // ledger's fallback sort key, so a freshly hooked client floats up before
+  // it has sent any traffic.
+  if (result.success) {
+    rosterCache.at = 0;
+    noteClientSetup(name);
+  }
   return siblingNote && result.success ? { ...result, message: result.message + siblingNote } : result;
 }
 export async function teardownClient(

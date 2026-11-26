@@ -91,6 +91,14 @@ export interface ClientStatus {
    *  with its own takeover state. Absent = single-product adapter. Mirrors
    *  backend ClientProductStatus. */
   products?: ClientProductStatus[];
+
+  /** Last inference traffic fingerprinted to this client's UA (ms epoch,
+   *  backend in-memory activity ledger). Absent = none observed this boot.
+   *  Display-only sort key for the dynamic roster order. */
+  lastActiveAt?: number;
+  /** Last successful hook (setup) of this client, ms epoch; the sort fallback
+   *  before any traffic. Absent = not hooked this boot. */
+  lastSetupAt?: number;
 }
 
 /** Mirrors backend ClientArtifact (a file an adapter owns besides `configPath`). */
