@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
+import { clientActivitySnapshot } from '../cli/clients/activity.js';
 import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
@@ -1181,9 +1182,15 @@ export function registerConsoleRoutes(
   // "Refresh Status" button must never serve a stale snapshot.
   app.get('/api/admin/clients', async (req) => {
     const refresh = (req.query as Record<string, string | undefined>).refresh === '1';
+    // The activity ledger rides along per row (lastActiveAt / lastSetupAt);
+    // SORTING stays on the console — the CLI's roster table must keep the
+    // registry order regardless of live traffic.
+    const activity = clientActivitySnapshot();
     return {
       status: 'ok',
-      clients: await getAllClientStatuses({ refresh }),
+      clients: (await getAllClientStatuses({ refresh })).map(
+        (c) => ({ ...c, ...(activity[c.name] ?? {}) })
+      ),
     };
   });
   // 3A1'. Release update check — display-only and cached in-process. The

@@ -2384,18 +2384,19 @@ hiddenBadge: string;
     no: string;
     none: string;
     teardownBtn: string;
+    rehookBtn: string;
+    /** Hover detail for the re-hook action: the setup re-runs with the
+     *  currently selected key (follow mode re-snapshots its model list; the
+     *  context window stays as remembered). */
+    rehookTitle: string;
     setupBtn: string;
-    /** Per-card resync action: re-run setup from the remembered draft so a
-     *  written model list (follow snapshot / alias metadata) picks up new
-     *  gateway models without teardown. */
-    resyncModels: string;
-    resyncModelsTitle: string;
     /** Launcher hooks (cursor/qoder) only publish a start script — no client
      *  state is taken over until `ocr <client>` actually launches it. Their
      *  buttons and status badge use these launcher-scoped labels instead of
      *  the config/service-env takeover vocabulary. */
     launcherTeardownBtn: string;
     launcherSetupBtn: string;
+    launcherRehookBtn: string;
     launcherHookedBadge: string;
     launcherNotHookedBadge: string;
     /** Launch-command block shown once a launcher is ready: the primary

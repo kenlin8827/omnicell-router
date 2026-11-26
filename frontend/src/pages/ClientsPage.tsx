@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search, AlertTriangle } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search, AlertTriangle, Rocket } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
@@ -314,10 +314,19 @@ export const ClientsPage: React.FC = () => {
       // status no longer carries the roster (backend GET /api/admin/clients).
       const [roster, data] = await Promise.all([api.getClients(refresh), api.getStatus()]);
       const list = roster.clients || [];
+      // Dynamic roster order (render-time, once per roster load): most
+      // recently active client first, then most recently hooked, then the
+      // backend's registry order (Array.sort is stable). Only this load
+      // sorts — the 3s status poll never reorders, so cards can't jump
+      // mid-edit. lastActiveAt/lastSetupAt are display-only backend ledger
+      // fields; a gateway predating them sorts purely by registry order.
+      const sorted = [...list].sort(
+        (a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0) || (b.lastSetupAt ?? 0) - (a.lastSetupAt ?? 0)
+      );
       // ONE normalization point: every filter/card below reads `hookKind`
       // unconditionally, and a gateway predating the field must classify as
       // 'config' (keeps the API-key gate) rather than as a keyless proxy hook.
-      setClients(list.map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
+      setClients(sorted.map(c => ({ ...c, hookKind: c.hookKind ?? 'config' })));
       if (data.port) setPort(String(data.port));
       setFpEnabled(data.forwardProxy ? data.forwardProxy.enabled : null);
       setFpRunning(data.forwardProxy ? data.forwardProxy.running : null);
@@ -1955,7 +1964,7 @@ export const ClientsPage: React.FC = () => {
   };
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row.
-   *  `compact` (collapsed card header) renders the resync action icon-only —
+   *  `compact` (collapsed card header) renders the re-hook action icon-only —
    *  the header row never wraps and already carries the long teardown label. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean, compact = false) => {
     // A proxy client's launcher only exists to feed its gateway plugin.
@@ -1980,18 +1989,26 @@ export const ClientsPage: React.FC = () => {
           <Undo2 size={12} />
           <span>{t(isLauncher ? 'clients.launcherTeardownBtn' : 'clients.teardownBtn')}</span>
         </button>
-        {supportsExtraModels(c.name) && (
-          <button
-            className="btn btn-sm"
-            title={t('clients.resyncModelsTitle')}
-            disabled={loading}
-            aria-label={t('clients.resyncModels')}
-            onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup', undefined, { resync: true }); }}
-          >
-            <RefreshCw size={12} />
-            {!compact && <span>{t('clients.resyncModels')}</span>}
-          </button>
-        )}
+        {/* Re-hook (the former extraModels-only "resync models" action,
+            generalized): re-run setup on an ALREADY hooked client with the
+            CURRENTLY SELECTED key — the setup payload resolves its plaintext
+            and resync:true re-snapshots that key's model list (follow mode)
+            and re-resolves alias metadata from the gateway, while keeping the
+            remembered context-window hint instead of stamping the 262144
+            default over it. Setup is idempotent (the adapters' `_ocr_previous_*`
+            guards make the second pass a pure overwrite). This is also the act
+            that refreshes the activity ledger's lastSetupAt, so a re-hooked
+            client floats up in the dynamic roster order. */}
+        <button
+          className="btn btn-sm"
+          disabled={loading || pluginBlocked}
+          title={pluginBlocked ? t('clients.gatewayPluginRequired', { client: c.displayName }) : t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookTitle')}
+          aria-label={t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookBtn')}
+          onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup', undefined, { resync: true }); }}
+        >
+          <RefreshCw size={12} />
+          {!compact && <span>{t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookBtn')}</span>}
+        </button>
       </>
     ) : (
       <button
@@ -2001,7 +2018,10 @@ export const ClientsPage: React.FC = () => {
         disabled={loading || pluginBlocked}
         title={pluginBlocked ? t('clients.gatewayPluginRequired', { client: c.displayName }) : undefined}
       >
-        <ArrowUpRight size={12} />
+        {/* Same primary style as the takeover setup, but the icon names the
+            lighter semantics: a launcher only generates a start script, it
+            does not take the client's config over. */}
+        {isLauncher ? <Rocket size={12} /> : <ArrowUpRight size={12} />}
         <span>{t(isLauncher ? 'clients.launcherSetupBtn' : 'clients.setupBtn')}</span>
       </button>
     );
@@ -2381,6 +2401,26 @@ export const ClientsPage: React.FC = () => {
                                       {p.hooked ? <Undo2 size={12} /> : <ArrowUpRight size={12} />}
                                       <span>{p.hooked ? t('clients.teardownBtn') : t('clients.setupBtn')}</span>
                                     </button>
+                                    {/* Same re-hook as the plain hooked card, scoped to
+                                        this product: re-run its setup with the CURRENTLY
+                                        SELECTED key (resync keeps the context-window hint
+                                        and re-snapshots the key's model list). */}
+                                    {p.hooked && (() => {
+                                      const gatewayPlugin = c.catalogPlugin ? gatewayPlugins[c.catalogPlugin] : undefined;
+                                      const pluginBlocked = !!c.catalogPlugin && gatewayPlugin !== undefined && !gatewayPlugin.loaded;
+                                      return (
+                                        <button
+                                          className="btn btn-sm"
+                                          disabled={loading || pluginBlocked}
+                                          title={pluginBlocked ? t('clients.gatewayPluginRequired', { client: c.displayName }) : t('clients.rehookTitle')}
+                                          aria-label={t('clients.rehookBtn')}
+                                          onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup', p.id, { resync: true }); }}
+                                        >
+                                          <RefreshCw size={12} />
+                                          <span>{t('clients.rehookBtn')}</span>
+                                        </button>
+                                      );
+                                    })()}
                                   </div>
                                 </>
                               );

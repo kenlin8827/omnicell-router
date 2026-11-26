@@ -120,6 +120,16 @@ export interface ClientHookStatus {
    *  each with its own takeover state. Absent for single-product adapters —
    *  the console then renders the card row exactly as before. */
   products?: ClientProductStatus[];
+
+  /** Last time an inference request was fingerprinted to this client's UA
+   *  (ms epoch; the auth gate's in-memory activity ledger). Absent = no
+   *  observed traffic since boot. Display-only sort key — never routing
+   *  state; the CLI roster table ignores it. */
+  lastActiveAt?: number;
+  /** Last time `setupClient()` hooked this client successfully (ms epoch).
+   *  The sort fallback while a client has sent no traffic yet; absent = not
+   *  hooked this boot. */
+  lastSetupAt?: number;
 }
 
 /**

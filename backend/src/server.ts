@@ -30,6 +30,7 @@ import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
 import { setGatewayMetaDeps } from './cli/clients/model-meta.js';
+import { noteClientActivityFromUserAgent } from './cli/clients/activity.js';
 import {
   comboEnvelope,
   findMemberCatalogRecords,
@@ -528,6 +529,14 @@ export function createServer(
 
     // Attach client identity onto request for tracing and logging
     (req as any).authInfo = validation;
+
+    // Display-only client-activity stamp for the Clients page's dynamic sort:
+    // fingerprint the User-Agent on the four inference wires only (model /
+    // admin browsing is not "using a client"). Forgeable by design of HTTP —
+    // never routing state, a spoofed UA costs at most a wrong card position.
+    if (path !== null && INFERENCE_ROUTE_PATHS.has(path)) {
+      noteClientActivityFromUserAgent(req.headers['user-agent']);
+    }
 
     // ── Inbound sliding-window enforcement (apiKeys[].limits) ───────────────
     // The client key's window caps are a CONTRACT with the caller, enforced at

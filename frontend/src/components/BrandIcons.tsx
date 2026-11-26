@@ -24,6 +24,8 @@ import React from 'react';
  * monochrome — the colored tiles become untagged subpaths so the wrapper's
  * fill="currentColor" themes it with the rest of the row.
  * qoder.color.svg is the Qoder app icon shipped in `plugins/qoder-models/logo.svg`.
+ * workbuddy.color.svg is the WorkBuddy app icon shipped in `plugins/workbuddy-models/logo.svg`
+ *   (the core WorkBuddyClientAdapter defaults its brand key to `workbuddy`).
  * idea.color.svg / goland.color.svg are JetBrains' official product icons
  *   (resources.jetbrains.com/storage/products/company/brand/logos/IntelliJ_IDEA_icon.svg
  *   and GoLand_icon.svg), vendored because simple-icons carries no JetBrains
