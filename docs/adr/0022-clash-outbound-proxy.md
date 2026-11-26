@@ -3,8 +3,15 @@
 Date: 2026-11-13
 Status: Accepted
 Governs: `backend/src/config/types.ts` (`ProxyConfig`), `backend/src/utils/proxy.ts`,
+`backend/src/opencode/probe.ts` (probe egress stamp),
+`backend/src/plugins/types.ts` (`ModelServicePluginHost.fetch` / `resolveProxy`,
+`PluginWebLoginOptions.provider`, `ModelServicePlugin.egressOrigins`),
+`backend/src/plugins/host.ts`, `backend/src/quota/engine.ts` (plugin-owned quota
+reads),
 `backend/src/utils/proxy-node.ts`, `backend/src/proxy/mihomo-*.ts`,
-`backend/src/routes/mihomo.ts`, `frontend/src/pages/ProxyPage.tsx`.
+`backend/src/proxy/asset-download.ts`, `backend/src/routes/mihomo.ts`,
+`frontend/src/pages/ProxyPage.tsx`, `frontend/src/pages/MihomoPage.tsx`,
+`frontend/src/pages/ProxyPatternsPage.tsx`.
 
 ## Context
 
@@ -48,6 +55,35 @@ other clients), and it can be stopped while `mode: mihomo` stays configured.
 > intent (`true` run, `false` stopped by hand, absent = follow `mode`), the
 > console's Start/Stop buttons persist it, and an absent value reproduces the
 > old rule exactly, so existing configs need no migration.
+
+> **Amendment — `proxy.includes` is an allowlist; no rule means no proxy.**
+> Earlier revisions treated an empty includes list as "proxy everything", so
+> turning the master switch on with a URL (or a mihomo core) routed every
+> upstream call through the proxy until the operator named an exception. That is
+> the wrong default for a gateway: it silently changes where credentials travel
+> for traffic nobody asked to proxy, and "I configured no rules" reads as "no
+> proxying" to every operator who hit it. `resolveProxyUrl` now returns direct
+> when the list is empty — `proxy.enabled` alone never routes traffic — and a
+> call with no `{ provider, model }` match target is always direct. Excludes
+> were already direct-forcing and remain first. The console renders the state
+> instead of leaving it implicit (an "all direct" pill on the proxy-patterns
+> page), and the field labels/comments say allowlist. Host-scoped
+> `forwardProxy.rules` are unaffected: `outboundProxyUrl()` has no list gate
+> (ADR-0018 §4), so a `{ egress: proxy }` row still proxies exactly the hosts it
+> names. An install that relied on proxy-everything adds `*` to includes — or a
+> provider-level row per provider — and is otherwise left on direct.
+>
+> **Infra calls are direct, and `*` does not change that.** The allowlist is
+> keyed by `{ provider, model }`, so a call with no such match target can never
+> satisfy a rule. Catalog sync (models.dev / OpenRouter), provider logo fetch and
+> the update check therefore always go direct, whatever includes says — this is
+> the consequence of naming models, not a second gate. On a network where those
+> hosts are only reachable through the proxy, that is a visible failure (the
+> catalog/logo sync reports the transport error) rather than a silent reroute of
+> credentialed inference traffic, which is the trade this amendment chooses.
+> The connectivity probe is NOT in this class: it carries `{ provider, model }`,
+> so it is gated by the allowlist exactly like real inference and a `*` row sends
+> it through the proxy.
 
 ### 2. The sidecar is generated config plus a loopback controller
 
@@ -132,6 +168,9 @@ GitHub API with the shared `GITHUB_TOKEN` header and falls back to the
 release-page redirect tag when the anonymous hourly cap answers 403/429,
 so a binary download no longer depends on API quota.
 
+The transfer behind that endpoint — staging, resume, verification and
+cancellation — is specified once, in the amendment at the end of this record.
+
 The core's own output is not discarded. Its stdout/stderr are piped into a
 bounded, memory-only ring (500 lines, oldest dropped first) that the console's
 logs section polls through `GET` / `DELETE /api/admin/proxy/mihomo/logs`, and
@@ -179,6 +218,60 @@ set — that shape predates `mode` and still asks for the core.
   `Proxy settings` for `manual`, `Clash core` for `mihomo`. A manual
   install therefore never opens on the core tab reporting a core it was never
   asked to run.
+- **A probe reports the egress it took.** `ProbeResult.egress`
+  (`direct` / `proxy`) plus `egressProxy` (redacted origin) ride the provider
+  test reply (`POST /api/admin/opencode/providers/:id/test`) and the console
+  renders the limb next to the verdict. The include/exclude page states
+  INTENT; only the probe states OUTCOME, because the two ways an operator gets
+  this wrong are both silent — `forwardProxy.rules` is host-scoped and never
+  governs gateway-originated traffic (ADR-0018), and an exclude-only config
+  proxies nothing at all, since `includes` is the allowlist. A wire with no
+  host seam at all leaves `egress` unset (UNKNOWN), never `direct`: the core
+  did not open that socket and must not claim a direction for it. The value is
+  resolved once by `resolveProxyUrl()` at the dial, so the stamp cannot drift
+  from the routing decision it describes. The patterns page carries the same
+  boundary as prose (`proxyPatterns.scopeHint` / `excludesHint`), where the
+  mistake is actually made.
+- **A plugin wire takes the same egress as a built-in transport.** A
+  model-service plugin may not dial its upstream with the global `fetch`:
+  `ModelServicePluginHost.fetch(url, init, { provider, model })` wraps the
+  core's `proxiedFetch`, so `proxy.enabled`, `proxy.includes`,
+  `proxy.excludes`, the `manual`/`mihomo` endpoint choice and the loopback
+  bypass all apply to plugin traffic exactly as they do to the four built-in
+  wires. `resolveProxy(url, match)` is the no-dial twin a plugin's `probe()`
+  reads to stamp the direction it took. Both run the SAME resolver, so the
+  stamp can never disagree with the dial.
+  The gap this closes was a capability hole, not a policy: a plugin that
+  called the global `fetch` went direct whatever the operator configured, and
+  the probe had no honest direction to report — which is why the trace left it
+  UNKNOWN instead of claiming `direct`. A wire that owns its transport is
+  still allowed to answer for itself, but it now has a correct way not to.
+  Two request classes stay DIRECT on purpose: loopback targets, and any call
+  the evidence cannot classify. Sign-in / token-refresh is NOT one of them: the
+  console always holds the provider entry it is connecting (it is the route's
+  `:id`), so `webLogin.start/poll/submit` carry it as `PluginWebLoginOptions.provider`
+  and the plugin hands it to `host.fetch` like any other call. A vendor login
+  host is exactly the geo-blocked host an operator routes through a proxy, so
+  leaving sign-in direct made "completions work, connect does not" the default
+  outcome for those vendors. Omitting `provider` (a caller that genuinely has
+  none) still resolves direct — the split never invents a provider.
+  Quota reads a plugin owns are covered too, without the plugin naming a
+  proxy: `egressOrigins(providerId)` declares the upstreams it dials per
+  entry, and the quota engine turns them into a proxy-guarded `fetchImpl` for
+  `probe()` — so a plugin-wire provider's quota row obeys the same split.
+- **`provider/*` means the whole provider, model or not.** A pattern is tested
+  against `provider/modelId`, the bare provider, the bare model id, and — when
+  the call carries no model at all — the provider's own `provider/` prefix. The
+  last target exists because a quota read, a catalog pull and a sign-in
+  exchange have no model dimension (`RunProbeOpts` has none to give), so
+  without it `qoder/*` — the natural spelling of "everything under this
+  provider" — silently matched inference ONLY and left that same provider's
+  quota and sign-in traffic direct. A MODEL-scoped pattern still never hits a
+  model-less call: `workbuddy/gpt-*` cannot proxy a call with no model to test
+  against, and guessing one would be worse than answering direct. `excludes`
+  keeps winning over every target, and the sibling prefix stays out
+  (`qoder-work/*` does not reach `qoder-work-cn`, whose prefix target is
+  `qoder-work-cn/`).
 - The admin surface is `/api/admin/proxy/mihomo/*` and the Proxy page's
   six Mihomo sections (general, subscriptions, nodes, rules, connectivity, logs).
   Controller-backed actions (node select/test, subscription refresh) stay
@@ -199,7 +292,7 @@ set — that shape predates `mode` and still asks for the core.
   start, so editing it mid-run would silently desync the console from the
   process); the card says so and the operator stops the core to change them.
   The proxy page has TWO nav levels, never two tab strips in a row: the page's
-  own tabs are `Proxy settings` (enable switch, manual URL, include/exclude lists)
+  own tabs are `Proxy settings` (enable switch, manual URL, allowlist + exclude lists)
   and `Clash core`, and the six Clash sections (general, subscriptions,
   nodes, rules, connectivity, logs) are a vertical menu on the left of that second
   scope — a section switch is navigation, so it reads as a menu, not as a
@@ -373,9 +466,9 @@ set — that shape predates `mode` and still asks for the core.
   proxy-patterns page offers a multi-select quick-add dialog of provider-level
   patterns derived from the LIVE connected provider ids (`<provider>/*`). The
   dialog only APPENDS the ticked rows — it never rewrites rules the operator
-  typed. Nothing is seeded: an empty includes list keeps the proxy-all
-  default, and the console never invents vendor names no configured provider
-  carries. The console
+  typed. Nothing is seeded: an empty includes list proxies nothing (see the
+  allowlist amendment below), and the console never invents vendor names no
+  configured provider carries. The console
   (Mihomo → basic settings) puts the URL behind a button that opens a dialog
   with the address and a copy action. The address is composed by the gateway
   from the request's own Host header plus the gateway port (`pacUrlFor`), never
@@ -664,3 +757,104 @@ set — that shape predates `mode` and still asks for the core.
 > working database for a broken one. Without `refresh`, existing non-empty files
 > are skipped; that is the mode the CN preset uses (install what is missing, never
 > re-fetch what is already there).
+
+> **Amendment — an interrupted asset transfer resumes, and the bytes are
+> verified.** Both downloads are tens of MB from GitHub over links where a
+> mid-transfer 503 or connection reset is routine, and both threw the whole
+> transfer away on failure: the next click refetched from zero, and the console
+> tab that started it kept downloading in the background because nothing
+> observed the client leaving. The rules were also written per site — the
+> binary had `.download` staging and no checksum at all, the geo databases had
+> a cap and a rename.
+>
+> `proxy/asset-download.ts` (`assetPartPaths`, `downloadAssetToFile`,
+> `cleanupAssetPart`, `withAssetLock`, `parseAssetDigest`, `AssetSidecar`) owns one
+> asset transfer and states the rules once.
+> Staging is `<target>.part` with a sidecar `<target>.part.json` recording
+> `{ url, etag, lastModified, sha256?, size, savedAt }` — the part travels with
+> the validators that make resuming safe, never one without the other. A resume
+> sends `Range: bytes=<size>-` ONLY when the sidecar is inside
+> the part TTL (24 h) and names the same URL with at least one entity
+> validator that the response echoes back; `If-Range` is deliberately unused,
+> the comparison is explicit in code. A 206 whose `Content-Range` total
+> disagrees with the recorded size destroys the part and restarts from zero; a
+> 416 with a consistent total is the host's "already complete" answer and
+> re-verifies from disk. Byte progress is measured against `size + written`, so
+> a resumed bar starts where the operator left it.
+>
+> Verification is publisher-anchored, never a self-consistency check of the
+> same response body. The mihomo release API already answers the asset list to
+> resolve the tag, and each asset carries a `digest`, so checking the binary
+> costs no extra request; the meta-rules-dat release publishes
+> `geoip.metadb.sha256sum` beside each database and the geo leg fetches that
+> sibling best-effort. A digest the host will not give degrades to the entity
+> validators and never blocks the download; a digest that mismatches destroys
+> the part and answers `checksum-failed` — retrying cannot help, so the console
+> says which file failed instead of showing a bare "install failed".
+>
+> Failure KEEPS the part, because the next click continues. The exceptions —
+> size cap, write failure, checksum mismatch, stale or mismatched sidecar, an
+> explicit re-sync, and a cancel that flushed nothing — each delete it, so a bad
+> part can never loop the caller. An asset that downloads and verifies but will
+> not unpack is destroyed by the caller for the same reason. `installMihomoBinary`
+> therefore writes the verified compressed bytes and unpacks UNDER
+> `withAssetLock(<part>)`, which serialises both halves: two console tabs used to
+> interleave writes to one destination and rename a torn file into place.
+>
+> Cancellation is threaded, and it is EXPLICIT. `signal` travels
+> `api.installMihomo` / `api.downloadMihomoGeo` → the NDJSON routes →
+> `installMihomoBinary` / `downloadMihomoGeoAssets` → `downloadAssetToFile`.
+> What does NOT work is detecting the operator leaving: measured on Bun 1.3.14
+> with Fastify 5, a client that abandons a hijacked NDJSON reply fires no
+> `close` on the request, the response or the socket until the response ends,
+> and a `write()` callback queued behind an accepted-but-unread body never
+> runs. A tab that is only hidden (no `visibilitychange`, so no page-side abort
+> either) therefore leaves a live download running to nobody, and the next
+> click cannot take its place. The routes keep the in-flight controllers in a
+> per-leg registry (`liveTransfers`, keyed `core`, `geo:machine`, `geo:node`,
+> registered when the transfer starts and released when the handler ends) and
+> expose `POST /api/admin/proxy/mihomo/transfers/cancel { leg }`, which aborts
+> exactly that leg and answers `cancelled: false` for a leg that is not
+> running — a stale or wrong key is a no-op, never an error. MihomoPage calls
+> it when the operator presses Cancel and on unmount, the unmount call with
+> `keepalive: true`, because a frozen background tab can stall the stream
+> reader the page is awaiting and its own promise is then not a leave signal
+> either. Starting a second transfer on the same leg waits for that cancel to be
+> acknowledged before the new one is handed a signal — bounded, so an ack that
+> hangs costs a short overlap on one asset lock instead of a frozen button — and
+> an unmount fires it fire-and-forget, because the component is already gone.
+> `raw.on('close')` stays as a safety net for runtimes that DO report
+> a disconnect: it must skip a normal end (`writableEnded`, which also fires on
+> a clean `raw.end()`) and abort WITH a reason.
+>
+> A cancel is an OUTCOME, never a failure, and it belongs to ONE leg. Every
+> `abort()` carries a reason: the route aborts with `client disconnected`, the
+> page names its own (`<leg> download cancelled by the operator`, `page closed
+> during the <leg> download`), and the page keeps one
+> controller per leg (`useTransferAbort`), so starting a geo sync can no longer
+> abort a running core install. A reasonless `abort()` is what reached the
+> console as the engine string "signal is aborted without reason" behind a
+> generic "operation failed" toast. Both abort paths answer
+> `download-aborted`, which the console renders as an interrupted transfer the
+> next click continues; the route's catch maps `signal.aborted` to the same
+> code instead of `install-failed` / `geo-download-failed`, and a stream
+> promise rejected with an abort renders nothing at all.
+>
+> Held bytes must SURVIVE the stop, or resume is a lie. The write queue is
+> flushed (`end()`) when a transfer is cut short, never discarded: destroying a
+> stream with buffered bytes was measured to leave a 0-byte `.part` behind, and
+> a cancelled click would then refetch the whole asset. A part that flushed
+> nothing keeps no sidecar — an orphan validator would make a restart from zero
+> look like a resume.
+> Codes ride the existing result shape: `download-incomplete`,
+> `download-aborted`, `checksum-failed` (the same code for both legs — the bytes
+> failed the same test), and the install result adds `resumedFrom` / `verified`.
+>
+> `.download` is retired as the TRANSFER staging name: nothing is fetched into it
+> any more, and the geo leg installs by renaming its verified `.part` directly, so
+> the databases are no longer read back through memory. It survives with a
+> different meaning in one place — the install path writes the UNPACKED executable
+> there before the final rename, because those bytes are a different artifact from
+> the archive the `.part` held. The geo amendment's older wording, "each written to
+> a temporary file and renamed over the old one", is replaced by that sentence:
+> `refresh: true` still never trades a working database for a broken one.

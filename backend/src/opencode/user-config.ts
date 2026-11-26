@@ -195,6 +195,11 @@ export interface OpenCodeProviderView {
     keyMasked?: string;
     inline?: boolean;
   };
+  /** Plugin-declared credential methods. An empty array means the plugin owns
+   *  login and the console must not collect a credential. */
+  authTypes?: Array<'none' | 'webLogin' | 'key'>;
+  /** Already-localized how-to line from the owning preset. */
+  keyHint?: string;
 }
 
 /**

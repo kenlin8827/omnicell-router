@@ -1,5 +1,6 @@
 import type { LastProbeCapture, QuotaCodeAdapter, QuotaAdapterContext, QuotaProbeOutcome, QuotaWindow } from '../types.js';
-import { LAST_BODY_MAX_CHARS, LAST_BODY_MAX_JSON_CHARS } from '../engine.js';
+import { LAST_BODY_MAX_CHARS, LAST_BODY_MAX_JSON_CHARS, classifyThrownFailure, failureCause } from '../engine.js';
+import { DEFAULT_QUOTA_PROBE_TIMEOUT_MS } from '../../config/defaults.js';
 
 /**
  * MiniMax quota — built-in code adapter (L-c).
@@ -27,8 +28,7 @@ import { LAST_BODY_MAX_CHARS, LAST_BODY_MAX_JSON_CHARS } from '../engine.js';
  *      2. https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains  (counts = remaining)
  *    (Note the CJK domain spelling: `minimaxi` with a trailing `i`.)
  *  - Fallback trigger: HTTP 404 / 405 / >= 500, or a network throw. 401/403
- *    (or envelope code 1004, or key-inactive wording) means the KEY is wrong,
- *    not the URL — no fallback.
+ *    (or envelope code 1004) means the KEY is wrong, not the URL — no fallback.
  *  - Envelope: `{ base_resp: { status_code, status_msg } }` (camel variants
  *    exist); `status_code != 0` is an API-level error even at HTTP 200.
  *  - Windows: `model_remains[]`, each carrying a session (5h) and a weekly
@@ -193,14 +193,19 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
   async probe(ctx: QuotaAdapterContext): Promise<QuotaProbeOutcome> {
     const doFetch = ctx.fetchImpl ?? fetch;
     const now = ctx.now ?? Date.now;
-    const timeoutMs = ctx.timeoutMs ?? 10_000;
+    const timeoutMs = ctx.timeoutMs ?? DEFAULT_QUOTA_PROBE_TIMEOUT_MS;
     const urls = urlsFor(ctx.providerId);
+    // Seeded with no capture: a chain that never issues a request has nothing
+    // to report. Every attempt below OVERWRITES this with its own `http`, so
+    // the console can say which leg failed and why (ADR-0009: a bare reason
+    // code is not evidence).
     let lastFailure: QuotaProbeOutcome = { ok: false, reason: 'network' };
 
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
       const canFallback = i < urls.length - 1;
       const controller = new AbortController();
+      const started = now();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const res = await doFetch(url, {
@@ -213,7 +218,7 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
         });
 
         // Hard key verdict — the credential is wrong, not the endpoint.
-        const http: LastProbeCapture = { url, status: res.status, ok: res.ok };
+        const http: LastProbeCapture = { url, status: res.status, ok: res.ok, durationMs: now() - started };
         if (res.status === 401 || res.status === 403) {
           const raw = await res.text().catch(() => '');
           if (raw) http.body = raw.slice(0, LAST_BODY_MAX_CHARS);
@@ -221,7 +226,14 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
         }
 
         if (!res.ok) {
-          lastFailure = { ok: false, reason: 'status' };
+          // A non-401 rejection explains itself too (rate limit, dead endpoint,
+          // vendor outage) — the badge has to be able to say why, so the body
+          // rides the capture exactly as it does on the auth path above.
+          const raw = await res.text().catch(() => '');
+          if (raw) http.body = raw.slice(0, LAST_BODY_MAX_CHARS);
+          // The capture rides the fallback too: the LAST leg that answered is
+          // the one whose status the badge has to explain.
+          lastFailure = { ok: false, reason: 'status', http };
           if ((res.status === 404 || res.status === 405 || res.status >= 500) && canFallback) continue;
           return { ...lastFailure, http };
         }
@@ -247,19 +259,28 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
         const base = payload.base_resp ?? payload.baseResp ?? null;
         if (base && typeof base === 'object') {
           const code = Number(base.status_code ?? base.statusCode) || 0;
-          const msg = `${String(base.status_msg ?? base.statusMsg ?? '')} ${raw}`;
-          if (code === 1004 || /invalid api key|invalid key|unauthorized|inactive/i.test(msg)) {
-            return { ok: false, reason: 'auth', http };
-          }
-          if (code !== 0) return { ok: false, reason: 'status', http };
+          if (code === 1004) return { ok: false, reason: 'auth', verdict: 'credential-rejected', http };
+          // A non-zero envelope code on HTTP 200 IS the account's verdict —
+          // MiniMax states "no active token plan subscription" as code 2062.
+          // The conclusion comes from the CODE (structured), never from the
+          // message wording: `status_msg` is vendor prose that changes.
+          if (code !== 0) return { ok: false, reason: 'status', verdict: 'plan-inactive', http };
         }
 
         const probeTimeMs = now();
         const windows = parseRemainsPayload(payload, probeTimeMs, url);
         if (windows.length === 0) return { ok: false, reason: 'shape', http };
         return { ok: true, windows, plan: ctx.providerId.includes('coding-plan') ? 'Token Plan' : undefined, http };
-      } catch {
-        lastFailure = { ok: false, reason: 'network' };
+      } catch (err) {
+        // A transport throw (or the abort guard firing) has no body — the
+        // cause text is the entire evidence, so it goes into the capture. A leg
+        // that ran out of clock is `timeout`, never a credential verdict.
+        const thrown = classifyThrownFailure(err);
+        lastFailure = {
+          ok: false,
+          reason: thrown,
+          http: { url, durationMs: now() - started, ok: false, error: thrown, detail: failureCause(err) },
+        };
         if (!canFallback) return lastFailure;
         continue;
       } finally {

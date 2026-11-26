@@ -15,6 +15,7 @@ import { resetCredentialStoreForTests } from '../../src/opencode/credentials/fac
 import { isAllowedLogoUrl, localLogoApiPath, getLogoCached, writeLogoCache } from '../../src/opencode/catalog/logos.js';
 import { resolveSources, parseByType, normalizeOpenAICompatible, normalizeMapped } from '../../src/opencode/catalog/sources/registry.js';
 import { effortLadderFor } from '../../src/providers/boot-direct.js';
+import { modelsDevBlock } from '../../src/providers/virtual-meta.js';
 import { EFFORT_LADDER } from '../../src/types/router.js';
 import type { CatalogModel } from '../../src/opencode/catalog/types.js';
 
@@ -219,6 +220,54 @@ describe('Catalog sources & repository', () => {
     // legacy data with no reasoning_options: fall back to the boolean-expanded ladder
     expect(effortLadderFor({ id: 'm' } as CatalogModel, true)).toEqual(EFFORT_LADDER);
     expect(effortLadderFor({ id: 'm' } as CatalogModel, false)).toBeUndefined();
+  });
+
+  it('withholds none from EVERY ladder branch when the def says the model always thinks (ADR-0035)', () => {
+    const noNone = [...EFFORT_LADDER].filter((e) => e !== 'none');
+    // Boolean-only expansion: the bare reasoning flag must not re-admit none.
+    expect(effortLadderFor({ id: 'm', reasoningDisableable: false } as CatalogModel, true)).toEqual(noNone);
+    // budget_tokens expansion: same withholding.
+    expect(
+      effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'budget_tokens', min: 1024 }], reasoningDisableable: false } as CatalogModel, true)
+    ).toEqual(noNone);
+    // A stale table carrying none: stripped, the rest survives in order.
+    expect(
+      effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'effort', values: ['none', 'low', 'high'] }], reasoningDisableable: false } as CatalogModel, true)
+    ).toEqual(['low', 'high']);
+    // Contradictory only-none table: empties under the strip, stays EMPTY —
+    // never falls back to a ladder that re-admits the forbidden level.
+    expect(
+      effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'effort', values: ['none'] }], reasoningDisableable: false } as CatalogModel, true)
+    ).toEqual([]);
+    // Off allowed / not stated: unchanged behavior.
+    expect(effortLadderFor({ id: 'm', reasoningDisableable: true } as CatalogModel, true)).toEqual(EFFORT_LADDER);
+  });
+
+  it('the public catalog block strips none for an always-think model (display matches routing, ADR-0035)', () => {
+    // A stale/override table carrying none must not be ADVERTISED as offering
+    // thinking-off when routing withholds it.
+    const block = modelsDevBlock({
+      id: 'm',
+      reasoning: true,
+      reasoningOptions: [{ type: 'effort', values: ['none', 'low', 'high'] }],
+      reasoningDisableable: false,
+    } as CatalogModel);
+    expect(block.reasoning_options).toEqual([{ type: 'effort', values: ['low', 'high'] }]);
+    // A contradictory only-none table empties → the option is dropped, not re-published.
+    const empty = modelsDevBlock({
+      id: 'm',
+      reasoning: true,
+      reasoningOptions: [{ type: 'effort', values: ['none'] }],
+      reasoningDisableable: false,
+    } as CatalogModel);
+    expect(empty.reasoning_options).toEqual([]);
+    // Off allowed / not stated: the table is published verbatim.
+    const open = modelsDevBlock({
+      id: 'm',
+      reasoning: true,
+      reasoningOptions: [{ type: 'effort', values: ['none', 'low'] }],
+    } as CatalogModel);
+    expect(open.reasoning_options).toEqual([{ type: 'effort', values: ['none', 'low'] }]);
   });
 
   it('preserves explicit temperature:false through fill-missing merge (first non-blank wins)', () => {

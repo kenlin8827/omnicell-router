@@ -120,11 +120,16 @@ function isJsonModeRejection(err: any): boolean {
  */
 const EFFORT_MENTION_RE = new RegExp(`\\b(${EFFORT_LADDER.join('|')})\\b`, 'gi');
 
-function parseMentionedEfforts(errorText: string, exclude: ReasoningEffort): ReasoningEffort[] {
+function parseMentionedEfforts(errorText: string, exclude: ReasoningEffort, disableable?: boolean): ReasoningEffort[] {
   const found = new Set<ReasoningEffort>();
   for (const token of errorText.match(EFFORT_MENTION_RE) || []) {
     const level = token.toLowerCase() as ReasoningEffort;
-    if (level !== exclude) found.add(level);
+    if (level === exclude) continue;
+    // An always-think model's vendor may still ENUMERATE `none` in a generic
+    // rejection string; learning it would memoize thinking-off for the process
+    // lifetime and bypass the capability strip (ADR-0035). Withhold it here.
+    if (disableable === false && level === 'none') continue;
+    found.add(level);
   }
   return [...found].sort((a, b) => EFFORT_LADDER.indexOf(a) - EFFORT_LADDER.indexOf(b));
 }
@@ -154,10 +159,10 @@ function plannedEffort(model: ModelRegistration): ReasoningEffort | 'omit' {
  * response_format (one omit each) — at most 5 wire calls, and any rejection
  * the fallbacks do not cover rethrows immediately.
  *
- * `upstreamEventContext` is the capture identity for the call (decision layer
- * plumbing or the surface pipeline itself), or undefined:
- * every attempt — including the pin-repair re-pins — is a real wire call,
- * so each gets its own event pair through the registry's normal mechanism.
+ * `upstreamEventContext` is the archive label for the call, or undefined
+ * when capture is off. Every attempt, including pin-repair re-pins, is a
+ * real wire call and gets its own event pair. The executor is not given a
+ * conversation id: this call is a routing decision, not the user's session.
  */
 async function executeDecision(
   registry: ProviderRegistry,
@@ -181,9 +186,12 @@ async function executeDecision(
         let next: ReasoningEffort | 'omit';
         if (rejections >= 2) next = 'omit';
         else {
-          const mentioned = parseMentionedEfforts(err.errorBody || '', attemptedEffort);
+          const mentioned = parseMentionedEfforts(err.errorBody || '', attemptedEffort, model.reasoningDisableable);
           next = mentioned.length > 0 ? mentioned[0]! : attemptedEffort === 'none' ? 'low' : 'omit';
         }
+        // Never memoize thinking-off for an always-think model (ADR-0035): the
+        // learned pin would otherwise send `none` on every later decision call.
+        if (next === 'none' && model.reasoningDisableable === false) next = 'omit';
         effortPreferenceByModel.set(model.id, next);
         console.warn(`[systemone] upstream rejected reasoning_effort '${attemptedEffort}' for model '${model.id}' — downgrading the pin to '${next}'`);
         const reasoning = { ...attemptRequest.reasoning };

@@ -450,6 +450,24 @@ export class SessionManager {
    * hands the same value to the resolver and the trace, so the console's alias
    * and the session it names can never disagree.
    */
+  /**
+   * Caller-supplied conversation id. Reads the four explicit header names and
+   * nothing else: no mint, no anchor, no session-manager write. Archive code
+   * uses this when it needs a file name and the request is not a conversation.
+   */
+  public static explicitSessionId(
+    headers?: Record<string, string | string[] | undefined>
+  ): string | undefined {
+    const raw =
+      headers?.['x-session-id'] ||
+      headers?.['x-conversation-id'] ||
+      headers?.['session-id'] ||
+      headers?.['conversation-id'];
+    if (!raw) return undefined;
+    const id = (Array.isArray(raw) ? raw[0] : raw).trim();
+    return id.length > 0 ? id : undefined;
+  }
+
   public static clientRefOf(request: CanonicalRequest): ClientConversationRef | null {
     return SessionManager.normalizeClientRef(request.routerOptions?.clientRef);
   }
@@ -475,17 +493,10 @@ export class SessionManager {
     identity: SessionIdentity | undefined,
     clientRef: ClientConversationRef | null
   ): SessionResolveResult {
-    // 1. Explicit Header Probe
-    const explicitHeader =
-      identity?.headers?.['x-session-id'] ||
-      identity?.headers?.['x-conversation-id'] ||
-      identity?.headers?.['session-id'] ||
-      identity?.headers?.['conversation-id'];
-
-    if (explicitHeader) {
-      const id = Array.isArray(explicitHeader) ? explicitHeader[0] : explicitHeader;
-      return { sessionId: id.trim(), lookupType: 'explicit_header' };
-    }
+    // 1. Explicit header. The same reader names an archive file when a
+    // surface is not a conversation and must not mint one.
+    const explicit = SessionManager.explicitSessionId(identity?.headers);
+    if (explicit) return { sessionId: explicit, lookupType: 'explicit_header' };
 
     if (request.routerOptions?.sessionId) {
       return { sessionId: request.routerOptions.sessionId.trim(), lookupType: 'explicit_header' };

@@ -12,12 +12,94 @@
  */
 import type { PluginClaimEgress, PluginConfigField, PluginManifest, PluginPart, PluginType } from './types.js';
 
-/** Contract version the CURRENT host implements. v1 is the FIRST plugin
- *  mechanism: there is no legacy or forward compatibility — a package must
- *  declare EXACTLY this value, anything else is an illegal package (ADR-0017
- *  §6). A deliberate compatibility window can only be added later, together
- *  with the test matrix that proves it. */
-export const SUPPORTED_PLUGIN_API = 1;
+/** The plugin ENGINE version the host implements — the version of the plugin
+ *  surface core offers package code (`createPlugin(host)` and everything
+ *  reachable from it).
+ *
+ *  ONE INTEGER, on purpose (ADR-0036). The engine version IS the plugin
+ *  contract version: an engine release that does not change the surface a
+ *  package can see is not a different engine where compatibility is concerned,
+ *  and `createPlugin` has no second dimension for a package to depend on.
+ *  A behaviour fix that a package can notice therefore ships as a contract
+ *  bump — which is exactly what it is — and `engines` has no room to say
+ *  anything `apiVersion` does not already say.
+ *
+ *  Bump discipline: raising this constant is the ONLY step a surface change
+ *  needs. Packages declaring the previous value are then refused with a
+ *  sentence that says which side is behind; nothing else in core reads it. */
+export const PLUGIN_ENGINE_VERSION = 1;
+
+/** The plugin CONTRACT this host implements — the same number by another name.
+ *  Kept as its own constant because readers come at it from two directions: a
+ *  package DECLARES `apiVersion`, this host boasts `SUPPORTED_PLUGIN_API`, and
+ *  the comparison between them is the whole rule (see
+ *  `pluginEngineCompatibility`). Equal to {@link PLUGIN_ENGINE_VERSION} by
+ *  construction, never by coincidence — see ADR-0036 on why there is one
+ *  number. */
+export const SUPPORTED_PLUGIN_API = PLUGIN_ENGINE_VERSION;
+
+/** Lower bound of the supported CONTRACT window. Equal to
+ *  `SUPPORTED_PLUGIN_API` today: one contract, no legacy. Raising it retires
+ *  the contracts in `[MIN, SUPPORTED)` — packages declaring them are refused
+ *  exactly like a too-new one. */
+export const MIN_SUPPORTED_PLUGIN_API = SUPPORTED_PLUGIN_API;
+
+/** Why a package was refused. Two directions, never one sentence: a package
+ *  that targeted a retired contract is fixed by installing its newer release;
+ *  a package that needs a newer engine is fixed by updating the GATEWAY, and
+ *  reinstalling it moves nothing. */
+export type PluginEngineRefusalReason = 'contract-too-old' | 'contract-too-new';
+
+/** Whether a package may load on THIS host, and if not, which side is behind
+ *  and therefore what the operator has to do about it. */
+export type PluginEngineCompatibility =
+  | { compatible: true; required: number }
+  | { compatible: false; reason: PluginEngineRefusalReason; required: number };
+
+/**
+ * The whole compatibility rule, in ONE place (ADR-0036). One declaration, one
+ * comparison:
+ *
+ *  - `apiVersion` ABOVE `SUPPORTED_PLUGIN_API` — the package was written
+ *    against a surface this build does not have. Fixed by updating the
+ *    GATEWAY; reinstalling the same file moves nothing.
+ *  - `apiVersion` BELOW `MIN_SUPPORTED_PLUGIN_API` — the contract it targets
+ *    has been retired. Fixed by installing the package's newer release.
+ *  - Otherwise it loads.
+ *
+ * There is no window, no floor and no ceiling: a package states the ONE engine
+ * it was developed against, and the integers compare. A package that wanted to
+ * say "and any later engine of this line" would be asserting compatibility it
+ * cannot know, which is why the contract does not offer the spelling.
+ */
+export function pluginEngineCompatibility(manifest: PluginManifest): PluginEngineCompatibility {
+  const required = manifest.apiVersion;
+  if (required > SUPPORTED_PLUGIN_API) return { compatible: false, reason: 'contract-too-new', required };
+  if (required < MIN_SUPPORTED_PLUGIN_API) return { compatible: false, reason: 'contract-too-old', required };
+  return { compatible: true, required };
+}
+
+/** The operator-facing sentence for a refused package. ONE wording, produced
+ *  by CORE, never by a package: it is an instruction about what the operator
+ *  must DO, and it has to name the right side to act on. */
+export function pluginEngineRefusal(manifest: PluginManifest): string | undefined {
+  const verdict = pluginEngineCompatibility(manifest);
+  if (verdict.compatible) return undefined;
+  const who = `'${manifest.id}' ${manifest.version}`;
+  if (verdict.reason === 'contract-too-new') {
+    return `plugin ${who} targets plugin contract ${verdict.required}, newer than this gateway's ${SUPPORTED_PLUGIN_API} — update OmniCellRouter to use this plugin`;
+  }
+  return `plugin ${who} targets plugin contract ${verdict.required}, which this gateway no longer supports (supported: ${MIN_SUPPORTED_PLUGIN_API}–${SUPPORTED_PLUGIN_API}) — update the plugin to a newer release`;
+}
+
+/** Reject a package the host cannot run. Called at INSTALL (before anything
+ *  touches disk) and at LOAD (packages already on disk); the LOAD path turns
+ *  the same verdict into a disabled console row instead of a failed one, so the
+ *  message below is what the operator reads. */
+export function assertSupportedPluginApi(manifest: PluginManifest): void {
+  const refusal = pluginEngineRefusal(manifest);
+  if (refusal) throw new Error(refusal);
+}
 
 /** Where a config field is edited: the plugin drawer (default), the Client Hub
  *  card the hook backs, or nowhere (stored, but dead for this hook). */
@@ -37,16 +119,6 @@ export const CONFIG_PLACEMENTS = ['drawer', 'card', 'none'] as const;
  */
 export const GATEWAY_EGRESS_CONFIG_KEY = 'egress';
 export const GATEWAY_EGRESS_VALUES = ['inherit', 'proxy', 'direct'] as const;
-
-/** Reject a package built for any other contract version. Called at INSTALL
- *  (before anything touches disk) and at LOAD (packages already on disk). */
-export function assertSupportedPluginApi(apiVersion: number): void {
-  if (apiVersion !== SUPPORTED_PLUGIN_API) {
-    throw new Error(
-      `plugin apiVersion ${apiVersion} does not match this host's plugin contract (${SUPPORTED_PLUGIN_API}) — rebuild the package with the current packager`
-    );
-  }
-}
 
 /** The three extension axes (ADR-0017 / ADR-0027), in the order a console row
  *  prefers to label them: a package that is both an ingress hook and a traffic
@@ -171,6 +243,11 @@ export function validatePluginManifest(manifest: unknown, label: string): void {
   if (typeof m.apiVersion !== 'number' || !Number.isInteger(m.apiVersion) || m.apiVersion < 1) {
     fail('apiVersion must be a positive integer (the plugin contract version, currently 1)');
   }
+  // `engines` is RETIRED (ADR-0036 Amendment 1): the engine version is the
+  // contract version, so `apiVersion` above is the whole declaration. A
+  // package that still carries the field is not rejected for it — it is simply
+  // not read, the same way any other unknown key is not read — because a
+  // refusal here would fail packages for a field that used to be required.
   // --- Extension axes: `type` (exactly one) or `parts` (any subset) -------
   // ADR-0028: the axes are independent capabilities, so the manifest states
   // which slots a package fills. Both spellings are accepted, never together:

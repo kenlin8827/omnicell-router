@@ -43,6 +43,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { EgressIcon } from '../components/EgressIcon';
 import { Switch } from '../components/Switch';
 import { InfoTip } from '../components/InfoTip';
 import { useModelTest } from '../lib/useModelTest';
@@ -1506,6 +1507,9 @@ export const KeysPage: React.FC = () => {
   );
   const canWriteCredential = (providerId: string): boolean =>
     integrationIds === null || integrationIds.has(providerId.toLowerCase());
+  // `none` alone means the plugin owns login. Absent stays the key form.
+  const declinesCredential = (authTypes?: PluginAuthType[]): boolean =>
+    Array.isArray(authTypes) && authTypes.includes('none') && !authTypes.some((t) => t === 'key' || t === 'webLogin');
   // ---- per-credential drill-down ----------------------------------------------------
   // The masked detail lives inside storeStatus (GET credential-store carries
   // it) so a write route's refreshed `credentials` array can patch it in place —
@@ -2121,6 +2125,21 @@ export const KeysPage: React.FC = () => {
     showNotice(t(multiCredentialStore ? 'op.keyAdded' : 'op.keyUpdated', { sink: sinkLabel }));
   };
 
+  /** Enable a preset that logs in outside the credential store. */
+  const connectLocal = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await opencodeApi.connectLocal(id);
+      showNotice(t('op.connectLocalOk'));
+      await Promise.all([refreshAll(), loadCatalog()]);
+    } catch (err) {
+      showNotice(reasonError(err), 'err');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** Batch test: bounded concurrency over the currently visible connected providers. */
   const handleTestAllProviders = () =>
     testAllTargets(connectedResults.map((p) => ({ key: p.id, providerId: p.id })));
@@ -2442,6 +2461,7 @@ export const KeysPage: React.FC = () => {
             const healthColor = liveIds.length === 0 ? 'var(--accent-rose)' : liveIds.length < credentialList.length ? 'var(--accent-amber)' : 'var(--accent-emerald)';
             // Key writes need a registered integration (see canWriteCredential).
             const keyWritable = canWriteCredential(p.id);
+            const noCredential = declinesCredential(p.authTypes);
             return (
             <div
               key={p.id}
@@ -2511,7 +2531,7 @@ export const KeysPage: React.FC = () => {
                     </span>
                   )}
                 </div>
-              {caps && (
+              {caps && !noCredential && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   {credentialList.length > 0 ? (
                     <>
@@ -2642,6 +2662,20 @@ export const KeysPage: React.FC = () => {
                       {testResults[p.id].ok
                         ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
                         : `✗ ${testResults[p.id].errorShort || testResults[p.id].error || t('op.testFailMsg')}`}
+                      {/* Egress rides the SAME row as the verdict: the operator's
+                          question after a split change is "did this provider take
+                          the proxy", and a failure that is really a wrong egress
+                          (geo block, proxy down) is indistinguishable from a bad
+                          key without it. One glyph, endpoint in its tip
+                          (components/EgressIcon.tsx); unknown (plugin wire)
+                          renders nothing. */}
+                      <EgressIcon
+                        egress={testResults[p.id].egress}
+                        proxy={testResults[p.id].egressProxy}
+                        unknown="none"
+                        size={13}
+                        style={{ marginLeft: 6 }}
+                      />
                     </span>
                     {/* Failure detail behind an explicit click: the upstream
                         body is multi-line JSON, so a hover bubble is the wrong
@@ -2670,6 +2704,13 @@ export const KeysPage: React.FC = () => {
                     stays on the chip row instead of wrapping into an orphaned
                     second line. */}
                 <div className="provider-card-actions">
+                  {noCredential ? (
+                    p.keyHint ? (
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }} title={p.keyHint}>
+                        {p.keyHint}
+                      </span>
+                    ) : null
+                  ) : (
                   <button
                     className="btn btn-sm"
                     disabled={!keyWritable}
@@ -2683,6 +2724,7 @@ export const KeysPage: React.FC = () => {
                     {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
                     <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
                   </button>
+                  )}
                     <button
                       className="btn btn-sm"
                       disabled={testingIds.size > 0 || testAll.running}
@@ -2835,6 +2877,7 @@ export const KeysPage: React.FC = () => {
             // badge = HAS A CREDENTIAL — a merely-defined provider (plugin preset
             // awaiting its key) must not read as already connected
             const connected = keyedProviderIds.has(c.id);
+            const noCredential = declinesCredential(c.authTypes);
             return (
               // Connected rows keep their place in the grid: static badge plus a
               // quick "add credential" affordance that opens the same inline key
@@ -2892,33 +2935,49 @@ export const KeysPage: React.FC = () => {
                   )}
                 </div>
                 {connected ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 0' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)', flex: 1 }}>
-                      <Check size={12} />
-                      <span>{t('op.alreadyConnected')}</span>
-                    </span>
-                    <button
-                      className="btn btn-sm"
-                      disabled={!canWriteCredential(c.id)}
-                      title={canWriteCredential(c.id) ? t('op.addCredentialQuickTip') : t('op.integrationMissingTip')}
-                      onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: webLoginByProvider.get(c.id)?.keyHint })}
-                    >
-                      <Plug size={12} />
-                      <span>{t('op.addCredentialQuick')}</span>
-                    </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '7px 0' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)', flex: 1 }}>
+                        <Check size={12} />
+                        <span>{t('op.alreadyConnected')}</span>
+                      </span>
+                      {!noCredential && (
+                        <button
+                          className="btn btn-sm"
+                          disabled={!canWriteCredential(c.id)}
+                          title={canWriteCredential(c.id) ? t('op.addCredentialQuickTip') : t('op.integrationMissingTip')}
+                          onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: webLoginByProvider.get(c.id)?.keyHint })}
+                        >
+                          <Plug size={12} />
+                          <span>{t('op.addCredentialQuick')}</span>
+                        </button>
+                      )}
+                    </div>
+                    {noCredential && c.keyHint && (
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>{c.keyHint}</span>
+                    )}
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', gap: 6 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <button
                       className="btn btn-sm"
-                      disabled={!canWriteCredential(c.id)}
-                      title={!canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
-                      onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: c.keyHint })}
+                      disabled={noCredential ? busy : !canWriteCredential(c.id)}
+                      title={!noCredential && !canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
+                      onClick={() => {
+                        if (noCredential) {
+                          void connectLocal(c.id);
+                          return;
+                        }
+                        setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: c.keyHint });
+                      }}
                       style={{ flex: 1 }}
                     >
                       <Plug size={12} />
                       <span>{t('op.connectBtn')}</span>
                     </button>
+                    {noCredential && c.keyHint && (
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>{c.keyHint}</span>
+                    )}
                   </div>
                 )}
               </div>

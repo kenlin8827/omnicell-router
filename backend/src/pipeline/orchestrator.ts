@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { CanonicalRequest, CanonicalResponse, StreamEvent, InputItem, MessageItem } from '../ir/types.js';
-import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning, effortFromThinkingBudget } from '../types/router.js';
+import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning, effortFromThinkingBudget, modelSupportsEfforts } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { repairToolCallPairing } from './tool-pairing.js';
@@ -14,7 +14,7 @@ import {
   normalizePrompt,
   L2_CONFIDENT_THRESHOLD,
 } from '../router/route-entries.js';
-import { scanDirectives, scrubWireDirectives, applyTierDirectives, applyEffortDirectives } from './directives.js';
+import { scanDirectives, scrubWireDirectives, applyTierDirectives, applyEffortDirectives, type DirectiveScan } from './directives.js';
 import { directivesGate } from './directive-gate.js';
 import { streamingPosture } from './streaming-posture.js';
 import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../config/defaults.js';
@@ -63,14 +63,13 @@ interface RequestIdentity {
   requestId: string;
   clientRequestId?: string;
   turn: TurnIdentity;
-  allocated: boolean;
 }
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
-import type { UpstreamEventContext } from '../providers/base.js';
+import { UpstreamEventContext } from '../observability/upstream-events.js';
 import type { StreamRelay, StreamRoutingFacts } from '../utils/stream-relay.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
@@ -449,6 +448,18 @@ export class PipelineOrchestrator {
   }
 
   /**
+   * The pool a model serves from, derived from its HOME tier — the single-tier
+   * question "is this pinned model still config-intended?". A model with no
+   * home tier serves from NO pool (empty list): every pool filters it out, so
+   * a pin on it is config-evicted and falls through to the ordinary
+   * replacement path. Callers must not treat the empty list as "tier down";
+   * that judgement belongs to `getModelForTier`.
+   */
+  private poolOfHomedModel(model: ModelRegistration): ModelRegistration[] {
+    return model.tier ? this.registry.getCandidateModelsForTier(model.tier, false) : [];
+  }
+
+  /**
    * Auto-request routing with the experience table in front of the decision layer
    * (ADR-0011): an entry hit short-circuits L2 entirely — the table IS a
    * prior judgment. Explicit request tiers (`forceTier`, incl. the
@@ -493,10 +504,9 @@ export class PipelineOrchestrator {
       this.config.classifier,
       this.registry,
       this.config.systemone?.defaultModel,
-      // Decision-call capture identity: the outer turn's requestId/sessionId (only
-      // exists while the capture master is on). The LAYER 2 DECISION applies
-      // the recorder master gate (requestCapture.enabled) — when off it
-      // passes nothing further, so this arg alone changes nothing today.
+      // Archive label for the decision wire, present only while capture is on.
+      // The conversation id itself is `sessionId` above; the decision leg
+      // copies it onto events and does not own the session.
       decisionCapture,
       // Failure attribution: decision layer wire failures land in the failure_events
       // ledger tagged with THIS conversation, whatever the capture switch.
@@ -517,25 +527,6 @@ export class PipelineOrchestrator {
     return this.healthProber?.getIntervalMs() ?? 0;
   }
 
-  /**
-   * Public entry point — thin capture wrapper around processInternal.
-   *
-   * Records the full request/response into the opt-in CaptureRecorder audit
-   * log on BOTH the success and the failure path (debugging failed requests
-   * is the primary use case). Implemented as a wrapper instead of an inline
-   * hook so processInternal stays untouched: the session-id resolution and
-   * the PRE-compression message snapshot are rebuilt here with the same pure
-   * functions (PromptOptimizer.normalizeMessages / scanDirectives /
-   * resolveSessionId) — all deterministic and run in the same synchronous
-   * segment, so the wrapper snapshot is byte-identical to the scrubbed chain
-   * processInternal routes on before applyCompression mutates the request
-   * (ADR-0011 §4: the scrubbed chain feeds hashing, snippets, traces AND
-   * capture — reserved tokens never reach the archive, and session /
-   * conversation anchor resolution sees the same bytes the router sees).
-   * Request headers are captured in
-   * SANITIZED form (credential values masked per the deny-list in
-   * observability/http-exchange.ts), never raw.
-   */
   /** One-shot allocation of the write-time turn identity (ADR-0024). */
   private allocateTurn(sessionId: string, input: readonly InputItem[]): TurnIdentity {
     // Retained traces seed the counter for sessions that predate the v3
@@ -551,6 +542,14 @@ export class PipelineOrchestrator {
     };
   }
 
+  /**
+   * Public entry point. The admission gate scrubs the chain once, resolves
+   * the conversation and allocates its turn, before anything else. The rest
+   * of the pipeline uses that scrubbed request and that session. Capture,
+   * when on, copies the id into the audit log. When it is off, no context
+   * is built and no event is written. Captured headers are sanitized
+   * (credential values masked in observability/http-exchange.ts).
+   */
   public async process(
     request: CanonicalRequest,
     context?: ProcessContext,
@@ -573,58 +572,59 @@ export class PipelineOrchestrator {
     // Headers come from the transport that owns the leg: the Fastify leg
     // reads its own request, the MITM leg the original clientRequest headers,
     // then plain `headers` (in-process/test callers).
-    const traceHeaders =
-      context?.fastifyRequest?.headers ?? context?.clientRequest?.headers ?? context?.headers;
-    const clientRequest = traceHeaders ? resolveClientRequestId({ headers: traceHeaders }) : {};
+    const admissionHeaders =
+      context?.headers ?? context?.clientRequest?.headers ?? context?.fastifyRequest?.headers;
+    const clientRequest = admissionHeaders ? resolveClientRequestId({ headers: admissionHeaders }) : {};
     const turnIdentity: RequestIdentity = {
       requestId: mintRequestId(),
       ...(clientRequest.clientRequestId ? { clientRequestId: clientRequest.clientRequestId } : {}),
       turn: NO_TURN,
-      allocated: false,
     };
 
-    let captureSessionId = '';
-    let preResolvedSession: SessionResolveResult | undefined;
+    // Conversation identity is the admission gate's job. Cold-start ids carry
+    // fresh entropy, so this resolve is the only one for the request;
+    // processInternal reuses it. Capture copies the id onto events and does
+    // not resolve a second one.
+    const gate = directivesGate();
+    const normalizedMessages = PromptOptimizer.normalizeMessages(request);
+    const snapshotScan = scanDirectives(
+      normalizedMessages,
+      gate.enabled ? gate.prefix : null,
+      request.instructions,
+    );
+    if (
+      snapshotScan.droppedMessages > 0 &&
+      !snapshotScan.input.some((item) => item.type === 'message' && item.role === 'user')
+    ) {
+      throw Object.assign(
+        new Error(`Empty prompt — ${gate.prefix}* directives were the only content in the request`),
+        { statusCode: 400 }
+      );
+    }
+    const snapshotRequest: CanonicalRequest = {
+      ...request,
+      input: snapshotScan.input,
+      ...(request.instructions !== undefined ? { instructions: snapshotScan.instructions } : {}),
+    };
+    // A name the gateway will not serve is not a conversation. These throws
+    // happen before the session resolve, so a 404 or a policy 403 does not
+    // allocate a turn or claim a session.
+    const addressed = this.resolveAddressedModel(snapshotRequest, context);
+    const keyIdentity = keyIdentityOf(context);
+    const admissionRef = SessionManager.clientRefOf(snapshotRequest);
+    const preResolvedSession = this.sessionManager.resolveSessionId(snapshotRequest, {
+      keyId: keyIdentity?.id,
+      headers: admissionHeaders,
+      clientRef: admissionRef ?? undefined,
+    });
+    const admissionSessionId = preResolvedSession.sessionId;
+    // ADR-0024: one turn boundary, after the session is bound, before any
+    // event. Retries, failover and the decision leg copy it.
+    turnIdentity.turn = this.allocateTurn(admissionSessionId, snapshotRequest.input);
+
     let upstreamEventContext: UpstreamEventContext | undefined;
     if (captureEnabled) {
-      // ADR-0011 §4: reserved tokens never reach the archive. Session and
-      // conversation identity use the scrubbed IR chain; the client event uses
-      // a separately scrubbed projection of the original protocol envelope.
-      // scanDirectives is idempotent; processInternal scrubs the live request
-      // again on its own path.
-      const normalizedMessages = PromptOptimizer.normalizeMessages(request);
-      // Scrub with the LIVE gate (enabled flag + configured prefix), matching
-      // processInternal — a relocated prefix or a disabled gate must not
-      // desync capture/anchor bytes from what the router actually serves.
-      const gate = directivesGate();
-      const snapshotScan = scanDirectives(
-        normalizedMessages,
-        gate.enabled ? gate.prefix : null,
-        request.instructions,
-      );
-      const snapshotRequest: CanonicalRequest = {
-        ...request,
-        input: snapshotScan.input,
-        ...(request.instructions !== undefined ? { instructions: snapshotScan.instructions } : {}),
-      };
-      const keyIdentity = keyIdentityOf(context);
-      // Resolve ONCE here and hand the result to processInternal: cold-start
-      // IDs carry fresh random entropy, so a second resolve of the same
-      // request would mint a different ID and split capture from routing.
-      preResolvedSession = this.sessionManager.resolveSessionId(snapshotRequest, {
-        keyId: keyIdentity?.id,
-        headers: context?.headers,
-      });
-      captureSessionId = preResolvedSession.sessionId;
-      // ADR-0024: allocate the turn boundary ONCE — after the final session
-      // binding, before the first event. Re-entries, retries, failover hops
-      // and the L2 decision leg copy it; none of them re-allocate.
-      turnIdentity.turn = this.allocateTurn(captureSessionId, snapshotRequest.input);
-      turnIdentity.allocated = true;
-      // Deterministic conversation key stamped onto EVERY event of the request:
-      // the capture archive can regroup turns even when the volatile session
-      // id shifts (content-addressed, never a credential, mirrors the
-      // session-manager resolution input exactly).
+      // Content-addressed regroup key for the archive only. Not a session id.
       const conversationKey = SessionManager.conversationKey(
         snapshotRequest.input || [],
         keyIdentity?.id
@@ -644,7 +644,7 @@ export class PipelineOrchestrator {
           context?.clientBody ?? snapshotRequest,
           gate.enabled ? gate.prefix : null
         ),
-        sessionId: captureSessionId,
+        sessionId: admissionSessionId,
         clientRequestId: turnIdentity.clientRequestId,
         requestId: turnIdentity.requestId,
         model: request.model || 'auto',
@@ -656,9 +656,9 @@ export class PipelineOrchestrator {
       } else if (context?.onClientExchange) {
         context.onClientExchange(clientExchangeCtx);
       }
-      upstreamEventContext = {
+      upstreamEventContext = new UpstreamEventContext({
         recorder: this.captureRecorder,
-        sessionId: captureSessionId,
+        sessionId: admissionSessionId,
         clientRequestId: turnIdentity.clientRequestId,
         requestId: turnIdentity.requestId,
         model: request.model || 'auto',
@@ -668,7 +668,7 @@ export class PipelineOrchestrator {
         apiKey: keyIdentity,
         conversationKey,
         turn: turnIdentity.turn,
-      };
+      });
     }
 
     // Provider-leg transport (streaming.upstream.mode — ADR-0008 §1):
@@ -680,7 +680,9 @@ export class PipelineOrchestrator {
     //              false and retries/failover remain legal;
     //   follow   → the client's own relay (or none) — historical behavior.
     return await this.processInternal(
-      request,
+      snapshotRequest,
+      snapshotScan,
+      addressed,
       context,
       preResolvedSession,
       upstreamEventContext,
@@ -703,60 +705,16 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * Complete orchestration workflow:
-   * 1. Prompt normalization (canonical order)
-   * 2. Zero-header session identification & prefix fingerprinting
-   * 3. Multi-Layer hierarchical routing (Layer 0 -> Layer 2)
-   * 4. Monotonic Ratchet session state enforcement + Session-Pin Eviction
-   * 5. Execution with Circuit Breaker, Transparent Failover & Schema Assertion
-   * 6. FinOps accounting
-   * 7. Post-turn prefix fingerprint registration
+   * Names the model the client addressed. Throws 404 for an unknown variant
+   * or an unusable combo, and 403 when the key's model policy denies an
+   * explicit model. A bare name that matches nothing falls through to the
+   * classifier. Mutates `request` with the tier and effort that name implies.
+   * Does not resolve a session.
    */
-  private async processInternal(
+  private resolveAddressedModel(
     request: CanonicalRequest,
-    context?: ProcessContext,
-    preResolvedSession?: SessionResolveResult,
-    upstreamEventContext?: UpstreamEventContext,
-    turnIdentity?: RequestIdentity,
-    relay?: StreamRelay
-  ): Promise<ExecutionResult> {
-    const clientRequestId = turnIdentity?.clientRequestId;
-    const requestId = turnIdentity?.requestId ?? mintRequestId();
-    const startTime = Date.now();
-
-    // 1. Optimize message prefix order & resolve virtual routing models
-    const normalizedMessages = PromptOptimizer.normalizeMessages(request);
-    // 1.0 Control directives (ADR-0011 rewrite): SCRUB first, before anything
-    // reads or forwards the chain. Every reserved token is removed from every
-    // role and text part, and directive-only messages are dropped, so the
-    // upstream payload is byte-equivalent to one that never carried a directive
-    // (stable prefix cache, no reserved word at any vendor). Only the LAST user
-    // message's tokens are actionable — and only for this turn. The namespace
-    // comes from the hot-applied gate (`directives.prefix`); `enabled: false`
-    // disables the scan entirely, so tokens travel as ordinary text.
-    const directiveGate = directivesGate();
-    const directivePrefix = directiveGate.prefix;
-    const directiveScan = scanDirectives(
-      normalizedMessages,
-      directiveGate.enabled ? directivePrefix : null,
-      request.instructions,
-    );
-    if (
-      directiveScan.droppedMessages > 0 &&
-      !directiveScan.input.some((item) => item.type === 'message' && item.role === 'user')
-    ) {
-      // A directive-only prompt with no history: nothing left to send.
-      throw Object.assign(
-        new Error(`Empty prompt — ${directivePrefix}* directives were the only content in the request`),
-        { statusCode: 400 }
-      );
-    }
-    const normalizedRequest: CanonicalRequest = {
-      ...request,
-      input: directiveScan.input,
-      ...(request.instructions !== undefined ? { instructions: directiveScan.instructions } : {}),
-    };
-
+    context: ProcessContext | undefined,
+  ): { explicitModel?: ModelRegistration; variantUsed?: string; comboId?: string } {
     let explicitModel: ModelRegistration | undefined;
     let variantUsed: string | undefined;
     // Routing-name matching trims once. `request.model` itself stays verbatim
@@ -767,7 +725,7 @@ export class PipelineOrchestrator {
     const modelName = (request.model ?? '').trim();
     const bareTier = tierFromVirtualEntry(modelName);
     if (bareTier) {
-      normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: bareTier };
+      request.routerOptions = { ...request.routerOptions, forceTier: bareTier };
     } else if (modelName && modelName !== 'auto') {
       const specific = this.registry.getModel(modelName);
       if (specific) {
@@ -777,7 +735,7 @@ export class PipelineOrchestrator {
         // same-model retry and credential re-spread still apply; the model
         // itself is never substituted (ADR-0014).
         explicitModel = specific;
-        normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: specific.tier };
+        request.routerOptions = { ...request.routerOptions, forceTier: specific.tier };
       } else {
         const variantRef = this.registry.resolveVariantRef(modelName);
         if (variantRef) {
@@ -789,9 +747,9 @@ export class PipelineOrchestrator {
           // applies its downgrade/honesty contract.
           explicitModel = variantRef.base;
           variantUsed = variantRef.variant.id;
-          setEffort(normalizedRequest, variantRef.variant.reasoningEffort);
-          normalizedRequest.model = variantRef.base.id;
-          normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: variantRef.base.tier };
+          setEffort(request, variantRef.variant.reasoningEffort);
+          request.model = variantRef.base.id;
+          request.routerOptions = { ...request.routerOptions, forceTier: variantRef.base.tier };
         } else if (modelName.includes('#')) {
           // `#variant` is explicit syntax — a typo must fail loud instead of
           // silently classifier-routing (invisible model drift is exactly
@@ -832,8 +790,8 @@ export class PipelineOrchestrator {
           // models stay addressable by their full provider-prefixed id.
           if (bareHits.length > 0 && !this.registry.isCombo(modelName)) {
             explicitModel = bareHits[0];
-            normalizedRequest.routerOptions = {
-              ...normalizedRequest.routerOptions,
+            request.routerOptions = {
+              ...request.routerOptions,
               forceTier: explicitModel.tier,
             };
           }
@@ -847,17 +805,14 @@ export class PipelineOrchestrator {
       }
     }
 
-    // 1A. Custom model combo: the client named a configured combo id — the
-    // combo's member list IS the candidate pool. Classifier tier routing,
+    // Custom model combo: the client named a configured combo id — the
+    // combo's member list IS the candidate pool. Tier-pool routing,
     // session ratchet and schema-assertion escalation are all bypassed
     // (explicit user composition wins, mirroring the exact-model
     // pass-through above).
     const comboByName =
       !explicitModel && modelName && this.registry.isCombo(modelName) ? modelName : undefined;
     if (comboByName && this.registry.isComboDisabled(comboByName)) {
-      // Fail fast like the empty-member case below: the combo is hidden from
-      // /v1/models, so an in-flight client naming it must get a loud 404 —
-      // routing it as `auto` would be invisible billing/model drift.
       throw Object.assign(
         new Error(
           `Combo '${comboByName}' is disabled — re-enable it in the console or choose another model.`
@@ -866,12 +821,6 @@ export class PipelineOrchestrator {
       );
     }
     if (comboByName && this.registry.resolveCombo(comboByName).length === 0) {
-      // Fail fast instead of silently degrading to classifier routing: the
-      // combo is still advertised via /v1/models, so routing it as `auto`
-      // would be invisible billing/model drift.
-      // 404 like the disabled branch above: the combo is not currently
-      // routable (no member registered) — an operator-config gap must not
-      // read as an upstream 502.
       throw Object.assign(
         new Error(
           `Combo '${comboByName}' has no registered member models — sync the member providers' model lists (console provider pull) or fix the ids in config.combos; boot logs name every provider excluded for zero models.`
@@ -881,14 +830,10 @@ export class PipelineOrchestrator {
     }
     const comboId = comboByName ?? undefined;
 
-    // Defense in depth: an explicitly named model outside the key's model
-    // policy fails loud here (HTTP routes entry-check this too; direct
-    // orchestrator callers might not). The model's FULL membership set is
-    // passed so TIER-level entries (lite/plus/pro/ultra) match exactly
-    // as they do in the execution pool filter (executeCandidatePool) — a
-    // tier-denied explicit model must not slip through the bare-name/variant
-    // resolution paths, and a multi-pool model is admitted when any of its
-    // memberships passes.
+    // An explicitly named model outside the key's model policy fails loud
+    // here (HTTP routes entry-check this too; direct orchestrator callers
+    // might not). The model's FULL membership set is passed so TIER-level
+    // entries match the execution pool filter.
     if (
       explicitModel &&
       context?.modelAccess &&
@@ -899,6 +844,33 @@ export class PipelineOrchestrator {
         { statusCode: 403 }
       );
     }
+    return { explicitModel, variantUsed, comboId };
+  }
+
+  /**
+   * Routing and execution after admission. The request is already scrubbed,
+   * the addressed model is already accepted, and the session and turn
+   * already exist. A rejected request never reaches this function.
+   */
+  private async processInternal(
+    request: CanonicalRequest,
+    directiveScan: DirectiveScan,
+    addressed: { explicitModel?: ModelRegistration; variantUsed?: string; comboId?: string },
+    context: ProcessContext | undefined,
+    preResolvedSession: SessionResolveResult,
+    upstreamEventContext: UpstreamEventContext | undefined,
+    turnIdentity: RequestIdentity,
+    relay?: StreamRelay
+  ): Promise<ExecutionResult> {
+    const clientRequestId = turnIdentity.clientRequestId;
+    const requestId = turnIdentity.requestId;
+    const startTime = Date.now();
+
+    // Admission already scrubbed this request (ADR-0011). Routing mutates the copy.
+    const normalizedRequest = request;
+    const directivePrefix = directivesGate().prefix;
+
+    const { explicitModel, variantUsed, comboId } = addressed;
 
     // 1B. Global routing mode (config.routing.mode) — cost/quality force the tier
     // for auto/tier-alias requests; explicit client choices always win.
@@ -911,28 +883,11 @@ export class PipelineOrchestrator {
       normalizedRequest.routerOptions = { ...normalizedRequest.routerOptions, forceTier: modeTier };
     }
 
-    // 2. Identify / track conversation session (zero-header layered resolution).
-    // Reuse the capture-time resolve when present: both call sites normalize
-    // identically, and one request must yield exactly one session ID. The
-    // client conversation ref is resolved ONCE here and handed to both the
-    // resolver and the trace, so the console's "both ids" view and the session
-    // it names can never disagree.
+    // 2. The admission gate resolved this conversation and allocated its turn.
+    // clientRef is read again only so the trace row names the ref that was bound.
     const clientRef = SessionManager.clientRefOf(normalizedRequest);
-    const sessionResolve = preResolvedSession ??
-      this.sessionManager.resolveSessionId(normalizedRequest, {
-        keyId: keyIdentityOf(context)?.id,
-        headers: context?.headers,
-        clientRef: clientRef ?? undefined,
-      });
-    const sessionId = sessionResolve.sessionId;
-    // Capture-disabled requests reach the admission gate only here; allocate
-    // exactly once so the trace plane carries the same identity regardless of
-    // the capture switch. `allocated` makes the two gates mutually exclusive.
-    if (turnIdentity && !turnIdentity.allocated) {
-      turnIdentity.turn = this.allocateTurn(sessionId, normalizedRequest.input);
-      turnIdentity.allocated = true;
-    }
-    const requestTurn = turnIdentity?.turn ?? NO_TURN;
+    const sessionId = preResolvedSession.sessionId;
+    const requestTurn = turnIdentity.turn;
 
     // 2B. Snapshot canonical strings before pairing/compression. Session
     // anchors must describe the bytes the client sent, not a compressed or
@@ -1015,7 +970,7 @@ export class PipelineOrchestrator {
     if (explicitModel && initialDecision.reasonCode === 'forced') {
       initialDecision.reasonCode = 'explicit.model';
       initialDecision.reason = `Explicit model '${explicitModel.id}' — routed to the named model, no tier judgment`;
-      initialDecision.reasonParams = { model: explicitModel.id, tier: explicitModel.tier };
+      initialDecision.reasonParams = { model: explicitModel.id, ...(explicitModel.tier ? { tier: explicitModel.tier } : {}) };
     }
 
     // ADR-0012 §1 + ADR-0011 floor: L2-decided effort joins the request
@@ -1093,7 +1048,7 @@ export class PipelineOrchestrator {
     let ratchetApplied = false;
     let sessionRequestCount: number;
     if (sessionMode === 'bypass') {
-      decision = { ...initialDecision, sessionId, sessionRatchetApplied: false, sessionLookupType: sessionResolve.lookupType };
+      decision = { ...initialDecision, sessionId, sessionRatchetApplied: false, sessionLookupType: preResolvedSession.lookupType };
       // Bypass never mints a session entity, so getSession reads undefined
       // every turn and stamped every combo request #1 in the console's
       // request-detail table. Dedicated counter instead — display-only
@@ -1106,7 +1061,7 @@ export class PipelineOrchestrator {
         // Tier representative for session bookkeeping (pin birth). An
         // explicitly named model IS the representative of its own turn —
         // consulting the pool for it would hard-throw in a pool-less
-        // deployment where every registered model is unclassified, even
+        // deployment where no member list claims any registered model, even
         // though the request itself is directly callable by design. Bare
         // `auto` keeps resolving through the pool (its empty-pool throw is
         // the honest "add tier members" answer).
@@ -1116,7 +1071,7 @@ export class PipelineOrchestrator {
       decision = ratchetResult.finalDecision;
       decision.sessionId = sessionId;
       decision.sessionRatchetApplied = ratchetResult.ratchetApplied;
-      decision.sessionLookupType = sessionResolve.lookupType;
+      decision.sessionLookupType = preResolvedSession.lookupType;
       ratchetApplied = ratchetResult.ratchetApplied;
       sessionRequestCount = ratchetResult.session.requestCount;
     }
@@ -1182,7 +1137,7 @@ export class PipelineOrchestrator {
     if (bornSession && bornSession.requestCount === 1) {
       this.sessionManager.attachOrigin(
         sessionId,
-        { wire: context?.wire, lookupType: sessionResolve.lookupType },
+        { wire: context?.wire, lookupType: preResolvedSession.lookupType },
         context?.clientIp,
         firstUserSummary
       );
@@ -1291,13 +1246,13 @@ export class PipelineOrchestrator {
       //   (removed from config.models; the unresolvable-pin / zombie case,
       //   which pre-fix silently re-fell back through the getModelForTier
       //   head below every turn without ever writing the pin back), it reads
-      //   `unclassified` (removed from every tier member list / no glob
-      //   claims it any more), or the global denylist (tiers.exclude) vetoes
-      //   it. A model MOVED to another tier is NOT evicted: the new tier's
-      //   member list claims it, so it still joins that pool (multi-membership
-      //   included — eviction fires only when NO pool claims the id).
-      //   Hand-configured models (no tierMatch) are reclassification-immune —
-      //   member-list edits never evict them; only the denylist or a registry
+      //   `unclaimed` (no tier member list claims it any more), or the global
+      //   denylist (tiers.exclude) vetoes it. A model MOVED to another tier is
+      //   NOT evicted: the new tier's member list claims it, so it still joins
+      //   that pool (multi-membership included — eviction fires only when NO
+      //   pool claims the id).
+      //   Hand-configured models (no autoTier stamp) never move
+      //   — member-list edits never evict them; only the denylist or a registry
       //   removal can. Checked with healthyOnly=false so health never
       //   masquerades as config intent (and vice versa below).
       //   HEALTH (runtime reality, model CAPABILITY view —
@@ -1320,7 +1275,7 @@ export class PipelineOrchestrator {
       const configEvicted =
         pinnedId !== undefined &&
         (preferredModel === null ||
-          !this.registry.getCandidateModelsForTier(preferredModel.tier, false).some((m) => m.id === pinnedId));
+          !this.poolOfHomedModel(preferredModel).some((m) => m.id === pinnedId));
       const healthEvicted = preferredModel !== null && this.registry.modelHealthView(preferredModel) === 'unavailable';
       if (pinnedId && (configEvicted || healthEvicted)) {
         const healthyReplacement = this.registry.getModelForTier(actualTier, true);
@@ -1369,9 +1324,11 @@ export class PipelineOrchestrator {
       const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
       preferredModel = pinnedId ? this.registry.getModel(pinnedId) ?? null : null;
       // Follow gates: a same-tier pin (pure KV affinity — serving it cannot
-      // cross the contract), the EMPTY-tier degraded landing (the pin IS the
-      // model getModelForTier degrades to), or a zombie id (repair to the
-      // forced tier's healthy head). Anything else — a pin in another tier
+      // cross the contract), a pin with NO home tier (nothing to compare
+      // against, so the affinity argument does not apply and eviction decides
+      // its fate), the EMPTY-tier degraded landing (the pin IS the model
+      // getModelForTier degrades to), or a zombie id (repair to the forced
+      // tier's healthy head). Anything else — a pin homed in another tier
       // while the forced pool has members — is neither followed nor
       // rewritten (ADR-0014).
       const tierPool = this.registry.getCandidateModelsForTier(actualTier, false);
@@ -1379,10 +1336,18 @@ export class PipelineOrchestrator {
         preferredModel !== null &&
         tierPool.length === 0 &&
         this.registry.getModelForTier(actualTier).id === preferredModel.id;
-      if (pinnedId && (preferredModel === null || preferredModel.tier === actualTier || degradeLanding)) {
+      const unhomed =
+        preferredModel !== null && preferredModel.tier === undefined;
+      if (
+        pinnedId &&
+        (preferredModel === null ||
+          unhomed ||
+          preferredModel.tier === actualTier ||
+          degradeLanding)
+      ) {
         const configEvicted =
           preferredModel === null ||
-          !this.registry.getCandidateModelsForTier(preferredModel.tier, false).some((m) => m.id === pinnedId);
+          !this.poolOfHomedModel(preferredModel).some((m) => m.id === pinnedId);
         const healthEvicted =
           preferredModel !== null && this.registry.modelHealthView(preferredModel) === 'unavailable';
         if (configEvicted || healthEvicted) {
@@ -1412,7 +1377,7 @@ export class PipelineOrchestrator {
     // resolution must not consult the tier pool when the request already
     // carries its own model: a combo is the sanctioned way to address
     // pool-less models, and an explicitly named model stays directly
-    // callable by design — when every registered model is unclassified the
+    // callable by design — when no member list claims any registered model the
     // tier lookup hard-throws and would kill both (and the placeholder is
     // overwritten by the executed member after the pool run regardless).
     // The combo's first resolved member is the honestest combo placeholder;
@@ -1473,10 +1438,19 @@ export class PipelineOrchestrator {
     // model pick can honour a raised level. Per-turn: it writes the request
     // for this call only and never records session state.
     if (directivesApplicable) {
-      const supportedEfforts = actualModel.supportedReasoningEfforts
-        ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : undefined);
+      // An EXPLICIT empty support set (a toggle model: `[]` from
+      // effortLadderFor) must stay `[]` here — applyEffortDirectives reads it
+      // as "no level control, directives are a no-op". modelSupportsEfforts
+      // collapses `[]` to undefined (the registry's "cannot serve a mapped
+      // level" rule), which would silently re-enable directives on toggle
+      // models, so the empty declaration is preserved before the resolution.
+      const declared = actualModel.supportedReasoningEfforts;
+      const supportedEfforts =
+        declared && declared.length === 0
+          ? declared
+          : modelSupportsEfforts(declared, actualModel.supportsReasoningEffort, actualModel.reasoningDisableable);
       const before = effortOf(normalizedRequest);
-      const effortDirective = applyEffortDirectives(directiveActions, before, supportedEfforts);
+      const effortDirective = applyEffortDirectives(directiveActions, before, supportedEfforts, actualModel.reasoningDisableable === false);
       if (effortDirective.applied) {
         const suffix = effortDirective.suffix ?? (effortDirective.delta > 0 ? 'effort-up' : 'effort-down');
         const token = `${directivePrefix}${suffix}`;
@@ -1564,15 +1538,23 @@ export class PipelineOrchestrator {
       // Explicit model choice / session pin: never re-route, but translate by
       // the model's pool effortMap first (none included), then clamp to what
       // it can serve and write back the truth.
+      const supported = modelSupportsEfforts(
+        preferredModel.supportedReasoningEfforts,
+        preferredModel.supportsReasoningEffort,
+        preferredModel.reasoningDisableable
+      ) ?? [];
+      const alwaysThink = preferredModel.reasoningDisableable === false;
+      // ADR-0035: an always-think model with a declared ladder never serves
+      // `none`, even for an explicit none ask or an effortMap→none translation.
+      const forbidsNone = alwaysThink && supported.length > 0;
       const target = applyEffortMap(this.registry.effortMapFor(preferredModel, actualTier), requestedEffort ?? 'none');
-      if (target === 'none') {
+      if (target === 'none' && !forbidsNone) {
         actualEffort = requestedEffort; // nothing in play — mirror exactly
       } else {
-        const supported = preferredModel.supportedReasoningEfforts
-          ?? (preferredModel.supportsReasoningEffort
-            ? EFFORT_LADDER
-            : []);
-        const recomputed = downgradeReasoning(target, supported);
+        let recomputed = downgradeReasoning(target, supported, alwaysThink);
+        // Same contradictory-data rule as resolveServedEffort: an empty resolved
+        // ladder on an always-think model never rewrites to the forbidden `none`.
+        if (recomputed === 'none' && alwaysThink && supported.length === 0) recomputed = target;
         actualEffort = recomputed;
         reasoningDegraded =
           EFFORT_LADDER.indexOf(recomputed) < EFFORT_LADDER.indexOf(requestedEffort ?? 'none');
@@ -1713,7 +1695,7 @@ export class PipelineOrchestrator {
               layerUsed: decision.layerUsed || 'layer0',
               sessionId,
               sessionRatchetApplied: ratchetApplied,
-              sessionLookupType: sessionResolve.lookupType,
+              sessionLookupType: preResolvedSession.lookupType,
               requestId,
               requestedEffort,
               variantUsed,
@@ -1819,6 +1801,11 @@ export class PipelineOrchestrator {
           const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto';
           if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
             const rank = TIER_RANK;
+            // A model with no home tier ranks BELOW every pool tier — it serves
+            // from no pool, so "closest tier" is meaningless; it sorts last
+            // rather than being silently ranked as `plus`.
+            const rankOf = (m: ModelRegistration): number =>
+              (m.tier ? rank[m.tier] : undefined) ?? Number.MAX_SAFE_INTEGER;
             // Multi-membership admit: allowed when the id or ANY membership
             // tier passes (allow mode); denied when the id or ANY membership
             // tier is denied (deny mode).
@@ -1827,8 +1814,8 @@ export class PipelineOrchestrator {
               .filter((m) => isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m)))
               .sort(
                 (a, b) =>
-                  Math.abs((rank[a.tier] ?? 9) - (rank[actualTier] ?? 9)) - Math.abs((rank[b.tier] ?? 9) - (rank[actualTier] ?? 9)) ||
-                  (rank[a.tier] ?? 9) - (rank[b.tier] ?? 9)
+                  Math.abs(rankOf(a) - (rank[actualTier] ?? 9)) - Math.abs(rankOf(b) - (rank[actualTier] ?? 9)) ||
+                  rankOf(a) - rankOf(b)
               );
             if (widened.length > 0) pool = widened;
           }
@@ -1869,7 +1856,7 @@ export class PipelineOrchestrator {
             layerUsed: decision.layerUsed || 'layer0',
             sessionId,
             sessionRatchetApplied: ratchetApplied,
-            sessionLookupType: sessionResolve.lookupType,
+            sessionLookupType: preResolvedSession.lookupType,
             requestId,
             requestedEffort,
             variantUsed,
@@ -2024,8 +2011,11 @@ export class PipelineOrchestrator {
       (servedEffort != null && servedEffort !== 'none') ||
       (typeof budgetTokens === 'number' && budgetTokens > 0);
     // 5-level default: `none` is a client toggle, not a capability.
-    const modelEfforts = actualModel.supportedReasoningEfforts
-      ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : []);
+    const modelEfforts = modelSupportsEfforts(
+      actualModel.supportedReasoningEfforts,
+      actualModel.supportsReasoningEffort,
+      actualModel.reasoningDisableable
+    ) ?? [];
     const supportsAnyThinking = modelEfforts.some((e) => e !== 'none');
     // Both warn paths go through the dedup + rate-limit warn throttle: at
     // QPS a misconfigured pool would otherwise print one warn per request.
@@ -2195,7 +2185,7 @@ export class PipelineOrchestrator {
         reasonCode: decision.reasonCode,
         reasonParams: decision.reasonParams,
         sessionRatchetApplied: ratchetApplied,
-        sessionLookupType: sessionResolve.lookupType,
+        sessionLookupType: preResolvedSession.lookupType,
       },
       execution: {
         modelUsed: actualModel.id,
@@ -2270,7 +2260,7 @@ export class PipelineOrchestrator {
       modelAvailability,
       sessionId,
       sessionRatchetApplied: ratchetApplied,
-      sessionLookupType: sessionResolve.lookupType,
+      sessionLookupType: preResolvedSession.lookupType,
       requestId,
       latencyMs,
       ttftMs,
@@ -2316,9 +2306,25 @@ export class PipelineOrchestrator {
         : undefined);
     const ask = effectiveRequested ?? 'none';
     const target = applyEffortMap(this.registry.effortMapFor(model, servedTier), ask);
-    if (target === 'none' && ask === 'none') return { actualEffort: effectiveRequested, degraded: false };
-    const supported = model.supportedReasoningEfforts ?? (model.supportsReasoningEffort ? EFFORT_LADDER : []);
-    const actual = target === 'none' ? 'none' : downgradeReasoning(target, supported);
+    const supported = modelSupportsEfforts(model.supportedReasoningEfforts, model.supportsReasoningEffort, model.reasoningDisableable) ?? [];
+    const alwaysThink = model.reasoningDisableable === false;
+    // ADR-0035 absolute withholding: an always-think model with a declared
+    // ladder can NEVER serve `none` — not even for an explicit client none-ask
+    // or an effortMap that translates to none. It clamps to its lowest rung.
+    const forbidsNone = alwaysThink && supported.length > 0;
+    if (target === 'none' && ask === 'none' && !forbidsNone) return { actualEffort: effectiveRequested, degraded: false };
+    // `downgradeReasoning` carries the always-think floor: a below-floor ask on
+    // a model whose vendor forbids thinking-off serves its lowest declared rung,
+    // never the `none` that earns a 400 (ADR-0035).
+    let actual = target === 'none' && !forbidsNone ? 'none' : downgradeReasoning(target, supported, alwaysThink);
+    // Contradictory data: the vendor says always-think but the resolved ladder
+    // is EMPTY (e.g. an operator override of only `none`, stripped to []).
+    // There is no declared rung to clamp to; minting `none` would write the
+    // forbidden thinking-off. Mirror the ask instead and let the vendor's own
+    // wire-side clamp / replay be the net — never rewrite to `none` here.
+    if (actual === 'none' && alwaysThink && supported.length === 0) {
+      actual = ask;
+    }
     return {
       actualEffort: actual,
       degraded: EFFORT_LADDER.indexOf(actual) < EFFORT_LADDER.indexOf(ask),
@@ -2463,8 +2469,12 @@ export class PipelineOrchestrator {
     //    Each entry carries its ACCESS tier (pool tier vs member home tier, see
     //    accessTierMode) and the effort translation that applies to it — a model
     //    holding membership in several tiers translates per serving pool.
+    //    `member-home` on a model with NO home tier (it serves from no pool)
+    //    falls back to the EXECUTION tier: the candidate is being tried from
+    //    this chain, so this chain's tier is the only tier that truthfully
+    //    describes the attempt.
     const accessTierOf = (m: ModelRegistration): TierLevel =>
-      opts.accessTierMode === 'member-home' ? m.tier : tier;
+      opts.accessTierMode === 'member-home' ? (m.tier ?? tier) : tier;
     let candidateList = opts.chain.map((m) => ({
       model: m,
       accessTier: accessTierOf(m),
@@ -2684,10 +2694,21 @@ export class PipelineOrchestrator {
             : undefined;
         const ask = opts.requestedEffort ?? budgetAsk ?? 'none';
         const target = applyEffortMap(candidateEffortMap, ask);
-        if (!(target === 'none' && ask === 'none')) {
-          const supported =
-            candidate.supportedReasoningEfforts ?? (candidate.supportsReasoningEffort ? EFFORT_LADDER : []);
-          const candidateEffort = target === 'none' ? 'none' : downgradeReasoning(target, supported);
+        const supported = modelSupportsEfforts(
+          candidate.supportedReasoningEfforts,
+          candidate.supportsReasoningEffort,
+          candidate.reasoningDisableable
+        ) ?? [];
+        const candidateAlwaysThink = candidate.reasoningDisableable === false;
+        // ADR-0035: an always-think model with a declared ladder never serves
+        // `none` — the rewire must run even for an explicit none ask so the
+        // upstream payload carries the clamped rung, not the forbidden none.
+        const forbidsNone = candidateAlwaysThink && supported.length > 0;
+        if (!(target === 'none' && ask === 'none') || forbidsNone) {
+          let candidateEffort = target === 'none' && !forbidsNone ? 'none' : downgradeReasoning(target, supported, candidateAlwaysThink);
+          if (candidateEffort === 'none' && candidateAlwaysThink && supported.length === 0) {
+            candidateEffort = ask;
+          }
           if (candidateEffort !== effortOf(request)) {
             candidateReq = {
               ...request,
@@ -2795,7 +2816,8 @@ export class PipelineOrchestrator {
             candidate,
             upstreamEventContext,
             credentialPrefix,
-            timingRelay
+            timingRelay,
+            opts.sessionId,
           );
           if (firstChunkAt !== undefined) streamEndAt = Date.now();
           // Scope-aware success: undefined prefix degenerates to the exact

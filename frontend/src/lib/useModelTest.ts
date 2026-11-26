@@ -117,7 +117,17 @@ export interface ModelTestOutcome {
    *  (addressed probe) or the chain entry that answered (provider-level probe,
    *  which rotates the enabled chain until one key works). */
   credential?: { id: string; label?: string };
+  /** Egress the probe actually used (backend vocabulary, api.ts). Absent =
+   *  unknown: a plugin wire owns its transport, so the core cannot observe it. */
+  egress?: 'direct' | 'proxy';
+  /** Redacted outbound-proxy origin; only with `egress: 'proxy'`. */
+  egressProxy?: string;
 }
+
+/**
+ * Localized egress limb of a probe verdict lives in `components/EgressIcon.tsx`:
+ * one glyph on screen, the redacted endpoint in its hover tip.
+ */
 
 const CONCURRENCY = 4;
 /** Batch tests above this count fire real inference calls — confirm first. */

@@ -77,7 +77,7 @@ function makeFixture(combos?: { id: string; models: string[] }[], mode: 'both' |
     },
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false);
+  registry.setAutoRefreshMembers(false);
   const stub1 = makeStub('p1');
   const stub2 = makeStub('p2');
   registry.registerProvider('p1', stub1.provider, chainP1);
@@ -199,7 +199,7 @@ describe('self-healing: credential rebind rides the model repin', () => {
       circuitBreaker: { ...base.circuitBreaker, enabled: true, failureThreshold: 1000, initialCooldownMs: 600000 },
     } as unknown as RouterConfig;
     const registry = new ProviderRegistry(config, false);
-    registry.setAutoRefreshTierMatch(false);
+    registry.setAutoRefreshMembers(false);
     const stub = makeStub('p1');
     registry.registerProvider('p1', stub.provider, chainP1);
     const m2same = { ...m2, id: 'p1/beta', provider: 'p1' } as ModelRegistration;

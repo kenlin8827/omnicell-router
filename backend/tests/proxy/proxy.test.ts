@@ -34,10 +34,12 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages')).toBeUndefined();
   });
 
-  test('global url applies to all non-loopback calls (incl. unlisted infra syncs)', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080' } as ProxyConfig);
+  test('include allowlist applies to model calls; unlisted infra syncs stay direct', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
-    expect(resolveProxyUrl('https://models.dev/api.json')).toBe('http://proxy:8080');
+    expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBe('http://proxy:8080');
+    // No provider/model target to match against: `*` still can't authorize it.
+    expect(resolveProxyUrl('https://models.dev/api.json')).toBeUndefined();
   });
 
   test('proxy is OFF by default (enabled unset/false), even with url configured', () => {
@@ -48,10 +50,15 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBeUndefined();
   });
 
-  test('enabled=true opts in to proxying', () => {
+  test('enabled=true with NO include rules is direct (nothing configured, nothing proxied)', () => {
     initProxyConfig({ enabled: true, url: 'http://proxy:8080' } as ProxyConfig);
-    expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
-    expect(resolveProxyUrl('https://models.dev/api.json')).toBe('http://proxy:8080');
+    expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBeUndefined();
+    expect(resolveProxyUrl('https://models.dev/api.json')).toBeUndefined();
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: [] } as ProxyConfig);
+    expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBeUndefined();
+    // A call with no provider/model target (catalog/logo sync) is direct too.
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['anthropic/*'] } as ProxyConfig);
+    expect(resolveProxyUrl('https://models.dev/api.json')).toBeUndefined();
   });
 
   test('loopback targets are never proxied even with a global proxy', () => {
@@ -82,8 +89,8 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
   });
 
-  test('excludes force direct even when a global proxy is set', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', excludes: ['deepseek/*', 'gpt-4o-mini'] } as ProxyConfig);
+  test('excludes force direct even when an include rule matches', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['*'], excludes: ['deepseek/*', 'gpt-4o-mini'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
     expect(resolveProxyUrl('https://api.openai.com/v1/chat/completions', openaiCall)).toBeUndefined();
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
@@ -102,9 +109,10 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl('https://openrouter.ai/api/v1/models')).toBeUndefined();
   });
 
-  test('excludes alone does not block unlisted infra calls', () => {
+  test('excludes alone proxy nothing — the include allowlist is the gate', () => {
     initProxyConfig({ enabled: true, url: 'http://proxy:8080', excludes: ['deepseek/*'] } as ProxyConfig);
-    expect(resolveProxyUrl('https://models.dev/api.json')).toBe('http://proxy:8080');
+    expect(resolveProxyUrl('https://models.dev/api.json')).toBeUndefined();
+    expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBeUndefined();
   });
 
   test('layer2 decision layer participates via its own provider/model', () => {
@@ -121,22 +129,83 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBeUndefined();
   });
 
-  test('mihomo mode uses the loopback mixed port and still honors excludes and loopback', () => {
+  test('mihomo mode uses the loopback mixed port and still honors includes, excludes and loopback', () => {
     initProxyConfig({
       enabled: true,
       mode: 'mihomo',
       url: 'http://proxy.example:8080',
+      includes: ['anthropic/*', 'openrouter/*'],
       mihomo: { mixedPort: 7897, controllerPort: 9097 },
       excludes: ['deepseek/*'],
     } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://127.0.0.1:7897');
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
+    expect(resolveProxyUrl('https://example.test/v1/chat', { provider: 'other', model: 'x' })).toBeUndefined();
     expect(resolveProxyUrl('http://127.0.0.1:9097/proxies')).toBeUndefined();
   });
 
   test('manual mode is unchanged when mode is omitted', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080' } as ProxyConfig);
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['anthropic/*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
+    expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
+  });
+
+  /**
+   * A model-less call (quota read, catalog pull, sign-in exchange) carries only
+   * `{ provider }` — there is no model dimension to match against. `provider/*`
+   * is the natural way to write "everything under this provider", and before
+   * the `provider/` target existed it matched inference ONLY, silently leaving
+   * the same provider's quota and sign-in traffic direct. These cases pin the
+   * whole-provider reading without weakening the model-scoped one.
+   */
+  describe('provider-scoped patterns reach model-less calls', () => {
+    test('`provider/*` matches a call that has only a provider', () => {
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['qoder-work/*'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://openapi.qoder.sh/api/v2/quota/usage', { provider: 'qoder-work' })).toBe(
+        'http://proxy:8080'
+      );
+      // ...and still matches the model-carrying form of the same provider.
+      expect(
+        resolveProxyUrl('https://openapi.qoder.sh/algo', { provider: 'qoder-work', model: 'kimi-k2' })
+      ).toBe('http://proxy:8080');
+    });
+
+    test('a bare `provider` (no `/`) also matches a model-less call', () => {
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['workbuddy'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://api.workbuddy.example/v3/config', { provider: 'workbuddy' })).toBe(
+        'http://proxy:8080'
+      );
+    });
+
+    test('a MODEL-scoped pattern never matches a model-less call', () => {
+      // There is no model to test, so requiring one to match would be a guess.
+      // `workbuddy/gpt-*` proxying the whole provider would be a regression.
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['workbuddy/gpt-*'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://api.workbuddy.example/v3/config', { provider: 'workbuddy' })).toBeUndefined();
+      expect(
+        resolveProxyUrl('https://api.workbuddy.example/v1/chat', { provider: 'workbuddy', model: 'gpt-5' })
+      ).toBe('http://proxy:8080');
+      expect(
+        resolveProxyUrl('https://api.workbuddy.example/v1/chat', { provider: 'workbuddy', model: 'claude-sonnet-4' })
+      ).toBeUndefined();
+    });
+
+    test('a sibling provider with the same prefix is still excluded', () => {
+      // `qoder-work/*` must not swallow `qoder-work-cn`: the prefix target is
+      // `qoder-work/`, and `qoder-work-cn/` does not equal it.
+      initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['qoder-work/*'] } as ProxyConfig);
+      expect(resolveProxyUrl('https://openapi.qoder.com.cn/api/v2/quota/usage', { provider: 'qoder-work-cn' })).toBeUndefined();
+    });
+
+    test('excludes still win for a model-less call', () => {
+      initProxyConfig({
+        enabled: true,
+        url: 'http://proxy:8080',
+        includes: ['*'],
+        excludes: ['qoder-work'],
+      } as ProxyConfig);
+      expect(resolveProxyUrl('https://openapi.qoder.sh/api/v2/quota/usage', { provider: 'qoder-work' })).toBeUndefined();
+    });
   });
 });
 
@@ -174,22 +243,22 @@ describe('proxiedFetch against an authenticated mock proxy', () => {
   beforeEach(() => initProxyConfig(undefined));
 
   test('user:pass@ in proxy.url → Proxy-Authorization sent, proxied response passes through', async () => {
-    initProxyConfig({ enabled: true, url: `http://alice:secret@127.0.0.1:${listener.port}` } as ProxyConfig);
-    const res = await proxiedFetch('http://192.0.2.1:9/x');
+    initProxyConfig({ enabled: true, url: `http://alice:secret@127.0.0.1:${listener.port}`, includes: ['*'] } as ProxyConfig);
+    const res = await proxiedFetch('http://192.0.2.1:9/x', {}, { provider: 'fixture', model: 'm' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ proxied: true });
     expect(seen.at(-1)!.auth).toBe(EXPECTED);
   });
 
   test('no credentials → upstream 407 surfaces to the caller', async () => {
-    initProxyConfig({ enabled: true, url: `http://127.0.0.1:${listener.port}` } as ProxyConfig);
-    const res = await proxiedFetch('http://192.0.2.1:9/x');
+    initProxyConfig({ enabled: true, url: `http://127.0.0.1:${listener.port}`, includes: ['*'] } as ProxyConfig);
+    const res = await proxiedFetch('http://192.0.2.1:9/x', {}, { provider: 'fixture', model: 'm' });
     expect(res.status).toBe(407);
   });
 
   test('CONNECT (https target) carries Proxy-Authorization too', async () => {
-    initProxyConfig({ enabled: true, url: `http://alice:secret@127.0.0.1:${listener.port}` } as ProxyConfig);
-    await proxiedFetch('https://192.0.2.1:9/x', { signal: AbortSignal.timeout(4000) }).catch(() => undefined);
+    initProxyConfig({ enabled: true, url: `http://alice:secret@127.0.0.1:${listener.port}`, includes: ['*'] } as ProxyConfig);
+    await proxiedFetch('https://192.0.2.1:9/x', { signal: AbortSignal.timeout(4000) }, { provider: 'fixture', model: 'm' }).catch(() => undefined);
     expect(seen.some(s => s.firstLine.startsWith('CONNECT') && s.auth === EXPECTED)).toBe(true);
   });
 });

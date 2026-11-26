@@ -3,7 +3,7 @@ import { loadConfig } from '../config/index.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { SessionManager } from '../session/session-manager.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext } from '../observability/http-exchange.js';
-import type { UpstreamEventContext } from '../observability/upstream-events.js';
+import { UpstreamEventContext } from '../observability/upstream-events.js';
 import { NO_TURN } from '../capture/turn-boundary.js';
 import { resolveClientRequestId, mintRequestId } from '../observability/request-identity.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
@@ -193,16 +193,12 @@ export async function runDecisionSurface(
       : undefined;
     // Gateway-owned per-request id (ADR-0021) — the capture turn-join key.
     const requestId = mintRequestId();
-    // sessionId: archive key ONLY (same SessionManager entry the chat leg
-    // pre-resolves through; no ratchet, no turn registration).
+    // File name only. A header the caller already sent groups the archive
+    // with that conversation; otherwise the request id names the file.
+    // This does not resolve or register a session.
     const keyId = captureKeyIdentity(pctx.fastifyRequest ?? pctx.clientRequest)?.id;
     const decisionRequest = buildDecisionRequest(sysBody, effective);
-    const sessionId = orchestrator
-      .getSessionManager()
-      .resolveSessionId(decisionRequest, {
-        keyId,
-        headers: t.headers,
-      }).sessionId;
+    const sessionId = SessionManager.explicitSessionId(t.headers) ?? requestId;
     const conversationKey = SessionManager.conversationKey(decisionRequest.input, keyId) ?? undefined;
     const clientExchangeCtx = emitClientRequest({
       recorder,
@@ -224,7 +220,7 @@ export async function runDecisionSurface(
     // Upstream leg shares the client-leg identity. Set only AFTER the client
     // event durably landed — a client-side failure keeps both legs silent
     // (consistent pairing, no orphan upstream events).
-    upstreamEventContext = {
+    upstreamEventContext = new UpstreamEventContext({
       recorder,
       sessionId,
       clientRequestId,
@@ -233,7 +229,7 @@ export async function runDecisionSurface(
       apiKey: captureKeyIdentity(pctx.fastifyRequest),
       conversationKey,
       turn: NO_TURN,
-    };
+    });
     } catch (captureErr) {
       // Non-fatal: decision proceeds unrecorded on any capture failure.
       t.logError(captureErr, 'systemone client-leg capture failed (non-fatal)');

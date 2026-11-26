@@ -10,6 +10,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { ScrollTable } from '../components/ScrollTable';
 import { Chip } from '../components/Chip';
+import { EgressIcon } from '../components/EgressIcon';
 import { fmtLatency } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
 
@@ -375,10 +376,27 @@ export const ModelsPage: React.FC = () => {
                                   whiteSpace: 'nowrap',
                                   color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                                 }}
-                                title={res.ok ? `${res.latencyMs} ms` : res.error}
+                                title={
+                                  res.ok
+                                    ? `${res.latencyMs} ms`
+                                    : res.error
+                                }
                               >
                                 {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
                               </span>
+                            )}
+                            {/* Egress is ALWAYS on screen, but as one glyph, not
+                                a raw endpoint: the whole point of a split is
+                                knowing which way a provider went, and the row
+                                only carries that one bit (endpoint in the tip).
+                                Unknown (plugin wire) renders nothing. */}
+                            {res && (
+                              <EgressIcon
+                                egress={res.egress}
+                                proxy={res.egressProxy}
+                                unknown="none"
+                                style={{ marginLeft: 4 }}
+                              />
                             )}
                             <button
                               style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}

@@ -13,7 +13,7 @@ import type { ComboConfig, TiersConfig, TierMemberRule } from '../config/types.j
  * need a single tier value (pinned-model force_tier, tier-keyed reporting,
  * model-access tier expansion) `claimModel` derives the home tier: the first
  * claim in tier order lite → plus → pro → ultra. Nothing matched →
- * `'unclassified'` (fourth state, no pool).
+ * `'unclassified'` (fourth state, no pool, no home tier).
  *
  * `combo:<id>` rules are the one sanctioned indirection: declared references
  * that expand IN PLACE into the combo's registered members at every commit /
@@ -21,10 +21,9 @@ import type { ComboConfig, TiersConfig, TierMemberRule } from '../config/types.j
  * path never resolves refs, and later combo edits follow into the tier at the
  * next commit. A combo may be referenced by any number of tiers.
  *
- * The classifier (tier-match.ts) stays alive as the SUGGESTION engine —
- * it feeds catalog-page recommendations, the /tiers ephemeral preview and
- * save-time checks, but NEVER routing and NEVER seeding (DEFAULT_CONFIG.tiers
- * ships four EMPTY pools — no member defaults exist to seed from).
+ * These lists are the ONE membership source: nothing classifies a model by
+ * price band, name glob or capability flag any more, and nothing seeds the
+ * pools (DEFAULT_CONFIG.tiers ships four EMPTY pools).
  */
 
 export const MEMBER_TIER_ORDER: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];

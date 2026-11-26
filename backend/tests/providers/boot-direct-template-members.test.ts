@@ -14,9 +14,10 @@ import type { TierLevel } from '../../src/types/router.js';
  *
  *   a) the member globs claim the matching models into the right tiers
  *      (list index 0 = leader = primary); non-matching siblings come out
- *      `unclassified` (still callable by full id — direct path, not pooled);
- *   b) zero claims → the all-empty warning fires once, every model is
- *      unclassified, boot does not crash;
+ *      unclaimed — no home tier (still callable by full id — direct path,
+ *      not pooled);
+ *   b) zero claims → the all-empty warning fires once, no model holds a home
+ *      tier, boot does not crash;
  *   and on BOTH: saveConfig is never called (nothing persists at boot) and a
  *      populated boot stays silent.
  *
@@ -120,7 +121,7 @@ describe('boot-direct — member globs claim, nothing seeds or persists', () => 
     catalogModels = [];
   });
 
-  it('(a) the member globs claim matching models; siblings stay unclassified; silent + no writes', async () => {
+  it('(a) the member globs claim matching models; siblings keep no home tier; silent + no writes', async () => {
     catalogModels = [
       fam('claude-haiku-1'),
       fam('claude-sonnet-x'),
@@ -144,10 +145,10 @@ describe('boot-direct — member globs claim, nothing seeds or persists', () => 
       expect(m!.tier).toBe(tier);
       expect(m!.priority).toBe(1); // sole glob = rule index 0
       expect(m!.isDefaultInTier).toBe(true); // index 0 leads the chain
-      expect(m!.unclassified).toBeUndefined();
+      expect(m!.tier).toBeDefined(); // a claimed model always has a home tier
     }
     for (const id of [`${PROVIDER}/gpt-5`, `${PROVIDER}/gemini-3`]) {
-      expect(byId.get(id)!.unclassified).toBe(true); // no pool; still callable by full id
+      expect(byId.get(id)!.tier).toBeUndefined(); // no pool, no home tier; still callable by full id
     }
     expect(savedPatches).toHaveLength(0); // NO boot-time persistence anymore
     expect(warns.filter((w) => w.includes('routing pools')).length).toBe(0); // at least one tier has members → silent
@@ -157,7 +158,7 @@ describe('boot-direct — member globs claim, nothing seeds or persists', () => 
     catalogModels = [fam('gpt-5'), fam('llama-4')];
     const { res, warns } = await boot();
     expect(res.models).toHaveLength(2); // models registered…
-    expect(res.models.every((m) => m.unclassified === true)).toBe(true); // …but none pooled
+    expect(res.models.every((m) => m.tier === undefined)).toBe(true); // …but none pooled
     expect(res.instances).toHaveLength(1); // provider still mounts (direct-by-id works)
     const poolWarns = warns.filter((w) => w.includes('routing pools'));
     expect(poolWarns).toHaveLength(1);

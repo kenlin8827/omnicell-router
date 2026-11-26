@@ -60,7 +60,7 @@ function registryWith(baseUrl: string, provider: LLMProvider): ProviderRegistry 
     tiers: {},
     circuitBreaker: { enabled: false },
   } as RouterConfig, false);
-  registry.setAutoRefreshTierMatch(false);
+  registry.setAutoRefreshMembers(false);
   registry.registerProvider('p', provider, undefined, providerConfig(baseUrl));
   return registry;
 }

@@ -49,7 +49,7 @@ function makeRegistry(): ProviderRegistry {
     tiers: {},
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false); // no disk re-reads in tests
+  registry.setAutoRefreshMembers(false); // no disk re-reads in tests
   return registry;
 }
 

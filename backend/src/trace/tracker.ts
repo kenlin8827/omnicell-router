@@ -228,8 +228,12 @@ export interface ExecutionTrace {
      * Actual USD cost of this request, computed at request time with the
      * catalog pricing that was current then. The only cost figure stored —
      * derived comparisons (baseline/savings) are intentionally not recorded.
+     *
+     * Absent when the serving model had NO known price: an unpriced model must
+     * stay unpriceable all the way to the console, because writing 0 here would
+     * read as "this request was free" and drag every aggregate toward a lie.
      */
-    costUsd: number;
+    costUsd?: number;
   };
 }
 
@@ -247,6 +251,8 @@ export interface CredentialPairUsageRow {
   outputTokens: number;
   cachedTokens: number;
   costUsd: number;
+  /** Turns of this pair whose model carried no price (excluded from `costUsd`). */
+  unpricedRequests: number;
 }
 
 /** Per-API-key token usage row (also used for the anonymous bucket). */
@@ -260,6 +266,8 @@ export interface KeyUsageRow {
   latencyMsSum: number;
   /** Sum of the per-request actual costs (USD) — data-only, not rendered yet. */
   costUsd: number;
+  /** Turns of this row whose model carried no price (excluded from `costUsd`). */
+  unpricedRequests: number;
   /**
    * Output tokens summed over STREAMED turns only (genMs present) — the
    * numerator paired with genMsSum for the decode-TPS aggregate.
@@ -276,7 +284,13 @@ export interface UsageStatsSummary {
     outputTokens: number;
     cachedTokens: number;
     avgLatencyMs: number;
+    /** Cost of the requests that could be priced; see {@link unpricedRequests}. */
     costUsd: number;
+    /**
+     * Requests whose serving model carried no price, excluded from `costUsd`.
+     * Non-zero means the total is a floor, not the window's real spend.
+     */
+    unpricedRequests: number;
     /** Same streamed-turns-only pairing as KeyUsageRow, window-wide. */
     genOutputTokens: number;
     genMsSum: number;
@@ -470,6 +484,10 @@ export class TraceTracker {
     let cachedTokens = 0;
     let latencyMsSum = 0;
     let costUsdSum = 0;
+    // Requests whose serving model carried no price. Reported alongside the
+    // sum so a smaller-than-expected total reads as "partly unpriceable"
+    // instead of silently looking like a bargain.
+    let unpricedRequests = 0;
     let genOutputTokens = 0;
     let genMsSum = 0;
 
@@ -481,7 +499,10 @@ export class TraceTracker {
       outputTokens += f.outputTokens;
       cachedTokens += f.cachedTokens;
       latencyMsSum += t.execution.latencyMs;
-      costUsdSum += f.costUsd;
+      // Skip unpriced requests rather than folding them in as 0: the sum then
+      // answers "cost of what we could price", which is the honest figure.
+      if (f.costUsd !== undefined) costUsdSum += f.costUsd;
+      else unpricedRequests++;
       // Decode-TPS pairing: accumulate BOTH sides only when the turn streamed,
       // so the quotient never mixes a streamed numerator into a full-window
       // denominator (that would be the effective-rate confusion again).
@@ -502,6 +523,7 @@ export class TraceTracker {
           cachedTokens: 0,
           latencyMsSum: 0,
           costUsd: 0,
+          unpricedRequests: 0,
           genOutputTokens: 0,
           genMsSum: 0,
         };
@@ -512,7 +534,8 @@ export class TraceTracker {
       row.outputTokens += f.outputTokens;
       row.cachedTokens += f.cachedTokens;
       row.latencyMsSum += t.execution.latencyMs;
-      row.costUsd += f.costUsd;
+      if (f.costUsd !== undefined) row.costUsd += f.costUsd;
+      else row.unpricedRequests++;
       if (typeof t.execution.genMs === 'number') {
         row.genOutputTokens += f.outputTokens;
         row.genMsSum += t.execution.genMs;
@@ -527,6 +550,7 @@ export class TraceTracker {
         cachedTokens,
         avgLatencyMs: requests > 0 ? Math.round(latencyMsSum / requests) : 0,
         costUsd: Number(costUsdSum.toFixed(6)),
+        unpricedRequests,
         genOutputTokens,
         genMsSum,
       },
@@ -560,6 +584,7 @@ export class TraceTracker {
           outputTokens: 0,
           cachedTokens: 0,
           costUsd: 0,
+          unpricedRequests: 0,
         };
         byPair.set(id, row);
       }
@@ -567,7 +592,10 @@ export class TraceTracker {
       row.inputTokens += t.finops.inputTokens;
       row.outputTokens += t.finops.outputTokens;
       row.cachedTokens += t.finops.cachedTokens;
-      row.costUsd = Number((row.costUsd + t.finops.costUsd).toFixed(6));
+      // Skip-and-count, same as the other two planes: an unpriced turn is
+      // excluded from the sum (a floor, not a confident total) and counted.
+      if (t.finops.costUsd !== undefined) row.costUsd = Number((row.costUsd + t.finops.costUsd).toFixed(6));
+      else row.unpricedRequests++;
     }
     return [...byPair.values()].sort(
       (a, b) => a.provider.localeCompare(b.provider) || a.keyHashPrefix.localeCompare(b.keyHashPrefix)
@@ -607,7 +635,13 @@ export class TraceTracker {
     inputTokens: number;
     outputTokens: number;
     cachedTokens: number;
+    /** Cost of the turns that COULD be priced; see {@link unpricedTurns}. */
     costUsd: number;
+    /**
+     * Turns whose model carried no price, hence excluded from `costUsd`.
+     * Non-zero means the total is a floor, not the session's real spend.
+     */
+    unpricedTurns: number;
     totalLatencyMs: number;
     genOutputTokens: number;
     genMsSum: number;
@@ -641,6 +675,7 @@ export class TraceTracker {
     let outputTokens = 0;
     let cachedTokens = 0;
     let costUsd = 0;
+    let unpricedTurns = 0;
     let totalLatencyMs = 0;
     let genOutputTokens = 0;
     let genMsSum = 0;
@@ -654,7 +689,8 @@ export class TraceTracker {
       inputTokens += t.finops.inputTokens;
       outputTokens += t.finops.outputTokens;
       cachedTokens += t.finops.cachedTokens;
-      costUsd += t.finops.costUsd;
+      if (t.finops.costUsd !== undefined) costUsd += t.finops.costUsd;
+      else unpricedTurns++;
       totalLatencyMs += t.execution.latencyMs;
       if (typeof t.execution.genMs === 'number') {
         genOutputTokens += t.finops.outputTokens;
@@ -674,6 +710,7 @@ export class TraceTracker {
       outputTokens,
       cachedTokens,
       costUsd: Number(costUsd.toFixed(6)),
+      unpricedTurns,
       totalLatencyMs,
       genOutputTokens,
       genMsSum,

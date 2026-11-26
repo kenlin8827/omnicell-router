@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { zipSync, type Zippable } from 'fflate';
 
+import { validatePluginManifest } from './manifest.js';
+
 /**
  * The ONE plugin packager: `scripts/build-plugins.ts` writes its zips with it
  * and the console's package export (`GET /api/admin/plugins/:id/package`)
@@ -49,6 +51,11 @@ const SKIPPED_DIRS: Record<string, true> = { node_modules: true, tests: true };
  *  bundle is self-contained, so its dependency list would be a lie, and its
  *  `type` could contradict the ESM output. */
 const PACKAGE_MANIFEST = 'package.json';
+/** The plugin's OWN manifest (`plugin.json`) — the file the host validates on
+ *  load and install. The packager ships it verbatim, so packaging is the one
+ *  moment it can be validated BEFORE an operator is handed a package that only
+ *  fails later. */
+const PLUGIN_MANIFEST = 'plugin.json';
 const PACKAGE_MANIFEST_BODY = `${JSON.stringify({ type: 'module' }, null, 2)}\n`;
 
 interface BunBuildResult {
@@ -238,6 +245,24 @@ export async function bundlePluginDir(dir: string): Promise<Uint8Array> {
         `plugin bundle still references external packages (${external.join(', ')}); a compiled host cannot resolve them at runtime — import them statically (or ship the asset) so the packager can inline them`
       );
     }
+    // VALIDATE the manifest as part of packaging. `collectPluginAssets` copies
+    // `plugin.json` verbatim, so without this an author could mint a package
+    // whose `apiVersion` is a string or an impossible contract number and only
+    // find out when an operator installs it (ADR-0036 Amendment 1: that
+    // integer IS the engine declaration). Every package — the operator's
+    // export and `plugins:build` alike — is minted here, so this is the one
+    // place the promise holds.
+    const manifestEntry = files[PLUGIN_MANIFEST];
+    if (!manifestEntry) throw new Error(`plugin source lacks ${PLUGIN_MANIFEST}`);
+    // A Zippable entry is `[data, options]`, never the bytes directly.
+    const manifestBytes = (Array.isArray(manifestEntry) ? manifestEntry[0] : manifestEntry) as Uint8Array;
+    let parsedManifest: unknown;
+    try {
+      parsedManifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+    } catch (err) {
+      throw new Error(`invalid ${PLUGIN_MANIFEST}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    validatePluginManifest(parsedManifest, `invalid ${PLUGIN_MANIFEST}`);
     files[PACKAGE_ENTRY] = [new TextEncoder().encode(bundleText), { mtime: ZIP_ENTRY_MTIME }];
     files[PACKAGE_MANIFEST] = [new TextEncoder().encode(PACKAGE_MANIFEST_BODY), { mtime: ZIP_ENTRY_MTIME }];
     return zipSync(files);

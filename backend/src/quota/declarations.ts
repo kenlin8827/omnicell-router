@@ -95,6 +95,11 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
     // origin), Bearer (inference auth).
     url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
     auth: 'bearer',
+    // Zhipu answers HTTP 200 with a STRUCTURED refusal when the account holds
+    // no plan: `{ code: 500, msg: "…", success: false }`. `success: false` is
+    // the machine-readable field — the `msg` beside it is vendor prose (and
+    // localized), so the verdict reads the boolean, never the sentence.
+    refusalIf: { where: { path: 'success', truthy: true } },
     windows: {
       form: 'each',
       path: 'data.limits',
@@ -129,6 +134,11 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
     // monitor endpoint above.
     url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
     auth: 'bearer',
+    // Zhipu answers HTTP 200 with a STRUCTURED refusal when the account holds
+    // no plan: `{ code: 500, msg: "…", success: false }`. `success: false` is
+    // the machine-readable field — the `msg` beside it is vendor prose (and
+    // localized), so the verdict reads the boolean, never the sentence.
+    refusalIf: { where: { path: 'success', truthy: true } },
     windows: {
       form: 'each',
       path: 'data.limits',

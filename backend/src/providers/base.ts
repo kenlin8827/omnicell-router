@@ -13,6 +13,8 @@ export interface LLMProvider {
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    /** Resolved OCR conversation id. Independent of request capture. */
+    sessionId?: string,
   ): Promise<CanonicalResponse>;
 
   /** Probe before fetch; absent createStream means buffered-only. */
@@ -33,5 +35,7 @@ export interface LLMProvider {
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    /** Resolved OCR conversation id. Independent of request capture. */
+    sessionId?: string,
   ): Promise<AsyncIterable<StreamEvent>>;
 }

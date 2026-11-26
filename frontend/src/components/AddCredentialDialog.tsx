@@ -40,15 +40,15 @@ export const AddCredentialDialog: React.FC<{
   // Ordered method list: plugin-declared authTypes wins (unknown entries and
   // unavailable ones filtered out); legacy fallback is key-first with the web
   // tab after it. The default selection is always the FIRST entry.
-  const methods = useMemo<('key' | 'web')[]>(() => {
+  const methods = useMemo<('key' | 'web' | 'none')[]>(() => {
     if (authTypes) {
       return authTypes
-        .map((m) => (m === 'webLogin' ? 'web' : m) as 'key' | 'web')
-        .filter((m) => m === 'key' || webLogin);
+        .map((m) => (m === 'webLogin' ? 'web' : m) as 'key' | 'web' | 'none')
+        .filter((m): m is 'key' | 'web' | 'none' => m === 'none' || m === 'key' || (m === 'web' && Boolean(webLogin)));
     }
     return webLogin ? ['key', 'web'] : ['key'];
   }, [authTypes, webLogin]);
-  const [method, setMethod] = useState<'key' | 'web'>(() => (methods[0] === 'web' ? 'web' : 'key'));
+  const [method, setMethod] = useState<'key' | 'web' | 'none'>(() => methods[0] ?? 'key');
 
   // Segmented method switch: same pill chrome as the catalog filter. Shared
   // by BOTH surfaces — the key form AND the web-login dialog render it, or a
@@ -75,8 +75,8 @@ export const AddCredentialDialog: React.FC<{
             }}
             onClick={() => setMethod(m)}
           >
-            {m === 'key' ? <Key size={12} /> : <Globe size={12} />}
-            <span>{m === 'key' ? t('op.connectMethodKey') : t('op.webLoginBtn')}</span>
+            {m === 'key' ? <Key size={12} /> : m === 'web' ? <Globe size={12} /> : null}
+            <span>{m === 'key' ? t('op.connectMethodKey') : m === 'web' ? t('op.webLoginBtn') : t('op.connectMethodNone')}</span>
           </button>
         ))}
       </div>
@@ -97,6 +97,21 @@ export const AddCredentialDialog: React.FC<{
         onClose={onClose}
         onConnected={onConnected}
       />
+    );
+  }
+
+  if (method === 'none' || (authTypes && methods.length === 0)) {
+    return (
+      <Dialog
+        title={providerName}
+        onClose={onClose}
+        closeLabel={t('common.close')}
+        width={480}
+      >
+        {keyHint && (
+          <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>{keyHint}</p>
+        )}
+      </Dialog>
     );
   }
 

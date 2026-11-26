@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap, LayoutGrid } from 'lucide-react';
+import { Sliders, Save, Check, Globe, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap, LayoutGrid } from 'lucide-react';
 import { api } from '../lib/api';
 import { sortModelOptions } from '../lib/model-options';
 import type { WebAuthConfigView } from '../lib/api';
@@ -328,7 +328,6 @@ export const SettingsPage: React.FC = () => {
   // visible without any sticky/fixed hacks.
   const NAV = [
     { key: 'net', label: t('settings.navNet'), icon: Globe, color: 'var(--accent)' },
-    { key: 'cache', label: t('settings.navCache'), icon: HardDrive, color: 'var(--accent-emerald)' },
     { key: 'capture', label: t('settings.navCapture'), icon: Archive, color: 'var(--accent)' },
     { key: 'responses', label: t('settings.navResponses'), icon: Database, color: 'var(--accent-emerald)' },
     { key: 'defaults', label: t('settings.navDefaults'), icon: Cpu, color: 'var(--accent-violet)' },
@@ -421,43 +420,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 2: Semantic Cache */}
-          <div id="settings-cache" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <HardDrive size={14} />
-              {t('settings.cacheTitle')}
-            </div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
-              <span>{t('settings.cacheEnable')}</span>
-              <Switch
-                checked={config.cache?.enabled ?? true}
-                onChange={v => setConfig({ ...config, cache: { ...config.cache, enabled: v } })}
-              />
-            </label>
-            {(config.cache?.enabled ?? true) && (<>
-            <div>
-              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheSim')}</label>
-              <input
-                type="number"
-                step="0.05"
-                value={config.cache?.similarityThreshold || 0.85}
-                onChange={e => setConfig({ ...config, cache: { ...config.cache, similarityThreshold: parseFloat(e.target.value) || 0.85 } })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.cacheTtl')}</label>
-              <input
-                type="number"
-                value={config.cache?.ttlSeconds || 3600}
-                onChange={e => setConfig({ ...config, cache: { ...config.cache, ttlSeconds: parseInt(e.target.value) || 3600 } })}
-                className="input"
-              />
-            </div>
-            </>)}
-          </div>
-
-          {/* Section 3: Request Capture (hot-applied — no restart needed) */}
+          {/* Section 2: Request Capture (hot-applied — no restart needed) */}
           <div id="settings-capture" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Archive size={14} />
@@ -568,7 +531,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 5: Responses wire stateful chain */}
+          {/* Section 3: Responses wire stateful chain */}
           <div id="settings-responses" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Database size={14} />

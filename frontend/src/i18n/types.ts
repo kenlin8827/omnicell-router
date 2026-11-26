@@ -80,6 +80,19 @@ export interface TranslationDict {
     dismissToast: string;
     requiredFields: string;
   };
+  /** Outbound-egress glyph shared by every surface that shows where a request
+   *  left the machine (components/EgressIcon.tsx). One icon per row; the
+   *  endpoint and the gloss ride the hover tip. */
+  egress: {
+    /** PROXY glyph: through the outbound proxy (the redacted endpoint is
+     *  appended on its own tip line by the component). */
+    proxy: string;
+    /** DIRECT glyph: straight out of this machine, no outbound proxy. */
+    direct: string;
+    /** Unobserved egress — legacy row, or a transport (plugin executor) that
+     *  never reports its dial base. Never worded as "direct". */
+    unknown: string;
+  };
   pagination: {
     prev: string;
     next: string;
@@ -600,6 +613,7 @@ export interface TranslationDict {
     copyFailed: string;
     connectBtn: string;
     connectMethodKey: string;
+    connectMethodNone: string;
     webLoginBtn: string;
     webLoginTip: string;
     webLoginTitle: string;
@@ -614,6 +628,7 @@ export interface TranslationDict {
     webLoginSubmitPlaceholder: string;
     webLoginSubmitBtn: string;
     connectOk: string;
+    connectLocalOk: string;
     testBtn: string;
     testing: string;
     /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
@@ -1334,9 +1349,20 @@ hiddenBadge: string;
     thTokensTotal: string;
     tokensTotalTip: string;
     thCost: string;
+    costUnknownTip: string;
     requestsTitle: string;
     requestsSortAsc: string;
     requestsSortDesc: string;
+    /** Parent-band label for the `turnIndex: null` bucket — requests that
+     *  carried no user prompt (one-shot helper calls, ADR-0024). */
+    noTurnGroup: string;
+    /** Expand/collapse every turn band of the request-detail tree at once. */
+    expandAllTurns: string;
+    collapseAllTurns: string;
+    /** View-mode toggle for the request-detail list — each string names the
+     *  shape a click switches TO (tree bands vs one flat grid). */
+    viewTree: string;
+    viewFlat: string;
     detailTitle: string;
     viewDetail: string;
     viewUsage: string;
@@ -1354,14 +1380,8 @@ hiddenBadge: string;
     colProtocol: string;
     /** Outbound-egress column header (direct / proxy / unknown). */
     colEgress: string;
-    /** Egress column tooltip: the three states. */
+    /** Egress column tooltip: the three glyphs (see `egress.*`). */
     colEgressTip: string;
-    /** PROXY badge tooltip prefix (the redacted origin is appended after the colon). */
-    egressProxyTip: string;
-    /** DIRECT state tooltip. */
-    egressDirectTip: string;
-    /** Unknown state tooltip (legacy row / transport that does not report its egress). */
-    egressUnknownTip: string;
     promptFallbackTip: string;
     /** Stream-tag tooltip (inbound / client leg): SSE vs buffered JSON. */
     inboundStreamTip: string;
@@ -1653,6 +1673,8 @@ hiddenBadge: string;
     refreshUnavailable: string;
     searchPlaceholder: string;
     pairsEmpty: string;
+    /** Pair identity for a provider that logs in through the machine CLI, not an OCR key. */
+    cliLogin: string;
     /** Status segmented control next to the search: healthy (default —
      *  hides sync-failed pairs), failed only, or everything. */
     filterOk: string;
@@ -1678,7 +1700,27 @@ hiddenBadge: string;
     failStatus: string;
     failShape: string;
     failNetwork: string;
+    failTimeout: string;
     failHttp: string;
+    /** Failure VERDICT words — the closed backend `QuotaFailureVerdict`
+     *  vocabulary, assigned server-side from structured signals (HTTP status,
+     *  envelope codes, declaration `refusalIf`), never from upstream prose.
+     *  These are what a user acts on; the `fail*` words above only name the
+     *  transport shape and are the fallback for pre-verdict records. */
+    verdictCredential: string;
+    verdictNoPlan: string;
+    verdictGone: string;
+    verdictRateLimited: string;
+    verdictUpstream: string;
+    verdictUnreadable: string;
+    /** Prefix for the upstream's own sentence, quoted verbatim as evidence. */
+    upstreamSaid: string;
+    /** Qualifies meters that are the last good read while the probe fails. */
+    staleNumbers: string;
+    /** Window value: absolute used/total plus the remaining percent, labeled. */
+    windowUsedOf: string;
+    /** Window value when only a percent is known. */
+    windowPctLeft: string;
     windowNoCap: string;
     windowResets: string;
     /** Quota-peek countdown (no leading separator — it stands alone). */
@@ -2545,7 +2587,6 @@ hiddenBadge: string;
     saveBtn: string;
     savedNotice: string;
     navNet: string;
-    navCache: string;
     navCapture: string;
     navResponses: string;
     navWebAuth: string;
@@ -2567,10 +2608,6 @@ hiddenBadge: string;
     host: string;
     hostAuthHint: string;
     hostAuthJump: string;
-    cacheTitle: string;
-    cacheEnable: string;
-    cacheSim: string;
-    cacheTtl: string;
     capTitle: string;
     capEnable: string;
     capRetention: string;
@@ -2674,6 +2711,22 @@ hiddenBadge: string;
     endpointHint: string;
     endpointManage: string;
     disabled: string;
+    /** Status pill: the include allowlist is empty, so every upstream call is direct. */
+    noInclude: string;
+    /** Status line: at least one include rule is configured — `{n}` = its count. */
+    active: string;
+    /** Status detail: nothing is proxied until a model matches an include rule. */
+    idleHint: string;
+    /** Status detail: only matching models use the endpoint. */
+    activeHint: string;
+    /** Status detail: the master switch is off, so the rules do nothing. */
+    disabledHint: string;
+    /** Scope boundary: these rules are the ONLY thing that proxies an upstream
+     *  call; the inbound forward-proxy rule table is host-scoped and never
+     *  applies to gateway-originated traffic. */
+    scopeHint: string;
+    /** Allowlist reminder: an exclude-only config proxies nothing. */
+    excludesHint: string;
     saveHint: string;
     /** Button + dialog title: multi-select picker of `<provider>/*` patterns from CONNECTED providers. */
     quickAdd: string;
@@ -2753,6 +2806,8 @@ hiddenBadge: string;
     errInstall: string;
     errUnsupported: string;
     errUnpack: string;
+    errInstallChecksum: string;
+    errInstallInterrupted: string;
     portsLocked: string;
     pacLabel: string;
     pacHint: string;
@@ -3397,6 +3452,8 @@ hiddenBadge: string;
     sourceDev: string;
     sourcePackaged: string;
     statusDisabled: string;
+    statusIncompatible: string;
+    incompatibleHint: string;
     disable: string;
     disableOk: string;
     disableFail: string;

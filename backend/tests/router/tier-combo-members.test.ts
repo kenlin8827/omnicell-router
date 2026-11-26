@@ -32,7 +32,7 @@ function makeRegistry(models: ModelRegistration[], tiers: RouterConfig['tiers'] 
     combos,
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false); // no disk re-reads in tests
+  registry.setAutoRefreshMembers(false); // no disk re-reads in tests
   return registry;
 }
 
@@ -90,9 +90,9 @@ describe('registry commit with combo refs', () => {
   it('pools follow combo edits at the next commit (applyCombos → expand → reclassify)', () => {
     const registry = makeRegistry(
       [
-        model('p/a', 'plus', { tierMatch: { reasoningFlag: false } }),
-        model('p/b', 'plus', { tierMatch: { reasoningFlag: false } }),
-        model('p/c', 'plus', { tierMatch: { reasoningFlag: false } }),
+        model('p/a', 'plus', { autoTier: true }),
+        model('p/b', 'plus', { autoTier: true }),
+        model('p/c', 'plus', { autoTier: true }),
       ],
       { lite: { members: [ref('c1')] } },
       [{ id: 'c1', models: ['p/a', 'p/b'] }],
@@ -111,8 +111,8 @@ describe('registry commit with combo refs', () => {
   it('resolveTierPool preview expands draft refs; weights carry; disabled combo empties the pool', () => {
     const registry = makeRegistry(
       [
-        model('p/a', 'plus', { tierMatch: { reasoningFlag: false } }),
-        model('p/b', 'plus', { tierMatch: { reasoningFlag: false } }),
+        model('p/a', 'plus', { autoTier: true }),
+        model('p/b', 'plus', { autoTier: true }),
       ],
       {},
       [{ id: 'c1', models: [{ id: 'p/a', weight: 4 }, 'p/b'] }],

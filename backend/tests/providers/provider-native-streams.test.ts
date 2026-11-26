@@ -6,6 +6,7 @@ import { AnthropicMessagesProvider } from '../../src/providers/executors/anthrop
 import { GoogleGeminiProvider } from '../../src/providers/executors/google-gemini.js';
 import { OpenAIResponsesProvider } from '../../src/providers/executors/openai-responses.js';
 import { STREAM_CAPTURE_CAP } from '../../src/providers/executors/http-stream.js';
+import { UpstreamEventContext } from '../../src/observability/upstream-events.js';
 import { toIR } from '../helpers/ir.js';
 
 const request = toIR({ model: 'p/m1', stream: true, messages: [{ role: 'user', content: 'hi' }] });
@@ -64,9 +65,10 @@ describe('native provider stream transports', () => {
     });
     try {
       const provider = new OpenAIResponsesProvider(config('responses', server.port));
-      const events = await collect(await provider.createStream(request, model('responses'), {
+      const events = await collect(await provider.createStream(request, model('responses'), new UpstreamEventContext({
+        sessionId: 's', requestId: 't', model: 'm1',
         recorder: { isEnabled: () => true, recordEvent: async (event: any) => captured.push(event) },
-      } as any));
+      })));
       expect(received.stream).toBe(true);
       expect(events[0]).toMatchObject({ type: 'response.created', id: 'resp_1' });
       expect(events.some((event) => event.type === 'response.output_text.delta' && event.text === 'hello')).toBe(true);
@@ -202,9 +204,10 @@ describe('native provider stream transports', () => {
     const server = serve({ port: 0, fetch: () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }) });
     try {
       const provider = new OpenAIResponsesProvider(config('responses', server.port));
-      const events = await collect(await provider.createStream(request, model('responses'), {
+      const events = await collect(await provider.createStream(request, model('responses'), new UpstreamEventContext({
+        sessionId: 's', requestId: 't', model: 'm1',
         recorder: { isEnabled: () => true, recordEvent: async (event: any) => captured.push(event) },
-      } as any));
+      })));
       expect(events.find((event) => event.type === 'response.output_text.delta')).toMatchObject({ text });
       expect(captured[1].wire.responseBody.endsWith('...[TRUNCATED]')).toBe(true);
       expect(Buffer.byteLength(captured[1].wire.responseBody)).toBeLessThan(STREAM_CAPTURE_CAP + 64);

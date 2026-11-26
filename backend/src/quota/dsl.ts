@@ -151,6 +151,7 @@ export function evalWhere(where: QuotaWhereSpec | undefined, ctx: QuotaResolveCo
   if (!where) return true;
   const v = resolvePath(ctx.item, where.path, ctx.itemKey);
   if (where.exists) return v !== undefined && v !== null;
+  if (where.truthy) return v === true;
   if (where.eq !== undefined) {
     if (typeof where.eq === 'boolean') return v === where.eq;
     const n = toFiniteNumber(where.eq);
@@ -353,7 +354,7 @@ export function evalSuccessIf(entry: QuotaProbeEntry, body: unknown): boolean {
 
 const FIELD_KEYS = new Set(['path', 'header', 'literal', 'firstOf', 'scale', 'invertOf', 'time']);
 const WINDOW_KEYS = new Set(['name', 'nameCode', 'nameSpec', 'where', 'used', 'total', 'remaining', 'resetAt', 'unlimited']);
-const WHERE_KEYS = new Set(['path', 'exists', 'eq', 'in']);
+const WHERE_KEYS = new Set(['path', 'exists', 'eq', 'in', 'truthy']);
 const NAME_KEYS = new Set(['template', 'from', 'enumMap', 'enumCode', 'fallback', 'code', 'argPath']);
 
 /**
@@ -369,7 +370,7 @@ export function validateEntry(entry: QuotaProbeEntry): string | null {
   // `method`, multi-url arrays, injected state): a loadable entry carries
   // exactly the schema keys — anything else rejects the WHOLE entry.
   const ENTRY_KEYS = new Set([
-    'id', 'providerId', 'url', 'auth', 'headers', 'successIf', 'windows',
+    'id', 'providerId', 'url', 'auth', 'headers', 'successIf', 'refusalIf', 'windows',
     'cacheTtlMs', 'forkedFrom', 'verifiedAt', 'builtin',
   ]);
   for (const k of Object.keys(entry)) {
@@ -397,7 +398,17 @@ export function validateEntry(entry: QuotaProbeEntry): string | null {
   if (entry.successIf) {
     const err = validateWhere(entry.successIf, `entry ${entry.id}: successIf`);
     if (err) return err;
-    if (entry.successIf.exists || entry.successIf.in) return `entry ${entry.id}: successIf must be a single equality`;
+    if (entry.successIf.exists || entry.successIf.in || entry.successIf.truthy) return `entry ${entry.id}: successIf must be a single equality`;
+  }
+
+  if (entry.refusalIf) {
+    if (typeof entry.refusalIf !== 'object' || entry.refusalIf === null)
+      return `entry ${entry.id}: refusalIf must be an object`;
+    for (const k of Object.keys(entry.refusalIf)) {
+      if (k !== 'where') return `entry ${entry.id}: refusalIf: unknown key '${k}'`;
+    }
+    const err = validateWhere(entry.refusalIf.where, `entry ${entry.id}: refusalIf`);
+    if (err) return err;
   }
 
   const ws = entry.windows;
@@ -483,8 +494,8 @@ function validateWhere(where: QuotaWhereSpec, label: string): string | null {
     if (!WHERE_KEYS.has(k)) return `${label}: unknown where key '${k}' (value comparison / regex / time delta is a banned class)`;
   }
   if (typeof where.path !== 'string') return `${label}: where.path must be a string`;
-  const set = [where.exists !== undefined, where.eq !== undefined, where.in !== undefined].filter(Boolean).length;
-  if (set !== 1) return `${label}: exactly one of exists/eq/in must be set`;
+  const set = [where.exists !== undefined, where.truthy !== undefined, where.eq !== undefined, where.in !== undefined].filter(Boolean).length;
+  if (set !== 1) return `${label}: exactly one of exists/truthy/eq/in must be set`;
   if (where.in !== undefined && (!Array.isArray(where.in) || where.in.length === 0))
     return `${label}: where.in must be a non-empty literal list`;
   if (where.eq !== undefined && typeof where.eq !== 'string' && typeof where.eq !== 'number' && typeof where.eq !== 'boolean')

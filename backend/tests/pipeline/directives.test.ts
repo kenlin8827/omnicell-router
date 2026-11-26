@@ -256,6 +256,25 @@ describe('applyEffortDirectives', () => {
     assert.equal(r.effort, 'none');
     assert.equal(r.changed, true);
   });
+
+  it('serves the declared floor to an ALWAYS-THINK model instead of none (ADR-0035)', () => {
+    // Same shape as the test above, but the model's vendor forbids thinking-off:
+    // 'none' is a guaranteed 400, so the step lands on the lowest rung the model
+    // actually declares. The flag is the only thing that may upgrade a serve.
+    const step = applyEffortDirectives(['effort_down'], 'low', ['high', 'max'], true);
+    assert.equal(step.effort, 'high');
+    assert.equal(step.changed, true);
+    assert.equal(step.clamped, true, 'an ask the ladder cannot reach is ledger-marked as clamped');
+
+    const pin = applyEffortDirectives(['effort_none' as never], 'low', ['high', 'max'], true);
+    assert.notEqual(pin.effort, 'none', 'a below-floor pin may not re-open the forbidden level');
+
+    // Empty resolved ladder (contradictory data): no rung to clamp to, so the
+    // directive stays a no-op rather than inventing one.
+    const empty = applyEffortDirectives(['effort_down'], 'low', [], true);
+    assert.equal(empty.effort, 'low');
+    assert.equal(empty.changed, false);
+  });
 });
 
 describe('configurable namespace (ADR-0011 §4)', () => {

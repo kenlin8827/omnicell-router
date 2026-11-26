@@ -12,6 +12,7 @@ import { compressToolOutputs } from '../../src/compression/tool-output.js';
 import { compressBuildLog, compressGeneric, compressGitDiff, compressGrepHits } from '../../src/compression/compressors.js';
 import { OpenAIChatProvider } from '../../src/providers/executors/openai-chat.js';
 import { emitClientRequest } from '../../src/observability/http-exchange.js';
+import { UpstreamEventContext } from '../../src/observability/upstream-events.js';
 
 const model: ModelRegistration = {
   id: 'p/m', provider: 'p', upstreamModel: 'upstream-m', tier: 'plus',
@@ -257,9 +258,9 @@ describe('capture remains on the two original protocol wires', () => {
       const provider = new OpenAIChatProvider({
         name: 'p', type: 'openai-chat', baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: 'sk-upstream-secret',
       });
-      await provider.createCompletion(request, model, {
+      await provider.createCompletion(request, model, new UpstreamEventContext({
         recorder, sessionId: 'sess_wire', requestId: 'req_wire', model: 'auto',
-      });
+      }));
       expect(events.map((event) => `${event.direction}/${event.phase}`)).toEqual([
         'client/request', 'upstream/request', 'upstream/response',
       ]);

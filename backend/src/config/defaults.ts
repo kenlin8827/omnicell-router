@@ -79,6 +79,17 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
  */
 export const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 
+/**
+ * One quota probe's wall clock (the DSL runner, code adapters, and the
+ * plugin-host seam when the operator left `quotaProbes.settings.timeoutMs`
+ * unset). Shorter than the capability probe above: quota is a meter read on a
+ * key we already hold, and the cadence — not this number — decides whether a
+ * slow vendor is worth waiting for. Every failed attempt keeps the previous
+ * values and marks them stale, so a timeout costs a stale badge, never a
+ * missing number.
+ */
+export const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 10_000;
+
 /** Forward-proxy listen port when `forwardProxy.port` is unset. */
 export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 

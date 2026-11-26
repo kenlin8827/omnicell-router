@@ -707,7 +707,7 @@ function makeRlFixture() {
     circuitBreaker: { ...base.circuitBreaker, enabled: true, failureThreshold: 1000, initialCooldownMs: 600_000 },
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false);
+  registry.setAutoRefreshMembers(false);
   const alpha: ModelRegistration = {
     id: 'rl/alpha',
     provider: 'rlp',

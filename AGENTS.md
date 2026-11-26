@@ -117,6 +117,29 @@ Source comments (`//`, `/* */`, JSDoc), identifiers, log messages: English only.
 - `desktop/src-tauri/nsis/installer.nsi` (`LangString OCR_*` only — the wizard's five first-run strings, one set per language declared in `tauri.conf.json` `bundle.windows.nsis.languages`; the installer runs before any console document exists and takes its language from NSIS / the OS locale, so it cannot use the React tables either).
 - Copy-paste console snippets (e.g. cURL samples in `pages/ApiKeysPage.tsx`) and test fixture strings.
 
+## Model-service plugins — one catalog-def contract
+
+A `-models` plugin translates its vendor's vocabulary into `VendorCapabilities`
+and a single `toOcrDef` (`backend/src/plugins/catalog-def.ts`, ADR-0035) builds
+the models.dev-shaped def. No plugin hand-builds a def. The rules the mapper
+enforces, each of which is a silent production bug when broken:
+
+- An effort TABLE (`{type:'effort',values}`) is the only level declaration. A
+  bare `{type:'toggle'}` resolves to an EMPTY ladder and `downgradeReasoning`
+  then collapses every requested level to `none` — the qoder-models bug that
+  produced `400 / code 1210` on models whose vendor forbids thinking-off.
+  A model that always thinks is `disableable: false`, which withholds `none`
+  from its ladder.
+- Omit `tool_call` / `temperature` / `structured_output` / `limit.input` /
+  `cost` unless the vendor declared them. `undefined` means "not stated".
+- `attachment` and `modalities.input` are one fact; the modality vocabulary is
+  models.dev's full one (`text|image|audio|video|pdf` in, `text|image|audio`
+  out). `attachment` is the VISION boolean specifically.
+- Unmappable vendor fields are kept verbatim under `vendor`, never read by
+  routing.
+
+The rules are pinned once in `backend/tests/plugins/catalog-def-contract.test.ts`.
+
 **User-facing UI text is never hardcoded** — it must go through `t('i18n.key')`. A hardcoded Chinese string in a `.tsx` is a bug; fix it.
 
 Verify (expected hits: `config/index.ts` `*` globs and `ApiKeysPage.tsx` snippet only):

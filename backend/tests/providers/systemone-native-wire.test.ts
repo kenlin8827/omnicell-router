@@ -75,7 +75,7 @@ describe('decision-wire pool exclusion', () => {
       tiers: { lite: { members: [{ pattern: 'ts/*' }] } },
     } as unknown as RouterConfig;
     const registry = new ProviderRegistry(config, false);
-    registry.setAutoRefreshTierMatch(false);
+    registry.setAutoRefreshMembers(false);
     return registry;
   }
 
@@ -100,7 +100,7 @@ describe('decision-wire pool exclusion', () => {
     const registry = new ProviderRegistry(config, false, [
       { name: 'ts', type: 'systemone', baseUrl: 'http://127.0.0.1:9', apiKey: 'sk' },
     ]);
-    registry.setAutoRefreshTierMatch(false);
+    registry.setAutoRefreshMembers(false);
     registry.registerModel(model);
     await expect(
       registry.execute({ model: 'ts/d1', messages: [] } as any, model)

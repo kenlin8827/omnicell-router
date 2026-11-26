@@ -1,7 +1,7 @@
 import type { Lang } from '../i18n/types';
 
 /** Credential methods a plugin's connect card may offer (backend PluginAuthType). */
-export type PluginAuthType = 'webLogin' | 'key';
+export type PluginAuthType = 'none' | 'webLogin' | 'key';
 
 export interface ProjectItem {
   id: string;
@@ -801,6 +801,13 @@ export interface TraceRecord {
   /** Gateway conversation entity id (ADR-0002). */
   sessionId: string;
   requestNumber: number;
+  /**
+   * Write-time turn identity (ADR-0024): the immutable, session-scoped turn
+   * ordinal stamped by the admission gate. `null` = the request carried no
+   * user prompt and belongs to no turn (one-shot helper calls). The detail
+   * tree groups exchanges by it; it is never re-derived from prompt text.
+   */
+  turnIndex: number | null;
   timestamp: number;
   /** Client API-key identity (application) that drove this turn, when known. */
   apiKey?: CaptureKeyIdentity;
@@ -896,8 +903,9 @@ export interface TraceRecord {
     inputTokens: number;
     outputTokens: number;
     cachedTokens: number;
-    /** Actual cost (USD) recorded at request time; no cost UI yet. */
-    costUsd: number;
+    /** Actual cost (USD) recorded at request time. Absent when the serving
+     *  model carried no price — unknown, NOT free. */
+    costUsd?: number;
   };
 }
 
@@ -1324,8 +1332,12 @@ export interface SessionRecord {
   outputTokens: number;
   /** Cumulative cache-read input tokens across the session's traces. */
   cachedTokens: number;
-  /** Cumulative recorded actual cost (USD) across the session's traces. */
+  /** Cumulative recorded actual cost (USD) across the session's traces —
+   *  priced turns only; see {@link unpricedTurns}. */
   costUsd: number;
+  /** Turns whose model carried no price, excluded from `costUsd`. Non-zero
+   *  means the total is a floor, not the session's real spend. */
+  unpricedTurns: number;
   /** Summed end-to-end latency (ms) across the session's traces. Part of the
    *  admin payload; the console renders per-turn latency instead. */
   totalLatencyMs: number;
@@ -1388,6 +1400,8 @@ export interface KeyUsageRow {
   cachedTokens: number;
   latencyMsSum: number;
   costUsd: number;
+  /** Turns of this row whose model carried no price (excluded from `costUsd`). */
+  unpricedRequests: number;
   /** Output tokens over STREAMED turns only — decode-TPS numerator. */
   genOutputTokens: number;
   /** Summed decode window (ms) over the same turns — decode-TPS denominator. */
@@ -1402,7 +1416,11 @@ export interface UsageStatsResponse {
     outputTokens: number;
     cachedTokens: number;
     avgLatencyMs: number;
+    /** Cost of the requests that could be priced; see {@link unpricedRequests}. */
     costUsd: number;
+    /** Requests whose model carried no price, excluded from `costUsd`.
+     *  Non-zero means the total is a floor, not the window's real spend. */
+    unpricedRequests: number;
     /** Same streamed-turns-only pairing as KeyUsageRow, window-wide. */
     genOutputTokens: number;
     genMsSum: number;
@@ -1954,6 +1972,10 @@ export interface InstallMihomoResult {
   version?: string;
   error?: string;
   code?: string;
+  /** Bytes reused from an interrupted transfer instead of refetched. */
+  resumedFrom?: number;
+  /** True when the downloaded asset matched the publisher's checksum. */
+  verified?: boolean;
 }
 
 export interface MihomoProxyGroup {
@@ -3056,12 +3078,13 @@ export const api = {
    */
   async downloadMihomoGeo(
     leg: MihomoGeoLeg,
-    opts: { refresh?: boolean; onProgress?: (file: string, downloaded: number, total: number) => void } = {},
+    opts: { refresh?: boolean; onProgress?: (file: string, downloaded: number, total: number) => void; signal?: AbortSignal } = {},
   ): Promise<MihomoGeoDownloadResult> {
     const res = await fetch('/api/admin/proxy/mihomo/geo', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ leg, refresh: opts.refresh === true }),
+      signal: opts.signal,
     });
     const contentType = res.headers.get('content-type') || '';
     if (!res.body || !contentType.includes('ndjson')) {
@@ -3103,12 +3126,33 @@ export const api = {
   },
 
   /**
+   * Stop a transfer the operator abandoned (`core`, `geo:machine`, `geo:node`).
+   * A walk-away fires no event the gateway can observe, so this call IS the stop
+   * signal (ADR-0022); the bytes already fetched stay staged and the next click
+   * resumes. `keepalive` lets it outlive the page during unmount, and a failure
+   * to deliver it is best-effort: the transfer simply finishes as before.
+   */
+  async cancelMihomoTransfer(leg: string): Promise<{ status: string; cancelled: boolean }> {
+    const res = await fetch('/api/admin/proxy/mihomo/transfers/cancel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ leg }),
+      keepalive: true,
+    }).catch(() => null);
+    if (!res) return { status: 'ok', cancelled: false };
+    return (await res.json().catch(() => null)) ?? { status: 'ok', cancelled: false };
+  },
+
+  /**
    * Install/update the mihomo core binary. The server answers NDJSON because the
    * download is tens of MB: `progress` events carry (downloaded, total) bytes and
    * exactly one `result` carries the install outcome (total 0 = unknown size).
    */
-  async installMihomo(onProgress?: (downloaded: number, total: number) => void): Promise<InstallMihomoResult> {
-    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  async installMihomo(
+    onProgress?: (downloaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<InstallMihomoResult> {
+    const res = await fetch('/api/admin/proxy/mihomo/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal });
     const contentType = res.headers.get('content-type') || '';
     if (!res.body || !contentType.includes('ndjson')) return res.json();
     let out: InstallMihomoResult | null = null;
@@ -5337,6 +5381,9 @@ export interface PluginViewInfo {
   /** Release history from the manifest, in declared (newest-first) order. */
   changelog?: PluginChangelogEntry[];
   presets?: PluginProviderPresetInfo[];
+  /** Logo asset inside the package (manifest-declared relative path; served at
+   *  /api/admin/plugins/:id/logo — mirrors backend PluginView). */
+  logo?: string;
   source: 'dev' | 'packaged';
   path: string;
   loaded: boolean;
@@ -5344,6 +5391,12 @@ export interface PluginViewInfo {
   loadedAt?: number;
   error?: string;
   disabled?: boolean;
+  /** Set by the loader when this gateway's plugin ENGINE refuses the package
+   *  (`apiVersion` contract mismatch, ADR-0036). The row is
+   *  `disabled` and carries the refusal in `error`: it answers no traffic, and
+   *  its fix is an upgrade of either side — nothing the operator can toggle
+   *  here, so the drawer hides the disable/enable actions for it. */
+  incompatible?: boolean;
 }
 
 /** One operator-facing plugin setting, mirroring backend/src/plugins/types.ts. */
@@ -5440,6 +5493,10 @@ export interface OpenCodeProviderView {
     keyMasked?: string;
     inline?: boolean;
   };
+  /** Plugin-declared credential methods. Empty array = the plugin owns login. */
+  authTypes?: PluginAuthType[];
+  /** Already-localized how-to line from the owning preset. */
+  keyHint?: string;
 }
 
 export interface OpenCodeCatalogProvider {
@@ -5460,8 +5517,9 @@ export interface OpenCodeCatalogProvider {
    *  authorization) — the dialog shows the paste box. */
   webLoginSubmit?: boolean;
   /** Plugin-declared credential methods in display order; the FIRST entry is
-   *  the dialog's default selection. Absent = legacy behavior (key first,
-   *  web tab after it when webLogin is set). Mirrors backend PluginAuthType. */
+   *  the dialog's default selection. `none` connects with no credential,
+   *  `webLogin` is the web tab, `key` is the key form. Absent = legacy
+   *  behavior (key first, web tab after it when webLogin is set). */
   authTypes?: PluginAuthType[];
   /** Plugin-provided how-to hint (already localized server-side) rendered
    *  above the key form in the add-credential dialog — "where to get this
@@ -5608,6 +5666,17 @@ export interface TestProviderResult {
   unroutableCode?: 'unknownPackage' | 'dedicatedTransport';
   unroutableNpm?: string;
   upstreamBody?: string;
+  /**
+   * Egress the probe ACTUALLY took (ADR-0018 / ADR-0022 vocabulary): `direct`
+   * straight out of the machine, `proxy` through the outbound proxy whose
+   * redacted origin rides in `egressProxy`. Absent = UNKNOWN (plugin wire with
+   * its own transport), never read as direct.
+   *
+   * This is the ground truth behind the include/exclude split: a rule that
+   * never matched this provider shows up here as `direct`.
+   */
+  egress?: 'direct' | 'proxy';
+  egressProxy?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
   /** Credential rotation: masked rows tried, in order (only when > 1). */
@@ -5764,15 +5833,38 @@ export interface LastProbeCapture {
   status?: number;
   ok: boolean;
   durationMs?: number;
-  error?: 'network';
+  error?: 'network' | 'timeout';
+  /** Mirror of backend `LastProbeCapture.detail`: one line naming the cause
+   *  when no upstream body exists (transport throw / rejected credential
+   *  chain), so the dialog never shows a bare "network failure". */
+  detail?: string;
   body?: unknown;
 }
 
 /** Why the last probe attempt produced nothing — mirrors backend
  *  `QuotaProbeFailure`. Display-safe: reason + HTTP status + the upstream's own
  *  short message (never headers, never key material). */
+/** Closed verdict vocabulary — mirrors backend `QuotaFailureVerdict`. Assigned
+ *  server-side from STRUCTURED signals (HTTP status, envelope codes such as
+ *  MiniMax `base_resp.status_code`, a declaration-table `refusalIf`), never
+ *  from matching the upstream's sentence. */
+export type QuotaFailureVerdict =
+  | 'credential-rejected'
+  | 'plan-inactive'
+  | 'endpoint-gone'
+  | 'rate-limited'
+  | 'upstream-error'
+  | 'unreadable'
+  | 'unreachable'
+  | 'timeout';
+
 export interface QuotaProbeFailure {
-  reason: 'network' | 'status' | 'shape' | 'auth';
+  reason: 'network' | 'timeout' | 'status' | 'shape' | 'auth';
+  /** Account-level conclusion the console translates; absent on records written
+   *  by a build that predates it. */
+  verdict?: QuotaFailureVerdict;
+  /** Upstream's own code when it stated one (evidence only, never a gate). */
+  upstreamCode?: string | number;
   statusCode?: number;
   message?: string;
   at: number;
@@ -5803,7 +5895,10 @@ export interface QuotaPairUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /** Cost of the requests that could be priced; see {@link unpricedRequests}. */
   costUsd: number;
+  /** Turns of this pair whose model carried no price (excluded from `costUsd`). */
+  unpricedRequests: number;
 }
 
 /** One connected (provider × credential) pair directory row — mirrors
@@ -6417,6 +6512,13 @@ export const opencodeApi = {
     return `/api/admin/plugins/${encodeURIComponent(id)}/package`;
   },
 
+  /** URL of an installed plugin's brand mark. Empty result for a package that
+   *  declares no `logo` asset (or whose file is missing) — 404, and the logo
+   *  renderer steps down to its initial-letter chip. */
+  pluginLogoUrl(id: string): string {
+    return `/api/admin/plugins/${encodeURIComponent(id)}/logo`;
+  },
+
   async uninstallPlugin(id: string): Promise<{ status: string; removed: string[]; providersRemoved?: string[]; devOnly?: boolean; plugins: PluginViewInfo[] }> {
     const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/uninstall`, { method: 'DELETE' });
     const parsed = (await res.json()) as { status: string; error?: string; removed: string[]; plugins: PluginViewInfo[] };
@@ -6431,7 +6533,18 @@ export const opencodeApi = {
     return parsed;
   },
 
-  async installPlugin(bytes: ArrayBuffer): Promise<{ status: string; id: string; plugins: PluginViewInfo[] }> {
+  async installPlugin(bytes: ArrayBuffer): Promise<{
+    status: string;
+    id: string;
+    plugins: PluginViewInfo[];
+    version?: string;
+    replacedVersion?: string;
+    registered?: string[];
+    /** Engine-refused package: INSTALLED (listed, disabled) but answers nothing
+     *  until one side is updated — a green toast over this row is forbidden. */
+    incompatible?: boolean;
+    error?: string;
+  }> {
     const res = await fetch(`/api/admin/plugins/install`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
@@ -6440,8 +6553,25 @@ export const opencodeApi = {
     const text = await res.text();
     // An empty body (proxy cut, server abort) must not surface as a cryptic
     // "Unexpected end of JSON input" — report the HTTP status instead.
-    const parsed = (text ? JSON.parse(text) : {}) as { status: string; id?: string; error?: string; plugins: PluginViewInfo[] };
-    if (!res.ok || parsed.status !== 'ok') throw new Error(parsed.error ?? `HTTP ${res.status}${text ? '' : ' (empty response)'}`);
+    const parsed = (text ? JSON.parse(text) : {}) as {
+      status: string;
+      id?: string;
+      error?: string;
+      plugins: PluginViewInfo[];
+      version?: string;
+      replacedVersion?: string;
+      registered?: string[];
+      incompatible?: boolean;
+    };
+    if (!res.ok || parsed.status !== 'ok') {
+      // An engine-INCOMPATIBLE package is INSTALLED (listed, disabled) and its
+      // bytes stay, so the row has to reach the page with the error: a thrown
+      // message would leave the operator looking at a list without it.
+      if (parsed.plugins?.length) {
+        throw Object.assign(new Error(parsed.error ?? `HTTP ${res.status}`), { plugins: parsed.plugins });
+      }
+      throw new Error(parsed.error ?? `HTTP ${res.status}${text ? '' : ' (empty response)'}`);
+    }
     return { ...parsed, id: parsed.id ?? '' };
   },
 
@@ -6646,6 +6776,17 @@ export const opencodeApi = {
    * is ALSO the key its own CLI uses, so adding an credential must not repoint it).
    * The reply mirrors backend console.ts `connect` inline.
    */
+  /** Enable a preset whose plugin owns login. No credential is written. */
+  async connectLocal(id: string): Promise<{ status: string; success: boolean; connected: boolean }> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/connect-local`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+    );
+  },
+
   async connectProvider(
     id: string,
     apiKey: string,

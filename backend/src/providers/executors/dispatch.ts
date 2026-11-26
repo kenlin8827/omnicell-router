@@ -76,8 +76,9 @@ export class DispatchingProvider implements LLMProvider {
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    sessionId?: string,
   ): Promise<CanonicalResponse> {
-    return this.exec(model).createCompletion(request, model, upstreamEventContext, credential);
+    return this.exec(model).createCompletion(request, model, upstreamEventContext, credential, sessionId);
   }
 
   public supportsStreaming(model: ModelRegistration): boolean {
@@ -96,9 +97,10 @@ export class DispatchingProvider implements LLMProvider {
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    sessionId?: string,
   ): Promise<AsyncIterable<StreamEvent>> {
     const executor = this.exec(model);
     if (!executor.createStream) throw new Error(`Wire '${model.wire ?? 'openai-chat'}' has no native streaming executor`);
-    return executor.createStream(request, model, upstreamEventContext, credential);
+    return executor.createStream(request, model, upstreamEventContext, credential, sessionId);
   }
 }

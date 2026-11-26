@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeftRight, ListFilter, Save } from 'lucide-react';
+import { ArrowLeftRight, Info, ListFilter, Save, ShieldAlert } from 'lucide-react';
 import { api, opencodeApi } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -103,6 +103,13 @@ export const ProxyPatternsPage: React.FC = () => {
     ? `http://127.0.0.1:${endpoint.mixedPort ?? 7890}`
     : (endpoint?.url || '');
 
+  /** Nothing is proxied until a model is named: an empty allowlist is direct. */
+  const idle = includes.length === 0;
+
+  /** One status block covers all three states: master switch off > no rule > routing. */
+  const status: 'off' | 'idle' | 'active' = !endpoint?.enabled ? 'off' : idle ? 'idle' : 'active';
+  const statusTone = status === 'active' ? 'var(--accent-emerald)' : status === 'idle' ? 'var(--text-dim)' : 'var(--accent-amber)';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
       <div className="card" style={{ flex: 1, minHeight: 0 }}>
@@ -116,13 +123,62 @@ export const ProxyPatternsPage: React.FC = () => {
           {t('proxyPatterns.hint')}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '720px' }}>
+          {/* Effective state, above the fields it describes: a badge squeezed
+              into the endpoint row reads as a property OF the URL, while it is
+              the conclusion of the include list below. Its own quiet line keeps
+              the endpoint row to [endpoint] [manage] and mirrors the
+              forward-proxy page's banner convention. */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px',
+              padding: '10px 12px',
+              borderRadius: 'var(--radius-sm, 6px)',
+              border: '1px solid var(--divider)',
+              background: 'var(--bg-inset, transparent)',
+              fontSize: 'var(--text-sm)',
+              lineHeight: 'var(--leading-normal)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+              <Info size={14} style={{ flexShrink: 0, marginTop: '2px', color: statusTone }} aria-hidden="true" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                <strong style={{ color: 'var(--text-main)', fontWeight: 'var(--font-semibold)' }}>
+                  {status === 'idle'
+                    ? t('proxyPatterns.noInclude')
+                    : status === 'active'
+                      ? t('proxyPatterns.active', { n: includes.length })
+                      : t('proxyPatterns.disabled')}
+                </strong>
+                <span style={{ color: 'var(--text-dim)' }}>
+                  {status === 'off'
+                    ? t('proxyPatterns.disabledHint')
+                    : status === 'active'
+                      ? t('proxyPatterns.activeHint')
+                      : t('proxyPatterns.idleHint')}
+                </span>
+              </div>
+            </div>
+            {/* Scope boundary, stated where the mistake is made (ADR-0018 vs
+                ADR-0022): operators configure `forwardProxy.rules` expecting it
+                to govern upstream calls, and read an empty Include list as "no
+                exclusions". Both leave every probe and every completion direct,
+                which then looks like the split silently failing. */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', paddingTop: '6px', borderTop: '1px solid var(--divider)' }}>
+              <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: '2px', color: 'var(--text-dim)' }} aria-hidden="true" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, color: 'var(--text-dim)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-normal)' }}>
+                <span>{t('proxyPatterns.scopeHint')}</span>
+                <span>{t('proxyPatterns.excludesHint')}</span>
+              </div>
+            </div>
+          </div>
           {/* Which proxy these patterns route through — read-only on purpose.
               The endpoint is capability config and is edited on the Outbound
               Proxy page (Proxy Management group), never here. */}
           <div>
             <label style={fieldLabel}>{t('proxyPatterns.endpoint')}</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              {endpoint && !endpoint.enabled && <span className="badge badge-amber">{t('proxyPatterns.disabled')}</span>}
               <code style={{
                 fontFamily: 'var(--font-mono, monospace)',
                 fontSize: 'var(--text-xs)',

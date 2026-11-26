@@ -2,10 +2,10 @@ import { ModelRegistration, ModelVariant, ProviderConfig } from '../config/types
 import { DispatchingProvider } from './executors/dispatch.js';
 import type { ProviderRegistry } from './registry.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
-import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
+import { TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
-import { resolveTierMatch, classifyTier } from './tier-match.js';
 import { resolveTierMembers, claimModel, comboRefLookupFromConfig, expandComboRefs } from './member-match.js';
+import { pricingFromCost } from './virtual-meta.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
 import {
   getProviderNodeById,
@@ -20,6 +20,7 @@ import { assertAllowedUpstream, UpstreamUrlError } from '../utils/upstream-url-g
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
 import { getProviderTakedownStore } from './provider-takedown.js';
+import { getModelServicePlugin, pluginDeclinesCredentials } from '../plugins/host.js';
 
 /**
  * Build the direct execution pool WITHOUT the opencode daemon.
@@ -115,17 +116,39 @@ export function effortLadderFor(
 ): readonly ReasoningEffort[] | undefined {
   const opts = catModel?.reasoningOptions;
   if (!Array.isArray(opts) || opts.length === 0) {
-    return isReasoning ? EFFORT_LADDER : undefined;
+    // Legacy data with no reasoning_options: the boolean expands to the full
+    // ladder — minus `none` when the def states the model always thinks.
+    return isReasoning ? fullLadder(catModel?.reasoningDisableable) : undefined;
   }
   const effortOpt = opts.find((o) => o?.type === 'effort');
   if (effortOpt && Array.isArray(effortOpt.values) && effortOpt.values.length > 0) {
     const allowed = effortOpt.values.filter(
       (v): v is ReasoningEffort => (EFFORT_LADDER as readonly string[]).includes(v)
     );
-    if (allowed.length > 0) return allowed;
+    if (allowed.length > 0) return withoutForbiddenNone(allowed, catModel?.reasoningDisableable);
   }
-  if (opts.some((o) => o?.type === 'budget_tokens')) return EFFORT_LADDER;
+  if (opts.some((o) => o?.type === 'budget_tokens')) return fullLadder(catModel?.reasoningDisableable);
+  // A declared table with NO usable level is "no explicit level control" —
+  // never expanded into a full ladder. `[]` already withholds `none`: the
+  // router reads it as "no level to offer", and the wire-side clamp keeps the
+  // model's own always-think behaviour (the qoder 1210 replay is the net).
   return [];
+}
+
+/** The boolean-expanded ladder, honouring an always-think declaration. */
+function fullLadder(disableable: boolean | undefined): readonly ReasoningEffort[] {
+  return disableable === false ? EFFORT_LADDER.filter((e) => e !== 'none') : EFFORT_LADDER;
+}
+
+/** Strip `none` from a declared table when the def says the model always
+ *  thinks. A table that empties under the strip stays EMPTY (no level control)
+ *  — it must never fall back to a ladder that re-admits the forbidden level. */
+function withoutForbiddenNone(
+  levels: readonly ReasoningEffort[],
+  disableable: boolean | undefined
+): readonly ReasoningEffort[] {
+  if (disableable !== false) return levels;
+  return levels.filter((e) => e !== 'none');
 }
 
 /** One shared line for a node the reader refuses to route (Decision 11). */
@@ -135,10 +158,6 @@ function retiredShapeReason(paths: string[]): string {
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
   const catalog = await catalogRepository.list();
-  // Boot-time smart match (config `tiers[t].match` over the built-in
-  // baseline). The registry replays it live on every config-save event
-  // (applyTierConfigNow) — no gateway restart required for tier edits.
-  const tierMatch = resolveTierMatch(loadConfig().tiers);
   // credentials come from the BOOT-BOUND CredentialStore, not
   // from auth.json directly. buildDirectPool is the boot/pool-rebuild path,
   // the ONLY sanctioned caller class for the raw `resolveKey`/`resolveKeyChain`
@@ -203,9 +222,15 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // Bake the default credential (P3 step 1); `resolved?.key` stays the defensive
     // fallback for a store whose chain read came back empty while resolveKey
     // answered — head === baked key is an invariant the registry relies on.
-    const apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
-
-    if (!apiKey) {
+    const pkg = typeof def?.npm === 'string' ? def.npm : typeof rec.npm === 'string' ? rec.npm : '';
+    // A plugin that declares only `none` owns login. A stored OCR key is not an account and is not required to route.
+    const credentialless = pkg ? pluginDeclinesCredentials(getModelServicePlugin(wireFor(pkg))) : false;
+    let apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
+    if (credentialless) {
+      apiKey = '';
+      storeCreds = [];
+      resolved = null;
+    } else if (!apiKey) {
       // catalog-universe providers without credentials are structural noise —
       // only surface when the user actually defined a config node for them.
       // the credential candidates are the inline def and
@@ -303,23 +328,21 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       wireBases.set(wire, baseForWire(wire, baseURL));
 
       const isReasoning = catModel?.reasoning === true || d?.capabilities?.reasoning === true;
-      const inputCost = catModel?.cost?.input ?? (isReasoning ? 10.0 : 2.0);
-      const outputCost = catModel?.cost?.output ?? inputCost * 4.0;
-      const cacheRead = catModel?.cost?.cache_read ?? inputCost * 0.25;
+      // No pricing fallback: a model whose price is unknown keeps `undefined`
+      // (a fabricated number is indistinguishable from a real quote downstream
+      // and erases the per-model differences the cost surfaces exist to show).
+      // The one cost→pricing rule is shared with the combo envelope.
+      const pricing = pricingFromCost(catModel?.cost);
 
-      // Explicit tier from the defs-file model definition wins; otherwise
-      // the configurable smart match classifies (patterns → price band →
-      // thinking-effort flag). Free models (input = 0) can hit the lite band;
-      // models without catalog pricing simply skip bands. This pre-labeling is
-      // suggestion/display only — the member lists below (claimModel) are the
-      // sole membership source and overwrite it for every claimed model.
+      // The defs-file model definition may declare an EXPLICIT tier — an operator
+      // pin that the member lists can never move (no `autoTier` stamp below).
+      // Everything else starts with NO home tier: the member lists are the one
+      // membership source, and the loop over `claimModel` at the end of this
+      // function assigns the derived home view for every claimed model. Nothing
+      // classifies by price, name pattern or capability any more.
       const explicitTier = (v: unknown): TierLevel | undefined =>
         v === 'lite' || v === 'plus' || v === 'pro' || v === 'ultra' ? (v as TierLevel) : undefined;
-      const rawInputPerM = catModel?.cost?.input;
       const configTier = explicitTier(d?.tier);
-      const membership: PoolMembership = configTier ?? classifyTier({ modelId: mid, inputPerM: rawInputPerM, reasoningFlag: isReasoning }, tierMatch);
-      const unclassified = membership === 'unclassified';
-      const tier: TierLevel = unclassified ? 'plus' : membership;
       const variants = routableVariants((d as any)?.variants ?? catModel?.variants);
       // Model-default thinking level: override (catalog) wins over the def's
       // `settings.reasoningEffort`; invalid values are dropped defensively.
@@ -332,13 +355,19 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         id: `${rec.id}/${mid}`,
         provider: rec.id,
         upstreamModel: (d && typeof d === 'object' && d.modelID ? String(d.modelID) : mid),
-        tier,
+        // Absent for machine-derived models: the claim loop at the end of this
+        // function assigns the home tier from the member lists.
+        tier: configTier,
         isDefaultInTier: false,
         // Catalog reasoning_options → the real effort tiers (see effortLadderFor).
         // The legacy `supportsReasoningEffort` boolean is intentionally NOT set:
         // `supportedReasoningEfforts` is always resolved here, and the legacy
         // true-branch would resurrect a full-ladder claim for [] (toggle) models.
         supportedReasoningEfforts: effortLadderFor(catModel, isReasoning),
+        // The vendor's on/off fact rides the registration so EVERY routing
+        // resolution (modelSupportsEfforts) withholds `none` for an always-think
+        // model — not only the boot ladder above (ADR-0035 rule 2).
+        ...(catModel?.reasoningDisableable === false ? { reasoningDisableable: false } : {}),
         // Tri-state sampling-parameter capability flag — the provider layer
         // strips params for temperature:false models.
         temperature: catModel?.temperature,
@@ -352,17 +381,12 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         // Pinned when the client omits `reasoning_effort` (orchestrator).
         defaultEffort,
         wire,
-        // Classification inputs → the registry replays tier membership live
-        // (config match + catalog overrides) without a gateway restart.
-        tierMatch: { rawInputPerM, reasoningFlag: isReasoning },
-        ...(configTier ? { configTier } : {}),
-        ...(unclassified ? { unclassified: true } : {}),
-        pricing: {
-          input: inputCost,
-          output: outputCost,
-          cacheRead,
-          ...(catModel?.cost?.cache_write != null ? { cacheWrite: catModel.cost.cache_write } : {}),
-        },
+        // Provenance stamp: the registry is allowed to re-project this model's
+        // home tier from the member lists at every commit. Only machine-derived
+        // models carry it — an explicit `tier` in the defs file keeps it out so
+        // member-list edits can never move a hand-configured model.
+        ...(configTier ? { configTier } : { autoTier: true as const }),
+        ...(pricing ? { pricing } : {}),
       });
     }
 
@@ -385,7 +409,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // Inline {env}/options.apiKey outranks the store for the baked default
     // (Decision 1) — it becomes the chain HEAD too, keeping the invariant
     // head === config.apiKey; store credentials stay selectable below it.
-    if (inlineKey) credentialChain.unshift(toCallCredential(inlineKey, 'inline'));
+    if (inlineKey && !credentialless) credentialChain.unshift(toCallCredential(inlineKey, 'inline'));
     instances.push({
       name: rec.id,
       config: {
@@ -461,13 +485,21 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   }
   let claimed = 0;
   for (const m of models) {
+    // An explicit defs-file tier is an operator PIN: the member lists may
+    // project the model into pools, but they never rewrite its home view.
+    // It still POPULATES its tier pool (hand-configured branch), so it counts
+    // toward "pools are non-empty" — otherwise an all-pinned deployment would
+    // log a false "pools are EMPTY" warning.
+    if (m.configTier) {
+      claimed++;
+      continue;
+    }
     const home = claimModel(m.id, resolved.tiers);
     if (home === 'unclassified') {
-      m.unclassified = true;
+      m.tier = undefined;
       continue;
     }
     claimed++;
-    delete m.unclassified;
     m.tier = home.tier;
     m.priority = home.index + 1; // home list order (derived view)
     m.isDefaultInTier = home.index === 0; // the home list leader

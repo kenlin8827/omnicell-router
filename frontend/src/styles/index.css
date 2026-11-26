@@ -1722,7 +1722,11 @@ tbody tr.is-current,
   align-items: center;
   gap: 4px;
   /* Pills must never wrap internally — squeezed table cells push the
-     badge narrower and the label breaks into one char per line. */
+     badge narrower and the label breaks into one char per line.
+     ONE documented exception: SessionsPage's `openai-chat → openai-responses`
+     protocol map opts into wrapping inline (whiteSpace/overflowWrap + per-segment
+     spans) because a clipped pair reads as a broken conversion, and it wraps at
+     the arrow rather than mid-id. Everything else keeps nowrap. */
   white-space: nowrap;
 }
 /* Outline badges (industry default on paper): transparent fill, border

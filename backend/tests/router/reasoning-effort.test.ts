@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { downgradeReasoning, EFFORT_LADDER, ReasoningEffort } from '../../src/types/router.js';
+import { downgradeReasoning, EFFORT_LADDER, ReasoningEffort, modelSupportsEfforts } from '../../src/types/router.js';
 import { ProviderRegistry } from '../../src/providers/registry.js';
 import { RouterConfig } from '../../src/config/types.js';
 
@@ -34,6 +34,24 @@ describe('downgradeReasoning — pure ranking', () => {
   it('never upgrades above the requested level', () => {
     // Critical honesty contract: a `low` request must never silently become `high`.
     assert.strictEqual(downgradeReasoning('low', ['high', 'xhigh']), 'none');
+  });
+
+  it('serves the declared floor ONLY to an always-think model (ADR-0035)', () => {
+    // The third argument is the vendor's own "cannot turn thinking off" fact.
+    // With it, a below-floor ask lands on the lowest declared rung — the one
+    // level the vendor will answer — instead of the `none` it rejects with 400.
+    assert.strictEqual(downgradeReasoning('low', ['high', 'max'], true), 'high');
+    assert.strictEqual(downgradeReasoning('none', ['minimal', 'low'], true), 'minimal');
+    // Without it, the never-upgrade contract above stands unchanged.
+    assert.strictEqual(downgradeReasoning('low', ['high', 'max'], false), 'none');
+    // An empty resolved ladder has no floor to serve: stays `none` (the caller
+    // mirrors the ask instead of inventing a level).
+    assert.strictEqual(downgradeReasoning('low', [], true), 'none');
+    assert.strictEqual(downgradeReasoning('low', undefined, true), 'low');
+    // A reachable level is untouched by the flag — it never upgrades a serve
+    // that already satisfies the ask.
+    assert.strictEqual(downgradeReasoning('high', ['low', 'high'], true), 'high');
+    assert.strictEqual(downgradeReasoning('max', ['low', 'medium'], true), 'medium');
   });
 
   it('handles full ladder requests correctly', () => {
@@ -108,6 +126,46 @@ function configWithModels(
     })),
   };
 }
+
+describe('modelSupportsEfforts — always-think withholding (ADR-0035)', () => {
+  it('strips none from the legacy boolean expansion when the model always thinks', () => {
+    assert.deepEqual(modelSupportsEfforts(undefined, true, false), [...EFFORT_LADDER].filter((e) => e !== 'none'));
+    // Off allowed / not stated: the expansion keeps none.
+    assert.deepEqual(modelSupportsEfforts(undefined, true, undefined), [...EFFORT_LADDER]);
+    assert.deepEqual(modelSupportsEfforts(undefined, true, true), [...EFFORT_LADDER]);
+  });
+
+  it('strips none from a stale explicit table too — the fact outranks the table', () => {
+    assert.deepEqual(modelSupportsEfforts(['none', 'low', 'high'], true, false), ['low', 'high']);
+    assert.deepEqual(modelSupportsEfforts(['none', 'low'], undefined, false), ['low']);
+  });
+
+  it('a table that empties under the strip falls through, never re-admits none', () => {
+    // Contradictory data: only-none table + always-think. With the legacy
+    // flag the stripped-empty set falls to the (stripped) expansion; without
+    // it, "no explicit effort control" — either way none is unreachable.
+    assert.deepEqual(modelSupportsEfforts(['none'], true, false), [...EFFORT_LADDER].filter((e) => e !== 'none'));
+    assert.equal(modelSupportsEfforts(['none'], undefined, false), undefined);
+  });
+
+  it('without the fact, resolution is unchanged (non-empty wins, legacy expands, else undefined)', () => {
+    assert.deepEqual(modelSupportsEfforts(['low'], true), ['low']);
+    assert.deepEqual(modelSupportsEfforts(undefined, true), [...EFFORT_LADDER]);
+    assert.equal(modelSupportsEfforts(undefined, undefined), undefined);
+    assert.equal(modelSupportsEfforts([], undefined), undefined);
+  });
+
+  it('downgradeReasoning can never emit none for an always-think resolved set', () => {
+    const supported = modelSupportsEfforts(undefined, true, false)!;
+    // A `none` ASK short-circuits before the support set on every generic
+    // path (documented in router.ts) — the wire-side clamp / qoder replay is
+    // the net there. For every real level the clamp must stay on the ladder.
+    for (const ask of EFFORT_LADDER.filter((e) => e !== 'none')) {
+      const served = downgradeReasoning(ask, supported);
+      assert.notStrictEqual(served, 'none', `ask=${ask} must not serve thinking-off`);
+    }
+  });
+});
 
 describe('ProviderRegistry.pickModelForEffort — perfect match within tier', () => {
   it('returns the model that natively supports the requested effort', () => {

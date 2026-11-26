@@ -20,7 +20,7 @@ corrected matrix as a contract.
 
 | Entry mode | Tier may move by gateway judgment? | Effort may be inferred? | Session interaction |
 | :--- | :--- | :--- | :--- |
-| `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (decision layer, entry table, `@ocr-*` directives) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
+| `auto` (bare alias) / unregistered names (resolve to `auto`, §1 step 7 of ADR-0003) | **YES** — full autonomy | YES (decision layer, entry table, `@ocr-*` directives) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
 | Forced tier: tier alias (`lite`/`plus`/`pro`/`ultra`), `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
 | Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves or errors; NEVER substituted (no cross-model failover; in-place same-model retry and credential re-spread stay). A client may opt in per request via `router_options.failover: true` | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
 | Combo | **NO** — the composition is authoritative | NO | `'bypass'` — no session entity, no pin, no ceiling |

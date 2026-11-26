@@ -1,6 +1,9 @@
+import { DEFAULT_QUOTA_PROBE_TIMEOUT_MS } from '../config/defaults.js';
 import { BUILTIN_QUOTA_DECLARATIONS, builtinAdapters } from './declarations.js';
 import { evalSuccessIf, resolveWindows, validateEntry } from './dsl.js';
+import { captureBody, resolveVerdict, upstreamCode } from './verdict.js';
 import { getQuotaStore } from './store.js';
+import { proxiedFetch } from '../utils/proxy.js';
 import type {
   QuotaCodeAdapter,
   LastProbeCapture,
@@ -9,6 +12,7 @@ import type {
   QuotaProbeOutcome,
   QuotaProbeFailure,
   QuotaSnapshot,
+  QuotaWindow,
 } from './types.js';
 
 /**
@@ -254,7 +258,7 @@ export interface ProbeRunResult {
 
 export async function runDslProbe(entry: QuotaProbeEntry, opts: RunProbeOpts): Promise<ProbeRunResult> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_QUOTA_PROBE_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = (opts.now ?? Date.now)();
@@ -266,36 +270,57 @@ export async function runDslProbe(entry: QuotaProbeEntry, opts: RunProbeOpts): P
 
     const res = await doFetch(entry.url, { method: 'GET', headers, signal: controller.signal });
     const meta = { url: entry.url, status: res.status, durationMs: Math.max(0, (opts.now ?? Date.now)() - startedAt) };
-    if (res.status === 429) return { outcome: { ok: false, reason: 'status' }, rateLimited: true, http: { ...meta, ok: false } };
-    if (res.status === 401 || res.status === 403) return { outcome: { ok: false, reason: 'auth' }, rateLimited: false, http: { ...meta, ok: false } };
-    if (!res.ok) return { outcome: { ok: false, reason: 'status' }, rateLimited: false, http: { ...meta, ok: false } };
-
-    const raw = await res.text().catch(() => '');
-    let body: unknown = undefined;
+    // Words BEFORE the verdict. A rejection is the commonest quota failure (a
+    // dead key answers 401 on every declaration-table provider) and the upstream
+    // explains it in the body it sends with the 4xx — a capture that drops that
+    // body can only render a reason word, which is the silence this whole change
+    // exists to remove. So the text is read once, for every outcome; a body read
+    // that itself breaks keeps the status and says so in `detail`.
+    let bodyReadError: string | undefined;
+    const raw = await res.text().catch((err) => {
+      bodyReadError = failureCause(err);
+      return '';
+    });
+    // Parsed when it parses (the console pretty-prints an object), raw text
+    // otherwise (an HTML error page still says something), and bounded either
+    // way — never hold an arbitrarily large JSON object per pair.
+    let parsed: unknown;
     if (raw) {
       try {
-        body = JSON.parse(raw);
+        parsed = JSON.parse(raw);
       } catch {
-        return {
-          outcome: { ok: false, reason: 'shape' },
-          rateLimited: false,
-          http: { ...meta, ok: false, body: raw.slice(0, LAST_BODY_MAX_CHARS) },
-        };
+        parsed = undefined;
       }
     }
-    // Oversized parsed bodies degrade to truncated text for the human-facing
-    // capture (never hold an arbitrarily large JSON object in memory per pair).
-    const captureBody = raw.length > LAST_BODY_MAX_JSON_CHARS ? raw.slice(0, LAST_BODY_MAX_CHARS) : body;
-    if (!evalSuccessIf(entry, body)) return { outcome: { ok: false, reason: 'shape' }, rateLimited: false, http: { ...meta, ok: false, body: captureBody } };
+    const http: LastProbeCapture = {
+      ...meta,
+      ok: res.ok,
+      ...(raw ? { body: raw.length > LAST_BODY_MAX_JSON_CHARS ? raw.slice(0, LAST_BODY_MAX_CHARS) : (parsed ?? raw.slice(0, LAST_BODY_MAX_CHARS)) } : {}),
+      ...(bodyReadError ? { detail: `response body read failed: ${bodyReadError}` } : {}),
+    };
+    if (res.status === 429) return { outcome: { ok: false, reason: 'status' }, rateLimited: true, http };
+    if (res.status === 401 || res.status === 403) return { outcome: { ok: false, reason: 'auth' }, rateLimited: false, http };
+    if (!res.ok) return { outcome: { ok: false, reason: 'status' }, rateLimited: false, http };
+
+    const body = parsed;
+    if (raw && body === undefined) return { outcome: { ok: false, reason: 'shape' }, rateLimited: false, http };
+    if (!evalSuccessIf(entry, body)) return { outcome: { ok: false, reason: 'shape' }, rateLimited: false, http };
     const headerGetter = (name: string) => res.headers.get(name);
     const { windows, plan } = resolveWindows(entry, body, headerGetter);
-    if (windows.length === 0) return { outcome: { ok: false, reason: 'shape' }, rateLimited: false, http: { ...meta, ok: false, body: captureBody } };
-    return { outcome: { ok: true, windows, plan }, rateLimited: false, http: { ...meta, ok: true, body: captureBody } };
-  } catch {
+    if (windows.length === 0) return { outcome: { ok: false, reason: 'shape' }, rateLimited: false, http };
+    return { outcome: { ok: true, windows, plan }, rateLimited: false, http };
+  } catch (err) {
+    const reason = classifyThrownFailure(err);
     return {
-      outcome: { ok: false, reason: 'network' },
+      outcome: { ok: false, reason },
       rateLimited: false,
-      http: { url: entry.url, ok: false, error: 'network', durationMs: Math.max(0, (opts.now ?? Date.now)() - startedAt) },
+      http: {
+        url: entry.url,
+        ok: false,
+        error: reason,
+        detail: failureCause(err),
+        durationMs: Math.max(0, (opts.now ?? Date.now)() - startedAt),
+      },
     };
   } finally {
     clearTimeout(timer);
@@ -310,6 +335,60 @@ export const FAILURE_MESSAGE_MAX_CHARS = 160;
 function oneLine(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > FAILURE_MESSAGE_MAX_CHARS ? `${flat.slice(0, FAILURE_MESSAGE_MAX_CHARS - 1)}…` : flat;
+}
+
+/**
+ * A probe that THREW is either a timeout or a plain transport fault — it is
+ * never a credential verdict. Node/undici report a wall-clock timeout with
+ * `err.name === 'AbortError'`, the same name an operator cancel carries, and the
+ * first pass labelled every throw `network` while a status branch reserved
+ * 401/403 for `auth`: a gateway that hung (or an auth shim that answered 504)
+ * then read as "key rejected", which sends the operator to re-auth a working
+ * credential. An HTTP ANSWER keeps its own class (`status`) — 504 says
+ * "upstream refused · HTTP 504", which is honest; this rule is for legs that
+ * never got an answer at all.
+ */
+export function classifyThrownFailure(err: unknown): 'timeout' | 'network' {
+  const e = err as { name?: string; message?: string; timedOut?: boolean; cause?: { code?: string; message?: string } };
+  const name = e?.name ?? '';
+  const code = typeof e?.cause?.code === 'string' ? e.cause.code : '';
+  if (
+    name === 'HeadersTimeoutError' ||
+    name === 'BodyTimeoutError' ||
+    code === 'ETIMEDOUT' ||
+    code === 'UND_ERR_HEADERS_TIMEOUT' ||
+    code === 'UND_ERR_BODY_TIMEOUT' ||
+    e?.timedOut === true ||
+    /timed out|timeout/i.test(`${name} ${e?.message ?? ''} ${e?.cause?.message ?? ''}`)
+  ) {
+    return 'timeout';
+  }
+  return 'network';
+}
+
+/**
+ * The cause of a failure that produced NO captured body: error class, its
+ * message, the transport code Node/Bun park on `cause` (`ENOTFOUND`,
+ * `ECONNREFUSED`, `ETIMEDOUT`, an abort) and the vendor's own words when the
+ * thrown error carries them in `errorBody` instead. A probe that throws is only
+ * ever labelled `network`, so without this line the operator cannot tell a dead
+ * resolver from a refused connection from a rejected credential chain.
+ */
+export function failureCause(err: unknown): string {
+  const e = err as { name?: string; message?: string; errorBody?: unknown; cause?: unknown };
+  const cause = e?.cause as { code?: string; message?: string } | undefined;
+  const parts = [
+    e?.name ?? 'Error',
+    typeof e?.message === 'string' && e.message ? e.message : String(err),
+    typeof cause?.code === 'string' ? cause.code : typeof cause?.message === 'string' ? cause.message : undefined,
+  ].filter((p): p is string => Boolean(p));
+  // A rejection that answered with a body the executor wrapped INTO the error
+  // (host `UpstreamError.errorBody`) never reaches `http.body` — the quota plane
+  // only sees the throw. Without this the sentence the vendor DID send
+  // ("token was expired") disappears behind the transport label.
+  const body = typeof e?.errorBody === 'string' ? upstreamMessage(e.errorBody) : undefined;
+  if (body) parts.push(`body: ${body}`);
+  return oneLine(parts.join(': '));
 }
 
 /**
@@ -356,15 +435,41 @@ function upstreamMessage(body: unknown): string | undefined {
 export function probeFailureDetail(
   outcome: Extract<QuotaProbeOutcome, { ok: false }>,
   http: LastProbeCapture | undefined,
-  at: number
+  at: number,
+  entry?: QuotaProbeEntry
 ): Omit<QuotaProbeFailure, 'at'> & { at: number } {
-  const message = upstreamMessage(http?.body);
+  const message = upstreamMessage(http?.body) ?? http?.detail;
+  const body = captureBody(http);
+  const code = upstreamCode(body);
   return {
     reason: outcome.reason,
+    verdict: outcome.verdict ?? resolveVerdict({ reason: outcome.reason, status: http?.status, body, entry }),
+    ...(code !== undefined ? { upstreamCode: code } : {}),
     ...(http?.status !== undefined ? { statusCode: http.status } : {}),
     ...(message ? { message } : {}),
     at,
   };
+}
+
+/**
+ * Normalize windows BEFORE they land in the store, for every source (DSL entry
+ * or adapter). A NEGATIVE cap is a vendor sentinel meaning 'no stated ceiling',
+ * never a credit count: passed through it rendered as `0 / -1`, a row that reads
+ * as an empty pool the account does not have. The wire type carries no remaining
+ * leg, so an absent ceiling cannot be rebuilt — say so with `unlimited` and drop
+ * the percent that was computed against it.
+ */
+function sanitizeWindows(windows: QuotaWindow[]): QuotaWindow[] {
+  return windows.map((w) => {
+    if (w.total === null || w.total >= 0) return w;
+    return {
+      ...w,
+      used: w.used !== null && w.used >= 0 ? w.used : null,
+      total: null,
+      remainingPct: null,
+      unlimited: true,
+    };
+  });
 }
 
 /**
@@ -380,17 +485,60 @@ export async function probePair(target: QuotaTarget, opts: RunProbeOpts): Promis
   let rateLimited = false;
   let entryId: string;
   let source: QuotaSnapshot['source'];
+  // The effective entry, when the DSL executed it — its `refusalIf` is the
+  // declaration-table half of the verdict decision (see verdict.ts).
+  let probedEntry: QuotaProbeEntry | undefined;
 
   if (target.kind === 'adapter') {
     entryId = `adapter:${target.adapter.id}`;
     source = 'probed';
-    outcome = await target.adapter.probe({ providerId: opts.providerId, key: opts.key, fetchImpl: opts.fetchImpl, now, timeoutMs: opts.timeoutMs });
-    http = outcome.http;
+    // An adapter is THIRD-PARTY code: it may reject instead of returning the
+    // failure object its contract asks for (an unwrapped transport call, its own
+    // defect). Letting that escape would kill the whole pair — no failure record,
+    // no capture, and the cycle dies with the other pairs unprobed — which is
+    // precisely the silent `—` this plane is meant to eliminate. The adapter's
+    // id stands in for a URL here: the throw happened before (or outside) any
+    // exchange core could see.
+    try {
+      // A plugin-mediated adapter declares the origins it dials; the transport
+      // they get is proxy-guarded per call site (ADR-0022), so the operator's
+      // split governs a plugin-wire quota read too. The url argument a caller
+      // passes to `fetchImpl` is the classification key.
+      let adapterFetch = opts.fetchImpl;
+      if (!adapterFetch && target.adapter.egressOrigins) {
+        adapterFetch = async (input: string | URL | Request, init?: RequestInit) => {
+          // A Request carries its own method/headers/body. When the caller
+          // supplies no explicit init, preserve them — extracting only `.url`
+          // would silently degrade a credentialed POST quota read to a bare
+          // GET. Read the body as text so no stream/duplex handling is needed.
+          if (input instanceof Request && !init) {
+            const body = input.body ? await input.text() : undefined;
+            return proxiedFetch(
+              input.url,
+              { method: input.method, headers: input.headers, ...(body !== undefined ? { body } : {}) },
+              { provider: opts.providerId }
+            );
+          }
+          return proxiedFetch(
+            typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+            init,
+            { provider: opts.providerId }
+          );
+        };
+      }
+      outcome = await target.adapter.probe({ providerId: opts.providerId, key: opts.key, fetchImpl: adapterFetch, now, timeoutMs: opts.timeoutMs });
+      http = outcome.http;
+    } catch (err) {
+      const reason = classifyThrownFailure(err);
+      outcome = { ok: false, reason };
+      http = { url: entryId, ok: false, error: reason, detail: `adapter threw: ${failureCause(err)}` };
+    }
     // Any 429 from any probe (DSL or adapter) arms the engine-level global
     // backoff — adapters report it as a plain status failure, so lift it here.
     if (http?.status === 429) rateLimited = true;
   } else {
     const entry = target.entry;
+    probedEntry = entry;
     entryId = entry.id;
     source = entry.builtin ? 'probed' : 'forked';
     const run = await runDslProbe(entry, opts);
@@ -401,6 +549,10 @@ export async function probePair(target: QuotaTarget, opts: RunProbeOpts): Promis
 
   const store = getQuotaStore();
   if (outcome.ok) {
+    // Sanitize the OUTCOME, not just the stored copy: the returned windows are
+    // what a manual 'probe now' answers with, and the two views must not
+    // disagree about whether a cap exists.
+    outcome = { ...outcome, windows: sanitizeWindows(outcome.windows) };
     store.put({
       providerId: opts.providerId,
       keyHashPrefix: opts.prefix,
@@ -418,7 +570,7 @@ export async function probePair(target: QuotaTarget, opts: RunProbeOpts): Promis
     // there is no "delete on failure" path — staleness is the honest
     // signal) AND records WHY, so a pair that never succeeded shows its
     // verdict instead of an eternal `unverified`.
-    store.markFailure(opts.providerId, opts.prefix, probeFailureDetail(outcome, http, now()));
+    store.markFailure(opts.providerId, opts.prefix, probeFailureDetail(outcome, http, now(), probedEntry));
   }
   // The raw last exchange rides MEMORY-ONLY (never into the snapshot file) —
   // the console's "inspect last probe" surface reads it back here.

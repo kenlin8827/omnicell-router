@@ -11,6 +11,7 @@
  * reverse) from whichever page loaded first.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isAbortError, useTransferAbort } from '../hooks/useTransferAbort';
 import { useNavigate } from 'react-router-dom';
 import { Activity, CheckCircle2, XCircle, Copy, ArrowDown, ArrowUp, ArrowUpDown, ArrowLeftRight, Cpu, Database, Download, Link2, Loader2, Network, Play, Plus, RefreshCw, Rss, Save, ScrollText, SlidersHorizontal, Sparkles, Square, Terminal, Trash2 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
@@ -520,6 +521,13 @@ const CORE_ERROR_KEYS: Record<string, string> = {
   'release-lookup-failed': 'proxy.errInstall',
   'download-failed': 'proxy.errInstall',
   'download-too-large': 'proxy.errInstall',
+  // An interrupted transfer and a bad checksum are different complaints: the
+  // first is retryable (the next click resumes from the `.part`), the second
+  // means the host served something that is not the published release file.
+  // A cancel is an interruption too, so it must never read as a failure.
+  'download-incomplete': 'proxy.errInstallInterrupted',
+  'download-aborted': 'proxy.errInstallInterrupted',
+  'checksum-failed': 'proxy.errInstallChecksum',
   'asset-missing': 'proxy.errUnsupported',
   'unsupported-platform': 'proxy.errUnsupported',
   'unpack-failed': 'proxy.errUnpack',
@@ -728,6 +736,15 @@ export const MihomoPage: React.FC = () => {
   /** The core's captured output. The ring outlives a crashed core, so reading
    *  it needs no live controller; polling runs only while this section is open. */
   const [coreLogs, setCoreLogs] = useState<MihomoCoreLogLine[]>([]);
+  /** Core and geo downloads run for minutes and may run at the same time, so each
+   *  leg owns its own controller AND its own gateway key (`hooks/useTransferAbort`):
+   *  leaving the page or restarting one leg stops that transfer only — the gateway
+   *  cannot see a client walk away, so the hook tells it to stop — the partial file
+   *  stays on disk, and the next click resumes where it stopped (ADR-0022). */
+  const { begin, cancel, settle } = useTransferAbort((serverKey) => {
+    void api.cancelMihomoTransfer(serverKey);
+  });
+
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const logFollowRef = useRef(true);
   const refreshLogs = useCallback(async () => {
@@ -1066,7 +1083,9 @@ export const MihomoPage: React.FC = () => {
     try {
       if (presetPickCn && !presetGeoPresent) {
         setPresetProgress({ file: 'geoip', downloaded: 0, total: 0 });
-        const result = await api.downloadMihomoGeo('machine', { onProgress: (file, downloaded, total) => setPresetProgress({ file, downloaded, total }) });
+        const presetSignal = await begin('geo', 'geo:machine');
+        const result = await api.downloadMihomoGeo('machine', { onProgress: (file, downloaded, total) => setPresetProgress({ file, downloaded, total }), signal: presetSignal })
+          .finally(() => settle('geo', presetSignal));
         if (!result.ok || !result.present) {
           toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
           return;
@@ -1092,7 +1111,7 @@ export const MihomoPage: React.FC = () => {
       }
       setPresetOpen(false);
     } catch (err: any) {
-      toastFailure(err);
+      if (!isAbortError(err)) toastFailure(err);
     } finally {
       setPresetBusy(false);
       setPresetProgress(null);
@@ -1109,17 +1128,20 @@ export const MihomoPage: React.FC = () => {
     setGeoBusy(true);
     setGeoProgress({ file: 'geoip', downloaded: 0, total: 0 });
     try {
+      const geoSignal = await begin('geo', `geo:${geoLeg}`);
       const result = await api.downloadMihomoGeo(geoLeg, {
         refresh: true,
         onProgress: (file, downloaded, total) => setGeoProgress({ file, downloaded, total }),
-      });
+        signal: geoSignal,
+      }).finally(() => settle('geo', geoSignal));
       if (result.ok && result.present) {
         toast.success(t('proxy.geoSyncDone'));
       } else {
         toast.error(t(CORE_ERROR_KEYS[result.code ?? ''] ?? 'proxy.errGeoDownload'));
       }
     } catch (err: any) {
-      toastFailure(err);
+      // Our own cancel is an outcome, not a failure: the next click resumes.
+      if (!isAbortError(err)) toastFailure(err);
     } finally {
       setGeoBusy(false);
       setGeoProgress(null);
@@ -1316,6 +1338,9 @@ export const MihomoPage: React.FC = () => {
   const runCore = async (action: 'start' | 'stop' | 'restart' | 'install') => {
     setBusy(action);
     if (action === 'install') setInstallProgress(null);
+    // The install leg registers its gateway key BEFORE the transfer starts, so the
+    // stop control (and an unmount) reaches THIS transfer and never the geo one.
+    const coreSignal = action === 'install' ? await begin('core', 'core') : undefined;
     try {
       if (action !== 'install' && proxy) {
         const next = await persistMihomo();
@@ -1325,7 +1350,7 @@ export const MihomoPage: React.FC = () => {
       const result = action === 'start' ? await api.startMihomo()
         : action === 'stop' ? await api.stopMihomo()
         : action === 'restart' ? await api.restartMihomo()
-        : await api.installMihomo((downloaded, total) => setInstallProgress({ downloaded, total }));
+        : await api.installMihomo((downloaded, total) => setInstallProgress({ downloaded, total }), coreSignal);
       if (result.ok === false || result.status === 'error') {
         toastResultFailure(result);
       } else {
@@ -1334,8 +1359,10 @@ export const MihomoPage: React.FC = () => {
       await refreshStatus();
       if (action !== 'install') await adoptAutoStart();
     } catch (err: any) {
-      toastFailure(err);
+      // A cancelled transfer is an outcome, not a failure (ADR-0022).
+      if (!isAbortError(err)) toastFailure(err);
     } finally {
+      if (coreSignal) settle('core', coreSignal);
       setBusy(null);
       setInstallProgress(null);
     }
@@ -2099,6 +2126,15 @@ export const MihomoPage: React.FC = () => {
                     <button className="btn btn-sm" disabled={busy !== null || coreReady} title={coreReady ? t('proxy.stopFirst') : undefined} onClick={() => void runCore('install')}>
                       <span>{installLabel()}</span>
                     </button>
+                    {/* A cancel the gateway can actually see: the transfer stops,
+                        the bytes already fetched stay staged, and installing again
+                        resumes from them (ADR-0022). */}
+                    {busy === 'install' && (
+                      <button className="btn btn-sm" onClick={() => cancel('core')}>
+                        <Square size={13} />
+                        <span>{t('common.cancel')}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
                 {/* Outbound mode + listening ports. `direct` is the quick kill switch
@@ -2295,6 +2331,7 @@ export const MihomoPage: React.FC = () => {
                           ? `${Math.min(100, Math.round((geoProgress.downloaded / geoProgress.total) * 100))}%`
                           : `${(geoProgress.downloaded / 1_048_576).toFixed(1)} MB`}
                       </span>
+                      <button className="btn btn-sm" onClick={() => cancel('geo')}>{t('common.cancel')}</button>
                     </div>
                   )}
                 </div>
@@ -2971,6 +3008,7 @@ export const MihomoPage: React.FC = () => {
                           ? `${Math.min(100, Math.round((presetProgress.downloaded / presetProgress.total) * 100))}%`
                           : `${(presetProgress.downloaded / 1_048_576).toFixed(1)} MB`}
                       </span>
+                      <button className="btn btn-sm" onClick={() => cancel('geo')}>{t('common.cancel')}</button>
                     </div>
                   )}
                 </div>

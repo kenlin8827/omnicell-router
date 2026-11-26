@@ -23,7 +23,7 @@ const HEAD_CELL: React.CSSProperties = {
   textTransform: 'uppercase',
   letterSpacing: 'var(--tracking-label)',
   whiteSpace: 'nowrap',
-  // The head's widths are measured from the body, so a longer label must clip rather than push
+  // The head's tracks mirror the body's, so a longer label must clip rather than push
   // its column out of line with the tracks below.
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -55,8 +55,8 @@ export const stickyBodyCell: React.CSSProperties = {
  * Only the body scrolls, so its scrollbar belongs to the body and scrolled rows never slide
  * under a floating head.
  *
- * The head is a second table; its column widths are MEASURED from the body's first row, so it
- * stays aligned whatever the body's own layout does (auto or fixed) and whether or not the body
+ * The head is a second table that mirrors the body table's own layout mode and used width, so
+ * the tracks line up whatever the body's layout does (auto or fixed) and whether or not the body
  * currently overflows. Horizontal scrolling is mirrored onto the head, and the head's scrollable
  * width is taken from the body's own scroll range — a cell wider than its track (a long badge)
  * overflows into that range, and a head sized to the tracks alone would clamp the mirrored
@@ -88,37 +88,47 @@ export const ScrollTable: React.FC<{
   const headRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const bodyTableRef = useRef<HTMLTableElement>(null);
-  const [widths, setWidths] = useState<number[] | null>(null);
-  // Scrollable width the head must expose. The measured tracks alone are NOT enough:
+  // Scrollable width the head must expose. The body's track width alone is NOT enough:
   // content wider than its track (a long badge, an unbreakable token) overflows into
   // the body's scrollable area, so the body can scroll further right than a head sized
   // to the tracks. The mirrored `scrollLeft` would then clamp short and leave every
   // column shifted by the overflow at the far right of the table.
   const [headWidth, setHeadWidth] = useState<number | null>(null);
+  // The body TABLE's used width — the head's inner box carries the scroll EXTENT, the
+  // head table must carry the tracks themselves. Without this the head keeps its own
+  // layout mode (auto, where a declared width is only a hint) against a fixed-layout
+  // body, and every column right of an elastic track drifts.
+  const [tracksWidth, setTracksWidth] = useState<number | null>(null);
+  // The width the body's vertical scrollbar takes from its client box. The head's
+  // scrollport has no bar, so it is this much WIDER than the body's. A `sticky
+  // right: 0` cell pins to its own scrollport's right edge, so without this inset
+  // the pinned HEAD cell lands one bar to the right of the pinned BODY cell
+  // (visible on narrow windows where the table overflows sideways: the opaque
+  // pinned cell clips its neighbour column and a ghost gap opens up in the head).
+  const [stickyInset, setStickyInset] = useState(0);
 
   const measure = () => {
-    const row = bodyTableRef.current?.tBodies[0]?.rows[0];
-    if (!row || row.cells.length !== columns.length) {
-      setWidths((prev) => (prev === null ? prev : null));
-      setHeadWidth((prev) => (prev === null ? prev : null));
-      return;
-    }
     // Used layout width, NOT getBoundingClientRect: dialogs animate their card
     // with a scale (`ocr-pop-in`), and a rect read during that transform comes
-    // back scaled (e.g. 0.97×). The head would then keep the shrunken tracks
-    // while the body settles at the real width — every column drifts a few px
-    // right of its header. `getComputedStyle().width` resolves the used value
-    // from layout, so ancestor transforms never leak into the measurement.
-    const next = Array.from(row.cells).map((cell) => {
-      const used = Number.parseFloat(getComputedStyle(cell).width);
-      return Number.isFinite(used) ? used : cell.getBoundingClientRect().width;
-    });
-    // The body's own scroll range, plus the width a classic vertical scrollbar takes
-    // from its client box (the head has no scrollbar, so without that term the head
-    // would come up short by the bar's width even with no content overflow).
+    // back scaled (e.g. 0.97×). `getComputedStyle().width` resolves the used
+    // value from layout, so ancestor transforms never leak into the measurement.
     const body = bodyRef.current;
-    const extent = body ? body.scrollWidth + (body.offsetWidth - body.clientWidth) : next.reduce((sum, w) => sum + w, 0);
-    setHeadWidth((prev) => (prev !== null && Math.abs(prev - extent) < 0.5 ? prev : extent));
+    const bodyTable = bodyTableRef.current;
+    const bar = body ? body.offsetWidth - body.clientWidth : 0;
+    if (bodyTable) {
+      const used = Number.parseFloat(getComputedStyle(bodyTable).width);
+      if (Number.isFinite(used)) {
+        setTracksWidth((prev) => (prev !== null && Math.abs(prev - used) < 0.5 ? prev : used));
+      }
+    }
+    if (body) {
+      // The body's own scroll range, plus the width a classic vertical scrollbar takes
+      // from its client box (the head has no scrollbar, so without that term the head
+      // would come up short by the bar's width even with no content overflow).
+      const extent = body.scrollWidth + bar;
+      setHeadWidth((prev) => (prev !== null && Math.abs(prev - extent) < 0.5 ? prev : extent));
+      setStickyInset((prev) => (Math.abs(prev - bar) < 0.5 ? prev : bar));
+    }
   };
 
   // After every render: rows, column count, the body's scrollbar and any content that
@@ -150,14 +160,10 @@ export const ScrollTable: React.FC<{
       ))}
     </colgroup>
   );
-  const measuredColgroup =
-    widths && (
-      <colgroup>
-        {columns.map((column, i) => (
-          <col key={column.key} style={{ width: widths[i] }} />
-        ))}
-      </colgroup>
-    );
+  // The head's box carries the widest of the two: the body's tracks, and its full scroll
+  // extent (so the mirrored `scrollLeft` can reach the far right of overflowing content).
+  const headBoxWidth =
+    headWidth === null && tracksWidth === null ? null : Math.max(headWidth ?? 0, tracksWidth ?? 0);
 
   return (
     <div
@@ -173,20 +179,25 @@ export const ScrollTable: React.FC<{
       }}
     >
       {/* The rule under the head belongs to this wrapper, not to the cells: the head table is only
-          as wide as the measured body tracks, so a cell border would stop short of the frame
-          whenever the body shows a scrollbar. No fill here either — the header reads as a plain
-          row over the surface, like every other table in the console. */}
+          as wide as the body's tracks, so a cell border would stop short of the frame whenever the
+          body shows a scrollbar. No fill here either — the header reads as a plain row over the
+          surface, like every other table in the console. */}
       <div
         ref={headRef}
         style={{ flex: '0 0 auto', overflow: 'hidden', borderBottom: '1px solid var(--divider)' }}
       >
         {/* The inner box carries the scroll EXTENT, the table only the tracks. The head must
-            keep its measured column widths, so the tail left by content that overflowed its
-            track inside the body is added OUTSIDE the table — widening the table itself would
-            spread the extra width over the tracks and drift every column out of line. */}
-        <div style={widths && headWidth !== null ? { width: headWidth } : undefined}>
-          <table style={{ ...baseTable(Boolean(widths)), ...(widths ? { width: widths.reduce((sum, w) => sum + w, 0) } : {}) }}>
-            {measuredColgroup ?? declaredColgroup}
+            mirror the body's own tracks, so the tail left by content that overflowed its track
+            inside the body is added OUTSIDE the table — widening the table itself would spread
+            the extra width over the tracks and drift every column out of line. */}
+        <div style={headBoxWidth !== null ? { width: headBoxWidth } : undefined}>
+          <table
+            style={{
+              ...baseTable(hasDeclaredWidth),
+              ...(tracksWidth !== null ? { width: tracksWidth } : {}),
+            }}
+          >
+            {declaredColgroup}
             <thead>
               <tr>
                 {columns.map((column) => (
@@ -196,7 +207,9 @@ export const ScrollTable: React.FC<{
                       ...HEAD_CELL,
                       ...headCellStyle,
                       ...(column.align ? { textAlign: column.align } : {}),
-                      ...(column.sticky ? stickyBodyCell : {}),
+                      // Pin with the body's bar inset so the seam lands on the
+                      // SAME x as the pinned body cell below it.
+                      ...(column.sticky ? { ...stickyBodyCell, right: stickyInset } : {}),
                       ...column.headStyle,
                     }}
                   >

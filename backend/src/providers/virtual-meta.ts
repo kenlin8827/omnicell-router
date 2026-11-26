@@ -1,7 +1,7 @@
 import type { ProviderRegistry } from './registry.js';
 import type { ComboConfig, ModelRegistration } from '../config/types.js';
-import type { CatalogModel, CatalogProviderRecord } from '../opencode/catalog/types.js';
-import { EFFORT_LADDER, type TierLevel } from '../types/router.js';
+import type { CatalogCost, CatalogModel, CatalogProviderRecord } from '../opencode/catalog/types.js';
+import { EFFORT_LADDER, type ModelPricing, type TierLevel } from '../types/router.js';
 
 /**
  * Capability envelope for VIRTUAL model refs (auto* aliases, tier aliases,
@@ -35,6 +35,20 @@ export interface VirtualEnvelope {
   structuredOutput?: boolean;
 }
 
+/** Strip `none` from a published effort table when the vendor forbids
+ *  thinking-off (ADR-0035): the public catalog must advertise exactly what
+ *  routing will serve, never a level the gateway withholds. An effort option
+ *  that empties under the strip is dropped, not re-published. */
+function stripForbiddenNone(
+  options: NonNullable<CatalogModel['reasoningOptions']>,
+  disableable: boolean | undefined
+): NonNullable<CatalogModel['reasoningOptions']> {
+  if (disableable !== false) return options;
+  return options
+    .map((o) => (o.type === 'effort' && Array.isArray(o.values) ? { ...o, values: o.values.filter((v) => v !== 'none') } : o))
+    .filter((o) => !(o.type === 'effort' && Array.isArray(o.values) && o.values.length === 0));
+}
+
 /**
  * models.dev-shaped capability block for ONE model record (snake_case, aligned
  * with https://models.opencode.ai/api.json). Fields absent from the record stay
@@ -44,7 +58,7 @@ export function modelsDevBlock(cat: CatalogModel): Record<string, unknown> {
   return {
     ...(cat.attachment !== undefined ? { attachment: cat.attachment } : {}),
     ...(cat.reasoning !== undefined ? { reasoning: cat.reasoning } : {}),
-    ...(cat.reasoningOptions ? { reasoning_options: cat.reasoningOptions } : {}),
+    ...(cat.reasoningOptions ? { reasoning_options: stripForbiddenNone(cat.reasoningOptions, cat.reasoningDisableable) } : {}),
     ...(cat.tool_call !== undefined ? { tool_call: cat.tool_call } : {}),
     ...(cat.temperature !== undefined ? { temperature: cat.temperature } : {}),
     ...(cat.structured_output !== undefined ? { structured_output: cat.structured_output } : {}),
@@ -101,6 +115,26 @@ export const TIER_PURPOSE: Record<TierLevel, string> = {
 /** Minimal registry seam so callers can pass the live singleton (or a stub). */
 export type CatalogList = () => Promise<CatalogProviderRecord[]>;
 
+/**
+ * The ONE catalog-cost → registration-pricing rule (no fabrication, ADR-0035):
+ * input AND output must both be known or there is no price (`undefined`, never
+ * a synthesized 0 — "free" is a lie the cost plane exists to remove). An absent
+ * cached-READ rate derives from `input` (a vendor that publishes none bills
+ * cache reads as input). An absent cached-WRITE rate is OMITTED, not zeroed:
+ * `cache_write: 0` would publish "cache writes are free", a number the vendor
+ * never stated. Shared by boot-direct (real models) and the virtual combo
+ * envelope so the two derivations can never drift apart.
+ */
+export function pricingFromCost(cost: CatalogCost | undefined): ModelPricing | undefined {
+  if (!cost || cost.input === undefined || cost.output === undefined) return undefined;
+  return {
+    input: cost.input,
+    output: cost.output,
+    cacheRead: cost.cache_read ?? cost.input,
+    ...(cost.cache_write !== undefined ? { cacheWrite: cost.cache_write } : {}),
+  };
+}
+
 /** Common math: safe-min limits, intersection image, leader pricing/name. */
 function envelopeOf(
   memberCats: CatalogModel[],
@@ -117,10 +151,7 @@ function envelopeOf(
     memberCats.length > 0 && memberCats.every((c) => pick(c) === true);
   // Cost fallback and display name bind to the true chain-order LEADER (by
   // identity), never to "the first member that happens to have a record".
-  const cost = leaderCat?.cost;
-  const pricing = leaderPricing ?? (cost
-    ? { input: cost.input ?? 0, output: cost.output ?? 0, cacheRead: cost.cache_read ?? 0, cacheWrite: cost.cache_write ?? 0 }
-    : undefined);
+  const pricing = leaderPricing ?? pricingFromCost(leaderCat?.cost);
   return {
     memberCount: fallbackCount,
     ...(contexts.length > 0 ? { contextWindow: Math.min(...contexts) } : {}),
@@ -141,16 +172,27 @@ function envelopeOf(
  * `lookup` resolves any single member id with the same precedence (used for the
  * chain-order leader, who must be found by IDENTITY even when other members
  * lack catalog records).
+ *
+ * Each pushed record's LOOKUP id is available from the `byId` map: callers
+ * that key by the registered id (`server.ts` catById.get(m.id)) must read that
+ * map, not the record's own `id` — a prefixed provider's registered id is
+ * `${provider}/${upstream}` while the catalog record keeps the bare upstream
+ * key, so indexing records by `rec.id` misses every prefixed provider.
  */
 export async function findMemberCatalogRecords(
   ids: string[],
   listCatalog: CatalogList
-): Promise<{ records: CatalogModel[]; lookup: (id: string) => CatalogModel | undefined }> {
+): Promise<{
+  records: CatalogModel[];
+  lookup: (id: string) => CatalogModel | undefined;
+  /** Resolved record keyed by the id it was looked up by (registered form). */
+  byId: Map<string, CatalogModel>;
+}> {
   let providers: CatalogProviderRecord[];
   try {
     providers = await listCatalog();
   } catch {
-    return { records: [], lookup: () => undefined };
+    return { records: [], lookup: () => undefined, byId: new Map() };
   }
   const byFull = new Map<string, CatalogModel>();
   const byBare = new Map<string, CatalogModel>();
@@ -162,11 +204,16 @@ export async function findMemberCatalogRecords(
   }
   const lookup = (id: string) => byFull.get(id) ?? byBare.get(id);
   const records: CatalogModel[] = [];
+  const byId = new Map<string, CatalogModel>();
   for (const id of ids) {
     const cat = lookup(id);
-    if (cat) records.push(cat);
+    if (!cat) continue;
+    records.push(cat);
+    // First writer wins: a repeated id must not let a later bare-key hit
+    // overwrite the prefixed provider's record.
+    if (!byId.has(id)) byId.set(id, cat);
   }
-  return { records, lookup };
+  return { records, lookup, byId };
 }
 
 /**

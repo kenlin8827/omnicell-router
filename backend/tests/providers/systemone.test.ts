@@ -649,6 +649,79 @@ describe('POST /v1/systemone end-to-end', () => {
     }
   });
 
+  test('always-think model: a rejection enum mentioning none never learns thinking-off (ADR-0035)', async () => {
+    useSandbox('plain');
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        const payload = await req.json();
+        seen.push(payload);
+        // The vendor rejects 'low' but its generic enum string still mentions
+        // 'none'. An always-think model must never learn/memoize 'none'.
+        if (payload.reasoning_effort === 'low') {
+          return Response.json(
+            {
+              error: {
+                code: 'invalid_parameter_error',
+                message: "'reasoning_effort' must be one of: 'none', 'high', 'max'",
+                type: 'invalid_request_error',
+              },
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: {
+                department: { choice: 'billing' },
+                escalate: { noul: 0.5 },
+                severity: { score: 1 },
+              },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'always-think',
+            type: 'openai-chat',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/always-think',
+            provider: 'always-think',
+            upstreamModel: 'always-think',
+            tier: 'plus',
+            supportedReasoningEfforts: ['low', 'high', 'max'],
+            reasoningDisableable: false,
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { app } = bootServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/always-think' } });
+      expect(res.statusCode).toBe(200);
+      // The retry must skip 'none' (withheld) and pick the lowest real level.
+      for (const s of seen) expect(s.reasoning_effort).not.toBe('none');
+      expect(seen.some((s) => s.reasoning_effort === 'high')).toBe(true);
+      // Memoized: a later call still never sends thinking-off.
+      const res2 = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/always-think' } });
+      expect(res2.statusCode).toBe(200);
+      for (const s of seen) expect(s.reasoning_effort).not.toBe('none');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
   test('upstream rejecting response_format (JSON mode) → retried without the field, then memoized', async () => {
     useSandbox('plain');
     const seen: any[] = [];

@@ -222,11 +222,11 @@ describe('Custom Model Combos: routing & execution', () => {
     // Combos exist to address pool-less models — the pre-execution tier
     // placeholder must not hard-fail them (regression pin).
     // The registry stores config model objects BY REFERENCE — clone them per
-    // fixture or the unclassified mutation below leaks into every later test
+    // fixture or the no-home-tier mutation below leaks into every later test
     // in this file (module-level baseConfig is shared).
     const cfg: RouterConfig = { ...baseConfig, models: baseConfig.models.map(m => ({ ...m })) };
     const { registry, orchestrator } = makeOrchestrator(cfg);
-    for (const m of registry.getAllModels()) m.unclassified = true;
+    for (const m of registry.getAllModels()) m.tier = undefined;
 
     const result = await processIR(orchestrator, {
       model: 'combo-priority',
@@ -242,7 +242,7 @@ describe('Custom Model Combos: routing & execution', () => {
     // Cloned fixtures — see the note in the combo test above.
     const cfg: RouterConfig = { ...baseConfig, models: baseConfig.models.map(m => ({ ...m })) };
     const { registry, orchestrator } = makeOrchestrator(cfg);
-    for (const m of registry.getAllModels()) m.unclassified = true;
+    for (const m of registry.getAllModels()) m.tier = undefined;
 
     const result = await processIR(orchestrator, {
       model: 'lite-2',
@@ -468,7 +468,7 @@ describe('Custom Model Combos: console end-to-end test route', () => {
     // Cloned model fixtures — the mutation must not leak to later tests.
     const cfg: RouterConfig = { ...baseConfig, models: baseConfig.models.map(m => ({ ...m })) };
     const { app, registry } = createServer(cfg, true);
-    for (const m of registry.getAllModels()) m.unclassified = true;
+    for (const m of registry.getAllModels()) m.tier = undefined;
     assert.throws(() => registry.getModelForTier('plus', true), /No routable models registered/);
 
     const res = await app.inject({ method: 'POST', url: '/api/admin/combos/combo-priority/test' });

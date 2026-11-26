@@ -12,6 +12,7 @@ import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { useModelTest, apiErrorText } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
+import { EgressIcon } from './EgressIcon';
 import { Switch } from './Switch';
 import { fmtLatency } from '../lib/format';
 
@@ -853,6 +854,19 @@ export const ProviderModelsDialog: React.FC<{
                     >
                       {probe.ok ? `✓${fmtLatency(probe.latencyMs ?? NaN)}` : '✗'}
                     </span>
+                  )}
+                  {/* Egress is ALWAYS visible in the row, next to the verdict it
+                      qualifies — but as one glyph, not a raw endpoint: this
+                      dialog is where models get wired to a split, so the row must
+                      show which way it went, and the tip carries the endpoint.
+                      Unknown (plugin wire) renders nothing. */}
+                  {probe && (
+                    <EgressIcon
+                      egress={probe.egress}
+                      proxy={probe.egressProxy}
+                      unknown="none"
+                      style={{ marginLeft: 4 }}
+                    />
                   )}
                   <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || probe ? 0 : 'auto' }}>
                     <button

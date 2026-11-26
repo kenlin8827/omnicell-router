@@ -75,6 +75,21 @@ export const chatSurface: ChatSurface = {
     return chunk ? `data: ${JSON.stringify(chunk)}\n\n` : null;
   },
 
+  /**
+   * The chat encoder validates every canonical stream event up front
+   * (`assertCanonicalStreamEventSupported`) and throws `IrUnsupportedError`
+   * mid-turn for anything chat cannot represent — signed/encrypted reasoning
+   * (`reasoning_signature`), structured reasoning summaries
+   * (`reasoning_summary`), extra candidates, extension items, signed tool
+   * calls. That is NOT one code: gating on `reasoning_signature` alone leaves
+   * the same silent close (no `[DONE]`, no reason) for its siblings. Answer
+   * in-band for every chat-side rejection; anything else keeps the bare close.
+   */
+  streamError(err): string | null {
+    if (!(err instanceof IrUnsupportedError) || err.protocol !== 'openai-chat') return null;
+    return `data: ${JSON.stringify(chatErrorBody(err.statusCode, err.message, 'unsupported_parameter'))}\n\n`;
+  },
+
   errorBody(status: number, message: string, code?: string): unknown {
     return chatErrorBody(status, message, code);
   },

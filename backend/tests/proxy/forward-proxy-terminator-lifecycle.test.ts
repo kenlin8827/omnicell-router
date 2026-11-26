@@ -156,8 +156,17 @@ describe('forward-proxy: client-rejected certificate', () => {
     await assert.rejects(tlsOver(sock, { servername: 'pinned.test', rejectUnauthorized: true }));
     sock.destroy();
 
-    await waitFor(() => notes().some((n) => n.includes('closed the intercepted TLS session')));
-    const row = listProxyAccessEvents(50).find((e) => (e.note ?? '').includes('closed the intercepted TLS session'));
+    // The refusal surfaces on one of two paths, by runtime: a `tlsClientError`
+    // when the runtime reports the handshake failure (Bun 1.4), or a decrypted
+    // stream that closes with zero bytes when it only sees a bare socket close
+    // (Bun 1.3.14 — see the comment on the `tlsClientError` handler). Both are
+    // the SAME ledger row and share one dedupe, so what this test pins is
+    // "a refused leaf is RECORDED", not which internal path noticed it.
+    const NOTE_PATTERNS = ['closed the intercepted TLS session', 'client TLS handshake failed'];
+    const matchesRefusal = (n: string): boolean => NOTE_PATTERNS.some((p) => n.includes(p));
+
+    await waitFor(() => notes().some(matchesRefusal));
+    const row = listProxyAccessEvents(50).find((e) => matchesRefusal(e.note ?? ''));
     assert.ok(row, `expected a pinning row, got: ${JSON.stringify(notes())}`);
     assert.equal(row!.kind, 'connect');
     assert.equal(row!.host, 'pinned.test');

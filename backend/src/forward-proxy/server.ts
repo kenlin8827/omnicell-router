@@ -305,6 +305,17 @@ function splitHostPort(value: string, defaultPort: number): { host: string; port
   return { host: raw, port: defaultPort };
 }
 
+/**
+ * The canonical spelling of a host for an `:authority` / `Host` value: the
+ * default HTTPS port is implicit, any other port is kept, and an IPv6 literal
+ * is bracketed. Mirrors the upstream rebuild in `h2-forward.ts` (`authorityOf`)
+ * so the value a gateway plugin reads matches the one the relay forwards.
+ */
+function authoritySpelling(host: string, port: number): string {
+  const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return port === 443 ? bracketed : `${bracketed}:${port}`;
+}
+
 /** One cached per-host TLS terminator (listening loopback socket + its port). */
 interface HostTerminator {
   srv: tls.Server;
@@ -869,7 +880,6 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       // authenticated caller; the gateway leg reads it via ALS (ADR-0017).
       const mitmTarget = mitmTargets.get(req.socket?.remotePort ?? -1);
       markProxyCaller(req, mitmTarget?.caller);
-      if (await deps.intercept(req, res)) return;
       // h2 compatibility requests carry the target in `:authority` (there is
       // no `host` header) — accept either so gateway-declined h2 traffic can
       // still fall through to transparent forward.
@@ -885,6 +895,16 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         (res as unknown as Record<symbol, () => void>)[MITM_ABORT] = mitmTarget.abort;
       }
       const { host, port } = splitHostPort(hostHeader, connectPort ?? 443);
+      // Normalize the h2 `:authority` BEFORE any gateway sees it. An h2 client
+      // may write the default port (`gw.test:443`), an h1 client's `Host`
+      // normally omits it — without this a gateway plugin reads a different
+      // host spelling per negotiated protocol and has to re-parse it. Same
+      // rule as the upstream rebuild (`h2-forward.ts` `authorityOf`): 443 is
+      // implicit, every other port is kept.
+      if (h2Leg && host && typeof req.headers[':authority'] === 'string') {
+        req.headers[':authority'] = authoritySpelling(host, port);
+      }
+      if (await deps.intercept(req, res)) return;
       if (!host) {
         proxyFail(res, 400, 'Forward proxy: missing Host header');
         return;

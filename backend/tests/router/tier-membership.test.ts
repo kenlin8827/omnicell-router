@@ -36,7 +36,7 @@ function makeRegistry(models: ModelRegistration[], tiers: RouterConfig['tiers'] 
     combos,
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
-  registry.setAutoRefreshTierMatch(false); // no disk re-reads in tests
+  registry.setAutoRefreshMembers(false); // no disk re-reads in tests
   return registry;
 }
 
@@ -55,8 +55,8 @@ describe('tier membership commit (member lists)', () => {
   it('claims by full id / substring; unclaimed models leave every pool but stay registered', () => {
     const registry = makeRegistry(
       [
-        model('p/mid-priced', 'plus', { tierMatch: { reasoningFlag: false } }),
-        model('p/no-condition', 'plus', { tierMatch: { reasoningFlag: false } }),
+        model('p/mid-priced', 'plus', { autoTier: true }),
+        model('p/no-condition', 'plus', { autoTier: true }),
       ],
       { plus: { members: [rule('p/mid')] } },
     );
@@ -73,8 +73,8 @@ describe('tier membership commit (member lists)', () => {
 
   it('list order IS the chain order; the list leader is the representative', () => {
     const registry = makeRegistry([
-      model('p/a', 'plus', { tierMatch: { reasoningFlag: false } }),
-      model('p/b', 'plus', { tierMatch: { reasoningFlag: false } }),
+      model('p/a', 'plus', { autoTier: true }),
+      model('p/b', 'plus', { autoTier: true }),
     ]);
     registry.reclassifyTiers(members([], [rule('p/b'), rule('p/a')], [], []));
     expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/b', 'p/a']);
@@ -85,8 +85,8 @@ describe('tier membership commit (member lists)', () => {
     const cfg = members([], [rule('p/a'), rule('p/b', { weight: 5 })], [], []);
     const registry = makeRegistry(
       [
-        model('p/a', 'plus', { tierMatch: { reasoningFlag: false } }),
-        model('p/b', 'plus', { tierMatch: { reasoningFlag: false } }),
+        model('p/a', 'plus', { autoTier: true }),
+        model('p/b', 'plus', { autoTier: true }),
       ],
       { plus: { members: cfg.plus } },
     );
@@ -96,7 +96,7 @@ describe('tier membership commit (member lists)', () => {
   });
 
   it('a model may join several tiers at once (per-tier membership projection)', () => {
-    const registry = makeRegistry([model('p/both', 'plus', { tierMatch: { reasoningFlag: false } })]);
+    const registry = makeRegistry([model('p/both', 'plus', { autoTier: true })]);
     registry.reclassifyTiers(members([rule('p/both')], [rule('p/both')], [], []));
     expect(registry.getCandidateModelsForTier('lite', false).map((m) => m.id)).toEqual(['p/both']);
     expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/both']);
@@ -110,7 +110,7 @@ describe('tier membership commit (member lists)', () => {
 
   it('each tier carries its own chain order, weight and effortMap for a shared member', () => {
     const registry = makeRegistry(
-      [model('p/shared', 'plus', { tierMatch: { reasoningFlag: false } }), model('p/b', 'plus', { tierMatch: { reasoningFlag: false } })],
+      [model('p/shared', 'plus', { autoTier: true }), model('p/b', 'plus', { autoTier: true })],
       {
         lite: { members: [rule('p/shared', { effortMap: { none: 'high' } })] },
         pro: { members: [rule('p/b'), rule('p/shared', { weight: 5 })] },
@@ -136,8 +136,8 @@ describe('tier membership commit (member lists)', () => {
   it('a combo ref may be referenced by several tiers (each pool expands independently)', () => {
     const registry = makeRegistry(
       [
-        model('p/a', 'plus', { tierMatch: { reasoningFlag: false } }),
-        model('p/b', 'plus', { tierMatch: { reasoningFlag: false } }),
+        model('p/a', 'plus', { autoTier: true }),
+        model('p/b', 'plus', { autoTier: true }),
       ],
       { lite: { members: [ref('c1')] }, ultra: { members: [ref('c1')] } },
       [{ id: 'c1', models: ['p/a', 'p/b'] }],
@@ -152,15 +152,15 @@ describe('tier membership commit (member lists)', () => {
   it('an unclassified model can never be a tier representative', () => {
     const registry = makeRegistry([
       // registered FIRST so it would naively become the plus representative
-      model('p/no-condition', 'plus', { tierMatch: { reasoningFlag: false } }),
-      model('p/mid-priced', 'plus', { tierMatch: { reasoningFlag: false } }),
+      model('p/no-condition', 'plus', { autoTier: true }),
+      model('p/mid-priced', 'plus', { autoTier: true }),
     ]);
     registry.reclassifyTiers(members([], [rule('p/mid-priced')], [], []));
     expect(registry.getModelForTier('plus', false).id).toBe('p/mid-priced');
   });
 
   it('attaches the claiming rule effortMap and clears it when the rule is removed', () => {
-    const registry = makeRegistry([model('p/gpt', 'plus', { tierMatch: { reasoningFlag: false } })]);
+    const registry = makeRegistry([model('p/gpt', 'plus', { autoTier: true })]);
     registry.reclassifyTiers(members([], [rule('p/gpt', { effortMap: { none: 'high', low: 'high' } })], [], []));
     expect(registry.getModel('p/gpt')!.effortMap).toEqual({ none: 'high', low: 'high' });
     registry.reclassifyTiers(members([], [rule('p/gpt')], [], []));
@@ -169,34 +169,34 @@ describe('tier membership commit (member lists)', () => {
 
   it('a tier emptied by its list degrades instead of hard-failing (same graceful-degradation contract)', () => {
     const registry = makeRegistry([
-      model('p/lite-one', 'lite', { tierMatch: { reasoningFlag: false }, isDefaultInTier: true }),
-      model('p/mid-one', 'plus', { tierMatch: { reasoningFlag: false } }),
+      model('p/lite-one', 'lite', { autoTier: true, isDefaultInTier: true }),
+      model('p/mid-one', 'plus', { autoTier: true }),
     ]);
     // the plus list matches nothing → EMPTY pool
     registry.reclassifyTiers(members([rule('p/lite-one')], [rule('p/no-such-model')], [], []));
     expect(registry.getCandidateModelsForTier('plus', false)).toHaveLength(0);
-    // degradation is allowed (logged) but never lands on an unclassified model
+    // degradation is allowed (logged) but never lands on a model with no home tier
     const picked = registry.getModelForTier('plus', false);
     expect(['p/lite-one', 'p/mid-one']).toContain(picked.id);
-    expect(picked.unclassified).not.toBe(true);
+    expect(picked.tier).toBeDefined();
   });
 
   it('reclassify is idempotent: adding the model to the list restores membership', () => {
-    const registry = makeRegistry([model('p/mid-one', 'plus', { tierMatch: { reasoningFlag: false } })]);
+    const registry = makeRegistry([model('p/mid-one', 'plus', { autoTier: true })]);
     registry.reclassifyTiers(members([], [], [], []));
     expect(registry.getCandidateModelsForTier('plus', false)).toHaveLength(0);
     registry.reclassifyTiers(members([], [rule('p/mid-one')], [], []));
     expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/mid-one']);
   });
 
-  it('hand-configured models (no tierMatch) keep their explicit tier forever', () => {
-    const registry = makeRegistry([model('p/hand', 'pro') /* no tierMatch */]);
+  it('hand-configured models (no autoTier stamp) keep their explicit tier forever', () => {
+    const registry = makeRegistry([model('p/hand', 'pro') /* no autoTier stamp */]);
     registry.reclassifyTiers(members([], [], [], []));
     expect(registry.getCandidateModelsForTier('pro', false).map((m) => m.id)).toEqual(['p/hand']);
   });
 
   it('the global denylist still outranks membership (projected as excluded)', () => {
-    const registry = makeRegistry([model('p/banned', 'lite', { tierMatch: { reasoningFlag: false } })], {
+    const registry = makeRegistry([model('p/banned', 'lite', { autoTier: true })], {
       exclude: ['p/banned'],
       lite: { members: [rule('p/banned')] },
     });
@@ -210,7 +210,7 @@ describe('tier membership commit (member lists)', () => {
 
 describe('effortMap — selection side (pickModelForEffort / bestEffortMatch)', () => {
   const effortModel = (id: string, extra: Partial<ModelRegistration> = {}) =>
-    model(id, 'plus', { tierMatch: { reasoningFlag: false }, supportedReasoningEfforts: ['none', 'medium', 'high'], ...extra });
+    model(id, 'plus', { autoTier: true, supportedReasoningEfforts: ['none', 'medium', 'high'], ...extra });
 
   it('none→high wins a no-effort request (negative gap beats the unmapped sibling)', () => {
     const maps = [rule('p/native'), rule('p/mapped', { effortMap: { none: 'high' } })];

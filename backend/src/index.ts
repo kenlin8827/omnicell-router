@@ -20,6 +20,7 @@ import { RATE_LIMIT_CHECKPOINT_INTERVAL_MS } from './config/index.js';
 import { openQuotaEventStore, getQuotaEventLog } from './quota/events.js';
 import { openFailureEventStore, getFailureEventLog } from './observability/failure-events.js';
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
+import { providerUsesCliLogin } from './quota/cli-login.js';
 import { getQuotaStore } from './quota/store.js';
 import { keyHashPrefix, type CredentialStore } from './opencode/credentials/types.js';
 import { expandEnvTemplate, getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
@@ -85,10 +86,16 @@ function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined
   const plugin = entry?.plugin;
   const check = plugin?.quotaCheck;
   if (!plugin || !check || !entry) return undefined;
+  // The plugin names the origins it dials for this entry; the core turns them
+  // into a proxy-guarded transport. Without them the adapter would inherit the
+  // raw global `fetch` and `proxy.includes` would silently not apply — the
+  // exact gap that made plugin-wire providers unreachable through a split.
+  const egressOrigins = plugin.egressOrigins?.bind(plugin);
   return {
     id: `plugin:${entry.view.id}`,
     providerIds: [providerId],
     probe: (ctx) => check(ctx),
+    ...(egressOrigins ? { egressOrigins } : {}),
   };
 }
 
@@ -383,6 +390,7 @@ async function main() {
         // L-d origin containment anchor: a model-less provider has no registry
         // config, so fall back to its provider-defs node (the single def truth).
         getProviderBaseUrl: (name) => registry.getProviderConfig(name)?.baseUrl ?? providerDefBaseUrl(name),
+        credentialless: (name) => providerUsesCliLogin(name),
         listStoredCredentials: (name) => {
           if (!credentialStore) return [];
           try {

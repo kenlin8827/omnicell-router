@@ -65,8 +65,16 @@ export interface PluginManifest {
   id: string;
   name: string;
   version: string;
-  /** Plugin contract version (ADR-0017 §6). Must EQUAL the host's
-   *  `SUPPORTED_PLUGIN_API` — v1 promises no legacy or forward compatibility. */
+  /** Plugin contract version (ADR-0017 §6): the surface this package was
+   *  written against. Must sit inside the host's supported contract window
+   *  (`[MIN_SUPPORTED_PLUGIN_API, SUPPORTED_PLUGIN_API]`).
+   *
+   *  THIS is the engine declaration (ADR-0036 Amendment 1): the engine version
+   *  is the contract version, so a package names the ONE engine it was
+   *  developed against and nothing else. There used to be a separate
+   *  `engines: { plugin: <semver window> }` map beside it; it was removed
+   *  because it could only ever restate this integer in a second vocabulary,
+   *  which is two truths for one fact. A legacy `engines` key is ignored. */
   apiVersion: number;
   /** Single-part shorthand (ADR-0028). Present on every one-axis package;
    *  a multi-part package declares `parts` instead and omits this — the two
@@ -210,11 +218,31 @@ export interface PluginConfigField {
 }
 
 /** Options/result seam shared with opencode/probe.ts (concrete types live there). */
+/** What the console hands a vendor web-login flow (ADR-0017 / ADR-0022).
+ *
+ *  `provider` is the provider-def id the operator is connecting. The console
+ *  ALWAYS knows it (it is the route's `:id`), so a plugin that dials its
+ *  vendor's login endpoints can hand it to `host.fetch` and let the operator's
+ *  proxy split govern sign-in exactly as it governs inference — a login that
+ *  has to reach a geo-blocked vendor host needs the same egress a completion
+ *  does. Optional only for compatibility with packages written before the
+ *  field existed; treat an absent value as "no provider-scoped rule matches". */
+export interface PluginWebLoginOptions {
+  baseURL: string;
+  provider?: string;
+}
+
 export interface PluginProbeOptions {
   provider?: string;
   model: string;
   apiKey: string;
   baseURL: string;
+  /** Capabilities the caller already knows about the model (from its def).
+   *  A plugin probe builds a real request, so a model flag it has to guess is
+   *  a model it can mis-test: qoder's probe once hardcoded "not a reasoning
+   *  model" and reported 400 for every always-thinking model the gateway
+   *  serves fine. Absent = the plugin's own pulled def decides. */
+  capabilities?: { reasoning?: boolean; vision?: boolean };
   headers?: Record<string, string>;
   timeoutMs?: number;
 }
@@ -262,10 +290,13 @@ export interface PluginProviderPreset {
 }
 
 /** Credential methods the console may offer for this plugin's providers, in
- *  display order; the FIRST entry is the default selection. 'webLogin'
- *  requires the webLogin capability below. Absent = legacy behavior (the key
- *  form always renders, the web tab appears after it when webLogin exists). */
-export type PluginAuthType = 'webLogin' | 'key';
+ *  display order; the FIRST entry is the default selection.
+ *  - `none` — connect with no OCR credential (the plugin owns login)
+ *  - `webLogin` — console web login; requires the webLogin capability below
+ *  - `key` — paste a credential
+ *  Absent = legacy behavior (the key form always renders, the web tab appears
+ *  after it when webLogin exists). */
+export type PluginAuthType = 'none' | 'webLogin' | 'key';
 
 /** Chat is the versioned external plugin contract, never the core IR. */
 export interface ChatPluginProvider {
@@ -275,12 +306,20 @@ export interface ChatPluginProvider {
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    /**
+     * Resolved OCR conversation id for this call (`x-session-id`, a minted
+     * `sess_…`, or any other resolver result). Present on every routed
+     * execution. The capture handle has no session field.
+     */
+    sessionId?: string,
   ): Promise<ChatCompletionResponse>;
   createStream?(
     request: ChatCompletionRequest,
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential,
+    /** Same conversation id as `createCompletion`. */
+    sessionId?: string,
   ): Promise<AsyncIterable<ChatCompletionChunk>>;
 }
 
@@ -309,16 +348,16 @@ export interface ModelServicePlugin {
    *  credential store. */
   webLogin?: {
     /** Begin a login session and return the authorize URL for the browser. */
-    start(opts: { baseURL: string }): Promise<{ authUrl: string }>;
+    start(opts: PluginWebLoginOptions): Promise<{ authUrl: string }>;
     /** Poll the in-flight session once. done+token = login finished and the
      *  plugin has already persisted its long-lived token bundle. */
-    poll(opts: { baseURL: string }): Promise<{ done: boolean; error?: string; token?: string }>;
+    poll(opts: PluginWebLoginOptions): Promise<{ done: boolean; error?: string; token?: string }>;
     /** Optional manual completion for off-box authorization: the operator
      *  opens the authorize URL on another machine (or copies a token from the
      *  vendor console) and pastes the resulting token/code back. Absent = the
      *  vendor flow has no user-visible token — the console hides the paste
      *  box and relies on poll alone. */
-    submit?(opts: { baseURL: string; code: string }): Promise<{ ok: boolean; error?: string; token?: string }>;
+    submit?(opts: PluginWebLoginOptions & { code: string }): Promise<{ ok: boolean; error?: string; token?: string }>;
   };
 
   /** Ordered credential methods for the console connect card (see PluginAuthType). */
@@ -340,6 +379,18 @@ export interface ModelServicePlugin {
    * period-aware ordering.
    */
   quotaCheck?(ctx: QuotaAdapterContext): Promise<QuotaProbeOutcome>;
+  /**
+   * Optional: the upstream hosts this plugin talks to for a given provider
+   * entry, so the core can build an egress-aware transport for INJECTED
+   * seams (`quotaCheck`'s `fetchImpl`) without the plugin naming a proxy.
+   *
+   * Only needed where the core, not the plugin, owns the call — a plugin that
+   * does its own dialing uses `host.fetch` instead. Returned URLs are matched
+   * against `proxy.includes` / `proxy.excludes` per call site at dial time, so
+   * an entry that spreads work over several origins is still classified
+   * correctly, one origin per attempt.
+   */
+  egressOrigins?(providerId: string, baseURL?: string): readonly string[];
   /** Optional: notified after the operator saves plugin settings; the merged
    *  values arrive pre-validated (same object `host.config()` returns). */
   onConfigChange?(config: Record<string, unknown>): void | Promise<void>;
@@ -424,6 +475,29 @@ export interface ModelServicePluginHost {
    *  packaging; a plugin that ships data files (`prompts/`, `protos/`, ...)
    *  must resolve them from here (ADR-0017 §6). */
   pluginDir(): string;
+  /**
+   * Egress-aware `fetch` — the ONLY way a model-service plugin may reach its
+   * upstream (ADR-0022). Wraps the core's `proxiedFetch`, so the operator's
+   * `proxy.includes` / `proxy.excludes` split, `proxy.enabled`, the
+   * `manual`/`mihomo` endpoint choice and the loopback bypass all apply to
+   * plugin wires exactly as they do to the four core transports.
+   *
+   * A plugin that calls the global `fetch` itself bypasses every one of those:
+   * it goes direct whatever the operator configured, and the probe has no
+   * honest egress to report (the trace leaves it UNKNOWN rather than claiming
+   * `direct`). That is a capability gap, not a policy — hand the request to
+   * this seam instead.
+   *
+   * `match` carries the logical caller so the include/exclude lists can
+   * evaluate provider- and model-scoped patterns. Omitting it makes the split
+   * answer `undefined` (allowlist needs a match), which is why every real call
+   * passes one.
+   */
+  fetch: (url: string, init?: RequestInit, match?: { provider?: string; model?: string }) => Promise<Response>;
+  /** Resolve the proxy this plugin WOULD take for `url`, without dialing —
+   *  `undefined` means direct. Lets a plugin report its egress in a `probe()`
+   *  result without duplicating the matching rules core-side. */
+  resolveProxy: (url: string, match?: { provider?: string; model?: string }) => string | undefined;
   /** Model-pull services (the auto-pull.ts seams, host-implemented). */
   pull: {
     getProviderNode(id: string): { options?: { baseURL?: string; apiKey?: string } } | undefined;
@@ -742,6 +816,11 @@ export interface PluginView {
   /** Wall-clock ms when this view's code was imported into the runtime (undefined for disabled/failed rows). */
   loadedAt?: number;
   error?: string;
+  /** True when the loader refused this package on ENGINE compatibility
+   *  (ADR-0036). `disabled` is set too — a refused package answers nothing —
+   *  but the cause and the remedy differ: the fix is a newer gateway or a
+   *  newer package, never the disable switch. */
+  incompatible?: boolean;
 }
 
 export type { CallCredential };

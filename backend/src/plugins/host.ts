@@ -37,6 +37,7 @@ import {
   isValidPluginId,
   normalizePluginParts,
   operatorEgressChoice,
+  pluginEngineRefusal,
   validatePluginManifest,
   withGatewayEgressField,
 } from './manifest.js';
@@ -50,6 +51,7 @@ import { isRuleRejected } from '../forward-proxy/egress.js';
 import { claimPluginWires, isCoreWire, isPluginWire } from '../providers/plugin-wires.js';
 import { currentProtocol } from '../providers/protocol.js';
 import { wireFor } from '../providers/wire.js';
+import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 /**
  * Plugin host: discovers, unpacks and loads plugins. Two types today
  * (ADR-0017): 'model-service' (outbound executors, registry below) and
@@ -123,7 +125,16 @@ let rebuildInFlight: Promise<PluginView[]> = Promise.resolve([]);
 let hostInitialized = false;
 
 /** The backend capabilities handed to every model-service plugin at load time.
- *  `dir` is the plugin's load root — the only asset root a packaged plugin has. */
+ *  `dir` is the plugin's load root — the only asset root a packaged plugin has.
+ *
+ *  Exported as a test seam: the egress seam (`fetch` / `resolveProxy`) is the
+ *  ONE way a plugin reaches its upstream, and it has no other side effects —
+ *  the registry-filled ``pull`` block is wired separately by
+ *  ``pluginPullServices()``. */
+export function buildHostSdkForTests(manifest: PluginManifest, dir: string): ModelServicePluginHost {
+  return buildHostSdk(manifest, dir);
+}
+
 function buildHostSdk(manifest: PluginManifest, dir: string): ModelServicePluginHost {
   return {
     UpstreamError: UpstreamError as unknown as ModelServicePluginHost['UpstreamError'],
@@ -137,6 +148,12 @@ function buildHostSdk(manifest: PluginManifest, dir: string): ModelServicePlugin
     config: () => mergedPluginConfig(manifest.id, manifest.configSchema),
     ocrHome: () => getOcrHomeDir(),
     pluginDir: () => dir,
+    // Egress policy is CORE-owned (ADR-0022): a plugin wire reaches its upstream
+    // through this seam, never the global `fetch`, so `proxy.includes` /
+    // `proxy.excludes` govern plugin traffic exactly as they govern the four
+    // built-in transports. `match` carries the logical caller for the lists.
+    fetch: (url, init, match) => proxiedFetch(url, init, match),
+    resolveProxy: (url, match) => resolveProxyUrl(url, match),
     // Filled by pluginPullServices() BEFORE createPlugin is invoked.
     pull: {
       getProviderNode: () => undefined,
@@ -344,6 +361,20 @@ function readManifest(dir: string): PluginManifest {
   return withGatewayEgressField(raw as PluginManifest);
 }
 
+/** `readManifest`, with an unreadable/invalid manifest answered as `undefined`
+ *  instead of thrown. The engine gate (ADR-0036) only needs the DECLARATION — a
+ *  package whose manifest cannot be read is not a compatibility question at all,
+ *  and it must keep falling through to the loader, which reports the real
+ *  reason.
+ */
+function readManifestOrUndefined(dir: string): PluginManifest | undefined {
+  try {
+    return readManifest(dir);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Extract one packaged zip when the unpacked copy is missing or stale. */
 function ensureUnpacked(packagedPath: string, id: string): string {
   const dest = join(pluginsRoot(), 'unpacked', id);
@@ -407,7 +438,7 @@ async function importPlugin(
   view: PluginView;
 }> {
   const manifest = readManifest(dir);
-  assertSupportedPluginApi(manifest.apiVersion);
+  assertSupportedPluginApi(manifest);
   // Dev tree is source-first; a package carries the BUNDLED entry. A package
   // without one is source-only and cannot load in a compiled sidecar, so fail
   // with the actionable fix instead of the resolver's bare-specifier error.
@@ -586,6 +617,58 @@ function failedView(
   };
 }
 
+/**
+ * The row for a package this host REFUSES on engine-compatibility grounds
+ * (ADR-0036). Distinct from `failedView` on purpose: a failed load is a BROKEN
+ * package the operator can only report, while this one is a compatible-ish
+ * install that is one upgrade away from working — either of the plugin or of
+ * the gateway. So it renders as DISABLED (no traffic, no wire, no preset) with
+ * the refusal sentence as its reason, it is not an error the console offers to
+ * "fix", and it clears itself the moment the mismatch is resolved: the gate is
+ * re-evaluated on every load from the manifest on disk, and nothing about this
+ * state is persisted.
+ *
+ * The disabled LEDGER is not written: writing it would outlive the mismatch and
+ * switch off a package that has become compatible.
+ */
+function incompatibleView(
+  id: string,
+  source: PluginView['source'],
+  path: string,
+  declared: PluginManifest,
+  reason: string
+): PluginView {
+  const parts = normalizePluginParts(declared);
+  // The manifest IS registered even though the code never loads: the console's
+  // settings drawer reads the schema from `manifestsById`, and a refused row
+  // whose drawer 404s looks broken rather than refused. Reading a schema runs
+  // no plugin code (ADR-0036), so this costs a map entry and nothing else.
+  manifestsById.set(declared.id || id, declared);
+  return {
+    id: declared.id || id,
+    name: declared.name,
+    version: declared.version,
+    type: parts[0]?.type ?? 'model-service',
+    types: parts.map((p) => p.type),
+    // No wire: an incompatible package answers nothing, and the console's wire
+    // column must not promise a protocol this host never registered.
+    wires: [],
+    description: declared.description,
+    changelog: declared.changelog,
+    presets: declared.presets,
+    logo: declared.logo,
+    source,
+    path,
+    disabled: true,
+    loaded: false,
+    // The console needs to tell this apart from an operator-disabled row: the
+    // reason is a compatibility statement, and toggling the plugin is not the
+    // remedy (upgrading one of the two sides is).
+    incompatible: true,
+    error: reason,
+  };
+}
+
 /** Scan both discovery roots and (re)build the registry. Serialized: the
  *  swap into `registry` is atomic (built in `nextRegistry` first), so
  *  in-flight dispatch/probe never see an empty plugin set mid-rebuild. */
@@ -615,6 +698,10 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
   beginPluginClientAdapterRebuild();
   invalidatePluginConfigCache();
   const views: PluginView[] = [];
+  // Rows refused by the engine gate (ADR-0036). Kept in their own list because
+  // they are part of THIS load's view set (the console lists them, and they
+  // claim their id) but they are not "installed" in the disabled ledger.
+  const incompatibleViews: PluginView[] = [];
   const devRoot = devSourceRoot();
   const disabled = readDisabled();
   disabledViews = [];
@@ -624,6 +711,21 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
     for (const name of readdirSync(devRoot)) {
       const dir = join(devRoot, name);
       if (!existsSync(join(dir, 'plugin.json'))) continue;
+      // ENGINE-COMPATIBILITY gate (ADR-0036) FIRST — ahead of the disabled
+      // check AND ahead of the import: code that cannot run here is never
+      // imported, so a mismatch costs one manifest read instead of a thrown
+      // module, and a package that is both incompatibly old and operator-
+      // disabled reports the reason that toggling cannot fix (the remedy is an
+      // upgrade, not a switch). The READABLE manifest is what makes the
+      // refusal actionable, so an unreadable one falls through to
+      // `importPlugin` / `failedView` and gets the failure wording instead.
+      const devDeclared = readManifestOrUndefined(dir);
+      const devRefusal = devDeclared ? pluginEngineRefusal(devDeclared) : undefined;
+      if (devDeclared && devRefusal) {
+        seenIds.add(name);
+        incompatibleViews.push(incompatibleView(name, 'dev', dir, devDeclared, devRefusal));
+        continue;
+      }
       if (disabled.has(name)) {
         seenIds.add(name);
         disabledViews.push(stubDisabledView(name, dir, 'dev'));
@@ -690,6 +792,21 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
         console.warn(`[OCR] plugins: duplicate id '${id}' — ${packagedPath} ignored (a higher-precedence copy already loaded)`);
         continue;
       }
+      // ENGINE-COMPATIBILITY gate (ADR-0036) FIRST — ahead of the disabled
+      // check and before `ensureUnpacked`: an unloadable package must not
+      // leave an extracted tree behind, its code must never reach the module
+      // cache, and a package that is both incompatibly old and operator-
+      // disabled must report the reason a switch cannot fix. The package FILE
+      // stays — an upgrade is installed over it, and the gate re-runs on every
+      // load.
+      if (packagedManifest) {
+        const refusal = pluginEngineRefusal(packagedManifest);
+        if (refusal) {
+          seenIds.add(id);
+          incompatibleViews.push(incompatibleView(id, 'packaged', packagedPath, packagedManifest, refusal));
+          continue;
+        }
+      }
       if (disabled.has(id)) {
         // No ensureUnpacked for disabled packages: their code stays dormant.
         disabledViews.push(stubDisabledView(id, join(packRoot, 'unpacked', id), 'packaged', packagedManifest));
@@ -716,7 +833,15 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
   // Anything else staged is a half-registration from a load that threw after
   // staging (or a future path that forgets to unstage) — a gateway that
   // answers with no row to disable is unreachable state, so it is dropped.
+  // Engine-refused rows join the view set HERE, after every other gate has run,
+  // so they can never shadow a same-id package that does load.
   retainStagedGateways(new Set(views.filter((v) => v.loaded).map((v) => v.id)));
+  // `views` is the LIVE load result (which package owns an id, what loaded);
+  // `lastViews` is what the console lists, and a package refused by the engine
+  // gate is exactly a row the operator has to SEE — it is silently dead
+  // otherwise, with no clue that an upgrade would fix it.
+  lastViews = [...views, ...incompatibleViews];
+  for (const view of incompatibleViews) console.warn(`[OCR] plugins: ${view.error}`);
   // Atomic swap: in-flight dispatch/probe never observe an empty registry —
   // and the gateway registry rides the same commit point.
   registry.clear();
@@ -729,7 +854,6 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
   claimPluginWires([...registry.values()].flatMap((entry) => entry.view.wires));
   commitGateways();
   commitPluginClientAdapterRebuild();
-  lastViews = views;
   hostInitialized = true;
   return views;
 }
@@ -799,7 +923,11 @@ function stubDisabledView(
       version: m.version,
       type: parts[0]?.type ?? 'model-service',
       types: parts.map((p) => p.type),
-      wires: parts.find((p) => p.type === 'model-service')?.wires ?? m.wires ?? [],
+      // `wires` stays EMPTY on a dormant row, exactly like a refused one: the
+      // package answers no protocol here (its code is never imported), so the
+      // console's wire column must not promise one. The manifest still declares
+      // them — that is a fact about the package, not about this host.
+      wires: [],
       description: m.description,
       changelog: m.changelog,
       presets: m.presets,
@@ -857,6 +985,23 @@ export function getModelServicePlugin(wire: string): ModelServicePlugin | undefi
   return getModelServicePluginEntry(wire)?.plugin;
 }
 
+/** True when the declared methods are only `none` (no key, no web login).
+ *  Absent stays the legacy key form. */
+export function pluginDeclinesCredentials(plugin: { authTypes?: readonly PluginAuthType[] } | undefined): boolean {
+  const types = plugin?.authTypes;
+  return Array.isArray(types) && types.includes('none') && !types.some((t) => t === 'key' || t === 'webLogin');
+}
+
+/** True when `providerId` is a preset of a plugin that owns its own login. */
+export function providerDeclinesCredentials(providerId: string): boolean {
+  for (const { plugin, view } of registry.values()) {
+    if ((view.presets ?? []).some((preset) => preset.providerId === providerId)) {
+      return pluginDeclinesCredentials(plugin);
+    }
+  }
+  return false;
+}
+
 /** Manifest id of an uploaded package, read WITHOUT touching disk. The install
  *  route needs it up front to snapshot the version it is about to replace, so a
  *  failed upgrade can be rolled back instead of deleting a working install. */
@@ -908,7 +1053,7 @@ export function installPluginPackage(
     // produced "invalid plugin.json: invalid plugin.json: ..." in the console.
     throw new Error(err instanceof Error ? err.message : String(err));
   }
-  assertSupportedPluginApi(manifest.apiVersion);
+  assertSupportedPluginApi(manifest);
   // Ownership refusals come FIRST: a rejected install must not touch a single
   // plugin artifact. (Clearing the disabled ledger before this point used to
   // resurrect a tombstoned app-owned package on the next reload.) Both answers
@@ -1174,7 +1319,29 @@ export function pluginProviderOrigins(): Record<string, string> {
   for (const [pluginId, entry] of Object.entries(readRegistrations())) {
     for (const id of entry.providers) out[id] = pluginId;
   }
+  // A deleted preset leaves the ledger, but the connect catalog still lists it.
+  // Keep the plugin id on that row so the origin filter can find it. Only a
+  // package still on disk may claim an origin: uninstall drops the ledger and
+  // artifacts at once while the registry keeps the last views until the
+  // caller's reload, so projecting from the registry alone would tag rows with
+  // a plugin the operator already removed.
+  for (const { view } of registry.values()) {
+    if (!packageStillInstalled(view)) continue;
+    for (const preset of view.presets ?? []) {
+      if (!out[preset.providerId]) out[preset.providerId] = view.id;
+    }
+  }
   return out;
+}
+
+/** Disk truth behind a plugin view: a dev-tree package is operator-owned and
+ *  always "installed"; a packaged one counts only while a package artifact or
+ *  its unpacked tree is still present. */
+function packageStillInstalled(view: PluginView): boolean {
+  if (view.source === 'dev') return true;
+  if (bundledPackagePath(view.id)) return true;
+  if (packagePathsIn(pluginsRoot(), view.id).length > 0) return true;
+  return existsSync(join(pluginsRoot(), 'unpacked', view.id));
 }
 
 /** Forget ONE provider id in every preset ledger entry and tombstone it. Called
@@ -1523,7 +1690,9 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
   { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[]
 > {
   const { getCredentialStore } = await import('../opencode/credentials/index.js');
+  const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
   const store = await getCredentialStore();
+  const defs = readProviderDefsFile()?.providers ?? {};
   const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[] = [];
   for (const { plugin, view } of registry.values()) {
     const logoUrl = view.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
@@ -1545,7 +1714,12 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         npm: currentProtocol(preset.protocol || preset.npm!),
         baseURL: preset.baseUrl,
         custom: true,
-        connected: Boolean(store.resolveKey(preset.providerId)?.key),
+        // A plugin that owns login is connected when its def exists. A stored
+        // key is not an account for it, and a missing key must not keep the
+        // card on the connect form.
+        connected: pluginDeclinesCredentials(plugin)
+          ? Boolean(defs[preset.providerId])
+          : Boolean(store.resolveKey(preset.providerId)?.key),
         // Console connect card offers the web-authorization button when the
         // plugin declares the capability (vendor knowledge stays in-plugin).
         webLogin: typeof plugin.webLogin === 'object',
@@ -1563,7 +1737,13 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
 /** Serve a plugin package's logo asset (path-safe: manifest-declared only). */
 export function pluginLogoFile(id: string): string | undefined {
   if (!isValidPluginId(id)) return undefined;
-  for (const { view } of registry.values()) {
+  // Resolve over the LISTED VIEWS, not the provider registry: the registry holds
+  // only packages with a model-service half, so a pure client-gateway package —
+  // the rows that declare a brand mark most often — 404'd on its own manifest
+  // field. A logo is a static asset of the package, not a capability of the live
+  // host, so every row the console renders (loaded, disabled or refused) serves
+  // the mark it advertises.
+  for (const view of listInstalledPlugins()) {
     if (view.id !== id) continue;
     const rel = view.logo;
     if (!rel) return undefined;

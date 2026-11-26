@@ -1694,7 +1694,7 @@ describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () =>
   const catalogRow = (id: string, sources: string[]) => ({
     id, name: id, custom: true, connected: false, sources, models: [],
   });
-  const preset = (id: string, webLogin: boolean, authTypes?: ('webLogin' | 'key')[]) => ({
+  const preset = (id: string, webLogin: boolean, authTypes?: ('none' | 'webLogin' | 'key')[]) => ({
     id, name: id, defaultName: id, npm: 'workbuddy', baseURL: 'https://wb.example',
     custom: true, connected: false, webLogin, authTypes, sources: ['service'],
   });
@@ -1734,6 +1734,13 @@ describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () =>
     presetEntries = [preset('workbuddy-cn', true, ['webLogin', 'key'])];
     const presetOnly = (await catalogRows()).find((p) => p.id === 'workbuddy-cn');
     expect(presetOnly?.authTypes).toEqual(['webLogin', 'key']);
+  });
+
+  it('forwards authTypes none (plugin owns login; no credential form)', async () => {
+    catalogRecs = [catalogRow('qoder-cli-cn', ['config', 'service'])];
+    presetEntries = [preset('qoder-cli-cn', false, ['none'])];
+    const row = (await catalogRows()).find((p) => p.id === 'qoder-cli-cn');
+    expect(row?.authTypes).toEqual(['none']);
   });
 });
 
