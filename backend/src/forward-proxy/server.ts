@@ -31,6 +31,13 @@ import {
 import { resolveUpstreamTls, type UpstreamTlsOptions } from './upstream-tls.js';
 import type { ForwardProxyRule, InterceptPosture } from '../config/types.js';
 import { createAccessTap, recordProxyConnect, recordProxyTunnel, type AccessTap } from './access-log.js';
+import { applyInboundLiveness } from '../utils/server-liveness.js';
+import {
+  bodyLimitFor,
+  settleContinuationExpectation,
+  type ContinueAdmissionRoute,
+} from '../surfaces/body-admission.js';
+import type { ProtocolSurface } from '../surfaces/types.js';
 import { closeH2Pool, forwardH2, type H2UpstreamTls } from './h2-forward.js';
 import { createWsObserver } from './ws-frames.js';
 import { findGateway, listGatewayHosts } from '../plugins/gateways.js';
@@ -119,11 +126,58 @@ const CLIENT_TLS_ERROR_DEDUPE_MS = 5_000;
  */
 const MITM_ABORT_FLUSH_MS = 1_000;
 /**
- * How long a blind tunnel waits for client bytes before recording its decision
- * row without an identity. Never a relay delay — the tunnel is already flowing;
- * this only bounds the observation window for a server-speaks-first protocol.
+ * Framing-level refusals for the two HTTP/1 listener legs (RFC 9110 10.1.1: a
+ * request line or header block the parser cannot use gets a FINAL status, not a
+ * silent close). Mapped from the parser code so the two legs cannot drift:
+ *   - header block overran the parser limit -> 431 (RFC 9110 15.5.21, and what
+ *     node's own default clientError path sends when no listener exists);
+ *   - unsupported message version -> 505 (RFC 9110 15.5.19);
+ *   - everything else is malformed syntax -> 400.
+ * No body: a peer that could not frame a request is not being asked to parse
+ * JSON, and `Connection: close` (RFC 9110 9.6) says the connection is done —
+ * RFC 10.1.1's advice to state whether it will be closed.
  */
-const CLIENT_ERROR_RESPONSE = 'HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n';
+function clientErrorResponse(err: unknown): string {
+  const code =
+    typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string'
+      ? (err as { code: string }).code
+      : '';
+  const [status, reason] =
+    code === 'HPE_HEADER_OVERFLOW'
+      ? [431, 'Request Header Fields Too Large']
+      : code === 'HPE_INVALID_VERSION'
+        ? [505, 'HTTP Version Not Supported']
+        : [400, 'Bad Request'];
+  return `HTTP/1.1 ${status} ${reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`;
+}
+
+/**
+ * Answer a framing-level client error on its own socket, then close it.
+ *
+ * The write is DEFERRED one tick because bun's socket layer discards a write
+ * issued synchronously inside a `clientError` listener (verified on bun 1.3.14
+ * against node v24: bun sends nothing at all, so the client saw a bare reset and
+ * no status). Deferring is the portable half of the fix; the socket is still
+ * closed immediately after, so a stalled client cannot hold it open.
+ */
+function answerClientError(
+  socket: { destroyed: boolean; writable: boolean; end(chunk: string): void },
+  err: unknown,
+  log: (msg: string) => void,
+  leg: string
+): void {
+  log(`${leg} clientError ${describeClientError(err)}`);
+  const packet = clientErrorResponse(err);
+  setImmediate(() => {
+    try {
+      if (socket.destroyed || !socket.writable) return;
+      socket.end(packet);
+    } catch {
+      // The peer is already gone; nothing left to tell.
+    }
+  });
+}
+
 /**
  * Credential-shaped header names in a raw packet head. The access log applies
  * the same policy to captured headers (`DENY_HEADER_SUBSTRINGS`), and this log
@@ -257,6 +311,17 @@ export interface ForwardProxyDeps {
    * is observable in a few connections); default MAX_HOST_TERMINATORS.
    */
   maxHostTerminators?: number;
+  /**
+   * Map a request path to the protocol surface that serves it
+   * (`detectSurface` from `surfaces/table.ts`). INJECTED rather than imported:
+   * the registry pulls the surface modules, and those reach `config/index.ts`
+   * → the plugin host → THIS module, so a static import here closes a load-time
+   * cycle — with a surface module as the entry, `table.ts` then reads
+   * `responsesSurface` before its own module body finished (TDZ crash). The MITM
+   * `Expect: 100-continue` refusal needs it only to answer in the surface's own
+   * envelope; unset, the expectation is honoured and the body gate decides.
+   */
+  detectSurface?: (url: string) => ProtocolSurface | null | undefined;
 }
 
 export interface ForwardProxyHandle {
@@ -398,7 +463,7 @@ function parseUpgradeHead(head: string, defaultPort: number): UpgradeHead | null
  *  any), then the live stream. With a tap, chunks tee into the access log
  *  alongside the upstream writes (both consumers see every chunk).
  *
- *  A preface can be up to 16 MB (`DEFAULT_MAX_BODY_BYTES`), so it is written
+ *  A preface can be up to `GATEWAY_MAX_BODY_BYTES` (32 MiB, h2-forward.ts), so it is written
  *  under backpressure: the old loop queued every chunk regardless of
  *  `write()` returning false, spiking the outgoing buffer by the whole body. */
 function pumpRequestBody(
@@ -836,6 +901,10 @@ function forwardPlainViaProxy(
 
 export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<ForwardProxyHandle> {
   const log = deps.log ?? (() => {});
+  // The surface registry seam is optional only so tests can boot the proxy
+  // without it; a production boot without it would silently lose the MITM-leg
+  // early 413/415, so say so once at startup rather than let it go quiet.
+  if (!deps.detectSurface) log('inner 100-continue guard: no surface registry injected — header-decidable refusals fall through to the body gate');
   setLiveForwardProxy(deps.liveForwardProxy);
   setBootRules(deps.rules, deps.interceptPosture);
   const ca = ensureCa(deps.caDir);
@@ -845,11 +914,48 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
   const inner = http.createServer((req, res) => {
     void handleInnerRequest(req, res, false);
   });
+  // Same liveness bounds as the native leg (utils/server-liveness): an intercepted
+  // client is the same kind of client, and "no bound armed" was Bun's default —
+  // which is how a stalled request could hold a MITM socket open forever.
+  applyInboundLiveness(inner);
+  /**
+   * `Expect: 100-continue` admission on the MITM legs (RFC 9110 10.1.1): a body whose
+   * declared length already exceeds the gateway cap is refused from the HEADERS, so
+   * the client never pays for an upload we would discard. Only a target the surface
+   * registry recognizes is judged -- a forward to a third-party host is not ours to
+   * size-limit, and refusing one would be the proxy inventing a rule it never agreed
+   * to. A caller that injected no `detectSurface` gets no early refusal here: the
+   * expectation is honoured and the post-body gate still enforces the cap. The cap is the configured one (`bodyLimits.maxBytes`), read at call time so a
+   * controlled restart picks the new value up without a rebuild.
+   *
+   * Installing these listeners suppresses the server's own delivery (verified on Bun
+   * 1.3.14 and Node 24), so each leg re-dispatches when the guard says continue. The
+   * h2 inner leg needs no guard: RFC 9113 8.2.2 forbids `Expect` in HTTP/2.
+   */
+  function mitmContinuationRoute(
+    url: string,
+    res: http.ServerResponse
+  ): ContinueAdmissionRoute | undefined {
+    const surface = deps.detectSurface?.(url);
+    if (!surface) return undefined;
+    const abort = (res as unknown as { [MITM_ABORT]?: () => void })[MITM_ABORT];
+    return {
+      capBytes: bodyLimitFor('gateway'),
+      errorBody: (err) => surface.errorBody(err.statusCode, err.message, err.code),
+      leg: 'mitm',
+      // `res.end()` alone leaves the terminated TLS socket open on Bun, so the client
+      // would sit waiting for the rest of a body nobody is reading: the refusal must
+      // retire the terminator's own connection to be real.
+      refuse: typeof abort === 'function' ? abort : undefined,
+    };
+  }
+  inner.on('checkContinue', (req, res) => {
+    if (!settleContinuationExpectation(req, res, (url) => mitmContinuationRoute(url, res))) {
+      void handleInnerRequest(req, res, false);
+    }
+  });
   inner.on('clientError', (err, socket) => {
-    log(`inner clientError ${describeClientError(err)}`);
-    try {
-      socket.end(CLIENT_ERROR_RESPONSE);
-    } catch {}
+    answerClientError(socket, err, log, 'inner');
   });
   // ── h2 loopback inner (prior-knowledge h2c): the transport-complete half of
   //  the MITM leg. EVERY host may reach it (see the ALPN offer below) — h2 is
@@ -859,6 +965,14 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
   //  compatibility API mirrors the node-http req/res shape the gateway
   //  contract consumes.
   const h2Inner = http2.createServer();
+  // No HTTP/1-style idle clocks here on purpose: an h2 session is multiplexed and
+  // may legitimately sit open between streams, so `keepAliveTimeout`/
+  // `headersTimeout` have no meaning on this listener. What DOES bound it: every
+  // gateway-dispatched body is read through `readRequestBody`, which arms
+  // `REQUEST_BODY_IDLE_TIMEOUT_MS` per chunk on both inner legs, and the session is
+  // reaped by the CONNECT lifetime (`FORWARD_PROXY_KEEPALIVE_MS`). If a
+  // session-level bound is ever wanted it is `sessionTimeout` on this factory —
+  // do not reach for the HTTP/1 knobs.
   h2Inner.on('request', (req, res) => {
     void handleInnerRequest(
       req as unknown as http.IncomingMessage,
@@ -1719,12 +1833,22 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
   const proxy = http.createServer((req, res) => {
     void handlePlainProxyRequest(req, res);
   });
+  // The outer leg terminates client TCP too, so it gets the same bounds. The blind
+  // TUNNEL behind it is deliberately NOT timed by an HTTP idle clock — a tunneled
+  // protocol may sit idle on purpose (IMAP IDLE), which is what
+  // FORWARD_PROXY_KEEPALIVE_MS exists to reap instead.
+  applyInboundLiveness(proxy);
+  proxy.on('checkContinue', (req, res) => {
+    // Absolute-form target on this leg (`http://gw.test:8443/v1/chat/completions`);
+    // `detectSurface` matches on the trailing path, so the spelling needs no rewrite,
+    // but a non-gateway target simply never matches and gets the continue.
+    if (!settleContinuationExpectation(req, res, (url) => mitmContinuationRoute(url, res))) {
+      void handlePlainProxyRequest(req, res);
+    }
+  });
   proxy.on('connect', handleConnect);
   proxy.on('clientError', (err, socket) => {
-    log(`proxy clientError ${describeClientError(err)}`);
-    try {
-      socket.end(CLIENT_ERROR_RESPONSE);
-    } catch {}
+    answerClientError(socket, err, log, 'proxy');
   });
 
   // ── inbound proxy auth (407) ──

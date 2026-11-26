@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search, AlertTriangle, Rocket } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search, AlertTriangle, Rocket, Maximize2 } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
+import { Dialog } from '../components/Dialog';
 import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
 import { AgentRowsTable } from '../components/AgentRowsTable';
@@ -278,6 +279,12 @@ export const ClientsPage: React.FC = () => {
    *  lives in page-level state keyed by client name, so collapsing never loses
    *  edits and opening a form is always a deliberate user action. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  /** Client whose expanded form is lifted into the large dialog ("zoom").
+   *  The body mounts in exactly ONE place — the dialog while zoomed, inline
+   *  otherwise — so drafts, refs and validation state never fork. Cleared when
+   *  the row folds or the access-mode tab switches; the roster row stays put
+   *  behind the overlay. */
+  const [zoomClient, setZoomClient] = useState<string | null>(null);
   /** Access-mode tabs: 'hook' = setup adapters writing tokens/models into the
    *  client's own config, 'proxy' = forward-proxy hooks (service env or launcher
    *  scripts), 'manual' = the hookup guide for anything the gateway can't auto-hook. */
@@ -2072,7 +2079,7 @@ export const ClientsPage: React.FC = () => {
           <SegGroup
             size="lg"
             value={activeTab}
-            onChange={v => { setKeyError({}); setActiveTab(v as typeof activeTab); }}
+            onChange={v => { setKeyError({}); setZoomClient(null); setActiveTab(v as typeof activeTab); }}
             options={[
               { value: 'hook', label: t('clients.tabHook') },
               { value: 'proxy', label: t('clients.tabProxy') },
@@ -2145,7 +2152,10 @@ export const ClientsPage: React.FC = () => {
             // Folding the card away also dismisses its validation flag: the red
             // box belongs to the expanded form, not to the collapsed row.
             const toggle = () => {
-              if (open) clearKeyError(c.name);
+              if (open) {
+                clearKeyError(c.name);
+                setZoomClient(prev => (prev === c.name ? null : prev));
+              }
               setExpanded(prev => (prev === c.name ? null : c.name));
             };
             return (
@@ -2239,11 +2249,56 @@ export const ClientsPage: React.FC = () => {
                       v{c.version.current}
                     </span>
                   )}
+                  {/* Zoom: the same expanded form in a large centered dialog —
+                      long chip walls and agent tables stop fighting the page
+                      scroll. Only the OPEN card offers it (there is nothing to
+                      enlarge while collapsed); the row itself stays behind. */}
+                  {open && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title={t('clients.zoomOpen')}
+                      aria-label={t('clients.zoomOpen')}
+                      onClick={e => { e.stopPropagation(); setZoomClient(c.name); }}
+                      // The row header treats Enter/Space as its own toggle; an
+                      // inner button must keep the key (its native activation)
+                      // instead of expanding/collapsing the card under it.
+                      onKeyDown={e => e.stopPropagation()}
+                      style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 6px', flexShrink: 0 }}
+                    >
+                      <Maximize2 size={13} />
+                    </button>
+                  )}
                   {!open && !c.products?.length && renderActionButtons(c, false, true)}
                 </div>
 
-                {open && (
-                  <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* One body, two frames: the inline row while collapsed into
+                    the accordion, the same node inside a large dialog while
+                    zoomed. The IIFE keeps the JSX in place instead of forking
+                    it — a second copy would double-mount every ref and draft
+                    field. */}
+                {open && (() => {
+                  const zoomed = zoomClient === c.name;
+                  // The takeover row — pinned to the dialog's footer while
+                  // zoomed instead of riding the scroll body: teardown/rehook
+                  // are the card's primary and destructive actions, and a
+                  // form long enough to scroll must never park them out of
+                  // sight. Inline it stays the last row of the form.
+                  const actions = (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {/* Family cards act per PRODUCT (nested panels) — a family-wide
+                      setup/teardown button would claim a state that does not exist. */}
+                  {!c.products?.length && renderActionButtons(c, true)}
+                  {clientSlots(c).length > 0 && (
+                    <button className="btn btn-sm" onClick={() => handleResetModel(c.name)} disabled={loading} title={t('clients.reset')}>
+                      <RotateCcw size={12} />
+                      <span>{t('clients.reset')}</span>
+                    </button>
+                  )}
+                </div>
+                  );
+                  const body = (
+                  <div style={{ padding: zoomed ? 0 : '16px 18px', borderTop: zoomed ? undefined : '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
                     {/* The gateway's model surface describes the WHOLE client, so
                         it leads the expanded body — above the product rows that
                         only its members carry. */}
@@ -2698,19 +2753,33 @@ export const ClientsPage: React.FC = () => {
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {/* Family cards act per PRODUCT (nested panels) — a family-wide
-                      setup/teardown button would claim a state that does not exist. */}
-                  {!c.products?.length && renderActionButtons(c, true)}
-                  {clientSlots(c).length > 0 && (
-                    <button className="btn btn-sm" onClick={() => handleResetModel(c.name)} disabled={loading} title={t('clients.reset')}>
-                      <RotateCcw size={12} />
-                      <span>{t('clients.reset')}</span>
-                    </button>
-                  )}
-                </div>
+                {/* Inline frame only: zoomed renders the same row in the
+                    dialog footer, where it cannot scroll away. */}
+                {!zoomed && actions}
                   </div>
-                )}
+                  );
+                  // A reading/editing surface, not a takeover: 90vw × 88vh keeps
+                  // a viewport margin and gives the chip walls + agent tables
+                  // room; the body scrolls inside the dialog. Closing (×, Esc,
+                  // backdrop) folds the SAME body back into the row.
+                  return zoomed ? (
+                    <Dialog
+                      title={
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                          <BrandIcon name={c.icon ?? c.name} size={16} />
+                          {c.shortName ?? c.displayName}
+                        </span>
+                      }
+                      subtitle={c.configPath || undefined}
+                      onClose={() => setZoomClient(null)}
+                      closeLabel={t('common.close')}
+                      footerRight={actions}
+                      maxSize={{ width: '90vw', height: '88vh' }}
+                    >
+                      {body}
+                    </Dialog>
+                  ) : body;
+                })()}
               </div>
             );
           })}

@@ -1202,6 +1202,38 @@ export interface RateLimitPersistConfig {
   enabled?: boolean;
 }
 
+/**
+ * Body-admission caps for the two HTTP planes, operator-tunable (disk
+ * `client.bodyLimits`). Boot-frozen: Fastify reads a route's `bodyLimit` at
+ * REGISTRATION time, so a new value applies on the next controlled restart
+ * (ADR-0007), never mid-flight — which is also what makes an in-flight request
+ * impossible to police twice under two different numbers.
+ *
+ * These are the ceilings the gateway AGREES TO HOLD IN MEMORY for one request,
+ * measured on the DECOMPRESSED body (an `gzip` bomb is admission-sized by what it
+ * inflates to, not by what it arrived as). Not the capture archive's truncation
+ * window (`requestCapture.maxBodyBytes` — what is RECORDED), and not a statement
+ * about what a model can read: a request that fits the cap can still exceed a
+ * model's context, and that is the model's error to return.
+ */
+export interface BodyLimitsConfig {
+  /**
+   * Inference plane (`/v1/*` — chat, responses, anthropic, systemone + the MITM
+   * and h2 forward legs, which share the one number). Default
+   * `GATEWAY_MAX_BODY_BYTES`; sized for a multi-million-token context plus base64
+   * attachments. Every admin upload route keeps its own declared cap and is never
+   * lowered by this value.
+   */
+  maxBytes?: number;
+  /**
+   * Control plane (every other `/api/*` route, as the Fastify INSTANCE default —
+   * the placement that stops a route which forgets to declare a limit from
+   * silently inheriting framework default). Default `ADMIN_MAX_BODY_BYTES`, the
+   * number `POST /api/admin/config/raw` needs to send a whole `config.yaml`.
+   */
+  adminMaxBytes?: number;
+}
+
 export interface RateLimitConfig {
   /**
    * Bounded grace wait in ms: when an inbound denial reopens its window
@@ -1280,6 +1312,12 @@ export interface RouterConfig {
   retry?: RetryConfig;
   /** Rate-limit policy (see RateLimitConfig); the windows themselves live in `apiKeys[].limits` / `credentials:`. */
   rateLimit?: RateLimitConfig;
+  /**
+   * Body-admission caps for both planes (see BodyLimitsConfig; disk
+   * `client.bodyLimits`). Absent = the shipped defaults in `config/defaults.ts`.
+   * Boot-frozen — applied when the routes are registered.
+   */
+  bodyLimits?: BodyLimitsConfig;
   models?: ModelRegistration[];
   combos?: ComboConfig[];
   /**

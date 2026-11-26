@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
-import type { CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingConfig, WebAuthConfig } from './types.js';
+import type { BodyLimitsConfig, CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingConfig, WebAuthConfig } from './types.js';
 import { INTERCEPT_POSTURES, lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
@@ -26,6 +26,10 @@ import {
   DEFAULT_LAYER2_EFFORT_FLOOR,
   DEFAULT_LAYER2_TIMEOUT_MS,
   DEFAULT_MAX_BODY_BYTES,
+  GATEWAY_MAX_BODY_BYTES,
+  ADMIN_MAX_BODY_BYTES,
+  BODY_LIMIT_MIN_BYTES,
+  BODY_LIMIT_MAX_BYTES,
   DEFAULT_ROUTE_ENTRIES_MAX,
   DEFAULT_GATEWAY_PORT,
   DEFAULT_MIHOMO_CONTROLLER_PORT,
@@ -237,6 +241,13 @@ const DEFAULT_CONFIG: RouterConfig = {
   rateLimit: {
     inboundGraceMs: DEFAULT_INBOUND_GRACE_MS,
     persist: { enabled: true },
+  },
+  // The shipped admission caps live in defaults.ts as the single source; this is
+  // the config face of the same two numbers (ADR-0008). A file with no
+  // `client.bodyLimits` therefore keeps exactly the pre-knob behavior.
+  bodyLimits: {
+    maxBytes: GATEWAY_MAX_BODY_BYTES,
+    adminMaxBytes: ADMIN_MAX_BODY_BYTES,
   },
   // Two axes (ADR-0008 §1): `allow` streams only when the caller asks;
   // `stream` keeps the provider leg on the upstream SSE reader even for JSON
@@ -651,6 +662,33 @@ function resolveCircuitBreaker(parsed: any): CircuitBreakerConfig {
  * doctrine as resolveRequestCapture). `persist.enabled` defaults to true —
  * only an explicit `false` disables the ledger store. Exported for tests.
  */
+/**
+ * Resolve the `client.bodyLimits` tree (ADR-0008) — the two request-body
+ * admission caps. `clampRange` is the same trust-boundary cleaner the grace
+ * window uses: a cap is a MEMORY promise the gateway makes for every in-flight
+ * request, so junk (string, NaN, negative) falls back to the shipped default and
+ * an absurd number is clamped to `BODY_LIMIT_MIN_BYTES`..`BODY_LIMIT_MAX_BYTES`
+ * instead of being honoured. Both bounds and the two defaults come from
+ * defaults.ts -- never re-declared here.
+ *
+ * Both members are always present on the resolved object: a partial file must not
+ * turn the other plane's cap undefined, and the boot-time installer
+ * (`surfaces/body-admission.ts`) treats undefined as "use the default" anyway.
+ */
+export function resolveBodyLimits(parsed: any): BodyLimitsConfig {
+  const raw = (parsed?.bodyLimits ?? {}) as Record<string, unknown>;
+  const base = DEFAULT_CONFIG.bodyLimits as BodyLimitsConfig;
+  return {
+    maxBytes: clampRange(raw.maxBytes, BODY_LIMIT_MIN_BYTES, BODY_LIMIT_MAX_BYTES, base.maxBytes as number),
+    adminMaxBytes: clampRange(
+      raw.adminMaxBytes,
+      BODY_LIMIT_MIN_BYTES,
+      BODY_LIMIT_MAX_BYTES,
+      base.adminMaxBytes as number
+    ),
+  };
+}
+
 export function resolveRateLimit(parsed: any): RateLimitConfig {
   const raw = (parsed?.rateLimit ?? {}) as Record<string, unknown>;
   const v = raw.inboundGraceMs;
@@ -1167,6 +1205,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         tracePersist: { ...DEFAULT_CONFIG.tracePersist, ...flat.tracePersist },
         circuitBreaker: resolveCircuitBreaker(flat),
         rateLimit: resolveRateLimit(flat),
+        bodyLimits: resolveBodyLimits(flat),
         retry: {
           enabled: flat.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,
           inplace: { ...DEFAULT_CONFIG.retry?.inplace, ...flat.retry?.inplace },

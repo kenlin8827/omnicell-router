@@ -2374,6 +2374,9 @@ hiddenBadge: string;
     title: string;
     desc: string;
     refresh: string;
+    /** Zoom affordance on an open client row: re-renders the SAME expanded
+     *  form inside a large centered dialog (body mounts once, in either frame). */
+    zoomOpen: string;
     configPath: string;
     /** Cursor owns launcher scripts, not a config file: the card lists every
      *  launcher path (primary + CLI) under this label. */
@@ -2625,6 +2628,10 @@ hiddenBadge: string;
     respPersistEnable: string;
     respPersistHint: string;
     respRestartHint: string;
+    bodyLimits: string;
+    capGatewayBytes: string;
+    capAdminBytes: string;
+    bodyLimitsHint: string;
     sysoneModelLabel: string;
     sysoneModelUnset: string;
     sysoneModelHint: string;

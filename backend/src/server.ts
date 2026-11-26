@@ -18,7 +18,18 @@ import { registerTranslationRoutes } from './routes/translation.js';
 import { MarketplaceRescanScheduler } from './harness/common/marketplace-rescan-scheduler.js';
 import { allHostProbes, probeOptionsFor } from './harness/plugin/adapters/index.js';
 import { INFERENCE_ROUTE_PATHS, SURFACES } from './surfaces/table.js';
+
+import {
+  adminBodyErrorHandler,
+  bodyLimitFor,
+  configureBodyLimits,
+  ContinueAdmissionRoute,
+  normalizeNativeBody,
+  settleContinuationExpectation,
+  surfaceBodyAdmissionOptions,
+} from './surfaces/body-admission.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
+import { applyInboundLiveness } from './utils/server-liveness.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
 import { purgeResponseChainForSession } from './surfaces/responses.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
@@ -257,6 +268,12 @@ export function createServer(
   registry: ProviderRegistry;
   tracker: FinOpsTracker;
 } {
+  // Install the operator-tunable admission caps (`client.bodyLimits`) BEFORE
+  // Fastify reads any `bodyLimit` — a route's cap is captured at registration
+  // time, which is exactly why the knob is restart-only (ADR-0007). With no
+  // configured value this returns the shipped constants unchanged.
+  configureBodyLimits(config.bodyLimits);
+
   // disableRequestLogging: Fastify's built-in per-request lifecycle logs
   // ("incoming request" / "request completed" at info) are pure noise here —
   // every UI poll of /health + /api/* produced a pair, drowning ocr.log.
@@ -270,6 +287,64 @@ export function createServer(
       level: process.env.LOG_LEVEL || 'info',
     },
     logController: new LogController({ disableRequestLogging: true }),
+    // Instance-wide body cap = the ADMIN tier. Fastify's own default is 1 MiB,
+    // which every console/API route inherited: a multi-MB `config.yaml` save
+    // failed as `413 "Payload Too Large"` in a shape the UI cannot render.
+    // Inference routes override this per route with the gateway tier cap, and
+    // the two upload routes declare their own bigger caps.
+    bodyLimit: bodyLimitFor('admin'),
+  });
+  // Inbound liveness, spelled from ONE source (utils/server-liveness + the
+  // SERVER_* constants): relying on runtime defaults is the same class of bug as
+  // the original 413 — Node arms 300s/60s/5s, Bun arms nothing, so which clients
+  // got served depended on which runtime started the process. Applied to the
+  // instance rather than passed as options because these keys are ambiguous across
+  // Fastify's http2 overloads and switch its inferred server type.
+  applyInboundLiveness(app.server);
+  // Admin-plane admission errors (413 oversized / 400 malformed body / 415
+  // undecodable) must answer `{ success: false, message }` — the shape the
+  // console already reads. Everything else is re-thrown to Fastify's default
+  // handler, so this never becomes a second error serializer.
+  app.setErrorHandler(adminBodyErrorHandler);
+  // `Expect: 100-continue` guard (RFC 9110 10.1.1): a client that declared a body
+  // over the cap of the route that would serve it is refused from the HEADERS
+  // alone, so it never pays for an upload we will throw away. Registering the
+  // listener switches off Node's automatic continue, so every continuation flows
+  // through `settleContinuationExpectation`, which always settles the request —
+  // either 413 or `100 Continue`.
+  //
+  // The cap comes from the route's OWN registration (recorded by `onRoute` below),
+  // never from a constant guessed here: the two upload routes accept more than the
+  // admin default, and refusing one of them early would reject a body the route
+  // would have taken. An unknown path or a route with no explicit cap gets no
+  // early answer — that costs one wasted upload, the other direction costs data.
+  const explicitRouteCaps = new Map<string, number>();
+  app.addHook('onRoute', (routeOptions) => {
+    if (typeof routeOptions.bodyLimit === 'number') {
+      explicitRouteCaps.set(routeOptions.url, routeOptions.bodyLimit);
+    }
+  });
+  app.server.on('checkContinue', (req, res) => {
+    const answered = settleContinuationExpectation(req, res, (url): ContinueAdmissionRoute | undefined => {
+      const path = url.split('?')[0];
+      const capBytes = explicitRouteCaps.get(path);
+      if (capBytes === undefined) return undefined;
+      const surface = SURFACES.find((s) => s.routePath === path);
+      return {
+        capBytes,
+        errorBody: surface
+          ? (err) => surface.errorBody(err.statusCode, err.message, err.code)
+          : (err) => ({ success: false, message: err.message }),
+        log: app.log,
+      };
+    });
+    if (answered) return;
+    // Installing the listener above suppressed the server's own delivery: verified
+    // on Bun 1.3.14 and Node 24, a `checkContinue` listener that only writes the
+    // continue leaves the request UNDISPATCHED (the client hangs until timeout).
+    // So the continue is written by the guard and the exchange is handed to the
+    // router here -- the same re-emit Node's own documentation prescribes.
+    app.server.emit('request', req, res);
   });
   app.addHook('onError', async (req, _reply, err) => {
     req.log.error(err, 'request errored');
@@ -1618,12 +1693,38 @@ export function createServer(
   //    former server-level capture hooks are deleted). `return reply` mirrors
   //    the old handler's terminal pattern — the Fastify transport has already
   //    sent via reply / reply.raw.
+  //
+  //    bodyLimit is NOT decoration: Fastify's instance default is 1 MiB, so an
+  //    unset value makes the native leg answer 413 "Payload Too Large" on any
+  //    ordinary agent context (Claude Code / opencode routinely post several
+  //    MB) while the MITM leg of the SAME request admits 32 MB. One constant,
+  //    both legs — see config/defaults.ts and surfaces/body-admission.ts.
+  //
+  //    surfaceBodyAdmissionOptions carries the whole admission policy for this
+  //    leg: Content-Encoding decode (gzip/deflate/br, 415 for anything else),
+  //    the cap on the DECOMPRESSED body, and rejection answers shaped with the
+  //    surface's own error envelope (ADR-0008: 400/413 precede process, so no
+  //    transport and no capture event exists to shape them later). Left to
+  //    Fastify's default it answers {statusCode, code, error, message}, which
+  //    client SDKs surface as an opaque `413 "Payload Too Large"` naming neither
+  //    the cap nor the gateway as its author. Non-admission errors are re-thrown
+  //    to the parent handler per fastify/docs/Reference/Errors.md.
   for (const surface of SURFACES) {
-    app.post(surface.routePath, async (req, reply) => {
-      const t = createFastifyTransport(req, reply, orchestrator);
-      await dispatchSurface(t, surface, orchestrator, req.body);
-      return reply;
-    });
+    app.post(
+      surface.routePath,
+      surfaceBodyAdmissionOptions(surface),
+      async (req, reply) => {
+        const t = createFastifyTransport(req, reply, orchestrator);
+        // `normalizeNativeBody` closes the parser-shape gap: a tolerated but
+        // non-json declaration (text/plain) hands Fastify's parser a raw STRING,
+        // which would otherwise reach the pipeline and fail as a misleading
+        // "messages array is required" 400 for a perfectly valid body. A wrong
+        // shape throws BodyAdmissionError, which the route handler above answers
+        // in the surface envelope.
+        await dispatchSurface(t, surface, orchestrator, normalizeNativeBody(req.body));
+        return reply;
+      }
+    );
   }
 
   // Opt-in marketplace rescan loop (ADR-0015 §D9): ONE process timer, unref'd so it never holds

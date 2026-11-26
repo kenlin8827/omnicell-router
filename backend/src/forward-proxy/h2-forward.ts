@@ -1,7 +1,8 @@
 import http2 from 'node:http2';
 import tls from 'node:tls';
 import type http from 'node:http';
-import { DEFAULT_MAX_BODY_BYTES, FORWARD_PROXY_HANG_TIMEOUT_MS, FORWARD_PROXY_KEEPALIVE_MS } from '../config/defaults.js';
+import { FORWARD_PROXY_HANG_TIMEOUT_MS, FORWARD_PROXY_KEEPALIVE_MS } from '../config/defaults.js';
+import { bodyTooLargeMessage, bodyLimitFor } from '../surfaces/body-admission.js';
 import {
   describeUpstreamFailure,
   openViaProxy,
@@ -421,7 +422,7 @@ export async function forwardH2(
   const onBody = (chunk: Buffer): void => {
     if (!upstreamStream || pumping || queueHead < queue.length) {
       queuedBytes += chunk.length;
-      if (queuedBytes > DEFAULT_MAX_BODY_BYTES) {
+      if (queuedBytes > bodyLimitFor('gateway')) {
         overflow = true;
         req.destroy();
         return;
@@ -465,7 +466,7 @@ export async function forwardH2(
   if (!session) {
     // h1 upstreams cannot carry bidi: drain the bounded body, then hand a
     // complete preface to the h1 leg. The timeout is the proxy's hang guard;
-    // the 16 MB cap prevents buffering an unbounded upload.
+    // the gateway body cap prevents buffering an unbounded upload.
     if (!heldEnd && !overflow) {
       let timer: NodeJS.Timeout | undefined;
       await Promise.race([
@@ -480,7 +481,7 @@ export async function forwardH2(
     req.removeListener('end', onBodyEnd);
     req.removeListener('close', resolveEnd);
     if (overflow) {
-      failPlain(res, 413, `Forward proxy: request body exceeds ${DEFAULT_MAX_BODY_BYTES} bytes on an h1 upstream`);
+      failPlain(res, 413, bodyTooLargeMessage(bodyLimitFor('gateway')) + ' (h1 upstream)');
       return { owned: true };
     }
     if (!heldEnd) {
@@ -490,7 +491,7 @@ export async function forwardH2(
     return { owned: false, ...(queue.length ? { preface: { chunks: queue, ended: true } } : {}) };
   }
   if (overflow) {
-    failPlain(res, 413, `Forward proxy: request body exceeds ${DEFAULT_MAX_BODY_BYTES} bytes`);
+    failPlain(res, 413, bodyTooLargeMessage(bodyLimitFor('gateway')));
     return { owned: true };
   }
 

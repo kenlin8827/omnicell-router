@@ -6,6 +6,8 @@ import {
   type ClientExchangeContext,
 } from '../observability/http-exchange.js';
 import type { ProtocolSurface, TransportContext } from './types.js';
+import { bodyLimitFor, payloadTooLarge, requestBodyTimeout } from './body-admission.js';
+import { REQUEST_BODY_IDLE_TIMEOUT_MS } from '../config/defaults.js';
 import { createClientLegWatchdog, writeWithBackpressure, type ClientLegWatchdog } from './transport-backpressure.js';
 
 /**
@@ -26,28 +28,81 @@ import { createClientLegWatchdog, writeWithBackpressure, type ClientLegWatchdog 
  * (Authoritative text — interceptor.ts keeps only a pointer here.)
  */
 
-const MAX_BODY_BYTES = 32 * 1024 * 1024;
-
 /**
- * Read the request body with a hard 32 MB cap (migrated verbatim from the
- * pre-refactor interceptor). Oversized bodies reject with 'Request body
- * too large' → the caller maps that to 413 via surface.errorBody.
+ * Read the request body with the gateway's hard cap (`bodyLimitFor('gateway')` —
+ * the SAME number the native Fastify routes pass as bodyLimit, so one admission
+ * ceiling covers both legs; `client.bodyLimits.maxBytes` moves it for both at the
+ * next boot). Oversized bodies reject with a BodyAdmissionError
+ * that already carries the 413 status, the `payload_too_large` code and the
+ * client-facing sentence; the caller only has to answer with it.
+ *
+ * The cap is measured on the WIRE here (this leg buffers before decoding), and
+ * `model-gateway.ts` re-checks after `decompressBody`, so a compressed body
+ * cannot slip past the ceiling that the native leg applies to its inflated
+ * stream.
+ *
+ * A STALLED body is refused too, with 408 (see `requestBodyTimeout`). The
+ * server-level `requestTimeout` cannot express it: that clock covers the whole
+ * request, so one byte per minute never trips it — and on Bun no such clock is
+ * armed at all. This timer is re-armed on every chunk, so liveness is measured on
+ * the axis that actually fails in practice: progress, not elapsed time.
+ *
+ * `idleMs` is a seam (a test cannot wait a minute, and a later config knob needs
+ * one call site); production callers pass nothing and get the single-source default.
  */
-export function readRequestBody(req: http.IncomingMessage): Promise<Buffer> {
+export function readRequestBody(
+  req: http.IncomingMessage,
+  idleMs: number = REQUEST_BODY_IDLE_TIMEOUT_MS
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    const capBytes = bodyLimitFor('gateway');
     let total = 0;
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const clearIdle = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = undefined;
+    };
+    const armIdle = (): void => {
+      clearIdle();
+      idle = setTimeout(() => {
+        idle = undefined;
+        // Same shape as the size overflow: stop consuming, let the caller answer,
+        // and let `sendPreDispatchError` close the connection.
+        req.pause();
+        reject(requestBodyTimeout());
+      }, idleMs);
+      // Never hold the event loop open for a client that has stopped talking.
+      idle.unref?.();
+    };
     req.on('data', (d: Buffer) => {
+      armIdle();
       total += d.length;
-      if (total > MAX_BODY_BYTES) {
-        reject(new Error('Request body too large'));
-        req.destroy();
+      if (total > capBytes) {
+        clearIdle();
+        // RFC 9110 15.5.14: an oversized payload is refused with a 413 — an
+        // ANSWER, not a reset. Destroying the request here tore the socket down
+        // before the caller could write the status, so the client saw a bare
+        // ECONNRESET with no code at all (verified on bun and node). Pause
+        // instead — the ceiling is already crossed, so stop consuming and let
+        // `sendPreDispatchError` answer, flush and close.
+        req.pause();
+        reject(payloadTooLarge(capBytes));
         return;
       }
       chunks.push(d);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.on('end', () => {
+      clearIdle();
+      resolve(Buffer.concat(chunks));
+    });
+    // A client that hangs up mid-body is not a stalled body: no 408 answer to send,
+    // just stop the clock.
+    req.on('close', clearIdle);
+    req.on('error', (err) => {
+      clearIdle();
+      reject(err);
+    });
   });
 }
 
@@ -61,18 +116,38 @@ export function sendPreDispatchError(
   res: http.ServerResponse,
   surface: ProtocolSurface,
   status: number,
-  message: string
+  message: string,
+  code?: string,
+  /** The rejection's negotiation headers (`Accept-Encoding` for a refused coding,
+   *  `Accept` for a refused media type). Carried through so the MITM leg advertises
+   *  exactly what the native leg does — a client that only reads the headers learns
+   *  the fix on neither leg if they are dropped here. */
+  headers?: Record<string, string>
 ): void {
   let serialized: string;
   try {
-    serialized = JSON.stringify(surface.errorBody(status, message));
+    serialized = JSON.stringify(surface.errorBody(status, message, code));
   } catch (err) {
     logWriteError(err, 'node-http pre-dispatch error body serialization failed');
     return;
   }
   try {
-    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+    // The MITM leg serves BOTH HTTP/1.1 and the http2 compatibility API. h2
+    // forbids connection-specific fields (writeHead throws
+    // ERR_HTTP2_INVALID_CONNECTION_HEADERS, which used to eat the whole
+    // envelope), so `connection: close` is spoken only on the h1 leg.
+    const isH2 = (res as unknown as { stream?: unknown }).stream !== undefined;
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      ...(isH2 ? {} : { connection: 'close' }),
+      ...(headers ?? {}),
+    });
     res.end(serialized);
+    // The body was deliberately left unread, so this connection is not reusable.
+    // destroySoon() — never destroy() — flushes the answer first and then closes
+    // the transport; on the h2 leg it ends the affected stream, not the
+    // multiplexed session.
+    (res as unknown as { destroySoon?: () => void }).destroySoon?.();
   } catch (err) {
     logWriteError(err, 'node-http pre-dispatch error write failed');
   }

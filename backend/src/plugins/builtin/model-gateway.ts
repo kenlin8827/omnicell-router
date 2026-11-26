@@ -4,6 +4,7 @@ import { dispatchSurface } from '../../surfaces/dispatch.js';
 import { detectSurface } from '../../surfaces/table.js';
 import { createNodeHttpTransport, readRequestBody, sendPreDispatchError } from '../../surfaces/transport-node-http.js';
 import type { ClientGatewayPlugin } from '../types.js';
+import { decompressBody, invalidJsonBody, isBodyAdmissionError, logBodyRejection, parseJsonBody, requestContentEncoding, preflightBodyAdmission, bodyLimitFor } from '../../surfaces/body-admission.js';
 
 /**
  * The BUILT-IN universal gateway — the canonical model wires, expressed as a
@@ -59,28 +60,50 @@ export function createBuiltinModelGateway(orchestrator: PipelineOrchestrator): C
         return;
       }
 
-      let raw: Buffer;
-      try {
-        raw = await readRequestBody(req);
-      } catch (err) {
-        sendPreDispatchError(
-          res,
-          surface,
-          413,
-          err instanceof Error ? err.message : 'Request body too large'
-        );
-        return;
-      }
-
+      let receivedBytes: number | undefined;
       let body: unknown;
       try {
-        body = JSON.parse(raw.toString('utf8'));
-      } catch {
-        sendPreDispatchError(res, surface, 400, 'Invalid JSON body');
+        // Media type and request coding are checked BEFORE the body is read:
+        // a form-urlencoded or XML upload must be refused rather than buffered and
+        // then rejected as "invalid JSON", and a body claiming a coding the gateway
+        // cannot decode must not pay for its own upload. The native leg refuses the
+        // same types (Fastify's own media-type gate) and the same codings, so the two
+        // legs cannot disagree about serviceability.
+        const preRefusal = preflightBodyAdmission(req.headers);
+        if (preRefusal) throw preRefusal;
+        const raw = await readRequestBody(req);
+        receivedBytes = raw.length;
+        // Same admission policy as the native leg: decode Content-Encoding with
+        // the cap re-checked on the INFLATED size (readRequestBody bounded the
+        // wire size), then parse. Both throw BodyAdmissionError carrying status,
+        // code and the client-facing message, so the two legs cannot drift.
+        body = parseJsonBody(decompressBody(raw, req.headers));
+      } catch (err) {
+        if (!isBodyAdmissionError(err)) {
+          // A socket/read failure is not an admission decision — answer 400 with
+          // the underlying reason rather than hanging the client.
+          sendPreDispatchError(res, surface, 400, err instanceof Error ? err.message : 'Unreadable request body');
+          return;
+        }
+        logBodyRejection(
+          {
+            leg: 'mitm',
+            path: req.url || '',
+            err,
+            capBytes: bodyLimitFor('gateway'),
+            receivedBytes,
+            encoding: requestContentEncoding(req.headers),
+          },
+          undefined
+        );
+        sendPreDispatchError(res, surface, err.statusCode, err.message, err.code, err.headers);
         return;
       }
       if (!body || typeof body !== 'object') {
-        sendPreDispatchError(res, surface, 400, 'Invalid JSON body');
+        // Valid JSON, wrong shape (array/string/number/null). Same 400 and the
+        // same code and words as the native leg's shape check — the client's fix
+        // is identical to a parse failure's.
+        sendPreDispatchError(res, surface, 400, invalidJsonBody().message, 'invalid_json_body');
         return;
       }
 

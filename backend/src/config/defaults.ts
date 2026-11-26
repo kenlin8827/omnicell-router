@@ -286,12 +286,86 @@ export const DEFAULT_HEADROOM_URL = `http://127.0.0.1:${DEFAULT_HEADROOM_PORT}`;
 export const DEFAULT_HEADROOM_TIMEOUT_MS = 3000;
 
 /** Per-body capture cap when `requestCapture.maxBodyBytes` is unset (16 MB —
- * sized for a fully-loaded 2M-token context). */
+ * sized for a fully-loaded 2M-token context). This bounds what the ARCHIVE
+ * stores, never what the gateway ACCEPTS — see GATEWAY_MAX_BODY_BYTES. */
 export const DEFAULT_MAX_BODY_BYTES = 16_777_216;
+
+/**
+ * Request-body admission cap for inference traffic, ONE value for BOTH legs:
+ * the native Fastify routes (route `bodyLimit`) and the MITM/node-http leg
+ * (`surfaces/transport-node-http.ts` reads it, `forward-proxy/h2-forward.ts`
+ * bounds its h2 preface buffer with it). 32 MiB — the value ADR-0008 documents
+ * for the proxy, and the ceiling a 2M-token context plus base64 attachments
+ * needs (an agent upload of several MB is normal traffic here, and the capture
+ * plane is already sized for 16 MB bodies untruncated).
+ *
+ * WHY IT IS NOT `DEFAULT_MAX_BODY_BYTES`: that constant is the capture
+ * truncation window and is operator-tunable (`requestCapture.maxBodyBytes`).
+ * Wiring an admission gate to a storage cap means raising what the operator is
+ * willing to RECORD silently changes what the gateway is willing to SERVE —
+ * two independent policies that must never share a number.
+ */
+export const GATEWAY_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Request-body admission cap for the ADMIN plane (console/API routes), applied as
+ * the Fastify INSTANCE default in `server.ts` — that placement is the point:
+ * Fastify's own instance default is 1 MiB, and a route that forgets to declare a
+ * limit silently inherits it. `POST /api/admin/config/raw` is exactly such a
+ * route: its body is the WHOLE `config.yaml` as a string, so an operator with a
+ * large config got `413 "Payload Too Large"` from the framework, in an envelope the
+ * console could not even name.
+ *
+ * 8 MiB, deliberately NOT `GATEWAY_MAX_BODY_BYTES`: a config, preset, rule set or
+ * harness manifest is kilobytes-to-low-megabytes, and the ceiling a client can
+ * push at the model plane has no business applying to the control plane. Keeping
+ * the tiers separate is what makes the answer to "why did that request get 413?"
+ * explainable. Bodies that really are big already declare their own cap per route
+ * (`IMPORT_BODY_LIMIT_BYTES`, `PLUGIN_PACKAGE_MAX_BYTES`).
+ */
+export const ADMIN_MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Bounds for the operator-tunable admission caps (`client.bodyLimits`), enforced by
+ * the config cleaner so a typo cannot turn the gateway into a memory sponge or
+ * make it refuse traffic it can no longer serve.
+ *
+ * 64 KiB floor: below that even a modest chat request with a short system prompt is
+ * rejected, so a smaller number is always a mistake rather than a policy.
+ * 512 MiB ceiling: 16x the shipped inference default. The cap is what a request may
+ * hold IN MEMORY while it is admitted, so the ceiling is a durability limit on the
+ * gateway itself, not a statement about models; an operator who genuinely needs
+ * more than this is describing a different product (streaming spooling), not a
+ * config value.
+ */
+export const BODY_LIMIT_MIN_BYTES = 64 * 1024;
+export const BODY_LIMIT_MAX_BYTES = 512 * 1024 * 1024;
 
 /** Forward-proxy hang protection: upstream socket timeout applied until
  * response headers arrive (blackholed-peer guard). */
 export const FORWARD_PROXY_HANG_TIMEOUT_MS = 60_000;
+
+/**
+ * INBOUND liveness bounds, declared once and SET EXPLICITLY on every listener the
+ * gateway owns. Leaving them to the runtime is not a neutral choice: Node ships
+ * `requestTimeout` 300s / `headersTimeout` 60s / `keepAliveTimeout` 5s, Bun ships
+ * none of them, so the same slow or half-open client holds a socket forever on one
+ * runtime and is reaped on the other. That is the same class of bug as the original
+ * 413 — an invisible runtime default deciding gateway policy (here: which clients
+ * get served) — so the values are named, and they match Node's shipped numbers
+ * deliberately: on Node this changes nothing, it makes the behavior on Bun the
+ * behavior on Node instead of undefined.
+ *
+ * `REQUEST_BODY_IDLE_TIMEOUT_MS` is the bound the server-level timeouts cannot
+ * express: `requestTimeout` measures the WHOLE request, so a client that trickles
+ * one byte per minute never trips it on either runtime. This one is armed per chunk
+ * in `readRequestBody`, so a stalled upload is refused with 408 while the ceiling
+ * still guards the size axis.
+ */
+export const SERVER_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+export const SERVER_HEADERS_TIMEOUT_MS = 60_000;
+export const SERVER_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+export const REQUEST_BODY_IDLE_TIMEOUT_MS = 60_000;
 
 /** Forward-proxy tunnel keepalive: TCP probe interval armed on both sides of
  * every relayed connection (blind tunnels and `Upgrade:` relays). There is no
