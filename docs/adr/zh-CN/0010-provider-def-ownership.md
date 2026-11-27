@@ -119,3 +119,13 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **删除是持久的；连接意图才解除。** 删除 provider 时把它的 id 记进所属插件的注册账本（`{ providers, written?, deleted? }`；`deleted` 可选，旧行没有也照常读）——任何插件的安装/reload 都会对所有插件重跑注册，不记就会被立刻重建。磁盘上重新出现 def（运维用 key 或 web-login 按钮重新连接；`ensurePresetProvider` 会物化预设并解除墓碑）即清除该记录。墓碑随所属插件的账本存亡，因此卸载/禁用**所属**插件会一并忘记它：全新安装注册全新预设。删除后仍留在凭据库里的凭据会经启动绑定扫描重建节点——那是凭据真相；要断开走 purge 路径。来源视图（`pluginProviderOrigins`、控制台的来源标签）随注册记录一起失去该 id。
 - **账本丢弃已不存在的包的行。** 包改名（`qoder` → `qoder-models`）会把旧 id 的注册记录留在原地；sync 只遍历已加载的 id，卸载只删除自己的键，所以那行永远读不到。现在 sync 会清理上次加载视图中不存在的账本键——已加载、加载失败、已禁用都算存在。**加载失败**的包保留其行：包还在磁盘上，卸载必须仍能删掉它注册的 def。
 - **reload 如实汇报。** `/plugins/reload` 返回 `registered`（新建或修复的 provider id），控制台点名列出——空操作的 reload 与真正修复的 reload 一眼可辨。
+
+## 修订案 —— OCR 自有协议槽为 `protocols[]`（干净 schema）
+
+取代 2026-11-19 那条「目录槽名仍叫 `npm`、值存协议 id」的修订。OCR 自有真源**只**存 `protocols: string[]`（有序的 OCR 协议 id）。退役拼写 `npm` / `package` / `protocol` 在升级 hop 之后不得留在磁盘上；兼容**只**发生在改写文件的迁移步骤里。
+
+- **基数。** 必须拨号的已连接 provider def 携带非空 `protocols`。模型可省略 `provider.protocols` 以继承服务商列表。顺序即偏好：入站匹配未选中时，按声明顺序回退。
+- **`providers.json` version 2。** 启动跑 JSON 文档 hop（`opencode/migrate/`）：服务商 `package`/`npm` → `protocols: [id]`，模型 `provider.npm`/`provider.package` → `provider.protocols`，删除旧键，原子写回。读者只认 version 2。
+- **`overrides.json` version 2** 与 **`ocr.json` version 6**（烧版本重建）同一干净规则。
+- **边界上的遗留名。** models.dev 仍发 `npm`；ingest 译成 `protocols`。opencode 客户端仍说 `package`；物化把 OCR `protocols` 映到 SDK `package`（导出），导入反向。插件 zip 的 manifest 仍可带 `protocol` 或 `npm`；加载边界归一成内存 `protocols`，预设同步只写干净 defs。这些外部拼写绝不写回 OCR 真源。
+- **保真拨号。** 请求时从模型已解析的 `protocols` 选一条线：入站面 id 若在集合中则拨它；否则按声明顺序找第一条 `assertCanonicalRequestSupported` 放行的；再否则 `protocols[0]`（现有门禁诚实性）。`DispatchingProvider` 为集合中每个 id 注册执行器。见 ADR-0033 修订案。

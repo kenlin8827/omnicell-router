@@ -206,3 +206,14 @@ resulting `400` was blamed on the upstream.
   provider streaming.
 - Unsupported vendor dialects are not silently accepted: a faithful mapping must
   be implemented, or the conversion must fail visibly.
+
+## Amendment — prefer-native southbound dial from `protocols[]`
+
+OCR-owned models carry `protocols: string[]` (ADR-0010). Northbound conversion into Canonical IR is unchanged. Southbound dial selection is request-scoped:
+
+1. Resolve the model's ordered protocol set (model override → catalog model → provider def → catalog provider).
+2. If the inbound surface protocol id is in that set, dial it (same-carrier fidelity; no cross-wire conversion loss for that attempt).
+3. Otherwise try each remaining id in declaration order; the first wire for which `assertCanonicalRequestSupported` admits the request wins (capability escalate).
+4. If none admit, dial `protocols[0]` and let the existing gate refuse visibly.
+
+One attempt still speaks exactly one wire. Multi-protocol is a dial set, not a parallel fan-out. Plugin wires and `systemone` participate when listed; they are never invented by the dialer.

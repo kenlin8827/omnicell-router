@@ -18,7 +18,6 @@ import { readProviderDefsFile, writeProviderDefs } from '../../opencode/provider
 import { materializeDefs } from '../../opencode/credentials/def-materialize.js';
 import { reloadOpencodeService } from '../../opencode/credentials/opencode-v2-store.js';
 import { resolveDefaultPaths } from '../../opencode/credentials/paths.js';
-import { opencodePackageFor } from '../../opencode/provider-package.js';
 
 /**
  * OpenCode client adapter.
@@ -112,7 +111,9 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
   }
   return {
     name: 'OmniCellRouter',
-    package: opencodePackageFor('openai-chat'),
+    // OCR defs truth is protocols[] (ADR-0010); materialize emits the
+    // client `package` spelling for opencode.jsonc.
+    protocols: ['openai-chat'],
     settings: {
       baseURL: targetUrl,
       // Gateway-issued key when the user picks one; the placeholder works

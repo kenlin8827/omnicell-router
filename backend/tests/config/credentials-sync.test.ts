@@ -330,9 +330,11 @@ describe('read sync (pull): client -> OCR file', () => {
 
     const first = await pullIntoOcr('opencode-v2', ocr, { paths: p, openDatabase: db, now: () => 2 });
     expect(first.defsImported).toBe(1);
-    expect(first.defsConverted).toBe(0);
+    // Live client nodes still speak package/settings; storing them in OCR's
+    // protocols/settings shape is a conversion (ADR-0010).
+    expect(first.defsConverted).toBe(1);
     const defs = JSON.parse(fs.readFileSync(getProviderDefsPath(p), 'utf8'));
-    expect(defs.providers.myrelay.package).toBe('openai-chat');
+    expect(defs.providers.myrelay.protocols).toEqual(['openai-chat']);
     expect(defs.providers.myrelay.settings.baseURL).toBe('https://relay.example/v1');
 
     // Rerun: the OCR defs file now owns it — skipped, never rewritten.

@@ -26,7 +26,7 @@ The common fixtures contain semantics every target can express: instructions, or
 | Native upstream SSE | Yes | Yes | Yes | Yes |
 | Buffered JSON / stream-request JSON fallback | Yes | Yes | Yes | Yes |
 | Content parts | text, image, refusal | text, image, file, refusal | text, image, file | text, image, file, audio |
-| Tool definitions | function | function, custom, builtin | function | function |
+| Tool definitions | function only (portable) | function, custom, builtin | function | function |
 | Structured output | JSON object/schema | JSON object/schema | JSON schema mapping | JSON object/schema |
 | Reasoning controls | effort mapping | effort, budget, summary, signatures | budget, signatures | budget, thought signatures |
 | Multiple candidates | Yes | No | No | Yes |
@@ -34,7 +34,9 @@ The common fixtures contain semantics every target can express: instructions, or
 | Request cache controls | key plus carrier-owned breakpoints; generic upstream strips foreign markers | key, retention, options, part breakpoint | part/tool/item `cache_control` | none advertised |
 | Item references / stateful upstream | No | Yes | No | No |
 
-Additional gates cover media source kind, strict tool schemas, allowed tool choice, parallel tool calls, generation fields, verbosity, logprobs, service tier, attribution, metadata, item references and stream options. Opaque same-carrier extensions may round-trip; a foreign opaque item/part or an unrepresentable load-bearing feature raises `unsupported_parameter`. No adapter stringifies unknown content into the prompt or silently discards signed reasoning, citations, tool definitions or usage details.
+Additional gates cover media source kind, strict tool schemas, allowed tool choice, parallel tool calls, generation fields, verbosity, logprobs, service tier, attribution, metadata, item references and stream options. Opaque same-carrier extensions may round-trip; a foreign opaque item/part or an unrepresentable load-bearing feature raises `unsupported_parameter`. The client-visible `error.message` names the feature, the dialed outbound protocol, the model and its declared `protocols[]` when dialed through the registry, and a short fix hint — never a bare "Protocol cannot…" line. No adapter stringifies unknown content into the prompt or silently discards signed reasoning, citations, tool definitions or usage details.
+
+**Chat tool kinds.** `openai-chat` advertises **function** tools only. That id is OCR's portable OpenAI-compatible Chat Completions contract (Xiaomi / DeepSeek / Kimi-style endpoints). OpenAI Platform Chat Completions added `type:"custom"` (freeform / Lark-or-regex grammar) in 2025-08; that dialect is **not** part of the generic `openai-chat` wire, because flipping the global matrix would forward OpenAI-only payloads to compat upstreams that reject or filter them. Responses keeps `custom` and `builtin`. Clients such as Codex that send Responses custom/builtin tools against a chat-compat or Anthropic-only model get an explicit `unsupported_parameter` naming `openai-responses` / `protocols[]` as the fix — never a silent rewrite into function calling.
 
 ## 3. Streaming, backpressure and terminal semantics
 
@@ -97,3 +99,4 @@ Live checks are not part of ordinary CI evidence until they have actually run ag
 - System One is a decision protocol, not another chat item surface.
 - A same-carrier opaque extension is not proof of portable cross-vendor semantics. New dialects need a faithful adapter mapping and conformance fixtures, or a visible rejection.
 - Golden fixtures and local simulations prove gateway behavior; they do not replace live-account interoperability tests for every provider/model combination.
+- OpenAI Platform Chat `custom` tools are deferred: encode/decode for that dialect belongs behind a **provider-scoped capability (default off)**, not on the global `OPENAI_CHAT` matrix. Until that ADR exists, route custom/builtin agent traffic to Responses-capable upstreams.

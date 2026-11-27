@@ -915,6 +915,58 @@ describe('POST /opencode/providers/:id/test — model-scoped candidate rotation'
   });
 });
 
+describe('POST /opencode/providers/:id/test — protocol pin', () => {
+  it('body.protocol pins the probe wire instead of the provider primary', async () => {
+    const p = credPaths();
+    writeJsonc(p, {
+      providers: {
+        dualwire: {
+          protocols: ['openai-chat', 'openai-responses'],
+          settings: { baseURL: 'https://dual.test/v1' },
+          models: { 'm1': {} },
+        },
+      },
+    });
+    catalogRecs = [{ id: 'dualwire', models: [{ id: 'm1' }], api: 'https://dual.test/v1', protocols: ['openai-chat', 'openai-responses'] }];
+    seedOcr(p, { dualwire: [{ id: 'c1', key: 'sk-live' }] });
+    bindStore(p);
+    probeImpl = async (opts: any) => ({ ok: true, kind: opts.kind, model: opts.model, latencyMs: 3 });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/dualwire/test',
+      payload: { modelId: 'm1', protocol: 'openai-responses' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ok).toBe(true);
+    expect(probeCalls).toHaveLength(1);
+    expect(probeCalls[0].kind).toBe('openai-responses');
+  });
+
+  it('body.protocol outside declared protocols[] is refused', async () => {
+    const p = credPaths();
+    writeJsonc(p, {
+      providers: {
+        dualwire: {
+          protocols: ['openai-chat', 'openai-responses'],
+          settings: { baseURL: 'https://dual.test/v1' },
+          models: { 'm1': {} },
+        },
+      },
+    });
+    catalogRecs = [{ id: 'dualwire', models: [{ id: 'm1' }], api: 'https://dual.test/v1', protocols: ['openai-chat', 'openai-responses'] }];
+    seedOcr(p, { dualwire: [{ id: 'c1', key: 'sk-live' }] });
+    bindStore(p);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/dualwire/test',
+      payload: { modelId: 'm1', protocol: 'anthropic-messages' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reasonCode).toBe('protocol_not_declared');
+    expect(probeCalls).toHaveLength(0);
+  });
+});
+
 describe('POST /opencode/providers/:id/models/pull — liveCapable keyed on the store', () => {
   it('baseURL config + store key (no auth.json) → LIVE pull chosen', async () => {
     const p = credPaths();

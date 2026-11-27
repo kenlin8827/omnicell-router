@@ -19,12 +19,13 @@ export interface OcrCatalogStore {
   /** Bump to invalidate every on-disk snapshot when the aggregation semantics
    *  change in code (the signature only covers defs/config mtimes + source
    *  defs + locked ids — code-level changes cannot drift it). Monotonic only —
- *  never reuse or step back: 1–4 are burned (2 was the pre-rename snapshot
- *  with `builtin` source ids; 3 the custom-store 'custom' source, retired
- *  when model books unified into providers.json; 4 still stored SDK package
- *  strings in the `npm` slot). A stale 1–4 file stays invalid forever and
- *  the next semantic change goes to 6. */
-  version: 5;
+   *  never reuse or step back: 1–5 are burned (2 was the pre-rename snapshot
+   *  with `builtin` source ids; 3 the custom-store 'custom' source, retired
+   *  when model books unified into providers.json; 4 still stored SDK package
+   *  strings in the `npm` slot; 5 stored singular protocol ids under `npm`).
+   *  Version 6 stores `protocols: string[]` (ADR-0010). A stale 1–5 file stays
+   *  invalid forever. */
+  version: 6;
   /** aggregation signature — defs/config.yaml mtimes + source defs + locked ids */
   sig: string;
   /** when this snapshot was aggregated (epoch ms) */
@@ -43,7 +44,7 @@ export function readOcrStore(): OcrCatalogStore | null {
     const file = getOcrStorePath();
     if (!fs.existsSync(file)) return null;
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as OcrCatalogStore;
-    if (parsed?.version !== 5 || typeof parsed.sig !== 'string' || typeof parsed.builtAt !== 'number') return null;
+    if (parsed?.version !== 6 || typeof parsed.sig !== 'string' || typeof parsed.builtAt !== 'number') return null;
     if (!Array.isArray(parsed.providers)) return null;
     return parsed;
   } catch {
@@ -55,7 +56,7 @@ export function writeOcrStore(sig: string, providers: CatalogProviderRecord[]): 
   try {
     const file = getOcrStorePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const store: OcrCatalogStore = { version: 5, sig, builtAt: Date.now(), providers };
+    const store: OcrCatalogStore = { version: 6, sig, builtAt: Date.now(), providers };
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmp, JSON.stringify(store), 'utf8');
     renameWithRetry(tmp, file);

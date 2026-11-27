@@ -427,15 +427,15 @@ describe('canonical IR conformance', () => {
     }];
     const anthropic = canonicalToAnthropicPayload({ model: 'auto', stream: false, input: cachedInput }, model);
     assert.deepEqual(anthropic.messages[0].content[0].cache_control, { type: 'ephemeral' });
-    assert.throws(() => canonicalToGooglePayload({ model: 'auto', stream: false, input: cachedInput }, model), /item-level cache breakpoint/);
-    assert.throws(() => canonicalToResponsesPayload({ model: 'auto', stream: false, input: cachedInput }, model), /item-level cache breakpoint/);
+    assert.throws(() => canonicalToGooglePayload({ model: 'auto', stream: false, input: cachedInput }, model), /Item-level cache breakpoints/);
+    assert.throws(() => canonicalToResponsesPayload({ model: 'auto', stream: false, input: cachedInput }, model), /Item-level cache breakpoints/);
     assert.throws(() => canonicalToAnthropicPayload({
       model: 'auto', stream: false, input: [userText('x')], cache: { key: 'shared' },
     }, model), /cache\.key/);
     assert.throws(() => canonicalToResponsesPayload({
       model: 'auto', stream: false, input: [userText('x')],
       tools: [{ type: 'function', function: { name: 'f', parameters: {}, cache: { type: 'ephemeral' } } }],
-    }, model), /tool cache breakpoint/);
+    }, model), /Tool cache breakpoints/);
   });
 
   it('keeps Chat stream_options at the northbound boundary on a Responses upstream', () => {

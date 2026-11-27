@@ -14,10 +14,10 @@ import { wireFor } from '../../src/providers/wire.js';
 
 /**
  * Provider-definition WRITES.
- * upsertProviderDef emits exactly one shape: the v2 node (package/settings/headers/
- * env/canonical/body) into opencode's native `providers` slot. There is no second
- * generation to select and no legacy npm/options emission left; requests that carry a
- * legacy-shaped node are refused, not converted. Fixtures follow user-config-v2-read.test.ts:
+ * upsertProviderDef emits exactly one shape: the OCR node (protocols/settings/
+ * headers/env/canonical/body) into the defs file's `providers` slot. The retired
+ * singular protocol spellings (npm/package/protocol) and the opencode-v1 options
+ * bag are refused, not converted. Fixtures follow user-config-v2-read.test.ts:
  * per-test XDG_* sandbox, raw-file assertions (text level) + normalized read-back assertions.
  */
 
@@ -59,30 +59,31 @@ function readRaw(): any {
 }
 
 describe('upsertProviderDef — opencode v2 shape emission', () => {
-  it('writes package/settings/headers/env — no npm/options slots, no auth.json', () => {
+  it('writes protocols/settings/headers/env — no npm/package/options slots, no auth.json', () => {
     const file = writeConfig('{}');
     const res = upsertProviderDef({
       id: 'acme',
       name: 'Acme',
-      npm: '@ai-sdk/openai-compatible',
+      protocols: ['@ai-sdk/openai-compatible'],
       baseURL: 'https://acme.test/v1',
       apiKey: '{env:ACME_TOKEN}',
       apiKeyInline: true,
       headers: { 'X-Tenant': 't' },
       options: { timeoutMs: 30000 },
       models: { 'm-1': { limit: { context: 128000 } } },
-      generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
     const node = readRaw().providers.acme;
-    expect(node.package).toBe('openai-chat');
+    expect(node.protocols).toEqual(['openai-chat']);
     expect(node.settings).toEqual({ baseURL: 'https://acme.test/v1', timeoutMs: 30000 });
     expect(node.headers).toEqual({ 'X-Tenant': 't' });
     expect(node.env).toEqual(['ACME_TOKEN']);
     expect(node.name).toBe('Acme');
     expect(node.models['m-1']).toEqual({ limit: { context: 128000 } });
-    // opencode-v1-only slots never appear
+    // retired singular slots never appear
     expect(node.npm).toBeUndefined();
+    expect(node.package).toBeUndefined();
+    expect(node.protocol).toBeUndefined();
     expect(node.options).toBeUndefined();
     // {env:X} translated to env:["X"], the fake inline key dropped (task test c)
     expect(node.settings.apiKey).toBeUndefined();
@@ -103,18 +104,17 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
     );
     const res = upsertProviderDef({
       id: 'acmev2',
-      npm: '@ai-sdk/anthropic',
+      protocols: ['@ai-sdk/anthropic'],
       baseURL: 'https://acme.test/v1',
-      generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
     const parsed = readRaw();
-    expect(parsed.providers.acmev2.package).toBe('anthropic-messages');
+    expect(parsed.providers.acmev2.protocols).toEqual(['anthropic-messages']);
     expect(parsed.providers.acmev2.settings.baseURL).toBe('https://acme.test/v1');
     // the untouched sibling is preserved structurally, with its retired client
     // package normalized to the OCR protocol id
     expect(parsed.providers.headroom).toEqual({
-      package: 'openai-chat',
+      protocols: ['openai-chat'],
       settings: { baseURL: 'http://127.0.0.1:8787/v1' },
     });
   });
@@ -126,7 +126,6 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
       baseURL: 'https://acme.test/v1',
       apiKey: 'sk-live-secret-0001',
       apiKeyInline: false,
-      generation: 'opencode-v2',
     });
     expect(res.success).toBe(false);
     expect(res.error).toContain('credential store');
@@ -142,7 +141,6 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
       baseURL: 'https://acme.test/v1',
       apiKey: 'sk-explicit-inline-2',
       apiKeyInline: true,
-      generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
     const node = readRaw().providers.acme;
@@ -156,13 +154,11 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
       id: 'tpl',
       baseURL: 'https://tpl.test/v1',
       options: { apiKey: '{env:LEGACY_TOKEN}', timeoutMs: 5 },
-      generation: 'opencode-v2',
     });
     upsertProviderDef({
       id: 'lit',
       baseURL: 'https://lit.test/v1',
       options: { apiKey: 'sk-existing-inline', headers: { 'X-From': 'options' } },
-      generation: 'opencode-v2',
     });
     const parsed = readRaw();
     // migration NEVER drops an inline credential already living in the file,
@@ -175,11 +171,11 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
     expect(parsed.providers.lit.settings.headers).toBeUndefined();
   });
 
-  it('emits canonical/env/body opencode v2 slots and models provider.npm→provider.package (reverse of normalizeModelDef)', () => {
+  it('emits canonical/env/body and model provider protocols — no npm/package remains', () => {
     const file = writeConfig('{}');
     const res = upsertProviderDef({
       id: 'acme',
-      npm: '@ai-sdk/openai-compatible',
+      protocols: ['@ai-sdk/openai-compatible'],
       baseURL: 'https://acme.test/v1',
       env: ['FOO_TOKEN', 'bad name!'],
       canonical: 'openai',
@@ -189,19 +185,18 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
         'm2': { provider: { package: '@opencode/ai/providers/anthropic' } },
         'm3': { name: 'Plain' },
       },
-      generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
     const node = readRaw().providers.acme;
     expect(node.canonical).toBe('openai');
     expect(node.env).toEqual(['FOO_TOKEN']); // invalid names filtered
     expect(node.body).toEqual({ stream_options: { include_usage: true } });
-    expect(node.models.m1.provider).toEqual({ package: 'anthropic-messages' });
-    expect(node.models.m2.provider).toEqual({ package: 'anthropic-messages' });
+    expect(node.models.m1.provider).toEqual({ protocols: ['anthropic-messages'] });
+    expect(node.models.m2.provider).toEqual({ protocols: ['anthropic-messages'] });
     expect(node.models.m3).toEqual({ name: 'Plain' });
   });
 
-  it('round-trip through the P1 reader: normalized opencode v2 view == equivalent opencode v1 view', () => {
+  it('round-trip through the P1 reader: the normalized def view converges on protocols', () => {
     writeConfig('{}');
     const common = {
       name: 'Eq',
@@ -209,36 +204,31 @@ describe('upsertProviderDef — opencode v2 shape emission', () => {
       headers: { 'X-T': '1' },
       models: { m1: { provider: { npm: '@ai-sdk/anthropic' } } },
     };
-    const r1 = upsertProviderDef({ id: 'eq1', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v1' });
-    const r2 = upsertProviderDef({
-      id: 'eq2',
-      ...common,
-      npm: '@ai-sdk/openai-compatible', // writer maps it to the opencode v2 compatible-runtime package
-      generation: 'opencode-v2',
-    });
+    const r1 = upsertProviderDef({ id: 'eq1', ...common, protocols: ['@ai-sdk/openai-compatible'] });
+    const r2 = upsertProviderDef({ id: 'eq2', ...common, protocols: ['@ai-sdk/openai-compatible'] });
     expect(r1.success && r2.success).toBe(true);
     const d1 = getProviderNodeById('eq1');
     const d2 = getProviderNodeById('eq2');
-    // getProviderNodeById normalizes opencode v2 → internal view: both must agree on
-    // every slot boot reads (npm/baseURL/headers), the two shapes converge.
-    expect(d2.npm).toBe('openai-chat');
+    // getProviderNodeById normalizes to the internal view: both must agree on
+    // every slot boot reads (protocols/baseURL/headers).
+    expect(d2.protocols).toEqual(['openai-chat']);
     expect(d2.options.baseURL).toBe(d1.options.baseURL);
     expect(d2.options.headers).toEqual(d1.options.headers);
-    expect(wireFor(d1.npm)).toBe(wireFor(d2.npm));
+    expect(wireFor(d1.protocols[0])).toBe(wireFor(d2.protocols[0]));
     const m1 = getProviderModelDefs('eq1')!.m1;
     const m2 = getProviderModelDefs('eq2')!.m1;
-    expect(m2.provider.npm).toBe('anthropic-messages'); // normalizeModelDef reverses the write; the protocol id round-trips verbatim
-    expect(wireFor(m2.provider.npm)).toBe(wireFor(m1.provider.npm)); // boot consumes it through wireFor — same wire both shapes
+    expect(m2.provider.protocols).toEqual(['anthropic-messages']); // normalizeModelDef reverses the write; the protocol id round-trips verbatim
+    expect(wireFor(m2.provider.protocols[0])).toBe(wireFor(m1.provider.protocols[0])); // boot consumes it through wireFor — same wire both shapes
   });
 });
 
-describe('upsertProviderModel — model defs are the current v2 FILE shape, not refused', () => {
+describe('upsertProviderModel — model defs are accepted, protocol slots normalized', () => {
   // Regression: an earlier model-level gate flagged flat snake_case cost cache keys
   // (and keyed variants / provider.npm) as 'legacy-shaped' and refused the write —
   // every cache-priced model (e.g. glm-4.5) failed pull and editor save. Verified
   // against opencode v2.0.15's embedded config decoder: this IS the file spelling;
   // the nested/array forms are opencode's internal domain shape only.
-  it('writes flat cost cache keys, keyed variants, and model provider.npm verbatim', () => {
+  it('writes flat cost cache keys and keyed variants; provider.npm becomes protocols[]', () => {
     writeConfig(
       '{"providers":{"zhipu":{"package":"@opencode/ai/providers/openai-compatible","settings":{"baseURL":"https://z.test/v1"}}}}'
     );
@@ -252,6 +242,6 @@ describe('upsertProviderModel — model defs are the current v2 FILE shape, not 
     const model = readRaw().providers.zhipu.models['glm-4.5'];
     expect(model.cost).toEqual({ input: 0.6, output: 1.8, cache_read: 0.13 });
     expect(model.variants).toEqual({ fast: { reasoningEffort: 'low' } });
-    expect(model.provider).toEqual({ npm: 'openai-chat' });
+    expect(model.provider).toEqual({ protocols: ['openai-chat'] });
   });
 });

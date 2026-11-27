@@ -26,7 +26,7 @@
 | 原生上游 SSE | 支持 | 支持 | 支持 | 支持 |
 | 缓冲 JSON／流请求 JSON fallback | 支持 | 支持 | 支持 | 支持 |
 | content parts | text、image、refusal | text、image、file、refusal | text、image、file | text、image、file、audio |
-| 工具定义 | function | function、custom、builtin | function | function |
+| 工具定义 | 仅 function（可移植） | function、custom、builtin | function | function |
 | 结构化输出 | JSON object／schema | JSON object／schema | JSON schema 映射 | JSON object／schema |
 | 推理控制 | effort 映射 | effort、budget、summary、签名 | budget、签名 | budget、thought 签名 |
 | 多候选 | 支持 | 不支持 | 不支持 | 支持 |
@@ -34,7 +34,9 @@
 | 请求缓存控制 | key 与载体自有断点；通用上游剥离异载体标记 | key、retention、options、part 断点 | part／tool／item `cache_control` | 未声明支持 |
 | item reference／有状态上游 | 不支持 | 支持 | 不支持 | 不支持 |
 
-其他门禁覆盖媒体 source 类型、strict 工具 schema、allowed tool choice、并行工具调用、generation 字段、verbosity、logprobs、service tier、归因、metadata、item reference 与 stream options。同载体 opaque 扩展可以往返；异载体 opaque item／part 或无法忠实表达的关键特性抛 `unsupported_parameter`。适配器不会把未知内容字符串化进 prompt，也不会静默丢弃签名推理、引用、工具定义或 usage 明细。
+其他门禁覆盖媒体 source 类型、strict 工具 schema、allowed tool choice、并行工具调用、generation 字段、verbosity、logprobs、service tier、归因、metadata、item reference 与 stream options。同载体 opaque 扩展可以往返；异载体 opaque item／part 或无法忠实表达的关键特性抛 `unsupported_parameter`。客户端可见的 `error.message` 会点名特性、拨号出站协议、经 registry 拨号时的模型及其声明的 `protocols[]`，以及简短修复提示——不再是一句光秃秃的 “Protocol cannot…”。适配器不会把未知内容字符串化进 prompt，也不会静默丢弃签名推理、引用、工具定义或 usage 明细。
+
+**Chat 工具种类。** `openai-chat` 只宣称 **function** 工具。该 id 是 OCR 的可移植 OpenAI 兼容 Chat Completions 契约（小米／DeepSeek／Kimi 一类端点）。OpenAI 平台 Chat Completions 在 2025-08 增加了 `type:"custom"`（自由文本／Lark 或正则 grammar）；该方言**不属于**通用 `openai-chat` 线——若在全局矩阵打开，会把仅 OpenAI 支持的载荷转发给会拒绝或过滤它的兼容上游。Responses 继续承载 `custom` 与 `builtin`。Codex 这类客户端若带着 Responses custom／builtin 打到 chat 兼容或仅 Anthropic 的模型，会得到显式的 `unsupported_parameter`，并点名以 `openai-responses`／`protocols[]` 为修复路径——绝不静默改写成 function calling。
 
 ## 3. 流式、背压与终态
 
@@ -97,3 +99,4 @@
 - System One 是决策协议，不是另一种 chat item 协议面。
 - 同载体 opaque 扩展可往返，不等于具备跨厂商可移植语义。新方言需要忠实适配器映射和一致性 fixture，否则必须可见地拒绝。
 - Golden fixture 与本地模拟证明网关行为，不能替代每个 provider／model 组合的实网账号互操作测试。
+- OpenAI 平台 Chat `custom` 工具暂缓：该方言的编解码应挂在**默认关闭的 provider 级能力**之后，而不是全局 `OPENAI_CHAT` 矩阵。在相应 ADR 落地前，把 custom／builtin 的 agent 流量路由到具备 Responses 能力的上游。

@@ -54,6 +54,10 @@ const CHAT_GENERATION: Readonly<Partial<Record<GenerationKind, true>>> = {
 const OPENAI_CHAT: ProtocolCapabilities = {
   parts: { text: true, image: true, refusal: true },
   sources: { image: ['url', 'base64'] },
+  // function only: this id is the portable OpenAI-compatible Chat contract.
+  // OpenAI Platform's 2025-08 Chat `custom` tools stay off the global matrix —
+  // most compat upstreams reject them; enabling here would forward OpenAI-only
+  // payloads to Xiaomi/DeepSeek/Kimi-style endpoints. Responses keeps custom/builtin.
   toolKinds: { function: true },
   reasoningSignature: false,
   // The orchestrator translates a budget to reasoning_effort before this wire.

@@ -11,6 +11,7 @@ import {
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { readProviderDefsFile, writeProviderDefs } from './provider-defs.js';
 import { currentPackageFor } from './provider-package.js';
+import { normalizeProtocols, primaryProtocol, DEFAULT_PROTOCOL } from '../providers/protocols-field.js';
 import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 
 /**
@@ -144,19 +145,19 @@ export function expandEnvTemplate(value?: string): string {
 // ---------------------------------------------------------------------------
 
 export const ROUTER_PROVIDER_ID = 'omnicell-router';
-const DEFAULT_NPM = 'openai-chat';
+const DEFAULT_PROTOCOLS: string[] = [DEFAULT_PROTOCOL];
 
 /**
- * No legacy compatibility: provider defs have ONE shape and ONE home — the v2
- * node (`package`/`settings`/`headers`/`env`/`canonical`/`body`) in the defs
- * file's `providers` map. opencode v1 installs are not supported, so there is
- * no v1 emit path and no legacy `provider`-slot reader.
+ * OCR provider defs have ONE shape and ONE home — `protocols`/`settings`/
+ * `headers`/`env`/`canonical`/`body` in the defs file's `providers` map
+ * (ADR-0010). The opencode client's `package` spelling is materialize-only.
  */
 
 export interface ProviderDefInput {
   id: string;
   name?: string;
-  npm?: string;
+  /** Ordered outbound protocol set. */
+  protocols?: string[];
   baseURL?: string;
   apiKey?: string;
   /**
@@ -181,7 +182,7 @@ export interface ProviderDefInput {
 export interface OpenCodeProviderView {
   id: string;
   name?: string;
-  npm?: string;
+  protocols?: string[];
   baseURL?: string;
   models: string[];
   /** Per-provider auto-pull whitelist (catalog.autoPullPatterns) — shown/prefilled by the console. */
@@ -226,14 +227,12 @@ export const PROVIDER_ID_RULE =
 // ---------------------------------------------------------------------------
 
 /**
- * Opencode v2 provider defs replace opencode v1 `npm`/`options` with
- * `name`/`env`/`package`/`canonical`/`settings`/`headers`/`body`. Only
- * markers an opencode v1 def can never carry count as evidence — `env`, top-level
- * `headers` and `name` are ambiguous across the two shapes and are
- * deliberately NOT detection signals.
+ * OCR / client-shaped provider nodes carry `settings` (and optionally
+ * `protocols` or, on import-only client copies, `package`).
  */
-function isOpencodeV2ShapedDef(raw: Record<string, any>): boolean {
+function isSettingsShapedDef(raw: Record<string, any>): boolean {
   return (
+    raw.protocols !== undefined ||
     raw.package !== undefined ||
     raw.settings !== undefined ||
     raw.canonical !== undefined ||
@@ -242,31 +241,29 @@ function isOpencodeV2ShapedDef(raw: Record<string, any>): boolean {
 }
 
 /**
- * Normalize one opencode-v2 shaped provider def to the internal (opencode v1) shape every
- * consumer below boot already reads:
- *  - `package` ≙ `npm`
- *  - `settings` ≙ `options` (fill-missing overlay — an opencode v1 `options` mixed into
- *    a partially migrated file wins on conflict)
- *  - top-level `headers` ≙ `options.headers` (opencode v2 moved that slot out; opencode v1 kept
- *    it inside options)
- *  - `env`/`body`/`canonical` ride through unchanged (no internal slot
- *    consumes them yet) and `settings` stays on the def too — boot-direct's
- *    model path still reads raw `settings.reasoningEffort`.
- * opencode-v1 shaped defs are returned BY REFERENCE, untouched — zero behavior change
- * for existing files. WRITE side emits both shapes via
- * `upsertProviderDef({schema})` (P4).
+ * Normalize one provider def for OCR consumers:
+ *  - `protocols` is the dial set (import may still carry client `package` —
+ *    lifted here into protocols, then dropped)
+ *  - `settings` ≙ `options` (fill-missing overlay)
+ *  - top-level `headers` ≙ `options.headers`
  */
 export function normalizeProviderDef(raw: unknown): any {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, any>;
-  if (!isOpencodeV2ShapedDef(rec)) return raw;
+  if (!isSettingsShapedDef(rec)) return raw;
   const def: Record<string, any> = { ...rec };
-  if (typeof def.npm === 'string') def.npm = currentPackageFor(def.npm);
-  if (typeof rec.package === 'string') {
-    const pkg = currentPackageFor(rec.package);
-    def.package = pkg;
-    if (def.npm === undefined) def.npm = pkg;
-  }
+  delete def.npm;
+  delete def.package;
+  delete def.protocol;
+  const fromPackage =
+    typeof rec.package === 'string' ? normalizeProtocols(currentPackageFor(rec.package)) : [];
+  const fromNpm = typeof rec.npm === 'string' ? normalizeProtocols(currentPackageFor(rec.npm)) : [];
+  const fromProtocols = normalizeProtocols(
+    normalizeProtocols(rec.protocols).map((p) => currentPackageFor(p)),
+  );
+  const protocols = fromProtocols.length > 0 ? fromProtocols : fromPackage.length > 0 ? fromPackage : fromNpm;
+  if (protocols.length > 0) def.protocols = protocols;
+  else delete def.protocols;
   const settings = rec.settings && typeof rec.settings === 'object' ? rec.settings : {};
   const options: Record<string, any> = rec.options && typeof rec.options === 'object' ? { ...rec.options } : {};
   for (const [k, v] of Object.entries(settings)) {
@@ -275,11 +272,6 @@ export function normalizeProviderDef(raw: unknown): any {
   if (options.headers === undefined && rec.headers && typeof rec.headers === 'object') {
     options.headers = rec.headers;
   }
-  // Credential slot: opencode v2 names the ENV VARS a provider reads instead of
-  // holding an inline template. Materialize the first name that actually resolves so
-  // OCR's existing `{env:X}` expansion (boot-direct, the console's inline badge) keeps
-  // working on a v2-shaped node — otherwise an env-supplied key reads as "no
-  // credential" while opencode itself routes fine with it.
   if (options.apiKey === undefined && Array.isArray(rec.env) && rec.env.length > 0) {
     const names = rec.env.filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
     const resolved = names.find((n) => (process.env[n] ?? '') !== '');
@@ -291,27 +283,29 @@ export function normalizeProviderDef(raw: unknown): any {
 }
 
 /**
- * Model-def sibling of normalizeProviderDef: `provider.package` ≙
- * `provider.npm` — the boot-direct npm precedence chain (d.provider.npm >
- * catModel.npm > def.npm > rec.npm) then flows the npm into wireFor. A retired
- * opencode-v2 package value is translated to the OCR protocol id here, so wireFor
- * only ever sees current spellings. NOTE: model-level `settings` is ALREADY
- * the opencode v1 shape's slot (reasoningEffort/effort are read raw there by
- * boot-direct), so unlike the provider level there is no settings→options
- * overlay — only the `package` alias is normalized. Untouched opencode v1
- * model defs pass through by reference.
+ * Model-def sibling: lift `provider.package`/`provider.npm` into
+ * `provider.protocols` for boot-direct resolution.
  */
 function normalizeModelDef(raw: unknown): any {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, any>;
   const provider = rec.provider && typeof rec.provider === 'object' ? (rec.provider as Record<string, any>) : undefined;
   if (!provider) return raw;
-  if (typeof provider.npm === 'string') {
-    const normalized = currentPackageFor(provider.npm);
-    return normalized === provider.npm ? raw : { ...rec, provider: { ...provider, npm: normalized } };
-  }
-  if (provider.npm !== undefined || typeof provider.package !== 'string') return raw;
-  return { ...rec, provider: { ...provider, npm: currentPackageFor(provider.package) } };
+  const fromProtocols = normalizeProtocols(
+    normalizeProtocols(provider.protocols).map((p) => currentPackageFor(p)),
+  );
+  const fromPackage =
+    typeof provider.package === 'string' ? normalizeProtocols(currentPackageFor(provider.package)) : [];
+  const fromNpm =
+    typeof provider.npm === 'string' ? normalizeProtocols(currentPackageFor(provider.npm)) : [];
+  const protocols = fromProtocols.length > 0 ? fromProtocols : fromPackage.length > 0 ? fromPackage : fromNpm;
+  const nextProvider: Record<string, any> = { ...provider };
+  delete nextProvider.npm;
+  delete nextProvider.package;
+  delete nextProvider.protocol;
+  if (protocols.length > 0) nextProvider.protocols = protocols;
+  else delete nextProvider.protocols;
+  return { ...rec, provider: nextProvider };
 }
 
 /**
@@ -354,8 +348,9 @@ function isPlainRecord(v: unknown): v is Record<string, any> {
  * retired-shape nodes instead of routing providers opencode never registered.
  */
 /**
- * Retired NODE spellings the v2 `providers` decoder cannot read: node-level `npm`
- * and `options` (moved to `package`/`settings`).
+ * Retired NODE spellings the defs reader cannot route: node-level `npm`/
+ * `package`/`protocol` (the boot hop rewrites them to `protocols`) and the
+ * opencode-v1 `options` bag (moved to `settings`).
  *
  * MODEL-level defs are deliberately NOT gated. Verified against the decoder schema
  * embedded in opencode v2.0.15: `providers.<id>.models` validates the models.dev
@@ -368,35 +363,63 @@ function isPlainRecord(v: unknown): v is Record<string, any> {
  */
 export function legacyShapedProviderPaths(def: Record<string, any>): string[] {
   const bad: string[] = [];
+  // OCR truth forbids retired singular protocol slots and the opencode-v1 options bag.
   if (def.npm !== undefined) bad.push('npm');
+  if (def.package !== undefined) bad.push('package');
+  if (def.protocol !== undefined) bad.push('protocol');
   if (def.options !== undefined) bad.push('options');
   return bad;
 }
 
 /**
- * Model-level write normalization — the reverse of normalizeModelDef: the
- * internal `provider.npm` slot becomes the client shape's `provider.package`
- * slot. The value is the npm string VERBATIM: the retired
- * `@opencode/ai/providers/*` vocabulary is never emitted again.
- * Everything else in a model def is already the client's file shape
- * (console.ts's bodyToModelDef is the single catalog-style→def converter
- * shared by the model editor routes; this mirror does NOT fork a second
- * converter).
+ * Persist model defs with OCR `provider.protocols` only (no npm/package).
  */
-function opencodeV2ModelDefs(models: Record<string, any> | undefined): Record<string, any> | undefined {
+function ocrModelDefs(models: Record<string, any> | undefined): Record<string, any> | undefined {
   if (!models) return undefined;
   const out: Record<string, any> = {};
   for (const [mid, m] of Object.entries(models)) {
     const provider = isPlainRecord(m) && isPlainRecord(m.provider) ? m.provider : undefined;
-    if (provider && typeof provider.npm === 'string' && provider.package === undefined) {
-      const providerOut: Record<string, any> = { ...provider };
-      const npmValue: string = provider.npm;
-      delete providerOut.npm;
-      providerOut.package = npmValue;
-      out[mid] = { ...m, provider: providerOut };
-    } else {
+    if (!provider) {
       out[mid] = m;
+      continue;
     }
+    const protocols = normalizeProtocols(
+      provider.protocols ?? provider.package ?? provider.npm,
+    );
+    const providerOut: Record<string, any> = { ...provider };
+    delete providerOut.npm;
+    delete providerOut.package;
+    delete providerOut.protocol;
+    if (protocols.length > 0) providerOut.protocols = protocols;
+    else delete providerOut.protocols;
+    out[mid] = { ...m, provider: providerOut };
+  }
+  return out;
+}
+
+/**
+ * Materialize-time: OCR `provider.protocols` → client `provider.package`
+ * (singular primary). Used only when writing the opencode client copy.
+ */
+export function opencodeV2ModelDefs(models: Record<string, any> | undefined): Record<string, any> | undefined {
+  if (!models) return undefined;
+  const out: Record<string, any> = {};
+  for (const [mid, m] of Object.entries(models)) {
+    const provider = isPlainRecord(m) && isPlainRecord(m.provider) ? m.provider : undefined;
+    if (!provider) {
+      out[mid] = m;
+      continue;
+    }
+    const protocols = normalizeProtocols(
+      provider.protocols ?? provider.package ?? provider.npm,
+    );
+    const providerOut: Record<string, any> = { ...provider };
+    delete providerOut.npm;
+    delete providerOut.protocols;
+    delete providerOut.protocol;
+    if (protocols.length > 0) providerOut.package = primaryProtocol(protocols);
+    else delete providerOut.package;
+    out[mid] = { ...m, provider: providerOut };
   }
   return out;
 }
@@ -455,13 +478,16 @@ export function buildV2ProviderNode(def: ProviderDefInput): { node?: Record<stri
 
   const node: Record<string, any> = {};
   if (def.name) node.name = def.name;
-  node.package = def.npm || DEFAULT_NPM;
+  const protocols = normalizeProtocols(
+    normalizeProtocols(def.protocols).map((p) => currentPackageFor(p)),
+  );
+  node.protocols = protocols.length > 0 ? protocols : [...DEFAULT_PROTOCOLS];
   if (def.canonical) node.canonical = def.canonical;
   if (envNames.size > 0) node.env = [...envNames];
   if (Object.keys(settings).length > 0) node.settings = settings;
   if (headers && Object.keys(headers).length > 0) node.headers = headers;
   if (isPlainRecord(def.body) && Object.keys(def.body).length > 0) node.body = def.body;
-  const models = opencodeV2ModelDefs(def.models);
+  const models = ocrModelDefs(def.models);
   if (models && Object.keys(models).length > 0) node.models = models;
   return { node };
 }
@@ -544,7 +570,7 @@ export function listConfigProviders(): OpenCodeProviderView[] {
     return {
       id,
       name: def?.name || undefined,
-      npm: def?.npm || undefined,
+      protocols: normalizeProtocols(def?.protocols),
       baseURL: options.baseURL || undefined,
       models,
       auth: {
@@ -557,8 +583,8 @@ export function listConfigProviders(): OpenCodeProviderView[] {
 }
 
 /**
- * Upsert a custom provider into the OCR defs file's `providers` map, in the v2
- * node shape (`package`/`settings`/`headers`/`env`/`canonical`/`body`).
+ * Upsert a custom provider into the OCR defs file's `providers` map, in the OCR
+ * node shape (`protocols`/`settings`/`headers`/`env`/`canonical`/`body`).
  *
  * This writer NEVER touches credential files: the bound credential store owns
  * secrets, so a non-inline key is pushed through store.connectKey once the def
@@ -668,9 +694,8 @@ export function getProviderModelDefs(id: string): Record<string, any> | undefine
 /**
  * Add or replace one model inside `providers.<id>.models` (atomic defs-file
  * rewrite). `definition` is the models.dev FILE shape (flat cost cache keys,
- * keyed variants, model-level provider.npm) and is written verbatim — v2's
- * file decoder reads that shape natively (see legacyShapedProviderPaths for
- * the retired-shape analysis).
+ * keyed variants, model-level provider.npm); the protocol slot is normalized
+ * to `provider.protocols` on write (ADR-0010), everything else is verbatim.
  */
 export function upsertProviderModel(
   providerId: string,

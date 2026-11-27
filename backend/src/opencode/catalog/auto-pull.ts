@@ -480,8 +480,9 @@ export async function autoPullProvider(
   const def = getProviderNodeById(id);
   // Plugin-provided model-service wire: the model source is the plugin's own
   // pullModels() — a plain /models GET cannot exist on this transport class.
-  const npm = def?.npm || def?.package || '';
-  const npmWire = npm ? wireFor(npm) : 'unroutable';
+  const { primaryProtocol, normalizeProtocols } = await import('../../providers/protocols-field.js');
+  const protocols = normalizeProtocols(def?.protocols ?? def?.package ?? def?.npm);
+  const npmWire = protocols.length > 0 ? wireFor(primaryProtocol(protocols)) : 'unroutable';
   if (isPluginWire(npmWire)) {
     // The executor's wire id is also the protocol id a plugin labels its own
     // model list with, so the message names the wire the def resolved to.
@@ -550,33 +551,33 @@ export async function ensureConnectedProviderBook(
   // (node absent, or present-but-baseless) — an operator-owned node needs no
   // network on this path.
   let catalogName: string | undefined;
-  let catalogNpm: string | undefined;
+  let catalogProtocols: string[] | undefined;
   let catalogBase: string | undefined;
   if ((!existing || !existing.options?.baseURL) && !opts.baseURL) {
     try {
       const { catalogRepository } = await import('./repository.js');
       const rec = await catalogRepository.getProvider(id);
       catalogName = rec?.name;
-      catalogNpm = rec?.npm;
+      catalogProtocols = rec?.protocols;
       catalogBase = rec?.baseURL || rec?.api;
     } catch {
       // catalog unavailable → node without baseURL; catalog-path fill still applies
     }
   }
   if (!existing) {
-    const up = upsertProviderDef({ id, name: catalogName, npm: catalogNpm, baseURL: opts.baseURL || catalogBase });
+    const up = upsertProviderDef({ id, name: catalogName, protocols: catalogProtocols, baseURL: opts.baseURL || catalogBase });
     if (!up.success) return { nodeCreated: false, pulled: 0, fillError: up.error };
     nodeCreated = true;
   } else if (!existing.options?.baseURL) {
     // Baseless node (the bind sweep's shape). Merging, not rebuilding: every
-    // other slot the operator owns (name/npm/headers/models/env/canonical/body)
+    // other slot the operator owns (name/protocols/headers/models/env/canonical/body)
     // rides through untouched.
     const baseURL = opts.baseURL || catalogBase;
     if (baseURL) {
       const up = upsertProviderDef({
         id,
         name: existing.name,
-        npm: existing.npm,
+        protocols: existing.protocols,
         baseURL,
         headers: existing.options?.headers,
         models: existing.models,

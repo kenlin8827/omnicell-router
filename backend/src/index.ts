@@ -34,6 +34,7 @@ import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
 import { wireFor } from './providers/wire.js';
+import { normalizeProtocols, primaryProtocol } from './providers/protocols-field.js';
 import { getModelServicePluginEntry } from './plugins/host.js';
 import type { QuotaCodeAdapter } from './quota/types.js';
 
@@ -82,7 +83,8 @@ function providerDefApiKey(providerId: string): string | undefined {
  */
 function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined {
   const def = getProviderNodeById(providerId);
-  const npm = typeof def?.npm === 'string' ? def.npm : typeof def?.package === 'string' ? def.package : undefined;
+  // Same resolution the boot primary uses: the normalized def's protocol head.
+  const npm = primaryProtocol(normalizeProtocols(def?.protocols));
   const entry = getModelServicePluginEntry(wireFor(npm, providerDefBaseUrl(providerId)));
   const plugin = entry?.plugin;
   const check = plugin?.quotaCheck;

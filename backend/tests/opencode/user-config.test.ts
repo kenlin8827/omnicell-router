@@ -80,9 +80,10 @@ describe('OpenCode user-config (provider defs file)', () => {
     expect(fs.existsSync(getProviderDefsPath())).toBe(true);
 
     const parsed: any = readProviderDefsFile();
-    expect(parsed.providers['home-lab'].package).toBe('openai-chat');
+    expect(parsed.providers['home-lab'].protocols).toEqual(['openai-chat']);
     expect(parsed.providers['home-lab'].settings.baseURL).toBe('http://192.168.1.10:20180/v1');
     expect(parsed.providers['home-lab'].npm).toBeUndefined();
+    expect(parsed.providers['home-lab'].package).toBeUndefined();
     // auth.json is never a sink on any binding.
     expect(fs.existsSync(authJsonPath())).toBe(false);
   });
@@ -100,9 +101,11 @@ describe('OpenCode user-config (provider defs file)', () => {
 
     let parsed: any = readProviderDefsFile();
     expect(parsed.providers.headroom.settings.baseURL).toBe('http://127.0.0.1:8787/v1');
-    // OCR writes the v2 shape: settings, not options.
+    // OCR writes the v2 shape: protocols/settings, never npm/package.
     expect(parsed.providers.maisuitx.settings.baseURL).toBe('http://192.168.18.10:20180/v1');
+    expect(parsed.providers.maisuitx.protocols).toEqual(['openai-chat']);
     expect(parsed.providers.maisuitx.npm).toBeUndefined();
+    expect(parsed.providers.maisuitx.package).toBeUndefined();
 
     // Delete keeps siblings intact
     const del = deleteProviderDef('maisuitx');

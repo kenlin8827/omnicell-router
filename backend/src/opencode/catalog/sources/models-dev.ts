@@ -29,8 +29,11 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
         models.push({
           id: mid,
           name: m.name || undefined,
-          // model-level protocol override; SDK package names are translated below
-          npm: m.provider && typeof m.provider === 'object' ? m.provider.npm || undefined : undefined,
+          // model-level protocol override; SDK package names → protocols[] below
+          protocols:
+            m.provider && typeof m.provider === 'object' && m.provider.npm
+              ? [String(m.provider.npm)]
+              : undefined,
           attachment: m.attachment === true || undefined,
           reasoning: m.reasoning === true || undefined,
           tool_call: m.tool_call === true || undefined,
@@ -69,7 +72,7 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
       id,
       name: entry.name || id,
       logo: modelsDevLogoUrl(id),
-      npm: entry.npm || undefined,
+      protocols: entry.npm ? [String(entry.npm)] : undefined,
       api: entry.api || undefined,
       doc: entry.doc || undefined,
       env: Array.isArray(entry.env) ? entry.env : undefined,
@@ -84,15 +87,31 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
   return withProtocolIds(list);
 }
 
-/** SDK package strings on a catalog record become OCR protocol ids.
- *  Idempotent: a record that already holds protocol ids is unchanged in value.
- *  Cache replays call this too — those files skip normalizeModelsDev. */
+/** External npm / raw protocol strings become OCR `protocols: string[]`.
+ *  Idempotent on already-canonical ids. Cache replays call this too, including
+ *  caches a pre-protocols build wrote in the retired singular `npm` slot. */
 export function withProtocolIds(providers: CatalogProviderRecord[]): CatalogProviderRecord[] {
-  return providers.map((p) => ({
-    ...p,
-    npm: protocolIdFromNpm(p.npm),
-    models: p.models.map((m) => (m.npm ? { ...m, npm: protocolIdFromNpm(m.npm) } : m)),
-  }));
+  return providers.map((p) => {
+    const legacyProvider = p as CatalogProviderRecord & { npm?: unknown };
+    const rawProvider = p.protocols ?? (typeof legacyProvider.npm === 'string' ? [legacyProvider.npm] : []);
+    const protocols = rawProvider
+      .map((id) => protocolIdFromNpm(id) ?? id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const { npm: _legacyProviderNpm, ...provider } = legacyProvider;
+    return {
+      ...provider,
+      protocols: protocols.length > 0 ? [...new Set(protocols)] : undefined,
+      models: p.models.map((m) => {
+        const legacyModel = m as CatalogModel & { npm?: unknown };
+        const rawModel = m.protocols ?? (typeof legacyModel.npm === 'string' ? [legacyModel.npm] : []);
+        const mp = rawModel
+          .map((id) => protocolIdFromNpm(id) ?? id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        const { npm: _legacyNpm, ...model } = legacyModel;
+        return mp.length > 0 ? { ...model, protocols: [...new Set(mp)] } : { ...model, protocols: undefined };
+      }),
+    };
+  });
 }
 
 /**

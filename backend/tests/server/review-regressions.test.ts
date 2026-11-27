@@ -508,13 +508,14 @@ describe('review proof: round-3 self-proved defects', () => {
     expect(payload.top_k).toBeUndefined();
   });
 
-  it('normalizeProviderDef and readProviderDefsFile normalize legacy SDK packages on both package and npm fields', () => {
+  it('normalizeProviderDef and the providers.json v2 hop normalize legacy SDK packages to protocols[]', () => {
     const normalizedV2 = normalizeProviderDef({
       package: '@opencode/ai/providers/anthropic',
       settings: { baseURL: 'https://api.anthropic.com/v1' },
     });
-    expect(normalizedV2.npm).toBe('anthropic-messages');
-    expect(normalizedV2.package).toBe('anthropic-messages');
+    expect(normalizedV2.protocols).toEqual(['anthropic-messages']);
+    expect(normalizedV2.npm).toBeUndefined();
+    expect(normalizedV2.package).toBeUndefined();
 
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-rev3-defs-'));
     try {
@@ -534,10 +535,17 @@ describe('review proof: round-3 self-proved defects', () => {
         },
       }));
       const read = readProviderDefsFile({ ocrHome: tmp } as never);
-      expect(read?.providers.legacy.npm).toBe('google-gemini');
-      expect(read?.providers.legacy.package).toBe('google-gemini');
-      expect(read?.providers.legacy.models['gemini-2.5-pro'].provider.npm).toBe('google-gemini');
-      expect(read?.providers.legacy.models['gemini-2.5-pro'].provider.package).toBe('google-gemini');
+      expect(read?.providers.legacy.protocols).toEqual(['google-gemini']);
+      expect(read?.providers.legacy.npm).toBeUndefined();
+      expect(read?.providers.legacy.package).toBeUndefined();
+      expect(read?.providers.legacy.models['gemini-2.5-pro'].provider.protocols).toEqual(['google-gemini']);
+      expect(read?.providers.legacy.models['gemini-2.5-pro'].provider.npm).toBeUndefined();
+      expect(read?.providers.legacy.models['gemini-2.5-pro'].provider.package).toBeUndefined();
+      // The boot hop rewrote the book — retired spellings do not survive on disk.
+      const onDisk = JSON.parse(fs.readFileSync(defsFile, 'utf8'));
+      expect(onDisk.version).toBe(2);
+      expect(JSON.stringify(onDisk.providers.legacy)).not.toContain('@ai-sdk/google');
+      expect(JSON.stringify(onDisk.providers.legacy)).not.toContain('@opencode/ai/');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

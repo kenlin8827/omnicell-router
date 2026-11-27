@@ -19,6 +19,7 @@ import { sanitizeExtraHeaders } from '../utils/http-headers.js';
 import { assertAllowedUpstream, UpstreamUrlError } from '../utils/upstream-url-guard.js';
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableInfo, baseForWire } from './wire.js';
+import { normalizeProtocols, primaryProtocol } from './protocols-field.js';
 import { getProviderTakedownStore } from './provider-takedown.js';
 import { getModelServicePlugin, pluginDeclinesCredentials } from '../plugins/host.js';
 
@@ -153,7 +154,7 @@ function withoutForbiddenNone(
 
 /** One shared line for a node the reader refuses to route (Decision 11). */
 function retiredShapeReason(paths: string[]): string {
-  return `provider def node is a retired shape (${paths.join(', ')}): retired shapes are not routable — use the package/settings v2 shape`;
+  return `provider def node is a retired shape (${paths.join(', ')}): retired shapes are not routable — use the protocols/settings shape`;
 }
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
@@ -169,11 +170,11 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   const models: ModelRegistration[] = [];
   const excluded: DirectBootResult['excluded'] = [];
 
-  // Decision 11: a retired-shape node is dropped by the reader (its v2 wire
-  // spelling is unproven — the node parses, but npm/options may be ignored, which
-  // would point the provider at a silently wrong endpoint), so the drop is
-  // reported here rather than leaving the operator to wonder where their provider
-  // went.
+  // Decision 11: a retired-shape node is dropped by the reader (its wire config
+  // is unproven — the node parses, but a retired opencode-v1 `options` bag may be
+  // ignored, which would point the provider at a silently wrong endpoint), so the
+  // drop is reported here rather than leaving the operator to wonder where their
+  // provider went.
   const retiredShapes = new Map(legacyShapedSlotEntries().map((e) => [e.id, e.paths]));
 
   for (const rec of catalog) {
@@ -222,7 +223,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // Bake the default credential (P3 step 1); `resolved?.key` stays the defensive
     // fallback for a store whose chain read came back empty while resolveKey
     // answered — head === baked key is an invariant the registry relies on.
-    const pkg = typeof def?.npm === 'string' ? def.npm : typeof rec.npm === 'string' ? rec.npm : '';
+    const pkg = primaryProtocol(normalizeProtocols(def?.protocols));
     // A plugin that declares only `none` owns login. A stored OCR key is not an account and is not required to route.
     const credentialless = pkg ? pluginDeclinesCredentials(getModelServicePlugin(wireFor(pkg))) : false;
     let apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
@@ -312,7 +313,19 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: `non-text output model (modalities.output=${outMods.join('/')}), not in the text routing pool` });
         continue;
       }
-      const npm = d?.provider?.npm || catModel?.npm || def?.npm || rec.npm;
+      // Ordered dial set (ADR-0033): model override → catalog model → provider
+      // def → catalog provider. ONE level fully wins (a declared list is never
+      // patched item-by-item across levels); the boot primary is its head, and
+      // the per-attempt dialer re-picks from the same list.
+      const modelProtocols =
+        normalizeProtocols(d?.provider?.protocols).length > 0
+          ? normalizeProtocols(d?.provider?.protocols)
+          : normalizeProtocols(catModel?.protocols).length > 0
+            ? normalizeProtocols(catModel?.protocols)
+            : normalizeProtocols(def?.protocols).length > 0
+              ? normalizeProtocols(def?.protocols)
+              : normalizeProtocols(rec.protocols);
+      const npm = modelProtocols.length > 0 ? modelProtocols[0] : undefined;
       const wire = wireFor(npm, baseURL || rec.api);
       if (wire === 'unroutable') {
         const info = unroutableInfo(npm);
@@ -381,6 +394,8 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         // Pinned when the client omits `reasoning_effort` (orchestrator).
         defaultEffort,
         wire,
+        // The full ordered dial set the boot primary above heads (ADR-0033).
+        ...(modelProtocols.length > 0 ? { protocols: modelProtocols } : {}),
         // Provenance stamp: the registry is allowed to re-project this model's
         // home tier from the member lists at every commit. Only machine-derived
         // models carry it — an explicit `tier` in the defs file keeps it out so

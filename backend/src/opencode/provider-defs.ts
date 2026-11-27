@@ -1,36 +1,32 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PROVIDER_ID_RULE, isValidProviderId, readJsonc } from './user-config.js';
-import { currentPackageFor } from './provider-package.js';
 import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 import { detectClientFlavor, type OpencodeFlavor } from './credentials/paths.js';
 import { providerDefAdapter } from './provider-def-adapters.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
+import { migrateProvidersFile, PROVIDERS_SCHEMA } from './migrate/engine.js';
+import { normalizeProtocols, protocolsFromLegacyNode } from '../providers/protocols-field.js';
+import { currentPackageFor } from './provider-package.js';
 
 /**
  * OCR-owned provider definitions — <ocrHome>/providers.json.
  *
- * Contract: connection defs (id/name/package/settings/headers/env/canonical/body/models)
+ * Contract: connection defs (id/name/protocols/settings/headers/env/canonical/body/models)
  * have ONE truth and it is THIS file, GLOBAL (not per-environment, same book as
  * credentials.json). opencode.jsonc is a sync-client materialization target:
  * after the one-shot import below, nothing here reads it for truth, and no
  * console route, boot path or view may treat it as a def source.
  *
- * There is NO provider class system: EVERY provider — built-in (connected via
- * the catalog) or self-declared relay — gets a node here at connect time, with
- * its model list auto-filled (live /v1/models first, static catalog fallback).
- * The "custom" badge is DYNAMIC (derived from builtin-catalog coverage at
- * aggregation time), never stored.
- *
- * The node shape is the client's `providers` slot spelling (the opencode v2
- * package/settings form) copied as-is. This module stores and migrates; it does
- * not reinterpret — consumers keep using the user-config.ts normalizer.
+ * Schema version 2 stores `protocols: string[]` only (ADR-0010). The opencode
+ * client's `package` spelling is produced at materialize time, never stored
+ * here after the boot hop.
  */
 
 export interface ProviderDefsFile {
-  version: 1;
+  version: 2;
   updated: number;
-  /** Verbatim v2-shaped provider nodes, keyed by provider id. */
+  /** OCR-shaped provider nodes (protocols/settings/…), keyed by provider id. */
   providers: Record<string, any>;
 }
 
@@ -51,7 +47,7 @@ export interface ProviderDefsImportMarker {
 }
 
 /** Bump when the import learns a new source or a new shape conversion. */
-export const PROVIDER_DEFS_IMPORT_VERSION = 2;
+export const PROVIDER_DEFS_IMPORT_VERSION = 3;
 
 /** One provider node the client config offered to the import. */
 export interface ProviderImportEntry {
@@ -93,8 +89,9 @@ export function catalogModelToDef(m: Record<string, any>): Record<string, any> {
   for (const [k, v] of Object.entries(m)) {
     if (k === 'id' || k === 'source') continue;
     if (v === undefined) continue;
-    if (k === 'npm') {
-      def.provider = { ...(def.provider || {}), npm: v };
+    if (k === 'protocols' || k === 'npm') {
+      const list = normalizeProtocols(k === 'protocols' ? v : [v]);
+      if (list.length > 0) def.provider = { ...(def.provider || {}), protocols: list };
       continue;
     }
     def[k] = v;
@@ -106,66 +103,63 @@ export function catalogModelToDef(m: Record<string, any>): Record<string, any> {
 }
 
 /**
- * Defs written by older builds carry retired package spellings
- * (`@opencode/ai/providers/*`, `@ai-sdk/*`). Normalize them to the OCR
- * protocol id on every read AND write so the book converges without a
- * separate migration pass; the retired spelling is never emitted again.
+ * Normalize protocol ids on every read/write. Retired SDK spellings inside a
+ * `protocols` entry are translated. Callers that still pass singular
+ * `npm`/`package`/`protocol` (e.g. OpenCode setup's router node) are lifted
+ * here so the write path cannot silently drop the dial slot — materialize
+ * then re-emits client `package` from `protocols[]`.
  */
-function currentPackageNodes(providers: Record<string, any>): Record<string, any> {
+function currentProtocolNodes(providers: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
   for (const [id, node] of Object.entries(providers)) {
     if (!node || typeof node !== 'object') {
       out[id] = node;
       continue;
     }
-    let next = node;
-    if (typeof node.package === 'string') {
-      const pkg = currentPackageFor(node.package);
-      if (pkg !== node.package) next = { ...next, package: pkg };
-    }
-    if (typeof node.npm === 'string') {
-      const pkg = currentPackageFor(node.npm);
-      if (pkg !== node.npm) next = { ...next, npm: pkg };
-    }
+    let next: Record<string, any> = { ...node };
+    const lifted = protocolsFromLegacyNode(node);
+    delete next.npm;
+    delete next.package;
+    delete next.protocol;
+    if (lifted && lifted.length > 0) {
+      next.protocols = normalizeProtocols(lifted.map((p) => currentPackageFor(p)));
+    } else delete next.protocols;
     if (node.models && typeof node.models === 'object') {
-      let modelsChanged = false;
       const models: Record<string, any> = {};
       for (const [mid, model] of Object.entries(node.models)) {
         const provider = (model as any)?.provider;
         if (provider && typeof provider === 'object') {
-          let nextProvider = provider;
-          if (typeof provider.package === 'string') {
-            const pkg = currentPackageFor(provider.package);
-            if (pkg !== provider.package) nextProvider = { ...nextProvider, package: pkg };
-          }
-          if (typeof provider.npm === 'string') {
-            const pkg = currentPackageFor(provider.npm);
-            if (pkg !== provider.npm) nextProvider = { ...nextProvider, npm: pkg };
-          }
-          if (nextProvider !== provider) {
-            models[mid] = { ...(model as any), provider: nextProvider };
-            modelsChanged = true;
-            continue;
-          }
+          const nextProvider: Record<string, any> = { ...provider };
+          const mp = protocolsFromLegacyNode(provider);
+          delete nextProvider.npm;
+          delete nextProvider.package;
+          delete nextProvider.protocol;
+          if (mp && mp.length > 0) {
+            nextProvider.protocols = normalizeProtocols(mp.map((p) => currentPackageFor(p)));
+          } else delete nextProvider.protocols;
+          models[mid] = { ...(model as any), provider: nextProvider };
+        } else {
+          models[mid] = model;
         }
-        models[mid] = model;
       }
-      if (modelsChanged) next = { ...next, models };
+      next = { ...next, models };
     }
     out[id] = next;
   }
   return out;
 }
-/** Tolerant read: missing / corrupt / wrong version → null. */
+
+/** Tolerant read: missing / corrupt / wrong version → null. Runs the hop first. */
 export function readProviderDefsFile(paths: CredentialPaths = resolveDefaultPaths()): ProviderDefsFile | null {
   try {
     const file = getProviderDefsPath(paths);
     if (!fs.existsSync(file)) return null;
+    migrateProvidersFile(file);
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (parsed?.version !== 1 || typeof parsed.providers !== 'object' || parsed.providers === null) {
+    if (parsed?.version !== PROVIDERS_SCHEMA || typeof parsed.providers !== 'object' || parsed.providers === null) {
       return null;
     }
-    return { ...(parsed as ProviderDefsFile), providers: currentPackageNodes(parsed.providers) };
+    return { ...(parsed as ProviderDefsFile), version: 2, providers: currentProtocolNodes(parsed.providers) };
   } catch {
     return null;
   }
@@ -178,7 +172,7 @@ export function writeProviderDefs(
 ): void {
   const file = getProviderDefsPath(paths);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const next: ProviderDefsFile = { version: 1, updated: Date.now(), providers: currentPackageNodes(providers) };
+  const next: ProviderDefsFile = { version: 2, updated: Date.now(), providers: currentProtocolNodes(providers) };
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
   renameWithRetry(tmp, file);
@@ -206,8 +200,8 @@ export function setProviderDefsMutationHook(hook: (() => void) | null): void {
  * caller's client id (the sync client being run) OR this machine's detected
  * flavor (`credentials/paths.ts`) selects the adapter (`provider-def-adapters.ts`),
  * which owns the slot key AND the node shape:
- *  - opencode-v2 → `providers` (`package`/`settings`, verbatim);
- *  - opencode-v1 → `provider` (`npm`/`options`, translated by its adapter).
+ *  - opencode-v2 → `providers` (`package`/`settings` → OCR `protocols`/`settings`);
+ *  - opencode-v1 → `provider` (`npm`/`options` → OCR `protocols`/`settings`).
  * Exactly one adapter runs per pass, so an id can only be seen once and the
  * retired spelling of the other flavor is never read.
  *
@@ -302,7 +296,7 @@ export function importProviderDefsFromClient(
           provider: id,
           action: 'converted',
           source: adapter.flavor,
-          reason: `translated ${adapter.flavor} node shape → package/settings`,
+          reason: `translated ${adapter.flavor} node shape → protocols/settings`,
         });
         imported += 1;
         converted += 1;

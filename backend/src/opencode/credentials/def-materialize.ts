@@ -3,6 +3,7 @@ import type { CredentialPaths } from './paths.js';
 import { resolveOpencodeConfigPath } from './paths.js';
 import { CLIENT_COMPATIBLE_PACKAGE, readJsonc } from '../user-config.js';
 import { currentPackageFor, opencodePackageFor } from '../provider-package.js';
+import { normalizeProtocols, primaryProtocol } from '../../providers/protocols-field.js';
 import { wireFor, type CoreWireKind } from '../../providers/wire.js';
 import { isPluginWire } from '../../providers/plugin-wires.js';
 import { clientDefNodes, writeDefSlot } from '../provider-def-adapters.js';
@@ -88,34 +89,36 @@ function clientPackageFallbackFor(wire: string): string | undefined {
 }
 
 /**
- * Translate every retired package spelling in a node (provider package +
- * model-level provider packages) to the OCR protocol id. The book may predate
- * the vocabulary retirement; the client copy is mapped to the SDK package
- * afterwards and must never carry a retired spelling.
+ * Lift OCR `protocols[]` (or any leftover singular package/npm) into the
+ * client-shaped singular `package` slot before SDK spelling translation.
  */
 function currentPackageNode(node: any): any {
-  let out = node;
-  if (typeof node?.package === 'string') {
-    const pkg = currentPackageFor(node.package);
-    if (pkg !== node.package) out = { ...out, package: pkg };
-  }
+  let out = { ...node };
+  const protocols = normalizeProtocols(node?.protocols ?? node?.package ?? node?.npm);
+  delete out.protocols;
+  delete out.npm;
+  delete out.protocol;
+  if (protocols.length > 0) out.package = currentPackageFor(primaryProtocol(protocols));
+  else delete out.package;
   const models = out?.models;
   if (models && typeof models === 'object') {
-    let changed = false;
     const next: Record<string, any> = {};
     for (const [mid, model] of Object.entries(models)) {
       const provider = (model as any)?.provider;
-      if (provider && typeof provider.package === 'string') {
-        const pkg = currentPackageFor(provider.package);
-        if (pkg !== provider.package) {
-          next[mid] = { ...(model as any), provider: { ...provider, package: pkg } };
-          changed = true;
-          continue;
-        }
+      if (provider && typeof provider === 'object') {
+        const mp = normalizeProtocols(provider.protocols ?? provider.package ?? provider.npm);
+        const nextProvider: Record<string, any> = { ...provider };
+        delete nextProvider.protocols;
+        delete nextProvider.npm;
+        delete nextProvider.protocol;
+        if (mp.length > 0) nextProvider.package = currentPackageFor(primaryProtocol(mp));
+        else delete nextProvider.package;
+        next[mid] = { ...(model as any), provider: nextProvider };
+      } else {
+        next[mid] = model;
       }
-      next[mid] = model;
     }
-    if (changed) out = { ...out, models: next };
+    out = { ...out, models: next };
   }
   return out;
 }

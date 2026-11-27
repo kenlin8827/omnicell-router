@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CatalogCost, CatalogLimit, CatalogModalities } from './types.js';
 import { getOcrStorePath } from './ocr-store.js';
-import { protocolIdFromNpm } from '../provider-package.js';
 import type { ReasoningEffort } from '../../types/router.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
+import { migrateOverridesFile, OVERRIDES_SCHEMA } from '../migrate/engine.js';
+import { normalizeProtocols } from '../../providers/protocols-field.js';
+import { protocolIdFromNpm } from '../provider-package.js';
 
 /**
  * Aggregate override store (~/.omnicell-router/catalog/overrides.json).
@@ -13,6 +15,8 @@ import { renameWithRetry } from '../../utils/atomic-write.js';
  * this is the landing spot for edits made in the OCR Catalog viewer, which
  * targets the AGGREGATION (not the defs-file nodes themselves).
  * Key is `${providerId}||${modelId}` (model ids may contain '/').
+ *
+ * Schema version 2: protocol slot is `protocols: string[]` only (ADR-0010).
  */
 
 export interface OverrideEntry {
@@ -50,14 +54,14 @@ export interface OverrideEntry {
   reasoningEfforts?: ReasoningEffort[];
   /** Model-default thinking level; `null` clears the override (follow the catalog/def). */
   defaultEffort?: ReasoningEffort | null;
-  /** Model-level protocol id. Retired SDK package strings are translated on read. */
-  npm?: string;
+  /** Model-level outbound protocol set (ordered). */
+  protocols?: string[];
   /** Named thinking-level variants (UI short shape `{id, effort}` — materialized to the def shape at aggregation). */
   variants?: { id: string; effort: string }[];
 }
 
 export interface OverrideStore {
-  version: 1;
+  version: 2;
   updated: number;
   models: Record<string, OverrideEntry>;
 }
@@ -72,30 +76,29 @@ export function readOverridesStore(): OverrideStore | null {
   try {
     const file = getOverridesStorePath();
     if (!fs.existsSync(file)) return null;
+    migrateOverridesFile(file);
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as OverrideStore;
-    if (parsed?.version !== 1 || typeof parsed.models !== 'object' || parsed.models === null) return null;
+    if (parsed?.version !== OVERRIDES_SCHEMA || typeof parsed.models !== 'object' || parsed.models === null) return null;
     const models: Record<string, OverrideEntry> = {};
     for (const [key, entry] of Object.entries(parsed.models)) {
-      models[key] = translateOverrideNpm(entry);
+      models[key] = normalizeOverrideEntry(entry);
     }
-    return { ...parsed, models };
+    return { ...parsed, version: 2, models };
   } catch {
     return null;
   }
 }
 
-/** Read view only. The file is not rewritten here; the next override write
- *  persists the translated id because it round-trips this view. */
-function translateOverrideNpm(entry: OverrideEntry): OverrideEntry {
-  if (!entry || typeof entry.npm !== 'string') return entry;
-  const npm = protocolIdFromNpm(entry.npm);
-  if (npm === entry.npm) return entry;
-  if (npm === undefined) {
+function normalizeOverrideEntry(entry: OverrideEntry): OverrideEntry {
+  if (!entry) return entry;
+  if (entry.protocols === undefined) return entry;
+  const list = normalizeProtocols(entry.protocols);
+  if (list.length === 0) {
     const rest = { ...entry };
-    delete rest.npm;
+    delete rest.protocols;
     return rest;
   }
-  return { ...entry, npm };
+  return { ...entry, protocols: list };
 }
 
 export function getOverride(providerId: string, modelId: string): OverrideEntry | undefined {
@@ -105,6 +108,7 @@ export function getOverride(providerId: string, modelId: string): OverrideEntry 
 function persist(store: OverrideStore): void {
   const file = getOverridesStorePath();
   store.updated = Date.now();
+  store.version = 2;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, JSON.stringify(store), 'utf8');
@@ -113,7 +117,7 @@ function persist(store: OverrideStore): void {
 
 export function upsertOverride(providerId: string, modelId: string, entry: OverrideEntry): { success: boolean; error?: string } {
   try {
-    const store: OverrideStore = readOverridesStore() ?? { version: 1, updated: 0, models: {} };
+    const store: OverrideStore = readOverridesStore() ?? { version: 2, updated: 0, models: {} };
     const merged: OverrideEntry = { ...(store.models[overrideKey(providerId, modelId)] ?? {}) };
     if (entry.name !== undefined) merged.name = entry.name;
     if (entry.cost) merged.cost = { ...(merged.cost ?? {}), ...entry.cost };
@@ -125,10 +129,13 @@ export function upsertOverride(providerId: string, modelId: string, entry: Overr
     if (entry.supportsDeveloperRole !== undefined) merged.supportsDeveloperRole = entry.supportsDeveloperRole;
     if (entry.disabled !== undefined) merged.disabled = entry.disabled;
     if (entry.reasoningEfforts !== undefined) merged.reasoningEfforts = entry.reasoningEfforts;
-    if (entry.npm !== undefined) {
-      const npm = protocolIdFromNpm(entry.npm);
-      if (npm === undefined) delete merged.npm;
-      else merged.npm = npm;
+    if (entry.protocols !== undefined) {
+      // Console may still post a singular SDK string via a one-element list.
+      const list = normalizeProtocols(
+        entry.protocols.map((p) => protocolIdFromNpm(p) ?? p),
+      );
+      if (list.length === 0) delete merged.protocols;
+      else merged.protocols = list;
     }
     if (entry.defaultEffort !== undefined) {
       if (entry.defaultEffort === null) delete merged.defaultEffort;

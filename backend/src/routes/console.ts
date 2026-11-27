@@ -3362,7 +3362,9 @@ export function registerConsoleRoutes(
             // at all) is by definition custom.
             custom: u ? u.custom : true,
             logo: u?.logo ?? v.logo,
-            npm: v.npm ?? u?.npm,
+            // The dial set: the def view's own protocols win, the catalog row
+            // only fills a def that declared nothing (ADR-0033 precedence).
+            protocols: v.protocols?.length ? v.protocols : u?.protocols,
             // Operator takedown: routing state, never a defs-file field (ADR-0010).
             // The card stays listed so the operator can restore it with one click.
             disabled: takedown !== undefined,
@@ -3397,7 +3399,7 @@ export function registerConsoleRoutes(
         id: p.id,
         name: p.name,
         logo: p.logo,
-        npm: p.npm,
+        protocols: p.protocols,
         api: p.api,
         baseURL: p.baseURL,
         doc: p.doc,
@@ -3452,7 +3454,7 @@ export function registerConsoleRoutes(
             // preset's own baseURL/npm.
             providers.splice(idx, 1);
           }
-          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, webLogin: preset.webLogin, webLoginSubmit: preset.webLoginSubmit, authTypes: preset.authTypes, keyHint: preset.keyHint, pluginOrigin: origins[preset.id], sources: preset.sources, modelCount: 0, priceFrom: undefined });
+          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, protocols: preset.protocols, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, webLogin: preset.webLogin, webLoginSubmit: preset.webLoginSubmit, authTypes: preset.authTypes, keyHint: preset.keyHint, pluginOrigin: origins[preset.id], sources: preset.sources, modelCount: 0, priceFrom: undefined });
         }
       } catch {
         // catalog must survive a broken plugin host
@@ -3587,7 +3589,7 @@ export function registerConsoleRoutes(
       const result = upsertProviderDef({
         id,
         name: body.name,
-        npm: body.npm,
+        protocols: body.protocols,
         baseURL: body.baseURL,
         apiKey: keyToStore ? undefined : body.apiKey,
         apiKeyInline: Boolean(body.apiKeyInline),
@@ -3703,7 +3705,9 @@ export function registerConsoleRoutes(
       const result = upsertProviderDef({
         id,
         name: body.name ?? existing.name,
-        npm: body.npm ?? existing.npm,
+        // An explicit [] (the editor cleared every protocol) is a real edit:
+        // upsertProviderDef falls back to the default set only for undefined.
+        protocols: body.protocols ?? existing.protocols,
         baseURL: body.baseURL ?? existing.options?.baseURL,
         apiKey: keyToStore ? undefined : body.apiKey,
         apiKeyInline: inline,
@@ -3760,7 +3764,9 @@ export function registerConsoleRoutes(
             id,
             baseURL: body.baseURL,
             name: existing?.name,
-            npm: existing?.npm,
+            // A baseURL connect must not reset the dial set — upsert falls back
+            // to the default protocol only when NOTHING was carried over.
+            protocols: existing?.protocols,
             headers: existing?.options?.headers,
             models: existing?.models,
             options: existing?.options,
@@ -3838,10 +3844,13 @@ export function registerConsoleRoutes(
         if (await ensurePresetProvider(id)) def = getProviderNodeById(id);
       }
       if (!def) return { error: `provider '${id}' not found` };
-      const node = def as { baseURL?: string; options?: { baseURL?: string }; npm?: string; package?: string };
+      const { primaryProtocol } = await import('../providers/protocols-field.js');
+      const node = def as { baseURL?: string; options?: { baseURL?: string }; protocols?: string[] };
       const baseURL = (node.options?.baseURL ?? node.baseURL ?? '').replace(/\/+$/, '');
-      const npm = node.npm || node.package || '';
-      const wire = npm ? wireFor(npm) : baseURL ? wireFor(undefined, baseURL) : 'unroutable';
+      // Boot doctrine: the protocol vocabulary decides first; a bare-URL def
+      // without any declared protocol still fingerprints its wire from baseURL.
+      const wire = node.protocols?.length ? wireFor(primaryProtocol(node.protocols))
+        : baseURL ? wireFor(undefined, baseURL) : 'unroutable';
       const plugin = (await import('../plugins/host.js')).getModelServicePlugin(wire);
       if (!plugin?.webLogin) {
         return { error: `provider '${id}' is not on a plugin wire with a web-login capability` };
@@ -3946,6 +3955,8 @@ export function registerConsoleRoutes(
         apiKey?: string;
         baseURL?: string;
         credentialId?: string;
+        /** Pin the probe wire to ONE declared protocols[] entry (ADR-0033). */
+        protocol?: string;
       };
       const { getProviderNodeById, getProviderModelDefs, expandEnvTemplate } = await import(
         '../opencode/user-config.js'
@@ -4122,6 +4133,42 @@ export function registerConsoleRoutes(
         });
       }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
+      const { wireFor } = await import('../providers/wire.js');
+      const { normalizeProtocols, primaryProtocol } = await import('../providers/protocols-field.js');
+      // A protocol pin is a PRECONDITION, not a dial hint: refuse before any
+      // upstream byte leaves. One attempt speaks exactly one wire, so the pin
+      // replaces the whole dial ladder rather than sitting on top of it.
+      let pinnedWire: ReturnType<typeof probeKindFor> | undefined;
+      if (body.protocol !== undefined && body.protocol !== null && String(body.protocol).trim()) {
+        const pin = normalizeProtocols(String(body.protocol))[0];
+        const offered = new Set(protocolVocabulary().map((e) => e.alias));
+        const wire = pin ? wireFor(pin) : 'unroutable';
+        if (!pin || !offered.has(pin) || wire === 'unroutable') {
+          return reply.status(400).send({
+            success: false,
+            reasonCode: 'protocol_invalid',
+            provider: id,
+            protocol: String(body.protocol),
+            error: `'${body.protocol}' is not an offered OCR protocol id.`,
+          });
+        }
+        // ONE level fully wins (never patched across levels) — the same
+        // precedence boot-direct uses, so a pin cannot pass a check the dial
+        // itself would resolve differently (no test-vs-inference divergence).
+        const defLevel = normalizeProtocols(def?.protocols);
+        const declared = defLevel.length > 0 ? defLevel : normalizeProtocols(cat?.protocols);
+        if (!declared.includes(pin)) {
+          return reply.status(400).send({
+            success: false,
+            reasonCode: 'protocol_not_declared',
+            provider: id,
+            protocol: pin,
+            declared,
+            error: `'${pin}' is not declared by '${id}' (${declared.join(', ') || 'no protocols'}).`,
+          });
+        }
+        pinnedWire = wire;
+      }
       // The verdict's egress (ADR-0018 / ADR-0022 vocabulary) is taken from the
       // attempt that produced it and rides on the reply, so "Test" answers "did
       // my model-scoped split apply" — the include/exclude page can only state
@@ -4153,10 +4200,17 @@ export function registerConsoleRoutes(
         answered = attempt;
         for (const modelId of modelCandidates) {
           if (!tried.includes(modelId)) tried.push(modelId);
-          // Model-level npm override (e.g. Zen gpt-6-luna → @ai-sdk/openai =
-          // Responses API) beats provider-level npm when picking the wire shape.
-          const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
-          const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
+          // Wire shape for this attempt: the console pin wins outright;
+          // otherwise the model's own declared protocols beat the provider
+          // list (prefer-native dial, ADR-0033).
+          const modelProtocols = normalizeProtocols(
+            cat?.models.find((mm) => mm.id === modelId)?.protocols,
+          );
+          const dialProtocols =
+            modelProtocols.length > 0
+              ? modelProtocols
+              : normalizeProtocols(def?.protocols ?? cat?.protocols);
+          const kind = pinnedWire ?? probeKindFor(cat?.api, primaryProtocol(dialProtocols));
           // The model's own capability flags, read from the def the console
           // holds — a plugin probe builds a REAL request, so guessing
           // "not a reasoning model" makes it send thinking-off to a model that
