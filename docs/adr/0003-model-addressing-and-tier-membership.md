@@ -10,7 +10,7 @@ Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: what the request 
 
 Resolution order, exact (chat path `orchestrator.ts:739-1085`; decision surface mirrors it `surfaces/decision-pipeline.ts:54-137`):
 
-1. Trim once; `request.model` verbatim on the wire (surface contract — forwarded bytes are never rewritten).
+1. Trim once; `request.model` verbatim on the wire (surface contract — the MODEL string of a forwarded request is never rewritten. The only documented byte rewrite on a forwarded payload is the tool correlation id, which a budgeted carrier renders deterministically; see ADR-0033).
 2. Bare tier aliases `lite|plus|pro|ultra` → `force_tier` (Layer 0, ADR-0001). These ids are RESERVED — registrable by neither models nor combos (`RESERVED_IDS`, `member-match.ts`). Historical note: the aliases were originally prefixed (`auto-lite`…`auto-ultra`); the prefix was dropped and the bare `default` alias (a synonym of `auto`) was retired in the same sweep — no legacy-compat shim exists: old ids simply fail to resolve.
 3. Exact registered id → transparent pass-through: pin that model and force its tier (`:364-373`).
 4. Variant sibling `base-variant` / `base#variant` → route to BASE, pin the variant's `reasoningEffort` over any client-sent effort (`ModelVariant = {id, reasoningEffort}`; `:375-387`). A real registered id always beats a sibling; a combo beats a variant ref; `#` with no matching variant → **404 loud, never silently auto-routed** (`:388-398`).

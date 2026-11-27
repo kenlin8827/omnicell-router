@@ -3,6 +3,7 @@ import type { ModelRegistration } from '../../config/types.js';
 import { EFFORT_LADDER, EFFORT_TO_BUDGET, type ReasoningEffort } from '../../types/router.js';
 import { IrUnsupportedError } from '../errors.js';
 import { DATA_URL_RE } from '../media.js';
+import { upstreamToolCallId } from '../tool-identity.js';
 import type {
   CacheBreakpoint,
   CanonicalRequest,
@@ -208,10 +209,11 @@ function itemsFromMessage(role: 'user' | 'assistant', rawContent: unknown): Inpu
     const block = record(raw);
     if (block.type === 'tool_use') {
       flush();
+      const callId = upstreamToolCallId(block.id);
       items.push({
         type: 'tool_call',
-        id: String(block.id ?? ''),
-        callId: String(block.id ?? ''),
+        id: callId,
+        callId,
         name: String(block.name ?? ''),
         arguments: JSON.stringify(block.input ?? {}),
         ...(cacheOf(block.cache_control) ? { cache: cacheOf(block.cache_control) } : {}),
@@ -577,8 +579,9 @@ export function anthropicResponseToIR(data: unknown): CanonicalResponse {
   for (const raw of Array.isArray(body.content) ? body.content : []) {
     const block = record(raw);
     if (block.type === 'tool_use') {
+      const callId = upstreamToolCallId(block.id);
       output.push({
-        type: 'tool_call', id: String(block.id ?? ''), callId: String(block.id ?? ''),
+        type: 'tool_call', id: callId, callId,
         name: String(block.name ?? ''), arguments: JSON.stringify(block.input ?? {}),
       });
     } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { ContentPart, OutputItem, StreamEvent, Usage } from '../types.js';
 import { IrUpstreamError } from '../errors.js';
 import { googleUsageFromWire } from './google-gemini.js';
+import { upstreamToolCallId } from '../tool-identity.js';
 
 function record(value: unknown): Record<string, any> {
   return value && typeof value === 'object' ? value as Record<string, any> : {};
@@ -85,8 +86,12 @@ export class GoogleGeminiStreamDecoder {
         if (part.functionCall) {
           const call = record(part.functionCall);
           const itemIndex = state.nextItem++;
-          const generatedId = `${this.id}:call:${candidateIndex}:${itemIndex}`;
-          const id = typeof call.id === 'string' && call.id ? call.id : generatedId;
+          // One mint namespace with the buffered Gemini reader (`google-gemini.ts`), which also
+          // has no correlation field to read. A response-scoped composite (`<id>:call:<c>:<i>`)
+          // was a fourth spelling of the same idea, and its `:` is outside the charset both
+          // Responses id fields share, so a Gemini call converted to Responses was rewritten by
+          // the digest instead of passing through.
+          const id = upstreamToolCallId(typeof call.id === 'string' ? call.id : undefined);
           const item: OutputItem = {
             type: 'tool_call', id, callId: id,
             name: String(call.name ?? ''), arguments: JSON.stringify(call.args ?? {}),

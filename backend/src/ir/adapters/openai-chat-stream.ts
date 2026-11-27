@@ -9,6 +9,7 @@ import type { ChatCompletionChunk } from '../../types/openai.js';
 import type { CanonicalResponse, OutputItem, StreamEvent, Usage } from '../types.js';
 import { extractChatReasoningText, usageToIR } from './openai-chat.js';
 import { IrUnsupportedError } from '../errors.js';
+import { upstreamToolCallId } from '../tool-identity.js';
 import { assertCanonicalResponseSupported, assertCanonicalStreamEventSupported } from '../validate.js';
 
 type ToolFragment = {
@@ -122,7 +123,10 @@ export class ChatStreamDecoder {
           const wireIndex = typeof fragment.index === 'number' ? fragment.index : position;
           let call = state.tools.get(wireIndex);
           if (!call) {
-            const id = fragment.id || `call_${candidateIndex}_${wireIndex}`;
+            // Minted, not positional: `call_<candidate>_<index>` repeats the SAME id for the
+            // same position of EVERY response, so two turns of one session would carry two
+            // calls under one correlation id and the upstream would merge their results.
+            const id = upstreamToolCallId(fragment.id);
             call = {
               index: state.nextItem++,
               emitted: false,

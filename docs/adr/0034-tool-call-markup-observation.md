@@ -79,10 +79,21 @@ unbounded buffering. Tool items wait for end-of-stream reconciliation so an
 upstream empty native placeholder and a recovered call cannot both execute.
 There is no whole-response fake stream and no transport switch.
 
-Recovered synthetic ids include the response id, candidate index and sequence.
+Recovered synthetic ids include the response id, candidate index and sequence. The id this
+gateway mints is the concatenation `call_` + response id + `_dsml_<candidate>_<sequence>`, and
+it is kept verbatim ONLY when that whole string already sits inside the `call_id` charset and
+`RESPONSES_CALL_ID_MAX_LEN`; otherwise the WHOLE string is SHA-256 digested into the room the
+marker leaves, with the marker re-appended. So the trigger is the room left after the prefix
+and the marker (as little as ~48 for a normal response id), not the bare 64; nothing is
+sanitised and nothing is tail-sliced, which means an id this gateway mints never has to be
+rewritten by its own outbound Responses gate, two responses sharing a 64-character tail can
+never merge onto one id, and neither can two response ids that differ only by characters
+outside the charset (`resp.a` versus `resp_a`).
 A native same-name empty/`{}` placeholder receives the recovered arguments and
-keeps its native id instead of producing a duplicate. Candidate zero mirrored as
-the primary output is converted once. Non-length terminal reasons, including
+keeps its native id instead of producing a duplicate. A candidate whose output IS the primary
+output is converted once, whatever index it carries (gating on index 0 as well minted a second
+id for the same recovered call, so the chat leg and the recorded/session plane disagreed).
+Non-length terminal reasons, including
 `content_filter`, are preserved.
 
 Failed buffered responses are never repaired. On a failed stream, queued

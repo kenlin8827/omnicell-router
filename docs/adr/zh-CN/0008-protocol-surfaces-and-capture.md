@@ -85,7 +85,7 @@
 
 每个北向接入面都直接解析为厂商中立的 Canonical IR，每个南向适配器再把该 IR 渲染成自己的协议（ADR-0033）。Chat Completions 只是一种载体，不再是语义中间层。以下不变量适用于任意入站／出站组合：
 
-- **tool-call 配对。** IR 以类型化 `tool_call` / `tool_result` item 保留调用与结果，item id 与关联 `callId` 分离。每个调用在下一个非工具 item 前必须恰有一个结果；重复、孤儿及已取消调用的历史不得原样发给严格上游。`repairToolCallPairing`（`pipeline/tool-pairing.ts`）在编排器中执行一次幂等修复，位于压缩前身份快照之后、压缩／渲染之前：需要时合成取消结果，删除重复／孤儿结果；无需修复时返回原数组。目标适配器再把合法 IR 渲染成各自的原生 message／item 形状。
+- **tool-call 配对。** IR 以类型化 `tool_call` / `tool_result` item 保留调用与结果，item id 与关联 `callId` 分离。每个调用在下一个非工具 item 前必须恰有一个结果；重复、孤儿及已取消调用的历史不得原样发给严格上游。`repairToolCallPairing`（`pipeline/tool-pairing.ts`）在编排器中执行一次幂等修复，位于压缩前身份快照之后、压缩／渲染之前：需要时合成取消结果，删除重复／孤儿结果；无需修复时返回原数组。目标适配器再把合法 IR 渲染成各自的原生 message／item 形状。渲染出的关联 id **可以**与 canonical 的不同：有字段预算的载体做确定性投影，而 IR、会话存档、记录下来的 canonical 响应都保留原 id（ADR-0033）；配对判定用的是 canonical id，绝不是渲染后的字节。
 - **推理保真。** Reasoning 是类型化 IR item。推理正文、摘要条目、签名与加密／脱敏载荷各占独立字段，正文绝不冒充摘要。Chat `reasoning_content`、Anthropic thinking block 与 Responses reasoning item 直接映射到该 item。目标无法忠实重放签名或加密载荷时显式失败，而不是丢弃。
 - **工具、媒体与生成控制。** Function／custom／builtin 工具、`strict`、`tool_choice`、`parallel_tool_calls`、结构化输出与采样控制都在 IR 中保留语义。适配器采用显式 payload 白名单与能力闸门。不支持的工具种类、媒体来源、annotation、item reference 或控制项返回 `400 unsupported_parameter`；绝不置空、字符串化进提示词或变成另一种工具形状。目标要求对象时， malformed 工具参数 JSON 同样显式失败。
 - **响应与流保真。** Responses 信封回显有效请求，终态保留 `completed` / `incomplete` / `failed`，incomplete 原因跨转换保留。厂商中立的流生命周期覆盖 item／content 的开始、增量和完成，包括正文、refusal、推理与摘要。流式期间分配的 item id 在完成事件和终态响应中复用。同载体的 opaque item 可以往返；异载体的 opaque 输出显式失败，绝不从响应里消失。

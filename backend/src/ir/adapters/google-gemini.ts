@@ -1,7 +1,7 @@
-import crypto from 'node:crypto';
 import type { ModelRegistration } from '../../config/types.js';
 import { EFFORT_TO_BUDGET } from '../../types/router.js';
 import { IrUnsupportedError } from '../errors.js';
+import { upstreamToolCallId } from '../tool-identity.js';
 import type {
   CanonicalCandidate,
   CanonicalRequest,
@@ -192,7 +192,10 @@ function partFromWire(raw: unknown): { part?: ContentPart; reasoning?: string; r
   const value = record(raw);
   if (value.functionCall) {
     const call = record(value.functionCall);
-    const id = `call_${crypto.randomBytes(8).toString('hex')}`;
+    // A vendor id wins when the schema carries one (newer Gemini v1beta has `functionCall.id`);
+    // otherwise the call is named here, in the ONE mint namespace, so the outbound carriers get
+    // a correlation id that is already inside their shape budget.
+    const id = upstreamToolCallId(typeof call.id === 'string' ? call.id : undefined);
     return {
       call: {
         type: 'tool_call', id, callId: id,

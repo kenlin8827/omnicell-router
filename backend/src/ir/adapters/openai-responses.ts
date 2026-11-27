@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { RESPONSES_CALL_ID_MAX_LEN, RESPONSES_TOOL_ITEM_ID_MAX_LEN } from '../../config/defaults.js';
 import type { ModelRegistration } from '../../config/types.js';
 import { IrUnsupportedError } from '../errors.js';
 import { DATA_URL_RE } from '../media.js';
@@ -13,6 +14,7 @@ import type {
   Usage,
 } from '../types.js';
 import { assertCanonicalRequestSupported } from '../validate.js';
+import { CALL_ID_PREFIX, upstreamToolCallId } from '../tool-identity.js';
 
 const PROTOCOL = 'openai-responses' as const;
 
@@ -126,7 +128,11 @@ function partFromWire(raw: unknown): ContentPart {
 export function responsesPartToWire(part: ContentPart, role: 'user' | 'assistant'): Record<string, unknown> {
   if (part.type === 'extension') {
     if (part.protocol !== PROTOCOL) throw new IrUnsupportedError('content_part', `Cannot convert ${part.protocol} content.`, PROTOCOL);
-    return record(part.payload);
+    // A COPY, exactly as at item level (`openai-responses-output.ts`): rendering must never
+    // alias the canonical object the session store and capture hold, or the next field the
+    // encoder stamps onto the wire shape would edit the operator's record of the upstream
+    // body. The item copy and this one are ONE rule, not two conventions.
+    return { ...record(part.payload) };
   }
   if (part.type === 'text') {
     return {
@@ -193,19 +199,164 @@ export function responsesToolToWire(tool: ToolDef): Record<string, unknown> {
  * - Injective: distinct tool-call ids MUST NOT collapse onto one item id. The
  *   chat client controls `tool_calls[].id`, so an id that is not safe both in
  *   charset and length is hashed instead of sanitized/truncated — dropping
- *   characters or a tail would silently merge two calls into one id.
+ *   characters or a tail would silently merge two calls into one id. What MAY be
+ *   shortened is the DIGEST (to RESPONSES_TOOL_ITEM_ID_MAX_LEN, because the
+ *   item-type prefix eats the room RESPONSES_CALL_ID_MAX_LEN gives a bare
+ *   correlation id), never the original string.
  */
+/**
+ * The item-id namespace for a tool call (`fc_` for a function call, `ctc_` for a custom one).
+ * Declared once because the anchor mint in `openai-responses-output.ts` has to agree with it:
+ * a minted id that missed this prefix would come back double-prefixed.
+ */
+export function toolItemPrefix(custom: boolean): string {
+  return custom ? 'ctc_' : 'fc_';
+}
+
 export function responsesToolItemId(id: string, custom: boolean): string {
-  const prefix = custom ? 'ctc_' : 'fc_';
+  const prefix = toolItemPrefix(custom);
   if (id.startsWith(prefix)) return id;
-  if (/^[A-Za-z0-9_-]{1,48}$/.test(id)) return prefix + id;
-  return prefix + crypto.createHash('sha256').update(id).digest('hex').slice(0, 48);
+  if (idShape(RESPONSES_TOOL_ITEM_ID_MAX_LEN).test(id)) return prefix + id;
+  return prefix + idDigest(id, RESPONSES_TOOL_ITEM_ID_MAX_LEN);
+}
+
+/**
+ * The one id charset both Responses id fields share, written once so the two
+ * budgets can never grow different rules (sha256 hex is inside it, which is what
+ * makes a hashed id legal).
+ */
+function idShape(maxLen: number): RegExp {
+  return new RegExp(`^[A-Za-z0-9_-]{1,${maxLen}}$`);
+}
+
+/**
+ * sha256 hex, shortened only as far as the destination field requires — callers
+ * subtract their own prefix (and any suffix they append) from the budget first.
+ * A budget above sha256's own 64 hex chars is satisfied by the full digest, so only
+ * the LOW side needs a guard: `slice(0, 0)` returns the whole digest and a NEGATIVE
+ * length returns `64 - n` characters, so an unguarded non-positive budget hands back
+ * a 64-char id when the caller asked for none. The floor makes a zero/negative budget
+ * yield ONE character — a caller that over-subtracts then gets an id that is still too
+ * long for its field (visible, and our own gate rewrites it), which is honest in a way
+ * a silent 64-char digest would not be.
+ */
+export function idDigest(id: string, maxLen: number): string {
+  return crypto.createHash('sha256').update(id).digest('hex').slice(0, Math.max(maxLen, 1));
+}
+
+/** Charset + length budget for `call_id` (see RESPONSES_CALL_ID_MAX_LEN). */
+const CALL_ID_SHAPE = idShape(RESPONSES_CALL_ID_MAX_LEN);
+
+/**
+ * Whether an id is ALREADY a legal `call_id`, so any projector can keep it byte-identical.
+ * Exported because the markup-recovery mint (`providers/compat/tool-markup-recovery.ts`) has
+ * to answer the same question about a response id it is about to embed — and because
+ * `slice`/`replace` on an id is never the right answer there (sanitising a response id is
+ * lossy, so it can alias two responses onto one correlation id). One charset, one predicate.
+ */
+export function isCanonicalResponsesCallId(id: string): boolean {
+  return CALL_ID_SHAPE.test(id);
+}
+
+/**
+ * The `call_` correlation namespace is declared once, in `ir/tool-identity.ts`, because the
+ * upstream readers mint ids there and the markup-recovery mint builds ids in the same
+ * namespace — two declarations would be two drift twins of one rule.
+ */
+
+/**
+ * Canonical correlation id -> Responses `call_id`, with the same two invariants as
+ * `responsesToolItemId` plus the one it lacked: a FIELD BUDGET. Upstream Responses
+ * APIs validate this string's length, and a client id that arrived from another
+ * carrier (chat owns `tool_calls[].id`; the cursor-gateway loop re-injects the id a
+ * PREVIOUS upstream minted) would otherwise leave here verbatim and answer 400
+ * `Invalid 'input[N].call_id': string too long, maximum 64 characters`.
+ *
+ * THIS IS THE ONLY PROJECTION POINT, and that is load-bearing. Canonical state —
+ * `CanonicalResponse.output[].callId`, the session store a `store: true` Responses
+ * chain replays, and the capture rows — keeps the ORIGINAL id, because projecting
+ * there would break the other carriers (Anthropic `tool_use.id` has its own length
+ * rule). If the outbound RESPONSE leg projected too, a client would hold digests
+ * while the chain replays originals, and the two would meet as one history: an
+ * unpaired orphan, `repairToolCallPairing` synthesising
+ * "Tool call was cancelled before returning a result." over the client's real
+ * result, and no error anywhere. One projector on one leg keeps every plane in one
+ * naming system: a client replays the original it was handed, and this function
+ * turns it into the same digest on every turn.
+ *
+ * Four properties, all load-bearing:
+ *
+ * - Inside the field (its charset AND its length) -> BYTE-IDENTICAL. Most traffic
+ *   never sees a rewrite, so carriers that key on the `call_` / `toolu_` shape keep
+ *   seeing it. `call_id` needs no item-type prefix (that is why `responsesToolItemId`
+ *   adds one and this does not have to), so the budget is spent entirely on the id.
+ * - Deterministic: the same history yields the same id on every turn, or the
+ *   replayed prompt prefix busts the upstream prompt cache.
+ * - Injective: truncating the ORIGINAL to the budget is NOT the fallback — ids
+ *   that share a 64-char prefix would silently merge, and a merged correlation id
+ *   merges two tool results onto one call with no error anywhere. The replacement
+ *   is a `sha256` digest (`call_` + 59 hex = 64, so 236 bits and no realistic
+ *   collision), and it keeps the `call_` shape because consumers, session stores
+ *   and operator greps key on it.
+ * - A PROJECTION: `responsesCallId(responsesCallId(x)) === responsesCallId(x)`,
+ *   because the hashed form is itself inside the field. The correlation id
+ *   flows back through the gateway (a client replays whatever id it was handed, and
+ *   an extension item may carry one verbatim), so a map that is not idempotent
+ *   would name the same call differently on two turns of one session.
+ *
+ * An empty id has no faithful representation — pairing is impossible without it —
+ * so it is refused in the plane's own envelope (`tool_call_id` is the machine code the
+ * client sees) rather than minted a placeholder, which would merge every unlabelled
+ * call onto one id, or relayed as `""` for the upstream to reject in a language the
+ * client cannot read. An EMPTY `call_id` counts as absent and falls back to the item
+ * id **when the caller has one to offer** — that is the tool-call branch, which passes
+ * `item.id`; a tool RESULT has no id of its own, so there the refusal above is what
+ * happens. The two carriers agree on the anchor because `chat`
+ * writes `callId = id`, and the inbound Responses reader does `call_id ?? id`; a
+ * stored turn from before the minting fix can carry `call_id: ""` beside a real item
+ * id. This is the LAST-MILE half of that contract: an empty correlation id is legal on
+ * the Chat and Anthropic outbound wires, so it is refused only when the dialed carrier
+ * requires one. The consequence is that the refusal is an `IrUnsupportedError`, which is
+ * NOT failover-eligible — correct for a malformed body every candidate would receive
+ * alike, but it means such a request ends here instead of trying the next model.
+ */
+export function responsesCallId(callId: string | undefined, fallback?: string): string {
+  const id = callId || fallback || '';
+  if (!id) {
+    throw new IrUnsupportedError(
+      'tool_call_id', 'Responses tool items require a non-empty correlation id.', PROTOCOL,
+    );
+  }
+  return isCanonicalResponsesCallId(id)
+    ? id
+    : CALL_ID_PREFIX + idDigest(id, RESPONSES_CALL_ID_MAX_LEN - CALL_ID_PREFIX.length);
+}
+
+/**
+ * Passthrough is not exemption on the leg we control. A built-in Responses item
+ * (`web_search_call`, `mcp_call`, `image_generation_call`, a `computer_call` a
+ * plugin parsed as an extension) carries `call_id` too, and an over-budget one
+ * answers 400 for exactly the reason a tool item does — so an outbound extension
+ * payload's correlation id goes through the same map. The payload is COPIED, never
+ * mutated in place: the same object is what capture and the session store read, and
+ * rewriting the original there would silently edit the client's prompt and put the
+ * two naming planes out of step. A NESTED `call_id` is deliberately not walked: a foreign
+ * built-in shape is not ours to relabel, and rewriting unknown payload keys would put the
+ * map's idempotence on the vendor's structure rather than on our own field. An absent or
+ * empty `call_id` is left alone, because
+ * this payload is not ours to label — refusing a foreign built-in item over a field
+ * shape we merely inferred would reject requests that work today.
+ */
+function withNormalizedCallId(payload: Record<string, unknown>): Record<string, unknown> {
+  const callId = payload.call_id;
+  if (typeof callId !== 'string' || callId === '') return payload;
+  return { ...payload, call_id: responsesCallId(callId) };
 }
 
 function itemToWire(item: InputItem): Record<string, unknown> | Record<string, unknown>[] | null {
   if (item.type === 'extension') {
     if (item.protocol !== PROTOCOL) throw new IrUnsupportedError('input_item', `Cannot convert ${item.protocol} item.`, PROTOCOL);
-    return record(item.payload);
+    return withNormalizedCallId(record(item.payload));
   }
   if (item.type === 'item_reference') return { type: 'item_reference', id: item.id };
   if (item.type === 'reasoning') {
@@ -225,7 +376,7 @@ function itemToWire(item: InputItem): Record<string, unknown> | Record<string, u
     return {
       type: custom ? 'custom_tool_call' : 'function_call',
       id: responsesToolItemId(item.id, custom),
-      call_id: item.callId ?? item.id,
+      call_id: responsesCallId(item.callId, item.id),
       name: item.name,
       ...(custom ? { input: item.arguments } : { arguments: item.arguments }),
       ...(item.status ? { status: item.status } : {}),
@@ -237,7 +388,7 @@ function itemToWire(item: InputItem): Record<string, unknown> | Record<string, u
     const textOnly = parts.every((p) => p.type === 'input_text');
     return {
       type: item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call_output' ? 'custom_tool_call_output' : 'function_call_output',
-      call_id: item.callId,
+      call_id: responsesCallId(item.callId),
       output: textOnly ? parts.map((p) => String(p.text ?? '')).join('\n') : parts,
     };
   }
@@ -495,8 +646,16 @@ export function responsesInputToIR(raw: unknown): InputItem[] {
       }];
     }
     if (type === 'function_call' || type === 'custom_tool_call') {
-      const id = typeof item.id === 'string' ? item.id : String(item.call_id ?? '');
-      const callId = typeof item.call_id === 'string' ? item.call_id : id;
+      // The REQUEST plane keeps the name the client sent. This is the one reader that must NOT
+      // mint: a harness resends the whole history every turn, so a random name invented here
+      // would make the canonical envelope differ per resend and the outbound prefix would
+      // change bytes on every turn — a cache miss the client can neither see nor fix. An item
+      // id is a legitimate fallback because the client wrote it. A call named by NOTHING is
+      // refused at the outbound gate (`responsesCallId`), never silently renamed here.
+      const wireCallId = typeof item.call_id === 'string' ? item.call_id : '';
+      const wireItemId = typeof item.id === 'string' ? item.id : '';
+      const callId = wireCallId || wireItemId;
+      const id = wireItemId || callId;
       const args = type === 'custom_tool_call' ? item.input : item.arguments;
       return [{
         type: 'tool_call', id, callId,
@@ -647,10 +806,11 @@ export function responsesResponseToIR(data: unknown): CanonicalResponse {
         ...(typeof item.encrypted_content === 'string' ? { encrypted: item.encrypted_content } : {}),
       });
     } else if (item.type === 'function_call' || item.type === 'custom_tool_call') {
-      const callId = typeof item.call_id === 'string' ? item.call_id : String(item.id ?? '');
+      const callId = upstreamToolCallId(typeof item.call_id === 'string' ? item.call_id
+        : typeof item.id === 'string' ? item.id : undefined);
       const args = item.type === 'custom_tool_call' ? item.input : item.arguments;
       output.push({
-        type: 'tool_call', id: String(item.id ?? callId), callId,
+        type: 'tool_call', id: typeof item.id === 'string' && item.id ? item.id : callId, callId,
         name: String(item.name ?? ''),
         arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}),
         ...(item.status ? { status: item.status } : {}),

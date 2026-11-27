@@ -21,6 +21,14 @@ function itemFromWire(raw: unknown): OutputItem {
   return item;
 }
 
+/** A wire tool item that carries NO name of its own (`id` and `call_id` both absent or empty). */
+function wireNamesToolCall(raw: unknown): boolean {
+  const item = record(raw);
+  if (item.type !== 'function_call' && item.type !== 'custom_tool_call') return true;
+  return (typeof item.call_id === 'string' && item.call_id !== '')
+    || (typeof item.id === 'string' && item.id !== '');
+}
+
 const BUILTIN_TOOL_PROGRESS_RE =
   /^response\.(?:web_search_call|file_search_call|code_interpreter_call|code_interpreter_call_code|mcp_call|mcp_call_arguments|mcp_list_tools|image_generation_call)\.(?:in_progress|searching|interpreting|generating|partial_image|delta|done|completed|failed)$/;
 
@@ -30,9 +38,34 @@ export class OpenAIResponsesStreamDecoder {
   private terminalSent = false;
   private createdSent = false;
   private readonly annotations = new Map<string, import('../types.js').Annotation[]>();
+  /**
+   * Names this decoder invented for items the wire left unnamed, keyed by output index. An
+   * id-less `function_call` arrives as BOTH `output_item.added` and `output_item.done`, and
+   * each frame is read on its own, so a plain read-time mint would give one item two canonical
+   * ids. The accumulator replaces the added item with the done item (`ir/stream.ts`), so the
+   * LAST name wins: without this memo the id a client was handed while streaming is not the
+   * one its tool result pairs against, and the buffered and streaming legs of one accounting
+   * plane disagree. First name seen wins here, and it is reused for every later frame of the
+   * same index; an id the upstream DID send is never touched.
+   */
+  private readonly mintedIds = new Map<number, string>();
 
   public get terminated(): boolean {
     return this.nativeTerminal;
+  }
+
+  /** Read one wire item, reusing this decoder's name for an item the wire left unnamed. */
+  private namedItem(index: number, raw: unknown): OutputItem {
+    const item = itemFromWire(raw);
+    if (item.type !== 'tool_call' || wireNamesToolCall(raw)) return item;
+    const seen = this.mintedIds.get(index);
+    if (seen) {
+      item.id = seen;
+      item.callId = seen;
+      return item;
+    }
+    this.mintedIds.set(index, item.id ?? '');
+    return item;
   }
 
   public push(raw: unknown): StreamEvent[] {
@@ -55,7 +88,7 @@ export class OpenAIResponsesStreamDecoder {
       return [{
         type: type === 'response.output_item.added' ? 'response.output_item.added' : 'response.output_item.done',
         index,
-        item: itemFromWire(frame.item),
+        item: this.namedItem(index, frame.item),
       }];
     }
     if (type === 'response.content_part.added' || type === 'response.content_part.done') {

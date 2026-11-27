@@ -17,6 +17,9 @@ import type {
   ToolCallItem,
 } from '../../ir/types.js';
 import { detectToolMarkupLeak } from './tool-markup-leak.js';
+import { idDigest, isCanonicalResponsesCallId } from '../../ir/adapters/openai-responses.js';
+import { CALL_ID_PREFIX } from '../../ir/tool-identity.js';
+import { RESPONSES_CALL_ID_MAX_LEN } from '../../config/defaults.js';
 
 /** A narrowly-scoped repair for the one endpoint/model family observed leaking. */
 export type ToolMarkupRecovery = 'dsml';
@@ -341,8 +344,23 @@ function placeholder(call: ToolCallItem): boolean {
 }
 
 function syntheticId(responseId: string, candidateIndex: number, sequence: number): string {
-  const safe = responseId.replace(/[^A-Za-z0-9_-]/g, '_').slice(-64) || randomUUID();
-  return `call_${safe}_dsml_${candidateIndex}_${sequence}`;
+  // A recovered call needs a CORRELATION id, and the vendor gave us none, so the id is built
+  // from what is stable: the response id, the candidate position, and the call's sequence in
+  // that candidate. The marker is what keeps two calls of one response distinct.
+  const marker = `_dsml_${candidateIndex}_${sequence}`;
+  // ONE rule, and it is the gate's own rule: the id is kept when it already satisfies the
+  // `call_id` shape, otherwise the whole thing is digested into it. That makes the mint LEGAL
+  // BY CONSTRUCTION — no rewrite by our own outbound gate, no charset surprise, nothing
+  // truncated. The previous form (`responseId.replace(/[^A-Za-z0-9_-]/g, '_').slice(-64)`)
+  // reached 78 characters and merged two responses sharing a 64-character TAIL; sanitising
+  // before the length test is lossy too (`resp.a`, `resp-a`, `resp_a` collapse to one string),
+  // so the digest is taken over the FULL id, which is injective. The test is on the FINAL id,
+  // not on the response id, so the prefix is inside the budget; `room` then subtracts prefix
+  // and marker, and `idDigest` bounds the width, so no clamp is needed here.
+  const id = `${CALL_ID_PREFIX}${responseId}${marker}`;
+  if (isCanonicalResponsesCallId(id)) return id;
+  const room = RESPONSES_CALL_ID_MAX_LEN - CALL_ID_PREFIX.length - marker.length;
+  return `${CALL_ID_PREFIX}${idDigest(id, room)}${marker}`;
 }
 
 function reconcileOutput(
@@ -406,7 +424,11 @@ function inputTextEchoSet(request: CanonicalRequest): Set<string> {
 
 export function recoverToolMarkupInResponse(response: CanonicalResponse, request: CanonicalRequest): CanonicalResponse {
   if (response.status === 'failed') return finishResponse(response, 0);
-  const responseId = response.id ?? randomUUID();
+  // An EMPTY response id is an ABSENT one (`??` would keep "" and then every id-less response
+  // would mint the same `call__dsml_0_1`, so two turns of such a server would collide on one
+  // correlation id in a replayed history). The stream leg already treats it as absent and
+  // seeds a uuid — both legs must, or they mint different id families for one upstream.
+  const responseId = response.id || randomUUID();
   const echoed = inputTextEchoSet(request);
   let recovered = 0;
   const convert = (output: OutputItem[], candidateIndex: number): OutputItem[] => {
@@ -444,9 +466,11 @@ export function recoverToolMarkupInResponse(response: CanonicalResponse, request
   const output = convert(response.output, 0);
   const candidates = response.candidates?.map((candidate) => ({
     ...candidate,
-    // Some accumulators mirror the primary output in candidates[0]. Convert
-    // that shared candidate once, not once per representation.
-    output: candidate.index === 0 && candidate.output === response.output
+    // Some accumulators mirror the primary output in a candidate. Convert that shared
+    // reference ONCE, whatever index it carries: matching on `index === 0` too would mint two
+    // ids for one recovered call (`_dsml_0_1` for the primary, `_dsml_1_1` for the mirror),
+    // double-count the call, and hand the chat leg an id the session/capture plane never saw.
+    output: candidate.output === response.output
       ? output
       : convert(candidate.output, candidate.index),
   }));

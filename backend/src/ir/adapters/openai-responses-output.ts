@@ -8,7 +8,7 @@ import type {
   Usage,
 } from '../types.js';
 import { assertCanonicalResponseSupported, assertCanonicalStreamEventSupported } from '../validate.js';
-import { responsesPartToWire, responsesToolItemId } from './openai-responses.js';
+import { responsesPartToWire, responsesToolItemId, toolItemPrefix } from './openai-responses.js';
 
 const PROTOCOL = 'openai-responses';
 
@@ -97,11 +97,32 @@ function outputPartToWire(part: ContentPart): Record<string, unknown> {
   return responsesPartToWire(part, 'assistant');
 }
 
-function outputItemToWire(item: OutputItem, messageId?: string): Record<string, unknown> {
+/**
+ * An `extension` item's payload has to be a plain object BEFORE anything else touches the
+ * item: the streaming encoder caches an anchor for the output index first and renders the
+ * wire shape second, so a payload checked only at render time would leave a cached name
+ * behind for a request that is already failing. One check, called from both places.
+ */
+function extensionPayloadOf(item: OutputItem): Record<string, unknown> {
+  const payload = item.type === 'extension' ? item.payload : undefined;
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new IrUnsupportedError('output_item', 'A Responses extension output item must carry an object payload.', PROTOCOL);
+  }
+  return payload as Record<string, unknown>;
+}
+
+/**
+ * `anchor` is the id the CALLER has settled on for THIS item — the streaming encoder passes
+ * its cached value, so an item never changes name between `output_item.added`, the terminal
+ * response, and a later replay, on ANY item type. A mint inside a branch below is therefore
+ * a fallback of last resort, not a second namespace. An EMPTY id counts as absent on every
+ * branch — the stream leg treats it the same way, and the two legs must not disagree.
+ */
+function outputItemToWire(item: OutputItem, anchor?: string): Record<string, unknown> {
   if (item.type === 'message') {
     return {
       type: 'message',
-      id: item.id ?? messageId ?? shortId('msg_'),
+      id: item.id || anchor || shortId('msg_'),
       status: item.status ?? 'completed',
       role: 'assistant',
       content: item.content.map(outputPartToWire),
@@ -109,10 +130,21 @@ function outputItemToWire(item: OutputItem, messageId?: string): Record<string, 
   }
   if (item.type === 'tool_call') {
     const custom = item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call';
+    // A lenient upstream can hand back a tool call with NEITHER id (OpenAI-compat
+    // servers that return `tool_calls[]` without an `id`, which the chat adapter records
+    // as `''`). Both slots still have to carry something a client can address a tool
+    // result with, so they fall back to ONE anchor. Never `responsesToolItemId('')` — the
+    // digest of the empty string is CONSTANT, so every id-less call in one response
+    // collapsed onto the same item id and a client could not tell two `function_call`
+    // items apart — and never `call_id: ''`, which names nothing on any plane and which
+    // the outbound budget then refuses when the client replays it. A minted anchor is
+    // short, inside `CALL_ID_SHAPE`, and stable for the life of the stream. An id the
+    // item or the call already carries always wins, so a present `call_id` is untouched.
+    const anchorId = item.id || item.callId || anchor || shortId(toolItemPrefix(custom));
     return {
       type: custom ? 'custom_tool_call' : 'function_call',
-      id: responsesToolItemId(item.id || shortId(custom ? 'ctc_' : 'fc_'), custom),
-      call_id: item.callId ?? item.id,
+      id: responsesToolItemId(anchorId, custom),
+      call_id: item.callId || anchorId,
       name: item.name,
       ...(custom ? { input: item.arguments } : { arguments: item.arguments }),
       status: item.status ?? 'completed',
@@ -121,7 +153,7 @@ function outputItemToWire(item: OutputItem, messageId?: string): Record<string, 
   if (item.type === 'reasoning') {
     return {
       type: 'reasoning',
-      id: item.id ?? shortId('rs_'),
+      id: item.id || anchor || shortId('rs_'),
       status: item.status ?? 'completed',
       summary: item.summary?.map((text) => ({ type: 'summary_text', text })) ?? [],
       ...(item.text ? { content: [{ type: 'reasoning_text', text: item.text }] } : {}),
@@ -132,12 +164,20 @@ function outputItemToWire(item: OutputItem, messageId?: string): Record<string, 
   if (item.protocol !== PROTOCOL) {
     throw new IrUnsupportedError('output_item', `Cannot convert ${item.protocol} output to Responses.`, PROTOCOL);
   }
-  return item.payload as Record<string, unknown>;
+  // A same-protocol built-in item passes through with its own shape, but as a COPY: the
+  // canonical item is the very object capture and the session store read, and stamping a
+  // minted name into the payload would edit the operator's record of the upstream response.
+  // Its name still has to be present on BOTH legs: the stream mints an `item_` anchor for a
+  // payload with none, so the buffered leg mints the same shape instead of omitting the field
+  // (AGENTS.md: a field present on only one leg is a bug).
+  const payload = extensionPayloadOf(item);
+  const payloadId = typeof payload.id === 'string' && payload.id ? payload.id : undefined;
+  return { ...payload, id: payloadId ?? anchor ?? shortId('item_') };
 }
 
 export function canonicalToResponsesObject(
   response: CanonicalResponse,
-  ids: { respId: string; messageId?: string },
+  ids: { respId: string; messageId?: string; anchorFor?: (index: number) => string | undefined },
   model: string,
   store = true,
   echo: ResponsesEcho = defaultResponsesEcho(),
@@ -156,7 +196,10 @@ export function canonicalToResponsesObject(
     instructions: echo.instructions,
     metadata: echo.metadata,
     model,
-    output: response.output.map((item, index) => outputItemToWire(item, index === 0 ? ids.messageId : undefined)),
+    output: response.output.map((item, index) => outputItemToWire(
+      item,
+      ids.anchorFor?.(index) ?? (index === 0 ? ids.messageId : undefined),
+    )),
     parallel_tool_calls: echo.parallel_tool_calls,
     temperature: echo.temperature,
     tool_choice: echo.tool_choice,
@@ -338,13 +381,26 @@ export class OpenAIResponsesEventEncoder {
     if (!item) {
       throw new IrUnsupportedError('stream_lifecycle', `Responses stream references unopened output item ${index}.`, PROTOCOL);
     }
-    const sourceId = 'id' in item && typeof item.id === 'string' ? item.id : undefined;
+    // An EMPTY id is absent, not a name: `responsesToolItemId('')` digests the empty
+    // string, a constant, so id-less tool calls merged onto one item id, and a message
+    // with `id: ''` streamed out with an empty one.
+    const sourceId = 'id' in item && typeof item.id === 'string' && item.id ? item.id : undefined;
+    // An extension item keeps its name INSIDE the payload (`web_search_call` arrives as
+    // `{ id: 'ws_…', … }`), and `'id' in item` is false for the wrapper — so reading only the
+    // wrapper made the stream mint a name the buffered leg never shows. The payload is
+    // validated HERE, before the anchor is cached: checking it only at render time left a
+    // cached name behind for an item that then failed mid-stream, so a retry of the same
+    // output index could inherit an id from a request that never completed.
+    const payloadId = item.type === 'extension' ? extensionPayloadOf(item).id : undefined;
     const custom = item.type === 'tool_call' && item.vendor?.[PROTOCOL]?.itemType === 'custom_tool_call';
-    const id = item.type === 'tool_call' && sourceId !== undefined
-      ? responsesToolItemId(sourceId, custom)
-      : sourceId ?? (item.type === 'message' && index === 0 ? this.messageId : undefined)
-        ?? shortId(item.type === 'message' ? 'msg_' : item.type === 'reasoning' ? 'rs_'
-          : custom ? 'ctc_' : 'fc_');
+    const callAnchor = item.type === 'tool_call'
+      ? (typeof item.callId === 'string' && item.callId ? item.callId : undefined)
+      : undefined;
+    const id = item.type === 'tool_call'
+      ? responsesToolItemId(sourceId ?? callAnchor ?? shortId(toolItemPrefix(custom)), custom)
+      : sourceId ?? (typeof payloadId === 'string' && payloadId ? payloadId : undefined)
+        ?? (item.type === 'message' && index === 0 ? this.messageId : undefined)
+        ?? shortId(item.type === 'message' ? 'msg_' : item.type === 'reasoning' ? 'rs_' : 'item_');
     this.itemIds.set(index, id);
     return id;
   }
@@ -385,15 +441,10 @@ export class OpenAIResponsesEventEncoder {
     };
     const object = canonicalToResponsesObject(base, {
       respId: this.respId, messageId: this.messageId,
+      anchorFor: (index) => this.itemIds.get(index),
     }, model, this.store, this.echo);
     object.status = status;
     if (opening) object.output = [];
-    else if (Array.isArray(object.output)) {
-      object.output.forEach((item: Record<string, unknown>, index: number) => {
-        const id = this.itemIds.get(index);
-        if (id) item.id = id;
-      });
-    }
     return object;
   }
 
