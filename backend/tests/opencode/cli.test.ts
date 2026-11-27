@@ -18,7 +18,9 @@ import { getOcrHomeDir, getRestartStatusFilePath } from '../../src/cli/paths.js'
 import { OpenCodeClientAdapter } from '../../src/cli/clients/opencode.js';
 import { listOpenCodeAgents, listOpenCodeAgentsLive } from '../../src/opencode/agents.js';
 import { ClaudeClientAdapter } from '../../src/cli/clients/claude.js';
-import { CodexClientAdapter } from '../../src/cli/clients/codex.js';
+import { CodexClientAdapter, type CodexStockModel } from '../../src/cli/clients/codex.js';
+import { setupClient, getClientAdapter } from '../../src/cli/clients/index.js';
+import { retiredClientHint } from '../../src/cli/clients/reserved.js';
 import { PiClientAdapter } from '../../src/cli/clients/pi.js';
 import { DshClientAdapter } from '../../src/cli/clients/dsh.js';
 import { parse as parseYaml } from 'yaml';
@@ -444,24 +446,74 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(restored.env.SOME_KEY).toBe('test');
   });
 
-  it('Codex adapter should safely redirect baseUrl and revert', async () => {
-    const configPath = path.join(tmpDir, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }, null, 2));
+  it('Codex adapter writes openai_base_url + merged catalog + auth, strips legacy provider, and reverts', async () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    const authPath = path.join(tmpDir, 'auth.json');
+    fs.writeFileSync(
+      configPath,
+      [
+        'model = "gpt-5"',
+        'model_provider = "openai"',
+        '',
+        '[mcp_servers.example]',
+        'command = "echo"',
+        '',
+        '[model_providers.omnicell-router]',
+        'name = "OmniCellRouter"',
+        'base_url = "http://127.0.0.1:9999/v1"',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'tok' } }, null, 2));
 
     const adapter = new CodexClientAdapter();
     adapter.getConfigPath = () => configPath;
+    // Empty stock: assert OCR-only order; a later case covers OCR+stock merge.
+    adapter.stockCatalogLoader = () => [];
 
     let status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
-    const setupRes = await adapter.setup({ port: 4000 });
+    const setupRes = await adapter.setup({
+      port: 4000,
+      models: { main: 'pro' },
+      apiKey: 'sk-test',
+      extraModels: ['gpt-4o', 'prov/thinker'],
+      virtualModels: ['pro'],
+    });
     expect(setupRes.success).toBe(true);
+    expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
 
     status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('pro');
+    expect(status.extraModels?.sort()).toEqual(['gpt-4o', 'prov/thinker']);
 
-    const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(updated.baseUrl).toBe('http://127.0.0.1:4000/v1');
+    const updated = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(updated.openai_base_url).toBe('http://127.0.0.1:4000/v1');
+    expect(updated.model).toBe('pro');
+    expect(updated.model_provider).toBe('openai');
+    expect(updated.model_providers).toBeUndefined();
+    // User tables survive the round-trip.
+    expect((updated.mcp_servers as TOML.JsonMap).example).toBeTruthy();
+
+    const catalogPath = path.join(tmpDir, 'omnicell-router-models.json');
+    expect(fs.existsSync(catalogPath)).toBe(true);
+    expect(String(updated.model_catalog_json).replace(/\\/g, '/')).toBe(catalogPath.replace(/\\/g, '/'));
+    const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8')) as { models: Array<{ slug: string }> };
+    expect(catalog.models.map(m => m.slug)).toEqual(['pro', 'gpt-4o', 'prov/thinker']);
+
+    const thinkerProfile = path.join(tmpDir, 'ocr-prov_thinker.config.toml');
+    const gptProfile = path.join(tmpDir, 'ocr-gpt-4o.config.toml');
+    expect(fs.existsSync(thinkerProfile)).toBe(true);
+    expect(fs.existsSync(gptProfile)).toBe(true);
+    const thinkerBody = TOML.parse(fs.readFileSync(thinkerProfile, 'utf8')) as TOML.JsonMap;
+    expect(thinkerBody.model).toBe('prov/thinker');
+    expect(thinkerBody.model_provider).toBe('openai');
+
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as Record<string, unknown>;
+    expect(auth.OPENAI_API_KEY).toBe('sk-test');
+    expect(auth.auth_mode).toBe('apikey');
 
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);
@@ -469,9 +521,218 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
-    const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(restored.baseUrl).toBe('https://api.openai.com/v1');
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.openai_base_url).toBeUndefined();
+    expect(restored.model).toBe('gpt-5');
+    expect(restored.model_provider).toBe('openai');
+    expect(restored.model_catalog_json).toBeUndefined();
+    expect(fs.existsSync(catalogPath)).toBe(false);
+    expect(fs.existsSync(thinkerProfile)).toBe(false);
+    expect(fs.existsSync(gptProfile)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).auth_mode).toBe('chatgpt');
   });
+
+  it('Codex follow-mode setup writes virtual tier profiles and keeps them out of the extras echo', async () => {
+    const configPath = path.join(tmpDir, 'codex-follow.toml');
+    fs.writeFileSync(configPath, ['model = "gpt-5"', ''].join('\n'));
+
+    const adapter = new CodexClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    adapter.stockCatalogLoader = () => [];
+
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      apiKey: 'sk-test',
+      extraModels: ['gpt-4o'],
+      virtualModels: ['auto', 'pro'],
+    });
+    // Main covers 'auto'; the admitted tier + concrete extras land as profiles.
+    const profiles = fs.readdirSync(tmpDir).filter(n => n.startsWith('ocr-') && n.endsWith('.config.toml')).sort();
+    expect(profiles).toEqual(['ocr-gpt-4o.config.toml', 'ocr-pro.config.toml']);
+    const catalog = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'omnicell-router-models.json'), 'utf8'),
+    ) as { models: Array<{ slug: string }> };
+    // Picker catalog includes main + admitted virtual + concrete extras.
+    expect(catalog.models.map(m => m.slug)).toEqual(['auto', 'pro', 'gpt-4o']);
+
+    const status = await adapter.getStatus();
+    expect(status.extraModels).toEqual(['gpt-4o']);
+
+    // A re-setup with a narrower verdict must sweep the stale virtual profile.
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test', virtualModels: ['auto'] });
+    const narrowed = fs.readdirSync(tmpDir).filter(n => n.startsWith('ocr-') && n.endsWith('.config.toml'));
+    expect(narrowed).toEqual([]);
+    const narrowedCatalog = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'omnicell-router-models.json'), 'utf8'),
+    ) as { models: Array<{ slug: string }> };
+    expect(narrowedCatalog.models.map(m => m.slug)).toEqual(['auto']);
+  });
+
+  it('Codex adapter teardown after double-setup must leave the client fully unhooked (restore-then-strip)', async () => {
+    const configPath = path.join(tmpDir, 'codex-double.toml');
+    fs.writeFileSync(configPath, ['model = "gpt-5"', 'model_provider = "openai"', ''].join('\n'));
+
+    const adapter = new CodexClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    adapter.stockCatalogLoader = () => [];
+
+    await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test', virtualModels: [] });
+    // The second setup re-backs-up the ALREADY-HOOKED config — teardown must
+    // not trust that backup alone.
+    await adapter.setup({ port: 4000, models: { main: 'lite' }, apiKey: 'sk-test', virtualModels: [] });
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.openai_base_url).toBeUndefined();
+    expect(restored.model_catalog_json).toBeUndefined();
+    // First-snapshot backup is kept across re-setup, so restore brings the
+    // pre-hook pins back; strip clears our openai_base_url if it survived.
+    expect(restored.model).toBe('gpt-5');
+    expect(restored.model_provider).toBe('openai');
+  });
+
+  it('Codex adapter refuses to overwrite an unparseable config and requires an API key', async () => {
+    const configPath = path.join(tmpDir, 'codex-broken.toml');
+    fs.writeFileSync(configPath, '[model_providers.unbalanced\n');
+
+    const adapter = new CodexClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const noKey = await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    expect(noKey.success).toBe(false);
+
+    const broken = await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test' });
+    expect(broken.success).toBe(false);
+  });
+
+  it('Codex setup drops legacy in-file profile tables that recent CLI refuses', async () => {
+    const configPath = path.join(tmpDir, 'codex-legacy-profiles.toml');
+    fs.writeFileSync(
+      configPath,
+      ['profile = "o3"', '', '[profiles.o3]', 'model = "o3"', ''].join('\n'),
+    );
+
+    const adapter = new CodexClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    adapter.stockCatalogLoader = () => [];
+
+    const res = await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test', virtualModels: [] });
+    expect(res.success).toBe(true);
+    const data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(data.profile).toBeUndefined();
+    expect(data.profiles).toBeUndefined();
+    expect(data.openai_base_url).toBe('http://127.0.0.1:4000/v1');
+  });
+
+  const fixtureStockCatalog = (): CodexStockModel[] => [
+    {
+      slug: 'gpt-5.4',
+      display_name: 'GPT-5.4',
+      visibility: 'list',
+      hidden: false,
+      supported_in_api: true,
+      priority: 0,
+      base_instructions: 'fixture',
+    },
+    {
+      slug: 'gpt-5.3-codex',
+      display_name: 'GPT-5.3-Codex',
+      visibility: 'list',
+      hidden: false,
+      supported_in_api: true,
+      priority: 1,
+      base_instructions: 'fixture',
+    },
+    {
+      slug: 'o3',
+      display_name: 'o3',
+      visibility: 'list',
+      hidden: false,
+      supported_in_api: true,
+      priority: 2,
+      base_instructions: 'fixture',
+    },
+  ];
+
+  it('Codex catalog keeps stock OpenAI entries after the OCR selection', async () => {
+    const configPath = path.join(tmpDir, 'codex-stock.toml');
+    fs.writeFileSync(configPath, ['model = "gpt-5"', 'model_provider = "openai"', ''].join('\n'));
+
+    const adapter = new CodexClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    adapter.stockCatalogLoader = fixtureStockCatalog;
+
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'pro' },
+      apiKey: 'sk-test',
+      extraModels: ['gpt-4o'],
+      virtualModels: ['pro'],
+    });
+
+    const catalog = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'omnicell-router-models.json'), 'utf8'),
+    ) as { models: Array<{ slug: string }> };
+    // OCR block first, then remaining stock (gpt-4o is OCR-only, not stock).
+    expect(catalog.models.map((m) => m.slug)).toEqual([
+      'pro',
+      'gpt-4o',
+      'gpt-5.4',
+      'gpt-5.3-codex',
+      'o3',
+    ]);
+    const data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(data.openai_base_url).toBe('http://127.0.0.1:4000/v1');
+    expect(data.model_provider).toBe('openai');
+    // Status extras are the OCR pick only — stock catalog rows must not echo
+    // as if the operator selected every OpenAI slug in "自定义".
+    const status = await adapter.getStatus();
+    expect(status.extraModels?.sort()).toEqual(['gpt-4o']);
+  });
+
+  it('Codex teardown after double-setup restore-then-strips openai_base_url', async () => {
+    const configPath = path.join(tmpDir, 'codex-double-url.toml');
+    fs.writeFileSync(configPath, ['model = "gpt-5"', 'model_provider = "openai"', ''].join('\n'));
+
+    const adapter = new CodexClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    adapter.stockCatalogLoader = fixtureStockCatalog;
+
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'gpt-5.4' },
+      apiKey: 'sk-test',
+      virtualModels: [],
+    });
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'o3' },
+      apiKey: 'sk-test',
+      virtualModels: [],
+    });
+    expect((await adapter.teardown()).success).toBe(true);
+    expect((await adapter.getStatus()).hooked).toBe(false);
+
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.openai_base_url).toBeUndefined();
+    expect(restored.model_catalog_json).toBeUndefined();
+    expect(restored.model).toBe('gpt-5');
+    expect(restored.model_provider).toBe('openai');
+  });
+
+  it('retired chatgpt client id points operators at codex', async () => {
+    expect(retiredClientHint('chatgpt')).toContain('codex');
+    expect(getClientAdapter('chatgpt')).toBeNull();
+    const refused = await setupClient('chatgpt', { port: 4000, apiKey: 'sk-x' });
+    expect(refused.success).toBe(false);
+    expect(refused.message).toContain('codex');
+  });
+
 
   it('Pi adapter should inject its provider, preserve user providers, and revert', async () => {
     const configPath = path.join(tmpDir, 'models.json');

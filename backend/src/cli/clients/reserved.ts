@@ -50,6 +50,8 @@ export function isCoreClientId(name: string): name is CoreClientId {
 export const RETIRED_CLIENT_IDS: Readonly<Record<string, string>> = {
   // ADR-0028: the ingress half merged into its gateway package.
   'opencode-proxy': 'opencode-gateway',
+  // ChatGPT Desktop shares ~/.codex with the Codex card (one unified hook).
+  chatgpt: 'codex',
 };
 
 /** Human-readable hint for a retired id, or undefined when the id is not one. */

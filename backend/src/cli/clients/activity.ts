@@ -32,6 +32,8 @@ const lastSetupAt = new Map<string, number>();
 const UA_MATCHERS: readonly { match: RegExp; client: string }[] = [
   { match: /claude-cli\//i, client: 'claude' },
   { match: /opencode\//i, client: 'opencode' },
+  // ChatGPT Desktop and Codex CLI share the one Codex card / ~/.codex hook.
+  { match: /chatgpt/i, client: 'codex' },
   { match: /codex/i, client: 'codex' },
 ];
 
