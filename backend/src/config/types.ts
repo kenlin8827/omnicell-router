@@ -84,9 +84,16 @@ export interface ModelRegistration {
    * `tiers[t].members` list claims, full stop.
    */
   pricing?: ModelPricing;
-  /** Resolved wire for direct execution (model-level npm beats provider npm).
-   *  Core shapes plus PLUGIN-owned wire ids — the plugin half is open-ended,
-   *  filled from the loaded plugin manifests (`providers/plugin-wires.ts`). */
+  /**
+   * Ordered outbound protocol set (ADR-0033 prefer-native dial). Boot resolves
+   * model override → catalog model → def → catalog provider into this list; the
+   * per-attempt dialer (`providers/dial-wire.ts`) picks ONE id from it, and
+   * `wire` below is the boot primary (first entry) it falls back to.
+   * Core shapes plus PLUGIN-owned ids — the plugin half is open-ended, filled
+   * from the loaded plugin manifests (`providers/plugin-wires.ts`). */
+  protocols?: string[];
+  /** Resolved boot-primary wire for direct execution (`protocols[0]`; model
+   *  declaration beats provider declaration). */
   wire?: WireKind;
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
@@ -1318,6 +1325,13 @@ export interface RouterConfig {
    * Boot-frozen — applied when the routes are registered.
    */
   bodyLimits?: BodyLimitsConfig;
+  /**
+   * When true (default), Key `modelAccess` / model-pool mutations event-drive a
+   * rewrite of every hooked follow-mode client catalog and every gateway
+   * plugin with `modelListMode=follow` (disk `client.autoResyncFollowCatalogs`).
+   * Hot-readable — no restart. Not a profile write-through (ADR-0031).
+   */
+  autoResyncFollowCatalogs?: boolean;
   models?: ModelRegistration[];
   combos?: ComboConfig[];
   /**

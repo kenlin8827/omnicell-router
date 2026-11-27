@@ -22,6 +22,7 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
 import { ProviderRegistry, type AttemptEgress } from '../providers/registry.js';
+import { pickDialWire } from '../providers/dial-wire.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { protocolForWire } from '../providers/vocabulary.js';
@@ -1411,7 +1412,14 @@ export class PipelineOrchestrator {
     // the default pin / effort matching below, so capability clamps and the
     // X-OCR-Thinking-* headers see it; the budget itself stays on the request
     // for wires that consume it natively.
-    const servedWire = actualModel.wire ?? 'openai-chat';
+    // Prefer-native dial (same pickDialWire registry.execute uses) — effort
+    // prep and X-OCR-Protocol must name the wire THIS attempt will dial, not
+    // protocols[0] / the boot primary alone.
+    const servedWire = pickDialWire(
+      actualModel.protocols ?? (actualModel.wire ? [actualModel.wire] : undefined),
+      context?.wire,
+      normalizedRequest,
+    );
     const budgetTokens = normalizedRequest.reasoning?.budgetTokens;
     if (
       effortOf(normalizedRequest) === undefined &&
@@ -1700,6 +1708,7 @@ export class PipelineOrchestrator {
               requestedEffort,
               variantUsed,
             },
+            inboundWire: context?.wire,
           },
           upstreamEventContext
         );
@@ -1861,6 +1870,7 @@ export class PipelineOrchestrator {
             requestedEffort,
             variantUsed,
           },
+          inboundWire: context?.wire,
         },
         upstreamEventContext
       );
@@ -2412,6 +2422,8 @@ export class PipelineOrchestrator {
        * chunk (the candidate is only known inside the pool).
        */
       streamRouting?: StreamRoutingFacts;
+      /** Inbound client surface protocol for prefer-native dial. */
+      inboundWire?: string;
     },
     upstreamEventContext?: UpstreamEventContext
   ): Promise<{
@@ -2679,6 +2691,16 @@ export class PipelineOrchestrator {
         });
       }
 
+      // Prefer-native dial for THIS attempt — effort prep, staging headers, and
+      // the returned modelUsed.wire must match what registry.execute dials.
+      const dialWire = pickDialWire(
+        candidate.protocols ?? (candidate.wire ? [candidate.wire] : undefined),
+        opts.inboundWire,
+        request,
+      );
+      const dialCandidate: ModelRegistration =
+        dialWire === candidate.wire ? candidate : { ...candidate, wire: dialWire };
+
       // per-candidate effort translation. Each chain member serves
       // through ITS OWN effortMap (`none` included), clamped by its declared
       // capability — the request copy carries exactly what gets sent (a
@@ -2689,7 +2711,7 @@ export class PipelineOrchestrator {
           opts.requestedEffort === undefined &&
           typeof request.reasoning?.budgetTokens === 'number' &&
           request.reasoning.budgetTokens > 0 &&
-          !this.wireConsumesBudgetNatively(candidate.wire)
+          !this.wireConsumesBudgetNatively(dialCandidate.wire)
             ? effortFromThinkingBudget(request.reasoning.budgetTokens)
             : undefined;
         const ask = opts.requestedEffort ?? budgetAsk ?? 'none';
@@ -2722,7 +2744,7 @@ export class PipelineOrchestrator {
       // to Chat-only upstreams instead of failing with 400 on the backup model.
       if (
         failoverAttempts > 1 &&
-        !capabilitiesFor(protocolForWire(candidate.wire ?? 'openai-chat')).reasoningSignature &&
+        !capabilitiesFor(protocolForWire(dialCandidate.wire ?? 'openai-chat')).reasoningSignature &&
         candidateReq.input.some((item) => item.type === 'reasoning' && (item.signature !== undefined || item.encrypted !== undefined))
       ) {
         const strippedInput = candidateReq.input.flatMap((item): InputItem[] => {
@@ -2740,9 +2762,9 @@ export class PipelineOrchestrator {
       if (opts.relay) {
         opts.relay.stageRouting({
           ...opts.streamRouting,
-          modelUsed: candidate.id,
+          modelUsed: dialCandidate.id,
           tierUsed: candidateAccessTier,
-          protocolUsed: protocolForWire(candidate.wire ?? 'openai-chat'),
+          protocolUsed: protocolForWire(dialCandidate.wire ?? 'openai-chat'),
         });
       }
 
@@ -2813,11 +2835,12 @@ export class PipelineOrchestrator {
           attemptEgress = this.registry.egressFor(candidate);
           candidateResponse = await this.registry.execute(
             candidateReq,
-            candidate,
+            dialCandidate,
             upstreamEventContext,
             credentialPrefix,
             timingRelay,
             opts.sessionId,
+            opts.inboundWire,
           );
           if (firstChunkAt !== undefined) streamEndAt = Date.now();
           // Scope-aware success: undefined prefix degenerates to the exact
@@ -2968,7 +2991,7 @@ export class PipelineOrchestrator {
         return {
           success: true,
           response: candidateResponse,
-          modelUsed: candidate,
+          modelUsed: dialCandidate,
           tierUsed: candidateAccessTier,
           failoverOccurred: failoverAttempts > 1,
           failoverAttempts,

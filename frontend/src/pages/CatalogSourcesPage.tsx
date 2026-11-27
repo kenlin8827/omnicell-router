@@ -965,7 +965,7 @@ const OcrEditModal: React.FC<{
     temperature: cur.temperature === true,
   });
   const [efforts, setEfforts] = useState<string[]>(effectiveEffortLadder(cur));
-  const [npm, setNpm] = useState(cur.npm ?? '');
+  const [protocols, setProtocols] = useState<string[]>(cur.protocols ?? []);
   // npm options come from the backend-owned vocabulary (single source of
   // truth with wireFor; api.ts caches the fetch process-lifetime). The
   // hardcoded list below is only the fetch-failed fallback.
@@ -997,7 +997,7 @@ const OcrEditModal: React.FC<{
         if (e.limit?.context != null) setContextLimit(String(e.limit.context));
         if (e.limit?.output != null) setOutputLimit(String(e.limit.output));
         if (e.reasoningEfforts !== undefined) setEfforts(e.reasoningEfforts);
-        if (e.npm !== undefined) setNpm(String(e.npm));
+        if (e.protocols !== undefined) setProtocols(e.protocols ?? []);
         if (e.variants !== undefined) setVariants(e.variants);
         if (e.defaultEffort !== undefined) setDefaultEffort(e.defaultEffort ?? '');
         if (e.modalities?.input) setModIn(e.modalities.input);
@@ -1059,7 +1059,9 @@ const OcrEditModal: React.FC<{
       if (caps.temperature !== capsBaseline.temperature) entry.temperature = caps.temperature;
       const ladderNow = EFFORT_LADDER.filter((l) => efforts.includes(l));
       if (changed(ladderNow, effectiveEffortLadder(cur))) entry.reasoningEfforts = ladderNow;
-      if (npm.trim() && changed(npm.trim(), cur.npm)) entry.npm = npm.trim();
+      const protoKey = (protocols ?? []).join('\0');
+      const curProtoKey = (cur.protocols ?? []).join('\0');
+      if (protoKey !== curProtoKey) entry.protocols = protocols;
       if (changed(variants.filter((v) => v.id.trim() && v.effort), cur.variants ?? [])) {
         entry.variants = variants.filter((v) => v.id.trim() && v.effort).map((v) => ({ id: v.id.trim(), effort: v.effort }));
       }
@@ -1240,13 +1242,20 @@ const OcrEditModal: React.FC<{
         <FormSection title={t('form.integration')}>
           <Field label={t('catalogPage.ocrEditNpm')} hint={t('catalogPage.ocrEditNpmHint')}>
             <Combobox
-              value={npm}
-              onChange={(v) => setNpm(v)}
+              multiple
+              clearable
+              value={protocols}
+              onChange={(v) => setProtocols(v)}
+              placeholder={t('catalogPage.ocrEditNpmFollow')}
               options={[
-                { value: '', label: t('catalogPage.ocrEditNpmFollow') },
-                  ...(protocolVocab.length > 0
-                    ? protocolVocab.map((e) => ({ value: e.alias, label: e.alias }))
-                    : FALLBACK_PROTOCOL_VOCABULARY.map((e) => ({ value: e.alias, label: e.alias }))),
+                ...protocols
+                  .filter((id) => !(protocolVocab.length > 0
+                    ? protocolVocab.some((e) => e.alias === id)
+                    : FALLBACK_PROTOCOL_VOCABULARY.some((e) => e.alias === id)))
+                  .map((id) => ({ value: id, label: id })),
+                ...(protocolVocab.length > 0
+                  ? protocolVocab.map((e) => ({ value: e.alias, label: e.alias }))
+                  : FALLBACK_PROTOCOL_VOCABULARY.map((e) => ({ value: e.alias, label: e.alias }))),
               ]}
             />
           </Field>

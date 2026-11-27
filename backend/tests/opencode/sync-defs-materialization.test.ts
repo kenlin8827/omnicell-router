@@ -193,7 +193,7 @@ describe('def materialization (v2 write direction)', () => {
   it('a wire the client has no package for is substituted in the client copy only (book untouched)', async () => {
     const p = withDb(withService(sandboxPaths()));
     const typesafeDef = {
-      package: 'systemone',
+      protocols: ['systemone'],
       settings: { baseURL: 'https://ark.cn-beijing.volces.com/api/v3' },
       models: { 'doubao-1': { name: 'doubao-1' } },
     };
@@ -217,7 +217,7 @@ describe('def materialization (v2 write direction)', () => {
     expect(parsed.providers.ark.package).toBe('@opencode/ai/providers/openai-compatible');
     expect(parsed.providers.ark.settings.baseURL).toBe('https://ark.cn-beijing.volces.com/api/v3');
     expect(parsed.providers.ark.models).toEqual({ 'doubao-1': { name: 'doubao-1' } });
-    // the book keeps the authored def — OCR's own wire inference is unaffected
+    // the book keeps the OCR protocol id — only the client copy is substituted
     expect(readProviderDefsFile(p)!.providers.ark).toEqual(typesafeDef);
   });
 

@@ -90,8 +90,8 @@ type ComboboxBaseProps = {
 /**
  * Single-select (default): value is one option value, picking closes the panel.
  * Multi-select (`multiple`): value is the selected array, picking TOGGLES the
- * option and the panel stays open; the trigger shows the selection count and
- * `clearable` × empties the whole selection.
+ * option and the panel stays open; the trigger renders selected labels as
+ * removable chips (and `clearable` × empties the whole selection).
  */
 export type ComboboxProps = ComboboxBaseProps &
   (
@@ -286,31 +286,78 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-invalid={invalid || undefined}
+        aria-label={multiple && values.length > 0 ? t('combobox.selectedCount', { n: values.length }) : undefined}
         disabled={disabled}
         onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}
         onKeyDown={onTriggerKeyDown}
-        style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}
+        style={{
+          ...style,
+          display: 'flex',
+          alignItems: multiple && values.length > 0 ? 'flex-start' : 'center',
+          gap: 8,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          textAlign: 'left',
+          opacity: disabled ? 0.5 : 1,
+          height: 'auto',
+        }}
       >
         {selected?.swatch && <SwatchDot color={selected.swatch} />}
         {selected?.icon}
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            color: selected || (multiple && values.length > 0) ? 'var(--text-main)' : 'var(--text-dim)',
-          }}
-        >
-          {selected
-            ? selected.label
-            : multiple
-              ? values.length > 0
-                ? t('combobox.selectedCount', { n: values.length })
-                : (placeholder ?? '')
-              : (placeholder ?? '')}
-        </span>
+        {multiple ? (
+          values.length > 0 ? (
+            <span className="combobox-tags">
+              {values.map((v) => {
+                const opt = options.find((o) => o.value === v);
+                const label = opt?.label ?? v;
+                return (
+                  <span key={v} className="combobox-tag">
+                    <span className="combobox-tag-label">{label}</span>
+                    {/* span (not button): interactive content must not nest inside <button>. */}
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={t('common.clear')}
+                      title={t('common.clear')}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        emitValues(values.filter((x) => x !== v));
+                      }}
+                      className="combobox-tag-remove"
+                    >
+                      <X size={11} />
+                    </span>
+                  </span>
+                );
+              })}
+            </span>
+          ) : (
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                color: 'var(--text-dim)',
+              }}
+            >
+              {placeholder ?? ''}
+            </span>
+          )
+        ) : (
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              color: selected ? 'var(--text-main)' : 'var(--text-dim)',
+            }}
+          >
+            {selected ? selected.label : (placeholder ?? '')}
+          </span>
+        )}
         {!hideMetaInTrigger && selected?.meta && (
           <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
         )}
@@ -325,7 +372,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
               e.stopPropagation();
               emitValues([]);
             }}
-            style={{ flexShrink: 0, display: 'flex', alignItems: 'center', cursor: 'pointer', color: 'var(--text-dim)' }}
+            style={{ flexShrink: 0, display: 'flex', alignItems: 'center', cursor: 'pointer', color: 'var(--text-dim)', marginTop: multiple ? 2 : 0 }}
           >
             <X size={13} />
           </span>
@@ -337,6 +384,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
               color: 'var(--text-dim)',
               transform: open ? 'rotate(180deg)' : undefined,
               transition: 'transform 0.15s ease',
+              marginTop: multiple && values.length > 0 ? 2 : 0,
             }}
           />
         )}

@@ -50,4 +50,5 @@
 
 - setup 载荷收敛到唯一的 agent 绑定来源（`agentModels`），控制台行表丢掉三态语义——routing 组的认知面积减少一个概念（方案）、一个页面、一个链接标签命名空间。
 - 跨客户端模型变更现在需要 N 次显式 setup（或逐客户端重跑智能分配）。如果多客户端批量换绑将来成为真实工作流，它应该以"从客户端页草稿派生的预设"形态回归，而不是平行的槽位表机制。
+- **修订（follow 目录自动同步）：** `clientProfileMemory.modelMode=follow` 的已挂接客户端，以及 `modelListMode=follow` 的网关插件，在 Key 的 `modelAccess` 变更或直播模型池重建时，由事件驱动的 N 次 setup 服务（`cli/clients/follow-catalog-sync.ts`）重写（`enabled` / 过期 / 删除只影响鉴权，不重写目录）。默认开启（`client.autoResyncFollowCatalogs`）；正在运行的客户端进入 pending（自动路径不带 `acknowledgeRunning`）。**不做后台自动重试**——未结清的 issue 等控制台手动 retry（可带 `acknowledgeRunning`）或下一次 key/池事件；轮询 `ide_running` 会在操作员不知情时写盘，硬失败也不会靠等待自愈。这**不是**方案表或 `refreshProfileBindings` 的复活——索引仍是既有表单记忆 / 插件配置，每个目标仍是一次 setup 或一次插件配置写入。
 - 活配置的升级在启动时发生（ADR-0016 链）；旧构建加载 v1 文件会得到一次性版本警告，符合严格读取契约。

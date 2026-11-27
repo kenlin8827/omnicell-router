@@ -1035,6 +1035,46 @@ details.tool-call > summary::-webkit-details-marker {
   height: 26px;
   padding: 0 6px;
 }
+/* Multi Combobox trigger: selected values as removable tags (not the toggle
+   `.chip` — those are pressed-state filters). Wrap inside the input so the
+   operator sees what is selected without opening the panel. */
+.combobox-tags {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.combobox-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-14);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text-main);
+}
+.combobox-tag-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.combobox-tag-remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.combobox-tag-remove:hover {
+  color: var(--text-main);
+}
 .chip {
   display: inline-flex;
   align-items: center;

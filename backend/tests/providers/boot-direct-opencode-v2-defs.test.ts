@@ -132,9 +132,10 @@ describe('boot-direct — mixed valid / retired-shape nodes in the defs file (re
     }
   });
 
-  it('normalizes v2 defs on read: settings→options, package→npm, headers carried; a retired-shape node is REFUSED', async () => {
-    // Three shapes seeded straight into the defs file: a v2 provider, a retired
-    // npm/options provider, a v2 unknown package.
+  it('normalizes v2 defs on read: settings→options, protocols carried; a retired-shape node is REFUSED', async () => {
+    // Three shapes seeded into the defs file: a protocols/settings provider, a
+    // retired options-bag provider (its npm slot is migrated to protocols by the
+    // write hop), a v2 unknown package.
     writeProviderDefs(
       JSON.parse(
         JSON.stringify(
@@ -191,10 +192,12 @@ describe('boot-direct — mixed valid / retired-shape nodes in the defs file (re
     expect(v2Instance!.wires.sort()).toEqual(['anthropic-messages', 'openai-chat']); // model-level provider.package honored
 
     // Retired shape: not routed, and not silently either — the drop is reported with
-    // the exact offending paths so the operator can migrate the node.
+    // the exact offending paths so the operator can migrate the node. The write hop
+    // already rewrote `npm` → protocols; the opencode-v1 `options` bag still marks
+    // the node as retired.
     expect(byName.has('v1prov')).toBe(false);
     const shapeEx = res.excluded.find((e) => e.provider === 'v1prov');
-    expect(shapeEx?.reason).toContain('npm, options');
+    expect(shapeEx?.reason).toContain('options');
     expect(shapeEx?.reason).toContain('retired shape');
 
     // unknown opencode v2 package: model-level unroutable exclusion + provider drop, no crash

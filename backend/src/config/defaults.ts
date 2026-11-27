@@ -410,3 +410,14 @@ export const CREDENTIAL_WEIGHT_MAX = 100;
  *  413 check both read this so they can never desync. */
 export const PLUGIN_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Follow-catalog auto-resync debounce (event-driven, not a poll).
+ * Key-policy edits coalesce quickly; pool rebuilds (catalog auto-pull storms)
+ * wait longer so one rewrite covers a burst of defs/credential mutations.
+ */
+export const FOLLOW_CATALOG_KEY_DEBOUNCE_MS = 300;
+export const FOLLOW_CATALOG_POOL_DEBOUNCE_MS = 2_000;
+
+/** Default for `client.autoResyncFollowCatalogs` — lazy-operator default ON. */
+export const DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS = true;
+

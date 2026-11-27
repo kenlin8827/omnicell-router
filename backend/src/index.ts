@@ -1,5 +1,6 @@
 import { loadConfig, ensureDefaultConfigFile, upgradeConfigFile, getRuntimeConfigRef } from './config/index.js';
 import { setPoolRefreshHook } from './providers/pool-refresh.js';
+import { setFollowCatalogSyncRegistry } from './cli/clients/follow-catalog-sync.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { refreshDirectPool } from './providers/boot-direct.js';
@@ -33,6 +34,7 @@ import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
 import { wireFor } from './providers/wire.js';
+import { normalizeProtocols, primaryProtocol } from './providers/protocols-field.js';
 import { getModelServicePluginEntry } from './plugins/host.js';
 import type { QuotaCodeAdapter } from './quota/types.js';
 
@@ -81,7 +83,8 @@ function providerDefApiKey(providerId: string): string | undefined {
  */
 function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined {
   const def = getProviderNodeById(providerId);
-  const npm = typeof def?.npm === 'string' ? def.npm : typeof def?.package === 'string' ? def.package : undefined;
+  // Same resolution the boot primary uses: the normalized def's protocol head.
+  const npm = primaryProtocol(normalizeProtocols(def?.protocols));
   const entry = getModelServicePluginEntry(wireFor(npm, providerDefBaseUrl(providerId)));
   const plugin = entry?.plugin;
   const check = plugin?.quotaCheck;
@@ -324,6 +327,7 @@ async function main() {
     // Background producers (catalog auto-pull) resync the pool through this
     // hook — same builder, same fail-open contract, no import cycles.
     setPoolRefreshHook(() => refreshDirectPool(registry));
+    setFollowCatalogSyncRegistry(registry);
     const providerLevel = boot.excluded.filter((e) => !e.model);
     const modelLevel = boot.excluded.filter((e) => e.model);
     for (const ex of providerLevel) console.log(`[OCR]   excluded ${ex.provider}: ${ex.reason}`);
@@ -333,6 +337,7 @@ async function main() {
     console.warn(`[OCR] Direct pool build failed, booting an EMPTY registry (no chat providers): ${err.message}`);
     registry = new ProviderRegistry(config, false);
     setPoolRefreshHook(() => refreshDirectPool(registry));
+    setFollowCatalogSyncRegistry(registry);
   }
 
   // breaker memory: attach the on-disk

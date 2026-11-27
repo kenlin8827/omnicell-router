@@ -51,14 +51,12 @@ export interface CatalogModel {
   id: string;
   name?: string;
   /**
-   * Model-level protocol id (models.dev `model.provider.npm`, translated at
-   * ingest). Beats the provider-level value when present — e.g. opencode(Zen)
-   * is `openai-chat` overall, but `gpt-6-luna` carries
-   * `openai-responses`, and Zen rejects that model on the chat/completions
-   * wire with `ModelProtocolUnsupported`. The slot name stays `npm` because
-   * that is the upstream and model-def file spelling.
+   * Model-level outbound protocol set (ordered). models.dev publishes a
+   * singular `model.provider.npm`; ingest translates it to `protocols: [id]`.
+   * Beats the provider-level list when present — e.g. opencode(Zen) is
+   * `openai-chat` overall, but a model may list `openai-responses`.
    */
-  npm?: string;
+  protocols?: string[];
   /** Model-default thinking level (OCR extension — pinned when the client omits `reasoning_effort`). */
   defaultEffort?: ReasoningEffort;
   attachment?: boolean;
@@ -131,8 +129,8 @@ export interface CatalogProviderRecord {
   name?: string;
   /** models.dev logo asset (svg); frontend falls back to an initial-letter avatar on error */
   logo?: string;
-  /** OCR protocol id. models.dev `npm` is translated at ingest. */
-  npm?: string;
+  /** Outbound protocol set. models.dev `npm` is translated at ingest. */
+  protocols?: string[];
   /** default API base from the catalog */
   api?: string;
   /** effective base URL override (defs-file definition wins, then live service) */

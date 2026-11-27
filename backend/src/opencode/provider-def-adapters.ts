@@ -1,5 +1,12 @@
-import { buildV2ProviderNode, legacyShapedProviderPaths, patchJsonc, type ProviderDefInput } from './user-config.js';
+import {
+  buildV2ProviderNode,
+  legacyShapedProviderPaths,
+  patchJsonc,
+  type ProviderDefInput,
+} from './user-config.js';
 import type { OpencodeFlavor } from './credentials/paths.js';
+import { normalizeProtocols, protocolsFromLegacyNode } from '../providers/protocols-field.js';
+import { currentPackageFor } from './provider-package.js';
 
 /**
  * ONE def adapter per opencode FLAVOR — the client version decides which config
@@ -8,10 +15,12 @@ import type { OpencodeFlavor } from './credentials/paths.js';
  *  - opencode-v1: defs live under the singular `provider` key in the v1 node
  *    spelling (`npm`/`options`/`models`). That spelling is v1's native one, so
  *    its adapter CONVERTS it through the same builder the console uses
- *    (`package`/`settings`) — translation between flavors, not compatibility.
- *  - opencode-v2: defs live under the canonical plural `providers` key in the
- *    `package`/`settings` spelling — which IS the defs-file spelling, so its
- *    adapter copies verbatim and refuses anything else.
+ *    (`protocols`/`settings`) — translation between flavors, not compatibility.
+ *  - opencode-v2: defs live under the canonical plural `providers` key. The
+ *    client's live spelling is still `package`/`settings`; OCR truth is
+ *    `protocols`/`settings`. The adapter converts either client shape (and any
+ *    retired npm/options leftover) into the OCR node — never rejects a node
+ *    that can be lifted, and never stores `package` in providers.json.
  *
  * The adapter layer also owns the client-config LAYOUT of the write direction
  * (`clientDefNodes`, `writeDefSlot`). No call site outside this module names a
@@ -20,7 +29,7 @@ import type { OpencodeFlavor } from './credentials/paths.js';
 
 export interface ProviderDefRead {
   node?: Record<string, any>;
-  /** true when the v1 native spelling had to be translated. */
+  /** true when a client/retired spelling had to be translated into OCR shape. */
   converted?: boolean;
   error?: string;
 }
@@ -41,20 +50,31 @@ function isPlainRecord(v: unknown): v is Record<string, any> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-/** v1 native node → current node through the ONE def builder. */
-function convertRetiredNode(id: string, node: Record<string, any>): ProviderDefRead {
-  const options = isPlainRecord(node.options) ? node.options : {};
+/**
+ * Any client-shaped node → OCR `protocols`/`settings` through the ONE def builder.
+ * Lifts `package`/`npm`/`protocol` into `protocols[]` (ADR-0010); maps
+ * `settings` or retired `options` into the builder's options bag.
+ */
+function convertClientNode(id: string, node: Record<string, any>): ProviderDefRead {
+  const bag = isPlainRecord(node.settings)
+    ? node.settings
+    : isPlainRecord(node.options)
+      ? node.options
+      : {};
+  // Client package / npm spellings → OCR protocol ids (opencode SDK map first).
+  const lifted = protocolsFromLegacyNode(node) ?? normalizeProtocols(node.protocols);
+  const protocols = normalizeProtocols(lifted.map((p) => currentPackageFor(p)));
   const def: ProviderDefInput = {
     id,
     // An inline key is carried only because it is ALREADY in a file; a
     // `{env:X}` value becomes env:["X"] instead (builder rules).
-    apiKeyInline: typeof options.apiKey === 'string',
+    apiKeyInline: typeof bag.apiKey === 'string',
     ...(typeof node.name === 'string' ? { name: node.name } : {}),
-    ...(typeof node.npm === 'string' ? { npm: node.npm } : {}),
-    ...(typeof options.baseURL === 'string' ? { baseURL: options.baseURL } : {}),
-    ...(typeof options.apiKey === 'string' ? { apiKey: options.apiKey } : {}),
+    ...(protocols.length > 0 ? { protocols } : {}),
+    ...(typeof bag.baseURL === 'string' ? { baseURL: bag.baseURL } : {}),
+    ...(typeof bag.apiKey === 'string' ? { apiKey: bag.apiKey } : {}),
     ...(isPlainRecord(node.headers) ? { headers: node.headers as Record<string, string> } : {}),
-    options,
+    options: bag,
     ...(isPlainRecord(node.models) ? { models: node.models } : {}),
     ...(Array.isArray(node.env) ? { env: node.env.filter((n: unknown): n is string => typeof n === 'string') } : {}),
     ...(typeof node.canonical === 'string' ? { canonical: node.canonical } : {}),
@@ -65,6 +85,11 @@ function convertRetiredNode(id: string, node: Record<string, any>): ProviderDefR
   return { node: built.node, converted: true };
 }
 
+/** OCR-shaped already: protocols/settings (and no retired npm/package/options/protocol). */
+function isOcrShapedNode(raw: Record<string, any>): boolean {
+  return legacyShapedProviderPaths(raw).length === 0;
+}
+
 const V1_ADAPTER: ProviderDefAdapter = {
   flavor: 'opencode-v1',
   // The slot key IS this flavor's spelling — deliberately a literal, not a
@@ -72,24 +97,23 @@ const V1_ADAPTER: ProviderDefAdapter = {
   // difference they exist to encode.
   slot: 'provider',
   read(id, raw) {
-    // Shape decides, not the slot: a node already in the current spelling is
-    // copied verbatim; the v1 spelling is translated.
-    if (legacyShapedProviderPaths(raw).length === 0) return { node: { ...raw } };
-    return convertRetiredNode(id, raw);
+    // Shape decides, not the slot: a node already in OCR spelling is copied
+    // verbatim; the v1 / client spelling is translated.
+    if (isOcrShapedNode(raw)) return { node: { ...raw } };
+    return convertClientNode(id, raw);
   },
 };
 
 const V2_ADAPTER: ProviderDefAdapter = {
   flavor: 'opencode-v2',
   slot: 'providers',
-  read(_id, raw) {
-    // Verbatim: this slot's spelling IS the defs-file spelling. A node still in
-    // the v1 spelling would be stored as a def nothing can render, so it is
-    // reported loudly instead of half-imported.
-    if (legacyShapedProviderPaths(raw).length > 0) {
-      return { error: 'retired npm/options node in the canonical `providers` slot — re-author it as package/settings' };
-    }
-    return { node: { ...raw } };
+  read(id, raw) {
+    // Live opencode-v2 clients still author `package`/`settings`. OCR stores
+    // `protocols`/`settings`. Convert anything that is not already OCR-shaped
+    // — including retired npm/options leftovers in this slot — instead of
+    // rejecting a node the operator can use.
+    if (isOcrShapedNode(raw)) return { node: { ...raw } };
+    return convertClientNode(id, raw);
   },
 };
 
@@ -118,12 +142,11 @@ export function clientDefNodes(
 /**
  * Write the def book into the client config: REPLACE the canonical slot.
  *
- * The defs file stores the v2 spelling, so the canonical slot is the only write
- * peer (a v1 client gets key sync, never def writes — the render is identity, and
- * landing v2 nodes under the retired spelling would corrupt its contract). Only
- * text-level patching happens here, so comments outside the slot survive. An
- * empty render REMOVES the slot rather than leaving `{}`: no defs to carry means
- * no key worth having.
+ * The defs file stores OCR spelling (`protocols`/`settings`); materialize maps
+ * that to the client's `package`/`settings` before this write. Only text-level
+ * patching happens here, so comments outside the slot survive. An empty render
+ * REMOVES the slot rather than leaving `{}`: no defs to carry means no key
+ * worth having.
  */
 export function writeDefSlot(configPath: string, providers: Record<string, unknown>): void {
   patchJsonc(configPath, [V2_ADAPTER.slot], Object.keys(providers).length > 0 ? providers : undefined);

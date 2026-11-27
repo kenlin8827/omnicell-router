@@ -10,7 +10,7 @@ import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { Dialog } from '../components/Dialog';
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX, DEFAULT_GATEWAY_PORT, DEFAULT_GATEWAY_MAX_BODY_BYTES, DEFAULT_ADMIN_MAX_BODY_BYTES, BODY_LIMIT_MIN_BYTES, BODY_LIMIT_MAX_BYTES } from '../lib/defaults';
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX, DEFAULT_GATEWAY_PORT, DEFAULT_GATEWAY_MAX_BODY_BYTES, DEFAULT_ADMIN_MAX_BODY_BYTES, BODY_LIMIT_MIN_BYTES, BODY_LIMIT_MAX_BYTES, DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS } from '../lib/defaults';
 import { readNavPreference, writeNavPreference, type NavPreference, type NavStyleId } from '../lib/navStyle';
 
 // UI mirror of the backend's resolveDirectivePrefix (backend/src/pipeline/
@@ -611,6 +611,22 @@ export const SettingsPage: React.FC = () => {
             </div>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
               {t('settings.bodyLimitsHint')}
+            </div>
+          </div>
+
+          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={config.autoResyncFollowCatalogs ?? DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS}
+                onChange={(e) => setConfig({ ...config, autoResyncFollowCatalogs: e.target.checked })}
+              />
+              <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)' }}>
+                {t('settings.autoResyncFollowCatalogs')}
+              </span>
+            </label>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
+              {t('settings.autoResyncFollowCatalogsHint')}
             </div>
           </div>
 

@@ -670,7 +670,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
       unified.set(v.id, {
         id: v.id,
         name: v.name,
-        npm: v.npm,
+        protocols: v.protocols,
         baseURL: v.baseURL,
         // dynamic tag — final value derived at the step-5 mapping
         custom: false,
@@ -820,7 +820,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
               ? [{ type: 'effort', values: [...entry.reasoningEfforts] }]
               : [{ type: 'toggle' }]; // empty = no explicit level control
         }
-        if (entry.npm !== undefined) model.npm = entry.npm;
+        if (entry.protocols !== undefined) model.protocols = entry.protocols;
         if (entry.defaultEffort !== undefined) {
           if (entry.defaultEffort === null) delete model.defaultEffort; // clear → follow catalog/def
           else model.defaultEffort = entry.defaultEffort;

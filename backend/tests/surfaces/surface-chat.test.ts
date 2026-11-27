@@ -136,7 +136,8 @@ describe('chat surface — committed SSE failures', () => {  for (const failure 
       if (attemptedErrors.length) {
         assert.deepEqual(JSON.parse(attemptedErrors[0]!.slice('data: '.length)), {
           error: {
-            message: 'Protocol cannot replay signed or encrypted reasoning. Target protocol: openai-chat.',
+            message:
+              "Unsupported on outbound protocol 'openai-chat': Signed or encrypted reasoning replay. Omit this field or use a protocol that supports it.",
             type: 'invalid_request_error',
             code: 'unsupported_parameter',
           },
@@ -160,12 +161,14 @@ describe('chat surface — committed SSE failures', () => {  for (const failure 
     {
       name: 'signed reasoning item (reasoning_signature)',
       event: { type: 'response.output_item.done', index: 1, item: { type: 'reasoning', text: '', signature: 'opaque' } } as const,
-      message: 'Protocol cannot replay signed or encrypted reasoning. Target protocol: openai-chat.',
+      message:
+        "Unsupported on outbound protocol 'openai-chat': Signed or encrypted reasoning replay. Omit this field or use a protocol that supports it.",
     },
     {
       name: 'reasoning summary on a wire that has none (reasoning_summary)',
       event: { type: 'response.reasoning_summary.delta', index: 1, summaryIndex: 0, text: 's' } as const,
-      message: 'Protocol cannot stream structured reasoning summaries. Target protocol: openai-chat.',
+      message:
+        "Unsupported on outbound protocol 'openai-chat': Streaming structured reasoning summaries. Omit this field or use a protocol that supports it.",
     },
     {
       name: 'a foreign extension item (output_item)',
@@ -174,7 +177,8 @@ describe('chat surface — committed SSE failures', () => {  for (const failure 
         index: 1,
         item: { type: 'extension', protocol: 'anthropic-messages', data: {} },
       } as const,
-      message: 'Cannot convert anthropic-messages extension item. Target protocol: openai-chat.',
+      message:
+        "Unsupported on outbound protocol 'openai-chat': anthropic-messages extension items. Keep same-carrier extensions only.",
     },
   ];
   for (const { name, event, message } of encoderRejections) {

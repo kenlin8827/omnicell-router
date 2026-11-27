@@ -130,6 +130,13 @@ export interface ClientHookStatus {
    *  The sort fallback while a client has sent no traffic yet; absent = not
    *  hooked this boot. */
   lastSetupAt?: number;
+
+  /** Follow-catalog auto-resync queued this client (or its catalogPlugin)
+   *  because the last rewrite hit ide_running. Console-only; stamped by the
+   *  roster route, never by adapters. */
+  followCatalogPending?: boolean;
+  /** Open follow-catalog issue for this card (pending or failed). */
+  followCatalogIssue?: { status: 'pending' | 'failed'; reason: string };
 }
 
 /**

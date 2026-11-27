@@ -7,7 +7,11 @@ import type {
 } from '../../types/openai.js';
 import { IrUnsupportedError } from '../errors.js';
 import { DATA_URL_RE } from '../media.js';
-import { assertCanonicalRequestSupported, assertCanonicalResponseSupported } from '../validate.js';
+import {
+  assertCanonicalRequestSupported,
+  assertCanonicalResponseSupported,
+  unsupportedToolKindMessage,
+} from '../validate.js';
 import type {
   CacheBreakpoint,
   CanonicalCandidate,
@@ -443,7 +447,7 @@ export function irToChatRequest(
   const gen = ir.generation;
   const tools = ir.tools?.map((t) => {
     if (t.type !== 'function') {
-      unsupported('tool_type', `Chat carries function tools only, not ${t.type}.`);
+      unsupported('tool_type', unsupportedToolKindMessage('openai-chat', t.type, false));
     }
     return {
       type: 'function' as const,
@@ -463,7 +467,9 @@ export function irToChatRequest(
       ? { type: 'function' as const, function: { name: ir.toolChoice.name } }
       : ir.toolChoice.type === 'auto' || ir.toolChoice.type === 'none' || ir.toolChoice.type === 'required'
         ? ir.toolChoice.type
-        : unsupported('tool_choice', `Chat cannot express tool_choice ${ir.toolChoice.type}.`)
+        : ir.toolChoice.type === 'custom'
+          ? unsupported('tool_choice', unsupportedToolKindMessage('openai-chat', 'custom', true))
+          : unsupported('tool_choice', unsupportedToolKindMessage('openai-chat', String(ir.toolChoice.type), true))
     : undefined;
   if (ir.text?.verbosity) unsupported('text_verbosity', 'Chat cannot represent text.verbosity on this execution bridge.');
   if (ir.reasoning?.summary) unsupported('reasoning_summary', 'Chat cannot represent reasoning.summary.');

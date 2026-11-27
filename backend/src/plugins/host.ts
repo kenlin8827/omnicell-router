@@ -1400,17 +1400,17 @@ function matchesRegistration(snapshot: unknown, current: unknown): boolean {
 
 /** A MEANINGFUL def is operator-owned and never overwritten/deleted, and
  *  joins the ledger (provenance tag/filter). A bare stub (New-custom leftover:
- *  only a package field) is left un-ledgered so uninstall never deletes an
- *  operator file node the plugin never created; an existing node is NEVER
+ *  only a protocol-slot field) is left un-ledgered so uninstall never deletes
+ *  an operator file node the plugin never created; an existing node is NEVER
  *  taken over by a preset (syncPluginPresets skips every id already present).
  *  Reads the RAW defs-file node:
- *  getProviderNodeById returns a normalized view that derives npm/options from
- *  package+settings, which would make even a bare stub look meaningful. */
+ *  getProviderNodeById returns a normalized view that derives protocols/options
+ *  from settings, which would make even a bare stub look meaningful. */
 function isMeaningfulDef(raw: Record<string, unknown> | undefined): boolean {
   return Boolean(
     raw &&
       Object.entries(raw).some(([key, value]) => {
-        if (key === 'package') return false; // a New-custom stub is ONLY a package field
+        if (key === 'package' || key === 'protocols') return false; // a New-custom stub is ONLY a protocol-slot field
         if (key === 'models') return Boolean(value && typeof value === 'object' && Object.keys(value as object).length > 0);
         return value !== undefined && value !== null && value !== '' && !(typeof value === 'object' && Object.keys(value as object).length === 0);
       })
@@ -1421,7 +1421,8 @@ function isMeaningfulDef(raw: Record<string, unknown> | undefined): boolean {
  *  the console probe and the web-login resolver use (`wireFor(npm)` first,
  *  baseURL fingerprint only when no package is declared). */
 function defWireOf(raw: Record<string, unknown>): string {
-  const pkg = typeof raw.package === 'string' ? raw.package : typeof raw.npm === 'string' ? raw.npm : '';
+  const protocols = Array.isArray(raw.protocols) ? raw.protocols.filter((x): x is string => typeof x === 'string') : [];
+  const pkg = protocols[0] ?? (typeof raw.package === 'string' ? raw.package : typeof raw.npm === 'string' ? raw.npm : '');
   if (pkg) return wireFor(pkg);
   const settings = raw.settings && typeof raw.settings === 'object' ? (raw.settings as Record<string, unknown>) : {};
   const options = raw.options && typeof raw.options === 'object' ? (raw.options as Record<string, unknown>) : {};
@@ -1446,8 +1447,10 @@ function presetWireIsBroken(raw: Record<string, unknown>): boolean {
  *  through untouched — the def could not have routed anywhere before, so no
  *  working configuration is lost. */
 function repairPresetWire(raw: Record<string, unknown>, presetWire: string): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...raw, package: presetWire };
+  const next: Record<string, unknown> = { ...raw, protocols: [presetWire] };
   delete next.npm;
+  delete next.package;
+  delete next.protocol;
   return next;
 }
 
@@ -1462,7 +1465,7 @@ function presetDefName(preset: PluginProviderPreset): string {
 /** Register every not-yet-defined preset of every loaded plugin, and RETIRE the
  *  ones the plugin no longer declares. A preset is skipped whenever the defs
  *  file already holds a MEANINGFUL node with that id, so presets never take
- *  over operator file state; a bare package-only stub (the New-custom form or
+ *  over operator file state; a bare protocol-only stub (the New-custom form or
  *  the boot bind sweep's node — machine-written, no operator content) is fair
  *  game and the preset overwrites it. The ONE exception is an unroutable wire
  *  spelling (an older plugin generation's SDK package, e.g.
@@ -1552,7 +1555,7 @@ export async function syncPluginPresets(): Promise<string[]> {
       const result = upsertProviderDef({
         id: preset.providerId,
         name: presetDefName(preset),
-        npm: presetWire,
+        protocols: [presetWire],
         baseURL: preset.baseUrl,
       });
       if (result.success) {
@@ -1613,7 +1616,7 @@ export async function ensurePresetProvider(providerId: string): Promise<boolean>
     return upsertProviderDef({
       id: preset.providerId,
       name: presetDefName(preset),
-      npm: presetWire,
+      protocols: [presetWire],
       baseURL: preset.baseUrl,
     }).success;
   }
@@ -1687,13 +1690,13 @@ const LANG_TO_BCP47: Record<string, string> = {
  *  key by BCP-47 ('zh-CN'/'en-US') — translated before lookup, en-US as the
  *  fallback. */
 export async function pluginPresetCatalogEntries(lang?: string): Promise<
-  { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[]
+  { id: string; name: string; defaultName: string; logo?: string; protocols?: string[]; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[]
 > {
   const { getCredentialStore } = await import('../opencode/credentials/index.js');
   const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
   const store = await getCredentialStore();
   const defs = readProviderDefsFile()?.providers ?? {};
-  const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[] = [];
+  const out: { id: string; name: string; defaultName: string; logo?: string; protocols?: string[]; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[] = [];
   for (const { plugin, view } of registry.values()) {
     const logoUrl = view.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
     for (const preset of view.presets ?? []) {
@@ -1711,7 +1714,7 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         name,
         defaultName,
         logo: logoUrl,
-        npm: currentProtocol(preset.protocol || preset.npm!),
+        protocols: [currentProtocol(preset.protocol || preset.npm!)],
         baseURL: preset.baseUrl,
         custom: true,
         // A plugin that owns login is connected when its def exists. A stored

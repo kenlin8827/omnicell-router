@@ -208,10 +208,13 @@ interface ModelRow {
 export const ProviderModelsDialog: React.FC<{
   providerId: string;
   providerName?: string;
+  /** Declared outbound protocols for this provider — when 2+, the dialog
+   *  offers a protocol pin so each wire can be probed independently. */
+  protocols?: string[];
   blur?: boolean;
   onClose: () => void;
   onChanged?: () => void;
-}> = ({ providerId, providerName, blur = false, onClose, onChanged }) => {
+}> = ({ providerId, providerName, protocols, blur = false, onClose, onChanged }) => {
   const { t } = useI18n();
   const confirmDialog = useConfirm();
   const toast = useToast();
@@ -236,6 +239,10 @@ export const ProviderModelsDialog: React.FC<{
    *  service, so probing with it would report a failure routing never produces. */
   const [credentialId, setCredentialId] = useState('');
   const [probeCredentials, setProbeCredentials] = useState<CredentialHealth[]>([]);
+  /** Probe protocol pin — '' = provider primaryProtocol(protocols[]). Shown
+   *  only when the provider declared 2+ protocols (single-wire providers have
+   *  nothing to choose). */
+  const [protocolId, setProtocolId] = useState('');
   const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
 
   const load = async () => {
@@ -268,6 +275,7 @@ export const ProviderModelsDialog: React.FC<{
   useEffect(() => {
     let alive = true;
     setCredentialId('');
+    setProtocolId('');
     opencodeApi
       .getCredentialStore()
       .then((res) => {
@@ -291,8 +299,14 @@ export const ProviderModelsDialog: React.FC<{
     meta: c.maskedKey || undefined,
   }));
 
-  /** The pin only applies to models, never to anything stored. */
+  const protocolOptions = (protocols ?? [])
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => ({ value: p, label: p }));
+
+  /** The pin only applies to probes, never to anything stored. */
   const pinnedCredential = credentialId || undefined;
+  const pinnedProtocol = protocolId || undefined;
 
   // Local view-only filter — never mutates `rows`; the upstream "Test All"
   // button keeps targeting the full set so its semantics stay "all models of
@@ -321,10 +335,18 @@ export const ProviderModelsDialog: React.FC<{
     })();
   };
 
-  /** Batch probe every listed model with the pinned credential (if any) —
+  /** Batch probe every listed model with the pinned credential/protocol (if any) —
    *  confirmation above 20 real requests lives in useModelTest. */
   const handleTestAll = () =>
-    testAllTargets(rows.map((row) => ({ key: row.id, providerId, modelId: row.id, credentialId: pinnedCredential })));
+    testAllTargets(
+      rows.map((row) => ({
+        key: row.id,
+        providerId,
+        modelId: row.id,
+        credentialId: pinnedCredential,
+        protocol: pinnedProtocol,
+      })),
+    );
 
   const refreshAll = async () => {
     await load();
@@ -686,17 +708,33 @@ export const ProviderModelsDialog: React.FC<{
               : t('op.modelsCount', { n: rows.length })}
           </span>
           {loading && rows.length > 0 && <Loader2 size={12} style={{ ...spin, color: 'var(--text-dim)' }} />}
-          {credentialOptions.length > 0 && (
-            <Combobox
-              variant="ghost"
-              clearable
-              value={credentialId}
-              onChange={setCredentialId}
-              options={credentialOptions}
-              placeholder={t('op.pmTestCredentialDefault')}
-              panelMinWidth={260}
-              style={{ ...headerControlStyle, marginLeft: 'auto', width: 'auto', maxWidth: 210, minWidth: 110, flexShrink: 1, padding: '0 6px', fontSize: 'var(--text-xs)' }}
-            />
+          {(credentialOptions.length > 0 || protocolOptions.length > 1) && (
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', flexShrink: 1, minWidth: 0 }}>
+              {protocolOptions.length > 1 && (
+                <Combobox
+                  variant="ghost"
+                  clearable
+                  value={protocolId}
+                  onChange={setProtocolId}
+                  options={protocolOptions}
+                  placeholder={t('op.pmTestProtocolDefault')}
+                  panelMinWidth={220}
+                  style={{ ...headerControlStyle, width: 'auto', maxWidth: 200, minWidth: 110, flexShrink: 1, padding: '0 6px', fontSize: 'var(--text-xs)' }}
+                />
+              )}
+              {credentialOptions.length > 0 && (
+                <Combobox
+                  variant="ghost"
+                  clearable
+                  value={credentialId}
+                  onChange={setCredentialId}
+                  options={credentialOptions}
+                  placeholder={t('op.pmTestCredentialDefault')}
+                  panelMinWidth={260}
+                  style={{ ...headerControlStyle, width: 'auto', maxWidth: 210, minWidth: 110, flexShrink: 1, padding: '0 6px', fontSize: 'var(--text-xs)' }}
+                />
+              )}
+            </div>
           )}
           <button
             className="btn btn-sm"
@@ -704,10 +742,16 @@ export const ProviderModelsDialog: React.FC<{
               ...headerControlStyle,
               gap: 4,
               padding: '0 8px',
-              marginLeft: credentialOptions.length > 0 ? undefined : 'auto',
+              marginLeft: credentialOptions.length > 0 || protocolOptions.length > 1 ? undefined : 'auto',
             }}
             disabled={testAll.running || testingIds.size > 0 || rows.length === 0}
-            title={credentialId ? t('op.pmTestCredentialTip', { credential: credentialOptions.find((o) => o.value === credentialId)?.label ?? credentialId }) : t('op.testAllBtn')}
+            title={
+              protocolId
+                ? t('op.pmTestProtocolTip', { protocol: protocolId })
+                : credentialId
+                  ? t('op.pmTestCredentialTip', { credential: credentialOptions.find((o) => o.value === credentialId)?.label ?? credentialId })
+                  : t('op.testAllBtn')
+            }
             onClick={handleTestAll}
           >
             {testAll.running ? <Loader2 size={11} style={spin} /> : <Zap size={11} />}
@@ -843,6 +887,7 @@ export const ProviderModelsDialog: React.FC<{
                         probe.ok
                           ? [
                               `${probe.latencyMs} ms`,
+                              probe.kind,
                               probe.credential
                                 ? probe.credential.label?.trim() || t('op.credentialUnnamed')
                                 : undefined,
@@ -889,7 +934,15 @@ export const ProviderModelsDialog: React.FC<{
                       className="btn btn-sm btn-icon"
                       title={t('op.testBtn')}
                       disabled={testingIds.size > 0 || testAll.running}
-                      onClick={() => testOne({ key: row.id, providerId, modelId: row.id, credentialId: pinnedCredential })}
+                      onClick={() =>
+                        testOne({
+                          key: row.id,
+                          providerId,
+                          modelId: row.id,
+                          credentialId: pinnedCredential,
+                          protocol: pinnedProtocol,
+                        })
+                      }
                     >
                       {testingIds.has(row.id) ? <Loader2 size={11} style={spin} /> : <Zap size={11} />}
                     </button>

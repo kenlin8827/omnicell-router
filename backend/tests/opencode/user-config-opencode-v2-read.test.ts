@@ -14,9 +14,9 @@ import { writeProviderDefs, getProviderDefsPath } from '../../src/opencode/provi
 
 /**
  * Provider-shape READ normalization in user-config.ts.
- * The v2 shape `package`/`settings`/`headers`/`env`/`canonical`/`body` normalizes to the
- * internal view (`npm`/`options`); a retired-shape node is REFUSED rather than passed
- * through, using the same guard the writer refuses with — reader and writer accept one shape.
+ * OCR truth is `protocols`/`settings`. Client `package`/`settings` lifts into
+ * protocols on write; a retired npm/options node is REFUSED from the OCR book
+ * rather than passed through.
  *
  * XDG sandbox per test (user-config.test.ts:25-43 precedent).
  */
@@ -51,8 +51,8 @@ function writeConfig(node: Record<string, unknown>): string {
   return getProviderDefsPath();
 }
 
-describe('normalizeProviderDef — opencode v2 provider shape on read', () => {
-  it('maps package→npm and settings→options, carries top-level headers', () => {
+describe('normalizeProviderDef — OCR protocols/settings on read', () => {
+  it('lifts client package→protocols and settings→options, carries top-level headers', () => {
     writeConfig({
       acme: {
         name: 'Acme',
@@ -65,17 +65,16 @@ describe('normalizeProviderDef — opencode v2 provider shape on read', () => {
       },
     });
     const def = getProviderNodeById('acme');
-    expect(def.npm).toBe('openai-chat');
+    expect(def.protocols).toEqual(['openai-chat']);
+    expect(def.package).toBeUndefined();
     expect(def.options.baseURL).toBe('https://acme.test/v1');
     expect(def.options.apiKey).toBe('{env:ACME_KEY}');
     expect(def.options.timeoutMs).toBe(30000);
     expect(def.options.headers).toEqual({ 'X-Tenant': 't' });
-    // informational / no internal slot yet — carried through untouched
     expect(def.env).toEqual(['ACME_KEY']);
     expect(def.canonical).toBe('https://acme.test');
     expect(def.body).toEqual({ extra: true });
     expect(def.name).toBe('Acme');
-    // raw settings stay on the def (model path reads settings.reasoningEffort)
     expect(def.settings.baseURL).toBe('https://acme.test/v1');
   });
 
@@ -88,16 +87,14 @@ describe('normalizeProviderDef — opencode v2 provider shape on read', () => {
       },
     };
     writeConfig(retired);
-    // Not routed, not normalized — and not silently: the same guard the writer uses
-    // names the node and the offending paths (Decision 11).
+    // writeProviderDefs lifts npm→protocols but leaves options; the reader then
+    // drops the node for the retired options bag.
     expect(getProviderNodeById('legacy')).toBeUndefined();
     expect(listConfigProviders().map((p) => p.id)).not.toContain('legacy');
-    expect(legacyShapedSlotEntries()).toEqual([
-      { id: 'legacy', paths: ['npm', 'options'] },
-    ]);
+    expect(legacyShapedSlotEntries()).toEqual([{ id: 'legacy', paths: ['options'] }]);
   });
 
-  it('a partially migrated def (package + retired options) is refused, not merged', () => {
+  it('a partially migrated def (protocols + retired options) is refused, not merged', () => {
     writeConfig({
       migrating: {
         package: '@opencode/ai/providers/anthropic',
@@ -105,8 +102,6 @@ describe('normalizeProviderDef — opencode v2 provider shape on read', () => {
         settings: { baseURL: 'https://ignored.test/v1', temperature: 0.5 },
       },
     });
-    // opencode decodes this node against the v2 schema; a retired key inside it makes
-    // the WHOLE node invalid. OCR matches: refuse and tell, never guess a merge.
     expect(getProviderNodeById('migrating')).toBeUndefined();
     expect(legacyShapedSlotEntries()).toEqual([{ id: 'migrating', paths: ['options'] }]);
   });
@@ -120,16 +115,16 @@ describe('normalizeProviderDef — opencode v2 provider shape on read', () => {
       },
     });
     const def = getProviderNodeById('bare');
-    expect(def.options).toBeUndefined(); // no package/settings → no v2 aliasing applied
-    expect(legacyShapedSlotEntries()).toEqual([]); // nothing retired about it
+    expect(def.options).toBeUndefined();
+    expect(legacyShapedSlotEntries()).toEqual([]);
   });
 });
 
-describe('normalizeModelDef — per-model opencode v2 fields', () => {
-  it('provider.package→provider.npm; opencode v1 model slots (settings/options) pass through untouched', () => {
+describe('normalizeModelDef — per-model protocol lift', () => {
+  it('provider.package→provider.protocols; model settings pass through untouched', () => {
     writeConfig({
       mix: {
-        package: '@opencode/ai/providers/openai-compatible',
+        protocols: ['openai-chat'],
         settings: { baseURL: 'https://mix.test/v1' },
         models: {
           'opencode v2-model': {
@@ -141,18 +136,20 @@ describe('normalizeModelDef — per-model opencode v2 fields', () => {
       },
     });
     const defs = getProviderModelDefs('mix')!;
-    expect(defs['opencode v2-model'].provider.npm).toBe('anthropic-messages');
-    // boot reads the RAW settings slot for defaultEffort — settings is the
-    // opencode v1 model-level slot name too, so normalization must not overlay it.
+    expect(defs['opencode v2-model'].provider.protocols).toEqual(['anthropic-messages']);
+    expect(defs['opencode v2-model'].provider.package).toBeUndefined();
     expect(defs['opencode v2-model'].settings.reasoningEffort).toBe('high');
     expect(defs['opencode v2-model'].options).toBeUndefined();
-    // opencode v1 model untouched, byte-identical
-    expect(defs['opencode v1-model']).toEqual({ options: { temperature: 0.9 }, settings: { effort: 'low' }, limit: { context: 8000 } });
+    expect(defs['opencode v1-model']).toEqual({
+      options: { temperature: 0.9 },
+      settings: { effort: 'low' },
+      limit: { context: 8000 },
+    });
   });
 });
 
 describe('management view + write side', () => {
-  it('listConfigProviders shows normalized npm/baseURL/inline-key for opencode v2 ', () => {
+  it('listConfigProviders shows protocols/baseURL/inline-key for OCR defs', () => {
     writeConfig({
       acmev2: {
         name: 'Acme V2',
@@ -161,40 +158,38 @@ describe('management view + write side', () => {
       },
     });
     const view = listConfigProviders().find((p) => p.id === 'acmev2')!;
-    expect(view.npm).toBe('google-gemini');
+    expect(view.protocols).toEqual(['google-gemini']);
     expect(view.baseURL).toBe('https://acmev2.test/v1');
     expect(view.auth.inline).toBe(true);
     expect(view.auth.keyMasked).toContain('••••');
   });
 
-  it('every write lands in the native slot in the v2 shape — the legacy spelling is gone', () => {
+  it('every write lands protocols/settings — package/npm never stored in OCR', () => {
     const file = writeConfig({
       acmev2: { package: '@opencode/ai/providers/google', settings: { baseURL: 'https://acmev2.test/v1' } },
     });
     const res = upsertProviderDef({
       id: 'newprov',
-      npm: '@ai-sdk/openai-compatible',
+      protocols: ['openai-chat'],
       baseURL: 'https://new.test/v1',
       apiKey: 'sk-x',
       apiKeyInline: true,
     });
     expect(res.success).toBe(true);
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    // The untouched neighbor is normalized to the current npm spelling on write.
-    expect(raw.providers.acmev2.package).toBe('google-gemini');
+    expect(raw.providers.acmev2.protocols).toEqual(['google-gemini']);
+    expect(raw.providers.acmev2.package).toBeUndefined();
     expect(raw.providers.acmev2.npm).toBeUndefined();
-    // The new node: v2 shape, native slot, npm emitted verbatim.
-    expect(raw.providers.newprov.package).toBe('openai-chat');
+    expect(raw.providers.newprov.protocols).toEqual(['openai-chat']);
     expect(raw.providers.newprov.settings.apiKey).toBe('sk-x');
     expect(raw.providers.newprov.npm).toBeUndefined();
     expect(raw.providers.newprov.options).toBeUndefined();
-    // No legacy slot is ever created.
     expect(raw.provider).toBeUndefined();
   });
 
-  it('deleteProviderDef removes a opencode-v2 shaped node (jsonPath addresses ids, not shapes)', () => {
+  it('deleteProviderDef removes an OCR-shaped node', () => {
     writeConfig({
-      acmev2: { package: '@opencode/ai/providers/google', settings: { baseURL: 'https://acmev2.test/v1' } },
+      acmev2: { protocols: ['google-gemini'], settings: { baseURL: 'https://acmev2.test/v1' } },
     });
     const res = deleteProviderDef('acmev2');
     expect(res.success).toBe(true);

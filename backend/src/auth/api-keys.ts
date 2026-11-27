@@ -211,6 +211,15 @@ export function updateApiKey(
     return { success: false, error: saveResult.error || 'Failed to persist API Key changes' };
   }
 
+  // Follow catalogs snapshot this key's allowed model ids — only a modelAccess
+  // change rewrites that list. enabled / expiresAt affect auth usability only
+  // (calls already fail); same rationale as deleteApiKey (no sync).
+  if (updates.modelAccess !== undefined) {
+    void import('../cli/clients/follow-catalog-sync.js')
+      .then((m) => m.requestFollowCatalogSync({ reason: 'key', keyId: id }))
+      .catch(() => {});
+  }
+
   return { success: true, data: updated };
 }
 
@@ -230,6 +239,10 @@ export function deleteApiKey(id: string): { success: boolean; error?: string } {
   if (!saveResult.success) {
     return { success: false, error: saveResult.error || 'Failed to remove API Key from config' };
   }
+
+  // No follow-catalog sync on delete: inbound calls already fail at auth, and
+  // the sync pass cannot rewrite a catalog without a usable key — it would only
+  // paint card issues. Operator tears down / re-hooks when ready.
 
   return { success: true };
 }

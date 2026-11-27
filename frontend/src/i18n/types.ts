@@ -28,7 +28,7 @@ export interface PlaygroundPreset {
 
 export interface TranslationDict {
   combobox: {
-    /** Multi-select trigger label: number of currently selected options. */
+    /** Multi-select trigger aria-label: number of currently selected options. */
     selectedCount: string;
     /** Multi-select panel toggle: show only the selected options. */
     showSelectedOnly: string;
@@ -643,6 +643,10 @@ export interface TranslationDict {
     pmTestCredentialDefault: string;
     /** Tooltip on the batch-test button once a credential is pinned ({credential} = masked label). */
     pmTestCredentialTip: string;
+    /** Probe protocol pin (models dialog): trigger placeholder when unset. */
+    pmTestProtocolDefault: string;
+    /** Tooltip on the batch-test button once a protocol is pinned ({protocol} = wire id). */
+    pmTestProtocolTip: string;
     testAllDone: string;
     testAllConfirmTitle: string;
     testAllConfirmDesc: string;
@@ -667,6 +671,10 @@ export interface TranslationDict {
     reasonNoBaseUrl: string;
     reasonCredentialNotTestable: string;
     reasonNoEnabledCredential: string;
+    /** Test 400: body.protocol did not canonicalize to a known wire id. */
+    reasonProtocolInvalid: string;
+    /** Test 400: body.protocol is not in the provider's declared protocols[]. */
+    reasonProtocolNotDeclared: string;
     /** Model-pull failures (pull_* reasonCodes). */
     pullHttp: string;
     pullNonJson: string;
@@ -682,6 +690,8 @@ export interface TranslationDict {
     fKey: string;
     fKeyInline: string;
     fNpmLabel: string;
+    /** Ordered outbound protocol set — prefer-native dial. */
+    fNpmTip: string;
     fHeaders: string;
     fHeadersTip: string;
     headerNamePh: string;
@@ -2425,6 +2435,8 @@ hiddenBadge: string;
     /** WorkBuddy's config dir differs between editions; the card names the
      *  resolved file and the merge/reopen semantics. */
     workbuddyHint: string;
+    /** Codex: one hook for CLI + Desktop (openai_base_url + OCR∪stock catalog). */
+    codexHint: string;
     versionOk: string;
     /** Generic hook hint for clients whose package declares no `clientText.hint`. */
     caHint: string;
@@ -2498,6 +2510,18 @@ hiddenBadge: string;
     followLoading: string;
     followCount: string;
     followSnapshot: string;
+    /** Banner when auto-resync queued clients that were running */
+    followSyncPending: string;
+    followSyncNow: string;
+    followSyncToast: string;
+    followSyncRunningConfirm: string;
+    followSyncPendingBadge: string;
+    followSyncFailedBadge: string;
+    followSyncBannerFailed: string;
+    followSyncBannerMixed: string;
+    followSyncCardPending: string;
+    followSyncCardKeyUnusable: string;
+    followSyncCardFailed: string;
     /** Truncation toggle for long model-chip walls (follow/custom lists) */
     modelsMore: string;
     modelsClear: string;
@@ -2632,6 +2656,8 @@ hiddenBadge: string;
     capGatewayBytes: string;
     capAdminBytes: string;
     bodyLimitsHint: string;
+    autoResyncFollowCatalogs: string;
+    autoResyncFollowCatalogsHint: string;
     sysoneModelLabel: string;
     sysoneModelUnset: string;
     sysoneModelHint: string;

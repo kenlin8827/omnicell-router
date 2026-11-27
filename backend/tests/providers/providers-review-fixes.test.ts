@@ -561,7 +561,9 @@ describe('Module 2 review fixes', () => {
         await loadInstalledPlugins();
         const entries = await pluginPresetCatalogEntries();
         const row = entries.find((e) => e.id === providerId);
-        expect(row?.npm).toBe('openai-chat');
+        // Preset rows carry the OCR dial set; the legacy `@ai-sdk/*` spelling is
+        // normalized to the canonical protocol id (ADR-0010 / ADR-0033).
+        expect(row?.protocols).toEqual(['openai-chat']);
       } finally {
         try { await uninstallPlugin(id); } catch { /* ignore */ }
         rmSync(join(pluginsRoot(), `${id}.zip`), { force: true });

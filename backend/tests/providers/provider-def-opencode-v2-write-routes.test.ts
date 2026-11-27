@@ -187,7 +187,8 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     });
     expect(res.statusCode).toBe(200);
     const node = rawJsonc().providers.acme;
-    expect(node.package).toBe('openai-chat');
+    expect(node.protocols).toEqual(['openai-chat']);
+    expect(node.package).toBeUndefined();
     expect(node.npm).toBeUndefined();
     const credFile = path.join(p.ocrHome, 'credentials.json');
     expect(fs.existsSync(credFile)).toBe(true);
@@ -253,7 +254,7 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().modelsPulled).toBeUndefined();
-    expect(rawJsonc().providers.pullboom.package).toBeDefined();
+    expect(rawJsonc().providers.pullboom.protocols).toEqual(['openai-chat']);
     await new Promise((r) => setTimeout(r, 10));
     expect(pullFired).toContain('pullboom'); // fired AND its throw was caught (no crash)
     // refused (non-200) is swallowed the same way — no modelsPulled, no failure
@@ -288,7 +289,7 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     });
     expect(res.statusCode).toBe(200);
     const node = rawJsonc().providers.fileshape;
-    expect(node.package).toBeDefined();
+    expect(node.protocols).toEqual(['openai-chat']);
     expect(node.npm).toBeUndefined();
     expect(node.settings?.apiKey).toBeUndefined();
     expect(node.models['glm-4.5'].variants).toEqual({ fast: { reasoningEffort: 'low' } });
@@ -296,8 +297,8 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
   });
 });
 
-describe('PATCH /opencode/providers/:id — opencode v2 update preserves the opencode v2 shape', () => {
-  it('name edit on an opencode v2 node keeps package/settings/canonical/env/body (P1 reader fields survive the writer)', async () => {
+describe('PATCH /opencode/providers/:id — update preserves OCR protocols/settings', () => {
+  it('name edit keeps protocols/settings/canonical/env/body (P1 reader fields survive the writer)', async () => {
     const p = credPaths();
     bindStore(p);
     writeJsoncFile(
@@ -327,7 +328,8 @@ describe('PATCH /opencode/providers/:id — opencode v2 update preserves the ope
     expect(res.statusCode).toBe(200);
     const node = rawJsonc().providers.acme;
     expect(node.name).toBe('Renamed');
-    expect(node.package).toBe('openai-chat');
+    expect(node.protocols).toEqual(['openai-chat']);
+    expect(node.package).toBeUndefined();
     expect(node.npm).toBeUndefined();
     expect(node.settings.baseURL).toBe('https://acme.test/v1');
     expect(node.canonical).toBe('openai');
@@ -338,8 +340,8 @@ describe('PATCH /opencode/providers/:id — opencode v2 update preserves the ope
   });
 });
 
-describe('POST /opencode/providers/:id/connect — baseURL merge keeps node shape on opencode v2', () => {
-  it('opencode-v2 shaped node stays opencode-v2 shaped after a connect with baseURL', async () => {
+describe('POST /opencode/providers/:id/connect — baseURL merge keeps OCR node shape', () => {
+  it('OCR-shaped node stays OCR-shaped after a connect with baseURL', async () => {
     const p = credPaths();
     bindStore(p);
     writeJsoncFile(
@@ -364,7 +366,8 @@ describe('POST /opencode/providers/:id/connect — baseURL merge keeps node shap
     });
     expect(res.statusCode).toBe(200);
     const node = rawJsonc().providers.acme;
-    expect(node.package).toBe('anthropic-messages');
+    expect(node.protocols).toEqual(['anthropic-messages']);
+    expect(node.package).toBeUndefined();
     expect(node.settings.baseURL).toBe('https://new.test/v1');
     expect(node.canonical).toBe('openai');
     expect(node.npm).toBeUndefined();
@@ -388,11 +391,11 @@ describe('boot-direct — opencode v2-written def routes identically to the open
       headers: { 'X-T': '1' },
       models: { m1: {}, m2: { provider: { npm: '@ai-sdk/anthropic' } } },
     };
-    expect(upsertProviderDef({ id: 'eq1', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v1' }).success).toBe(
-      true
-    );
     expect(
-      upsertProviderDef({ id: 'eq2', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v2' }).success
+      upsertProviderDef({ id: 'eq1', ...common, protocols: ['openai-chat'] }).success,
+    ).toBe(true);
+    expect(
+      upsertProviderDef({ id: 'eq2', ...common, protocols: ['openai-chat'] }).success,
     ).toBe(true);
     fs.writeFileSync(
       p.authJsonPath,
@@ -414,7 +417,7 @@ describe('boot-direct — opencode v2-written def routes identically to the open
     expect(i2.config.headers).toEqual(i1.config.headers);
     expect(i2.config.apiKey).toBe(i1.config.apiKey);
     expect(i2.wires.sort()).toEqual(i1.wires.sort());
-    expect(i2.wires.sort()).toEqual(['anthropic-messages', 'openai-chat']); // model-level provider.npm → package → same wire
+    expect(i2.wires.sort()).toEqual(['anthropic-messages', 'openai-chat']); // model-level provider.npm → protocols → same wire
     // Boot-baked credential invariant (read-only check against boot-direct):
     // the default credential is the config.apiKey the executors default to — holds for
     // the opencode v1 and the P4-written opencode v2 shape alike (single store credential each).

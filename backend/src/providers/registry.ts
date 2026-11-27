@@ -1,4 +1,5 @@
 import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
+import { pickDialWire } from './dial-wire.js';
 import { OpenAIChatProvider } from './executors/openai-chat.js';
 import { AnthropicMessagesProvider } from './executors/anthropic-messages.js';
 import { OpenAIResponsesProvider } from './executors/openai-responses.js';
@@ -7,6 +8,8 @@ import { getModelServicePlugin } from '../plugins/host.js';
 import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, TierMemberRule, ComboConfig, ComboModelRef } from '../config/types.js';
 import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts, type EffortMap } from '../types/router.js';
 import type { CanonicalRequest, CanonicalResponse } from '../ir/types.js';
+import { IrUnsupportedError } from '../ir/errors.js';
+import { withDialContext } from '../ir/validate.js';
 import { createEventAccumulator } from '../ir/stream.js';
 import { createToolMarkupScanner, detectToolMarkupLeak, type ToolMarkupLeak } from './compat/tool-markup-leak.js';
 import { createToolMarkupStreamRecovery, recoverToolMarkupInResponse, toolMarkupRecoveryFor } from './compat/tool-markup-recovery.js';
@@ -1160,6 +1163,8 @@ export class ProviderRegistry {
     relay?: StreamRelay,
     /** Resolved OCR conversation id. Not a capture field. */
     sessionId?: string,
+    /** Inbound client surface protocol — prefer-native dial (ADR-0033). */
+    inboundWire?: string,
   ): Promise<CanonicalResponse> {
     if (this.mockMode) {
       relay?.onTransport?.('buffered');
@@ -1167,6 +1172,9 @@ export class ProviderRegistry {
     }
     const provider = this.providers.get(model.provider);
     if (!provider) throw new Error(`Provider '${model.provider}' not found for model '${model.id}'`);
+    const dialWire = pickDialWire(model.protocols ?? (model.wire ? [model.wire] : undefined), inboundWire, request);
+    const dialModel: ModelRegistration =
+      dialWire === model.wire ? model : { ...model, wire: dialWire };
     const chain = this.credentialChains.get(model.provider);
     let credential: CallCredential | undefined;
     if (credentialKeyHashPrefix !== undefined) {
@@ -1176,17 +1184,17 @@ export class ProviderRegistry {
       }
     }
     try {
-      const recovery = toolMarkupRecoveryFor(request, model, this.providerConfigs.get(model.provider));
+      const recovery = toolMarkupRecoveryFor(request, dialModel, this.providerConfigs.get(model.provider));
       if (relay) {
         const streams = provider.supportsStreaming
-          ? provider.supportsStreaming(model)
+          ? provider.supportsStreaming(dialModel)
           : typeof provider.createStream === 'function';
         if (streams) {
           const accumulate = createEventAccumulator();
           const scanner = recovery ? null : createToolMarkupScanner();
           const rewrite = recovery ? createToolMarkupStreamRecovery(request) : null;
           relay.onTransport?.('sse');
-          const stream = await provider.createStream!(request, model, upstreamEventContext, credential, sessionId);
+          const stream = await provider.createStream!(request, dialModel, upstreamEventContext, credential, sessionId);
           // Drain for terminal usage even if the client disconnected. Relay and
           // accounting consume the same event objects without history copies.
           for await (const event of stream) {
@@ -1203,21 +1211,30 @@ export class ProviderRegistry {
           }
           const accumulated = accumulate.finish();
           const finished = rewrite ? rewrite.finishResponse(accumulated) : accumulated;
-          reportToolMarkupLeak(rewrite ? finished.toolMarkupLeak ?? null : scanner!.leak(), model);
+          reportToolMarkupLeak(rewrite ? finished.toolMarkupLeak ?? null : scanner!.leak(), dialModel);
           return finished;
         }
         relay.onTransport?.('buffered');
       }
-      const buffered = await provider.createCompletion(request, model, upstreamEventContext, credential, sessionId);
+      const buffered = await provider.createCompletion(request, dialModel, upstreamEventContext, credential, sessionId);
       const finished = recovery ? recoverToolMarkupInResponse(buffered, request) : buffered;
       const leak = recovery ? finished.toolMarkupLeak ?? null : detectToolMarkupLeak(finished);
       if (!leak) return finished;
-      reportToolMarkupLeak(leak, model);
+      reportToolMarkupLeak(leak, dialModel);
       return { ...finished, toolMarkupLeak: leak };
     } catch (err) {
       const used = credential ?? chain?.[0];
       if (used && err && (typeof err === 'object' || typeof err === 'function')) {
         (err as { usedCredentialKeyHashPrefix?: string }).usedCredentialKeyHashPrefix = used.keyHashPrefix;
+      }
+      // Layer model + declared protocols onto IR refusals so the client sees
+      // which dial was incompatible — not only the bare protocol id.
+      if (err instanceof IrUnsupportedError) {
+        throw withDialContext(err, {
+          modelId: dialModel.id,
+          dialWire: dialWire,
+          protocols: dialModel.protocols ?? (dialModel.wire ? [dialModel.wire] : undefined),
+        });
       }
       throw err;
     }

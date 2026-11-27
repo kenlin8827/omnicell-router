@@ -455,18 +455,18 @@ describe('install → uninstall lifecycle', () => {
     expect(result.providersRemoved).toEqual([]);
     expect(defOf(PROVIDER)).toMatchObject({ settings: { baseURL: 'https://operator.invalid/v1' } });
   });
-  it('takes a preset id back from a bare package-only stub', async () => {
+  it('takes a preset id back from a bare protocol-only stub', async () => {
     // Regression: the boot credential-bind sweep writes a BARE node for every
-    // store-backed provider (`{"package":"openai-chat"}` — the DEFAULT_NPM
+    // store-backed provider (`{"protocols":["openai-chat"]}` — the DEFAULT
     // fallback). That machine-written stub blocked the preset registration
     // forever, and the provider then resolved to a core wire with no web-login
     // capability ("provider 'workbuddy' is not on a plugin wire…"). A stub is
     // not operator state: the preset overwrites it.
-    writeProviderDefs({ [PROVIDER]: { package: 'openai-chat' } });
+    writeProviderDefs({ [PROVIDER]: { protocols: ['openai-chat'] } });
     installPluginPackage(presetPackage());
     await loadInstalledPlugins();
     expect(await syncPluginPresets()).toContain(PROVIDER);
-    expect(defOf(PROVIDER)).toMatchObject({ name: 'Life Cycle', package: 'openai-chat', settings: { baseURL: 'https://example.invalid/v1' } });
+    expect(defOf(PROVIDER)).toMatchObject({ name: 'Life Cycle', protocols: ['openai-chat'], settings: { baseURL: 'https://example.invalid/v1' } });
     // uninstall still cleans up the def it (re)wrote.
     const result = await uninstallPlugin(ID);
     expect(result.providersRemoved).toEqual([PROVIDER]);
@@ -687,7 +687,7 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
     expect(await syncPluginPresets()).toContain(PROVIDER);
     expect(defOf(PROVIDER)).toMatchObject({
       name: 'Operator Name',
-      package: ID,
+      protocols: [ID],
       settings: { baseURL: 'https://keep.invalid/v1' },
       headers: { 'X-Keep': '1' },
       models: { keep: { name: 'Keep' } },
@@ -698,14 +698,14 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
     installPluginPackage(repairPackage());
     await loadInstalledPlugins();
     await syncPluginPresets();
-    expect(defOf(PROVIDER)?.package).toBe(ID);
+    expect(defOf(PROVIDER)?.protocols).toEqual([ID]);
 
     const defs = readProviderDefsFile()!;
-    (defs.providers[PROVIDER] as Record<string, unknown>).package = 'azure';
+    (defs.providers[PROVIDER] as Record<string, unknown>).protocols = ['azure'];
     writeProviderDefs(defs.providers);
 
     expect(await syncPluginPresets()).toContain(PROVIDER);
-    expect(defOf(PROVIDER)?.package).toBe(ID);
+    expect(defOf(PROVIDER)?.protocols).toEqual([ID]);
   });
 
   it('never overwrites a def that already routes (operator endpoint wins)', async () => {
@@ -716,7 +716,7 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
     await loadInstalledPlugins();
 
     expect(await syncPluginPresets()).not.toContain(PROVIDER);
-    expect(defOf(PROVIDER)).toMatchObject({ package: 'openai-chat', settings: { baseURL: 'https://mine.invalid/v1' } });
+    expect(defOf(PROVIDER)).toMatchObject({ protocols: ['openai-chat'], settings: { baseURL: 'https://mine.invalid/v1' } });
   });
 
   it('refuses a preset protocol that is not an OCR protocol id', async () => {
@@ -779,7 +779,7 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
     writeProviderDefs(defs.providers);
 
     expect((await uninstallPlugin(ID)).providersRemoved).not.toContain(PROVIDER);
-    expect(defOf(PROVIDER)).toMatchObject({ package: 'openai-chat', settings: { baseURL: 'https://mine.invalid/v1' } });
+    expect(defOf(PROVIDER)).toMatchObject({ protocols: ['openai-chat'], settings: { baseURL: 'https://mine.invalid/v1' } });
   });
 
   it('a deleted provider is not resurrected while the plugin is still installed', async () => {
@@ -803,7 +803,7 @@ describe('preset registration: wire repair, protocol guard, ledger hygiene', () 
     // An explicit connect (the web-login button) is intent the other way: it
     // materializes the preset again and lifts the tombstone.
     expect(await ensurePresetProvider(PROVIDER)).toBe(true);
-    expect(defOf(PROVIDER)?.package).toBe(ID);
+    expect(defOf(PROVIDER)?.protocols).toEqual([ID]);
     await syncPluginPresets();
     expect(pluginProviderOrigins()[PROVIDER]).toBe(ID);
   });

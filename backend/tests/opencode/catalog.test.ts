@@ -85,7 +85,7 @@ describe('Catalog sources & repository', () => {
     expect(records.length).toBe(1);
     const a = records[0];
     expect(a.id).toBe('anthropic');
-    expect(a.npm).toBe('anthropic-messages'); // @ai-sdk/anthropic → protocol id at ingest
+    expect(a.protocols).toEqual(['anthropic-messages']); // @ai-sdk/anthropic → protocol id at ingest
     expect(a.logo).toBe('https://models.dev/logos/anthropic.svg');
     const m = a.models[0];
     expect(m.source).toBe('opencode');
@@ -128,14 +128,16 @@ describe('Catalog sources & repository', () => {
       },
     });
     const zen = records[0];
-    expect(zen.npm).toBe('openai-chat');
-    expect(zen.models.find((m) => m.id === 'gpt-6-luna')?.npm).toBe('openai-responses');
-    expect(zen.models.find((m) => m.id === 'already')?.npm).toBe('openai-responses');
-    expect(zen.models.find((m) => m.id === 'mystery')?.npm).toBe('@ai-sdk/not-a-protocol');
-    expect(zen.models.find((m) => m.id === 'opencode-pkg')?.npm).toBe('google-gemini');
+    expect(zen.protocols).toEqual(['openai-chat']);
+    expect(zen.models.find((m) => m.id === 'gpt-6-luna')?.protocols).toEqual(['openai-responses']);
+    expect(zen.models.find((m) => m.id === 'already')?.protocols).toEqual(['openai-responses']);
+    expect(zen.models.find((m) => m.id === 'mystery')?.protocols).toEqual(['@ai-sdk/not-a-protocol']);
+    expect(zen.models.find((m) => m.id === 'opencode-pkg')?.protocols).toEqual(['google-gemini']);
   });
 
-  it('translates a stale models.dev cache on read', async () => {
+  it('translates a stale models.dev cache written in the old npm slot', async () => {
+    // A cache written by a pre-protocols OCR build still carries `npm`; the
+    // replay boundary lifts it into `protocols[]` without rewriting the cache.
     writeCacheFile('catalog-protocol-replay', [
       {
         id: 'anthropic',
@@ -149,11 +151,11 @@ describe('Catalog sources & repository', () => {
     ]);
     const replay = await syncModelsDev(false, { cacheName: 'catalog-protocol-replay', url: 'http://127.0.0.1:9/unused' });
     expect(replay.origin).toBe('cache');
-    expect(replay.providers[0].npm).toBe('anthropic-messages');
-    expect(replay.providers[0].models[0].npm).toBe('anthropic-messages');
+    expect(replay.providers[0].protocols).toEqual(['anthropic-messages']);
+    expect(replay.providers[0].models[0].protocols).toEqual(['anthropic-messages']);
   });
 
-  it('translates override npm on read and on write without a read-time rewrite', () => {
+  it('migrates a legacy override npm slot through the v2 hop and normalizes protocol ids on write', () => {
     const file = path.join(path.dirname(process.env.OCR_CATALOG_PATH!), 'overrides.json');
     fs.writeFileSync(
       file,
@@ -163,10 +165,13 @@ describe('Catalog sources & repository', () => {
         models: { 'anthropic||claude': { npm: '@ai-sdk/anthropic', name: 'Claude' } },
       }),
     );
-    expect(readOverridesStore()?.models['anthropic||claude']?.npm).toBe('anthropic-messages');
-    expect(JSON.parse(fs.readFileSync(file, 'utf8')).models['anthropic||claude'].npm).toBe('@ai-sdk/anthropic');
-    upsertOverride('anthropic', 'claude', { npm: '@ai-sdk/openai' });
-    expect(JSON.parse(fs.readFileSync(file, 'utf8')).models['anthropic||claude'].npm).toBe('openai-responses');
+    expect(readOverridesStore()?.models['anthropic||claude']?.protocols).toEqual(['anthropic-messages']);
+    // The boot hop rewrites the retired spelling onto disk — no npm remains.
+    const migrated = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(migrated.version).toBe(2);
+    expect(migrated.models['anthropic||claude']).toEqual({ name: 'Claude', protocols: ['anthropic-messages'] });
+    upsertOverride('anthropic', 'claude', { protocols: ['@ai-sdk/openai'] });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).models['anthropic||claude'].protocols).toEqual(['openai-responses']);
   });
 
   it('normalizes OpenRouter models converting $/token pricing to $/1M', () => {
@@ -357,7 +362,7 @@ describe('Catalog sources & repository', () => {
     ];
     writeOcrStore('sig-1', providers as any);
     const store = readOcrStore();
-    expect(store?.version).toBe(5);
+    expect(store?.version).toBe(6);
     expect(store?.sig).toBe('sig-1');
     expect(store?.builtAt).toBeGreaterThan(0);
     expect(store?.providers[0].id).toBe('anthropic');

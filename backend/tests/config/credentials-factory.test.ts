@@ -97,7 +97,7 @@ describe('credential store factory', () => {
     resetCredentialStoreForTests();
     await bindCredentialStore(base({ paths }));
     const defs = JSON.parse(fs.readFileSync(path.join(paths.ocrHome, 'providers.json'), 'utf8'));
-    expect(defs.providers.relay.package).toBe('openai-chat');
+    expect(defs.providers.relay.protocols).toEqual(['openai-chat']);
     expect(defs.providers.relay.settings.baseURL).toBe('https://r.example/v1');
     expect((readLkg(paths) as any).providerDefsImport.version).toBe(PROVIDER_DEFS_IMPORT_VERSION);
   });

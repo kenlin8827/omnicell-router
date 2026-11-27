@@ -74,6 +74,9 @@ export const DEFAULT_MIHOMO_TEST_URL = 'https://www.gstatic.com/generate_204';
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 
+/** `client.autoResyncFollowCatalogs` backend default (event-driven follow catalog rewrite). */
+export const DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS = true;
+
 /** Packaged gateway port — mirrors backend `DEFAULT_GATEWAY_PORT`
  *  (backend/src/config/defaults.ts), which in turn matches `OCR_DEFAULT_PORT`
  *  (backend/src/cli/clients/base.ts). Last-resort fallback for console

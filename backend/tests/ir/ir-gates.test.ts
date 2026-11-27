@@ -8,7 +8,7 @@ import { canonicalToResponsesObject } from '../../src/ir/adapters/openai-respons
 import { IrUnsupportedError } from '../../src/ir/errors.js';
 import { canonicalResponseToEvents } from '../../src/ir/stream.js';
 import { ChatEventEncoder } from '../../src/ir/adapters/openai-chat-stream.js';
-import { assertCanonicalRequestSupported } from '../../src/ir/validate.js';
+import { assertCanonicalRequestSupported, withDialContext } from '../../src/ir/validate.js';
 import type { CanonicalRequest, CanonicalResponse } from '../../src/ir/types.js';
 
 const model = { id: 'm', upstreamModel: 'upstream' } as ModelRegistration;
@@ -23,6 +23,49 @@ function response(output: CanonicalResponse['output']): CanonicalResponse {
 }
 
 describe('IR fail-visible request gates', () => {
+  test('chat-family rejects custom and builtin tools with Responses-upstream guidance', () => {
+    const custom = request({
+      tools: [{ type: 'custom', name: 'apply_patch', description: 'patch', format: { type: 'text' } }],
+    });
+    expect(() => assertCanonicalRequestSupported(custom, 'openai-chat')).toThrow(
+      /Unsupported on outbound protocol 'openai-chat': custom tools/,
+    );
+    expect(() => assertCanonicalRequestSupported(custom, 'openai-chat')).toThrow(/openai-responses/);
+    expect(() => assertCanonicalRequestSupported(custom, 'openai-chat')).toThrow(/Portable openai-chat/);
+    expect(() => irToChatRequest(custom, 'upstream')).toThrow(/openai-responses/);
+
+    const builtin = request({
+      tools: [{ type: 'builtin', kind: 'web_search_preview', config: {} }],
+    });
+    expect(() => assertCanonicalRequestSupported(builtin, 'openai-chat')).toThrow(/builtin\/hosted/);
+    expect(() => assertCanonicalRequestSupported(builtin, 'openai-chat')).toThrow(/openai-responses/);
+
+    // Non-chat protocols name the feature + the same Responses / protocols[] hint.
+    expect(() => assertCanonicalRequestSupported(custom, 'google-gemini')).toThrow(
+      /Unsupported on outbound protocol 'google-gemini': custom tools/,
+    );
+    expect(() => assertCanonicalRequestSupported(custom, 'google-gemini')).toThrow(/openai-responses/);
+
+    // Dial wrap (registry.execute) layers model id + declared protocols[] onto the gate.
+    try {
+      assertCanonicalRequestSupported(custom, 'anthropic-messages');
+      expect.unreachable('expected IrUnsupportedError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(IrUnsupportedError);
+      const wrapped = withDialContext(err as IrUnsupportedError, {
+        modelId: 'minimax/m2',
+        dialWire: 'anthropic-messages',
+        protocols: ['anthropic-messages'],
+      });
+      expect(wrapped.message).toMatch(/Request for model 'minimax\/m2'/);
+      expect(wrapped.message).toMatch(/declared protocols: anthropic-messages/);
+      expect(wrapped.message).toMatch(/custom tools/);
+      expect(wrapped.message).toMatch(/openai-responses/);
+      expect(wrapped.code).toBe('tool_type');
+      expect(wrapped.protocol).toBe('anthropic-messages');
+    }
+  });
+
   test('emits Responses logprobs controls and rejects fields with no faithful target', () => {
     const payload = canonicalToResponsesPayload(request({ logprobs: true, topLogprobs: 4 }), model);
     expect(payload.top_logprobs).toBe(4);
@@ -44,7 +87,7 @@ describe('IR fail-visible request gates', () => {
     const cached: CanonicalRequest['input'] = [{
       type: 'message', role: 'user', content: [{ type: 'text', text: 'x', cache: { raw: { mode: 'explicit' } } }],
     }];
-    expect(() => canonicalToAnthropicPayload(request({ input: cached }), model)).toThrow(/foreign raw cache/);
+    expect(() => canonicalToAnthropicPayload(request({ input: cached }), model)).toThrow(/Foreign raw cache breakpoints/);
   });
 
   test('Responses request gate rejects foreign signatures but still accepts encrypted reasoning', () => {
@@ -55,7 +98,7 @@ describe('IR fail-visible request gates', () => {
       ],
     });
     expect(() => assertCanonicalRequestSupported(signed, 'openai-responses')).toThrow(IrUnsupportedError);
-    expect(() => canonicalToResponsesPayload(signed, model)).toThrow(/foreign reasoning signature/);
+    expect(() => canonicalToResponsesPayload(signed, model)).toThrow(/Foreign reasoning signatures/);
 
     const toolSigned = request({
       input: [
@@ -63,7 +106,7 @@ describe('IR fail-visible request gates', () => {
         { type: 'tool_call', id: 'fc_1', callId: 'call_1', name: 'ls', arguments: '{}', signature: 'sig' },
       ],
     });
-    expect(() => assertCanonicalRequestSupported(toolSigned, 'openai-responses')).toThrow(/tool-call signature/);
+    expect(() => assertCanonicalRequestSupported(toolSigned, 'openai-responses')).toThrow(/Foreign tool-call signatures/);
 
     const encrypted = request({
       input: [
@@ -104,8 +147,8 @@ describe('IR fail-visible response and stream gates', () => {
       { index: 0, status: 'completed', output: [] },
       { index: 1, status: 'completed', output: [] },
     ];
-    expect(() => canonicalToResponsesObject(multiple, { respId: 'r' }, 'm')).toThrow(/multiple candidates/);
-    expect(() => canonicalToAnthropicResponse(multiple, 'm')).toThrow(/multiple candidates/);
+    expect(() => canonicalToResponsesObject(multiple, { respId: 'r' }, 'm')).toThrow(/Multiple candidates/);
+    expect(() => canonicalToAnthropicResponse(multiple, 'm')).toThrow(/Multiple candidates/);
     expect(irToChatResponse(multiple, 'c', 'm').choices).toHaveLength(2);
   });
 
