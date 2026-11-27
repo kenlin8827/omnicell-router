@@ -136,6 +136,18 @@ export const ClientsPage: React.FC = () => {
    *  collapse the list into a spinner — only a roster (re)load does. */
   const [refreshing, setRefreshing] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  /** Follow-catalog auto-resync state (pending / failed issues for banner + cards). */
+  const [followSync, setFollowSync] = useState<{
+    enabled: boolean;
+    pending: string[];
+    failed: string[];
+    lastRunAt?: number;
+  }>({
+    enabled: true,
+    pending: [],
+    failed: [],
+  });
+  const lastFollowRunSeen = useRef<number>(0);
   /** Per-client per-slot model selection ('auto' = intelligent routing default) */
   const [modelSel, setModelSel] = useState<Record<string, Record<string, string>>>({});
   /** Gateway-routable models (virtual + registered) from /v1/models */
@@ -405,10 +417,55 @@ export const ClientsPage: React.FC = () => {
         }
         return next;
       });
+      try {
+        const sync = await api.getFollowCatalogSyncState();
+        setFollowSync({
+          enabled: sync.enabled,
+          pending: sync.pending,
+          failed: sync.failed,
+          lastRunAt: sync.lastRun?.at,
+        });
+        if (sync.lastRun && sync.lastRun.at > lastFollowRunSeen.current) {
+          lastFollowRunSeen.current = sync.lastRun.at;
+          if (sync.lastRun.synced > 0 || sync.lastRun.failed > 0) {
+            const msg = t('clients.followSyncToast', {
+              synced: sync.lastRun.synced,
+              skipped: sync.lastRun.skipped,
+              failed: sync.lastRun.failed,
+            });
+            if (sync.lastRun.failed > 0) toast.warning(msg);
+            else toast.success(msg);
+          }
+        }
+      } catch {
+        /* sync status is advisory */
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const retryFollowSync = async () => {
+    setLoading(true);
+    try {
+      const run = await api.retryFollowCatalogSync();
+      const stillRunning = (run?.errors || []).some((e) => e.reason === 'ide_running');
+      if (stillRunning) {
+        const proceed = await confirmDialog({
+          title: t('clients.ideRunningTitle'),
+          description: t('clients.followSyncRunningConfirm'),
+        });
+        if (proceed) {
+          await api.retryFollowCatalogSync({ acknowledgeRunning: true });
+        }
+      }
+      await loadClients(true);
+    } catch (err: any) {
+      toast.error(err?.message || t('common.saveFailed'));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -965,6 +1022,9 @@ export const ClientsPage: React.FC = () => {
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         ...agentPayload,
         ...(product ? { product } : {}),
+        // Backend stamps the authoritative follow-resync index from these.
+        modelMode: modeSel[clientName] ?? 'default',
+        ...(apiKeySel[clientName] ? { apiKeyId: apiKeySel[clientName] } : {}),
         ...acknowledge,
       } : { ...(product ? { product } : {}), ...acknowledge });
       // Success notices are the owning package's declared copy
@@ -2009,9 +2069,24 @@ export const ClientsPage: React.FC = () => {
         <button
           className="btn btn-sm"
           disabled={loading || pluginBlocked}
-          title={pluginBlocked ? t('clients.gatewayPluginRequired', { client: c.displayName }) : t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookTitle')}
+          title={
+            c.followCatalogIssue?.status === 'failed'
+              ? t('clients.followSyncFailedBadge')
+              : c.followCatalogPending || c.followCatalogIssue?.status === 'pending'
+                ? t('clients.followSyncPendingBadge')
+                : pluginBlocked
+                  ? t('clients.gatewayPluginRequired', { client: c.displayName })
+                  : t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookTitle')
+          }
           aria-label={t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookBtn')}
           onClick={e => { e.stopPropagation(); handleToggle(c.name, 'setup', undefined, { resync: true }); }}
+          style={
+            c.followCatalogIssue?.status === 'failed'
+              ? { borderColor: 'var(--accent-rose)', color: 'var(--accent-rose)' }
+              : c.followCatalogPending || c.followCatalogIssue?.status === 'pending'
+                ? { borderColor: 'var(--accent-amber)', color: 'var(--accent-amber)' }
+                : undefined
+          }
         >
           <RefreshCw size={12} />
           {!compact && <span>{t(isLauncher ? 'clients.launcherRehookBtn' : 'clients.rehookBtn')}</span>}
@@ -2064,6 +2139,39 @@ export const ClientsPage: React.FC = () => {
           <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <Check size={16} />
             <span>{actionNotice}</span>
+          </div>
+        )}
+
+        {(followSync.pending.length > 0 || followSync.failed.length > 0) && (
+          <div style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background: followSync.failed.length > 0
+              ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'
+              : 'color-mix(in srgb, var(--accent-amber) 12%, transparent)',
+            border: followSync.failed.length > 0
+              ? '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)'
+              : '1px solid color-mix(in srgb, var(--accent-amber) 30%, transparent)',
+            color: followSync.failed.length > 0 ? 'var(--accent-rose)' : 'var(--accent-amber)',
+            fontSize: 'var(--text-md)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            marginBottom: '16px',
+            flexWrap: 'wrap',
+          }}>
+            <AlertTriangle size={16} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              {followSync.failed.length > 0 && followSync.pending.length > 0
+                ? t('clients.followSyncBannerMixed', { pending: followSync.pending.length, failed: followSync.failed.length })
+                : followSync.failed.length > 0
+                  ? t('clients.followSyncBannerFailed', { n: followSync.failed.length })
+                  : t('clients.followSyncPending', { n: followSync.pending.length })}
+            </span>
+            <button className="btn btn-sm" onClick={() => retryFollowSync()} disabled={loading}>
+              <RefreshCw size={12} />
+              <span>{t('clients.followSyncNow')}</span>
+            </button>
           </div>
         )}
 
@@ -2271,6 +2379,39 @@ export const ClientsPage: React.FC = () => {
                   )}
                   {!open && !c.products?.length && renderActionButtons(c, false, true)}
                 </div>
+
+                {c.followCatalogIssue && (() => {
+                  const failed = c.followCatalogIssue.status === 'failed';
+                  const reason = c.followCatalogIssue.reason;
+                  const text =
+                    reason === 'ide_running'
+                      ? t('clients.followSyncCardPending')
+                      : reason === 'api_key_unusable'
+                        ? t('clients.followSyncCardKeyUnusable')
+                        : failed
+                          ? t('clients.followSyncCardFailed', { reason })
+                          : t('clients.followSyncCardPending');
+                  return (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '8px 14px',
+                        fontSize: 'var(--text-xs)',
+                        lineHeight: 'var(--leading-normal)',
+                        background: failed
+                          ? 'color-mix(in srgb, var(--accent-rose) 10%, transparent)'
+                          : 'color-mix(in srgb, var(--accent-amber) 10%, transparent)',
+                        color: failed ? 'var(--accent-rose)' : 'var(--accent-amber)',
+                        borderTop: '1px solid var(--card-border)',
+                      }}
+                    >
+                      <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+                      <span style={{ flex: 1, minWidth: 0 }}>{text}</span>
+                    </div>
+                  );
+                })()}
 
                 {/* One body, two frames: the inline row while collapsed into
                     the accordion, the same node inside a large dialog while

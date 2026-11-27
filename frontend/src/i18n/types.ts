@@ -2498,6 +2498,18 @@ hiddenBadge: string;
     followLoading: string;
     followCount: string;
     followSnapshot: string;
+    /** Banner when auto-resync queued clients that were running */
+    followSyncPending: string;
+    followSyncNow: string;
+    followSyncToast: string;
+    followSyncRunningConfirm: string;
+    followSyncPendingBadge: string;
+    followSyncFailedBadge: string;
+    followSyncBannerFailed: string;
+    followSyncBannerMixed: string;
+    followSyncCardPending: string;
+    followSyncCardKeyUnusable: string;
+    followSyncCardFailed: string;
     /** Truncation toggle for long model-chip walls (follow/custom lists) */
     modelsMore: string;
     modelsClear: string;
@@ -2632,6 +2644,8 @@ hiddenBadge: string;
     capGatewayBytes: string;
     capAdminBytes: string;
     bodyLimitsHint: string;
+    autoResyncFollowCatalogs: string;
+    autoResyncFollowCatalogsHint: string;
     sysoneModelLabel: string;
     sysoneModelUnset: string;
     sysoneModelHint: string;

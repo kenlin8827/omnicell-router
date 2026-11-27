@@ -99,6 +99,45 @@ export interface ClientStatus {
   /** Last successful hook (setup) of this client, ms epoch; the sort fallback
    *  before any traffic. Absent = not hooked this boot. */
   lastSetupAt?: number;
+
+  /** Follow-catalog auto-resync is waiting (client was running on last attempt). */
+  followCatalogPending?: boolean;
+  /** Open follow-catalog issue for this card (pending or failed). */
+  followCatalogIssue?: { status: 'pending' | 'failed'; reason: string };
+}
+
+export interface FollowCatalogIssue {
+  id: string;
+  kind: 'client' | 'gateway';
+  status: 'pending' | 'failed';
+  reason: string;
+  apiKeyId?: string;
+  at: number;
+}
+
+/** Mirrors backend FollowCatalogSyncError (one target's failure in a pass). */
+export interface FollowCatalogSyncError {
+  target: string;
+  reason: string;
+}
+
+/** Mirrors backend FollowCatalogSyncRun (the outcome of one sync pass). */
+export interface FollowCatalogSyncRun {
+  at: number;
+  reason: 'key' | 'pool';
+  keyId?: string;
+  synced: number;
+  skipped: number;
+  failed: number;
+  errors: FollowCatalogSyncError[];
+}
+
+export interface FollowCatalogSyncState {
+  enabled: boolean;
+  pending: string[];
+  failed: string[];
+  issues: FollowCatalogIssue[];
+  lastRun?: FollowCatalogSyncRun;
 }
 
 /** Mirrors backend ClientArtifact (a file an adapter owns besides `configPath`). */
@@ -3498,6 +3537,10 @@ export const api = {
       product?: string;
       /** The operator was told the client is running and chose to proceed anyway. */
       acknowledgeRunning?: boolean;
+      /** Console form mode — stamped into clientProfileMemory after success. */
+      modelMode?: 'default' | 'custom' | 'follow';
+      /** Selected apiKeys[].id — stamped with modelMode; never the plaintext secret. */
+      apiKeyId?: string;
     }
   ): Promise<{ status: string; message: string; warnings?: ClientActionWarning[] }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {
@@ -3513,6 +3556,37 @@ export const api = {
       err.reasonCode = body.reasonCode;
       err.params = body.params;
       throw err;
+    }
+    return res.json();
+  },
+
+  async getFollowCatalogSyncState(): Promise<FollowCatalogSyncState> {
+    const res = await fetch('/api/admin/clients/follow-catalog-sync');
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    return {
+      enabled: body.enabled !== false,
+      pending: Array.isArray(body.pending) ? body.pending : [],
+      failed: Array.isArray(body.failed) ? body.failed : [],
+      issues: Array.isArray(body.issues) ? body.issues : [],
+      ...(body.lastRun ? { lastRun: body.lastRun } : {}),
+    };
+  },
+
+  async retryFollowCatalogSync(opts?: {
+    acknowledgeRunning?: boolean;
+  }): Promise<FollowCatalogSyncRun & { status: string }> {
+    const res = await fetch('/api/admin/clients/follow-catalog-sync/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts || {}),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `HTTP ${res.status}`);
     }
     return res.json();
   },

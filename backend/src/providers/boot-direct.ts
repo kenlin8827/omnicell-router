@@ -536,5 +536,16 @@ export async function refreshDirectPool(registry: ProviderRegistry): Promise<Dir
     })),
     boot.models
   );
+  // Event-drive follow-catalog rewrites off the same seam every pool rebuild
+  // already shares (console mutations, catalog auto-pull, config save). Fail-open:
+  // a sync scheduling error must never undo a successful pool rebuild.
+  try {
+    const { requestFollowCatalogSync } = await import('../cli/clients/follow-catalog-sync.js');
+    requestFollowCatalogSync({ reason: 'pool' });
+  } catch (err) {
+    console.warn(
+      `[pool] follow-catalog sync schedule failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   return boot;
 }

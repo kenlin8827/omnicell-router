@@ -1318,6 +1318,13 @@ export interface RouterConfig {
    * Boot-frozen — applied when the routes are registered.
    */
   bodyLimits?: BodyLimitsConfig;
+  /**
+   * When true (default), Key `modelAccess` / model-pool mutations event-drive a
+   * rewrite of every hooked follow-mode client catalog and every gateway
+   * plugin with `modelListMode=follow` (disk `client.autoResyncFollowCatalogs`).
+   * Hot-readable — no restart. Not a profile write-through (ADR-0031).
+   */
+  autoResyncFollowCatalogs?: boolean;
   models?: ModelRegistration[];
   combos?: ComboConfig[];
   /**

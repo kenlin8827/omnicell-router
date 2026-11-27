@@ -1,5 +1,6 @@
 import { loadConfig, ensureDefaultConfigFile, upgradeConfigFile, getRuntimeConfigRef } from './config/index.js';
 import { setPoolRefreshHook } from './providers/pool-refresh.js';
+import { setFollowCatalogSyncRegistry } from './cli/clients/follow-catalog-sync.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { refreshDirectPool } from './providers/boot-direct.js';
@@ -324,6 +325,7 @@ async function main() {
     // Background producers (catalog auto-pull) resync the pool through this
     // hook — same builder, same fail-open contract, no import cycles.
     setPoolRefreshHook(() => refreshDirectPool(registry));
+    setFollowCatalogSyncRegistry(registry);
     const providerLevel = boot.excluded.filter((e) => !e.model);
     const modelLevel = boot.excluded.filter((e) => e.model);
     for (const ex of providerLevel) console.log(`[OCR]   excluded ${ex.provider}: ${ex.reason}`);
@@ -333,6 +335,7 @@ async function main() {
     console.warn(`[OCR] Direct pool build failed, booting an EMPTY registry (no chat providers): ${err.message}`);
     registry = new ProviderRegistry(config, false);
     setPoolRefreshHook(() => refreshDirectPool(registry));
+    setFollowCatalogSyncRegistry(registry);
   }
 
   // breaker memory: attach the on-disk

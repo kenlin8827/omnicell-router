@@ -30,6 +30,7 @@ import {
   ADMIN_MAX_BODY_BYTES,
   BODY_LIMIT_MIN_BYTES,
   BODY_LIMIT_MAX_BYTES,
+  DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS,
   DEFAULT_ROUTE_ENTRIES_MAX,
   DEFAULT_GATEWAY_PORT,
   DEFAULT_MIHOMO_CONTROLLER_PORT,
@@ -249,6 +250,9 @@ const DEFAULT_CONFIG: RouterConfig = {
     maxBytes: GATEWAY_MAX_BODY_BYTES,
     adminMaxBytes: ADMIN_MAX_BODY_BYTES,
   },
+  // Follow-catalog auto-resync: default ON (lazy-operator default). Hot-read
+  // by the sync module — unlike bodyLimits, no restart required.
+  autoResyncFollowCatalogs: DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS,
   // Two axes (ADR-0008 §1): `allow` streams only when the caller asks;
   // `stream` keeps the provider leg on the upstream SSE reader even for JSON
   // callers — TTFT/stall measurement on by default, client timing unchanged.
@@ -1206,6 +1210,8 @@ export function loadConfig(configPath?: string): RouterConfig {
         circuitBreaker: resolveCircuitBreaker(flat),
         rateLimit: resolveRateLimit(flat),
         bodyLimits: resolveBodyLimits(flat),
+        // Explicit false disables; absent / junk / true → shipped default ON.
+        autoResyncFollowCatalogs: flat.autoResyncFollowCatalogs === false ? false : DEFAULT_AUTO_RESYNC_FOLLOW_CATALOGS,
         retry: {
           enabled: flat.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,
           inplace: { ...DEFAULT_CONFIG.retry?.inplace, ...flat.retry?.inplace },
