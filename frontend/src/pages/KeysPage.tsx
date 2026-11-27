@@ -82,7 +82,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const CONNECTED_PAGE_SIZES = [12, 24, 48];
 const CATALOG_PAGE_SIZES = [10, 20, 50, 100, 200];
 
-const CUSTOM_NPM = '__custom__';
 
 /** One editable header row (2-column editor state). */
 interface HeaderRow {
@@ -1367,23 +1366,26 @@ export const KeysPage: React.FC = () => {
   const [limitsBusy, setLimitsBusy] = useState(false);
 
   // Custom provider create form
-  const [form, setForm] = useState<{ id: string; name: string; baseURL: string; npm: string; apiKey: string; inline: boolean; pullPattern: string; headerRows: HeaderRow[] }>({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, pullPattern: '', headerRows: [] });
-  const [npmChoice, setNpmChoice] = useState<string>('');
+  const [form, setForm] = useState<{ id: string; name: string; baseURL: string; protocols: string[]; apiKey: string; inline: boolean; pullPattern: string; headerRows: HeaderRow[] }>({ id: '', name: '', baseURL: '', protocols: [], apiKey: '', inline: false, pullPattern: '', headerRows: [] });
+  const [customProtocolDraft, setCustomProtocolDraft] = useState('');
+  const [editCustomProtocolDraft, setEditCustomProtocolDraft] = useState('');
   /** Provider-def edit dialog (connected card pencil): def-node providers only. */
-  const [editDef, setEditDef] = useState<{ id: string; name: string; baseURL: string; npm: string; pullPattern: string; headerRows: HeaderRow[] } | null>(null);
+  const [editDef, setEditDef] = useState<{ id: string; name: string; baseURL: string; protocols: string[]; pullPattern: string; headerRows: HeaderRow[] } | null>(null);
   const [savingDef, setSavingDef] = useState(false);
   // Backdrop closes only on a press+release that both land on the overlay
   // (shared guard: useBackdropDismiss).
-  const defBackdrop = useBackdropDismiss(() => { if (!savingDef) setEditDef(null); });
-  const openDefEdit = (p: OpenCodeProviderView) =>
+  const defBackdrop = useBackdropDismiss(() => { if (!savingDef) { setEditDef(null); setEditCustomProtocolDraft(''); } });
+  const openDefEdit = (p: OpenCodeProviderView) => {
     setEditDef({
       id: p.id,
       name: p.name ?? '',
       baseURL: p.baseURL ?? '',
-      npm: displayProtocol(p.npm) ?? '',
+      protocols: p.protocols ?? [],
       pullPattern: p.autoPullPattern ?? '',
       headerRows: headersToRows(p.headers),
     });
+    setEditCustomProtocolDraft('');
+  };
   const saveDefEdit = async () => {
     if (!editDef) return;
     setSavingDef(true);
@@ -1391,7 +1393,7 @@ export const KeysPage: React.FC = () => {
       await opencodeApi.updateProvider(editDef.id, {
         name: editDef.name.trim() || undefined,
         baseURL: editDef.baseURL.trim() || undefined,
-        npm: editDef.npm.trim() || undefined,
+        protocols: editDef.protocols.length ? editDef.protocols : undefined,
         // Always sent: an emptied editor CLEARS the def's headers (the
         // backend contract is presence = full replace).
         headers: rowsToHeaders(editDef.headerRows) ?? {},
@@ -1399,7 +1401,7 @@ export const KeysPage: React.FC = () => {
         pullPattern: editDef.pullPattern.trim(),
       });
       showNotice(t('op.saveDefDone'));
-      setEditDef(null);
+      setEditDef(null); setEditCustomProtocolDraft('');
       await refreshAll();
     } catch (err: any) {
       toast.error(reasonError(err));
@@ -2236,15 +2238,15 @@ export const KeysPage: React.FC = () => {
         id: form.id.trim(),
         name: form.name.trim() || undefined,
         baseURL: form.baseURL.trim(),
-        npm: form.npm.trim() || undefined,
+        protocols: form.protocols.length ? form.protocols : undefined,
         headers: rowsToHeaders(form.headerRows),
         apiKey: form.apiKey.trim() || undefined,
         apiKeyInline: form.inline,
         pullPattern: form.pullPattern.trim() || undefined,
       });
       showNotice(t('op.customTitle') + ' ✓');
-      setForm({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, pullPattern: '', headerRows: [] });
-      setNpmChoice('');
+      setForm({ id: '', name: '', baseURL: '', protocols: [], apiKey: '', inline: false, pullPattern: '', headerRows: [] });
+      setCustomProtocolDraft('');
       await refreshAll();
     } catch (err: any) {
       toast.error(reasonError(err));
@@ -2591,12 +2593,12 @@ export const KeysPage: React.FC = () => {
                   "[OCR] excluded" log). */}
               <ProviderCardFooter hasProbe={Boolean(testResults[p.id])}>
                 <div className="provider-card-chips">
-                    {displayProtocol(p.npm) && (
+                    {(p.protocols?.length ?? 0) > 0 && (
                       <span
                         style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
-                        title={`${displayProtocol(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
+                        title={`${(p.protocols ?? []).map((x) => displayProtocol(x) ?? x).join(', ')} — ${t('catalogPage.ocrEditNpmHint')}`}
                       >
-                        {displayProtocol(p.npm)!}
+                        {(p.protocols ?? []).map((x) => displayProtocol(x) ?? x).join(', ')}
                       </span>
                     )}
                     {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
@@ -2787,6 +2789,7 @@ export const KeysPage: React.FC = () => {
                 <ProviderModelsDialog
                   providerId={p.id}
                   providerName={p.name}
+                  protocols={p.protocols}
                   onClose={() => setModelsPanelId(null)}
                   onChanged={loadOpenCodeProviders}
                 />
@@ -2892,9 +2895,9 @@ export const KeysPage: React.FC = () => {
                         "Volcengine A…" whenever the npm badge sat beside it). */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                       <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
-                      {c.npm && (
+                      {(c.protocols?.length ?? 0) > 0 && (
                         <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '0 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
-                          {displayProtocol(c.npm) || ''}
+                          {(c.protocols ?? []).map((x) => displayProtocol(x) ?? x).join(', ')}
                         </span>
                       )}
                     </div>
@@ -3026,29 +3029,51 @@ export const KeysPage: React.FC = () => {
           {/* Protocol id is low-frequency (almost always the openai-chat
               default) — parked last so the common path reads ID → name → URL → key. */}
           <FormField label={t('op.fNpmLabel')}>
-            {npmChoice === CUSTOM_NPM ? (
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input className="input" style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 0 }} placeholder={t('op.fNpmCustom')} value={form.npm} onChange={e => setForm({ ...form, npm: e.target.value })} autoFocus />
-                <button className="btn btn-sm" title={t('op.fNpmLabel')} onClick={() => { setNpmChoice(''); setForm({ ...form, npm: '' }); }}>↩</button>
-              </div>
-            ) : (
-              <Combobox
-                style={{ fontSize: 'var(--text-sm)', cursor: 'pointer' }}
-                value={npmChoice}
-                onChange={(v) => {
-                  setNpmChoice(v);
-                  if (v === CUSTOM_NPM) setForm({ ...form, npm: '' });
-                  else setForm({ ...form, npm: v });
+            <Combobox
+              multiple
+              clearable
+              style={{ fontSize: 'var(--text-sm)', cursor: 'pointer' }}
+              value={form.protocols}
+              onChange={(v) => setForm({ ...form, protocols: v })}
+              placeholder={t('op.fNpm')}
+              options={[
+                ...form.protocols
+                  .filter((p) => !protocolOptions.includes(p))
+                  .map((p) => ({ value: p, label: p })),
+                ...protocolOptions.map((pkg) => ({ value: pkg, label: pkg })),
+              ]}
+            />
+            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+              <input
+                className="input"
+                style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 0 }}
+                placeholder={t('op.fNpmCustom')}
+                value={customProtocolDraft}
+                onChange={(e) => setCustomProtocolDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  const id = customProtocolDraft.trim();
+                  if (!id || form.protocols.includes(id)) return;
+                  setForm({ ...form, protocols: [...form.protocols, id] });
+                  setCustomProtocolDraft('');
                 }}
-                placeholder={t('op.fNpm')}
-                clearable
-                options={[
-                  { value: '', label: t('op.fNpm') },
-                  ...protocolOptions.map((pkg) => ({ value: pkg, label: pkg })),
-                  { value: CUSTOM_NPM, label: `${t('op.fNpmCustom')}…` },
-                ]}
               />
-            )}
+              <button
+                type="button"
+                className="btn btn-sm"
+                title={t('op.fNpmCustom')}
+                onClick={() => {
+                  const id = customProtocolDraft.trim();
+                  if (!id || form.protocols.includes(id)) return;
+                  setForm({ ...form, protocols: [...form.protocols, id] });
+                  setCustomProtocolDraft('');
+                }}
+              >
+                +
+              </button>
+            </div>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fNpmTip')}</span>
           </FormField>
           <FormField label={t('op.fHeaders')} style={{ gridColumn: '1 / -1' }}>
             <HeadersEditor rows={form.headerRows} onChange={headerRows => setForm({ ...form, headerRows })} />
@@ -3475,24 +3500,51 @@ export const KeysPage: React.FC = () => {
                 <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
               </FormField>
               <FormField label={t('op.fNpmLabel')}>
-                {/* Combobox, not a free input (repo dropdown convention). The
-                    current value always rides first so a non-vocabulary def
-                    stays visible; selections may also be cleared. */}
                 <Combobox
-                  style={{ fontSize: 'var(--text-sm)' }}
-                  value={editDef.npm}
-                  onChange={(v) => setEditDef({ ...editDef, npm: v })}
+                  multiple
                   clearable
+                  style={{ fontSize: 'var(--text-sm)' }}
+                  value={editDef.protocols}
+                  onChange={(v) => setEditDef({ ...editDef, protocols: v })}
+                  placeholder={t('op.fNpm')}
                   options={[
-                    // Current value rides first ONLY when the vocabulary does not
-                    // already list it — otherwise the dropdown shows the same
-                    // alias twice, both ticked.
-                    ...(editDef.npm && !protocolOptions.includes(editDef.npm)
-                      ? [{ value: editDef.npm, label: editDef.npm }]
-                      : []),
+                    ...editDef.protocols
+                      .filter((p) => !protocolOptions.includes(p))
+                      .map((p) => ({ value: p, label: p })),
                     ...protocolOptions.map((pkg) => ({ value: pkg, label: pkg })),
                   ]}
                 />
+                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                  <input
+                    className="input"
+                    style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 0 }}
+                    placeholder={t('op.fNpmCustom')}
+                    value={editCustomProtocolDraft}
+                    onChange={(e) => setEditCustomProtocolDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      e.preventDefault();
+                      const id = editCustomProtocolDraft.trim();
+                      if (!id || editDef.protocols.includes(id)) return;
+                      setEditDef({ ...editDef, protocols: [...editDef.protocols, id] });
+                      setEditCustomProtocolDraft('');
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    title={t('op.fNpmCustom')}
+                    onClick={() => {
+                      const id = editCustomProtocolDraft.trim();
+                      if (!id || editDef.protocols.includes(id)) return;
+                      setEditDef({ ...editDef, protocols: [...editDef.protocols, id] });
+                      setEditCustomProtocolDraft('');
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fNpmTip')}</span>
               </FormField>
               <FormField label={t('op.fPullPattern')}>
                 <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
@@ -3503,7 +3555,7 @@ export const KeysPage: React.FC = () => {
                 <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fHeadersTip')}</span>
               </FormField>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button className="btn btn-sm" disabled={savingDef} onClick={() => setEditDef(null)}>{t('op.cancelDefEdit')}</button>
+                <button className="btn btn-sm" disabled={savingDef} onClick={() => { setEditDef(null); setEditCustomProtocolDraft(''); }}>{t('op.cancelDefEdit')}</button>
                 <button className="btn btn-primary btn-sm" disabled={savingDef} onClick={saveDefEdit}>
                   <Check size={12} />
                   <span>{savingDef ? t('op.savingDef') : t('op.saveDef')}</span>

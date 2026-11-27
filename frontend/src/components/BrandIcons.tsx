@@ -18,7 +18,10 @@ import React from 'react';
  *
  * Sources: simple-icons (https://simpleicons.org, CC0-1.0). Note: the OpenAI
  * mark was removed from upstream simple-icons (v15+) at OpenAI's request, so
- * codex.svg is vendored from simple-icons@13 and maintained locally.
+ * codex.svg is a ChatGPT-style chat-bubble mark for the unified
+ * Codex / ChatGPT client card (same ~/.codex home; ChatGPT is the clearer
+ * brand signal on the roster). The historical OpenAI blossom from
+ * simple-icons@13 was dropped with the dual-mark experiment.
  * pi.svg is derived from the official Pi press-kit mark (pi.dev/press-kit,
  * three tile paths on an 800x800 grid), rescaled to 24x24 and flattened to
  * monochrome — the colored tiles become untagged subpaths so the wrapper's

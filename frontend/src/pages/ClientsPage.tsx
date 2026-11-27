@@ -34,7 +34,7 @@ const clientSlots = (c: ClientStatus | undefined): { key: string; value?: string
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw' || name === 'workbuddy';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw' || name === 'workbuddy' || name === 'codex';
 
 /** Core reasonCodes whose copy stays console-owned (shared by every adapter).
  *  Package adapters' codes resolve through the owning plugin's
@@ -85,7 +85,7 @@ const MODEL_CHIP_LIMIT = 12;
 const VIRTUAL_MODEL_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 
 /** Adapter default virtual block when a custom-mode setup omits `virtualModels`:
- *  opencode/dsh/pi/omp/kimi/workbuddy/openclaw inject the full block, grok
+ *  opencode/dsh/pi/omp/kimi/workbuddy/openclaw/codex inject the full block, grok
  *  injects none (its own historical default). Keep in sync with the adapters. */
 const virtualDefaultFor = (clientName: string): string[] =>
   clientName === 'grok' ? [] : [...VIRTUAL_MODEL_IDS];
@@ -2661,6 +2661,11 @@ export const ClientsPage: React.FC = () => {
                         {c.name === 'workbuddy' && (
                           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
                             {t('clients.workbuddyHint')}
+                          </div>
+                        )}
+                        {c.name === 'codex' && (
+                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
+                            {t('clients.codexHint')}
                           </div>
                         )}
                       </>

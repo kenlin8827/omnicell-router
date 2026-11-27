@@ -11,7 +11,8 @@ const CLIENT_PATTERNS: [RegExp, string][] = [
   // Coding agents / CLIs
   [/opencode/i, 'OpenCode'],
   [/claude-cli|claude-code/i, 'Claude Code'],
-  [/codex/i, 'Codex'],
+  [/chatgpt/i, 'ChatGPT'],
+  [/codex/i, 'Codex / ChatGPT'],
   [/cline/i, 'Cline'],
   [/roo-?code/i, 'Roo Code'],
   [/kilo-?code/i, 'Kilo Code'],

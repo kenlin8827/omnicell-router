@@ -5547,7 +5547,7 @@ let protocolVocabularyCache: ProtocolVocabularyEntry[] | null = null;
 export interface OpenCodeProviderView {
   id: string;
   name?: string;
-  npm?: string;
+  protocols?: string[];
   baseURL?: string;
   /** Def-level custom headers (options.headers) — edit-dialog prefill; never secrets. */
   headers?: Record<string, string>;
@@ -5585,7 +5585,7 @@ export interface OpenCodeCatalogProvider {
   id: string;
   name: string;
   logo?: string;
-  npm?: string;
+  protocols?: string[];
   api?: string;
   baseURL?: string;
   doc?: string;
@@ -5634,7 +5634,7 @@ export interface CatalogSourceView {
 export interface CatalogSourceDataModelRecord {
   id: string;
   name?: string;
-  npm?: string;
+  protocols?: string[];
   reasoning?: boolean;
   tool_call?: boolean;
   temperature?: boolean;
@@ -5667,7 +5667,7 @@ export interface OcrCatalogProvider {
   id: string;
   name?: string;
   logo?: string;
-  npm?: string;
+  protocols?: string[];
   baseURL?: string;
   doc?: string;
   env?: string[];
@@ -5680,7 +5680,7 @@ export interface OcrCatalogProvider {
 export interface CatalogSourceDataProviderRecord {
   id: string;
   name?: string;
-  npm?: string;
+  protocols?: string[];
   api?: string;
   doc?: string;
   env?: string[];
@@ -5699,7 +5699,7 @@ export interface CatalogSourceDataResponse {
 export interface ProviderDefPayload {
   id: string;
   name?: string;
-  npm?: string;
+  protocols?: string[];
   baseURL?: string;
   apiKey?: string;
   apiKeyInline?: boolean;
@@ -6928,7 +6928,7 @@ export const opencodeApi = {
   },
   async testProvider(
     id: string,
-    payload?: { modelId?: string; apiKey?: string; baseURL?: string; credentialId?: string }
+    payload?: { modelId?: string; apiKey?: string; baseURL?: string; credentialId?: string; protocol?: string }
   ): Promise<TestProviderResult> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/test`, {

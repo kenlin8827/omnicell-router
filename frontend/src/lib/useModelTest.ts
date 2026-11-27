@@ -26,6 +26,8 @@ const TEST_REASON_KEY: Record<string, string> = {
   no_base_url: 'op.reasonNoBaseUrl',
   credential_not_testable: 'op.reasonCredentialNotTestable',
   no_enabled_credential: 'op.reasonNoEnabledCredential',
+  protocol_invalid: 'op.reasonProtocolInvalid',
+  protocol_not_declared: 'op.reasonProtocolNotDeclared',
 };
 
 /**
@@ -79,7 +81,11 @@ export const apiErrorText = (err: unknown, providerId: string, t: TFn): string =
   const e = err as OcApiError;
   const code = e?.reasonCode;
   if (code && TEST_REASON_KEY[code])
-    return t(TEST_REASON_KEY[code], { provider: providerId, credential: (e.body as any)?.credentialId ?? '' });
+    return t(TEST_REASON_KEY[code], {
+      provider: providerId,
+      credential: (e.body as any)?.credentialId ?? '',
+      protocol: (e.body as any)?.protocol ?? '',
+    });
   if (code === 'pull_unreachable')
     return t('op.probeUnreachable', { url: (e.body as any)?.url ?? '?', cause: (e.body as any)?.cause ?? '?' });
   if (code === 'pull_non_json') return t('op.pullNonJson', { url: (e.body as any)?.url ?? '?' });
@@ -103,12 +109,16 @@ export interface ModelTestTarget {
   modelId?: string;
   /** Pin the probe to ONE credential row (KeysPage credential list); default = let the provider-level probe rotate the enabled chain. */
   credentialId?: string;
+  /** Pin the probe wire (provider protocols[] entry); default = primaryProtocol / prefer-native primary. */
+  protocol?: string;
 }
 
 /** Probe outcome — the ok:false shape also covers HTTP-level failures. */
 export interface ModelTestOutcome {
   ok: boolean;
   model?: string;
+  /** Wire id the probe actually spoke (api.ts TestProviderResult.kind). */
+  kind?: string;
   latencyMs?: number;
   error?: string;
   /** Card-row classification only — keeps long upstream bodies out of the grid. */
@@ -159,9 +169,10 @@ export const useModelTest = () => {
   const runTest = async (target: ModelTestTarget): Promise<ModelTestOutcome> => {
     setTestingIds((prev) => new Set(prev).add(target.key));
     try {
-      const payload: { modelId?: string; credentialId?: string } = {};
+      const payload: { modelId?: string; credentialId?: string; protocol?: string } = {};
       if (target.modelId) payload.modelId = target.modelId;
       if (target.credentialId) payload.credentialId = target.credentialId;
+      if (target.protocol) payload.protocol = target.protocol;
       const r = await opencodeApi.testProvider(target.providerId, Object.keys(payload).length ? payload : undefined);
       // The wire carries machine limbs only — compose the localized display
       // ONCE here so every outcome surface (card/badge/toast/title) stays raw.
