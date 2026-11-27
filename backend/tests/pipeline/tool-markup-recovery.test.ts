@@ -6,6 +6,8 @@ import {
   toolMarkupRecoveryFor,
 } from '../../src/providers/compat/tool-markup-recovery.js';
 import { createEventAccumulator } from '../../src/ir/stream.js';
+import { RESPONSES_CALL_ID_MAX_LEN } from '../../src/config/defaults.js';
+import { responsesCallId } from '../../src/ir/adapters/openai-responses.js';
 import { ChatStreamDecoder } from '../../src/ir/adapters/openai-chat-stream.js';
 import type { CanonicalRequest, CanonicalResponse, StreamEvent } from '../../src/ir/types';
 import type { ModelRegistration, ProviderConfig } from '../../src/config/types';
@@ -141,6 +143,44 @@ describe('tool markup recovery — scope and buffered conversion', () => {
     expect(idOf(first)).toContain('resp_A');
     expect(idOf(second)).toContain('resp_B');
     expect(idOf(first)).not.toBe(idOf(second));
+  });
+
+  test('keeps a synthetic call id inside the Responses correlation budget', () => {
+    // A recovered call's id is a correlation id on the wire, so it must fit the bound the
+    // outbound leg enforces: the old sanitize + tail-slice reached 78 characters and was
+    // then rewritten by our own gate. An over-long response id is digested, not sliced.
+    const longId = `resp_${'x'.repeat(90)}`;
+    const calls = recoverToolMarkupInResponse(responseWith(REAL_LEAK, longId), request())
+      .output.filter((item) => item.type === 'tool_call');
+    expect(calls.length).toBe(2);
+    for (const item of calls) {
+      expect(item.callId).toMatch(new RegExp(`^[A-Za-z0-9_-]{1,${RESPONSES_CALL_ID_MAX_LEN}}$`));
+      expect((item.callId ?? '').length).toBeLessThanOrEqual(RESPONSES_CALL_ID_MAX_LEN);
+    }
+    // Distinct within one response, and still the projection the gate would hand back: a
+    // minted id never needs rewriting, so a replay cannot 400 on our own history.
+    expect(calls[0]?.callId).not.toBe(calls[1]?.callId);
+    for (const item of calls) expect(responsesCallId(item.callId)).toBe(item.callId);
+    const short = recoverToolMarkupInResponse(responseWith(REAL_LEAK, 'resp_1'), request())
+      .output.find((item) => item.type === 'tool_call');
+    expect(short?.callId).toContain('resp_1');
+  });
+
+  test('mints distinct ids when the upstream response id is empty', () => {
+    // An EMPTY id is an ABSENT one: keeping it would concatenate to the same
+    // `call__dsml_0_1` on every turn, and two turns of such a server would collide on one
+    // correlation id inside one replayed history. The stream leg already seeds a uuid, so
+    // the buffered leg must too.
+    const first = recoverToolMarkupInResponse(responseWith(REAL_LEAK, ''), request())
+      .output.filter((item) => item.type === 'tool_call');
+    const second = recoverToolMarkupInResponse(responseWith(REAL_LEAK, ''), request())
+      .output.filter((item) => item.type === 'tool_call');
+    expect(first.length).toBe(2);
+    expect(first[0]?.callId).not.toBe(second[0]?.callId);
+    for (const item of [...first, ...second]) {
+      expect(item.callId).toMatch(new RegExp(`^[A-Za-z0-9_-]{1,${RESPONSES_CALL_ID_MAX_LEN}}$`));
+      expect(responsesCallId(item.callId)).toBe(item.callId);
+    }
   });
 
   test('never recovers an inline-code example', () => {

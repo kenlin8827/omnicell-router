@@ -1,6 +1,7 @@
 import type { ContentPart, OutputItem, StreamEvent, Usage } from '../types.js';
 import { IrUpstreamError } from '../errors.js';
 import { anthropicUsageFromWire } from './anthropic-messages.js';
+import { upstreamToolCallId } from '../tool-identity.js';
 
 function record(value: unknown): Record<string, any> {
   return value && typeof value === 'object' ? value as Record<string, any> : {};
@@ -73,7 +74,11 @@ export class AnthropicMessagesStreamDecoder {
         );
         if (part.text) events.push({ type: 'response.output_text.delta', index: itemIndex, partIndex: 0, text: part.text });
       } else if (block.type === 'tool_use') {
-        const id = String(block.id ?? '');
+        // The streaming leg names an unnamed call exactly the way the buffered leg does
+        // (`anthropicResponseToIR`), so a call the client must answer always carries something
+        // to answer with on both legs. An empty id here would survive to the outbound gate and
+        // the client's tool result could not name the call it belongs to.
+        const id = upstreamToolCallId(typeof block.id === 'string' ? block.id : undefined);
         const item: OutputItem = { type: 'tool_call', id, callId: id, name: String(block.name ?? ''), arguments: '' };
         state = { wireIndex, itemIndex, item, kind: 'tool' };
         events.push({ type: 'response.output_item.added', index: itemIndex, item: { ...item, arguments: '' } });

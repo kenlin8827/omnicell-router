@@ -7,6 +7,7 @@ import type {
 } from '../../types/openai.js';
 import { IrUnsupportedError } from '../errors.js';
 import { DATA_URL_RE } from '../media.js';
+import { upstreamToolCallId } from '../tool-identity.js';
 import {
   assertCanonicalRequestSupported,
   assertCanonicalResponseSupported,
@@ -577,10 +578,13 @@ function choiceToCandidate(choice: ChatCompletionResponse['choices'][number]): C
     output.push({ type: 'message', role: 'assistant', content: [{ type: 'refusal', text: choice.message.refusal }] });
   }
   for (const call of choice.message.tool_calls ?? []) {
+    // A lenient OpenAI-compatible server can return `tool_calls[]` with NO id. Mint it HERE, in canonical
+    // state, so the session store, capture and every carrier see one name for one call.
+    const id = upstreamToolCallId(call.id);
     output.push({
       type: 'tool_call',
-      id: call.id,
-      callId: call.id,
+      id,
+      callId: id,
       name: call.function.name,
       arguments: call.function.arguments ?? '{}',
     });

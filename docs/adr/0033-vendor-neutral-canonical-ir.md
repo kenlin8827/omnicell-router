@@ -36,16 +36,52 @@ semantic model. The model must sit above all of them.
      item id that does not start with `fc_` / `ctc_` ("Expected an ID that begins
      with 'fc'", param `input[n].id`). The Responses adapters therefore derive the
      item id from the incoming tool-call id deterministically
-     (`responsesToolItemId`), keeping `call_id` untouched — the same history must
-     yield the same item id on every turn, or the replayed prompt prefix turns
-     over and the upstream prompt cache misses. The derivation is also injective:
-     a tool-call id that is not already safe in charset and length is hashed
-     (SHA-256, truncated to the same 48-char budget) instead of sanitized or
-     truncated, because the chat client owns that string and dropping characters
-     would merge two calls onto one item id. Item ids already carrying the
-     right prefix (a real Responses replay) pass through verbatim, and buffered
-     and streamed encoders share the derivation so an emitted item never changes
-     id between `output_item.added` and the terminal response;
+     (`responsesToolItemId`); `call_id` keeps the string it was given whenever it is
+     already inside its own field budget AND the shared id charset `[A-Za-z0-9_-]`
+     (the shape and the length are two rules, and a charset-only test would let a
+     120-character id through), and is otherwise replaced by a deterministic
+     `call_`-prefixed SHA-256 digest (`responsesCallId`, budget
+     `RESPONSES_CALL_ID_MAX_LEN`) because upstream Responses APIs field-validate that
+     string's length and answer 400 on an over-long one — a client id arriving from
+     another carrier (chat owns `tool_calls[].id`, and a plugin agent loop re-injects
+     the id a PREVIOUS upstream minted) is not ours to shape. Neither derivation may
+     sanitize or truncate the ORIGINAL: the same history must yield the same id on
+     every turn, or the replayed prompt prefix turns over and the upstream prompt
+     cache misses, and two ids that share a prefix must never merge onto one
+     correlation id. The projection exists on the OUTBOUND REQUEST LEG ONLY, on the
+     `call_id` field —
+     canonical state, the session store a `store: true` chain replays, and the recorded
+     canonical response
+     keep the original id (the archive of the UPSTREAM request records what was actually
+     sent, which is the rendered form), because a digest handed back to a client would meet the
+     original in the next turn's history, pair as an orphan, and let pairing repair
+     overwrite the client's real tool result with a synthetic "cancelled" placeholder.
+     Buffered and streamed encoders share both derivations so an emitted item never
+     changes id between `output_item.added` and the terminal response, and an item id that
+     already carries its item-type prefix passes through unchanged;
+     A tool call whose upstream supplied NO id (a lenient OpenAI-compatible server returns
+     `tool_calls[]` without one) is given ONE minted anchor that fills both its item id and
+     its `call_id`: never the digest of an empty string — that is a CONSTANT, so every
+     unlabelled call in one response collapsed onto a single item id a client cannot tell
+     apart — and never an empty `call_id`, which no reply can name and which the request-leg
+     budget then refuses when the client replays it. The mint's prefix follows the item
+     TYPE (`fc_` / `ctc_` for a tool call, `msg_` / `rs_` / `item_` for the rest), an
+     `extension` item's name is read from its own payload before anything is minted so the
+     buffered and streamed legs cannot disagree, and the extension passthrough is a COPY —
+     writing a minted name into the payload would stamp it into the recorded upstream item;
+     the anchor is minted in CANONICAL state by the reader, from ONE namespace shared by every
+     adapter (`ir/tool-identity.ts`), because canonical state is what the session store records,
+     what capture archives and what every carrier renders from — a name invented later, at
+     wire-render time, would leave the stored turn unnamed and the next turn of a `store: true`
+     chain would be refused by this gateway's own gate. A stream leg reads one item MORE THAN
+     ONCE (`output_item.added`, then `output_item.done`, and the accumulator lets the later frame
+     replace the earlier one), so an inbound stream decoder remembers the name it minted for that
+     output index; without that memo the anchor handed to the client mid-stream is not the anchor
+     its tool result pairs against. Minting lives on the RESPONSE plane only: the request plane
+     copies the name the client wrote, empty or not, because a harness resends its whole history
+     every turn and a name invented while reading it changes the outbound prefix bytes on each
+     resend — the same cache gate above. A correlation named by NOTHING is therefore refused at
+     the outbound gate (`tool_call_id`) rather than renamed;
    - reasoning text, summary parts, signatures and encrypted content are
      distinct fields — text is never relabelled as a summary;
    - generation, structured-output, reasoning, cache, stateful-request and

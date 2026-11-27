@@ -10,7 +10,7 @@
 
 解析顺序，精确（chat 路径 `orchestrator.ts:739-1085`；决策面镜像同一顺序 `surfaces/decision-pipeline.ts:54-137`）：
 
-1. trim 一次；`request.model` 原文上 wire（surface 契约——转发字节永不改写）。
+1. trim 一次；`request.model` 原文上 wire（surface 契约——转发请求的 **model 字符串**永不改写；已文档化的唯一字节改写是工具关联 id，有字段预算的载体做确定性投影，见 ADR-0033）。
 2. 裸梯队别名 `lite|plus|pro|ultra` → `force_tier`（Layer 0，ADR-0001）。这些 id 是 RESERVED——模型与 combo 都不得注册（`RESERVED_IDS`，`member-match.ts`）。历史备注：这些别名最初带前缀（`auto-lite`…`auto-ultra`）；同一次清理中去掉了前缀，并退役了裸 `default` 别名（它是 `auto` 的同义词）——不存在遗留兼容层：旧 id 直接解析失败。
 3. 精确已注册 id → 透明直通：钉扎该模型并强制其梯队（`:364-373`）。
 4. 变体兄弟 `base-variant` / `base#variant` → 路由到 BASE，钉扎变体的 `reasoningEffort`、压过客户端所发思考级别（`ModelVariant = {id, reasoningEffort}`；`:375-387`）。真实注册 id 永远赢过兄弟名；combo 赢过变体引用；`#` 无匹配变体 → **响亮 404，绝不静默转 auto**（`:388-398`）。

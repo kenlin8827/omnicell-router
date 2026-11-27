@@ -21,11 +21,26 @@ ADR-0008 曾把所有转换统一到 `ChatCompletionRequest`。那是务实的�
      没有 item id 的载体（Chat、Anthropic、Gemini）把 tool-call id 同时填进两个槽位，而 Responses wire
      拒绝不以 `fc_` / `ctc_` 开头的 `function_call` / `custom_tool_call` item id（“Expected an ID that
      begins with 'fc'”，参数 `input[n].id`）。因此 Responses 适配器由传入的 tool-call id 确定性派生 item id
-     （`responsesToolItemId`），`call_id` 保持原值——同一段历史每轮必须派生出同一个 item id，否则重放的
-     prompt 前缀会翻篇、上游 prompt cache 失效。派生同时保证单射：本身不符字符集或长度要求的 tool-call id
-     改用 SHA-256（截断到同样的 48 字符预算）而不是清洗或截尾，因为该字符串由 Chat 客户端掌控，丢字符会把
-     两个调用合并成同一个 item id。已带正确前缀的 item id（真正的 Responses 重放）原样透传，
+     （`responsesToolItemId`）；`call_id` 只要落在自身字段预算内**且**在共用字符集 `[A-Za-z0-9_-]` 内就保持原值（字符集与长度是两条规则，只测字符集会放过 120 字符的 id），否则换成确定性的 `call_` 前缀 SHA-256 摘要
+     （`responsesCallId`，预算 `RESPONSES_CALL_ID_MAX_LEN`）——上游 Responses 接口字段校验该串长度，超长直接 400，而带进来的
+     id 不由我们塑造（chat 拥有 `tool_calls[].id`，插件 agent 循环会把上一个上游铸造的 id 重新注入）。两张映射都不许清洗或截尾
+     **原文**：同一段历史每轮必须派生出同一个 id，否则重放的 prompt 前缀翻篇、上游 prompt cache 失效；共享前缀的两个 id
+     也绝不能合并成同一个关联 id。投影**只作用在出站请求侧的 `call_id` 字段**——canonical 状态、`store: true` 链路重放的会话存档、记录下来的 canonical 响应
+     都保留原 id（**上游请求**的归档记录的是真正发出的字节，即渲染后的形态），因为把摘要交回客户端会在下一轮历史里与原值互不相认、被判为孤儿，随后配对修复会用合成的“cancelled”占位
+     覆盖客户端真正的工具结果。已带正确前缀的 item id（真正的 Responses 重放）原样透传，
      缓冲编码器与流式编码器共用同一派生逻辑，因此同一 item 在 `output_item.added` 与终态响应之间不会换 id；
+     上游**没给 id** 的 tool call（宽松的 OpenAI 兼容服务器返回不带 `id` 的 `tool_calls[]`）只取
+     **一个**铸造锚点，同时填进 item id 与 `call_id`：绝不用空串的摘要——那是个常量，会让同一响应里
+     所有无 id 调用并成一个客户端无法区分的 item id——也绝不留空 `call_id`，那是任何回复都无法指名的串，
+     客户端拿它重放时还会被出站预算拒掉。铸造前缀按 item **类型**取（tool call 用 `fc_` / `ctc_`，其余用 `msg_` / `rs_` / `item_`）；
+     `extension` 条目的名字先读它**自己的 payload**，再决定要不要铸造，否则缓冲腿与流式腿会给出两个名字；透传也是**复制**——
+     把铸造出的名字写回 payload，就等于写进了记录下来的上游 item；
+     锚点由**读侧**铸进 **canonical 状态**，且所有适配器共用**同一个命名空间**（`ir/tool-identity.ts`）——canonical 状态正是会话存档记录、
+     捕获归档、以及每个载体渲染所依据的那一层；若在渲染时才造名，存档里那一轮就没有名字，`store: true` 的下一轮会被本网关自己的闸门拒绝。
+     入站流式解码器对同一条目会**读不止一次**（`output_item.added`，再 `output_item.done`，且累加器让后一帧替换前一帧），所以它必须记住为该
+     output index 造过的名字；没有这份记忆，流中交给客户端的锚点就不是工具结果所配对的那个。命名只发生在**响应**平面：请求平面照抄客户端写下的
+     名字（空也照抄），因为 harness 每轮重发整段历史，读请求体时造名会让出站前缀每次重发都变字节。因此对**什么都没命名**的配对，结论是在出站闸门
+     拒绝（`tool_call_id`），而不是改名；
    - 推理正文、摘要 part、签名与加密内容是不同字段——正文绝不改标为摘要；
    - generation、结构化输出、推理、缓存、有状态请求与归因控制都有显式规范字段；
    - usage 保留缓存输入、缓存写入、推理、音频与预测 token 明细；

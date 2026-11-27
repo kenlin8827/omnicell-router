@@ -291,6 +291,42 @@ export const DEFAULT_HEADROOM_TIMEOUT_MS = 3000;
 export const DEFAULT_MAX_BODY_BYTES = 16_777_216;
 
 /**
+ * Field budget for the outbound OpenAI Responses `call_id` (`ir/adapters/openai-responses.ts`
+ * `responsesCallId`). The value arriving here is NOT ours: a chat client owns
+ * `tool_calls[].id`, and the cursor-gateway plugin's agent loop re-injects the id the
+ * PREVIOUS upstream minted (its `tc.id`; plugins are a gitignored tree outside this
+ * source, so it is a name to grep in `plugins/`, not a tracked path), so a cascade that
+ * starts on a verbose provider and lands on a
+ * Responses-compatible one replays an id the new upstream never issued. Such
+ * upstreams field-validate this string and answer 400 — a breach is silent to
+ * the client (it sees an opaque failure of its own agent loop) and unfixable
+ * from the client side, because nothing about the payload is wrong.
+ *
+ * 64 is the strictest bound of that family we have evidence for. An id already inside
+ * it AND inside the shared charset `[A-Za-z0-9_-]` leaves byte-identical (see the
+ * projection invariant on
+ * `responsesCallId`); an id outside either is replaced by a `sha256` digest that fits —
+ * `call_` + 59 hex, so 236 bits and the shape consumers key on survives. Truncating
+ * the ORIGINAL is deliberately not the fallback: ids sharing a prefix would merge
+ * two tool results onto one call with no error on any leg. That is also why this
+ * number is a hard bound rather than something to raise: it is the strictest
+ * outbound Responses shape OCR has evidence for, not an inconvenience to widen.
+ */
+export const RESPONSES_CALL_ID_MAX_LEN = 64;
+
+/**
+ * Field budget for a Responses ITEM id body — the `fc_` / `ctc_` prefix is added
+ * in front of at most this many characters, so a digested item id is 48 hex + 3 = 51
+ * in total (see `responsesToolItemId`). Declared
+ * beside {@link RESPONSES_CALL_ID_MAX_LEN} because the two limits differ and one
+ * adapter reads both: a correlation id may sit at the full 64, while an item id
+ * must leave room for its item-type prefix. Where an id does not fit, the DIGEST
+ * is what gets shortened (48 hex chars = 192 bits, no realistic collision) — never
+ * the original string, which would merge two ids sharing a prefix.
+ */
+export const RESPONSES_TOOL_ITEM_ID_MAX_LEN = 48;
+
+/**
  * Request-body admission cap for inference traffic, ONE value for BOTH legs:
  * the native Fastify routes (route `bodyLimit`) and the MITM/node-http leg
  * (`surfaces/transport-node-http.ts` reads it, `forward-proxy/h2-forward.ts`
