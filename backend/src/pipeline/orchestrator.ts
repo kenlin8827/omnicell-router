@@ -54,6 +54,7 @@ interface ForcedPassRecord {
 }
 import { recordRateLimitEvent, type RateLimitNoteCode } from '../ratelimit/event-log.js';
 import { NO_TURN, type TurnIdentity } from '../capture/turn-boundary.js';
+import { CLIENT_HINT_HEADER } from '../utils/client-families.js';
 
 /**
  * One inbound request's identity plus its WRITE-TIME turn boundary. `turn` is
@@ -367,9 +368,16 @@ function envelopeHintsOf(
   };
 }
 
+/**
+ * Non-sensitive client-identification subset of the inbound headers. The
+ * self-declared `x-ocr-client` hint is read because a browser webview strips
+ * a script-set `User-Agent` on `fetch` — the hint is what identifies the
+ * console playground (see `utils/client-families.ts`). Display-only: the
+ * family it produces is never an identity or routing input (ADR-0002).
+ */
 function extractClientHeaders(
   headers?: Record<string, string | string[] | undefined>
-): { userAgent?: string; acceptLanguage?: string; clientRequestId?: string } | undefined {
+): { userAgent?: string; acceptLanguage?: string; clientRequestId?: string; clientHint?: string } | undefined {
   if (!headers) return undefined;
   const pick = (key: string): string | undefined => {
     const v = headers[key] ?? headers[key.toLowerCase()];
@@ -380,11 +388,13 @@ function extractClientHeaders(
   const ua = pick('user-agent');
   const al = pick('accept-language');
   const rid = resolveClientRequestId({ headers }).clientRequestId;
-  if (ua === undefined && al === undefined && rid === undefined) return undefined;
+  const hint = pick(CLIENT_HINT_HEADER);
+  if (ua === undefined && al === undefined && rid === undefined && hint === undefined) return undefined;
   return {
     ...(ua !== undefined ? { userAgent: ua } : {}),
     ...(al !== undefined ? { acceptLanguage: al } : {}),
     ...(rid !== undefined ? { clientRequestId: rid } : {}),
+    ...(hint !== undefined ? { clientHint: hint } : {}),
   };
 }
 

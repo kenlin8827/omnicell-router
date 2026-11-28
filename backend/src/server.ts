@@ -30,6 +30,7 @@ import {
 } from './surfaces/body-admission.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { applyInboundLiveness } from './utils/server-liveness.js';
+import { clientFamiliesOf, type ClientFingerprint } from './utils/client-families.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
 import { purgeResponseChainForSession } from './surfaces/responses.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
@@ -92,6 +93,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
   );
   const keyList = distinctTraceKeys(traces);
   const uaList = distinctTraceUserAgents(traces);
+  const famList = clientFamiliesOf(distinctTraceClientFingerprints(traces));
   const refList = distinctTraceClientRefs(traces);
   return {
     id,
@@ -119,6 +121,9 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
     apiKeys: keyList.length ? keyList : undefined,
     // DISTINCT client User-Agent strings (write order) — console display only.
     clients: uaList.length ? uaList : undefined,
+    // DISTINCT client families derived from those UAs (write order) — the
+    // console filter axis (display only, never identity).
+    ...(famList.length ? { clientFamilies: famList } : {}),
     // DISTINCT client-minted conversation ids (write order) — the alias half
     // of the gateway-id ↔ client-id mapping (ADR-0002 §1).
     clientRefs: refList.length ? refList : undefined,
@@ -170,6 +175,28 @@ function distinctTraceUserAgents(traces: ExecutionTrace[]): string[] {
       seen.add(ua);
       list.push(ua);
     }
+  }
+  return list;
+}
+
+/**
+ * Distinct client fingerprints across a session's traces (write order, first
+ * element = display anchor), pairing each request's self-declared
+ * `x-ocr-client` hint with the UA that request carried so family
+ * classification can prefer the hint PER REQUEST (a browser strips a
+ * script-set UA, but another caller on the same session may not declare one).
+ */
+function distinctTraceClientFingerprints(traces: ExecutionTrace[]): ClientFingerprint[] {
+  const seen = new Set<string>();
+  const list: ClientFingerprint[] = [];
+  for (const t of traces) {
+    const hint = t.request.clientHeaders?.clientHint;
+    const userAgent = t.request.clientHeaders?.userAgent;
+    if (!hint && !userAgent) continue;
+    const key = `${hint ?? ''}\u0000${userAgent ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push({ ...(hint ? { hint } : {}), ...(userAgent ? { userAgent } : {}) });
   }
   return list;
 }
@@ -1380,6 +1407,8 @@ export function createServer(
       offset?: string;
       q?: string;
       apiKey?: string;
+      client?: string;
+      tier?: string;
       hideInternal?: string;
       hideOneShot?: string;
     };
@@ -1394,6 +1423,14 @@ export function createServer(
     // Per-application selector (same semantics as the capture sessions route):
     // exact client API-key id OR case-insensitive name substring.
     const ak = firstStr(query.apiKey).trim();
+    // Client-family selector: membership in the session's distinct family set
+    // (machine ids from utils/client-families.ts). The UA that produced the
+    // family is forgeable and display-only, so filtering happens on the derived
+    // family, never on a raw UA string.
+    const client = firstStr(query.client).trim().toLowerCase();
+    // Tier selector: exact `maxTier` (lite|plus|pro|ultra) — the session's
+    // ratchet ceiling, identical on live and reconstructed rows.
+    const tier = firstStr(query.tier).trim().toLowerCase();
     // Internal (gateway-loopback) rows: hidden unless the caller asks for
     // them. Filtered BEFORE pagination so `total` stays truthful.
     const hideInternal = firstStr(query.hideInternal) !== '0';
@@ -1419,6 +1456,7 @@ export function createServer(
       const sessTraces = traceTracker.getTracesBySession(s.id);
       const keyList = distinctTraceKeys(sessTraces);
       const uaList = distinctTraceUserAgents(sessTraces);
+      const famList = clientFamiliesOf(distinctTraceClientFingerprints(sessTraces));
       const refList = distinctTraceClientRefs(sessTraces);
       const row: SessionRow = {
         // Whitelisted entity projection (session-row.ts): the entity's
@@ -1441,6 +1479,9 @@ export function createServer(
         apiKeys: keyList.length ? keyList : undefined,
         // Client User-Agents (write order) — console display only (forgeable).
         clients: uaList.length ? uaList : undefined,
+        // Client families derived from those UAs (write order) — console
+        // filter axis; same derivation as reconstructed rows.
+        ...(famList.length ? { clientFamilies: famList } : {}),
         // Client-minted conversation ids (write order) — the alias half of the
         // gateway-id ↔ client-id mapping, derived from traces exactly like the
         // reconstructed rows so both shapes show the same pair.
@@ -1468,9 +1509,12 @@ export function createServer(
     // Most recently active first — stable ordering for pagination. `q`
     // filters (case-insensitive substring) across session id, current model AND
     // its provider (both are rendered in that column), first user message,
-    // every app name and every client-minted conversation id (the alias half
-    // of the ADR-0002 §1 pair), applied BEFORE pagination.
-    // `apiKey` (ak) selects by membership in the session's distinct key set.
+    // every app name, every client FAMILY (id and label — never the raw UA,
+    // which is forgeable) and every client-minted conversation id (the alias
+    // half of the ADR-0002 §1 pair), applied BEFORE pagination.
+    // `apiKey` (ak) selects by membership in the session's distinct key set;
+    // `client` selects by membership in its distinct client-family set;
+    // `tier` selects the exact maxTier value.
     const all = [...live, ...reconstructed]
       .filter(s => {
         if (hideInternal && (s as { internal?: boolean }).internal) return false;
@@ -1480,6 +1524,11 @@ export function createServer(
         if (hideOneShot && s.traceCount <= 1) return false;
         const keys = s.apiKeys ?? [];
         if (ak && !keys.some(k => k.id === ak || k.name.toLowerCase().includes(ak.toLowerCase()))) return false;
+        // Client-family membership, applied BEFORE pagination so `total` stays
+        // truthful. An empty selector means "every client".
+        if (client && !(s.clientFamilies ?? []).some(f => f.id.toLowerCase() === client)) return false;
+        // Exact tier selector, also applied BEFORE pagination.
+        if (tier && String(s.maxTier ?? '').toLowerCase() !== tier) return false;
         return (
           !q ||
           s.id.toLowerCase().includes(q) ||
@@ -1493,6 +1542,9 @@ export function createServer(
             .toLowerCase()
             .includes(q) ||
           keys.some(k => k.name.toLowerCase().includes(q)) ||
+          (s.clientFamilies ?? []).some(
+            f => f.id.toLowerCase().includes(q) || f.label.toLowerCase().includes(q)
+          ) ||
           (s.clientRefs ?? []).some(r => r.id.toLowerCase().includes(q) || r.kind.toLowerCase().includes(q))
         );
       })

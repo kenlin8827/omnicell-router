@@ -95,6 +95,23 @@ const HDR = {
  *  chat-model conversion). Absent on every other surface. */
 const HDR_SYSTEMONE_UPSTREAM = 'X-OCR-Systemone-Upstream';
 
+/** Self-declared client id header (backend/src/utils/client-families.ts
+ *  `CLIENT_HINT_HEADER`). Carries the same value as the outbound UA. */
+const HDR_CLIENT_HINT = 'X-Ocr-Client';
+
+/** Self-declared client id on every gateway call this page makes.
+ *
+ *  Sent BOTH as `User-Agent` and as the `X-Ocr-Client` hint, because a browser
+ *  webview SILENTLY DROPS a script-set `User-Agent` on `fetch` (the browser
+ *  sends its own, which the console classifies as `unknown` / `Mozilla/5.0`) —
+ *  verified empirically. The custom header survives, and the backend prefers
+ *  it over the UA for family classification. The `<product>/<version>` shape is
+ *  what `clientFamilyOf` matches in both channels, and the copied cURL samples
+ *  carry the same value so a pasted sample reproduces the request that was
+ *  actually sent. Display-only, exactly like every other UA (ADR-0002): never
+ *  an identity or routing input. */
+const PG_CLIENT_ID = `OmniCellRouter-Playground/${__APP_VERSION__}`;
+
 /** The presets live in the i18n dictionary — clone before they enter editable
  *  state so a form edit can never mutate the active language's table. */
 const cloneDrafts = (drafts: QuestionDraft[]): QuestionDraft[] =>
@@ -2215,7 +2232,11 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     const load = async () => {
       try {
         const res = await fetch('/v1/models', {
-          headers: activeKey ? { Authorization: `Bearer ${activeKey}` } : undefined,
+          headers: {
+            'User-Agent': PG_CLIENT_ID,
+            [HDR_CLIENT_HINT]: PG_CLIENT_ID,
+            ...(activeKey ? { Authorization: `Bearer ${activeKey}` } : {}),
+          },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as { data?: { id: string; owned_by?: string }[] };
@@ -2352,7 +2373,12 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     try {
       const res = await fetch(proto.path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}` },
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': PG_CLIENT_ID,
+          [HDR_CLIENT_HINT]: PG_CLIENT_ID,
+          Authorization: `Bearer ${activeKey}`,
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -2534,7 +2560,13 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     try {
       const res = await fetch(wire.path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}`, 'x-session-id': playgroundSessionId },
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': PG_CLIENT_ID,
+          [HDR_CLIENT_HINT]: PG_CLIENT_ID,
+          Authorization: `Bearer ${activeKey}`,
+          'x-session-id': playgroundSessionId,
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -2851,6 +2883,8 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     const body = JSON.stringify(elideDataUrls(buildRequestBody(messages, systemPrompt.trim()))).replace(/'/g, "'\\''");
     const curl = `curl -sS ${window.location.origin}${wire.path} \\
   -H "Content-Type: application/json" \\
+  -H "User-Agent: ${PG_CLIENT_ID}" \\
+  -H "${HDR_CLIENT_HINT}: ${PG_CLIENT_ID}" \\
   -H "Authorization: Bearer ${activeKey ? escapeDoubleQuoted(activeKey) : '<API_KEY>'}" \\
   -H "x-session-id: ${playgroundSessionId}" \\
   -d '${body}'`;
@@ -2937,6 +2971,8 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     const body = JSON.stringify(built.body).replace(/'/g, "'\\''");
     const curl = `curl -sS ${window.location.origin}/v1/systemone \\
   -H "Content-Type: application/json" \\
+  -H "User-Agent: ${PG_CLIENT_ID}" \\
+  -H "${HDR_CLIENT_HINT}: ${PG_CLIENT_ID}" \\
   -H "Authorization: Bearer ${activeKey ? escapeDoubleQuoted(activeKey) : '<API_KEY>'}" \\
   -H "x-session-id: ${playgroundSessionId}" \\
   -d '${body}'`;
@@ -2965,7 +3001,13 @@ export const PlaygroundPage: React.FC<{ active?: boolean }> = ({ active = true }
     try {
       const res = await fetch('/v1/systemone', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${activeKey}`, 'x-session-id': playgroundSessionId },
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': PG_CLIENT_ID,
+          [HDR_CLIENT_HINT]: PG_CLIENT_ID,
+          Authorization: `Bearer ${activeKey}`,
+          'x-session-id': playgroundSessionId,
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });

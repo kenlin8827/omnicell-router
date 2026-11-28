@@ -5,7 +5,6 @@ import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { formatCost, formatCostCompact, formatSessionId, decodeRate, formatSpeed, fmtDur, fmtLatency, lastActiveParts } from '../lib/format';
 import { copyToClipboard } from '../lib/clipboard';
-import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -917,6 +916,18 @@ export const SessionsPage: React.FC = () => {
   // from the URL so /usage row clicks arrive pre-filtered.
   const [apiKeyFilter, setApiKeyFilter] = useState(searchParams.get('apiKey') || '');
   const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
+  // Per-client selector (server-side ?client=, filtered on the derived client
+  // FAMILY id, never the raw User-Agent — the UA is a forgeable fingerprint,
+  // the family is the display/filter key). Initialized from the URL so a
+  // cross-page jump can arrive pre-filtered.
+  const [clientFilter, setClientFilter] = useState(searchParams.get('client') || '');
+  // Family options are ACCUMULATED from every page load and never pruned:
+  // while a filter is active only its families come back, so rebuilding the
+  // list from the current page alone would collapse the dropdown to one entry.
+  const [clientOptions, setClientOptions] = useState<{ id: string; label: string }[]>([]);
+  // Exact-value selector (server-side ?tier=), URL seeded so a cross-page jump
+  // can arrive pre-filtered.
+  const [tierFilter, setTierFilter] = useState(searchParams.get('tier') || '');
   // Gateway-internal rows (console translation/probe loopback calls, reserved
   // `ocr-internal:` session ids) — server-side filter, ON by default. Disabled
   // when arriving with a `?q=` deep link (the playground's session chip) so the
@@ -959,22 +970,33 @@ export const SessionsPage: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getSessions(
-        pageSize,
-        (page - 1) * pageSize,
-        filter || undefined,
-        apiKeyFilter || undefined,
+      const res = await api.getSessions({
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+        q: filter || undefined,
+        apiKey: apiKeyFilter || undefined,
+        client: clientFilter || undefined,
+        tier: tierFilter || undefined,
         hideInternal,
-        hideOneShot
-      );
+        hideOneShot,
+      });
       setSessions(res.sessions);
       setTotal(res.total);
+      setClientOptions(prev => {
+        const byId = new Map(prev.map(o => [o.id, o]));
+        for (const s of res.sessions) {
+          for (const f of s.clientFamilies ?? []) {
+            if (!byId.has(f.id)) byId.set(f.id, f);
+          }
+        }
+        return byId.size === prev.length ? prev : [...byId.values()];
+      });
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, filter, apiKeyFilter, hideInternal, hideOneShot]);
+  }, [page, pageSize, filter, apiKeyFilter, clientFilter, tierFilter, hideInternal, hideOneShot]);
 
   useEffect(() => {
     loadData();
@@ -1340,6 +1362,36 @@ export const SessionsPage: React.FC = () => {
             ]}
             style={{ fontSize: 'var(--text-sm)', padding: '5px 8px', width: 180 }}
           />
+          <Combobox
+            value={clientFilter}
+            onChange={v => {
+              setClientFilter(v);
+              setPage(1);
+            }}
+            options={[
+              { value: '', label: t('sessions.clientAll') },
+              ...clientOptions.map(o => ({
+                value: o.id,
+                label: o.id === 'unknown' ? t('sessions.clientOther') : o.label,
+              })),
+            ]}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 8px', width: 180 }}
+          />
+          <Combobox
+            value={tierFilter}
+            onChange={v => {
+              setTierFilter(v);
+              setPage(1);
+            }}
+            options={[
+              { value: '', label: t('sessions.tierAll') },
+              ...(Object.keys(TIER_LABEL) as SessionRecord['maxTier'][]).map(tier => ({
+                value: tier,
+                label: t(TIER_LABEL[tier]),
+              })),
+            ]}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 8px', width: 130 }}
+          />
           <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 180, maxWidth: 420 }}>
             <Search
               size={12}
@@ -1655,7 +1707,8 @@ export const SessionsPage: React.FC = () => {
                       textAlign: 'center',
                     }}
                   >
-                    {(s.apiKeys && s.apiKeys.length > 0) || (s.clients && s.clients.length > 0) ? (
+                    {(s.apiKeys && s.apiKeys.length > 0) ||
+                    (s.clientFamilies && s.clientFamilies.length > 0) ? (
                       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px' }}>
                         {s.apiKeys?.map(k => (
                           <span
@@ -1680,10 +1733,10 @@ export const SessionsPage: React.FC = () => {
                             {k.name}
                           </span>
                         ))}
-                        {s.clients?.map(ua => (
+                        {s.clientFamilies?.map(f => (
                           <span
-                            key={ua}
-                            title={t('sessions.clientTip', { ua })}
+                            key={f.id}
+                            title={t('sessions.clientTip', { id: f.fingerprints.join(' · ') })}
                             style={{
                               fontSize: 'var(--text-2xs)',
                               lineHeight: 'var(--leading-14)',
@@ -1698,7 +1751,7 @@ export const SessionsPage: React.FC = () => {
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {clientDisplayName(ua)}
+                            {f.id === 'unknown' ? t('sessions.clientOther') : f.label}
                           </span>
                         ))}
                       </div>

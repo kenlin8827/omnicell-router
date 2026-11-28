@@ -1430,6 +1430,13 @@ export interface SessionRecord {
    *  write order (display-only fingerprint; forgeable, never identity). */
   clients?: string[];
   /**
+   * Distinct client FAMILIES derived from `clients` (write order), the axis
+   * the sessions filter uses. `id` is the backend machine key (`opencode`,
+   * `claude-code`, `pi`, `unknown`, …), `label` the English fallback; the
+   * console localizes known ids and shows the raw label otherwise.
+   */
+  clientFamilies?: { id: string; label: string; fingerprints: string[] }[];
+  /**
    * Client-minted conversation ids seen on this session's turns, write order
    * (first = display anchor). The `id` field above remains the GATEWAY session
    * id; this is the other side of the mapping (ADR-0002 §1), rendered beside it
@@ -3860,18 +3867,25 @@ export const api = {
   },
 
   async getSessions(
-    limit?: number,
-    offset = 0,
-    q?: string,
-    apiKey?: string,
-    hideInternal = true,
-    hideOneShot = false
+    options: {
+      limit?: number;
+      offset?: number;
+      q?: string;
+      apiKey?: string;
+      client?: string;
+      tier?: string;
+      hideInternal?: boolean;
+      hideOneShot?: boolean;
+    } = {}
   ): Promise<{ sessions: SessionRecord[]; total: number }> {
+    const { limit, offset = 0, q, apiKey, client, tier, hideInternal = true, hideOneShot = false } = options;
     const qs = new URLSearchParams();
     if (limit !== undefined) qs.set('limit', String(limit));
     qs.set('offset', String(offset));
     if (q) qs.set('q', q);
     if (apiKey) qs.set('apiKey', apiKey);
+    if (client) qs.set('client', client);
+    if (tier) qs.set('tier', tier);
     // Backend default hides internal rows; send '0' explicitly to include them.
     qs.set('hideInternal', hideInternal ? '1' : '0');
     // Single-request (client helper) rows: the BACKEND default shows them and

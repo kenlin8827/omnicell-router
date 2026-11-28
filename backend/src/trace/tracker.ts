@@ -103,6 +103,14 @@ export interface ExecutionTrace {
       userAgent?: string;
       acceptLanguage?: string;
       clientRequestId?: string;
+      /**
+       * Self-declared client id from `x-ocr-client`, e.g.
+       * `OmniCellRouter-Playground/0.8.5`. PREFERRED over `userAgent` when the
+       * console classifies this trace's client family, because a browser
+       * webview strips a script-set `User-Agent` on `fetch` (it sends its own
+       * instead). Display-only, never an identity or routing input (ADR-0002).
+       */
+      clientHint?: string;
     };
     /**
      * Client-minted conversation id this turn carried (Cursor's agent-wire

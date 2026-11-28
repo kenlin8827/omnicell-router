@@ -18,6 +18,7 @@ import type { CallCredential } from '../opencode/credentials/types.js';
 import type { ClientConversationRef, ConversationSession } from './session-manager.js';
 import type { ExecutionTrace, TraceTracker } from '../trace/tracker.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
+import type { SessionClientFamily } from '../utils/client-families.js';
 
 /**
  * How the client addressed a session's turns, derived from persisted traces
@@ -225,6 +226,13 @@ export interface SessionRow extends SessionEntityView, SessionAggregates {
   apiKeys?: CaptureKeyIdentity[];
   /** Distinct client User-Agents, write order (console display only). */
   clients?: string[];
+  /**
+   * Distinct client FAMILIES derived from `clients` (write order), the axis the
+   * console filters on. Ids are machine keys (`opencode`, `claude-code`, `pi`,
+   * `unknown`, …) from the canonical classifier in utils/client-families.ts;
+   * labels are English fallbacks. Display/filter only — never identity.
+   */
+  clientFamilies?: SessionClientFamily[];
   /**
    * Client-minted conversation ids seen on this session's turns (write order,
    * first = display anchor), derived from the traces' `request.clientRef`. The

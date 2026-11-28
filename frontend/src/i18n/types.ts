@@ -1435,6 +1435,8 @@ hiddenBadge: string;
     tierNameUltra: string;
     entryModeCombo: string;
     entryModeComboHint: string;
+    /** Sessions filter: tier dropdown "all" entry + exact tier selector. */
+    tierAll: string;
     thSwitches: string;
     thTurns: string;
     /** Tooltip: turns = distinct user prompts; tool-loop requests excluded */
@@ -1455,6 +1457,10 @@ hiddenBadge: string;
     switchPrefixLegend: string;
     filterPlaceholder: string;
     apiKeyAll: string;
+    /** Client-family selector: the "all clients" entry. */
+    clientAll: string;
+    /** Client-family selector: the fallback family for unrecognized User-Agents. */
+    clientOther: string;
     hideInternal: string;
     hideInternalTip: string;
     /** Toggle: hide sessions that carry a single request (client helper calls). */
