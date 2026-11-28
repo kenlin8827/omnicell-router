@@ -1352,6 +1352,12 @@ fn boot(app: &tauri::App) -> Result<(), String> {
         .decorations(false)
         .inner_size(default_w, default_h)
         .visible(!autostart_launch)
+        // Tauri's internal drag-drop handler REPLACES WebView2's on Windows, so
+        // HTML5 DnD (draggable + dragstart/dragover/drop) never fires there —
+        // combo reordering and Playground image drops died on the desktop build
+        // while working in a browser. The frontend consumes only HTML5 DnD (no
+        // DragDropEvent listeners), so handing the handler back to WebView2 is safe.
+        .disable_drag_drop_handler()
         .on_download(move |_webview, event| {
             match event {
                 tauri::webview::DownloadEvent::Requested { url, destination } => {
