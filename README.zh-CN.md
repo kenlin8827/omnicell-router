@@ -247,7 +247,7 @@ main();
 | **`auto-plus`** | 强制主力梯队 | 强制路由至 `plus` 标准主力池（~$2.00 ~ $3.00 / M tokens），默认通用工程代码主力基准线。 |
 | **`auto-pro`** | 强制专家梯队 | 强制路由至 `pro` 深度推理专家池（~$3.00 ~ $8.00 / M tokens），解决数学推演、长上下文架构重构。 |
 | **`auto-ultra`** | 强制前沿梯队 | 强制路由至 `ultra` 前沿顶尖池（≥ $8.00 / M tokens），支撑多文件全自主智能体长循环。 |
-| *Custom Combos* | 自定义组合池 | 依照设定策略（`priority`, `weighted`, `round_robin`）在组合成员内分发，成员故障严格在池内故障转移。 |
+| *Custom Combos* | 自定义组合池 | 依照设定策略（`priority` = 配置序链首, `weighted_round_robin` = 平滑加权轮转, `round_robin` = 等权轮转且忽略权重）在组合成员内分发，成员故障严格在池内故障转移。 |
 | *物理模型* | 直连穿透调用 | 任意已注册物理模型名（如 `deepseek-chat`, `kimi-k2.7-code`），绕过梯队仲裁直接透传上游。 |
 
 ---

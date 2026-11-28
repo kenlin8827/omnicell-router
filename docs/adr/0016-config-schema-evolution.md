@@ -41,8 +41,14 @@ Schema v4 renames the console form-memory value
 `routing.profileMemory.*.modelMode: none` to `default` (the tab always
 rendered as "Default" — no concrete models are added, the adapter's
 virtual-entry block applies); no section moved either, so `SECTION_MOVES_V4`
-is the v3 table verbatim and the current layout is `SECTION_MOVES_V4` in
-`migrations/v3-to-v4.ts`.
+is the v3 table verbatim. Schema v5 (ADR-0008) materializes
+`client.bodyLimits` without moving anything; schema v6 adds
+`client.autoResyncFollowCatalogs`, likewise. Schema v7 (ADR-0003) folds the
+old weighted selection VALUES into `weighted_round_robin` (the weighted RANDOM
+draw and the bursty weighted-slot `round_robin` are both retired for smooth
+weighted round-robin; the new equal-turn `round_robin` is an explicit choice)
+and moves nothing. The current layout is therefore `SECTION_MOVES_V7` in
+`migrations/v6-to-v7.ts`.
 
 The runtime `RouterConfig` object is UNCHANGED and stays flat: consumers
 keep reading `config.tiers`, `config.retry`, `config.fallback`. Grouping

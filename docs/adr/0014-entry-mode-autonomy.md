@@ -36,6 +36,8 @@ corrected matrix as a contract.
 - **Schema-assertion lite-lead cascade** — 5A/5B: lite first, assert, escalate to
   `fallback.escalateTier` on failure. Arms only for the auto family; both directions are tier
   moves (lite-lead serves BELOW a forced plus; the escalation leg serves ABOVE a forced lite).
+  Cascade eligibility skips the pre-execution auto draw, so each served leg draws exactly
+  once, never for a model the request discards. A session pin does not suppress the cascade.
 - **Cross-tier pool escalation tail** — `executeCandidatePool({ allowEscalate })` appends plus
   candidates behind an exhausted lite chain. Arms only for the auto family
   (`!explicitModel ∧ !force_tier ∧ tierCrossPolicy='allow_escalate' ∧ tier='lite'`).
@@ -83,3 +85,6 @@ corrected matrix as a contract.
   forced tier (KV affinity), repairs zombie ids to the forced tier's healthy head, and keeps
   the empty-tier degrade landing; a pin living in another tier is neither followed nor
   rewritten (`pin-eviction.test.ts` cross-tier-move assertion updated accordingly).
+- 2026-11-28: a cascade-eligible turn now SKIPS the pre-execution auto draw — previously the
+  placeholder pick advanced the rotation cursor for a model the cascade then discarded, so a
+  `round_robin` pool served every second draw (`cascade-single-draw.test.ts`).

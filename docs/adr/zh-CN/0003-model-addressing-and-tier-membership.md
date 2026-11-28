@@ -24,12 +24,20 @@
 
 `tiers.<tier>.members` 决定候选池（`config/types.ts:261-265`）。确定性胜过零维护：策展池、无隐藏启发式；新模型**不**自动入池是特性不是缺陷。已经不存在任何分类器：曾用于预标注模型的价格档/名称通配/能力标志分类器已删除（它早已不再参与路由，其 `tierMatch` 输出也没有任何读者——见下方 home tier 条目）。
 
-- `TierMemberRule = {pattern, weight?≥1, effortMap?}`；pattern 语义：`*`/`?` 大小写不敏感 glob，**无通配符 = 子串匹配**，全量 id = 精确钉（`utils/glob.ts:7-16`）。
-- **成员资格是按梯队的投影**（`claimInTier`，`member-match.ts`）：梯队 T 列表里的每条规则各自独立认领它匹配到的东西，因此一个模型——或 combo 展开后的成员——**可以**同时加入多个梯队（规则重叠按契约合法，保存时**不**告警）。每个梯队的链序（= 该梯队的规则序号）、权重与内联 `effortMap` 都来自**该梯队自己**的认领规则，所以同一个模型在不同池里可以有不同的排名——以及不同的 effort 翻译。`matchingTiers` 返回完整成员集合（目录的 `tiers` 数组、按梯队展开的 model-access 检查）。
+- `TierMemberRule = {pattern, weight?≥1, effortMap?}`；pattern 语义：`*`/`?` 大小写不敏感 glob，**无通配符 = 子串匹配**，全量 id = 精确钉。这个钉由**投影**施加（`markExactFullIds`，`providers/member-match.ts`）：pattern 命中**已注册**模型 id 的规则在每个提交/预览/boot 读取点都被标记 `exact: true`，因此 `deepseek/v4-flash` 绝不会以子串方式认领更长的兄弟 `deepseek/v4-flash-vision-exp`。部分 pattern（`deepseek/v4`、`flash`）与未注册 id 保持子串语义——未注册且无通配符的 pattern 若是一个已注册 id 的子串，仍会认领它；只有什么都匹配不到时才作为孤立项上报。磁盘配置本身从不被重写。
+- **成员资格是按梯队的投影**（`claimInTier`，`member-match.ts`）：梯队 T 列表里的每条规则各自独立认领它匹配到的东西，因此一个模型——或 combo 展开后的成员——**可以**同时加入多个梯队（规则重叠按契约合法，保存时**不**告警）。每个梯队的链序（权重降序、再该梯队的规则序号）、权重与内联 `effortMap` 都来自**该梯队自己**的认领规则，所以同一个模型在不同池里可以有不同的排名——以及不同的 effort 翻译。`matchingTiers` 返回完整成员集合（目录的 `tiers` 数组、按梯队展开的 model-access 检查）。
 - 注册表只保留**一份**已提交成员视图（`committedMembers`，由 `reclassifyTiers` 设置——唯一的提交点；从 boot 配置初始化）：每次运行时池读取（`getCandidateModelsForTier`、权重、`effortMapFor`、`tiersOf`、无覆盖的实时预览）都把**那份**快照投影到模型宇宙上（`buildTierPoolEntries`）。带草稿覆盖的预览则改从草稿重新推导。
 - **归属梯队（派生视图）**：`m.tier` = 按梯队序 lite→plus→pro→ultra 的首次认领（`claimModel`），并把该认领的 priority/列表代表标志与 effortMap 存到注册对象上。它**只**为需要单一梯队值的消费方存在——钉扎模型的 force_tier、按梯队的上报（`tierUsed` 回落到它，否则上报实际服务池的梯队）、model-access 的梯队展开，以及裸 auto 拓宽池的邻近排序。**池成员资格绝不读它**。
 - `tier` 是**可选的**：`undefined` 是**第四态**，不是错误——没有任何梯队的成员表认领该模型，所以它不进任何候选池。它是一个普通的可选值，而不是被加宽的 `TierLevel` 联合，好让 `TIER_RANK` / failover 链 / 会话棘轮继续在严格四值词汇上运作；每个读取方自行声明「无归属梯队」对它意味着什么。
-- 链序 = 按梯队的规则数据：priority = 该梯队的认领序号，列表代表领跑该梯队（`buildTierPoolEntries`：权重降序、再序号；weighted/RR 用 `pickPrimary`）——代表（`tierDefaults`、空池回退链）就是各梯队的池首，每次提交都重算。
+- 链序 = 权重降序、再认领序号（`buildTierPoolEntries`）——权重排序对**每一种**策略的链都生效，权重相同才按该梯队的规则序号。`priority` 取该链首（failover 沿用同一顺序），永不读取轮转游标。`weighted_round_robin` 是链上的平滑加权轮询（权重 w 的成员每轮被服务 w 次且均匀交错）；`round_robin` 走同一轮转内核但所有成员权重按 1 计——等权轮转、权重被忽略。任何其他值（含已退役的 `weighted` 加权随机抽取旧拼写）在读写两侧都归一化为 `priority`：只有三种拼写会被持久化，已有 `weighted` 与 `round_robin`（两者都是旧加权机制：加权随机抽取 / 连续加权槽位）由 v6→v7 迁移在升级时统一改写为 `weighted_round_robin`；新的等权 `round_robin` 是升级后的显式选择。代表（`tierDefaults`、空池回退链）就是各梯队的池首，每次提交都重算。
+- **选主发生在哪里由会话模式决定，不由策略决定。** 有持久 pin 时（`session.enabled` + `monotonic`/`sticky`，默认值），策略选主只在 pin 诞生与重钉时发生一次；该会话后续每一轮都服务这个 pin（prompt-cache 亲和，ADR-0002），游标不再前进。强制梯队的轮次（ADR-0014）对同梯队的 pin 出于同一亲和理由照常跟随；pin 在强制梯队之外时既不跟随也不改写，该轮就在强制池里抽一次。`stateless` 或 `session.enabled: false` 下不存 pin，所以选主每请求发生一次，落在实际服务链的链首（auto 直连、lite 级联与升档腿都一样）。Combo 绕过会话、按请求轮转（见下 `ComboConfig`）。
+- **可级联轮次只抽将要服务的腿，不抽被丢弃的预选。** 当 lite 抢跑级联将决定路由时，orchestrator
+  **跳过**执行前的 auto 抽取（否则会为一个请求根本不服务的模型推进游标，占位也终被丢弃）；用于
+  effort 预览的占位取池首，永不抽取。级联随后按实际服务的每条腿各抽一次（lite 冲锋、再升档梯队）。
+  已持久化的会话 pin 本就提供执行前模型，且不会压制级联。
+- **轮转游标以成员 id 与其声明权重为键。** 组成变化**或**权重变化（同 id、新份额）都会开启新的
+  信用向量，池缩到单成员时同样重置，恢复后的池不会沿用变化前累积的信用。权重在每个边界都归一化到
+  有限上限（`MAX_MEMBER_WEIGHT`）——YAML `.inf` / `1e309` 的 `Infinity` 被钳制而非毒化累加器。
 - **运行时无自动种子、出厂无内置成员**（历史种子路径已删除）：`DEFAULT_CONFIG.tiers` 为四个空梯队壳——全新 config.yaml 出厂即无池，`auto` 在操作者于 /tiers 页添加成员前无法路由；显式 `tiers: {}` 被尊重为"无池"；任何梯队都无 `members` 键的配置保持空池 + 启动告警（`member-match.ts:36-45`；YAML 字段注释的中文原文"运行时不再自动生成种子"只存在于 `config/index.ts`）。
 - `unclassified` 是第四态**标记位**，不是梯队加宽（`types/router.ts:26`）：不被任何梯队认领、不进任何池、不得成为梯队代表，控制台以"未入池"视图呈现并可一键加入。它作为 `PoolMembership` 取值存在——即一个**认领结果**（`claimModel` / `resolveTierPool` 的返回值），而绝不是存在注册对象上的字段：没有归属梯队的注册对象就是 `tier: undefined`。
 - 双轴活性：BOOT 快照拥有模型宇宙（provider/凭证/wire）；成员资格+链优先序+effortMap 是**文件派生的活投影**——控制台两条保存路径即时提交 `applyTierConfigNow`（+ `applyCombos`），另有 2 秒懒惰重放兜手改 YAML（`registry.ts` `maybeRefreshMembers`，`routes/console.ts` `handleSaveConfig`/`handleSaveRawYaml`）。懒惰重放同样重放 **combos**——绕过控制台保存路径的组合写入（手改 YAML、api-keys 路由等直调 `saveConfig` 的调用方）此前要等到下一次保存事件或重启才对路由可见。重放带指纹守卫：内容未变即空操作（不重建表、不清轮询游标、不重复告警）。
@@ -39,7 +47,7 @@
 
 ### 3. Combo
 
-`ComboConfig = {id, disabled?, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。梯队成员表可经 `combo:<id>` 规则引用 combo（§2）——组合保持自持，引用只在提交点镜像成员资格。`disabled: true` 是运维下线开关：combo 仍保持注册，好让请求路径区分「已禁用」与「未知名字」，但它从所有目录隐藏（`/v1/models` 列表与详情 404、控制台模型选择器），请求显式点名它则快速失败返回 404——与空成员场景同一条「绝不静默降级」契约，绝不回落池路由（`orchestrator.ts:866-896`）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:1005-1020`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:961-972`、`:279-281`）。`combos` 列表顺序即控制台展示顺序——可在 UI 中重排，按原顺序写回配置。
+`ComboConfig = {id, disabled?, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。`priority` 取配置序链首；`weighted_round_robin` 与 `round_robin` 共用梯队池同一套 `WeightedRoundRobin` 内核（按 combo 作用域独立游标）：`weighted_round_robin` 把成员声明的权重当作轮转份额，`round_robin` 一律按 1——等权轮转、权重被忽略。任何其他值（含旧拼写 `weighted`）在读写两侧都归一化为 `priority`；已有 `weighted` 与 `round_robin`（旧加权随机 / 连续加权槽位）由 v6→v7 迁移在升级时统一改写为 `weighted_round_robin`，因此只有三种拼写会被持久化，新的等权 `round_robin` 是升级后的显式选择。梯队成员表可经 `combo:<id>` 规则引用 combo（§2）——组合保持自持，引用只在提交点镜像成员资格。`disabled: true` 是运维下线开关：combo 仍保持注册，好让请求路径区分「已禁用」与「未知名字」，但它从所有目录隐藏（`/v1/models` 列表与详情 404、控制台模型选择器），请求显式点名它则快速失败返回 404——与空成员场景同一条「绝不静默降级」契约，绝不回落池路由（`orchestrator.ts:866-896`）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:1005-1020`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:961-972`、`:279-281`）。`combos` 列表顺序即控制台展示顺序——可在 UI 中重排，按原顺序写回配置。
 
 #### 3a. 目录面形状（`/v1/models`）
 

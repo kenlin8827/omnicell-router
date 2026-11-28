@@ -24,7 +24,7 @@ config.yaml 以 `schemaVersion` 为首键，所有段归入且只归入六个语
 | `resilience` | 韧性恢复面——失败怎么救 | `circuitBreaker`、`retry`（`inplace` / `failover` / `escalation`） |
 | `ops` | 运维观测面——观测、数据源、内部设施 | `requestCapture`、`tracePersist`、`logging`、`catalog`、`quota`、`quotaProbes`、`opencode`、`defaultModels` |
 
-上表是本文确定时的 v1 分组。schema v2（ADR-0031）已移除 `routing.modelProfiles`。schema v3（ADR-0008 §1）把单一的 `upstream.streaming.enabled` 标志拆成两个姿态轴 `streaming.client.mode` / `streaming.upstream.mode`；`upstream.streaming` 这一节本身没有搬家，因此 `SECTION_MOVES_V3` 逐字等于 v2 表，当前布局是 `migrations/v2-to-v3.ts` 里的 `SECTION_MOVES_V3`。
+上表是本文确定时的 v1 分组。schema v2（ADR-0031）已移除 `routing.modelProfiles`。schema v3（ADR-0008 §1）把单一的 `upstream.streaming.enabled` 标志拆成两个姿态轴 `streaming.client.mode` / `streaming.upstream.mode`；`upstream.streaming` 这一节本身没有搬家，因此 `SECTION_MOVES_V3` 逐字等于 v2 表。schema v4 把控制台表单记忆值 `routing.profileMemory.*.modelMode: none` 改名为 `default`（该标签一直渲染为「Default」——不新增任何具体模型，由适配器的虚拟条目块生效）；同样没有搬家，`SECTION_MOVES_V4` 逐字等于 v3 表。schema v5（ADR-0008）落地 `client.bodyLimits`，不搬动任何节；schema v6 增加 `client.autoResyncFollowCatalogs`，同样不搬动。schema v7（ADR-0003）把旧的加权 selection 取值折叠为 `weighted_round_robin`（旧的加权随机抽取与突发式加权槽位 `round_robin` 双双退役，改为平滑加权轮询；新的等权 `round_robin` 是显式选择），且不搬动任何节。因此当前布局是 `migrations/v6-to-v7.ts` 里的 `SECTION_MOVES_V7`。
 
 运行时 `RouterConfig` 对象**不变、保持扁平**：消费方继续读 `config.tiers`、`config.retry`、`config.fallback`。分组只存在于磁盘 ↔ 运行时之间，由唯一一张声明式映射表（`schema.ts` 的 `SECTION_MOVES`）双向使用。
 

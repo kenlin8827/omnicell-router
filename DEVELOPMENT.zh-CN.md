@@ -131,7 +131,7 @@ omnicell-router/
 网关彻底废弃传统的“字符长度规则”，采用分层确定的仲裁逻辑：
 
 ### 3.1 Layer 0: 显式规则与快速直通
-1. **组合直通 (Combos)**：若请求的 `model` 为已配置的自定义组合（ADR-0003），直接绕过梯队仲裁。组合池根据其自身配置的分配策略（`priority`, `weighted`, `round_robin`）选出领头模型，故障转移严格局限于组合内。
+1. **组合直通 (Combos)**：若请求的 `model` 为已配置的自定义组合（ADR-0003），直接绕过梯队仲裁。组合池根据其自身配置的分配策略（`priority` = 配置序链首, `weighted_round_robin` = 平滑加权轮转, `round_robin` = 等权轮转且忽略权重）选出领头模型，故障转移严格局限于组合内。
 2. **强制梯队列名**：如 `auto-lite`, `auto-plus`, `auto-pro`, `auto-ultra`，直接选定目标梯队，会话进入 `'explicit'` 模式合约。
 3. **客户端选项**：请求体中携带的 `router_options.force_tier` 具有最高控制优先级。
 4. **全局模式杠杆**：配置 `routing.mode: cost` 强制默认导向 `lite`，配置 `routing.mode: quality` 导向 `pro`。

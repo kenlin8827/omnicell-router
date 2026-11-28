@@ -131,7 +131,7 @@ All inbound traffic is intercepted by the Fastify server, normalized into an int
 The decision cascade eliminates crude prompt-length heuristics and replaces them with deterministic layers:
 
 ### 3.1 Layer 0: Explicit Rules & Fast Paths
-1. **Direct Combo**: If `request.model` names a configured combo (ADR-0003), tier arbitration is bypassed. The combo pool selects a member using its configured strategy (`priority`, `weighted`, `round_robin`) and confines failover strictly within its members.
+1. **Direct Combo**: If `request.model` names a configured combo (ADR-0003), tier arbitration is bypassed. The combo pool selects a member using its configured strategy (`priority` = config-order head, `weighted_round_robin` = smooth weighted rotation, `round_robin` = equal rotation ignoring weights) and confines failover strictly within its members.
 2. **Auto-Tier Aliases**: Models named `lite`, `plus`, `pro`, or `ultra` force the target tier directly and lock the session to an `'explicit'` mode contract.
 3. **Client Options**: `router_options.force_tier` explicitly overrides automatic tiering.
 4. **Global Mode Lever**: `routing.mode: cost` routes to `lite`; `routing.mode: quality` routes to `pro`.

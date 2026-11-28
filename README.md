@@ -256,7 +256,7 @@ Clients can request models through four distinct addressing modalities (ADR-0003
 | **`plus`** | Forced Virtual Tier | Serves exclusively from the `plus` workhorse pool (~$2.00 ~ $3.00 / M tokens). Default general-purpose engineering baseline. |
 | **`pro`** | Forced Virtual Tier | Serves exclusively from the `pro` reasoning specialist pool (~$3.00 ~ $8.00 / M tokens) for deep mathematical proofs and complex refactors. |
 | **`ultra`** | Forced Virtual Tier | Serves from the `ultra` frontier tier (≥ $8.00 / M tokens) for large-scale multi-file codebases and complex autonomous agent loops. |
-| *Custom Combos* | Virtual Model Sets | Composed model groups with configured selection strategies (`priority`, `weighted`, `round_robin`). Fails over strictly within combo members. |
+| *Custom Combos* | Virtual Model Sets | Composed model groups with configured selection strategies (`priority` = config-order head, `weighted_round_robin` = smooth weighted rotation, `round_robin` = equal rotation ignoring weights). Fails over strictly within combo members. |
 | *Direct Physical Models* | Direct Passthrough | Any registered upstream physical identifier (e.g. `deepseek-chat`, `claude-3-7-sonnet-20250219`). Bypasses tier arbitration. |
 
 ---

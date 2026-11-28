@@ -30,8 +30,9 @@
   `directive.effort_down`（ADR-0011）：只对 auto 家族适用（`sessionMode === 'ratchet'`）；显式
   客户端选择优先于指令，并在台账中留痕。它们也是唯一合法的降档来源。
 - **schema 断言 lite 抢跑级联**——5A/5B：lite 先行、断言、失败升入 `fallback.escalateTier`。
-  仅 auto 家族武装；**两个方向都是梯队移动**（lite 抢跑会服务到强制 plus 之下；升级腿会服务到
-  强制 lite 之上）。
+  仅 auto 家族武装；两个方向都是梯队移动（lite 抢跑会服务到强制 plus 之下；升级腿会服务到
+  强制 lite 之上）。可级联的轮次会**跳过**执行前的 auto 抽取：级联按实际服务的每条腿各抽
+  一次，绝不为请求最终丢弃的模型抽签。会话 pin 不会压制级联。
 - **跨级池升级尾**——`executeCandidatePool({ allowEscalate })` 在 lite 链耗尽后追加 plus 候选。
   仅 auto 家族武装（`!explicitModel ∧ !force_tier ∧ tierCrossPolicy='allow_escalate' ∧ tier='lite'`）。
 
@@ -73,3 +74,5 @@
 - 2026-10-21：pin 跟随细化——强制轮次仅在强制梯队内跟随会话 pin（KV 亲和），僵尸 id 修复为
   强制梯队的健康头，空梯队降级落点保留；其他梯队的 pin 既不跟随也不改写
   （`pin-eviction.test.ts` 的跨梯队移动断言已同步更新）。
+- 2026-11-28：可级联轮次现在**跳过**执行前的 auto 抽取——此前该占位抽取会为级联随后丢弃的
+  模型推进轮转游标，`round_robin` 池因此每隔一次抽签才服务一次（`cascade-single-draw.test.ts`）。
