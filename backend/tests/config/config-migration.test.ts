@@ -217,4 +217,58 @@ describe('config schema evolution (ADR-0016)', () => {
     const empty = migrateConfig({ schemaVersion: 3, client: { port: 4700 } }).disk as Record<string, Record<string, unknown>>;
     assert.equal('profileMemory' in ((empty.routing ?? {}) as Record<string, unknown>), false);
   });
+
+  it('v6 → v7: both weighted selection values become "weighted_round_robin", nothing else moves', () => {
+    const { disk, fromVersion, warnings } = migrateConfig({
+      schemaVersion: 6,
+      routing: {
+        tiers: {
+          exclude: ['blocked/*'],
+          plus: { selection: 'weighted', members: [{ pattern: 'p/a', weight: 3 }] },
+          pro: { selection: 'round_robin', members: [] },
+          ultra: { selection: 'priority', members: [] },
+          lite: { members: [] },
+        },
+        combos: [
+          { id: 'c1', selection: 'weighted', models: [{ id: 'p/a', weight: 3 }] },
+          { id: 'c2', selection: 'priority', models: ['p/a'] },
+        ],
+      },
+    });
+    assert.equal(fromVersion, 6);
+    assert.equal(disk.schemaVersion, SCHEMA_VERSION);
+    const routing = (disk as Record<string, Record<string, unknown>>).routing;
+    const tiers = routing.tiers as Record<string, unknown>;
+    const plus = tiers.plus as Record<string, unknown>;
+    assert.equal(plus.selection, 'weighted_round_robin');
+    // Sibling fields are untouched — only the enum spelling moved.
+    assert.deepEqual(plus.members, [{ pattern: 'p/a', weight: 3 }]);
+    // v6 `round_robin` meant BURSTY WEIGHTED slots, not equal turns — it must keep
+    // its weight proportions, so it moves to the smooth weighted rotation too.
+    assert.equal((tiers.pro as Record<string, unknown>).selection, 'weighted_round_robin');
+    assert.equal((tiers.ultra as Record<string, unknown>).selection, 'priority');
+    assert.equal((tiers.lite as Record<string, unknown>).selection, undefined);
+    assert.deepEqual(tiers.exclude, ['blocked/*']);
+    const combos = routing.combos as Array<Record<string, unknown>>;
+    assert.equal(combos[0].selection, 'weighted_round_robin');
+    assert.equal(combos[1].selection, 'priority');
+    assert.ok(warnings.some((w) => w.includes('weighted_round_robin')));
+    assert.ok(warnings.some((w) => w.includes('`round_robin`')));
+
+    // The runtime view is canonical too — registry and console read through it.
+    const flat = toRuntimeConfig(disk) as unknown as RouterConfig;
+    assert.equal(flat.tiers?.plus?.selection, 'weighted_round_robin');
+    assert.equal(flat.combos?.[0].selection, 'weighted_round_robin');
+
+    // Unknown spellings are left to loadConfig's cleaners, never rewritten,
+    // and an absent routing tree is never created by the step.
+    const weird = migrateConfig({
+      schemaVersion: 6,
+      routing: { tiers: { plus: { selection: 'weird' } } },
+    }).disk as Record<string, unknown>;
+    const weirdTiers = (weird.routing as Record<string, unknown>).tiers as Record<string, Record<string, unknown>>;
+    assert.equal(weirdTiers.plus.selection, 'weird');
+    const empty = migrateConfig({ schemaVersion: 6, client: { port: 4700 } }).disk as Record<string, unknown>;
+    assert.equal('routing' in empty, false);
+  });
 });

@@ -4,7 +4,7 @@ import type { ProviderRegistry } from './registry.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import { TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
-import { resolveTierMembers, claimModel, comboRefLookupFromConfig, expandComboRefs } from './member-match.js';
+import { resolveTierMembers, claimModel, comboRefLookupFromConfig, expandComboRefs, markExactFullIds } from './member-match.js';
 import { pricingFromCost } from './virtual-meta.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
 import {
@@ -490,8 +490,17 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   // /tiers page (hot-applied by the registry; no restart, no persistence).
   const cfgTiers = loadConfig().tiers;
   const registeredIds = new Set(models.map((m) => m.id));
+  const registeredLower = new Set(models.map((m) => m.id.toLowerCase()));
   const lookup = comboRefLookupFromConfig(loadConfig().combos, (id) => registeredIds.has(id));
-  const resolved = expandComboRefs(resolveTierMembers(cfgTiers).tiers, lookup);
+  const expanded = expandComboRefs(resolveTierMembers(cfgTiers).tiers, lookup);
+  // Hand-written FULL ids pin exactly like combo-expanded members (the console's
+  // "full id = exact match" contract): `deepseek/v4-flash` must not claim the
+  // longer sibling `deepseek/v4-flash-vision-exp`. Partial patterns stay
+  // substring patterns.
+  const resolved = {
+    dead: expanded.dead,
+    tiers: markExactFullIds(expanded.tiers, (id) => registeredLower.has(id.toLowerCase())),
+  };
   for (const d of resolved.dead) {
     console.warn(
       `[Boot] Tier '${d.tier}' references combo '${d.ref.slice('combo:'.length)}' that contributes no members ` +

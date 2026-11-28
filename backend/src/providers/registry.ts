@@ -22,7 +22,8 @@ import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type Mode
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
 import { redactProxyUrl, resolveProxyUrl } from '../utils/proxy.js';
-import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_IDS, type ExpandedMembers } from './member-match.js';
+import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, markExactFullIds, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_IDS, type ExpandedMembers } from './member-match.js';
+import { WeightedRoundRobin, normalizeSelectionStrategy, normalizeMemberWeight, type SelectionStrategy } from './selection.js';
 
 /**
  * Normalize a client-supplied upstream host for provider matching: lowercase,
@@ -93,9 +94,11 @@ export class ProviderRegistry {
    * so what routing sees is always exactly what was last committed.
    */
   private committedMembers: Record<TierLevel, TierMemberRule[]> = { lite: [], plus: [], pro: [], ultra: [] };
-  private rrCursor = new Map<TierLevel, number>();
+  /** Smooth weighted round-robin cursors — one per tier pool. */
+  private tierRr = new WeightedRoundRobin();
   private combos = new Map<string, ComboConfig>();
-  private comboRrCursor = new Map<string, number>();
+  /** Smooth weighted round-robin cursors — one per combo pool. */
+  private comboRr = new WeightedRoundRobin();
   /** Fingerprint of the combo section last applied by applyCombos — lets the
    *  lazy hand-edit safety net skip no-op replays instead of resetting
    *  round-robin cursors and re-logging skip warnings every TTL window. */
@@ -489,52 +492,58 @@ export class ProviderRegistry {
    *  a weight per pool), default 1. */
   private weightFor(tier: TierLevel, modelId: string): number {
     const claim = claimInTier(tier, modelId, this.committedMembers);
-    return claim ? Math.max(1, Number(claim.rule.weight) || 1) : 1;
+    return claim ? normalizeMemberWeight(claim.rule.weight) : 1;
   }
 
-  /** Effective selection strategy: explicit config wins; default priority (legacy weights retired). */
-  private selectionStrategy(tier: TierLevel): 'priority' | 'weighted' | 'round_robin' {
-    return this.tierPolicies?.[tier]?.selection ?? 'priority';
-  }
-
-  /** Weighted round-robin: each model occupies `weight` consecutive slots per cycle. */
-  private pickRoundRobin(models: ModelRegistration[], tier: TierLevel): ModelRegistration {
-    const slots: ModelRegistration[] = [];
-    for (const m of models) {
-      const w = this.weightFor(tier, m.id);
-      for (let i = 0; i < w; i++) slots.push(m);
-    }
-    if (slots.length === 0) return models[0];
-    const prev = this.rrCursor.get(tier) ?? 0;
-    this.rrCursor.set(tier, prev + 1);
-    return slots[prev % slots.length];
+  /** Effective selection strategy: explicit config wins, default priority. */
+  private selectionStrategy(tier: TierLevel): SelectionStrategy {
+    return normalizeSelectionStrategy(this.tierPolicies?.[tier]?.selection);
   }
 
   /**
    * Primary pick inside a tier, driven by the tier's selection strategy:
    * - priority (default): first healthy candidate in chain order (= member
    *   list order)
-   * - weighted: weighted random draw over the healthy pool (claiming member
-   *   rule's weight, default 1)
-   * - round_robin: rotating weighted slots for even distribution over time
+   * - weighted_round_robin: smooth WEIGHTED round-robin — weight = the
+   *   claiming member rule's weight (default 1), served in proportion, evenly
+   *   interleaved
+   * - round_robin: plain sequential round-robin — equal turns, weights ignored
+   * `weighted_round_robin` and `round_robin` share ONE smooth round-robin core
+   * (combos use it too); only the weight policy differs.
    * The failover chain order is strategy-independent (buildTierPoolEntries:
    * rule weight desc, then rule list order).
    */
   private pickPrimary(models: ModelRegistration[], tier: TierLevel): ModelRegistration {
-    if (models.length <= 1) return models[0];
     const strategy = this.selectionStrategy(tier);
-    if (strategy === 'round_robin') return this.pickRoundRobin(models, tier);
-    if (strategy === 'weighted') {
-      const weights = models.map((m) => this.weightFor(tier, m.id));
-      const total = weights.reduce((a, b) => a + b, 0);
-      let r = Math.random() * total;
-      for (let i = 0; i < models.length; i++) {
-        r -= weights[i];
-        if (r < 0) return models[i];
-      }
-      return models[models.length - 1];
-    }
-    return models[0];
+    // `priority` never touches a cursor. The rotation strategies ALWAYS go
+    // through the core — including a single-member pool, whose identity check
+    // resets a stale vector after a shrink (a short-circuit here would strand
+    // credit accumulated before it).
+    if (strategy === 'priority') return models[0];
+    const weightOf = strategy === 'weighted_round_robin' ? (m: ModelRegistration) => this.weightFor(tier, m.id) : () => 1;
+    return this.tierRr.pick(`${tier}:${strategy}`, models, (m) => m.id, weightOf);
+  }
+
+  /**
+   * Strategy-aware leader over an ALREADY-FILTERED candidate list. `getModelForTier`
+   * assembles the pool (health, denylist, cross-tier fallback) and then picks;
+   * this is the pure pick for a chain whose pool was filtered elsewhere
+   * (model access, widening) — the serving chain must lead with this model.
+   */
+  public pickLeader(tier: TierLevel, candidates: ModelRegistration[]): ModelRegistration {
+    return this.pickPrimary(candidates, tier);
+  }
+
+  /**
+   * Chain order for a ready candidate list: the strategy-selected leader first,
+   * then the remaining members in their existing order. `priority` leaves the
+   * list untouched (its head already leads); only the rotation strategies
+   * reorder, and the failover walk after the head is unchanged.
+   */
+  public orderChain(tier: TierLevel, candidates: ModelRegistration[]): ModelRegistration[] {
+    if (candidates.length === 0) return candidates;
+    const leader = this.pickPrimary(candidates, tier);
+    return [leader, ...candidates.filter((m) => m.id !== leader.id)];
   }
 
   /**
@@ -562,7 +571,7 @@ export class ProviderRegistry {
         const claim = claimInTier(tier, m.id, members);
         entries.push({
           model: m,
-          weight: claim ? Math.max(1, Number(claim.rule.weight) || 1) : 1,
+          weight: claim ? normalizeMemberWeight(claim.rule.weight) : 1,
           effortMap: m.effortMap,
           rank: m.isDefaultInTier ? 0 : m.priority ?? 10,
         });
@@ -572,7 +581,7 @@ export class ProviderRegistry {
       if (!claim) continue;
       entries.push({
         model: m,
-        weight: Math.max(1, Number(claim.rule.weight) || 1),
+        weight: normalizeMemberWeight(claim.rule.weight),
         effortMap: claim.rule.effortMap,
         rank: claim.index,
       });
@@ -657,12 +666,17 @@ export class ProviderRegistry {
 
   /**
    * The ONE member-rule read view: `tiers.<t>.members` with `combo:<id>` refs
-   * expanded in place. Every membership consumer (claims, weights, pools,
-   * boot, save checks) must read through this so pools stay physical-model
-   * lists while config keeps the operator's declared references.
+   * expanded in place and hand-written FULL ids pinned exact. Every membership
+   * consumer (claims, weights, pools, boot, save checks) must read through this
+   * so pools stay physical-model lists while config keeps the operator's
+   * declared references. Exact pinning is a PROJECTION concern, not a config
+   * write: the stored `tiers` keeps the operator's plain pattern.
    */
   public expandedMemberRules(policies: TiersConfig | undefined): ExpandedMembers {
-    return expandComboRefs(resolveTierMembers(policies).tiers, (id) => this.comboMemberRefs(id));
+    const expanded = expandComboRefs(resolveTierMembers(policies).tiers, (id) => this.comboMemberRefs(id));
+    const registered = new Set<string>();
+    for (const id of this.models.keys()) registered.add(id.toLowerCase());
+    return { dead: expanded.dead, tiers: markExactFullIds(expanded.tiers, (id) => registered.has(id.toLowerCase())) };
   }
 
   /**
@@ -768,6 +782,17 @@ export class ProviderRegistry {
         const mapped = this.bestEffortMatch(entries, requested);
         if (mapped) return mapped;
       }
+      // Pass-through head is NOT a selection: the caller's per-request chain
+      // head is the one real pick, so reading the rotation cursor here would
+      // advance it twice per request and serve every second draw. The pool
+      // head (all health levels, never drawn) is the same model the chain
+      // would lead with.
+      const head =
+        entries[0]?.model ?? this.getCandidateModelsForTier(tier, false)[0];
+      if (head) return { model: head, actualEffort: 'none', degraded: false };
+      // Pool empty at every health level: keep the getter's cross-tier /
+      // throw contract. No rotation draw can happen here — a pool with no
+      // candidate has nothing for pickPrimary to advance.
       const m = this.getModelForTier(tier, healthyOnly);
       if (m) return { model: m, actualEffort: 'none', degraded: false };
       return null;
@@ -975,7 +1000,7 @@ export class ProviderRegistry {
     if (fingerprint === this.combosFingerprint) return;
     this.combosFingerprint = fingerprint;
     this.combos.clear();
-    this.comboRrCursor.clear();
+    this.comboRr.reset();
     for (const combo of combos || []) {
       if (!combo?.id || !Array.isArray(combo.models) || combo.models.length === 0) continue;
       if (RESERVED_IDS.has(combo.id)) {
@@ -1012,7 +1037,7 @@ export class ProviderRegistry {
   /** Normalize a member entry (bare string | {id, weight}) to {id, weight>=1}. */
   private comboMemberRef(entry: string | ComboModelRef): { id: string; weight: number } {
     if (typeof entry === 'string') return { id: entry, weight: 1 };
-    return { id: entry.id, weight: Math.max(1, Number(entry.weight) || 1) };
+    return { id: entry.id, weight: normalizeMemberWeight(entry.weight) };
   }
 
   /**
@@ -1038,15 +1063,20 @@ export class ProviderRegistry {
   }
 
   /**
-   * Combo primary pick, mirroring the tier selection strategies:
+   * Combo primary pick, mirroring the tier selection strategies exactly:
    * - priority (default): first healthy member in config order
-   * - weighted: weight-random draw over the healthy pool
-   * - round_robin: rotating weighted slots (combo-scoped cursor)
+   * - weighted_round_robin: smooth WEIGHTED round-robin — weight = the member
+   *   entry's weight (default 1)
+   * - round_robin: plain sequential round-robin — equal turns, weights ignored
+   * The same smooth round-robin core serves the tier pools; cursors are
+   * combo-scoped (and strategy-scoped).
    * Falls back to the full member list when every member is tripped.
    */
   public pickComboLeader(comboId: string, members: ModelRegistration[]): ModelRegistration {
-    if (members.length <= 1) return members[0];
-    const strategy = this.combos.get(comboId)?.selection ?? 'priority';
+    if (members.length === 0) return members[0];
+    // Single-member combos still go through the rotation core on rotation
+    // strategies so a shrunk pool resets its cursor (same rule as the tiers).
+    const strategy = normalizeSelectionStrategy(this.combos.get(comboId)?.selection);
     // Decision 6 aggregate (same rule as the tier pools): a member whose every
     // credential is out must not lead a combo.
     const healthy = members.filter((m) => this.modelAvailable(m).available);
@@ -1057,30 +1087,10 @@ export class ProviderRegistry {
       if (!weights.has(ref.id)) weights.set(ref.id, ref.weight);
     }
 
-    if (strategy === 'round_robin') {
-      const slots: ModelRegistration[] = [];
-      for (const m of pool) {
-        const w = weights.get(m.id) ?? 1;
-        for (let i = 0; i < w; i++) slots.push(m);
-      }
-      if (slots.length === 0) return pool[0];
-      const prev = this.comboRrCursor.get(comboId) ?? 0;
-      this.comboRrCursor.set(comboId, prev + 1);
-      return slots[prev % slots.length];
-    }
-
-    if (strategy === 'weighted') {
-      const ws = pool.map(m => weights.get(m.id) ?? 1);
-      const total = ws.reduce((a, b) => a + b, 0);
-      let r = Math.random() * total;
-      for (let i = 0; i < pool.length; i++) {
-        r -= ws[i];
-        if (r < 0) return pool[i];
-      }
-      return pool[pool.length - 1];
-    }
-
-    return pool[0];
+    if (strategy === 'priority') return pool[0];
+    const weightOf =
+      strategy === 'weighted_round_robin' ? (m: ModelRegistration) => weights.get(m.id) ?? 1 : () => 1;
+    return this.comboRr.pick(`${comboId}:${strategy}`, pool, (m) => m.id, weightOf);
   }
 
   /**

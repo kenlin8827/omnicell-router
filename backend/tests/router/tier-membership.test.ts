@@ -71,6 +71,26 @@ describe('tier membership commit (member lists)', () => {
     expect(pool.map((p) => p.model.id)).toEqual(['p/no-condition']);
   });
 
+  it('a registered full id pins one model; a partial pattern stays substring', () => {
+    const registry = makeRegistry([
+      model('p/v4-flash', 'plus', { autoTier: true }),
+      model('p/v4-flash-vision-exp', 'plus', { autoTier: true }),
+      model('p/v4-flash-vision-exp-pro', 'plus', { autoTier: true }),
+    ]);
+    // The console promises "full id = exact match" — naming the registered id
+    // must NOT swallow its longer siblings, which is what made a tier serve a
+    // model the operator never listed.
+    registry.reclassifyTiers(registry.expandedMemberRules({ plus: { members: [rule('p/v4-flash')] } } as any).tiers);
+    expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/v4-flash']);
+
+    // No wildcard and not a registered id = the documented substring match.
+    registry.reclassifyTiers(registry.expandedMemberRules({ plus: { members: [rule('p/v4-flash-vision')] } } as any).tiers);
+    expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual([
+      'p/v4-flash-vision-exp',
+      'p/v4-flash-vision-exp-pro',
+    ]);
+  });
+
   it('list order IS the chain order; the list leader is the representative', () => {
     const registry = makeRegistry([
       model('p/a', 'plus', { autoTier: true }),
@@ -93,6 +113,44 @@ describe('tier membership commit (member lists)', () => {
     registry.reclassifyTiers(cfg);
     // b carries weight 5 → it leads despite being listed second
     expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/b', 'p/a']);
+  });
+
+  it('weighted_round_robin selection is smooth weighted rotation — no random draw, no consecutive-weight burst', () => {
+    const cfg = members([], [rule('p/a', { weight: 3 }), rule('p/b')], [], []);
+    const registry = makeRegistry(
+      [
+        model('p/a', 'plus', { autoTier: true }),
+        model('p/b', 'plus', { autoTier: true }),
+      ],
+      { plus: { members: cfg.plus, selection: 'weighted_round_robin' } },
+    );
+    registry.reclassifyTiers(cfg);
+    // weights 3:1, pool order = weight desc → [a, b]; one SWRR cycle is
+    // a,a,b,a (interleaved), never a "three consecutive a slots" burst.
+    const picks = Array.from({ length: 8 }, () => registry.getModelForTier('plus', false).id);
+    expect(picks).toEqual([
+      'p/a', 'p/a', 'p/b', 'p/a',
+      'p/a', 'p/a', 'p/b', 'p/a',
+    ]);
+  });
+
+  it('round_robin ignores declared weights and turns equally', () => {
+    const cfg = members([], [rule('p/a', { weight: 3 }), rule('p/b')], [], []);
+    const registry = makeRegistry(
+      [
+        model('p/a', 'plus', { autoTier: true }),
+        model('p/b', 'plus', { autoTier: true }),
+      ],
+      { plus: { members: cfg.plus, selection: 'round_robin' } },
+    );
+    registry.reclassifyTiers(cfg);
+    // Same 3:1 weights as above, but round_robin forces every weight to 1 by
+    // policy — the pool alternates a,b,a,b instead of favouring a.
+    const picks = Array.from({ length: 8 }, () => registry.getModelForTier('plus', false).id);
+    expect(picks).toEqual([
+      'p/a', 'p/b', 'p/a', 'p/b',
+      'p/a', 'p/b', 'p/a', 'p/b',
+    ]);
   });
 
   it('a model may join several tiers at once (per-tier membership projection)', () => {

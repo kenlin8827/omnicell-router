@@ -829,6 +829,20 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
   });
 });
 
+describe('pinsModels — whether a ratchet pin is actually served', () => {
+  it('is true only when sessions are enabled and not stateless', () => {
+    assert.strictEqual(new SessionManager({ enabled: true, strategy: 'monotonic' }).pinsModels(), true);
+    assert.strictEqual(new SessionManager({ enabled: true, strategy: 'sticky' }).pinsModels(), true);
+    assert.strictEqual(new SessionManager({ enabled: true, strategy: 'stateless' }).pinsModels(), false);
+    assert.strictEqual(new SessionManager({ enabled: false, strategy: 'monotonic' }).pinsModels(), false);
+  });
+
+  it('is false for the defaults only when sessions are disabled', () => {
+    assert.strictEqual(new SessionManager().pinsModels(), true);
+    assert.strictEqual(new SessionManager({ enabled: false }).pinsModels(), false);
+  });
+});
+
 // Helpers (module scope) ----------------------------------------------------
 
 function sessionRegen(u1: string, assistantBytes: string, followup: string): ChatCompletionRequest {

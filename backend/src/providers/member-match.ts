@@ -1,4 +1,5 @@
 import { globMatch } from '../utils/glob.js';
+import { normalizeMemberWeight } from './selection.js';
 import { EFFORT_LADDER, type EffortMap, type ReasoningEffort, type TierLevel } from '../types/router.js';
 import type { ComboConfig, TiersConfig, TierMemberRule } from '../config/types.js';
 
@@ -64,8 +65,14 @@ export function sanitizeMemberRules(raw: unknown): TierMemberRule[] {
     const pattern = typeof (entry as any).pattern === 'string' ? (entry as any).pattern.trim() : '';
     if (!pattern) continue;
     const rule: TierMemberRule = { pattern };
-    const w = Number((entry as any).weight);
-    if (Number.isFinite(w) && w >= 1) rule.weight = w;
+    const rawWeight = (entry as any).weight;
+    if (rawWeight !== undefined && rawWeight !== null) {
+      // Same weight contract as the rotation core: finiteness is NOT a
+      // requirement — `Infinity` (YAML `.inf` / `1e309`) means "as heavy as
+      // possible" and clamps to MAX_MEMBER_WEIGHT. Garbage stays absent.
+      const w = Number(rawWeight);
+      if (!Number.isNaN(w) && w >= 1) rule.weight = normalizeMemberWeight(w);
+    }
     const map = sanitizeEffortMap((entry as any).effortMap);
     if (map) rule.effortMap = map;
     out.push(rule);
@@ -108,7 +115,7 @@ export function comboMemberRefsOf(
   const seen = new Set<string>();
   const refs: { id: string; weight: number }[] = [];
   for (const entry of combo.models || []) {
-    const ref = typeof entry === 'string' ? { id: entry, weight: 1 } : { id: entry.id, weight: Math.max(1, Number(entry.weight) || 1) };
+    const ref = typeof entry === 'string' ? { id: entry, weight: 1 } : { id: entry.id, weight: normalizeMemberWeight(entry.weight) };
     if (!ref.id || seen.has(ref.id) || !isRegistered(ref.id)) continue;
     seen.add(ref.id);
     refs.push(ref);
@@ -193,10 +200,37 @@ export interface MemberClaim {
 }
 
 /** One rule against one model id: `exact` rules pin the full id (combo
-    expansion); everything else keeps the glob semantics (substring / wildcards). */
+    expansion AND a hand-written registered full id — see markExactFullIds);
+    everything else keeps the glob semantics (substring / wildcards). */
 function ruleMatches(rule: TierMemberRule, modelId: string): boolean {
   if (rule.exact) return rule.pattern.trim().toLowerCase() === modelId.toLowerCase();
   return globMatch(rule.pattern, modelId);
+}
+
+/**
+ * Mark hand-written FULL ids as exact pins (the counterpart of the combo
+ * expansion's `exact: true`). The public contract is "no wildcard = substring,
+ * full id = exact match", but a bare substring test makes `deepseek/v4-flash`
+ * also claim `deepseek/v4-flash-vision-exp` — a longer sibling the operator
+ * never named. A rule qualifies as a full id exactly when it names a
+ * REGISTERED model: partial patterns (`deepseek/v4`, `flash`) keep substring
+ * semantics, and an unregistered/near-miss id stays a substring pattern so
+ * the save check can report it as an orphan instead of silently pinning.
+ * Idempotent; combo-expanded rules are already exact and pass through.
+ */
+export function markExactFullIds(
+  tiers: Record<TierLevel, TierMemberRule[]>,
+  isRegistered: (id: string) => boolean
+): Record<TierLevel, TierMemberRule[]> {
+  const out = { lite: [], plus: [], pro: [], ultra: [] } as Record<TierLevel, TierMemberRule[]>;
+  for (const tier of MEMBER_TIER_ORDER) {
+    out[tier] = tiers[tier].map((rule) => {
+      const pattern = rule.pattern.trim();
+      if (rule.exact || !pattern || isComboRef(pattern) || /[*?]/.test(pattern)) return rule;
+      return isRegistered(pattern) ? { ...rule, exact: true } : rule;
+    });
+  }
+  return out;
 }
 
 /** Claim ONE model id against the member lists (tier order → list order, first hit wins). */

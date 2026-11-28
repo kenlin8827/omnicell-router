@@ -193,8 +193,8 @@ export interface ModelVariant {
 
 /**
  * Combo member entry — bare string (config order = failover chain order,
- * weight 1) or an object carrying an explicit weight for the weighted /
- * round_robin selection strategies.
+ * weight 1) or an object carrying an explicit rotation share for the
+ * `weighted_round_robin` selection strategy (ignored by `round_robin`).
  */
 export interface ComboModelRef {
   id: string;
@@ -205,9 +205,11 @@ export interface ComboModelRef {
  * Custom model combo (user-composed virtual model): the client sends the
  * combo id as `model` and the gateway executes against the member list.
  * Routing/breaker semantics stay per member; `selection` only decides who
- * leads the pool (priority = config order / weighted = weight-random /
- * round_robin = rotating weighted slots) — failover always walks config
- * order. No cross-tier escalation: the user's composition is authoritative.
+ * leads the pool (priority = config order / weighted_round_robin = smooth
+ * weighted round-robin / round_robin = equal sequential rotation ignoring
+ * weights) —
+ * failover always walks config order. No cross-tier escalation: the user's
+ * composition is authoritative.
  */
 export interface ComboConfig {
   id: string; // client-visible virtual model name, e.g. 'my-combo'
@@ -215,7 +217,10 @@ export interface ComboConfig {
    *  requests naming it are rejected (not usable). Stays registered so the
    *  request path can tell "disabled" apart from "unknown name". */
   disabled?: boolean;
-  selection?: 'priority' | 'weighted' | 'round_robin'; // default 'priority'
+  /** Primary-pick strategy: `priority` / `weighted_round_robin` (smooth
+   *  weighted rotation) / `round_robin` (equal rotation, weights ignored).
+   *  Any other or absent value resolves to `priority`. */
+  selection?: 'priority' | 'weighted_round_robin' | 'round_robin'; // default 'priority'
   models: (string | ComboModelRef)[]; // ordered: first = preferred leader
   note?: string; // free-form remark, console-display only (never routed)
 }
@@ -247,7 +252,9 @@ export interface FallbackConfig {
  */
 export interface TierMemberRule {
   pattern: string;
-  /** >= 1, default 1 — reserved for weighted / round_robin selection (v1 UI does not expose). */
+  /** >= 1, default 1 — orders the failover chain (higher leads) and is the
+   *  rotation share under `weighted_round_robin` selection (`round_robin`
+   *  ignores it). */
   weight?: number;
   /**
    * Inline thinking-level translation (client-requested → upstream
@@ -257,10 +264,11 @@ export interface TierMemberRule {
    */
   effortMap?: EffortMap;
   /**
-   * Runtime-projection-only flag (combo expansion sets it; config sanitize
-   * never reads it): match the pattern as an EXACT id instead of a substring
-   * glob — expanded combo members must not claim longer sibling ids
-   * (`p/v4` must not pool `p/v4-pro`).
+   * Runtime-projection-only flag (combo expansion and markExactFullIds set
+   * it; config sanitize never reads it): match the pattern as an EXACT id
+   * instead of a substring glob — expanded combo members and hand-written
+   * registered full ids must not claim longer sibling ids (`p/v4` must not
+   * pool `p/v4-pro`).
    */
   exact?: boolean;
 }
@@ -268,7 +276,7 @@ export interface TierMemberRule {
 export interface TierPolicy {
   /** explicit member list — routing's ONLY pool-membership source. */
   members?: TierMemberRule[];
-  selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
+  selection?: 'priority' | 'weighted_round_robin' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
 }
 
 export interface TiersConfig {

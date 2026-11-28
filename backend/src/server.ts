@@ -37,6 +37,7 @@ import cors from '@fastify/cors';
 import { RouterConfig, ProviderConfig } from './config/types.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { normalizeSelectionStrategy } from './providers/selection.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
@@ -1174,10 +1175,10 @@ export function createServer(
       if (registry.resolveCombo(c.id).length === 0) continue;
       virtualModels[c.id] = {
         id: c.id,
-        description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
+        description: `Custom model combo (${c.models.length} members, ${normalizeSelectionStrategy(c.selection)} selection)`,
         ...(await virtualModel(comboEnvelope(registry, listCatalogOnce, c), {
           kind: 'combo',
-          selection: c.selection || 'priority',
+          selection: normalizeSelectionStrategy(c.selection),
           members: c.models.map((raw) => (typeof raw === 'string' ? raw : raw?.id)).filter(Boolean),
         })),
       };

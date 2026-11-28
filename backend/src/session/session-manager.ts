@@ -694,6 +694,16 @@ export class SessionManager {
   }
 
   /**
+   * True when a ratchet call actually persists a per-session model pin.
+   * `applyRatchet` still resolves a representative model in the stateless /
+   * disabled branch, but that representative is thrown away with the dummy
+   * session — callers must not let it consume a rotation pick.
+   */
+  public pinsModels(): boolean {
+    return this.config.enabled && this.config.strategy !== 'stateless';
+  }
+
+  /**
    * Applies the Monotonic Session Ratchet policy.
    *
    * - Upgrade (T_proposed > T_session): Allowed. Upgrades tier and pins new model instance.

@@ -99,8 +99,8 @@ export async function runDecisionSurface(
     }
     // Chain head of the healthy allowed pool (weight/priority order from
     // buildTierPoolEntries) — deterministic per pool state. The chat pool's
-    // weighted/round-robin strategies are a chat-surface nicety, not a
-    // decision-surface one.
+    // rotation strategies (`weighted_round_robin` / `round_robin`) are a
+    // chat-surface nicety, not a decision-surface one.
     const healthyAllowed = registry
       .getCandidateModelsForTier(tier, true, { decisionSurface: true })
       .filter((m) => isModelAllowed(m.id, policy, tier));

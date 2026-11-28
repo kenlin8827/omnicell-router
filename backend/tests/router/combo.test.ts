@@ -84,7 +84,9 @@ const baseConfig: RouterConfig = {
     { id: 'combo-single', selection: 'priority', models: ['lite-1'] },
     { id: 'combo-cross', selection: 'priority', models: ['lite-1', 'plus-1'] },
     { id: 'combo-rr', selection: 'round_robin', models: ['lite-1', 'lite-2'] },
-    { id: 'combo-weighted', selection: 'weighted', models: [{ id: 'lite-1', weight: 1000000 }, { id: 'lite-2', weight: 1 }] },
+    { id: 'combo-rr-weighted', selection: 'round_robin', models: [{ id: 'lite-1', weight: 3 }, { id: 'lite-2', weight: 1 }] },
+    { id: 'combo-weighted', selection: 'weighted_round_robin', models: [{ id: 'lite-1', weight: 1000000 }, { id: 'lite-2', weight: 1 }] },
+    { id: 'combo-weighted-3-1', selection: 'weighted_round_robin', models: [{ id: 'lite-1', weight: 3 }, { id: 'lite-2', weight: 1 }] },
     { id: 'combo-unknown-member', selection: 'priority', models: ['ghost-model', 'lite-2'] },
     { id: 'combo-disabled', selection: 'priority', models: ['lite-1'], disabled: true },
   ],
@@ -192,10 +194,49 @@ describe('Custom Model Combos: routing & execution', () => {
     assert.deepEqual([r1.modelUsed, r2.modelUsed], ['lite-1', 'lite-2']);
   });
 
-  it('weighted selection should draw the leader by member weight', async () => {
+  it('weighted_round_robin selection is smooth weighted rotation — one interleaved cycle per weight total', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    // weight 1,000,000 : 1 — probability of the minority draw is ~1e-6
+    // weights 3:1 → one cycle = lite-1, lite-1, lite-2, lite-1 (smooth SWRR,
+    // not a "three consecutive lite-1 slots" burst).
+    const leaders: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const r = await processIR(orchestrator, {
+        model: 'combo-weighted-3-1',
+        messages: [{ role: 'user', content: `Turn ${i}` }],
+      } as any);
+      leaders.push(r.modelUsed);
+    }
+    assert.deepEqual(leaders, [
+      'lite-1', 'lite-1', 'lite-2', 'lite-1',
+      'lite-1', 'lite-1', 'lite-2', 'lite-1',
+    ]);
+  });
+
+  it('round_robin ignores declared weights and turns equally', async () => {
+    const { orchestrator } = makeOrchestrator(baseConfig);
+
+    // Same 3:1 weights as the weighted combo above; round_robin forces every
+    // weight to 1 by policy, so the leaders alternate instead of favouring lite-1.
+    const leaders: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const r = await processIR(orchestrator, {
+        model: 'combo-rr-weighted',
+        messages: [{ role: 'user', content: `Turn ${i}` }],
+      } as any);
+      leaders.push(r.modelUsed);
+    }
+    assert.deepEqual(leaders, [
+      'lite-1', 'lite-2', 'lite-1', 'lite-2',
+      'lite-1', 'lite-2', 'lite-1', 'lite-2',
+    ]);
+  });
+
+  it('the weighted_round_robin strategy is deterministic — the heavier member leads first', async () => {
+    const { orchestrator } = makeOrchestrator(baseConfig);
+
+    // weight 1,000,000 : 1 — the deterministic rotation must still lead with
+    // the heavier member on the first turn (no random draw draws the minority).
     const result = await processIR(orchestrator, {
       model: 'combo-weighted',
       messages: [{ role: 'user', content: 'Hello combo' }],

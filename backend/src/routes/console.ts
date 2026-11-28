@@ -6,6 +6,7 @@ import { clientActivitySnapshot } from '../cli/clients/activity.js';
 import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
+import { normalizeSelectionStrategy } from '../providers/selection.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { getProviderTakedownStore } from '../providers/provider-takedown.js';
@@ -2877,7 +2878,7 @@ export function registerConsoleRoutes(
   // the bare tier alias: the same force_tier path a client's
   // `model: "pro"` request takes (tier aliases are reserved gateway ids,
   // never pool-routed). One run only
-  // exercises the SELECTED member (the default credential, or the weighted/round-robin
+  // exercises the SELECTED member (the default credential, or the round-robin
   // pick), never the whole pool — deep per-model checks stay on the providers
   // page. An EMPTY tier degrades inside getModelForTier (the session-pin birth
   // representative falls down the escalate→plus→lite chain, server-warned with
@@ -3160,7 +3161,7 @@ export function registerConsoleRoutes(
       active: registry.isCombo(c.id) && !registry.getModel(c.id),
       // Operator takedown flag (hidden from catalogs, calls rejected).
       disabled: c.disabled === true,
-      selection: c.selection || 'priority',
+      selection: normalizeSelectionStrategy(c.selection),
       members: (c.models || []).map((entry: any) => {
         const ref =
           typeof entry === 'string' ? { id: entry, weight: 1 } : { id: entry.id, weight: entry.weight ?? 1 };

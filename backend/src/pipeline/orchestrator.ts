@@ -1056,6 +1056,12 @@ export class PipelineOrchestrator {
       // bookkeeping, no pin/tier state (ADR-0002).
       sessionRequestCount = this.sessionManager.recordBypassTurn(sessionId);
     } else {
+      // The birth pin IS served: ratchet turns serve it, and a forced-tier
+      // turn follows a same-tier pin for KV affinity (below), so its pick is
+      // real and may advance the strategy cursor. Only the stateless /
+      // disabled branch throws its representative away — it must not consume
+      // a pick, because the per-request chain head takes the one pick then.
+      const ratchetConsumesPick = this.sessionManager.pinsModels();
       const ratchetResult = this.sessionManager.applyRatchet(
         sessionId,
         initialDecision,
@@ -1066,7 +1072,16 @@ export class PipelineOrchestrator {
         // though the request itself is directly callable by design. Bare
         // `auto` keeps resolving through the pool (its empty-pool throw is
         // the honest "add tier members" answer).
-        (tier) => explicitModel ?? this.registry.getModelForTier(tier),
+        (tier) => {
+          if (explicitModel) return explicitModel;
+          if (!ratchetConsumesPick) {
+            const pool = this.registry.getCandidateModelsForTier(tier, true);
+            if (pool.length > 0) return pool[0];
+            const anyPool = this.registry.getCandidateModelsForTier(tier, false);
+            if (anyPool.length > 0) return anyPool[0];
+          }
+          return this.registry.getModelForTier(tier);
+        },
         { allowIntercept: sessionMode === 'ratchet' }
       );
       decision = ratchetResult.finalDecision;
@@ -1385,10 +1400,44 @@ export class PipelineOrchestrator {
     // the zero-member case fails fast above, so index 0 exists whenever
     // comboId is set. Bare `auto` still resolves through the pool — its
     // empty-pool throw is the honest "add members on the /tiers page" answer.
+    // One strategy pick for the no-pin auto path (stateless / disabled
+    // sessions): the same model leads the serving chain below (the direct
+    // path reuses `autoLeader`), so the cursor advances exactly once per
+    // request and effort prep sees the model that will actually serve. A
+    // session pin (preferredModel) and combos resolve without touching this
+    // cursor.
+    //
+    // The lite-lead cascade below picks its OWN leader per tier, so this
+    // pre-execution draw must be skipped when the cascade will decide the
+    // route: a round here would advance the cursor for a model the request
+    // never serves, and the placeholder is discarded anyway. Hoisting the
+    // cascade predicate keeps the two sites from ever disagreeing.
+    const cascadeEligible =
+      decision.needsSchemaValidation &&
+      this.config.fallback.enabled &&
+      !request.routerOptions?.disableFallback &&
+      !explicitModel &&
+      !comboId &&
+      !normalizedRequest.routerOptions?.forceTier;
+    const autoLeader: ModelRegistration | null =
+      preferredModel || comboId || explicitModel || cascadeEligible
+        ? null
+        : this.registry.getModelForTier(actualTier, true);
     let actualModel: ModelRegistration =
       preferredModel ||
       (comboId ? this.registry.resolveCombo(comboId)[0] : undefined) ||
       explicitModel ||
+      autoLeader ||
+      // Cascade-eligible placeholder: the cascade executes its own leaders, so
+      // this only feeds the pre-execution effort preview and the directive
+      // ledger — take a pool head WITHOUT a rotation draw. Healthy head first,
+      // then the all-health head: `getModelForTier` is only reached when the
+      // tier pool is empty at every health level, where it resolves a cross-tier
+      // representative without touching a cursor. Reaching a `pickPrimary` draw
+      // here would advance the same `${tier}:${strategy}` key the cascade then
+      // draws on (double advance for one request).
+      this.registry.getCandidateModelsForTier(actualTier, true)[0] ||
+      this.registry.getCandidateModelsForTier(actualTier, false)[0] ||
       this.registry.getModelForTier(actualTier, true);
     // Reasoning-effort matching. `requestedEffort` is the
     // literal value the client sent (undefined if the field was omitted —
@@ -1605,26 +1654,23 @@ export class PipelineOrchestrator {
     // (lite-lead cascade is skipped for explicit model choices, combos AND
     // forced tiers — the client named exactly what to run. A forced tier is
     // a contract in BOTH directions: no lite-lead downgrade of a forced
-    // plus/pro/ultra, no plus escape of a forced lite. ADR-0014.)
+    // plus/pro/ultra, no plus escape of a forced lite. A session pin does
+    // NOT skip the cascade: the structured-output probe is a cost decision
+    // and each leg it serves draws its own leader. ADR-0014.)
     const retryConfig = this.config.retry;
     const failoverEnabled = retryConfig?.enabled !== false && retryConfig?.failover?.enabled !== false;
     const maxFailoverCandidates = failoverEnabled ? (retryConfig?.failover?.maxAttempts ?? 2) : 1;
     const tierCrossPolicy = retryConfig?.failover?.tierCrossPolicy ?? 'allow_escalate';
 
-    if (
-      decision.needsSchemaValidation &&
-      this.config.fallback.enabled &&
-      !request.routerOptions?.disableFallback &&
-      !explicitModel &&
-      !comboId &&
-      !normalizedRequest.routerOptions?.forceTier
-    ) {
+    if (cascadeEligible) {
       // 5A: Lite Tier lead - Deploy Lite Tier first with resilience
       const litePool = this.registry.getCandidateModelsForTier('lite', true);
+      const liteCandidates =
+        litePool.length > 0 ? litePool : this.registry.getCandidateModelsForTier('lite', false);
       const liteResult = await this.executeCandidatePool(
         normalizedRequest,
         {
-          chain: litePool.length > 0 ? litePool : this.registry.getCandidateModelsForTier('lite', false),
+          chain: this.registry.orderChain('lite', liteCandidates),
           tier: 'lite',
           allowEscalate: tierCrossPolicy === 'allow_escalate',
           attemptCap: maxFailoverCandidates,
@@ -1689,7 +1735,10 @@ export class PipelineOrchestrator {
         const plusResult = await this.executeCandidatePool(
           fallbackReq,
           {
-            chain: this.registry.getCandidateModelsForTier(escalateTier, true),
+            chain: this.registry.orderChain(
+              escalateTier,
+              this.registry.getCandidateModelsForTier(escalateTier, true)
+            ),
             tier: escalateTier,
             allowEscalate: false,
             attemptCap: maxFailoverCandidates,
@@ -1828,7 +1877,23 @@ export class PipelineOrchestrator {
               );
             if (widened.length > 0) pool = widened;
           }
-          chain = head ? [head, ...pool.filter(m => m.id !== head.id)] : pool;
+          if (head) {
+            chain = [head, ...pool.filter(m => m.id !== head.id)];
+          } else if (pool.length === 0) {
+            chain = pool;
+          } else {
+            // No pin and no explicit model (stateless / disabled sessions):
+            // the early strategy pick IS this request's leader and already
+            // advanced the cursor once. Keep it when the (possibly widened)
+            // pool still holds it; otherwise draw exactly one replacement
+            // from the pool this chain will actually walk.
+            const early = autoLeader;
+            const leader =
+              early && pool.some(m => m.id === early.id)
+                ? early
+                : this.registry.pickLeader(actualTier, pool);
+            chain = [leader, ...pool.filter(m => m.id !== leader.id)];
+          }
           // Auto keeps the configured failover budget; an explicit opt-in is
           // bounded by its own chain length (failover.maxAttempts governs
           // auto routing only). Cross-tier escalation is an AUTO-routing

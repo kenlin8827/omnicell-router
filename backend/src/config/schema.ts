@@ -33,7 +33,8 @@ import { migrationV1ToV2 } from './migrations/v1-to-v2.js';
 import { migrationV2ToV3 } from './migrations/v2-to-v3.js';
 import { migrationV3ToV4 } from './migrations/v3-to-v4.js';
 import { migrationV4ToV5 } from './migrations/v4-to-v5.js';
-import { migrationV5ToV6, SECTION_MOVES_V6, type DiskConfigV6 } from './migrations/v5-to-v6.js';
+import { migrationV5ToV6 } from './migrations/v5-to-v6.js';
+import { migrationV6ToV7, SECTION_MOVES_V7, type DiskConfigV7 } from './migrations/v6-to-v7.js';
 import {
   toDiskConfigWith,
   toRuntimeConfigWith,
@@ -42,16 +43,16 @@ import {
 } from './layout.js';
 import type { RouterConfig } from './types.js';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** The current disk type — re-exported from the LATEST version's file. */
-export type DiskConfig = DiskConfigV6;
+export type DiskConfig = DiskConfigV7;
 
 /**
- * The CURRENT layout pointer. Bump to `SECTION_MOVES_V6` (etc.) when the
+ * The CURRENT layout pointer. Bump to `SECTION_MOVES_V7` (etc.) when the
  * newest migration file ships — the single edit a new version makes here.
  */
-const LATEST_LAYOUT: ReadonlyArray<SectionMove> = SECTION_MOVES_V6;
+const LATEST_LAYOUT: ReadonlyArray<SectionMove> = SECTION_MOVES_V7;
 
 export interface Migration {
   from: number;
@@ -74,6 +75,7 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
   migrationV3ToV4,
   migrationV4ToV5,
   migrationV5ToV6,
+  migrationV6ToV7,
 ];
 
 /** Runtime flat config → current-version disk shape. */

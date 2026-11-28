@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'yaml';
-import type { BodyLimitsConfig, CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingConfig, WebAuthConfig } from './types.js';
+import type { BodyLimitsConfig, CircuitBreakerConfig, DirectivesConfig, InterceptPosture, Layer2DecisionConfig, MihomoConfig, MihomoCustomRule, MihomoGroupType, MihomoManualNode, MihomoRoutingMode, MihomoRuleTarget, MihomoRuleType, MihomoSubscription, ProxyConfig, ProxyMode, RateLimitConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, StreamingConfig, TierMemberRule, WebAuthConfig } from './types.js';
 import { INTERCEPT_POSTURES, lintRules, normalizeRuleTable } from '../forward-proxy/rules.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_MAX_RATE_LIMIT_WAIT_MS } from '../resilience/circuit-breaker.js';
 import { EFFORT_LADDER } from '../types/router.js';
 import { resolveDirectivePrefix } from '../pipeline/directives.js';
+import { canonicalizeSelectionValues } from '../providers/selection.js';
+import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { missingNodeCredential, sanitizeTypedNode } from '../proxy/manual-node-spec.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
@@ -1159,6 +1161,12 @@ export function loadConfig(configPath?: string): RouterConfig {
         return DEFAULT_CONFIG;
       }
       const flat = toRuntimeConfig(parsed as unknown as DiskConfig) as Record<string, any>;
+      // Canonical strategy values at the read boundary: a hand-edited file (or
+      // a config copied in without the boot upgrade) must not leak an unknown
+      // or retired spelling into the runtime object — every consumer, and the
+      // next save, reads one of the three strategies only (anything else is
+      // the default `priority`).
+      canonicalizeSelectionValues(flat);
       if (configPath === undefined) {
         _diskPort = typeof flat.port === 'number' && Number.isFinite(flat.port) ? flat.port : undefined;
       }
@@ -1360,6 +1368,11 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
         error: `config schemaVersion ${fromVersion} is newer than this build supports (current ${SCHEMA_VERSION}) — upgrade OmniCellRouter`,
       };
     }
+    // Canonical strategy values at the raw-save boundary: a hand-pasted unknown
+    // or retired spelling on an otherwise current-version draft would otherwise
+    // be written back verbatim (migrateConfig is a no-op for a current-version
+    // file). A change forces the canonical regroup write below.
+    const canonicalizedSelection = canonicalizeSelectionValues(disk.routing);
     if (fs.existsSync(configPath)) {
       fs.copyFileSync(configPath, `${configPath}.bak`);
     }
@@ -1368,7 +1381,8 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
     // is BOTH current AND the first key; anything else goes through the
     // canonical regroup, which rewrites it first with the current version.
     const firstIsVersion = parsed.schemaVersion === SCHEMA_VERSION && Object.keys(parsed)[0] === 'schemaVersion';
-    fs.writeFileSync(configPath, fromVersion === SCHEMA_VERSION && firstIsVersion ? yamlContent : stringify(disk), 'utf8');
+    const writeVerbatim = fromVersion === SCHEMA_VERSION && firstIsVersion && !canonicalizedSelection;
+    fs.writeFileSync(configPath, writeVerbatim ? yamlContent : stringify(disk), 'utf8');
     if (warnings.length > 0) {
       console.warn(`[Config] ${configPath}: draft upgraded v${fromVersion} → v${SCHEMA_VERSION}:`);
       for (const w of warnings) console.warn(`  - ${w}`);
@@ -1482,6 +1496,34 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
       merged.webAuth = { ...merged.webAuth, passwordHash: current.webAuth.passwordHash };
     }
     merged.webAuth = sanitizeWebAuthInput(merged.webAuth);
+    // Canonical strategy values at the WRITE boundary: a stale console tab (or a
+    // hand-built PUT) that still posts an unknown/retired spelling must never
+    // reach disk — it resolves to the default `priority`.
+    canonicalizeSelectionValues(merged);
+    // Runtime-projection-only rule fields never reach disk: `exact` is derived
+    // by markExactFullIds / combo expansion at commit time, so a stale console
+    // tab (or a hand-built PUT) that echoes committed rules back must not
+    // freeze it into the file. Strip it here, next to the other write-boundary
+    // sanitizers.
+    if (merged.tiers) {
+      const nextTiers = { ...merged.tiers };
+      for (const tier of MEMBER_TIER_ORDER) {
+        const policy = nextTiers[tier];
+        if (policy && Array.isArray(policy.members)) {
+          nextTiers[tier] = {
+            ...policy,
+            members: policy.members.map((rule: TierMemberRule): TierMemberRule => {
+              if (rule.exact === undefined) return rule;
+              const clean: TierMemberRule = { pattern: rule.pattern };
+              if (rule.weight !== undefined) clean.weight = rule.weight;
+              if (rule.effortMap !== undefined) clean.effortMap = rule.effortMap;
+              return clean;
+            }),
+          };
+        }
+      }
+      merged.tiers = nextTiers;
+    }
     // One-step undo for EVERY save, not just the raw-page editor: a sanitizer
     // regression once dropped a whole section and the console save persisted
     // the loss with no previous file to restore. Best effort — an absent file
