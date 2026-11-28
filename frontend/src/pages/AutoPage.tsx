@@ -274,9 +274,12 @@ export const AutoPage: React.FC = () => {
               { to: '/cache', label: t('auto.linkCache') },
               { to: '/sessions', label: t('auto.linkSessions') },
             ]).map(l => (
-              <Link key={l.to} to={l.to} className="btn" style={{ fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span>{l.label}</span>
-                <ArrowRight size={13} />
+              /* .btn is nowrap by default (an atomic action label), but these are
+                 multi-word navigation links: a narrow card must wrap the label
+                 instead of pushing the text past the card edge. */
+              <Link key={l.to} to={l.to} className="btn" style={{ fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', whiteSpace: 'normal', textAlign: 'left' }}>
+                <span style={{ flex: 1, minWidth: 0 }}>{l.label}</span>
+                <ArrowRight size={13} style={{ flexShrink: 0 }} />
               </Link>
             ))}
           </div>

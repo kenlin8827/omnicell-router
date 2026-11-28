@@ -544,12 +544,15 @@ export interface TranslationDict {
     selPriority: string;
     selWeighted: string;
     selRoundRobin: string;
-    selectionHint: string;
     defaultsHint: string;
     membersTitle: string;
     membersHint: string;
     addMemberPlaceholder: string;
-    addMemberBtn: string;
+    quickAdd: string;
+    quickPreview: string;
+    quickNoMatch: string;
+    quickExists: string;
+    quickConfirm: string;
     effortMapBtn: string;
     effortMapEditTitle: string;
     effortPassthrough: string;
@@ -562,7 +565,6 @@ export interface TranslationDict {
     clearMembersHint: string;
     clearMembersConfirmTitle: string;
     clearMembersConfirmDesc: string;
-    moveTop: string;
     dragSort: string;
     membersEmpty: string;
     saveCheckTitle: string;
@@ -571,7 +573,6 @@ export interface TranslationDict {
     saveCheckContinue: string;
     saveCheckBack: string;
     membersCount: string;
-    filterPlaceholder: string;
     memberWeightHint: string;
     pickModelBtn: string;
     pickEmptyHint: string;
@@ -3412,9 +3413,23 @@ hiddenBadge: string;
     selWeighted: string;
     selRoundRobin: string;
     members: string;
-    addMember: string;
+    /** Placeholder for the always-present blank add-row at the list bottom. */
+    addRowPlaceholder: string;
+    memberCount: string;
+    /** Add-row toggle that swaps the model picker for the wildcard input. */
+    quickAdd: string;
     patternPlaceholder: string;
+    /** Commit-button label while the wildcard box has no usable hit yet. */
     patternAdd: string;
+    /** Tooltip of the quick-add toggle: preview first, existing members skipped. */
+    patternHint: string;
+    /** Caption for the preview chips that are already in the chain. */
+    patternSkipped: string;
+    /** Wildcard hit, but nothing left to add. */
+    patternAllPresent: string;
+    /** Live hit-list line before the operator confirms the bulk append. */
+    patternPreview: string;
+    patternConfirm: string;
     patternAdded: string;
     patternNoMatch: string;
     noteLabel: string;

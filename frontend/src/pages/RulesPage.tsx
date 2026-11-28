@@ -1,22 +1,31 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Pencil, Trash2, AlertTriangle, Activity, Loader2 } from 'lucide-react';
+import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUp, ArrowDown, ArrowRightLeft, Pencil, Trash2, AlertTriangle, Activity, Loader2, Wand2 } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo, type ComboView, type TierTestResult } from '../lib/api';
 import { useConfirm } from '../components/ConfirmProvider';
-import { Combobox } from '../components/Combobox';
+import { Combobox, type ComboboxOption } from '../components/Combobox';
+import {
+  DROPDOWN_PANEL_Z,
+  dropdownSurfaceStyle,
+  positionDropdown,
+  type DropdownPosition,
+} from '../components/dropdown';
 import { Dialog } from '../components/Dialog';
 import { ProviderLogo } from '../components/ProviderLogo';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
-import { globMatch } from '../lib/glob';
+import { memberRuleMatch } from '../lib/glob';
 import { fmtLatency } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
+import { comboOptionIcon } from '../lib/modelRefBadge';
+import { MEMBER_ACTIONS_W, MEMBER_GUTTER_W, MEMBER_QUICK_CHIP_CAP, MEMBER_WEIGHT_INPUT } from '../lib/member-row-rails';
+import { MEMBER_WEIGHT_MAX } from '../lib/defaults';
+import { type SelectionStrategy, normalizeSelection } from '../lib/selection';
 
 import { FONT_MONO } from '../lib/fonts';
 type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
-
-type SelectionStrategy = 'priority' | 'weighted' | 'round_robin';
 
 /** thinking-level vocabulary (mirrors backend EFFORT_LADDER). */
 const EFFORT_LEVELS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -29,7 +38,7 @@ const EFFORT_MAP_GRID = '78px 14px minmax(0, 1fr)';
 /** One member rule row. `effortMap` values: '' / missing = passthrough. */
 interface MemberRow {
   pattern: string;
-  weight?: number; // preserved verbatim; not edited in the v1 UI
+  weight?: number; // ≥ 1; undefined = 1 (orders priority too: weight desc, then list order)
   effortMap: Record<string, string>;
 }
 
@@ -90,7 +99,7 @@ const defaultFormFor = (): TierPolicyForm => ({ members: [], selection: 'priorit
 
 const formFromPolicy = (p: any): TierPolicyForm => ({
   members: toFormMembers(p?.members),
-  selection: p?.selection ?? 'priority',
+  selection: normalizeSelection(p?.selection),
 });
 
 /**
@@ -177,7 +186,17 @@ export const RulesPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savingTier, setSavingTier] = useState<Tier | null>(null);
   const [pendingSaveTier, setPendingSaveTier] = useState<Tier | null>(null);
-  const [memberDrafts, setMemberDrafts] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
+  // Quick-add popover (the combo editor's wildcard bulk-add): ONE tier's
+  // panel can be open at a time, anchored to that tier's add-row button.
+  // Unlike the combo editor it commits the PATTERN, not its expansion —
+  // tier members are match rules evaluated by the backend at request time.
+  const [quick, setQuick] = useState<{ tier: Tier } | null>(null);
+  const [quickPos, setQuickPos] = useState<DropdownPosition | null>(null);
+  const [quickPattern, setQuickPattern] = useState('');
+  const [quickCellW, setQuickCellW] = useState<number | null>(null);
+  const quickBtnRefs = useRef<Partial<Record<Tier, HTMLButtonElement | null>>>({});
+  const quickPanelRef = useRef<HTMLDivElement | null>(null);
+  const quickInputRef = useRef<HTMLInputElement | null>(null);
   const [mapTarget, setMapTarget] = useState<{ tier: Tier; index: number } | null>(null);
   const [saveWarnings, setSaveWarnings] = useState<
     { kind: string; tier?: string; pattern?: string }[] | null
@@ -185,7 +204,6 @@ export const RulesPage: React.FC = () => {
   // Modal dismissal (Escape / backdrop press+release / ×) is owned by the
   // shared <Dialog> — the page supplies onClose only. Stacked modals block
   // the layers beneath via `closeDisabled` (see the edit Dialog below).
-  const [memberFilters, setMemberFilters] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   // Per-tier end-to-end test (POST /api/admin/tiers/:tier/test): latest result
   // per tier card + in-flight markers. Result shows inline (✓ms / ✗) with the
   // full detail on hover, mirroring the combo test button.
@@ -351,9 +369,6 @@ export const RulesPage: React.FC = () => {
 
   const startEdit = (tier: Tier) => {
     setDrafts((prev) => ({ ...prev, [tier]: committed[tier] }));
-    // Clean slate for the editing chrome (filter / manual-input draft).
-    setMemberFilters((prev) => ({ ...prev, [tier]: '' }));
-    setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
   };
 
   const cancelEdit = async (tier: Tier) => {
@@ -369,8 +384,6 @@ export const RulesPage: React.FC = () => {
     }
     if (drag?.tier === tier) endDrag();
     setDrafts((prev) => ({ ...prev, [tier]: null }));
-    setMemberFilters((prev) => ({ ...prev, [tier]: '' }));
-    setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
   };
 
   // Warn before closing / refreshing the tab while any draft is unsaved.
@@ -420,14 +433,11 @@ export const RulesPage: React.FC = () => {
 
   /* ─── member-list editing (draft-only; edit mode is the gate) ── */
 
-  /** The ONE append path for both the picker and the manual input.
+  /** The ONE append path for both the picker and the quick-add popover.
    *  Rules match case-insensitively (glob), so duplicates are detected the
    *  same way: a duplicate is NOT appended — instead the EXISTING row is
    *  flashed and scrolled into view, so "re-adding" gives honest feedback
-   *  instead of a silent twin. New rows append at the end, the tier's member
-   *  filter is cleared (guaranteeing the new row is actually rendered — the
-   *  old behavior could hide it behind an active filter or the 5-row scroll
-   *  fold, which read as "add did nothing"), and the row flashes. */
+   *  instead of a silent twin. New rows append at the end and flash. */
   const appendMembers = (tier: Tier, patterns: string[]) => {
     const draft = drafts[tier];
     if (!draft) return;
@@ -450,14 +460,115 @@ export const RulesPage: React.FC = () => {
     }
     if (members.length === current.length && !flashKey) return;
     updateDraft(tier, { members });
-    setMemberFilters((prev) => ({ ...prev, [tier]: '' }));
     if (flashKey) setFlash({ tier, key: flashKey });
   };
 
-  const addMemberFromDraft = (tier: Tier) => {
-    appendMembers(tier, [memberDrafts[tier]]);
-    setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
+  /* ─── quick-add popover (wildcard bulk-add, combo-editor parity) ── */
+
+  /** Registered model ids the quick-add preview matches against. Tiers save
+   *  the PATTERN itself (backend `memberRuleMatch` re-evaluates it per
+   *  request), so this list is a spot-check, never the payload. */
+  const registeredModelIds = useMemo(
+    () => gatewayModels.filter((m) => m.kind === 'model').map((m) => m.id),
+    [gatewayModels],
+  );
+
+  const quickMatch = useMemo(() => {
+    const p = quickPattern.trim();
+    if (!p) return null;
+    const registered = new Set(registeredModelIds.map((id) => id.toLowerCase()));
+    const isRegistered = (id: string) => registered.has(id.trim().toLowerCase());
+    const hits = registeredModelIds.filter((id) => memberRuleMatch(p, id, isRegistered));
+    const exists = quick
+      ? forms[quick.tier].members.some((m) => m.pattern.toLowerCase() === p.toLowerCase())
+      : false;
+    return { hits, exists };
+  }, [quickPattern, registeredModelIds, forms, quick]);
+
+  const placeQuick = useCallback((tier: Tier) => {
+    const el = quickBtnRefs.current[tier];
+    setQuickPos(el ? positionDropdown(el, 340, 300) : null);
+  }, []);
+
+  const closeQuick = useCallback(() => {
+    setQuick(null);
+    setQuickPos(null);
+    setQuickPattern('');
+  }, []);
+
+  const commitQuick = () => {
+    if (!quick || !quickMatch || quickMatch.exists) return;
+    appendMembers(quick.tier, [quickPattern.trim()]);
+    closeQuick();
   };
+
+  // Escape belongs to the popover while it is open — the shared Dialog's own
+  // window listener would otherwise throw away the whole draft.
+  useEffect(() => {
+    if (!quick) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      closeQuick();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [quick, closeQuick]);
+
+  // Re-anchor on reflow, dismiss on pointerdown outside trigger + panel (the
+  // same pair of rules the Combobox popup applies to its own panel).
+  useEffect(() => {
+    if (!quick) return;
+    const tier = quick.tier;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (quickPanelRef.current?.contains(target) || quickBtnRefs.current[tier]?.contains(target)) return;
+      closeQuick();
+    };
+    const onReflow = () => placeQuick(tier);
+    window.addEventListener('scroll', onReflow, true);
+    window.addEventListener('resize', onReflow);
+    document.addEventListener('pointerdown', onDown);
+    return () => {
+      window.removeEventListener('scroll', onReflow, true);
+      window.removeEventListener('resize', onReflow);
+      document.removeEventListener('pointerdown', onDown);
+    };
+  }, [quick, placeQuick, closeQuick]);
+
+  useEffect(() => {
+    if (quick) quickInputRef.current?.focus();
+  }, [quick]);
+
+  // One closing editor at a time: cancelling it must not strand its popover.
+  useEffect(() => {
+    if (!quick) return;
+    if (drafts[quick.tier] === null) closeQuick();
+  }, [drafts, quick, closeQuick]);
+
+  // The add-row trigger is the widest thing in the trailing action column
+  // (locale-dependent label), and the member rows reuse that measured width so
+  // both columns end on the same x — the combo editor's `actionsW` rule.
+  const editingTier = TIERS.find(({ key }) => drafts[key] !== null)?.key ?? null;
+  useLayoutEffect(() => {
+    const el = editingTier ? quickBtnRefs.current[editingTier] : null;
+    if (!el) return;
+    let raf = 0;
+    const measure = () => {
+      const w = el.offsetWidth;
+      if (w > 0) setQuickCellW(w);
+      else raf = requestAnimationFrame(measure);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [editingTier]);
+
+  const actionCellW = quickCellW ? `${quickCellW}px` : MEMBER_ACTIONS_W;
 
   /** Change a member rule's weight: ≥ 2 is stored; 1 / blank = default (not written). */
   const updateWeight = (tier: Tier, index: number, raw: string) => {
@@ -467,54 +578,78 @@ export const RulesPage: React.FC = () => {
       const next = [...members];
       next[index] = { ...next[index] };
       if (!Number.isFinite(n) || n <= 1) delete next[index].weight;
-      else next[index].weight = n;
+      else next[index].weight = Math.min(n, MEMBER_WEIGHT_MAX);
       return next;
     });
   };
 
-  /** Filtered view of a tier's members (edit actions still target the real indices). */
-  const visibleMembers = (tier: Tier) => {
-    const q = memberFilters[tier].trim().toLowerCase();
-    const rows = forms[tier].members.map((m, idx) => ({ m, idx }));
-    return q ? rows.filter(({ m }) => m.pattern.toLowerCase().includes(q)) : rows;
-  };
+  /** Replace one row's match rule (pattern / exact id / `combo:` ref) while
+   *  keeping its weight and thinking-level map. */
+  const setMemberPattern = (tier: Tier, index: number, pattern: string) =>
+    patchDraftMembers(tier, (members) => {
+      if (!members[index] || !pattern || members[index].pattern === pattern) return members;
+      const next = [...members];
+      next[index] = { ...next[index], pattern };
+      return next;
+    });
+
+  /** Every member of a tier paired with its REAL index (edit actions target
+   *  that index; the list renders in config order). */
+  const membersWithIndex = (tier: Tier, form: TierPolicyForm = forms[tier]) => form.members.map((m, idx) => ({ m, idx }));
 
   /** idx → effective chain position (weight desc, then list order) — mirrors the backend sort. */
-  const chainPositions = (tier: Tier) => {
+  const chainPositions = (tier: Tier, form: TierPolicyForm = forms[tier]) => {
     const pos = new Map<number, number>();
-    forms[tier].members
+    form.members
       .map((m, idx) => ({ m, idx }))
       .sort((a, b) => (b.m.weight ?? 1) - (a.m.weight ?? 1) || a.idx - b.idx)
       .forEach(({ idx }, n) => pos.set(idx, n + 1));
     return pos;
   };
 
-  /** Member-picker dropdown options: active combos first (a pick adds ONE
+  /** Every pickable member value: active combos first (a pick adds ONE
       `combo:<id>` rule — an indirection the backend expands at every commit
       point, so pools follow later combo edits), then registered models. Only
       real registrations may enter pools — virtual auto* ids and variant
       sibling ids are not registrations. */
-  const memberPickOptions = (tier: Tier) => {
-    const existing = new Set(forms[tier].members.map((x) => x.pattern));
-    const comboOptions = comboCatalog
+  const memberOptionPool = (): ComboboxOption[] => {
+    const comboOptions: ComboboxOption[] = comboCatalog
       .filter((c) => c.active !== false && c.disabled !== true)
-      .filter((c) => !existing.has(`combo:${c.id}`))
       .map((c) => ({
         value: `combo:${c.id}`,
         label: c.id,
+        icon: comboOptionIcon(),
         badge: t('tierPolicy.comboBadge'),
         badgeColor: 'var(--accent-violet)',
         meta: t('tierPolicy.comboMemberCount', { n: (c.members || []).filter((m) => m.registered).length }),
       }));
     const modelOptions = gatewayModels
-      .filter((m) => m.kind === 'model' && !existing.has(m.id))
-      .map((m) => {
-        // Full membership set (a model may belong to several tiers) — never a
-        // single fixed tier.
-        const meta = (m.tiers ?? []).map((tier) => t(TIERS.find((x) => x.key === tier)?.labelKey ?? '') || tier).join(' / ');
-        return { value: m.id, label: m.id, meta };
-      });
+      .filter((m) => m.kind === 'model')
+      // No tier meta in this picker: it composes THIS tier's rules, so a
+      // model's memberships elsewhere are noise, not a decision input.
+      .map((m) => ({ value: m.id, label: m.id }));
     return [...comboOptions, ...sortModelOptions(modelOptions)];
+  };
+
+  /** Options for ONE row's picker. A rule is a pattern (glob / substring /
+   *  exact id) or a `combo:` ref, so its current value may not exist in the
+   *  catalog at all — it is always (re)injected as the first option, or the
+   *  trigger would render the row as empty. Values claimed by OTHER rows stay
+   *  hidden, so a pick can never create a duplicate. */
+  const memberRowOptions = (pool: ComboboxOption[], tier: Tier, index: number): ComboboxOption[] => {
+    const self = forms[tier].members[index]?.pattern ?? '';
+    const usedElsewhere = new Set(
+      forms[tier].members.filter((_, j) => j !== index).map((m) => m.pattern)
+    );
+    const options = pool.filter((o) => !usedElsewhere.has(o.value));
+    if (self && !options.some((o) => o.value === self)) {
+      options.unshift(
+        self.startsWith('combo:')
+          ? { value: self, label: self.slice('combo:'.length), icon: comboOptionIcon(), badge: t('tierPolicy.comboBadge'), badgeColor: 'var(--accent-violet)' }
+          : { value: self, label: self }
+      );
+    }
+    return options;
   };
 
   /** Declared thinking levels the gateway can actually serve for one member
@@ -528,12 +663,16 @@ export const RulesPage: React.FC = () => {
     const raw = pattern.trim();
     if (!raw) return undefined;
     const combo = raw.startsWith('combo:') ? comboCatalog.find((c) => `combo:${c.id}` === raw) : undefined;
+    // A rule is a PATTERN (glob / substring) or a `combo:` ref. The match uses
+    // the shared member-rule semantics — including the full-id exact pin — so a
+    // registered full id resolves to ITS model only, never to a longer sibling.
+    const registered = new Set(gatewayModels.filter((g) => g.kind === 'model').map((g) => g.id.toLowerCase()));
     const claimed = combo
       ? combo.members
           .filter((m) => m.registered)
           .map((m) => gatewayModels.find((g) => g.id === m.id))
           .filter((m): m is GatewayModelRow => m !== undefined)
-      : gatewayModels.filter((m) => m.kind === 'model' && globMatch(raw, m.id));
+      : gatewayModels.filter((m) => m.kind === 'model' && memberRuleMatch(raw, m.id, (id) => registered.has(id.toLowerCase())));
     if (claimed.length === 0) return undefined;
     const declared = new Set<string>();
     for (const m of claimed) for (const lvl of m.efforts ?? []) declared.add(lvl);
@@ -687,7 +826,7 @@ export const RulesPage: React.FC = () => {
 
   /** One real minimal completion through the production pipeline, pinned to
    * the tier via the auto-<tier> virtual entry — the same force_tier path a
-   * client's request takes. Only the SELECTED member (default credential / weighted
+   * client's request takes. Only the SELECTED member (default credential / round-robin
    * pick) is exercised, never the whole pool; an empty tier lands on its
    * degraded fallback model, which modelUsed surfaces verbatim. Precondition
    * failures (unknown tier) localize via the reasonCode. */
@@ -867,14 +1006,22 @@ export const RulesPage: React.FC = () => {
             <Zap size={18} color="var(--accent)" />
             <span>{t('tierPolicy.title')}</span>
           </div>
-          {/* Quick-nav chips: jump to the corresponding tier card below */}
+          {/* Tier chips: the page's tier INDEX. A click both scrolls the grid to
+              that tier's card and opens its editor — editing is the page's one
+              action, and the modal scrim already blocks the chips while a
+              draft is open, so this can never stack two drafts. The scroll is
+              kept so the card is in view once the dialog closes. */}
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
             {TIERS.map(({ key: navTier, labelKey: navLabel, icon: NavIcon, color: navColor }) => (
               <button
                 key={navTier}
                 className="btn"
                 style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', color: navColor, ...CTRL_H }}
-                onClick={() => document.getElementById(`tier-card-${navTier}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                disabled={loading}
+                onClick={() => {
+                  document.getElementById(`tier-card-${navTier}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  startEdit(navTier);
+                }}
               >
                 <NavIcon size={12} />
                 <span>{t(navLabel)}</span>
@@ -913,22 +1060,14 @@ export const RulesPage: React.FC = () => {
         }}
       >
         {TIERS.map(({ key: tier, labelKey, descKey, icon: Icon, color }) => {
-          const f = forms[tier];
-          const editing = drafts[tier] !== null;
-          const pos = chainPositions(tier);
-          const pickOptions = memberPickOptions(tier);
-          // Card footer pool numbers are mode-dependent: VIEW mode shows the
-          // COMMITTED (live) projection — the single source of truth for what
-          // routing uses; EDIT mode shows the ephemeral preview computed from
-          // the draft ("what would happen if I saved now"). The preview's
-          // ephemeral nature stays explicit in the detail modal.
-          const poolInfo = editing ? pools[tier] ?? poolsLive[tier] : poolsLive[tier] ?? pools[tier];
+          const isEditing = drafts[tier] !== null;
           const testRes = tierTests[tier];
           const isTesting = testingTiers.has(tier);
           // Tier title: ONE source for both surfaces — the view card's header
           // row and the edit Dialog's title slot. A <span> (not <div>) so it
-          // stays valid inside the Dialog's <h3>.
-          const tierTitleEl = (
+          // stays valid inside the Dialog's <h3>. `editing` only gates the
+          // unsaved badge, which belongs to the edit surface.
+          const tierTitleEl = (editing: boolean) => (
             <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color, minWidth: 0 }}>
               <Icon size={16} />
               <span>{t(labelKey)}</span>
@@ -953,9 +1092,31 @@ export const RulesPage: React.FC = () => {
               )}
             </span>
           );
+          // ONE card-body renderer for BOTH surfaces: the grid cell always
+          // renders the read-only committed view (`editing = false`), and the
+          // edit surface is the SAME tree rendered into the <Dialog>
+          // (`editing = true`). Rendering a separate edit tree out of the grid
+          // used to remove the tier's card while its dialog was open, so the
+          // remaining cards reflowed into the vacated column on every open /
+          // close; keeping the view card in place keeps the grid stable.
+          const renderCard = (editing: boolean) => {
+          const f = editing ? drafts[tier] ?? committed[tier] : committed[tier];
+          const pos = chainPositions(tier, f);
+          // One catalog pool per card; the add-row hides claimed values while
+          // each row's own picker hides only what OTHER rows claim.
+          const memberPool = memberOptionPool();
+          const pickOptions = memberPool.filter((o) => !f.members.some((m) => m.pattern === o.value));
+          // Card footer pool numbers are mode-dependent: VIEW mode shows the
+          // COMMITTED (live) projection — the single source of truth for what
+          // routing uses; EDIT mode shows the ephemeral preview computed from
+          // the draft ("what would happen if I saved now"). The preview's
+          // ephemeral nature stays explicit in the detail modal.
+          const poolInfo = editing ? pools[tier] ?? poolsLive[tier] : poolsLive[tier] ?? pools[tier];
           const cardEl = (
             <div
-              id={`tier-card-${tier}`}
+              // The scroll-anchor id belongs to the grid card only; a second
+              // copy inside the dialog would duplicate it.
+              id={editing ? undefined : `tier-card-${tier}`}
               style={{
                 // Dialog mode strips the card chrome: the shared <Dialog>
                 // owns the surface (bg / border / shadow / padding / scroll
@@ -983,7 +1144,7 @@ export const RulesPage: React.FC = () => {
                   carries the title in its own chrome. */}
               {!editing && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                {tierTitleEl}
+                {tierTitleEl(editing)}
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
                   {/* Dialog mode: commit actions move to the footer bar
                       (modal convention) — the header carries only the title
@@ -1013,21 +1174,21 @@ export const RulesPage: React.FC = () => {
                       )}
                       <button
                         className="btn btn-sm"
-                        style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                        style={{ padding: '3px 18px', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-none)', minWidth: '82px', flexShrink: 0, ...CTRL_H }}
                         title={t('tierPolicy.testBtnHint')}
                         disabled={isTesting}
                         onClick={() => void handleTierTest(tier)}
                       >
-                        {isTesting ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Activity size={11} />}
+                        {isTesting ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Activity size={12} />}
                         <span>{t('tierPolicy.testBtn')}</span>
                       </button>
                       <button
                         className="btn btn-primary btn-sm"
-                        style={{ padding: '3px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                        style={{ padding: '3px 18px', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-none)', minWidth: '82px', flexShrink: 0, ...CTRL_H }}
                         disabled={loading}
                         onClick={() => startEdit(tier)}
                       >
-                        <Pencil size={11} />
+                        <Pencil size={12} />
                         <span>{t('tierPolicy.editBtn')}</span>
                       </button>
                     </>
@@ -1036,23 +1197,54 @@ export const RulesPage: React.FC = () => {
               </div>
               )}
 
-              {/* Single line + ellipsis (full text on hover): every card shows
-                  exactly one desc line, so member sections stay aligned without
-                  a 2-line reserve. */}
+              {/* Full description, wrapped — never truncated: the tier's role
+                  is the operator's primary orientation cue, and a clipped tail
+                  reads as missing copy at narrow card widths. */}
               <div
                 data-tip={t(descKey)}
                 style={{
                   fontSize: 'var(--text-xs)',
                   color: 'var(--text-dim)',
                   lineHeight: 'var(--leading-snug)',
-                  marginTop: '-6px',
-                  minHeight: '17px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  // Pull up against the view card's header row, but NEVER in
+                  // the edit dialog: there this is the scroll body's first
+                  // child, and a negative margin pushes the first line above
+                  // the padding box where `overflow: auto` clips it — the
+                  // beheaded-line bug.
+                  marginTop: editing ? '0px' : '-6px',
                 }}
               >
                 {t(descKey)}
+              </div>
+
+              {/* Selection strategy (weight comes from the member rules) —
+                  above the members list, matching the combo editor's order. */}
+              <div>
+                <label style={labelStyle}>{t('tierPolicy.selection')}</label>
+                {editing ? (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {(['priority', 'weighted_round_robin', 'round_robin'] as SelectionStrategy[]).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      // Compact rail (30px), same as every other in-body control —
+                      // the commit bar must stay the tallest action in the dialog.
+                      className={`btn btn-sm ${f.selection === s ? 'btn-primary' : ''}`}
+                      aria-pressed={f.selection === s}
+                      style={{ fontSize: 'var(--text-sm)', flex: 1 }}
+                      onClick={() => updateDraft(tier, { selection: s })}
+                    >
+                      {t(s === 'priority' ? 'tierPolicy.selPriority' : s === 'weighted_round_robin' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
+                    </button>
+                  ))}
+                </div>
+                ) : (
+                /* View mode: the committed strategy as plain text — no toggle
+                   chrome on a read-only surface. */
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-main)' }}>
+                  {t(f.selection === 'priority' ? 'tierPolicy.selPriority' : f.selection === 'weighted_round_robin' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
+                </div>
+                )}
               </div>
 
               {/* Member list — the ONLY pool-membership source. List order =
@@ -1070,9 +1262,9 @@ export const RulesPage: React.FC = () => {
                     <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
                     {editing && f.members.length > 0 && (
                       <button
-                        className="btn"
+                        className="btn btn-danger btn-sm"
                         data-tip={t('tierPolicy.clearMembersHint')}
-                        style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                        style={{ padding: '3px 10px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
                         disabled={savingTier !== null || loading}
                         onClick={() => void clearMembers(tier)}
                       >
@@ -1082,26 +1274,17 @@ export const RulesPage: React.FC = () => {
                     )}
                   </div>
                 </div>
-                {/* Member filter is edit-mode chrome (view mode has no
-                    controls on the list). */}
-                {editing && (
-                  <input
-                    type="text"
-                    className="input"
-                    style={{ marginTop: '6px', fontSize: 'var(--text-xs)', padding: '4px 8px', ...CTRL_H }}
-                    placeholder={t('tierPolicy.filterPlaceholder')}
-                    value={memberFilters[tier]}
-                    onChange={(e) => setMemberFilters((prev) => ({ ...prev, [tier]: e.target.value }))}
-                  />
-                )}
                 {/* The list flex-grows (basis auto) so a short pool next to a
-                    tall sibling still fills its card — capped at EXACTLY 5
-                    rows: rows are pinned to 40px + 6px gap, so maxHeight =
-                    5*40 + 4*6 = 224px. Longer pools scroll internally. */}
+                    tall sibling still fills its card — the grid card is capped
+                    at EXACTLY 5 of its 40px rows, so maxHeight =
+                    5*40 + 4*6 = 224px. The dialog's rows are one-line controls
+                    and get 45vh; longer pools scroll internally either way. */}
                 <div
-                  ref={(el) => {
+                  // Drag-sort / edge-scroll touch the EDIT body's list, never
+                  // the read-only grid card — keep a single owner.
+                  ref={editing ? (el) => {
                     listRefs.current[tier] = el;
-                  }}
+                  } : undefined}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -1116,7 +1299,7 @@ export const RulesPage: React.FC = () => {
                     // stays capped at 5 rows so all four cards align.
                     maxHeight: editing ? '45vh' : 'calc(5 * 40px + 4 * 6px)',
                     overflowY: 'auto',
-                    paddingRight: visibleMembers(tier).length > 5 ? '4px' : undefined,
+                    paddingRight: membersWithIndex(tier, f).length > 5 ? '4px' : undefined,
                   }}
                 >
                   {/* Empty pool: a single centered warning icon instead of a
@@ -1140,7 +1323,7 @@ export const RulesPage: React.FC = () => {
                       its keydown focus) alive across swaps. */}
                   {(() => {
                     const seen = new Map<string, number>();
-                    return visibleMembers(tier).map(({ m, idx: i }) => {
+                    return membersWithIndex(tier, f).map(({ m, idx: i }) => {
                       const occ = seen.get(m.pattern) ?? 0;
                       seen.set(m.pattern, occ + 1);
                       const mapped = Object.values(m.effortMap).filter(Boolean).length;
@@ -1239,30 +1422,25 @@ export const RulesPage: React.FC = () => {
                         style={{
                           display: 'flex',
                           alignItems: 'center',
-                          // 10px (not the view row's 6px): the right-side control
-                          // cluster (weight / effort-map / 4 icon buttons) needs
-                          // visible seams or it reads as one merged blob.
-                          gap: '10px',
-                          height: '40px',
-                          padding: '0 8px',
+                          gap: '6px',
+                          padding: '4px 6px',
                           // Dragged row = dimmed + accent outline; the flashed
                           // row plays the one-shot ocr-flash highlight
-                          // (index.css). Text selection stays possible for the
-                          // id, except while a drag is in flight.
+                          // (index.css). Text selection stays possible except
+                          // while a drag is in flight.
                           border: `1px solid ${isDragging ? 'var(--accent)' : 'var(--card-border)'}`,
-                          borderRadius: 8,
+                          borderRadius: 6,
                           flexShrink: 0,
                           opacity: isDragging ? 0.45 : undefined,
                           animation: isFlashed ? 'ocr-flash 1.2s ease-out 1' : undefined,
                           userSelect: drag ? 'none' : undefined,
                         }}
                       >
-                        {/* grip + index in a tight sub-group: the parent row's
-                            6px gap plus the right-aligned index's empty left
-                            space made them look disconnected (~16px apart).
-                            The grip is the drag handle (pointer capture) AND
-                            the keyboard-reorder handle (focus + arrows). */}
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+                        {/* Combo-editor gutter: the grip is the drag handle
+                            (pointer capture) AND the keyboard-reorder handle
+                            (focus + arrows / Home / End); the number is the
+                            effective chain position. */}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', width: MEMBER_GUTTER_W, flexShrink: 0, color: 'var(--text-dim)' }}>
                           <button
                             type="button"
                             data-tip={t('tierPolicy.dragSort')}
@@ -1295,69 +1473,41 @@ export const RulesPage: React.FC = () => {
                               touchAction: 'none',
                             }}
                           >
-                            <GripVertical size={12} />
+                            <GripVertical size={13} />
                           </button>
                           <span
                             data-tip={t('tierPolicy.memberWeightHint')}
-                            style={{
-                              minWidth: '22px',
-                              flexShrink: 0,
-                              fontSize: 'var(--text-2xs)',
-                              fontFamily: FONT_MONO,
-                              color: 'var(--text-dim)',
-                              textAlign: 'right',
-                            }}
+                            style={{ fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, textAlign: 'right', flexShrink: 0 }}
                           >
                             #{pos.get(i) ?? ''}
                           </span>
                         </span>
-                        <span
-                          data-tip={m.pattern}
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            fontFamily: FONT_MONO,
-                            fontSize: 'var(--text-sm)',
-                            fontWeight: 'var(--font-semibold)',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 6,
-                          }}
-                        >
-                          {isComboRef && (
-                            <span
-                              style={{
-                                fontSize: 'var(--text-2xs)',
-                                fontWeight: 'var(--font-bold)',
-                                flexShrink: 0,
-                                padding: '0 6px',
-                                borderRadius: 999,
-                                color: 'var(--accent-violet)',
-                                border: '1px solid color-mix(in srgb, var(--accent-violet) 45%, transparent)',
-                              }}
-                            >
-                              {t('tierPolicy.comboBadge')}
-                            </span>
-                          )}
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {isComboRef ? m.pattern.slice('combo:'.length) : m.pattern}
-                          </span>
-                        </span>
-                        {!isComboRef && (
-                          <input
-                            type="number"
-                            min={1}
-                            step={1}
-                            className="input"
-                            data-tip={t('tierPolicy.memberWeightHint')}
-                            style={{ width: '52px', padding: '3px 6px', fontSize: 'var(--text-xs)', textAlign: 'center', flexShrink: 0, ...CTRL_H }}
-                            value={m.weight ?? 1}
-                            onChange={(e) => updateWeight(tier, i, e.target.value)}
-                          />
-                        )}
+                        {/* The row's own picker: a pick replaces the rule in
+                            place (pattern / exact id / combo ref) and keeps
+                            its weight and thinking-level map. */}
+                        <Combobox
+                          value={m.pattern}
+                          onChange={(v) => setMemberPattern(tier, i, v)}
+                          options={memberRowOptions(memberPool, tier, i)}
+                          panelMinWidth={320}
+                          style={{ flex: 1, minWidth: '180px', fontSize: 'var(--text-sm)', padding: '4px 8px', ...CTRL_H }}
+                        />
+                        {/* Weight ranks the chain first (higher first, ties by
+                            list order) under EVERY strategy, so it is always
+                            editable. Under `weighted_round_robin` it is also
+                            the rotation share; `priority` serves the resulting
+                            chain head and `round_robin` serves equal turns. */}
+                        <input
+                          type="number"
+                          min={1}
+                          max={MEMBER_WEIGHT_MAX}
+                          step={1}
+                          className="input"
+                          data-tip={t('tierPolicy.memberWeightHint')}
+                          style={MEMBER_WEIGHT_INPUT}
+                          value={m.weight ?? 1}
+                          onChange={(e) => updateWeight(tier, i, e.target.value)}
+                        />
                         <button
                           className="btn"
                           style={{ padding: '2px 8px', fontSize: 'var(--text-2xs)', lineHeight: 'var(--leading-none)', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0, ...CTRL_H }}
@@ -1367,140 +1517,202 @@ export const RulesPage: React.FC = () => {
                           <ArrowRightLeft size={10} />
                           <span>{mapped > 0 ? `${t('tierPolicy.effortMapBtn')} ${mapped}` : t('tierPolicy.effortMapBtn')}</span>
                         </button>
-                        {/* One-click reorder nudges — kept even though the
-                            grip drag is now reliable: for a ±1 hop a single
-                            click beats starting a drag. The grip also still
-                            supports keyboard (↑/↓/Home/End) for a11y. */}
-                        <button
-                          className="btn"
-                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
-                          disabled={i === 0}
-                          data-tip={t('tierPolicy.moveTop')}
-                          onClick={() => moveMemberTop(tier, i)}
-                        >
-                          <ArrowUpToLine size={11} />
-                        </button>
-                        <button
-                          className="btn"
-                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
-                          disabled={i === 0}
-                          data-tip={t('tierPolicy.moveUp')}
-                          onClick={() => moveMember(tier, i, -1)}
-                        >
-                          <ArrowUp size={11} />
-                        </button>
-                        <button
-                          className="btn"
-                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
-                          disabled={i === f.members.length - 1}
-                          data-tip={t('tierPolicy.moveDown')}
-                          onClick={() => moveMember(tier, i, 1)}
-                        >
-                          <ArrowDown size={11} />
-                        </button>
-                        <button
-                          className="btn"
-                          style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
-                          data-tip={t('tierPolicy.removeMember')}
-                          onClick={() => removeMember(tier, i)}
-                        >
-                          <X size={11} />
-                        </button>
+                        {/* Fixed-width action cluster (same rails as the combo
+                            editor) — the grip drag covers "move to top", so
+                            only the ±1 nudges and remove live here. The width
+                            is the add-row trigger's measured width so both
+                            columns end on the same x. */}
+                        <span style={{ display: 'flex', gap: '4px', width: actionCellW, justifyContent: 'space-between', flexShrink: 0 }}>
+                          <button
+                            className="btn"
+                            style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                            disabled={i === 0}
+                            data-tip={t('tierPolicy.moveUp')}
+                            onClick={() => moveMember(tier, i, -1)}
+                          >
+                            <ArrowUp size={11} />
+                          </button>
+                          <button
+                            className="btn"
+                            style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                            disabled={i === f.members.length - 1}
+                            data-tip={t('tierPolicy.moveDown')}
+                            onClick={() => moveMember(tier, i, 1)}
+                          >
+                            <ArrowDown size={11} />
+                          </button>
+                          <button
+                            className="btn"
+                            style={{ padding: '3px 6px', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                            data-tip={t('tierPolicy.removeMember')}
+                            onClick={() => removeMember(tier, i)}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </span>
                       </div>
                     );
                     });
                   })()}
-                  {f.members.length > 0 && visibleMembers(tier).length === 0 && (
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('common.noResults')}</div>
-                  )}
                 </div>
-                {/* Picker first (high-frequency, error-proof path), manual
-                    wildcard input second (advanced fallback). Edit mode only:
+                {/* Picker first (high-frequency, error-proof path); the
+                    trigger's popover takes the wildcard bulk-add that the
+                    combo editor also puts behind this button. Edit mode only:
                     view mode renders a purely read-only member list. */}
                 {editing && (
-                <Combobox
-                  value=""
-                  onChange={(v) => {
-                    // combo:<id> options store the ref verbatim — the backend
-                    // expands it at every commit point (pools follow combo edits)
-                    if (v) appendMembers(tier, [v]);
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '4px 6px',
+                    // The combo editor's add-row: a dashed slot that is an
+                    // input, not data — it never joins the member list.
+                    border: '1px dashed var(--divider)',
+                    borderRadius: 6,
+                    flexShrink: 0,
                   }}
-                  options={pickOptions}
-                  placeholder={t('tierPolicy.pickModelBtn')}
-                  panelMinWidth={320}
-                  forceFilter
-                  style={{ width: '100%', fontSize: 'var(--text-xs)', padding: '4px 8px', marginTop: '6px' }}
-                />
+                >
+                  {/* The rail is empty except for this icon, so center it —
+                      a left-aligned + reads as a stray glyph next to the
+                      member rows' grip + number pair above. */}
+                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: MEMBER_GUTTER_W, flexShrink: 0, color: 'var(--text-dim)' }}>
+                    <Plus size={13} />
+                  </span>
+                  <Combobox
+                    value=""
+                    onChange={(v) => {
+                      // combo:<id> options store the ref verbatim — the backend
+                      // expands it at every commit point (pools follow combo edits)
+                      if (v) appendMembers(tier, [v]);
+                    }}
+                    options={pickOptions}
+                    placeholder={t('tierPolicy.pickModelBtn')}
+                    panelMinWidth={320}
+                    forceFilter
+                    style={{ flex: 1, minWidth: '180px', fontSize: 'var(--text-sm)', padding: '4px 8px', ...CTRL_H }}
+                  />
+                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', width: actionCellW, flexShrink: 0 }}>
+                    <button
+                      ref={(el) => { quickBtnRefs.current[tier] = el; }}
+                      className="btn"
+                      style={{ gap: '5px', whiteSpace: 'nowrap', flexShrink: 0, padding: '3px 8px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', ...CTRL_H }}
+                      data-tip={t('tierPolicy.membersHint')}
+                      onClick={() => {
+                        if (quick?.tier === tier) {
+                          closeQuick();
+                          return;
+                        }
+                        placeQuick(tier);
+                        setQuick({ tier });
+                      }}
+                    >
+                      <Wand2 size={11} />
+                      <span>{t('tierPolicy.quickAdd')}</span>
+                    </button>
+                  </span>
+                </div>
                 )}
                 {editing && catalogReady && pickOptions.length === 0 && (
                   <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
                     {t('tierPolicy.pickEmptyHint')}
                   </div>
                 )}
-                {editing && (
-                <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-                  <input
-                    type="text"
-                    className="input"
-                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', padding: '4px 8px', ...CTRL_H }}
-                    placeholder={t('tierPolicy.addMemberPlaceholder')}
-                    value={memberDrafts[tier]}
-                    onChange={(e) => setMemberDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addMemberFromDraft(tier);
-                      }
+                {editing && quick && quickPos && createPortal(
+                  <div
+                    ref={quickPanelRef}
+                    style={{
+                      position: 'fixed',
+                      ...quickPos,
+                      zIndex: DROPDOWN_PANEL_Z,
+                      ...dropdownSurfaceStyle,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      padding: '10px',
                     }}
-                  />
-                  <button className="btn" style={{ padding: '4px 10px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', ...CTRL_H }} onClick={() => addMemberFromDraft(tier)}>
-                    <Plus size={11} />
-                    <span>{t('tierPolicy.addMemberBtn')}</span>
-                  </button>
-                </div>
-                )}
-                {editing && (
-                <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)', marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
-                )}
-              </div>
-
-              {/* Selection strategy (weight comes from the member rules) */}
-              <div>
-                <label style={labelStyle}>{t('tierPolicy.selection')}</label>
-                {editing ? (
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {(['priority', 'weighted', 'round_robin'] as SelectionStrategy[]).map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className="btn"
-                      aria-pressed={f.selection === s}
-                      style={{
-                        fontSize: 'var(--text-xs)',
-                        padding: '5px 8px',
-                        flex: 1,
-                        lineHeight: 'var(--leading-none)',
-                        ...CTRL_H,
-                        // Selected = accent-tinted outline, not a primary fill:
-                        // this is a toggle, not a call-to-action. Same quiet
-                        // pattern as the JSON toggle in CatalogSourcesPage.
-                        ...(f.selection === s ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}),
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                        <Wand2 size={13} />
+                        {t('tierPolicy.quickAdd')}
+                      </span>
+                      <button className="btn" style={{ padding: '2px 6px', ...CTRL_H }} onClick={closeQuick} title={t('common.cancel')}>
+                        <X size={11} />
+                      </button>
+                    </div>
+                    <input
+                      ref={quickInputRef}
+                      className="input"
+                      style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
+                      placeholder={t('tierPolicy.addMemberPlaceholder')}
+                      value={quickPattern}
+                      onChange={(e) => setQuickPattern(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          commitQuick();
+                        }
                       }}
-                      onClick={() => updateDraft(tier, { selection: s })}
+                    />
+                    {quickMatch ? (
+                      quickMatch.exists ? (
+                        <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--accent-rose)' }}>{t('tierPolicy.quickExists')}</span>
+                      ) : quickMatch.hits.length > 0 ? (
+                        <>
+                          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                            {t('tierPolicy.quickPreview', { count: quickMatch.hits.length })}
+                          </span>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', maxHeight: '120px', overflowY: 'auto' }}>
+                            {quickMatch.hits.slice(0, MEMBER_QUICK_CHIP_CAP).map((id) => (
+                              <span
+                                key={id}
+                                title={id}
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 'var(--text-2xs)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  background: 'var(--bg-elev)',
+                                  color: 'var(--text-muted)',
+                                }}
+                              >
+                                {id}
+                              </span>
+                            ))}
+                            {quickMatch.hits.length > MEMBER_QUICK_CHIP_CAP && (
+                              <span
+                                title={quickMatch.hits.slice(MEMBER_QUICK_CHIP_CAP).join('\n')}
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 'var(--text-2xs)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  border: '1px solid var(--divider)',
+                                  color: 'var(--text-dim)',
+                                }}
+                              >
+                                +{quickMatch.hits.length - MEMBER_QUICK_CHIP_CAP}
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', lineHeight: 1.5 }}>{t('tierPolicy.quickNoMatch')}</span>
+                      )
+                    ) : (
+                      <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', lineHeight: 1.5 }}>{t('tierPolicy.membersHint')}</span>
+                    )}
+                    <button
+                      className="btn btn-sm"
+                      style={{ alignSelf: 'flex-end' }}
+                      disabled={!quickMatch || quickMatch.exists}
+                      onClick={commitQuick}
                     >
-                      {t(s === 'priority' ? 'tierPolicy.selPriority' : s === 'weighted' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
+                      {t('tierPolicy.quickConfirm')}
                     </button>
-                  ))}
-                </div>
-                ) : (
-                /* View mode: the committed strategy as plain text — no toggle
-                   chrome on a read-only surface. */
-                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-main)' }}>
-                  {t(f.selection === 'priority' ? 'tierPolicy.selPriority' : f.selection === 'weighted' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
-                </div>
-                )}
-                {editing && (
-                <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
+                  </div>,
+                  document.body
                 )}
               </div>
 
@@ -1546,55 +1758,62 @@ export const RulesPage: React.FC = () => {
               )}
             </div>
           );
+          return cardEl;
+          };
           // Dialog footer: the commit bar. Modal convention puts the primary
           // actions bottom-right — the shared <Dialog> footerRight slot owns
           // the bar (borderTop / spacing included), so the card proper no
-          // longer renders a footer row while editing.
+          // longer renders a footer row while editing. The commit buttons use
+          // the STANDARD .btn scale (34px / text-sm): they must never read as
+          // smaller than the body's controls (e.g. the strategy toggle).
           const editFooterEl = (
             <>
               <button
                 className="btn"
-                style={{ padding: '3px 14px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                style={{ flexShrink: 0 }}
                 disabled={savingTier !== null}
                 onClick={() => void cancelEdit(tier)}
               >
-                <X size={11} />
+                <X size={13} />
                 <span>{t('tierPolicy.cancelEdit')}</span>
               </button>
               <button
                 className="btn btn-primary"
-                style={{ padding: '3px 14px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)', flexShrink: 0, ...CTRL_H }}
+                style={{ flexShrink: 0 }}
                 disabled={savingTier !== null || loading || !draftDirty(tier)}
                 onClick={() => void saveTier(tier)}
               >
-                <Save size={11} />
+                <Save size={13} />
                 <span>{savingTier === tier ? t('common.loading') : t('tierPolicy.saveTierBtn')}</span>
               </button>
             </>
           );
-          // Edit mode: the shared <Dialog> owns ALL modal chrome (overlay,
-          // Escape, backdrop press+release, scroll lock, footer bar).
+          // The grid cell ALWAYS renders the committed view card; while the
+          // tier is in edit mode the SAME body is additionally mounted in the
+          // shared <Dialog> (which owns ALL modal chrome: overlay, Escape,
+          // backdrop press+release, scroll lock, footer bar).
           // closeDisabled: while a stacked modal (pool / effort-map /
           // warnings) covers this dialog, every dismissal path of THIS
           // layer is blocked — one Escape press must not close two layers.
           // onClose = cancelEdit, which already asks before discarding a
           // dirty draft.
-          if (editing) {
-            return (
-              <Dialog
-                key={tier}
-                title={tierTitleEl}
-                onClose={() => void cancelEdit(tier)}
-                closeLabel={t('common.close')}
-                closeDisabled={!!poolModalTier || !!mapTarget || !!saveWarnings}
-                width={680}
-                footerRight={editFooterEl}
-              >
-                {cardEl}
-              </Dialog>
-            );
-          }
-          return <React.Fragment key={tier}>{cardEl}</React.Fragment>;
+          return (
+            <React.Fragment key={tier}>
+              {renderCard(false)}
+              {isEditing && (
+                <Dialog
+                  title={tierTitleEl(true)}
+                  onClose={() => void cancelEdit(tier)}
+                  closeLabel={t('common.close')}
+                  closeDisabled={!!poolModalTier || !!mapTarget || !!saveWarnings}
+                  width={720}
+                  footerRight={editFooterEl}
+                >
+                  {renderCard(true)}
+                </Dialog>
+              )}
+            </React.Fragment>
+          );
         })}
       </div>
 
@@ -1754,7 +1973,7 @@ export const RulesPage: React.FC = () => {
                     <span style={{ flex: 1, minWidth: 0 }}>{t('tierPolicy.colModel')}</span>
                     <span style={{ flexShrink: 0, fontFamily: FONT_MONO }}>
                       {t('tierPolicy.colInput')} / {t('tierPolicy.colOutput')} · {t('tierPolicy.colWeight')}
-                      {modalStrategy !== 'priority' ? ` · ${t('tierPolicy.colShare')}` : ''}
+                      {modalStrategy === 'weighted_round_robin' ? ` · ${t('tierPolicy.colShare')}` : ''}
                     </span>
                     <span style={{ width: 96, flexShrink: 0, textAlign: 'right' }}>{t('tierPolicy.colActions')}</span>
                   </div>
@@ -1777,7 +1996,7 @@ export const RulesPage: React.FC = () => {
                           const segs = [
                             `$${m.inputPrice ?? '?'} / $${m.outputPrice ?? '?'}`,
                             `${m.weight}x`,
-                            ...(modalStrategy !== 'priority' && modalTotalWeight > 0
+                            ...(modalStrategy === 'weighted_round_robin' && modalTotalWeight > 0
                               ? [`${Math.round((m.weight / modalTotalWeight) * 100)}%`]
                               : []),
                             ...(m.priority != null ? [`P${m.priority}`] : []),

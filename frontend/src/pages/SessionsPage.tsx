@@ -2237,7 +2237,13 @@ export const SessionsPage: React.FC = () => {
                   open or collapsed (it used to sit in the subtitle, where the
                   gap below it read as an orphan, and then in the grid, where
                   collapsing the card hid it entirely). No label — the mono
-                  quote is self-evident. Same copy affordance as the row's. */}
+                  quote is self-evident. Same copy affordance as the row's.
+
+                  Open vs collapsed is the read-depth signal: a collapsed card
+                  stays compact (single ellipsized line), while an open card is
+                  asking to be READ, so the title wraps to its full capped text
+                  instead of hiding the part the operator opened the dialog to
+                  see. */}
               {timeline.session.firstUserMessage && (
                 <div style={{ padding: '2px 12px 9px', minWidth: 0 }}>
                   <span
@@ -2247,9 +2253,10 @@ export const SessionsPage: React.FC = () => {
                       cursor: 'copy',
                       fontFamily: FONT_MONO,
                       fontSize: 'var(--text-sm)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
+                      whiteSpace: timeline.summaryOpen ? 'pre-wrap' : 'nowrap',
+                      overflow: timeline.summaryOpen ? 'visible' : 'hidden',
+                      textOverflow: timeline.summaryOpen ? 'clip' : 'ellipsis',
+                      overflowWrap: 'anywhere',
                     }}
                     onClick={async () => {
                       const ok = await copyToClipboard(timeline.session.firstUserMessage!);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Layers, Plus, Trash2, ArrowUp, ArrowDown, AlertTriangle, Pencil, X, Wand2, GripVertical, Power, Zap, Loader2 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { api, opencodeApi, type ComboView, type ComboMemberView, type ComboTestResult } from '../lib/api';
@@ -7,12 +7,26 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Combobox } from '../components/Combobox';
+import {
+  DROPDOWN_PANEL_Z,
+  dropdownSurfaceStyle,
+  positionDropdown,
+  type DropdownPosition,
+} from '../components/dropdown';
 import { Pagination } from '../components/Pagination';
 import { fmtLatency } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
+import { memberRuleMatch } from '../lib/glob';
 
 import { FONT_MONO } from '../lib/fonts';
-type Selection = 'priority' | 'weighted' | 'round_robin';
+import { MEMBER_ACTIONS_W, MEMBER_GUTTER_W, MEMBER_QUICK_CHIP_CAP, MEMBER_WEIGHT_INPUT } from '../lib/member-row-rails';
+import { MEMBER_WEIGHT_MAX } from '../lib/defaults';
+import { type SelectionStrategy, normalizeSelection } from '../lib/selection';
+/** Explicit label map — never derive the i18n key from the value: the canonical
+ *  `weighted_round_robin` would camel-case into a key that does not exist.
+ *  Anything outside the two rotation spellings reads as the default. */
+const selectionLabelKey = (s: SelectionStrategy): string =>
+  s === 'weighted_round_robin' ? 'combos.selWeighted' : s === 'round_robin' ? 'combos.selRoundRobin' : 'combos.selPriority';
 
 /** Virtual model ids routing owns — a combo must never shadow them. */
 const RESERVED_COMBO_IDS = new Set(['auto', 'lite', 'plus', 'pro', 'ultra']);
@@ -28,7 +42,7 @@ interface MemberDraft {
 
 interface ComboDraft {
   id: string;
-  selection: Selection;
+  selection: SelectionStrategy;
   disabled: boolean;
   models: MemberDraft[];
   note: string;
@@ -37,7 +51,7 @@ interface ComboDraft {
 /** Config payload → editable draft (members may arrive as strings or {id, weight}). */
 const toDraft = (c: ComboView): ComboDraft => ({
   id: c.id,
-  selection: (c.selection as Selection) || 'priority',
+  selection: normalizeSelection(c.selection),
   disabled: c.disabled === true,
   models: (c.members || []).map((m: ComboMemberView) => ({ id: m.id, weight: m.weight ?? 1 })),
   note: c.note || '',
@@ -87,6 +101,33 @@ const HealthDot: React.FC<{ member?: ComboMemberView }> = ({ member }) => {
   );
 };
 
+/**
+ * The member list is structurally `realRows ++ [addRow]`: the LAST slot is always
+ * a blank row used to append, so there is no "add member" button and no way to
+ * end up with zero rows. Typing an id into the add-row promotes it into the real
+ * range and a fresh blank takes its place (the row keeps its key/index, so focus
+ * and caret survive the promotion).
+ *
+ * The add-row is a rendering slot, never data: validation and save both go
+ * through `realMembers`, so config.yaml can never receive an empty member and the
+ * cards/counts on the page never see the phantom row.
+ */
+const BLANK_MEMBER = (): MemberDraft => ({ id: '', weight: 1 });
+/**
+ * The add-row and the real rows must share one leading gutter and one trailing
+ * action cell, otherwise their pickers and weight boxes sit a few px off each
+ * other and the list reads as two different kinds of row. The rails themselves
+ * are declared once in lib/member-row-rails (the tier editor uses the same
+ * ones). MEMBER_ACTIONS_W is only the first-paint width here: the real one is
+ * measured from the quick-add button (see actionsW) so the column is flush in
+ * every locale.
+ */
+const withAddRow = (real: readonly MemberDraft[]): MemberDraft[] => [...real, BLANK_MEMBER()];
+const realMembers = (models: readonly MemberDraft[]): MemberDraft[] => models.slice(0, -1);
+/** Seed the editor from a saved draft: a trailing blank is adopted as the add-row. */
+const asEditorList = (models: readonly MemberDraft[]): MemberDraft[] =>
+  withAddRow(models.length > 0 && models[models.length - 1].id.trim() === '' ? models.slice(0, -1) : models);
+
 /** Centered editor dialog for one combo (portal, Esc/backdrop close). */
 const ComboDialog: React.FC<{
   draft: ComboDraft;
@@ -101,8 +142,35 @@ const ComboDialog: React.FC<{
 }> = ({ draft, isNew, all, selfIndex, modelOptions, registeredIds, onClose, onSave }) => {
   const { t } = useI18n();
   const toast = useToast();
-  const [work, setWork] = useState<ComboDraft>(draft);
+  const [work, setWork] = useState<ComboDraft>(() => ({ ...draft, models: asEditorList(draft.models) }));
   const [pattern, setPattern] = useState('');
+  /**
+   * Wildcard bulk-add lives in a popover anchored to the add-row button, not in the
+   * dialog body: a hit list of dozens of models would push the member list around.
+   * It reuses the `Combobox` popup primitives (portal + fixed panel + outside-click)
+   * so the two cannot drift, and it stays BELOW the Escape order: while it is open,
+   * Escape cancels the popover instead of throwing away the whole draft.
+   */
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickPos, setQuickPos] = useState<DropdownPosition | null>(null);
+  const quickBtnRef = useRef<HTMLButtonElement>(null);
+  const quickPanelRef = useRef<HTMLDivElement>(null);
+  const quickInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * One action column for every row: the member rows hold three icon buttons and
+   * the add-row one text button, and the label length is locale-dependent, so the
+   * shared width is measured from the button instead of guessed. The trio then
+   * stretches to the same box, which makes the column flush on BOTH edges.
+   */
+  const [actionsW, setActionsW] = useState<number | null>(null);
+  const placeQuick = useCallback(
+    () => setQuickPos(quickBtnRef.current ? positionDropdown(quickBtnRef.current, 340, 320) : null),
+    []
+  );
+  const closeQuick = useCallback(() => {
+    setQuickOpen(false);
+    setPattern('');
+  }, []);
   const [saving, setSaving] = useState(false);
   // Native HTML5 drag-and-drop for member rows. A row is only draggable while
   // its grip handle is held (armedIdx), so text selection inside the member
@@ -114,46 +182,142 @@ const ComboDialog: React.FC<{
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // While the quick-add popover is open, Escape cancels it, not the draft.
+      if (quickOpen) {
+        closeQuick();
+        return;
+      }
+      onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, quickOpen, closeQuick]);
 
-  const warn = validateDraft(work, all, selfIndex, registeredIds);
+  // Re-anchor while the dialog scrolls, and dismiss on pointerdown outside
+  // trigger + panel (the same pair of rules Combobox applies to its own panel).
+  useEffect(() => {
+    if (!quickOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (quickPanelRef.current?.contains(target) || quickBtnRef.current?.contains(target)) return;
+      closeQuick();
+    };
+    window.addEventListener('scroll', placeQuick, true);
+    window.addEventListener('resize', placeQuick);
+    document.addEventListener('pointerdown', onDown);
+    return () => {
+      window.removeEventListener('scroll', placeQuick, true);
+      window.removeEventListener('resize', placeQuick);
+      document.removeEventListener('pointerdown', onDown);
+    };
+  }, [quickOpen, placeQuick, closeQuick]);
+
+  useEffect(() => {
+    if (quickOpen) quickInputRef.current?.focus();
+  }, [quickOpen]);
+
+  useEffect(() => {
+    const el = quickBtnRef.current;
+    if (!el) return;
+    // The button is flex-shrink:0 inside the cell, so its natural width never
+    // depends on actionsW and measuring it cannot feed back into its own size.
+    // A 0 reading means it has no layout box yet (this effect can run before the
+    // portal subtree is laid out), NOT that the column is 0px wide: taking it
+    // literally spills both action cells out of the row, so keep the fallback and
+    // re-measure on the next frame instead.
+    let raf = 0;
+    const measure = () => {
+      const w = el.offsetWidth;
+      if (w > 0) setActionsW(w);
+      else raf = requestAnimationFrame(measure);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
+
+  const actionCellW = actionsW ? `${actionsW}px` : MEMBER_ACTIONS_W;
+
+  const members = realMembers(work.models);
+  const warn = validateDraft({ ...work, models: members }, all, selfIndex, registeredIds);
   const patch = (p: Partial<ComboDraft>) => setWork(prev => ({ ...prev, ...p }));
+
+  /**
+   * Edit one row. Writing an id into the add-row commits it as a member and opens
+   * a new add-row below; a weight-only tweak does NOT commit (an id-less member
+   * would light up the warnEmptyMember badge for what is still just an input).
+   */
   const patchMember = (idx: number, p: Partial<MemberDraft>) =>
-    setWork(prev => ({ ...prev, models: prev.models.map((m, i) => (i === idx ? { ...m, ...p } : m)) }));
+    setWork(prev => {
+      const real = realMembers(prev.models);
+      if (idx < real.length) {
+        return { ...prev, models: withAddRow(real.map((m, i) => (i === idx ? { ...m, ...p } : m))) };
+      }
+      const next = { ...prev.models[prev.models.length - 1], ...p };
+      return { ...prev, models: next.id.trim() ? withAddRow([...real, next]) : [...real, next] };
+    });
+  const removeMember = (idx: number) =>
+    setWork(prev => ({ ...prev, models: withAddRow(realMembers(prev.models).filter((_, j) => j !== idx)) }));
   const moveMember = (idx: number, dir: -1 | 1) =>
     setWork(prev => {
-      const next = [...prev.models];
+      const next = realMembers(prev.models);
       const target = idx + dir;
       if (target < 0 || target >= next.length) return prev;
       [next[idx], next[target]] = [next[target], next[idx]];
-      return { ...prev, models: next };
+      return { ...prev, models: withAddRow(next) };
     });
   /** Drag-and-drop reorder: move the member at `from` to position `to`. */
   const reorderMember = (from: number, to: number) =>
     setWork(prev => {
-      const next = [...prev.models];
+      const next = realMembers(prev.models);
       const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return { ...prev, models: next };
+      // Clamped so dropping on the add-row means "move to the end", and the
+      // phantom row can never be pushed into the middle of the chain.
+      next.splice(Math.min(to, next.length), 0, moved);
+      return { ...prev, models: withAddRow(next) };
     });
 
-  /** Expand a '*' wildcard pattern over connected registered models → new members. */
-  const addByPattern = () => {
+  /**
+   * A model already in the chain is not offered again. `Combobox` is select-only
+   * (it never commits typed text), so filtering the options stops a duplicate at
+   * the input instead of after it; `warnDupMember` stays in `validateDraft` as the
+   * legacy-data backstop. A row always keeps its own id so its label resolves.
+   */
+  const memberIds = useMemo(() => new Set(realMembers(work.models).map(m => m.id)), [work.models]);
+  const rowOptions = (selfId: string) => modelOptions.filter(o => o.value === selfId || !memberIds.has(o.value));
+
+  /**
+   * Wildcard bulk-add is two-step: the input matches live and the hit list is
+   * shown, and only the confirm (Enter is the same action once that list is on
+   * screen) appends. Models already in the chain are reported as skipped instead
+   * of being filtered out silently.
+   *
+   * Matching is the SAME member-rule vocabulary the tier page and the backend
+   * speak (`memberRuleMatch`): `*` / `?` globs, no wildcard = substring, and a
+   * registered full id pins only itself — never a longer sibling. A private
+   * `*`-only anchored regex here used to diverge on all three counts.
+   */
+  const patternMatch = useMemo(() => {
     const p = pattern.trim();
-    if (!p) return;
-    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const rx = new RegExp(`^${p.split('*').map(esc).join('.*')}$`, 'i');
-    const existing = new Set(work.models.map(m => m.id));
-    const add = modelOptions.filter(o => rx.test(o.value) && !existing.has(o.value));
-    if (add.length === 0) {
-      toast.error(t('combos.patternNoMatch'));
-      return;
-    }
-    patch({ models: [...work.models, ...add.map(o => ({ id: o.value, weight: 1 }))] });
+    if (!p) return null;
+    // The exact-pin test must read the FULL registered universe, not the
+    // connected-only hit list: a registered model whose provider is offline
+    // is still a registered id, so naming it exactly must not fall back to
+    // substring and swallow a connected longer sibling.
+    const registeredLower = new Set(Array.from(registeredIds, (id) => id.toLowerCase()));
+    const isRegistered = (id: string) => registeredLower.has(id.trim().toLowerCase());
+    const hits = modelOptions.filter(o => memberRuleMatch(p, o.value, isRegistered));
+    return { fresh: hits.filter(o => !memberIds.has(o.value)), skipped: hits.filter(o => memberIds.has(o.value)) };
+  }, [pattern, modelOptions, memberIds, registeredIds]);
+  const commitPattern = () => {
+    if (!patternMatch || patternMatch.fresh.length === 0) return;
+    const add = patternMatch.fresh.map(o => ({ id: o.value, weight: 1 }));
+    setWork(prev => ({ ...prev, models: withAddRow([...realMembers(prev.models), ...add]) }));
     setPattern('');
     toast.success(t('combos.patternAdded', { count: add.length }));
   };
@@ -161,14 +325,44 @@ const ComboDialog: React.FC<{
   const handleSave = async () => {
     if (warn || saving) return;
     setSaving(true);
-    const ok = await onSave(work);
+    // The add-row is an input, not a member — it never leaves the dialog.
+    const ok = await onSave({ ...work, models: members });
     setSaving(false);
     if (ok) onClose();
   };
 
   // Close on backdrop click only when BOTH press and release happen on the
   // overlay itself — a click that starts inside the form and ends on the
-  // overlay (text-selection drag) must not dismiss the dialog.
+  // overlay (text-selection drag) must not dismiss the dialog. While the
+  // quick-add popover is open the backdrop click belongs to that layer alone
+  // (its own pointerdown handler dismisses it), so the draft survives.
+  /**
+   * Chips in the quick-add preview are a spot-check, not the decision (the count
+   * line carries that), so each list is capped (`MEMBER_QUICK_CHIP_CAP`, shared
+   * with the tier editor) and the tail collapses into one `+N` chip whose
+   * tooltip still names every hidden id. Keeps the popover about half as tall
+   * for a broad wildcard like `*`.
+   */
+  const chipTail = (list: { value: string; label: string }[]) => {
+    const hidden = list.slice(MEMBER_QUICK_CHIP_CAP);
+    if (hidden.length === 0) return null;
+    return (
+      <span
+        title={hidden.map(o => o.value).join('\n')}
+        style={{
+          fontFamily: FONT_MONO,
+          fontSize: 'var(--text-2xs)',
+          padding: '2px 6px',
+          borderRadius: '4px',
+          border: '1px solid var(--divider)',
+          color: 'var(--text-dim)',
+        }}
+      >
+        +{hidden.length}
+      </span>
+    );
+  };
+
   const mouseDownOnOverlay = React.useRef(false);
 
   return createPortal(
@@ -184,11 +378,11 @@ const ComboDialog: React.FC<{
         animation: 'ocr-fade-in 0.15s ease',
       }}
       onMouseDown={e => {
-        mouseDownOnOverlay.current = e.target === e.currentTarget;
+        mouseDownOnOverlay.current = e.target === e.currentTarget && !quickOpen;
       }}
       onMouseUp={e => {
         setArmedIdx(null); // disarm even if the pointer left the grip handle
-        if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose();
+        if (!quickOpen && mouseDownOnOverlay.current && e.target === e.currentTarget) onClose();
       }}
     >
       <div
@@ -245,7 +439,7 @@ const ComboDialog: React.FC<{
               {t('combos.selection')}
             </label>
             <div style={{ display: 'flex', gap: '8px' }}>
-              {(['priority', 'weighted', 'round_robin'] as Selection[]).map(s => (
+              {(['priority', 'weighted_round_robin', 'round_robin'] as SelectionStrategy[]).map(s => (
                 <button
                   key={s}
                   type="button"
@@ -253,7 +447,7 @@ const ComboDialog: React.FC<{
                   style={{ fontSize: 'var(--text-sm)', flex: 1 }}
                   onClick={() => patch({ selection: s })}
                 >
-                  {t(s === 'priority' ? 'combos.selPriority' : s === 'weighted' ? 'combos.selWeighted' : 'combos.selRoundRobin')}
+                  {t(selectionLabelKey(s))}
                 </button>
               ))}
             </div>
@@ -264,17 +458,13 @@ const ComboDialog: React.FC<{
               <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {t('combos.members')}
               </label>
-              <button
-                className="btn btn-sm"
-                style={{ gap: '6px', padding: '3px 8px' }}
-                onClick={() => patch({ models: [...work.models, { id: '', weight: 1 }] })}
-              >
-                <Plus size={12} />
-                <span>{t('combos.addMember')}</span>
-              </button>
+              <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>
+                {t('combos.memberCount', { count: members.length })}
+              </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {work.models.map((member, mIdx) => {
+                const isAddRow = mIdx === work.models.length - 1;
                 const known = registeredIds.has(member.id);
                 return (
                   <div
@@ -309,30 +499,59 @@ const ComboDialog: React.FC<{
                       alignItems: 'center',
                       flexWrap: 'wrap',
                       borderRadius: '6px',
-                      border: dragIdx !== null && overIdx === mIdx && dragIdx !== mIdx ? '1px dashed var(--accent)' : '1px solid transparent',
+                      border: dragIdx !== null && overIdx === mIdx && dragIdx !== mIdx
+                        ? '1px dashed var(--accent)'
+                        : isAddRow
+                          ? '1px dashed var(--divider)'
+                          : '1px solid transparent',
                       opacity: dragIdx === mIdx ? 0.4 : 1,
                     }}
                   >
                     <span
-                      title={t('combos.dragSort')}
-                      onMouseDown={() => setArmedIdx(mIdx)}
-                      onMouseUp={() => setArmedIdx(null)}
-                      style={{ cursor: 'grab', color: 'var(--text-dim)', display: 'inline-flex', flexShrink: 0 }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        // The add-row rail holds only the +, so center it there;
+                        // real rows stay left-packed (grip + number).
+                        justifyContent: isAddRow ? 'center' : undefined,
+                        gap: '6px',
+                        width: MEMBER_GUTTER_W,
+                        flexShrink: 0,
+                        color: 'var(--text-dim)',
+                      }}
                     >
-                      <GripVertical size={13} />
-                    </span>
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', width: '18px', textAlign: 'right' }}>
-                      {mIdx + 1}.
+                      {isAddRow ? <Plus size={13} /> : (
+                        <span
+                          title={t('combos.dragSort')}
+                          onMouseDown={() => setArmedIdx(mIdx)}
+                          onMouseUp={() => setArmedIdx(null)}
+                          style={{ cursor: 'grab', display: 'inline-flex' }}
+                        >
+                          <GripVertical size={13} />
+                        </span>
+                      )}
+                      {/* Real rows carry their 1-based chain number; the
+                          add-row drops that cell entirely (the picker's start
+                          x comes from the fixed gutter width, not this cell),
+                          leaving the rail empty so the + centers in it. */}
+                      {!isAddRow && (
+                        <span style={{ fontSize: 'var(--text-xs)', width: '22px', textAlign: 'right' }}>
+                          {`${mIdx + 1}.`}
+                        </span>
+                      )}
                     </span>
                     <Combobox
                       value={member.id}
                       onChange={v => patchMember(mIdx, { id: v })}
-                      options={modelOptions}
-                      placeholder={t('combos.memberPlaceholder')}
+                      options={rowOptions(member.id)}
+                      placeholder={isAddRow ? t('combos.addRowPlaceholder') : t('combos.memberPlaceholder')}
                       panelMinWidth={360}
                       style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', flex: 1, minWidth: '220px' }}
                     />
-                    {work.selection !== 'priority' && (
+                    {/* ONLY `weighted_round_robin` reads member weight (rotation
+                        share); priority and round_robin ignore it, so the field
+                        is not offered under them. */}
+                    {work.selection === 'weighted_round_robin' && (
                       <label
                         style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
                       >
@@ -340,40 +559,80 @@ const ComboDialog: React.FC<{
                         <input
                           type="number"
                           min={1}
+                          max={MEMBER_WEIGHT_MAX}
                           value={member.weight}
-                          onChange={e => patchMember(mIdx, { weight: Math.max(1, Number(e.target.value) || 1) })}
+                          onChange={e => patchMember(mIdx, { weight: Math.min(MEMBER_WEIGHT_MAX, Math.max(1, Number(e.target.value) || 1)) })}
                           className="input"
-                          style={{ width: '60px', padding: '4px 6px' }}
+                          style={MEMBER_WEIGHT_INPUT}
                         />
                       </label>
                     )}
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <button
-                        className="btn btn-sm"
-                        style={{ padding: '4px 6px' }}
-                        disabled={mIdx === 0}
-                        onClick={() => moveMember(mIdx, -1)}
-                        title={t('combos.moveUp')}
+                    {!isAddRow && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '4px',
+                          width: actionCellW,
+                          justifyContent: 'space-between',
+                          flexShrink: 0,
+                        }}
                       >
-                        <ArrowUp size={13} />
-                      </button>
-                      <button
-                        className="btn btn-sm"
-                        style={{ padding: '4px 6px' }}
-                        disabled={mIdx === work.models.length - 1}
-                        onClick={() => moveMember(mIdx, 1)}
-                        title={t('combos.moveDown')}
+                        <button
+                          className="btn btn-sm"
+                          style={{ padding: '4px 6px' }}
+                          disabled={mIdx === 0}
+                          onClick={() => moveMember(mIdx, -1)}
+                          title={t('combos.moveUp')}
+                        >
+                          <ArrowUp size={13} />
+                        </button>
+                        <button
+                          className="btn btn-sm"
+                          style={{ padding: '4px 6px' }}
+                          disabled={mIdx >= members.length - 1}
+                          onClick={() => moveMember(mIdx, 1)}
+                          title={t('combos.moveDown')}
+                        >
+                          <ArrowDown size={13} />
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          style={{ padding: '4px 6px' }}
+                          onClick={() => removeMember(mIdx)}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )}
+                    {isAddRow && (
+                      <div
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'flex-end',
+                          width: actionCellW,
+                          flexShrink: 0,
+                        }}
                       >
-                        <ArrowDown size={13} />
-                      </button>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        style={{ padding: '4px 6px' }}
-                        onClick={() => patch({ models: work.models.filter((_, j) => j !== mIdx) })}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
+                        <button
+                          ref={quickBtnRef}
+                          className="btn btn-sm"
+                          style={{ gap: '5px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                          onClick={() => {
+                            if (quickOpen) {
+                              closeQuick();
+                              return;
+                            }
+                            placeQuick();
+                            setQuickOpen(true);
+                          }}
+                          title={t('combos.patternHint')}
+                        >
+                          <Wand2 size={13} />
+                          <span>{t('combos.quickAdd')}</span>
+                        </button>
+                      </div>
+                    )}
                     {!known && member.id && (
                       <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '5px', fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>
                         <AlertTriangle size={12} />
@@ -383,30 +642,129 @@ const ComboDialog: React.FC<{
                   </div>
                 );
               })}
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <input
-                  className="input"
-                  style={{ flex: 1, fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
-                  placeholder={t('combos.patternPlaceholder')}
-                  value={pattern}
-                  onChange={e => setPattern(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addByPattern();
-                    }
-                  }}
-                />
-                <button
-                  className="btn btn-sm"
-                  style={{ gap: '6px', whiteSpace: 'nowrap' }}
-                  onClick={addByPattern}
-                  disabled={!pattern.trim()}
-                >
-                  <Wand2 size={14} />
-                  <span>{t('combos.patternAdd')}</span>
-                </button>
-              </div>
+              {quickOpen &&
+                quickPos &&
+                createPortal(
+                  <div
+                    ref={quickPanelRef}
+                    style={{
+                      position: 'fixed',
+                      ...quickPos,
+                      zIndex: DROPDOWN_PANEL_Z,
+                      ...dropdownSurfaceStyle,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      padding: '10px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
+                        <Wand2 size={13} />
+                        {t('combos.quickAdd')}
+                      </span>
+                      <button
+                        className="btn btn-sm"
+                        style={{ padding: '2px 6px' }}
+                        onClick={closeQuick}
+                        title={t('common.cancel')}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    <input
+                      ref={quickInputRef}
+                      className="input"
+                      style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
+                      placeholder={t('combos.patternPlaceholder')}
+                      value={pattern}
+                      onChange={e => setPattern(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          commitPattern();
+                        }
+                      }}
+                    />
+                    {!patternMatch ? (
+                      <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', lineHeight: 1.5 }}>{t('combos.patternHint')}</span>
+                    ) : (
+                      <>
+                        <span
+                          style={{
+                            fontSize: 'var(--text-xs)',
+                            // Rose only for a real miss — everything-already-present is
+                            // informational, not an error.
+                            color:
+                              !patternMatch.fresh.length && !patternMatch.skipped.length
+                                ? 'var(--accent-rose)'
+                                : 'var(--text-dim)',
+                          }}
+                        >
+                          {patternMatch.fresh.length
+                            ? t('combos.patternPreview', { count: patternMatch.fresh.length, skipped: patternMatch.skipped.length })
+                            : patternMatch.skipped.length
+                              ? t('combos.patternAllPresent')
+                              : t('combos.patternNoMatch')}
+                        </span>
+                        {patternMatch.fresh.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', maxHeight: '160px', overflowY: 'auto' }}>
+                            {patternMatch.fresh.slice(0, MEMBER_QUICK_CHIP_CAP).map(o => (
+                              <span
+                                key={o.value}
+                                title={o.label}
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 'var(--text-2xs)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  background: 'var(--bg-elev)',
+                                  color: 'var(--text-muted)',
+                                }}
+                              >
+                                {o.value}
+                              </span>
+                            ))}
+                            {chipTail(patternMatch.fresh)}
+                          </div>
+                        )}
+                        {patternMatch.skipped.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                            <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>{t('combos.patternSkipped')}</span>
+                            {patternMatch.skipped.slice(0, MEMBER_QUICK_CHIP_CAP).map(o => (
+                              <span
+                                key={o.value}
+                                title={o.label}
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 'var(--text-2xs)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  border: '1px solid var(--divider)',
+                                  color: 'var(--text-dim)',
+                                }}
+                              >
+                                {o.value}
+                              </span>
+                            ))}
+                            {chipTail(patternMatch.skipped)}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <button
+                      className="btn btn-sm"
+                      style={{ alignSelf: 'flex-end' }}
+                      onClick={commitPattern}
+                      disabled={!patternMatch || patternMatch.fresh.length === 0}
+                    >
+                      {patternMatch && patternMatch.fresh.length > 0
+                        ? t('combos.patternConfirm', { count: patternMatch.fresh.length })
+                        : t('combos.patternAdd')}
+                    </button>
+                  </div>,
+                  document.body
+                )}
             </div>
           </div>
 
@@ -769,7 +1127,7 @@ export const CombosPage: React.FC = () => {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {t(`combos.sel${combo.selection.charAt(0).toUpperCase()}${combo.selection.slice(1)}`)}
+                    {t(selectionLabelKey(combo.selection))}
                   </span>
                 </div>
 
@@ -806,7 +1164,7 @@ export const CombosPage: React.FC = () => {
                         <span title={m.id} style={{ fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {m.id || <span style={{ color: 'var(--accent-rose)' }}>{t('combos.warnEmptyMember')}</span>}
                         </span>
-                        {combo.selection !== 'priority' && (m.weight ?? 1) > 1 && (
+                        {combo.selection === 'weighted_round_robin' && (m.weight ?? 1) > 1 && (
                           <span style={{ marginLeft: 'auto', fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>×{m.weight}</span>
                         )}
                       </div>

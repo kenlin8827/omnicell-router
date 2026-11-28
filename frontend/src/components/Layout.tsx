@@ -65,12 +65,33 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     { to: '/proxy-patterns', labelKey: 'nav.proxyPatterns', icon: ListFilter },
     { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
   ] },
+  /** The name-resolution chain, in the order the pipeline walks it (ADR-0003):
+   *  combos and tiers are the exact-match stages, auto is the smart cascade,
+   *  route-entries the explicit overrides, each an exact-match or override
+   *  stage of the name-resolution chain.
+   *  There is deliberately NO terminal "unresolved name" page any more: the
+   *  fallback mechanism was deleted outright (ADR-0026), and a name that
+   *  survives none of these stages moves that answer to whoever owns the
+   *  traffic — the gateway plugin that answered the request.
+   *  It precedes the Proxy group: model routing is active by default while
+   *  every proxy switch is opt-in, so the inactive transport domain must not
+   *  split model definitions from model routing. */
+  { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
+    { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
+    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
+  ] },
   /** Proxy capability home (ADR-0018/0022 axis): the inbound forward-proxy
    *  rule table and the outbound endpoint live together, away from the model
    *  vocabulary — the model-side reference (include/exclude globs) stays in the
    *  Upstream group on the Proxy Patterns page. Inbound leads: a request enters
    *  here before any egress decision is made, and its traffic lands on the log
-   *  page right next to the rules that admitted it. */
+   *  page right next to the rules that admitted it.
+   *  Placed after BOTH model-side groups on purpose: `forwardProxy.enabled`,
+   *  `proxy.enabled` and `proxy.mihomo.enabled` all default to false, so this
+   *  group is an opt-in transport domain, not a step between defining a model
+   *  and routing a request to it. */
   { id: 'grp-proxy', headingKey: 'nav.grpProxy', shortKey: 'nav.shortProxy', icon: Globe, items: [
     { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: DoorOpen },
     { to: '/proxy-log', labelKey: 'nav.proxyLog', icon: ScrollText },
@@ -79,20 +100,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     /* The machine-wide switch consumes BOTH halves above, so it sits last:
        one OS slot, pointed at the inbound proxy or the Clash egress. */
     { to: '/proxy-system', labelKey: 'nav.systemProxy', icon: MonitorCog },
-  ] },
-  /** The name-resolution chain, in the order the pipeline walks it (ADR-0003):
-   *  combos and tiers are the exact-match stages, auto is the smart cascade,
-   *  route-entries the explicit overrides, each an exact-match or override
-   *  stage of the name-resolution chain.
-   *  There is deliberately NO terminal "unresolved name" page any more: the
-   *  fallback mechanism was deleted outright (ADR-0026), and a name that
-   *  survives none of these stages moves that answer to whoever owns the
-   *  traffic — the gateway plugin that answered the request. */
-  { id: 'grp-traffic', headingKey: 'nav.grpTraffic', shortKey: 'nav.shortTraffic', icon: Shuffle, items: [
-    { to: '/combos', labelKey: 'nav.combos', icon: Layers },
-    { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-    { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
-    { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
   ] },
   { id: 'grp-safety', headingKey: 'nav.grpSafety', shortKey: 'nav.shortSafety', icon: ShieldCheck, items: [
     { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },

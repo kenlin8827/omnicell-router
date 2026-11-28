@@ -1,4 +1,5 @@
 import type { Lang } from '../i18n/types';
+import type { SelectionStrategy } from './selection';
 
 /** Credential methods a plugin's connect card may offer (backend PluginAuthType). */
 export type PluginAuthType = 'none' | 'webLogin' | 'key';
@@ -1532,7 +1533,7 @@ export interface ComboView {
   id: string;
   active?: boolean;
   disabled?: boolean;
-  selection: 'priority' | 'weighted' | 'round_robin' | string;
+  selection: SelectionStrategy;
   members: ComboMemberView[];
   note?: string;
 }

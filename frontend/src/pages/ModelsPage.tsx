@@ -55,6 +55,8 @@ const hasCapability = (m: OpenCodeModelView): boolean =>
 
 // Outline badges: transparent fill, border derived from the text hue (the
 // bg param is legacy at call sites — kept for signature stability).
+// whiteSpace: nowrap — a pill never breaks mid-text (CJK allows a break
+// between any two characters); squeezed badges wrap as whole units instead.
 const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   background: 'transparent',
   color,
@@ -66,6 +68,7 @@ const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   display: 'inline-flex',
   alignItems: 'center',
   gap: 4,
+  whiteSpace: 'nowrap',
 });
 
 /** Header-cell metrics handed to ScrollTable — the head row itself lives outside the scroll body. */

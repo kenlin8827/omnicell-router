@@ -153,3 +153,10 @@ export const DEFAULT_ADMIN_MAX_BODY_BYTES = 8_388_608;
  *  server-side on load, so the console shows the same floor and ceiling. */
 export const BODY_LIMIT_MIN_BYTES = 65_536;
 export const BODY_LIMIT_MAX_BYTES = 536_870_912;
+
+/** Member rotation weight ceiling — mirrors backend `MAX_MEMBER_WEIGHT`
+ *  (backend/src/providers/selection.ts). The backend clamps every weight on
+ *  read; the console clamps its inputs to the same ceiling so a displayed
+ *  rotation share never diverges from the effective one. Update both in the
+ *  same commit. */
+export const MEMBER_WEIGHT_MAX = 1_000_000;

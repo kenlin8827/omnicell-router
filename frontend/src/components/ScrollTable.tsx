@@ -62,6 +62,12 @@ export const stickyBodyCell: React.CSSProperties = {
  * overflows into that range, and a head sized to the tracks alone would clamp the mirrored
  * `scrollLeft` short and sit shifted at the far right.
  *
+ * Mirrored layout mode alone is NOT enough: with `auto` layout the head would size its columns
+ * from its own content (labels) while the body sizes them from row content (badges, buttons,
+ * monospace ids), so on a narrow window every column drifted left of its body track. The columns
+ * are therefore MEASURED from the body — a table cell's used width is its column's track, so any
+ * full-width row reports the same numbers — and the head is laid out fixed over those widths.
+ *
  * Use this for every bounded, scrolling table. A page-level table keeps a plain header row too.
  *
  * The scrolling viewport carries `.scroll-table-viewport`, which styles/index.css uses to
@@ -88,17 +94,15 @@ export const ScrollTable: React.FC<{
   const headRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const bodyTableRef = useRef<HTMLTableElement>(null);
-  // Scrollable width the head must expose. The body's track width alone is NOT enough:
+  // Measured column tracks, in column order. A cell's used width is its COLUMN's
+  // track (not its content width), so one full-width row reports every track.
+  const [widths, setWidths] = useState<number[] | null>(null);
+  // Scrollable width the head must expose. The measured tracks alone are NOT enough:
   // content wider than its track (a long badge, an unbreakable token) overflows into
   // the body's scrollable area, so the body can scroll further right than a head sized
   // to the tracks. The mirrored `scrollLeft` would then clamp short and leave every
   // column shifted by the overflow at the far right of the table.
   const [headWidth, setHeadWidth] = useState<number | null>(null);
-  // The body TABLE's used width — the head's inner box carries the scroll EXTENT, the
-  // head table must carry the tracks themselves. Without this the head keeps its own
-  // layout mode (auto, where a declared width is only a hint) against a fixed-layout
-  // body, and every column right of an elastic track drifts.
-  const [tracksWidth, setTracksWidth] = useState<number | null>(null);
   // The width the body's vertical scrollbar takes from its client box. The head's
   // scrollport has no bar, so it is this much WIDER than the body's. A `sticky
   // right: 0` cell pins to its own scrollport's right edge, so without this inset
@@ -108,19 +112,37 @@ export const ScrollTable: React.FC<{
   const [stickyInset, setStickyInset] = useState(0);
 
   const measure = () => {
-    // Used layout width, NOT getBoundingClientRect: dialogs animate their card
-    // with a scale (`ocr-pop-in`), and a rect read during that transform comes
-    // back scaled (e.g. 0.97×). `getComputedStyle().width` resolves the used
-    // value from layout, so ancestor transforms never leak into the measurement.
     const body = bodyRef.current;
     const bodyTable = bodyTableRef.current;
     const bar = body ? body.offsetWidth - body.clientWidth : 0;
-    if (bodyTable) {
-      const used = Number.parseFloat(getComputedStyle(bodyTable).width);
-      if (Number.isFinite(used)) {
-        setTracksWidth((prev) => (prev !== null && Math.abs(prev - used) < 0.5 ? prev : used));
+    // Sample the first row that actually spans EVERY column: band/tree header rows
+    // and the empty-state row use colSpan, so their cell count does not match. If no
+    // row qualifies the head falls back to its declared colgroup / auto layout.
+    let next: number[] | null = null;
+    const rows = bodyTable?.tBodies[0]?.rows;
+    if (rows) {
+      for (let i = 0; i < rows.length; i += 1) {
+        const row = rows[i];
+        if (row.cells.length !== columns.length) continue;
+        // Used layout width, NOT getBoundingClientRect: dialogs animate their card
+        // with a scale (`ocr-pop-in`), and a rect read during that transform comes
+        // back scaled (e.g. 0.97×). `getComputedStyle().width` resolves the used
+        // value from layout, so ancestor transforms never leak into the measurement.
+        const rowWidths = Array.from(row.cells).map((cell) => {
+          const used = Number.parseFloat(getComputedStyle(cell).width);
+          return Number.isFinite(used) ? used : cell.getBoundingClientRect().width;
+        });
+        if (rowWidths.every((w) => Number.isFinite(w) && w > 0)) {
+          next = rowWidths;
+          break;
+        }
       }
     }
+    setWidths((prev) => {
+      if (!next) return prev === null ? prev : null;
+      if (prev && prev.length === next.length && prev.every((w, i) => Math.abs(w - next[i]) < 0.5)) return prev;
+      return next;
+    });
     if (body) {
       // The body's own scroll range, plus the width a classic vertical scrollbar takes
       // from its client box (the head has no scrollbar, so without that term the head
@@ -160,10 +182,21 @@ export const ScrollTable: React.FC<{
       ))}
     </colgroup>
   );
-  // The head's box carries the widest of the two: the body's tracks, and its full scroll
-  // extent (so the mirrored `scrollLeft` can reach the far right of overflowing content).
+  const measuredColgroup =
+    widths && (
+      <colgroup>
+        {columns.map((column, i) => (
+          <col key={column.key} style={{ width: widths[i] }} />
+        ))}
+      </colgroup>
+    );
+  // The head is laid out fixed over the measured tracks; without a measurable row it
+  // keeps the declared colgroup / auto layout. The inner box carries the widest of the
+  // measured tracks and the body's scroll extent, so the mirrored `scrollLeft` can reach
+  // the far right of content that overflowed its track.
+  const headTableWidth = widths ? widths.reduce((sum, w) => sum + w, 0) : null;
   const headBoxWidth =
-    headWidth === null && tracksWidth === null ? null : Math.max(headWidth ?? 0, tracksWidth ?? 0);
+    headWidth === null && headTableWidth === null ? null : Math.max(headWidth ?? 0, headTableWidth ?? 0);
 
   return (
     <div
@@ -193,11 +226,11 @@ export const ScrollTable: React.FC<{
         <div style={headBoxWidth !== null ? { width: headBoxWidth } : undefined}>
           <table
             style={{
-              ...baseTable(hasDeclaredWidth),
-              ...(tracksWidth !== null ? { width: tracksWidth } : {}),
+              ...baseTable(Boolean(widths) || hasDeclaredWidth),
+              ...(headTableWidth !== null ? { width: headTableWidth } : {}),
             }}
           >
-            {declaredColgroup}
+            {measuredColgroup ?? declaredColgroup}
             <thead>
               <tr>
                 {columns.map((column) => (
